@@ -97,9 +97,29 @@ async function widenPreview(page) {
   assert.ok(scroll >= 4000, "sandbox: preview contains overflowing content");
 }
 
+async function checkLoadingStatus(page, label) {
+  const saved = await page.locator("#status").evaluate((el) => {
+    const previous = { text: el.textContent, kind: el.dataset.kind };
+    el.textContent = "downloading bun.wasm… 2.1 MB / 3.1 MB";
+    el.dataset.kind = "";
+    return previous;
+  });
+  try {
+    await fits(page, `${label}/loading`);
+    const box = await page.locator("#status").boundingBox();
+    assert.ok(box && box.height > 0, `${label}: loading status must be visible on phones`);
+  } finally {
+    await page.locator("#status").evaluate((el, previous) => {
+      el.textContent = previous.text;
+      el.dataset.kind = previous.kind;
+    }, saved);
+  }
+}
+
 async function checkWidth(page, app, chromium, files, long, path, width) {
   await page.setViewportSize({ width, height: 850 });
   await fits(page, `${app}/${width}/initial`);
+  await checkLoadingStatus(page, `${app}/${width}`);
   for (const file of files) {
     await page.evaluate(([app, file]) => globalThis[app].editor.open(file), [app, file]);
     await fits(page, `${app}/${width}/${file}`);
