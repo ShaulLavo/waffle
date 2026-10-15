@@ -174,7 +174,13 @@ connection, same length protocol as `fetch_head`.
 
 - `crates/bunwasm-host` (`bun-wasm` binary): native launcher on wasmtime,
   implements every slot.
-- `web/`: the browser playground implements `poll`, `fetch*`, `read`,
-  `close`, `error`, and (for `Bun.serve` previews) `listen`/`accept`/`write`
-  on virtual connections fed by a service worker.
+- `web/`: the browser playground implements `poll`, `fetch`, `fetch_head`,
+  `read`, `close`, `error`, and for `Bun.serve` previews `listen`,
+  `local_port`, `accept`, `write` and `peer_addr` on virtual connections fed
+  by a service worker (`/__preview/<port>/…`). `connect` works only to the
+  guest's own listeners (an in-worker pipe); anything else is `UNSUPPORTED`.
+  Requests are relayed through a SharedArrayBuffer ring (web/src/net/), so
+  the page must be cross-origin isolated; without isolation no slots are
+  installed. `scripts/run.ts` offers the same slots when running the shim
+  in Bun.
 - `wasmtime run`: no slots; network APIs report "not supported".
