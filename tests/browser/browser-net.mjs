@@ -114,16 +114,18 @@ console.log("FETCH-DONE");
 
 const serveTest = `
 let socketOrigin = "";
+let socketHost = "";
 const server = Bun.serve({
   port: 3000,
   async fetch(req, srv) {
     if (new URL(req.url).pathname === "/socket") {
       socketOrigin = req.headers.get("origin") || "";
+      socketHost = req.headers.get("host") || "";
       const protocol = req.headers.get("sec-websocket-protocol");
       if (srv.upgrade(req, protocol ? { headers: { "sec-websocket-protocol": protocol.split(",")[0].trim() } } : {})) return;
     }
     const url = new URL(req.url);
-    if (url.pathname === "/socket-origin") return new Response(socketOrigin);
+    if (url.pathname === "/socket-headers") return Response.json({ origin: socketOrigin, host: socketHost });
     if (url.pathname === "/changed") return new Response(await Bun.file("/home/user/live.txt").text());
     if (url.pathname === "/api") return Response.json({ hello: "preview", method: req.method, body: await req.text() });
     if (url.pathname === "/app.js") return new Response("document.title = 'app.js loaded';", { headers: { "content-type": "text/javascript" } });
@@ -225,6 +227,27 @@ async function checkHtmlEntry(page, context, appUrl, name) {
     const iframe = page.frames().find((frame) => frame.url() === previewUrl);
     if (!iframe) throw new Error("Missing HTML HMR iframe");
     await Promise.all([preview.waitForFunction(() => globalThis.__hmrConnected, null, { timeout: 15000 }), iframe.waitForFunction(() => globalThis.__hmrConnected, null, { timeout: 15000 })]);
+    const deniedOriginStatus = await boundedEvaluate(page, () => new Promise((resolve, reject) => {
+      const helper = globalThis.playground.previews.servers.get(3000);
+      let response = "";
+      const connection = helper.connect(3000, {
+        data: (bytes) => {
+          response += new TextDecoder().decode(bytes);
+          if (!response.includes("\r\n\r\n")) return;
+          resolve(Number(/^HTTP\/1\.1 (\d+)/.exec(response)?.[1]));
+          connection.close();
+        },
+        end: () => reject(new Error("HMR origin probe closed without a response")),
+        error: (message) => reject(new Error(message)),
+      });
+      if (!connection) return reject(new Error("HMR origin probe could not connect"));
+      connection.write(new TextEncoder().encode([
+        "GET /_bun/hmr HTTP/1.1", "host: localhost:3000", "origin: https://foreign.example",
+        "connection: Upgrade", "upgrade: websocket", "sec-websocket-version: 13",
+        "sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==", "", "",
+      ].join("\r\n")));
+    }));
+    check(`${name}: Bun HMR rejects a foreign Origin through virtual TCP`, Number.isInteger(deniedOriginStatus) && deniedOriginStatus >= 200, String(deniedOriginStatus));
     const markers = await Promise.all([preview.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID()), iframe.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID())]);
     await page.evaluate(async () => {
       const helper = globalThis.playground.previews.servers.get(3000);
@@ -334,7 +357,8 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   check(`${name}: preview WebSocket large Blob send`, tunneled.large === 80000);
   check(`${name}: preview WebSocket Blob receive`, tunneled.blob.join(",") === "7,8,9");
   check(`${name}: preview WebSocket close handshake`, tunneled.close.code === 3001 && tunneled.close.reason === "preview done" && tunneled.close.wasClean, JSON.stringify(tunneled.close));
-  check(`${name}: preview WebSocket sends browser Origin`, await preview.evaluate(async () => (await fetch("/socket-origin")).text()) === new URL(previewUrl).origin);
+  const socketHeaders = await preview.evaluate(async () => (await fetch("/socket-headers")).json());
+  check(`${name}: preview WebSocket preserves browser Origin and Host`, socketHeaders.origin === new URL(previewUrl).origin && socketHeaders.host === new URL(previewUrl).host, JSON.stringify(socketHeaders));
   check(`${name}: injected shim preserves doctype`, tunneled.standards === "CSS1Compat");
   check(`${name}: preview WebSocket negotiates Bun HMR protocol`, tunneled.protocol === "bun-hmr");
   check(`${name}: preview WebSocket keeps its visible URL`, tunneled.url === new URL("/socket", previewUrl).href.replace(/^http/, "ws"));

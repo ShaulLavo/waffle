@@ -56,20 +56,9 @@ async function copyOutput(page, app, chromium, expected) {
 }
 
 async function printSandboxOutput(page, long) {
-  await page.evaluate((long) => {
-    const { fs, restart } = globalThis.sandbox;
-    const path = "/home/user/app/.dev/dev.ts";
-    const source = new TextDecoder().decode(fs.readFile(path));
-    fs.writeFile(path, `console.log("${long}");\n` + source);
-    void restart();
-  }, long);
-  await page.waitForFunction((long) => {
-    const { term } = globalThis.sandbox;
-    term.selectAll();
-    const text = term.getSelection();
-    term.clearSelection();
-    return text.includes(long) && globalThis.sandbox.server();
-  }, long, { timeout: 180_000 });
+  await page.evaluate((long) => new Promise((resolve) => {
+    globalThis.sandbox.term.write(`${long}\r\n`, resolve);
+  }), long);
 }
 
 async function openLongFile(page, app, path, long) {
