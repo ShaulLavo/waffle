@@ -37,7 +37,7 @@ stored in the table).
 ### Calling through an import
 
 Some engines may reject a cross-module function in the guest's table: a call_indirect to it traps
-with "signature does not match" (seen on iOS Safari; under investigation). For those, a host can
+with "signature does not match" (iOS Safari does this for functions of another module). For those, a host can
 instead write `0xFFFFFFFF` into a slot. The guest then calls that slot through WASI's `sock_send`,
 which every preview1 host already provides:
 
@@ -47,8 +47,9 @@ sock_send(fd = 0x7FFFB0B0, si_data = ptr to [slot, a, b, c, d] (5 × i32), si_da
 ```
 
 The host answers with errno 0 and writes the slot's result. Unused arguments are 0. Any other errno
-reads as `UNSUPPORTED`. The playground uses this with `?slots=imports` (`web/src/net/trampoline.ts`,
-`installHostSlotsViaImport`); `scripts/run.ts` with `SLOTS=imports`.
+reads as `UNSUPPORTED`. The playground and sandbox use this by default (`web/src/net/trampoline.ts`,
+`installHostSlotsViaImport`); `?slots=table` selects the table path for comparison.
+`scripts/run.ts` uses it with `SLOTS=imports`.
 
 ## Conventions
 

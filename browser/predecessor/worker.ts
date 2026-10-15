@@ -26,9 +26,10 @@ export interface RunRequest {
    */
   moduleCache: string | null;
   /**
-   * How the wasm engines get the networking host functions (`?slots=`): "table" (default) appends
-   * them to the guest's function table; "imports" has the guest call them through a WASI import
-   * instead (no cross-module functions in the table); "off" installs none.
+   * How the wasm engines get the networking host functions (`?slots=`): "imports" (default) has
+   * the guest call them through a WASI import; "table" appends them to the guest's function table
+   * as functions of a second module, which iOS Safari rejects at call_indirect ("signature does not
+   * match"), so it is kept only for comparison; "off" installs none.
    */
   slots?: "table" | "imports" | "off";
 }
@@ -127,7 +128,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   };
   try {
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
-    const slots = req.slots ?? "table";
+    const slots = req.slots ?? "imports";
     if (req.net && req.engine !== "browser" && slots !== "off") installNet(instance, req.net, wasi, slots);
     const exited = wasi.launch(instance);
     const ready = instance.exports.bunwasm_ready as (() => number) | undefined;
