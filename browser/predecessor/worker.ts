@@ -35,11 +35,12 @@ export interface RunRequest {
    */
   slots?: "table" | "imports" | "off";
   child?: ChildTransport;
+  /** The page creates child workers while this worker may be blocked in a wasm call. */
+  spawnBroker?: boolean;
 }
 
 // The browser engine's polyfills replace globalThis.Response; Cache.put needs the real one.
 const NativeResponse = Response;
-const NativeWorker = Worker;
 
 /** Named module URLs for engine-host.js, stored where the service worker (sw.ts) serves them. */
 function moduleStore(cacheName: string) {
@@ -56,6 +57,7 @@ function moduleStore(cacheName: string) {
 }
 
 export type WorkerMessage =
+  | { type: "spawn"; request: RunRequest }
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout"; data: Uint8Array }
   | { type: "stderr"; data: Uint8Array }
@@ -111,16 +113,17 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     stdin: req.child?.pipes[0],
     output: (fd, data) => post(fd === 2 ? "stderr" : "stdout", data),
     sync: (snapshot) => mergeFilesystemChanges(fs, snapshot),
-    launch: (meta, transport, onError) => {
+    launch: (meta, transport) => {
       const cwd = meta.cwd || req.env.PWD || "/";
       if (fs.lookup(cwd)?.kind !== "dir") throw Object.assign(new Error(`spawn: cwd does not exist: ${cwd}`), { code: "ENOENT" });
-      const worker = new NativeWorker(new URL("./worker.js", ctx.location.href), { type: "module" });
-      worker.onerror = onError;
-      worker.postMessage({
-        ...req, args: meta.argv, env: { ...meta.env, PWD: meta.cwd || req.env.PWD || "/" },
+      if (!req.spawnBroker) throw Object.assign(new Error("spawn: this worker has no page subprocess broker"), { code: "ENOTSUP" });
+      const request: RunRequest = {
+        ...req, args: meta.argv, env: { ...meta.env, PWD: cwd },
         root: structuredClone(fs.root), child: transport, net: null, moduleCache: null,
-      } satisfies RunRequest);
-      return worker;
+      };
+      ctx.postMessage({ type: "spawn", request } satisfies WorkerMessage);
+      const control = new Int32Array(transport.control, 0, 4);
+      return { terminate: () => { Atomics.store(control, 3, 1); } };
     },
   }) : null;
   const wasi = new Wasi({
