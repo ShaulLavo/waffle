@@ -1,6 +1,9 @@
 // One worker per `bun …` command: instantiate bun.wasm fresh, run it, send the filesystem back.
 
 import { type DirNode, MemFS } from "./fs";
+import { NetHost } from "./net/host";
+import type { NetRequest } from "./net/protocol";
+import { installHostSlots } from "./net/trampoline";
 import { Wasi, compactFs } from "./wasi";
 
 export interface RunRequest {
@@ -9,11 +12,14 @@ export interface RunRequest {
   env: Record<string, string>;
   root: DirNode;
   trace: boolean;
+  /** The networking ring (net/ring.ts); null when the page is not cross-origin isolated. */
+  net: SharedArrayBuffer | null;
 }
 
 export type WorkerMessage =
   | { type: "stdout"; data: Uint8Array }
   | { type: "stderr"; data: Uint8Array }
+  | { type: "net"; req: NetRequest }
   | { type: "exit"; code: number; root: DirNode; sleep: SleepMode }
   | { type: "error"; message: string; root: DirNode; sleep: SleepMode };
 
@@ -37,6 +43,13 @@ function sleep(ms: number): void {
   }
 }
 
+/** Gives bun.wasm fetch and Bun.serve through the bun_wasm host slots (docs/host-abi.md). */
+function installNet(instance: WebAssembly.Instance, sab: SharedArrayBuffer): void {
+  const host = new NetHost(sab, (req, transfer = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer));
+  host.attach(instance.exports.memory as WebAssembly.Memory);
+  installHostSlots(instance, host.slots());
+}
+
 ctx.onmessage = (event: MessageEvent<RunRequest>) => {
   const req = event.data;
   const fs = new MemFS(req.root);
@@ -54,6 +67,7 @@ ctx.onmessage = (event: MessageEvent<RunRequest>) => {
   let message: WorkerMessage;
   try {
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    if (req.net) installNet(instance, req.net);
     const code = wasi.start(instance);
     compactFs(fs.root);
     message = { type: "exit", code, root: fs.root, sleep: sleepMode };
