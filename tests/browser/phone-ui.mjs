@@ -11,6 +11,21 @@ async function fits(page, label) {
     const box = await page.locator(selector).boundingBox();
     assert.ok(box && box.width > 0 && box.x >= 0 && box.x + box.width <= size.width, `${label}: ${selector} outside viewport`);
   }
+  // Nothing may sit past either edge, even inside a pane that scrolls sideways (the owner wants
+  // no left-right scrolling at all on phones, not only no page panning).
+  const outside = await page.evaluate(() => {
+    const width = innerWidth;
+    const found = [];
+    for (const el of document.querySelectorAll("header *, button, select, a, .pane, main, #app, [role=tab]")) {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+      const box = el.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) continue;
+      if (box.right > width + 1 || box.left < -1) found.push(`${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ""} [${Math.round(box.left)}, ${Math.round(box.right)}]`);
+    }
+    return found;
+  });
+  assert.deepEqual(outside, [], `${label}: elements outside the viewport`);
   await page.evaluate(() => window.scrollTo(500, 0));
   assert.equal(await page.evaluate(() => scrollX), 0, `${label}: page pans sideways`);
 }
