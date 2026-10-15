@@ -112,6 +112,20 @@ rl.on("close", () => console.log("readline closed:", JSON.stringify(lines)));
   );
   await expectRun(page, `${name}: readline sees end of input`, "bun run ask.ts", 0, ["readline closed: []"]);
 
+  await writeFile(page, `${HOME}/shutdown.test.ts`, `import { test, afterAll } from "bun:test";
+test("live interval", () => { setInterval(() => {}, 1000); });
+afterAll(async () => { await Bun.sleep(5); console.log("cleanup finished"); });
+`);
+  await expectRun(page, `${name}: test exits with live handles after cleanup`, "bun test ./shutdown.test.ts", 0, ["cleanup finished", "1 pass", "0 fail"]);
+  await writeFile(page, `${HOME}/rejection.test.ts`, `import { test, afterAll } from "bun:test";
+test("live interval", () => { setInterval(() => {}, 1000); });
+afterAll(async () => {
+  await Bun.sleep(5);
+  queueMicrotask(() => Promise.reject(new Error("shutdown rejection")));
+});
+`);
+  await expectRun(page, `${name}: test reports pending rejections on shutdown`, "bun test ./rejection.test.ts", 1, ["shutdown rejection", "Unhandled error"]);
+
   // Ctrl-C ends a program that would run forever.
   await writeFile(page, `${HOME}/forever.ts`, `setInterval(() => {}, 1000);\nconsole.log("RUNNING");\n`);
   const pending = page.evaluate(() => globalThis.playground.shell.submit("bun run forever.ts").then(() => globalThis.playground.shell.lastExit));
