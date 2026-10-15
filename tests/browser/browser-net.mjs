@@ -1,5 +1,5 @@
 // End-to-end networking test of the playground in real browsers (Chromium desktop, WebKit iPhone).
-//   cd web && bun run build && [ENGINES=browser,quickjs] node tests/browser-net.mjs [chromium|webkit …]
+//   cd web && bun run build && [ENGINES=browser,quickjs] [SLOTS=imports] node tests/browser-net.mjs [chromium|webkit …]
 // Starts web/serve.ts and a local fixture server on another origin (no public internet), drives
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
 // PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
@@ -166,7 +166,8 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   const errors = [];
   // WebKit reports the deliberate CORS failure (/nocors) as a page error as well as rejecting.
   page.on("pageerror", (e) => /\/nocors due to access control checks/.test(String(e)) || errors.push(String(e)));
-  await page.goto(`${appUrl}?engine=${engine}`);
+  // SLOTS=imports|table picks how the wasm engines get the host functions (?slots=).
+  await page.goto(`${appUrl}?engine=${engine}${process.env.SLOTS ? `&slots=${process.env.SLOTS}` : ""}`);
   await page.waitForFunction(() => document.querySelector("#status")?.textContent?.startsWith("bun.wasm ready"), null, { timeout: 60000 });
   check(`${name}: page is cross-origin isolated`, await page.evaluate(() => crossOriginIsolated));
 

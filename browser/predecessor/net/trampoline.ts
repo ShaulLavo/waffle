@@ -91,6 +91,44 @@ export function trampolineModule(arities: readonly number[]): Uint8Array<ArrayBu
   );
 }
 
+/** Slot value telling the guest to call through `sock_send` instead of the table (host.rs). */
+const VIA_IMPORT = 0xffffffff;
+/** The fd of those `sock_send` calls (host.rs `HOST_CALL_FD`). */
+export const HOST_CALL_FD = 0x7fffb0b0;
+
+/** The guest's slot table, or null when the module has none (another program). */
+function slotTable(instance: WebAssembly.Instance): { view: DataView; ptr: number; count: number } | null {
+  const exports = instance.exports;
+  const slots = exports.bun_wasm_host_slots;
+  const memory = exports.memory;
+  if (typeof slots !== "function" || !(memory instanceof WebAssembly.Memory)) return null;
+  const ptr = (slots as () => number)() >>> 0;
+  const view = new DataView(memory.buffer);
+  if (view.getUint32(ptr, true) !== ABI_VERSION) return null;
+  return { view, ptr, count: view.getUint32(ptr + 4, true) };
+}
+
+/**
+ * Like `installHostSlots`, without putting functions into the guest's table: each provided slot is
+ * marked "call through an import", and the guest then calls WASI `sock_send` on HOST_CALL_FD with
+ * `[slot, a, b, c, d]`. Returns the dispatcher for the WASI shim's `sock_send` (Wasi.hostCall), or
+ * null when the module has no slot table. For engines where a cross-module function in the table
+ * traps on call_indirect (`?slots=imports` in the playground).
+ */
+export function installHostSlotsViaImport(instance: WebAssembly.Instance, impls: SlotImpls): ((slot: number, args: number[]) => number) | null {
+  const table = slotTable(instance);
+  if (!table) return null;
+  const fns: (SlotFunction | undefined)[] = SLOT_NAMES.map((slot) => impls[slot]);
+  fns.forEach((fn, index) => {
+    if (fn && index < table.count) table.view.setUint32(table.ptr + 8 + 4 * index, VIA_IMPORT, true);
+  });
+  return (slot, args) => {
+    const fn = fns[slot];
+    const name = SLOT_NAMES[slot];
+    return fn && name ? fn(...args.slice(0, ARITY[name])) : -4;
+  };
+}
+
 /**
  * Writes table indices of `impls` into the guest's host slots. Call after instantiation, before
  * `_start`. Returns the names of the installed slots, or [] when the module has no slot table

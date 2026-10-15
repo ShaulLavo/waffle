@@ -34,6 +34,22 @@ directly; wrap it by instantiating a tiny module that imports the JS
 functions and re-exports them (the exports are wasm functions and can be
 stored in the table).
 
+### Calling through an import
+
+Some engines may reject a cross-module function in the guest's table: a call_indirect to it traps
+with "signature does not match" (seen on iOS Safari; under investigation). For those, a host can
+instead write `0xFFFFFFFF` into a slot. The guest then calls that slot through WASI's `sock_send`,
+which every preview1 host already provides:
+
+```
+sock_send(fd = 0x7FFFB0B0, si_data = ptr to [slot, a, b, c, d] (5 × i32), si_data_len = 5,
+          si_flags = 0, so_datalen = ptr to the i32 result) -> errno
+```
+
+The host answers with errno 0 and writes the slot's result. Unused arguments are 0. Any other errno
+reads as `UNSUPPORTED`. The playground uses this with `?slots=imports` (`web/src/net/trampoline.ts`,
+`installHostSlotsViaImport`); `scripts/run.ts` with `SLOTS=imports`.
+
 ## Conventions
 
 - All parameters and results are `i32` (wasm32 pointers and lengths are

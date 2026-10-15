@@ -6,7 +6,7 @@ import { startEngineHost } from "./engine-host.js";
 import { type DirNode, MemFS } from "./fs";
 import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
-import { installHostSlots } from "./net/trampoline";
+import { installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
 import { Wasi, WasiExit, compactFs } from "./wasi";
 
 export type Engine = "quickjs" | "jsc" | "browser";
@@ -25,6 +25,12 @@ export interface RunRequest {
    * serves under ./m/ (this worker runs from its ./__bunwasm/ scope). Null: blob URLs, no cycles.
    */
   moduleCache: string | null;
+  /**
+   * How the wasm engines get the networking host functions (`?slots=`): "table" (default) appends
+   * them to the guest's function table; "imports" has the guest call them through a WASI import
+   * instead (no cross-module functions in the table); "off" installs none.
+   */
+  slots?: "table" | "imports" | "off";
 }
 
 // The browser engine's polyfills replace globalThis.Response; Cache.put needs the real one.
@@ -76,10 +82,19 @@ function sleep(ms: number): void {
 const sendNet = (req: NetRequest, transfer: Transferable[] = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer);
 
 /** Gives bun.wasm fetch and Bun.serve through the bun_wasm host slots (docs/host-abi.md). */
-function installNet(instance: WebAssembly.Instance, sab: SharedArrayBuffer): void {
+function installNet(instance: WebAssembly.Instance, sab: SharedArrayBuffer, wasi: Wasi, mode: "table" | "imports"): void {
   const host = new NetHost(sab, sendNet);
   host.attach(instance.exports.memory as WebAssembly.Memory);
-  installHostSlots(instance, host.slots());
+  if (mode === "imports") wasi.hostCall = installHostSlotsViaImport(instance, host.slots());
+  else installHostSlots(instance, host.slots());
+}
+
+/** `Name: message` plus the first stack frames (wasm function names when the build keeps them). */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const head = `${err.name}: ${err.message}`;
+  const frames = (err.stack ?? "").split("\n").filter((line) => line.trim() && !line.includes(err.message)).slice(0, 15);
+  return frames.length ? `${head}\n${frames.map((f) => `    ${f.trim()}`).join("\n")}` : head;
 }
 
 ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
@@ -107,12 +122,13 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
       return;
     }
     const err = result.error;
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    const message = describeError(err);
     ctx.postMessage({ type: "error", message, root: fs.root, sleep: sleepMode } satisfies WorkerMessage);
   };
   try {
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
-    if (req.net && req.engine !== "browser") installNet(instance, req.net);
+    const slots = req.slots ?? "table";
+    if (req.net && req.engine !== "browser" && slots !== "off") installNet(instance, req.net, wasi, slots);
     const exited = wasi.launch(instance);
     const ready = instance.exports.bunwasm_ready as (() => number) | undefined;
     if (exited !== null || req.engine !== "browser" || ready?.() !== 1) {

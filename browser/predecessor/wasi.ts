@@ -2,6 +2,7 @@
 // Runs inside the worker. Synchronous by design: bun.wasm calls in, we answer from memory.
 
 import { type DirNode, type FileNode, type Node, MemFS, basename, dirname, newDir, newFile, normalize } from "./fs";
+import { HOST_CALL_FD } from "./net/trampoline";
 
 // errno
 const SUCCESS = 0;
@@ -110,6 +111,11 @@ export function compactFs(root: DirNode): void {
 
 export class Wasi {
   private memory!: WebAssembly.Memory;
+  /**
+   * Host-ABI calls the guest makes through `sock_send` on HOST_CALL_FD (net/trampoline.ts,
+   * installHostSlotsViaImport): `(slot, [a, b, c, d]) -> result`.
+   */
+  hostCall: ((slot: number, args: number[]) => number) | null = null;
   private fds = new Map<number, Fd>();
   private nextFd = 0;
   private args: Uint8Array[];
@@ -665,7 +671,16 @@ export class Wasi {
       sched_yield: () => SUCCESS,
       sock_accept: () => ENOTSUP,
       sock_recv: () => ENOTSUP,
-      sock_send: () => ENOTSUP,
+      sock_send: (fd: number, siData: number, siLen: number, _flags: number, retPtr: number) => {
+        if (fd !== HOST_CALL_FD || !this.hostCall || siLen !== 5) return ENOTSUP;
+        const view = new DataView(this.memory.buffer);
+        const at = siData >>> 0;
+        const words = [0, 1, 2, 3, 4].map((i) => view.getInt32(at + 4 * i, true));
+        const result = this.hostCall(words[0]!, words.slice(1));
+        // The call may have grown memory: take a fresh view.
+        new DataView(this.memory.buffer).setInt32(retPtr >>> 0, result, true);
+        return SUCCESS;
+      },
       sock_shutdown: () => ENOTSUP,
     };
   }
