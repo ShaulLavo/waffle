@@ -1,8 +1,8 @@
 # bun.wasm host ABI (`bun_wasm`, version 1)
 
 WASI preview1 has no sockets. Hosts that want to give bun.wasm networking
-(`fetch`, `Bun.serve`, `node:http`, `node:net`) and bun child processes provide a small set of extra
-functions described here. Hosts that don't (plain `wasmtime run`) need to do
+(`fetch`, `Bun.serve`, `node:http`, `node:net`) and bun child processes provide
+the extra functions described here. Hosts that don't (plain `wasmtime run`) need to do
 nothing: bun.wasm runs exactly as before and network APIs reject or throw
 "not supported".
 
@@ -231,7 +231,20 @@ most four active children, including descendants; another spawn fails `EAGAIN`.
 Each store's linear memory is limited to 512 MiB. A 10 ms epoch ticker interrupts
 CPU-bound children; cancellation also wakes blocked WASI stdio and host polling.
 Parent teardown kills and joins its remaining children, including descendants.
-Handles are virtual identifiers, not host process IDs.
+Handles are virtual identifiers, not host process IDs. Guest timer waits and
+`Bun.sleepSync` use host polling so cancellation also interrupts long sleeps.
+
+Browser and Node hosts implement the same process slots. The browser uses a page
+broker to start child workers while their parent is blocked in `spawnSync`. Its
+filesystem is copied at spawn and changed paths merge back on normal exit, with
+an 8 MiB serialized change limit. Node workers share their real preopens. See
+[the browser host notes](../web/README.md#bun-subprocess-workers) for sync-back,
+networking and isolation details.
+
+The guest exposes Bun spawn APIs and Node spawn/exec/fork wrappers over these
+slots. Fork launches a bun child; IPC channels and native descriptors are not
+implemented. Shell execution accepts a single quoted bun command, without shell
+operators or expansion. `$` remains unsupported.
 
 Plain `wasmtime run` has no child slots and reports that spawning is not supported
 in bun-wasm. It never falls back to a native program.
