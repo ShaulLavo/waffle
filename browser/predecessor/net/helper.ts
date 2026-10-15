@@ -6,6 +6,7 @@
 import { type ResponseHead, type ResponseSink, ResponseParser, type PreviewRequest, serializeRequest } from "./http1";
 import { CONN_BASE, FETCH_WINDOW, type FetchHead, Kind, MAX_RECORD, type NetError, type NetRequest, type NewConn } from "./protocol";
 import { RingWriter } from "./ring";
+import { installFetch } from "./install-cache";
 
 const encoder = new TextEncoder();
 /** Hostnames that mean "this machine": fetches to them may reach the guest's own servers. */
@@ -153,7 +154,7 @@ export class NetHelper {
     }
     let response: Response;
     try {
-      response = await fetch(req.url, {
+      response = await installFetch(req.url, {
         method: req.method,
         headers: req.headers,
         body: req.body as BodyInit | null,
