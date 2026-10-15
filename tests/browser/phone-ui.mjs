@@ -58,7 +58,7 @@ async function copyOutput(page, app, chromium, expected) {
 async function printSandboxOutput(page, long) {
   await page.evaluate((long) => {
     const { fs, restart } = globalThis.sandbox;
-    const path = "/home/user/app/dev.ts";
+    const path = "/home/user/app/.dev/dev.ts";
     const source = new TextDecoder().decode(fs.readFile(path));
     fs.writeFile(path, `console.log("${long}");\n` + source);
     void restart();
