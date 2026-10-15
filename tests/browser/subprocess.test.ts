@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { MemFS } from "../src/fs";
-import { SharedPipe, createProcessBudget } from "../src/subprocess.js";
+import { SharedPipe, SubprocessHost, childTransport, createProcessBudget, type ChildTransport } from "../src/subprocess.js";
 import { filesystemChanges, mergeFilesystemChanges } from "../src/subprocess-fs";
 
 const encoder = new TextEncoder();
@@ -48,4 +48,70 @@ test.skipIf(!existsSync(new URL("../../dist/bun-browser.wasm", import.meta.url))
   expect(decoder.decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
   expect(decoder.decode(result.stdout)).toBe("9 subprocess worker checks passed\n");
+});
+
+const childCommand = JSON.stringify({ argv: ["bun", "-e", "0"] });
+
+function budgetHost(budget: SharedArrayBuffer, parent?: ChildTransport) {
+  const launched: ChildTransport[] = [];
+  const host = new SubprocessHost({
+    budget, slot: parent?.slot, token: parent?.token,
+    output() {},
+    launch(_meta, transport) {
+      launched.push(transport);
+      return { terminate() {} };
+    },
+  });
+  return { host, launched };
+}
+
+test("a terminated parent cannot spawn through a reused parent slot", () => {
+  const budget = createProcessBudget();
+  const root = budgetHost(budget);
+  const parent = root.host.spawn(childCommand);
+  const stale = budgetHost(budget, root.launched[0]);
+  try {
+    root.host.kill(parent, 9);
+    expect(root.host.spawn(childCommand)).toBeGreaterThan(0);
+    expect(root.launched[1]?.slot).toBe(root.launched[0]?.slot);
+    expect(root.launched[1]?.token).not.toBe(root.launched[0]?.token);
+    expect(stale.host.spawn(childCommand)).toBe(-1);
+    expect(stale.launched).toHaveLength(0);
+    const replacement = budgetHost(budget, root.launched[1]);
+    try { expect(replacement.host.spawn(childCommand)).toBeGreaterThan(0); }
+    finally { replacement.host.dispose(); }
+  } finally {
+    stale.host.dispose();
+    root.host.dispose();
+  }
+});
+
+test("late completion cannot release a reused child slot or its descendants", () => {
+  const budget = createProcessBudget();
+  const root = budgetHost(budget);
+  const parent = root.host.spawn(childCommand);
+  const stale = budgetHost(budget, root.launched[0]);
+  const oldChild = stale.host.spawn(childCommand);
+  try {
+    root.host.kill(parent, 9);
+    root.host.spawn(childCommand);
+    root.host.spawn(childCommand);
+    const reused = root.launched[2];
+    expect(reused?.slot).toBe(stale.launched[0]?.slot);
+    const replacement = budgetHost(budget, reused);
+    try {
+      expect(replacement.host.spawn(childCommand)).toBeGreaterThan(0);
+      const old = stale.launched[0];
+      if (!old) throw new Error("old child was not launched");
+      childTransport(old).finish(0);
+      const before = Array.from(new Int32Array(budget));
+      expect(stale.host.wait(oldChild)).toBe(0);
+      expect(Array.from(new Int32Array(budget))).toEqual(before);
+      expect(root.host.spawn(childCommand)).toBeGreaterThan(0);
+      expect(root.host.spawn(childCommand)).toBe(-1);
+    } finally { replacement.host.dispose(); }
+  } finally {
+    stale.host.dispose();
+    root.host.dispose();
+  }
 });

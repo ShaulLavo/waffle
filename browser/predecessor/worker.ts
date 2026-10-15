@@ -110,6 +110,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   const subprocess = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? new SubprocessHost({
     budget: req.child?.budget,
     slot: req.child?.slot,
+    token: req.child?.token,
     stdin: req.child?.pipes[0],
     output: (fd, data) => post(fd === 2 ? "stderr" : "stdout", data),
     sync: (snapshot) => mergeFilesystemChanges(fs, snapshot),

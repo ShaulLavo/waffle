@@ -1,11 +1,12 @@
 // A worker's synchronous wasm call can prevent its newly created nested worker from starting.
 // Start every child from the page instead. The page remains runnable while wasm waits on a pipe.
-import { childTransport, MAX_CHILDREN, type ChildTransport } from "./subprocess.js";
+import { childTransport, type ChildTransport } from "./subprocess.js";
 import type { RunRequest, WorkerMessage } from "./worker";
 
 function active(transport: ChildTransport): boolean {
   const budget = new Int32Array(transport.budget);
-  return Atomics.load(budget, transport.slot + 2) > 0 && Atomics.load(budget, transport.slot + 2 + MAX_CHILDREN) === transport.token;
+  const state = Atomics.load(budget, transport.slot + 2);
+  return state > 0 && Math.floor(state / 8) === transport.token;
 }
 
 export class SubprocessBroker {
