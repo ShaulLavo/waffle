@@ -50,6 +50,7 @@ export class NetHelper {
   private connections = new Map<number, ConnectionSink>();
   private nextConn = CONN_BASE;
   private disposed = false;
+  private fileWrites: Promise<void> = Promise.resolve();
 
   constructor(
     sab: SharedArrayBuffer,
@@ -84,6 +85,7 @@ export class NetHelper {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.ring.dispose();
     for (const job of this.fetches.values()) job.controller.abort();
     this.fetches.clear();
     for (const conn of this.connections.values()) conn.error("the server stopped");
@@ -119,6 +121,25 @@ export class NetHelper {
     if (!connection) return false;
     connection.write(serializeRequest(req, `localhost:${port}`));
     return true;
+  }
+
+  /** Replace a running worker's file, even while wasm blocks its event loop. */
+  changeFile(path: string, contents: string | Uint8Array): Promise<void> {
+    if (!path.startsWith("/") || path.includes("\0")) return Promise.reject(new TypeError("Expected an absolute guest path"));
+    const bytes = typeof contents === "string" ? encoder.encode(contents) : contents.slice();
+    this.fileWrites = this.fileWrites.then(() => this.sendFile(path, bytes));
+    return this.fileWrites;
+  }
+
+  private async sendFile(path: string, bytes: Uint8Array): Promise<void> {
+    if (this.disposed) throw new Error("The server stopped");
+    await this.ring.write(0, Kind.FileStart, json({ path, length: bytes.length }));
+    for (let at = 0; at < bytes.length; at += MAX_RECORD) {
+      if (this.disposed) throw new Error("The server stopped");
+      await this.ring.write(0, Kind.FileData, bytes.subarray(at, at + MAX_RECORD));
+    }
+    if (this.disposed) throw new Error("The server stopped");
+    await this.ring.write(0, Kind.FileEnd);
   }
 
   /** Connects a host-side byte stream to the guest without HTTP response framing. */

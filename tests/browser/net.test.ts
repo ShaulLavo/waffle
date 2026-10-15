@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ResponseParser, type ResponseHead, serializeRequest } from "../src/net/http1";
+import { MAX_RECORD } from "../src/net/protocol";
 import { CAPACITY, RingReader, RingWriter, createRing } from "../src/net/ring";
 import { installHostSlots, trampolineModule } from "../src/net/trampoline";
 import { MemFS } from "../src/fs";
@@ -170,4 +171,56 @@ test("raw preview connections preserve upgrade and duplex frame bytes", async ()
     expect(ended).toBe(true);
     expect(helper.connect(9999, { data() {}, end() {}, error() {} })).toBeNull();
   } finally { helper.dispose(); }
+});
+
+
+test("disposing a full ring releases blocked writes and drops queued records", async () => {
+  const sab = createRing();
+  const writer = new RingWriter(sab);
+  const reader = new RingReader(sab);
+  const bytes = new Uint8Array(MAX_RECORD);
+  await Promise.all(Array.from({ length: 15 }, (_, id) => writer.write(id, 2, bytes)));
+  const pending = writer.write(16, 2, bytes);
+  await Bun.sleep(1);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    writer.dispose();
+    const released = await Promise.race([
+      pending.then(() => true),
+      new Promise<false>((resolve) => { timeout = setTimeout(() => resolve(false), 100); }),
+    ]);
+    expect(released).toBe(true);
+    expect(reader.drain()).toHaveLength(15);
+    await writer.write(17, 2, bytes);
+    expect(reader.drain()).toHaveLength(0);
+  } finally {
+    clearTimeout(timeout);
+    reader.drain();
+    await pending;
+  }
+});
+
+test("stopping a worker rejects a file update blocked behind a full ring", async () => {
+  const { NetHelper } = await import("../src/net/helper");
+  const sab = createRing();
+  const reader = new RingReader(sab);
+  const helper = new NetHelper(sab);
+  const pending = helper.changeFile("/app.ts", new Uint8Array(CAPACITY * 2)).then(() => null, (error: unknown) => error);
+  await Bun.sleep(1);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    helper.dispose();
+    const error = await Promise.race([
+      pending,
+      new Promise<string>((resolve) => { timeout = setTimeout(() => resolve("not released"), 100); }),
+    ]);
+    expect(error).toBeInstanceOf(Error);
+    if (!(error instanceof Error)) throw new Error("File update remained blocked after disposal");
+    expect(error.message).toBe("The server stopped");
+  } finally {
+    clearTimeout(timeout);
+    reader.drain();
+    helper.dispose();
+    await pending;
+  }
 });

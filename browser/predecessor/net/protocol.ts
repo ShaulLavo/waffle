@@ -27,6 +27,10 @@ export const Kind = {
   Error: 4,
   /** New connection on a listener; the record's handle is the listener, payload JSON NewConn. */
   Conn: 5,
+  /** Atomic file replacement from the editor: JSON {path,length}, zero or more byte chunks, end. */
+  FileStart: 6,
+  FileData: 7,
+  FileEnd: 8,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 

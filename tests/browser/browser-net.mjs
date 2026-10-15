@@ -4,7 +4,7 @@
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
 // PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const here = new URL(".", import.meta.url).pathname;
@@ -22,7 +22,15 @@ async function cleanup() {
   if (cleaned) return;
   cleaned = true;
   for (const b of browsers) await b.close().catch(() => {});
-  for (const c of children) c.kill("SIGKILL");
+  for (const child of children) {
+    if (child.exitCode !== null || child.signalCode !== null) continue;
+    let cwd;
+    try { cwd = readlinkSync(`/proc/${child.pid}/cwd`); } catch { continue; }
+    if (cwd !== web) throw new Error(`Refusing to kill ${child.pid}: cwd ${cwd} differs from ${web}`);
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    child.kill("SIGKILL");
+    await closed;
+  }
   rmSync(scratch, { recursive: true, force: true });
 }
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => void cleanup().then(() => process.exit(130)));
@@ -58,6 +66,7 @@ const server = Bun.serve({
   port: 0,
   async fetch(req) {
     const url = new URL(req.url);
+    if (url.pathname === "/socket" && server.upgrade(req)) return;
     if (url.pathname === "/nocors") return new Response("secret");
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
     const reply = (body, init = {}) => {
@@ -76,6 +85,7 @@ const server = Bun.serve({
       default: return reply("not found", { status: 404 });
     }
   },
+  websocket: { message(ws, data) { ws.send(data); } },
 });
 console.log("port", server.port);
 `,
@@ -103,11 +113,18 @@ console.log("FETCH-DONE");
 `;
 
 const serveTest = `
+let socketOrigin = "";
 const server = Bun.serve({
   port: 3000,
   async fetch(req, srv) {
-    if (new URL(req.url).pathname === "/socket" && srv.upgrade(req)) return;
+    if (new URL(req.url).pathname === "/socket") {
+      socketOrigin = req.headers.get("origin") || "";
+      const protocol = req.headers.get("sec-websocket-protocol");
+      if (srv.upgrade(req, protocol ? { headers: { "sec-websocket-protocol": protocol.split(",")[0].trim() } } : {})) return;
+    }
     const url = new URL(req.url);
+    if (url.pathname === "/socket-origin") return new Response(socketOrigin);
+    if (url.pathname === "/changed") return new Response(await Bun.file("/home/user/live.txt").text());
     if (url.pathname === "/api") return Response.json({ hello: "preview", method: req.method, body: await req.text() });
     if (url.pathname === "/app.js") return new Response("document.title = 'app.js loaded';", { headers: { "content-type": "text/javascript" } });
     return new Response("<!doctype html><h1>preview ok " + url.pathname + "</h1><script src='/app.js'></script>", { headers: { "content-type": "text/html" } });
@@ -160,6 +177,16 @@ async function waitFor(page, re, ms = 60000) {
   throw new Error(`timeout waiting for ${re}\n${await terminalText(page)}`);
 }
 
+async function boundedEvaluate(page, callback, argument) {
+  let timer;
+  try {
+    return await Promise.race([
+      page.evaluate(callback, argument),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Preview check timed out after 15 seconds")), 15000); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 const failures = [];
 function check(name, ok, detail = "") {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `\n     ${detail}`}`);
@@ -170,20 +197,56 @@ async function checkHtmlEntry(page, context, appUrl, name) {
   await page.evaluate(() => {
     const fs = globalThis.playground.fs;
     fs.writeFile("/home/user/index.html", '<!doctype html><title>HTML entry</title><link rel="stylesheet" href="./app.css"><h1 id="html-app"></h1><script type="module" src="./app.ts"></script>');
-    fs.writeFile("/home/user/app.ts", 'const message: string = "bundled HTML entry"; document.querySelector("#html-app").textContent = message;');
+    fs.writeFile("/home/user/app.ts", 'const message: string = "bundled HTML entry"; document.querySelector("#html-app").textContent = message; if (import.meta.hot) { import.meta.hot.accept(); import.meta.hot.on("bun:ws:connect", () => { globalThis.__hmrConnected = true; }); }');
     fs.writeFile("/home/user/app.css", 'body { color: rgb(12, 34, 56); }');
   });
   await page.evaluate(() => void globalThis.playground.shell.submit("bun ./index.html"));
   const output = await waitFor(page, /Started development server:|error:|crashed/);
   check(`${name}: HTML CLI starts a server`, output.includes("Started development server:"), output.slice(-500));
   const preview = await context.newPage();
+  const logs = [];
+  const ownerLog = (message) => logs.push("owner: " + message.text());
+  page.on("console", ownerLog);
+  preview.on("console", (message) => logs.push(message.text()));
+  preview.on("pageerror", (error) => logs.push(String(error)));
   try {
-    await preview.goto(new URL("__preview/3000/", appUrl).href);
+    const previewUrl = new URL("__preview/3000/", appUrl).href;
+    await page.evaluate((url) => {
+      const iframe = document.createElement("iframe");
+      iframe.id = "hmr-fixture";
+      iframe.src = url;
+      document.body.append(iframe);
+    }, previewUrl);
+    await preview.goto(previewUrl);
     await preview.waitForFunction(() => document.querySelector("#html-app")?.textContent === "bundled HTML entry", null, { timeout: 15000 });
     check(`${name}: Bun bundles HTML and TypeScript`, await preview.textContent("#html-app") === "bundled HTML entry");
     check(`${name}: Bun bundles linked CSS`, await preview.evaluate(() => getComputedStyle(document.body).color) === "rgb(12, 34, 56)");
+    await page.frameLocator("#hmr-fixture").locator("#html-app").waitFor({ timeout: 15000 });
+    const iframe = page.frames().find((frame) => frame.url() === previewUrl);
+    if (!iframe) throw new Error("Missing HTML HMR iframe");
+    await Promise.all([preview.waitForFunction(() => globalThis.__hmrConnected, null, { timeout: 15000 }), iframe.waitForFunction(() => globalThis.__hmrConnected, null, { timeout: 15000 })]);
+    const markers = await Promise.all([preview.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID()), iframe.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID())]);
+    await page.evaluate(async () => {
+      const helper = globalThis.playground.previews.servers.get(3000);
+      const original = new TextDecoder().decode(globalThis.playground.fs.readFile("/home/user/app.ts"));
+      const edited = original.replace("bundled HTML entry", "bundled HMR update");
+      if (new TextEncoder().encode(original).length !== new TextEncoder().encode(edited).length) throw new Error("HMR fixture edit must preserve the file size");
+      await helper.changeFile("/home/user/app.ts", edited);
+    });
+    await Promise.all([preview.waitForFunction(() => document.querySelector("#html-app")?.textContent === "bundled HMR update", null, { timeout: 15000 }), iframe.waitForFunction(() => document.querySelector("#html-app")?.textContent === "bundled HMR update", null, { timeout: 15000 })]);
+    check(`${name}: Bun real HMR updates separate preview tab`, await preview.textContent("#html-app") === "bundled HMR update");
+    check(`${name}: Bun real HMR updates iframe`, await iframe.textContent("#html-app") === "bundled HMR update");
+    const after = await Promise.all([preview.evaluate(() => globalThis.__hmrVisit), iframe.evaluate(() => globalThis.__hmrVisit)]);
+    check(`${name}: Bun real HMR preserves both documents`, after[0] === markers[0] && after[1] === markers[1]);
+    await page.evaluate(async () => globalThis.playground.previews.servers.get(3000).changeFile("/home/user/app.css", 'body { color: rgb(98, 76, 54); }'));
+    await Promise.all([preview.waitForFunction(() => getComputedStyle(document.body).color === "rgb(98, 76, 54)", null, { timeout: 15000 }), iframe.waitForFunction(() => getComputedStyle(document.body).color === "rgb(98, 76, 54)", null, { timeout: 15000 })]);
+    check(`${name}: Bun real HMR updates CSS in both documents`, await preview.evaluate(() => getComputedStyle(document.body).color) === "rgb(98, 76, 54)" && await iframe.evaluate(() => getComputedStyle(document.body).color) === "rgb(98, 76, 54)");
+  } catch (error) {
+    throw new Error(`${error}\nPreview logs:\n${logs.join("\n")}\nTerminal:\n${await terminalText(page)}`);
   } finally {
+    page.off("console", ownerLog);
     await preview.close();
+    await page.evaluate(() => document.querySelector("#hmr-fixture")?.remove());
     await page.click(".xterm");
     await page.keyboard.press("Control+c");
     await waitFor(page, /\^C/);
@@ -223,6 +286,7 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   check(`${name}: guest fetches its own server`, self.includes('self: {"hello":"preview","method":"POST","body":"me"}'), self.slice(-500));
 
   const preview = await context.newPage();
+  preview.on("pageerror", (error) => errors.push(`preview: ${String(error)}`));
   const previewUrl = new URL("__preview/3000/some/page?x=1", appUrl).href;
   await preview.goto(previewUrl);
   await preview.waitForFunction(() => document.title === "app.js loaded", null, { timeout: 15000 }).catch(() => {});
@@ -231,6 +295,66 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   const api = await preview.evaluate(async () => (await fetch("/api", { method: "POST", body: "from page" })).json());
   check(`${name}: POST through the preview`, api.hello === "preview" && api.method === "POST" && api.body === "from page", JSON.stringify(api));
   check(`${name}: playground still isolated with the SW`, await page.evaluate(() => crossOriginIsolated));
+
+  await page.evaluate(async () => {
+    const helper = globalThis.playground.previews.servers.get(3000);
+    await helper.changeFile("/home/user/live.txt", "x".repeat(80000) + "🌍");
+  });
+  const changed = await preview.evaluate(async () => (await fetch("/changed")).text());
+  check(`${name}: file edit crosses blocked worker ring`, changed === "x".repeat(80000) + "🌍");
+  await page.evaluate(async () => {
+    const helper = globalThis.playground.previews.servers.get(3000);
+    await Promise.all([helper.changeFile("/home/user/live.txt", "older"), helper.changeFile("/home/user/live.txt", "")]);
+  });
+  check(`${name}: file edits stay ordered and support empty files`, await preview.evaluate(async () => (await fetch("/changed")).text()) === "");
+
+  const tunneled = await boundedEvaluate(preview, async () => {
+    const socket = new WebSocket(new URL("/socket", location.href).href.replace(/^http/, "ws"), ["bun-hmr"]);
+    socket.binaryType = "arraybuffer";
+    const received = [];
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = (event) => reject(new Error(event.message || event.error?.message || "WebSocket error")); });
+    const echo = (payload) => new Promise((resolve) => {
+      socket.onmessage = ({ data }) => { received.push(data); resolve(); };
+      socket.send(payload);
+    });
+    await echo("preview tunnel text");
+    await echo(new Uint8Array([0, 1, 2, 253, 254, 255]));
+    await echo(new Blob([new Uint8Array(80000).fill(42)]));
+    socket.binaryType = "blob";
+    await echo(new Uint8Array([7, 8, 9]));
+    const close = await new Promise((resolve) => { socket.onclose = ({ code, reason, wasClean }) => resolve({ code, reason, wasClean }); socket.close(3001, "preview done"); });
+    return {
+      text: received[0], bytes: Array.from(new Uint8Array(received[1])),
+      large: received[2].byteLength, blob: received[3] instanceof Blob && Array.from(new Uint8Array(await received[3].arrayBuffer())),
+      close, standards: document.compatMode, protocol: socket.protocol, url: socket.url,
+    };
+  });
+  check(`${name}: separate preview tab WebSocket text`, tunneled.text === "preview tunnel text");
+  check(`${name}: preview WebSocket binary ArrayBuffer`, tunneled.bytes.join(",") === "0,1,2,253,254,255");
+  check(`${name}: preview WebSocket large Blob send`, tunneled.large === 80000);
+  check(`${name}: preview WebSocket Blob receive`, tunneled.blob.join(",") === "7,8,9");
+  check(`${name}: preview WebSocket close handshake`, tunneled.close.code === 3001 && tunneled.close.reason === "preview done" && tunneled.close.wasClean, JSON.stringify(tunneled.close));
+  check(`${name}: preview WebSocket sends browser Origin`, await preview.evaluate(async () => (await fetch("/socket-origin")).text()) === new URL(previewUrl).origin);
+  check(`${name}: injected shim preserves doctype`, tunneled.standards === "CSS1Compat");
+  check(`${name}: preview WebSocket negotiates Bun HMR protocol`, tunneled.protocol === "bun-hmr");
+  check(`${name}: preview WebSocket keeps its visible URL`, tunneled.url === new URL("/socket", previewUrl).href.replace(/^http/, "ws"));
+
+  const invalid = await boundedEvaluate(preview, async () => {
+    const socket = new WebSocket(new URL("/bad-socket", location.href).href.replace(/^http/, "ws"));
+    let errors = 0;
+    socket.onerror = () => errors++;
+    const close = await new Promise((resolve) => { socket.onclose = ({ code, wasClean }) => resolve({ code, wasClean }); });
+    return { errors, close };
+  });
+  check(`${name}: preview rejects non-upgrade handshake`, invalid.errors === 1 && invalid.close.code === 1002 && !invalid.close.wasClean);
+  const external = await boundedEvaluate(preview, async (url) => {
+    const socket = new WebSocket(url);
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+    const reply = await new Promise((resolve) => { socket.onmessage = ({ data }) => resolve(data); socket.send("native external websocket"); });
+    await new Promise((resolve) => { socket.onclose = resolve; socket.close(); });
+    return { reply, instance: socket instanceof WebSocket };
+  }, fixtureBase.replace(/^http/, "ws") + "/socket");
+  check(`${name}: external WebSockets retain native networking`, external.reply === "native external websocket" && external.instance);
 
   // Ctrl-C stops the server; the preview then reports nothing listening.
   await page.click(".xterm");

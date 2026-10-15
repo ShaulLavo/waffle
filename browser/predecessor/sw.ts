@@ -18,6 +18,8 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 /** Path of the scope, `<app>/__preview/`. */
 const prefix = new URL(sw.registration.scope).pathname;
 const PORT_PATH = new RegExp(`^${escapeRegExp(prefix)}(\\d{1,5})(/.*)?$`);
+declare const __PREVIEW_SOCKET_SCRIPT__: string;
+const SOCKET_SCRIPT_PATH = new URL("../preview-websocket.js", sw.registration.scope).pathname;
 const MODULES = prefix.endsWith("/__bunwasm/");
 /** How long a window has to claim a request before we try the next one. */
 const CLAIM_TIMEOUT_MS = 3000;
@@ -30,6 +32,10 @@ sw.addEventListener("fetch", (event) => {
   if (url.origin !== location.origin) return;
   if (MODULES) {
     if (url.pathname.startsWith(prefix)) event.respondWith(moduleScope(event.request, url.pathname.slice(prefix.length)));
+    return;
+  }
+  if (url.pathname === SOCKET_SCRIPT_PATH) {
+    event.respondWith(new Response(__PREVIEW_SOCKET_SCRIPT__, { headers: { "content-type": "text/javascript" } }));
     return;
   }
   const direct = PORT_PATH.exec(url.pathname);
@@ -106,7 +112,7 @@ function askWindow(client: Client, ask: PreviewAsk): Promise<Response | null> {
           clearTimeout(timer);
           return;
         case "head":
-          answer(makeResponse(msg, stream));
+          answer(makeResponse(msg, stream, ask.port));
           return;
         case "data":
           body?.enqueue(msg.chunk);
@@ -130,7 +136,7 @@ const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 /** Framing headers describe the HTTP/1.1 bytes, not the decoded body we hand over. */
 const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length"]);
 
-function makeResponse(head: PreviewReply & { type: "head" }, stream: ReadableStream<Uint8Array>): Response {
+function makeResponse(head: PreviewReply & { type: "head" }, stream: ReadableStream<Uint8Array>, port: number): Response {
   const headers = new Headers();
   for (const [name, value] of head.headers) {
     if (DROP.has(name)) continue;
@@ -141,7 +147,14 @@ function makeResponse(head: PreviewReply & { type: "head" }, stream: ReadableStr
     }
   }
   try {
-    return new Response(NULL_BODY.has(head.status) ? null : stream, { status: head.status, statusText: head.statusText, headers });
+    const encoding = headers.get("content-encoding");
+    const html = headers.get("content-type")?.toLowerCase().includes("text/html") && !encoding;
+    const body = html ? injectSocket(stream, port) : stream;
+    if (html) {
+      headers.set("cross-origin-embedder-policy", "require-corp");
+      headers.set("cross-origin-opener-policy", "same-origin");
+    }
+    return new Response(NULL_BODY.has(head.status) ? null : body, { status: head.status, statusText: head.statusText, headers });
   } catch (err) {
     return text(502, `bun.wasm server sent an unusable response (status ${head.status}): ${String(err)}\n`);
   }
@@ -153,4 +166,67 @@ function text(status: number, body: string): Response {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+
+function injectSocket(stream: ReadableStream<Uint8Array>, port: number): ReadableStream<Uint8Array> {
+  const script = `<script src="${SOCKET_SCRIPT_PATH}" data-bun-port="${port}" data-bun-prefix="${prefix}"></script>`;
+  const reader = stream.getReader();
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (length < 1024) {
+        const { value, done } = await reader.read();
+        if (value) { chunks.push(value); length += value.length; }
+        if (done || value?.includes(62)) break;
+      }
+      const initial = new Uint8Array(length);
+      let at = 0;
+      for (const chunk of chunks) { initial.set(chunk, at); at += chunk.length; }
+      const text = new TextDecoder().decode(initial);
+      const doctype = /^\s*<!doctype[^>]*>/i.exec(text)?.[0] ?? "";
+      const offset = new TextEncoder().encode(doctype).length;
+      controller.enqueue(initial.subarray(0, offset));
+      controller.enqueue(new TextEncoder().encode(script));
+      controller.enqueue(initial.subarray(offset));
+    },
+    async pull(controller) {
+      const { value, done } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
+}
+
+sw.addEventListener("message", (event) => {
+  if (MODULES || event.data?.type !== "preview-socket" || !event.ports[0]) return;
+  const client = event.source;
+  if (!client || !("url" in client)) return;
+  const match = PORT_PATH.exec(new URL(client.url).pathname);
+  if (!match || Number(match[1]) !== event.data.port) return;
+  event.waitUntil(routeSocket(event.data.port, event.ports[0]));
+});
+
+async function routeSocket(port: number, socket: MessagePort): Promise<void> {
+  const windows = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of windows) {
+    if (new URL(client.url).pathname.startsWith(prefix)) continue;
+    if (!await claimsSocket(client, port)) continue;
+    client.postMessage({ type: "preview-socket", port }, [socket]);
+    return;
+  }
+  socket.postMessage({ type: "error" });
+  socket.close();
+}
+
+function claimsSocket(client: Client, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const answer = (claimed: boolean) => { clearTimeout(timer); channel.port1.close(); resolve(claimed); };
+    const timer = setTimeout(() => answer(false), CLAIM_TIMEOUT_MS);
+    channel.port1.onmessage = (event) => answer(event.data?.type === "accepted");
+    client.postMessage({ type: "preview-socket-probe", port }, [channel.port2]);
+  });
 }

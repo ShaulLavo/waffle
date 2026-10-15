@@ -52,6 +52,7 @@ export class RingWriter extends RingBase {
   private headerView = new DataView(this.header.buffer);
 
   private queue: Promise<void> = Promise.resolve();
+  private disposed = false;
 
   /**
    * Appends one record, waiting while the ring is full. Records land in call order (writes are
@@ -63,9 +64,17 @@ export class RingWriter extends RingBase {
     return this.queue;
   }
 
+  /** The consumer stopped: release blocked producers and discard queued records. */
+  dispose(): void {
+    this.disposed = true;
+    Atomics.add(this.cells, SPACE, 1);
+    Atomics.notify(this.cells, SPACE);
+  }
+
   private async append(handle: number, kind: number, payload: Uint8Array): Promise<void> {
     const size = align4(RECORD_HEADER + payload.length);
-    while (CAPACITY - this.used() < size) await this.waitForSpace();
+    while (!this.disposed && CAPACITY - this.used() < size) await this.waitForSpace();
+    if (this.disposed) return;
     this.headerView.setInt32(0, handle, true);
     this.headerView.setInt32(4, kind, true);
     this.headerView.setInt32(8, payload.length, true);

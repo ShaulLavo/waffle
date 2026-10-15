@@ -83,10 +83,12 @@ export class NetHost {
   private lastError: NetError | null = null;
   /** Something changed without a ring record (a local pipe write or close): `poll` must not sleep. */
   private localNews = false;
+  private fileWrite: { path: string; bytes: Uint8Array; offset: number } | null = null;
 
   constructor(
     sab: SharedArrayBuffer,
     private send: (msg: NetRequest, transfer?: Transferable[]) => void,
+    private writeFile?: (path: string, bytes: Uint8Array) => void,
   ) {
     this.ring = new RingReader(sab);
     this.seenGeneration = this.ring.generation();
@@ -156,6 +158,7 @@ export class NetHost {
   private watchRing(): void {
     const seen = this.ring.generation();
     const again = () => {
+      this.drain();
       if (this.ring.generation() !== seen && this.onNews) this.onNews();
       this.watchRing();
     };
@@ -388,6 +391,10 @@ export class NetHost {
   }
 
   private dispatch(handle: number, kind: number, payload: Uint8Array): void {
+    if (kind === Kind.FileStart || kind === Kind.FileData || kind === Kind.FileEnd) {
+      this.receiveFile(kind, payload);
+      return;
+    }
     if (kind === Kind.Conn) {
       this.onConn(handle, payload);
       return;
@@ -399,6 +406,27 @@ export class NetHost {
     else if (kind === Kind.Data) h.chunks.push(payload);
     else if (kind === Kind.End) h.ended = true;
     else if (kind === Kind.Error) h.error = JSON.parse(decoder.decode(payload)) as NetError;
+  }
+
+  private receiveFile(kind: number, payload: Uint8Array): void {
+    if (kind === Kind.FileStart) {
+      const meta: unknown = JSON.parse(decoder.decode(payload));
+      if (!meta || typeof meta !== "object" || !("path" in meta) || !("length" in meta)) throw new TypeError("Invalid file update");
+      if (typeof meta.path !== "string" || !meta.path.startsWith("/") || typeof meta.length !== "number" || !Number.isSafeInteger(meta.length) || meta.length < 0) throw new TypeError("Invalid file update metadata");
+      this.fileWrite = { path: meta.path, bytes: new Uint8Array(meta.length), offset: 0 };
+      return;
+    }
+    const pending = this.fileWrite;
+    if (!pending) throw new Error("File update has no start record");
+    if (kind === Kind.FileData) {
+      if (pending.offset + payload.length > pending.bytes.length) throw new Error("File update exceeds its declared size");
+      pending.bytes.set(payload, pending.offset);
+      pending.offset += payload.length;
+      return;
+    }
+    this.fileWrite = null;
+    if (pending.offset !== pending.bytes.length) throw new Error("Incomplete file update");
+    this.writeFile?.(pending.path, pending.bytes);
   }
 
   private onConn(listener: number, payload: Uint8Array): void {

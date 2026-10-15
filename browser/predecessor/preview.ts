@@ -34,7 +34,7 @@ export class Previews {
   private async registerWorker(): Promise<PreviewState> {
     const container = navigator.serviceWorker;
     if (!container) return "unsupported";
-    container.addEventListener("message", (event: MessageEvent<PreviewAsk>) => this.onAsk(event));
+    container.addEventListener("message", (event: MessageEvent<PreviewAsk | { type: "preview-socket-probe" | "preview-socket"; port: number }>) => this.onAsk(event));
     container.startMessages();
     try {
       // The scope keeps the playground page itself out of the worker's control.
@@ -48,10 +48,36 @@ export class Previews {
     }
   }
 
-  private onAsk(event: MessageEvent<PreviewAsk>): void {
+  private connectSocket(port: number, reply: MessagePort): void {
+    const connection = this.servers.get(port)?.connect(port, {
+      data: (chunk) => reply.postMessage({ type: "data", chunk }, [chunk.buffer]),
+      end: () => { reply.postMessage({ type: "end" }); reply.close(); },
+      error: () => { reply.postMessage({ type: "error" }); reply.close(); },
+    });
+    if (!connection) { reply.postMessage({ type: "error" }); reply.close(); return; }
+    reply.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (!message || typeof message !== "object" || !("type" in message)) return;
+      if (message.type === "data" && "chunk" in message && message.chunk instanceof Uint8Array) connection.write(message.chunk);
+      if (message.type === "end") { connection.close(); reply.close(); }
+    };
+    reply.postMessage({ type: "accepted" });
+  }
+
+  private onAsk(event: MessageEvent<PreviewAsk | { type: "preview-socket-probe" | "preview-socket"; port: number }>): void {
     const ask = event.data;
     const reply = event.ports[0];
-    if (ask?.type !== "preview-request" || !reply) return;
+    if (!reply || !ask) return;
+    if (ask.type === "preview-socket-probe") {
+      reply.postMessage({ type: this.servers.has(ask.port) ? "accepted" : "none" });
+      reply.close();
+      return;
+    }
+    if (ask.type === "preview-socket") {
+      this.connectSocket(ask.port, reply);
+      return;
+    }
+    if (ask.type !== "preview-request") return;
     const send = (msg: PreviewReply, transfer: Transferable[] = []) => reply.postMessage(msg, transfer);
     const helper = this.servers.get(ask.port);
     const request = { method: ask.method, target: ask.target, headers: ask.headers, body: ask.body ? new Uint8Array(ask.body) : null };

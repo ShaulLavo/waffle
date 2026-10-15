@@ -163,7 +163,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
     ctx.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating } satisfies WorkerMessage);
     const slots = req.slots ?? "imports";
-    const netHost = req.net ? new NetHost(req.net, sendNet) : null;
+    const netHost = req.net ? new NetHost(req.net, sendNet, (path, bytes) => fs.writeFile(path, bytes)) : null;
     if (slots !== "off") {
       const memory = instance.exports.memory;
       if (!(memory instanceof WebAssembly.Memory)) throw new Error("bun-wasm has no memory");
