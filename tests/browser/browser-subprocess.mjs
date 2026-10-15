@@ -20,12 +20,14 @@ const fileText = new Response(files.stdout).text();
 console.log("api files", await files.exited, (await fileText).trim(), readFileSync("child-cwd/child.txt", "utf8"));
 const nested = Bun.spawnSync(cmd("const p=Bun.spawnSync(['bun','-e','console.log(99)']); console.log(p.exitCode,p.stdout.toString().trim())"));
 console.log("api nested", nested.exitCode, nested.stdout.toString().trim());
+const cycle = Bun.spawnSync([process.execPath, "run", "cycle/a.js"]);
+console.log("api cycle", cycle.exitCode, cycle.stdout.toString().trim());
 console.log("api exec", execSync("bun -e 'console.log(42)'", { encoding: "utf8" }).trim());
 const timeout = spawnSync("bun", ["-e", "while(true){}"], { timeout: 100 });
 console.log("api timeout", timeout.signal, timeout.error.code);
 console.log("api cwd", Bun.spawnSync(cmd("0"), { cwd: "/missing-child-cwd" }).error.code);
 `;
-const apiExpected = ["api sync 0 fresh err", "api input 0 1200000", "api files 0 child shared", "api nested 0 0 99", "api exec 42", "api timeout SIGTERM ETIMEDOUT", "api cwd ENOENT"];
+const apiExpected = ["api sync 0 fresh err", "api input 0 1200000", "api files 0 child shared", "api nested 0 0 99", "api exec 42", "api cycle 0 ab", "api timeout SIGTERM ETIMEDOUT", "api cwd ENOENT"];
 const s = session("bun-wasm-self-spawn-browser-");
 try {
   const url = await s.serve();
@@ -80,6 +82,8 @@ try {
       assert.equal(result.code, 7);
       assert.match(result.snapshot, /child.txt/);
       console.log(`ok ${browserName} ${engine}: argv/env/stdin/stdout/stderr/exit/filesystem`);
+      await writeFile(page, "/home/user/cycle/a.js", 'import { b } from "./b.js"; export function a() { return "a"; } console.log(b());');
+      await writeFile(page, "/home/user/cycle/b.js", 'import { a } from "./a.js"; export function b() { return a() + "b"; }');
       await writeFile(page, "/home/user/subprocess-api.js", apiProgram);
       const api = await run(page, "bun run subprocess-api.js");
       assert.equal(api.code, 0, api.output);

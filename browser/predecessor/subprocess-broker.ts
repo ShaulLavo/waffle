@@ -22,6 +22,7 @@ export class SubprocessBroker {
     const transport = childTransport(request.child);
     const control = new Int32Array(request.child.control, 0, 4);
     if (Atomics.load(control, 3)) return;
+    if (request.engine === "browser" && new URL(this.workerUrl).pathname.endsWith("/__bunwasm/worker.js")) request.moduleCache = `bunwasm-m-${crypto.randomUUID()}`;
     const worker = new Worker(this.workerUrl, { type: "module" });
     this.children.set(worker, request);
     worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -42,6 +43,7 @@ export class SubprocessBroker {
       const control = new Int32Array(request.child.control, 0, 4);
       if (!Atomics.load(control, 0) && !Atomics.load(control, 3) && active(request.child)) continue;
       worker.terminate();
+      if (request.moduleCache) void caches.delete(request.moduleCache);
       this.children.delete(worker);
     }
   }
@@ -59,7 +61,10 @@ export class SubprocessBroker {
     this.disposed = true;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
-    for (const worker of this.children.keys()) worker.terminate();
+    for (const [worker, request] of this.children) {
+      worker.terminate();
+      if (request.moduleCache) void caches.delete(request.moduleCache);
+    }
     this.children.clear();
   }
 }
