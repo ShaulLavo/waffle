@@ -166,6 +166,30 @@ function check(name, ok, detail = "") {
   if (!ok) failures.push(name);
 }
 
+async function checkHtmlEntry(page, context, appUrl, name) {
+  await page.evaluate(() => {
+    const fs = globalThis.playground.fs;
+    fs.writeFile("/home/user/index.html", '<!doctype html><title>HTML entry</title><link rel="stylesheet" href="./app.css"><h1 id="html-app"></h1><script type="module" src="./app.ts"></script>');
+    fs.writeFile("/home/user/app.ts", 'const message: string = "bundled HTML entry"; document.querySelector("#html-app").textContent = message;');
+    fs.writeFile("/home/user/app.css", 'body { color: rgb(12, 34, 56); }');
+  });
+  await page.evaluate(() => void globalThis.playground.shell.submit("bun ./index.html"));
+  const output = await waitFor(page, /Started development server:|error:|crashed/);
+  check(`${name}: HTML CLI starts a server`, output.includes("Started development server:"), output.slice(-500));
+  const preview = await context.newPage();
+  try {
+    await preview.goto(new URL("__preview/3000/", appUrl).href);
+    await preview.waitForFunction(() => document.querySelector("#html-app")?.textContent === "bundled HTML entry", null, { timeout: 15000 });
+    check(`${name}: Bun bundles HTML and TypeScript`, await preview.textContent("#html-app") === "bundled HTML entry");
+    check(`${name}: Bun bundles linked CSS`, await preview.evaluate(() => getComputedStyle(document.body).color) === "rgb(12, 34, 56)");
+  } finally {
+    await preview.close();
+    await page.click(".xterm");
+    await page.keyboard.press("Control+c");
+    await waitFor(page, /\^C/);
+  }
+}
+
 async function runEngine(browserName, engine, type, options, appUrl, fixtureBase) {
   const name = `${browserName}/${engine}`;
   const browser = await type.launch();
@@ -185,6 +209,8 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   await page.evaluate(() => globalThis.playground.shell.submit("bun run net.ts"));
   const out = await waitFor(page, /FETCH-DONE|error:|crashed/);
   for (const line of expectedFetch(browserName)) check(`${name}: ${line.split(":")[0]}`, out.includes(line), `expected ${JSON.stringify(line)} in\n${out}`);
+
+  await checkHtmlEntry(page, context, appUrl, name);
 
   // Bun.serve preview through the service worker
   await page.evaluate((src) => globalThis.playground.fs.writeFile("/home/user/serve.ts", src), serveTest);
