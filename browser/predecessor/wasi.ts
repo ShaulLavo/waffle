@@ -60,6 +60,8 @@ export interface WasiOptions {
   fs: MemFS;
   /** Preopened directories: guest name -> absolute path in `fs`. */
   preopens: Record<string, string>;
+  /** Optional blocking stdin for subprocess pipes; absent means EOF. */
+  stdin?(cap: number): Uint8Array | number;
   stdout(data: Uint8Array): void;
   stderr(data: Uint8Array): void;
   /** Blocks the calling thread for `ms` milliseconds. */
@@ -120,6 +122,20 @@ export class Wasi {
   private nextFd = 0;
   private args: Uint8Array[];
   private env: Uint8Array[];
+
+  private readStdin(iovecs: Uint8Array[]): number {
+    if (!this.opts.stdin) return 0;
+    const size = iovecs.reduce((n, chunk) => n + chunk.length, 0);
+    const bytes = this.opts.stdin(size);
+    if (typeof bytes === "number") return 0;
+    let at = 0;
+    for (const chunk of iovecs) {
+      const n = Math.min(chunk.length, bytes.length - at);
+      chunk.set(bytes.subarray(at, at + n));
+      at += n;
+    }
+    return at;
+  }
 
   constructor(private opts: WasiOptions) {
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
@@ -395,8 +411,7 @@ export class Wasi {
         const entry = this.fds.get(fd);
         if (!entry) return EBADF;
         if (entry.type === "dir") return EISDIR;
-        // stdin is always at end of file: the terminal does not feed running programs.
-        const n = entry.type === "stdio" ? 0 : this.readIn(entry, this.iovecs(iovs, count), null);
+        const n = entry.type === "stdio" ? this.readStdin(this.iovecs(iovs, count)) : this.readIn(entry, this.iovecs(iovs, count), null);
         this.view().setUint32(nreadPtr, n, true);
         return SUCCESS;
       },

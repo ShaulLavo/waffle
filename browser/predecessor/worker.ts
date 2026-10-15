@@ -8,6 +8,8 @@ import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
 import { installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
 import { Wasi, WasiExit, compactFs } from "./wasi";
+import { SubprocessHost, childTransport, type ChildTransport } from "./subprocess.js";
+import { filesystemChanges, mergeFilesystemChanges } from "./subprocess-fs";
 
 export type Engine = "quickjs" | "jsc" | "browser";
 
@@ -32,10 +34,12 @@ export interface RunRequest {
    * match"), so it is kept only for comparison; "off" installs none.
    */
   slots?: "table" | "imports" | "off";
+  child?: ChildTransport;
 }
 
 // The browser engine's polyfills replace globalThis.Response; Cache.put needs the real one.
 const NativeResponse = Response;
+const NativeWorker = Worker;
 
 /** Named module URLs for engine-host.js, stored where the service worker (sw.ts) serves them. */
 function moduleStore(cacheName: string) {
@@ -83,14 +87,6 @@ function sleep(ms: number): void {
 
 const sendNet = (req: NetRequest, transfer: Transferable[] = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer);
 
-/** Gives bun.wasm fetch and Bun.serve through the bun_wasm host slots (docs/host-abi.md). */
-function installNet(instance: WebAssembly.Instance, sab: SharedArrayBuffer, wasi: Wasi, mode: "table" | "imports"): void {
-  const host = new NetHost(sab, sendNet);
-  host.attach(instance.exports.memory as WebAssembly.Memory);
-  if (mode === "imports") wasi.hostCall = installHostSlotsViaImport(instance, host.slots());
-  else installHostSlots(instance, host.slots());
-}
-
 /** `Name: message` plus the first stack frames (wasm function names when the build keeps them). */
 function describeError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
@@ -103,12 +99,36 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   ctx.postMessage({ type: "phase", name: "worker-start", duration: 0 } satisfies WorkerMessage);
   const req = event.data;
   const fs = new MemFS(req.root);
-  const post = (type: "stdout" | "stderr", data: Uint8Array) => ctx.postMessage({ type, data }, [data.buffer]);
+  const initialRoot = req.child ? structuredClone(req.root) : null;
+  const child = req.child ? childTransport(req.child) : null;
+  const post = (type: "stdout" | "stderr", data: Uint8Array) => {
+    if (child) child[type].writeAll(data);
+    else ctx.postMessage({ type, data }, [data.buffer]);
+  };
+  const subprocess = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? new SubprocessHost({
+    budget: req.child?.budget,
+    slot: req.child?.slot,
+    stdin: req.child?.pipes[0],
+    output: (fd, data) => post(fd === 2 ? "stderr" : "stdout", data),
+    sync: (snapshot) => mergeFilesystemChanges(fs, snapshot),
+    launch: (meta, transport, onError) => {
+      const cwd = meta.cwd || req.env.PWD || "/";
+      if (fs.lookup(cwd)?.kind !== "dir") throw Object.assign(new Error(`spawn: cwd does not exist: ${cwd}`), { code: "ENOENT" });
+      const worker = new NativeWorker(new URL("./worker.js", ctx.location.href), { type: "module" });
+      worker.onerror = onError;
+      worker.postMessage({
+        ...req, args: meta.argv, env: { ...meta.env, PWD: meta.cwd || req.env.PWD || "/" },
+        root: structuredClone(fs.root), child: transport, net: null, moduleCache: null,
+      } satisfies RunRequest);
+      return worker;
+    },
+  }) : null;
   const wasi = new Wasi({
     args: req.args,
     env: req.env,
     fs,
     preopens: { "/": "/" },
+    stdin: child ? (cap) => child.stdin.readBlocking(cap) : undefined,
     stdout: (data) => post("stdout", data),
     stderr: (data) => post("stderr", data),
     sleep,
@@ -119,7 +139,13 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   const finish = (result: { code: number } | { error: unknown }) => {
     if (done) return;
     done = true;
+    subprocess?.dispose();
     compactFs(fs.root);
+    if (child && initialRoot) {
+      if ("error" in result) child.stderr.writeAll(new TextEncoder().encode(`${describeError(result.error)}\n`));
+      child.finish("code" in result ? result.code : 1, filesystemChanges(initialRoot, fs.root));
+      return;
+    }
     if ("code" in result) {
       ctx.postMessage({ type: "exit", code: result.code, root: fs.root, sleep: sleepMode } satisfies WorkerMessage);
       return;
@@ -133,7 +159,16 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
     ctx.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating } satisfies WorkerMessage);
     const slots = req.slots ?? "imports";
-    if (req.net && req.engine !== "browser" && slots !== "off") installNet(instance, req.net, wasi, slots);
+    const netHost = req.net ? new NetHost(req.net, sendNet) : null;
+    if (slots !== "off") {
+      const memory = instance.exports.memory;
+      if (!(memory instanceof WebAssembly.Memory)) throw new Error("bun-wasm has no memory");
+      netHost?.attach(memory);
+      subprocess?.attach(memory);
+      const impls = subprocess ? subprocess.slots(netHost?.slots()) : netHost?.slots();
+      if (impls && slots === "imports") wasi.hostCall = installHostSlotsViaImport(instance, impls);
+      else if (impls) installHostSlots(instance, impls);
+    }
     const exited = wasi.launch(instance);
     const ready = instance.exports.bunwasm_ready as (() => number) | undefined;
     if (exited !== null || req.engine !== "browser" || ready?.() !== 1) {
@@ -155,7 +190,8 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     ctx.addEventListener("unhandledrejection", onRejection);
     // With a ring (cross-origin isolated page): the same NetHost as the wasm engines, so fetch goes
     // through the page's helper and Bun.serve gets /__preview/<port>/ connections.
-    const net = req.net ? new NetHost(req.net, sendNet).engineNet() : undefined;
+    const networking = slots !== "off" ? netHost?.engineNet() : undefined;
+    const net = slots !== "off" && subprocess ? subprocess.engineNet(networking) : networking;
     const code = await startEngineHost({
       instance,
       moduleUrls: "blob",
