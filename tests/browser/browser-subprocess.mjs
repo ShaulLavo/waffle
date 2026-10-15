@@ -1,9 +1,10 @@
 // Fresh subprocess workers on the real browser worker bootstrap, across all wasm engines.
 // cd web && bun run build && node tests/browser-subprocess.mjs [chromium|webkit]
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { playwright, session, ready, writeFile, run } from "./playground.mjs";
-const source = readFileSync(new URL("../src/subprocess.js", import.meta.url), "utf8");
+const source = execFileSync("bun", ["build", fileURLToPath(new URL("../src/subprocess.js", import.meta.url)), "--target=browser"], { encoding: "utf8" });
 const apiProgram = `
 import { spawnSync, execSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";

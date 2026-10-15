@@ -3,6 +3,8 @@
 // results come back through the shared ring (ring.ts), which is drained into per-handle state on
 // every call.
 
+import { memoryViews, type MemoryViews } from "../memory-views.js";
+
 import {
   AGAIN,
   BADF,
@@ -74,7 +76,7 @@ const decoder = new TextDecoder();
 
 export class NetHost {
   private ring: RingReader;
-  private memory: WebAssembly.Memory | null = null;
+  private memory!: MemoryViews;
   private handles = new Map<number, Handle>();
   /** Connections announced by the helper but not accepted yet (their bytes buffer here meanwhile). */
   private unaccepted = new Map<number, ConnHandle>();
@@ -95,7 +97,7 @@ export class NetHost {
   }
 
   attach(memory: WebAssembly.Memory): void {
-    this.memory = memory;
+    this.memory = memoryViews(memory);
   }
 
   /** The slot implementations to install (no `connect`: browsers have no raw sockets). */
@@ -228,7 +230,7 @@ export class NetHost {
   private read(handle: number, ptr: number, cap: number): number {
     const chunk = this.readBytes(handle, cap);
     if (typeof chunk === "number") return chunk;
-    new Uint8Array(this.memory!.buffer).set(chunk, ptr >>> 0);
+    this.memory.bytes().set(chunk, ptr >>> 0);
     return chunk.length;
   }
 
@@ -450,12 +452,12 @@ export class NetHost {
 
   /** A copy of guest memory [ptr, ptr+len). */
   private bytes(ptr: number, len: number): Uint8Array<ArrayBuffer> {
-    return new Uint8Array(this.memory!.buffer).slice(ptr >>> 0, (ptr >>> 0) + len);
+    return this.memory.bytes().slice(ptr >>> 0, (ptr >>> 0) + len);
   }
 
   /** The `fetch_head` length protocol: write when it fits, return the full length either way. */
   private writeSized(data: Uint8Array, ptr: number, cap: number): number {
-    if (data.length <= cap) new Uint8Array(this.memory!.buffer).set(data, ptr >>> 0);
+    if (data.length <= cap) this.memory.bytes().set(data, ptr >>> 0);
     return data.length;
   }
 

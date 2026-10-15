@@ -2,6 +2,7 @@
 // Runs inside the worker. Synchronous by design: bun.wasm calls in, we answer from memory.
 
 import { type DirNode, type FileNode, type Node, MemFS, basename, dirname, newDir, newFile, normalize } from "./fs";
+import { memoryViews, type MemoryViews } from "./memory-views.js";
 import { HOST_CALL_FD } from "./net/trampoline";
 
 // errno
@@ -112,7 +113,7 @@ export function compactFs(root: DirNode): void {
 }
 
 export class Wasi {
-  private memory!: WebAssembly.Memory;
+  private memory!: MemoryViews;
   /**
    * Host-ABI calls the guest makes through `sock_send` on HOST_CALL_FD (net/trampoline.ts,
    * installHostSlotsViaImport): `(slot, [a, b, c, d]) -> result`.
@@ -157,7 +158,7 @@ export class Wasi {
 
   /** Runs `_start`; returns the `proc_exit` code, or null when `_start` returned without exiting. */
   launch(instance: WebAssembly.Instance): number | null {
-    this.memory = instance.exports.memory as WebAssembly.Memory;
+    this.memory = memoryViews(instance.exports.memory as WebAssembly.Memory);
     try {
       (instance.exports._start as () => void)();
       return null;
@@ -213,11 +214,11 @@ export class Wasi {
   }
 
   private view(): DataView {
-    return new DataView(this.memory.buffer);
+    return this.memory.view();
   }
 
   private bytes(): Uint8Array {
-    return new Uint8Array(this.memory.buffer);
+    return this.memory.bytes();
   }
 
   private str(ptr: number, len: number): string {
@@ -230,7 +231,7 @@ export class Wasi {
     for (let i = 0; i < count; i++) {
       const buf = view.getUint32(ptr + i * 8, true);
       const len = view.getUint32(ptr + i * 8 + 4, true);
-      out.push(new Uint8Array(this.memory.buffer, buf, len));
+      out.push(this.memory.range(buf, len));
     }
     return out;
   }
@@ -688,12 +689,12 @@ export class Wasi {
       sock_recv: () => ENOTSUP,
       sock_send: (fd: number, siData: number, siLen: number, _flags: number, retPtr: number) => {
         if (fd !== HOST_CALL_FD || !this.hostCall || siLen !== 5) return ENOTSUP;
-        const view = new DataView(this.memory.buffer);
+        const view = this.memory.view();
         const at = siData >>> 0;
         const words = [0, 1, 2, 3, 4].map((i) => view.getInt32(at + 4 * i, true));
         const result = this.hostCall(words[0]!, words.slice(1));
-        // The call may have grown memory: take a fresh view.
-        new DataView(this.memory.buffer).setInt32(retPtr >>> 0, result, true);
+        // Reacquire after reentry for hosts without length-tracking wasm views.
+        this.memory.view().setInt32(retPtr >>> 0, result, true);
         return SUCCESS;
       },
       sock_shutdown: () => ENOTSUP,

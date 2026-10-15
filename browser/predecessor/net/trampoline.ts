@@ -1,3 +1,5 @@
+import { memoryViews } from "../memory-views.js";
+
 // Installs JS functions into bun.wasm's `bun_wasm` host slots (docs/host-abi.md).
 //
 // A function table only holds wasm functions, and `WebAssembly.Function` (which would wrap a JS
@@ -111,7 +113,7 @@ function slotTable(instance: WebAssembly.Instance): { view: DataView; ptr: numbe
   const memory = exports.memory;
   if (typeof slots !== "function" || !(memory instanceof WebAssembly.Memory)) return null;
   const ptr = (slots as () => number)() >>> 0;
-  const view = new DataView(memory.buffer);
+  const view = memoryViews(memory).view();
   if (view.getUint32(ptr, true) !== ABI_VERSION) return null;
   return { view, ptr, count: view.getUint32(ptr + 4, true) };
 }
@@ -150,7 +152,7 @@ export function installHostSlots(instance: WebAssembly.Instance, impls: SlotImpl
   if (!(table instanceof WebAssembly.Table) || typeof slots !== "function" || !(memory instanceof WebAssembly.Memory)) return [];
 
   const ptr = (slots as () => number)() >>> 0;
-  const view = new DataView(memory.buffer);
+  const view = memoryViews(memory).view();
   const version = view.getUint32(ptr, true);
   const count = view.getUint32(ptr + 4, true);
   if (version !== ABI_VERSION) return [];
