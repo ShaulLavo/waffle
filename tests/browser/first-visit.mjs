@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { createServer, request } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 // A fresh proxy origin keeps both HTTP caches and service worker registrations empty. Delaying
 // activate and resolving register() at "activating" exercises a timing browsers are allowed to use.
@@ -40,7 +41,11 @@ export async function firstVisit(context, base) {
 
 function forwardRequest(upstream, incoming, outgoing) {
   const target = new URL(incoming.url, upstream.origin);
-  const forwarded = request(target, { method: incoming.method, headers: incoming.headers }, (response) => forwardResponse(target, outgoing, response));
+  // Works against the deployed https site too: the upstream sees its own Host, and asks for
+  // uncompressed bodies because sw.js is rewritten as text below.
+  const headers = { ...incoming.headers, host: target.host, "accept-encoding": "identity" };
+  const request = target.protocol === "https:" ? httpsRequest : httpRequest;
+  const forwarded = request(target, { method: incoming.method, headers }, (response) => forwardResponse(target, outgoing, response));
   forwarded.on("error", (error) => outgoing.destroy(error));
   incoming.pipe(forwarded);
 }
