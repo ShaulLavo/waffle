@@ -20,6 +20,28 @@ export interface RunRequest {
   trace: boolean;
   /** The networking ring (net/ring.ts); null when the page is not cross-origin isolated. */
   net: SharedArrayBuffer | null;
+  /**
+   * Browser engine: the Cache Storage cache for this run's ES modules, which the service worker
+   * serves under ./m/ (this worker runs from its ./__bunwasm/ scope). Null: blob URLs, no cycles.
+   */
+  moduleCache: string | null;
+}
+
+// The browser engine's polyfills replace globalThis.Response; Cache.put needs the real one.
+const NativeResponse = Response;
+
+/** Named module URLs for engine-host.js, stored where the service worker (sw.ts) serves them. */
+function moduleStore(cacheName: string) {
+  const run = cacheName.replace(/^bunwasm-m-/, "");
+  const base = new URL(`./m/${run}/`, self.location.href).href;
+  const cache = caches.open(cacheName);
+  return {
+    url: (key: string) => base + encodeURIComponent(key),
+    put: async (url: string, source: string) => {
+      const headers = { "content-type": "text/javascript; charset=utf-8" };
+      await (await cache).put(url, new NativeResponse(source, { headers }));
+    },
+  };
 }
 
 export type WorkerMessage =
@@ -116,6 +138,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     const code = await startEngineHost({
       instance,
       moduleUrls: "blob",
+      modules: req.moduleCache ? moduleStore(req.moduleCache) : undefined,
       fetch: ctx.fetch.bind(ctx),
       net,
       onExit: (exitCode) => finish({ code: exitCode }),

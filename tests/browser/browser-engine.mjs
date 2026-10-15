@@ -46,6 +46,13 @@ async function runBrowser(name, type, options, appUrl, fixtureBase) {
   await writeFile(page, `${HOME}/app.ts`, `import answer, { greet, type Who } from "./lib/greet";\nconst who: Who = { name: "ts" };\nconsole.log(greet(who), answer satisfies number);\n`);
   await expectRun(page, `${name}: TS file importing another file`, "bun run app.ts", 0, ["hi ts 42"]);
 
+  // An import cycle with a hoisted function called before its module evaluated (the browser engine
+  // needs the service worker's named module URLs for this).
+  await writeFile(page, `${HOME}/cycle/a.ts`, `import { b } from "./b";\nexport function a(): string { return "a"; }\nexport let count = 0;\nexport function bump() { count++; }\nconsole.log("a sees", b());\n`);
+  await writeFile(page, `${HOME}/cycle/b.ts`, `import { a } from "./a";\nexport function b(): string { return "b+" + a(); }\nconsole.log("b first:", a());\n`);
+  await writeFile(page, `${HOME}/cycle/main.ts`, `import { bump, count } from "./a";\nbump();\nconsole.log("live count:", count);\n`);
+  await expectRun(page, `${name}: import cycle`, "bun run cycle/main.ts", 0, ["b first: a", "a sees b+a", "live count: 1"]);
+
   await writeFile(page, `${HOME}/throws.ts`, `console.log("before");\nthrow new Error("kaboom");\n`);
   await expectRun(page, `${name}: uncaught error`, "bun run throws.ts", 1, ["before", "kaboom"]);
 

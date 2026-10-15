@@ -65,7 +65,7 @@ export class Previews {
   }
 }
 
-function activated(registration: ServiceWorkerRegistration): Promise<void> {
+export function activated(registration: ServiceWorkerRegistration): Promise<void> {
   const worker = registration.installing ?? registration.waiting;
   if (!worker || registration.active) return Promise.resolve();
   return new Promise((resolve) => {

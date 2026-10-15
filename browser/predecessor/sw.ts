@@ -1,6 +1,12 @@
-// Service worker for Bun.serve previews. Registered with scope `<app>/__preview/`, so it controls
-// only preview tabs, never the playground page (whose COOP/COEP headers stay untouched).
+// Service worker for Bun.serve previews and the browser engine's ES modules. The page registers it
+// twice, never over itself (its COOP/COEP headers stay untouched):
 //
+// Scope `<app>/__bunwasm/` controls the bun workers started from `<app>/__bunwasm/worker.js`. The
+// worker puts each program module into Cache Storage under `<app>/__bunwasm/m/<run>/<key>` before
+// importing it, and this worker serves those URLs, so modules have named URLs and import cycles
+// link natively (engine-host.js). Other paths under the scope are the app's own files.
+//
+// Scope `<app>/__preview/` controls only preview tabs:
 // A request for `<app>/__preview/<port>/<path>` is forwarded to the playground window running a
 // guest server on <port> (see preview.ts), which turns it into an HTTP/1.1 connection for bun.wasm
 // and streams the parsed response back here. Root-relative requests made by a preview page (e.g.
@@ -12,6 +18,7 @@ const sw = self as unknown as ServiceWorkerGlobalScope;
 /** Path of the scope, `<app>/__preview/`. */
 const prefix = new URL(sw.registration.scope).pathname;
 const PORT_PATH = new RegExp(`^${escapeRegExp(prefix)}(\\d{1,5})(/.*)?$`);
+const MODULES = prefix.endsWith("/__bunwasm/");
 /** How long a window has to claim a request before we try the next one. */
 const CLAIM_TIMEOUT_MS = 3000;
 
@@ -21,6 +28,10 @@ sw.addEventListener("activate", (event) => event.waitUntil(sw.clients.claim()));
 sw.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== location.origin) return;
+  if (MODULES) {
+    if (url.pathname.startsWith(prefix)) event.respondWith(moduleScope(event.request, url.pathname.slice(prefix.length)));
+    return;
+  }
   const direct = PORT_PATH.exec(url.pathname);
   if (direct) {
     event.respondWith(forward(event.request, Number(direct[1]), (direct[2] ?? "/") + url.search));
@@ -31,6 +42,17 @@ sw.addEventListener("fetch", (event) => {
   if (!event.clientId) return;
   event.respondWith(fromPreviewClient(event.request, event.clientId, url.pathname + url.search));
 });
+
+/** `m/<run>/<key>`: a module the worker stored; anything else: the app file of that name. */
+async function moduleScope(request: Request, rest: string): Promise<Response> {
+  if (rest.startsWith("m/")) return (await caches.match(request)) ?? text(404, `bun.wasm: no such module ${rest}\n`);
+  const upstream = await fetch(new URL(rest, new URL("..", sw.registration.scope)).href);
+  // The page is cross-origin isolated: a worker script needs COEP of its own.
+  const headers = new Headers(upstream.headers);
+  headers.set("cross-origin-embedder-policy", "require-corp");
+  headers.set("cross-origin-resource-policy", "same-origin");
+  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers });
+}
 
 async function fromPreviewClient(request: Request, clientId: string, target: string): Promise<Response> {
   const client = await sw.clients.get(clientId);
