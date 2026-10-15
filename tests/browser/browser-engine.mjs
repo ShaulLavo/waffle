@@ -54,6 +54,9 @@ async function runBrowser(name, type, options, appUrl, fixtureBase) {
   await writeFile(page, `${HOME}/cycle/main.ts`, `import { bump, count } from "./a";\nbump();\nconsole.log("live count:", count);\n`);
   await expectRun(page, `${name}: import cycle`, "bun run cycle/main.ts", 0, ["b first: a", "a sees b+a", "live count: 1"]);
 
+  await writeFile(page, `${HOME}/bytes.ts`, `import { readFileSync, writeFileSync } from "node:fs";\nconst bytes = new Uint8Array([1, 2, 3, 4]);\nwriteFileSync("view.bin", bytes.subarray(2));\nconsole.log("view bytes:", Array.from(readFileSync("view.bin")).join(","));\n`);
+  await expectRun(page, `${name}: native APIs honor typed array byte offsets`, "bun run bytes.ts", 0, ["view bytes: 3,4"]);
+
   await writeFile(page, `${HOME}/throws.ts`, `console.log("before");\nthrow new Error("kaboom");\n`);
   await expectRun(page, `${name}: uncaught error`, "bun run throws.ts", 1, ["before", "kaboom"]);
 
