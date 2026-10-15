@@ -3,6 +3,7 @@
 // ENGINE=quickjs|jsc runs the same checks on another engine.
 // Needs web/dist/bun-browser.wasm.gz (dist/bun-browser.wasm from scripts/build-bun-browser.sh).
 // Starts web/serve.ts and a CORS fixture server on another origin (no public internet); kills both on exit.
+import { checkPhoneUI } from "./phone-ui.mjs";
 import { playwright, ready, run, session, terminalText, writeFile } from "./playground.mjs";
 
 const { chromium, webkit, devices } = playwright;
@@ -104,6 +105,9 @@ rl.on("close", () => console.log("readline closed:", JSON.stringify(lines)));
   await page.keyboard.press("Control+C");
   check(`${name}: Ctrl-C exits 130`, (await pending) === 130);
   await expectRun(page, `${name}: runs again after Ctrl-C`, "bun run app.ts", 0, ["hi ts 42"]);
+
+  await checkPhoneUI(page, "playground", name === "chromium");
+  check(`${name}: phone layout and terminal copy`, true);
 
   check(`${name}: no page errors`, errors.length === 0, errors.join("\n"));
   await browser.close();
