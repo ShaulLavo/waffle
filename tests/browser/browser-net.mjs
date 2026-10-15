@@ -165,7 +165,8 @@ async function runEngine(name, type, options, appUrl, fixtureBase) {
   const errors = [];
   // WebKit reports the deliberate CORS failure (/nocors) as a page error as well as rejecting.
   page.on("pageerror", (e) => /\/nocors due to access control checks/.test(String(e)) || errors.push(String(e)));
-  await page.goto(appUrl);
+  // Bun.serve previews need a wasm engine (the default browser engine has none).
+  await page.goto(`${appUrl}?engine=quickjs`);
   await page.waitForFunction(() => document.querySelector("#status")?.textContent?.startsWith("bun.wasm ready"), null, { timeout: 60000 });
   check(`${name}: page is cross-origin isolated`, await page.evaluate(() => crossOriginIsolated));
 

@@ -66,15 +66,21 @@ export interface WasiOptions {
   trace?: (line: string) => void;
 }
 
+// The host's own clock and RNG, taken before anything runs: the browser engine (engine-host.js)
+// replaces globalThis.performance and crypto with the runtime's polyfills, which call back into
+// bun.wasm, which calls clock_time_get / random_get here.
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const perfNow = performance.now.bind(performance);
+const timeOrigin = performance.timeOrigin;
+const getRandomValues = crypto.getRandomValues.bind(crypto);
 
 function nowNs(clock: number): bigint {
   if (clock === CLOCK_REALTIME) {
-    const ms = performance.timeOrigin + performance.now();
+    const ms = timeOrigin + perfNow();
     return BigInt(Math.floor(ms)) * 1_000_000n + BigInt(Math.round((ms % 1) * 1e6));
   }
-  return BigInt(Math.round(performance.now() * 1e6));
+  return BigInt(Math.round(perfNow() * 1e6));
 }
 
 function msToNs(ms: number): bigint {
@@ -124,10 +130,15 @@ export class Wasi {
 
   /** Runs `_start`; returns the exit code. */
   start(instance: WebAssembly.Instance): number {
+    return this.launch(instance) ?? 0;
+  }
+
+  /** Runs `_start`; returns the `proc_exit` code, or null when `_start` returned without exiting. */
+  launch(instance: WebAssembly.Instance): number | null {
     this.memory = instance.exports.memory as WebAssembly.Memory;
     try {
       (instance.exports._start as () => void)();
-      return 0;
+      return null;
     } catch (err) {
       if (err instanceof WasiExit) return err.code;
       throw err;
@@ -646,7 +657,7 @@ export class Wasi {
         const mem = this.bytes();
         for (let at = 0; at < len; at += 65536) {
           const chunk = new Uint8Array(Math.min(65536, len - at));
-          crypto.getRandomValues(chunk);
+          getRandomValues(chunk);
           mem.set(chunk, ptr + at);
         }
         return SUCCESS;
