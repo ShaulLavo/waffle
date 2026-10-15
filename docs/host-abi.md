@@ -1,7 +1,7 @@
 # bun.wasm host ABI (`bun_wasm`, version 1)
 
 WASI preview1 has no sockets. Hosts that want to give bun.wasm networking
-(`fetch`, `Bun.serve`, `node:http`, `node:net`) provide a small set of extra
+(`fetch`, `Bun.serve`, `node:http`, `node:net`) and bun child processes provide a small set of extra
 functions described here. Hosts that don't (plain `wasmtime run`) need to do
 nothing: bun.wasm runs exactly as before and network APIs reject or throw
 "not supported".
@@ -89,6 +89,10 @@ reads as `UNSUPPORTED`. The playground and sandbox use this by default (`web/src
 | 9    | `connect`    | `(host_ptr, host_len, port) -> handle`                           |
 | 10   | `error`      | `(handle, buf_ptr, buf_cap) -> len`                              |
 | 11   | `peer_addr`  | `(handle, buf_ptr, buf_cap) -> len`                              |
+| 12   | `spawn`      | `(meta_ptr, meta_len) -> child`                                  |
+| 13   | `child_wait` | `(child) -> exit_code`                                          |
+| 14   | `child_pipe` | `(child, fd) -> pipe`                                            |
+| 15   | `child_kill` | `(child, signal) -> i32`                                         |
 
 ### `poll(timeout_ms) -> i32`
 
@@ -186,6 +190,51 @@ for handle `0`), same length protocol as `fetch_head`:
 
 JSON `{ "address": "127.0.0.1", "port": 51234, "family": "IPv4" }` for a
 connection, same length protocol as `fetch_head`.
+
+## Bun child processes
+
+`spawn` starts a fresh instance of the same compiled module. It never invokes a
+native executable or shell. The metadata is JSON:
+
+```json
+{"argv":["bun","run","/app.ts"],"cwd":"/","env":{"HOME":"/"},
+ "stdin":"pipe","stdout":"pipe","stderr":"pipe"}
+```
+
+`argv[0]` must be `bun` or `/bun`. The guest recognizes its own `process.execPath`
+and `process.argv0`, then sends `bun`. Other commands fail with `ENOENT`.
+`env` replaces the child environment; the host sets `PWD` to `cwd` because the
+WASI guest changes directory there at startup. Each stdio mode is `pipe`,
+`inherit`, or `ignore`. Inheritance refers to the immediate parent's stream,
+including pipes when the parent is itself a child. No OS descriptor inheritance
+or IPC channel is implied.
+
+`child_pipe(child, fd)` returns the stdin, stdout, or stderr pipe for fd 0, 1, or
+2. It returns 0 for an inherited or ignored stream. Use the existing `write`,
+`read`, and `close` functions on these pipe handles. Closing stdin sends EOF;
+closing an output read end discards remaining output and makes child writes fail.
+Reads return `AGAIN` until bytes or EOF arrive. Pipe buffers are bounded to 1 MiB
+on the native launcher and apply backpressure.
+
+`child_wait` is nonblocking and repeatable: `AGAIN` while running, then the exit
+code. Waiting does not close the child or its pipes. Drain and close the pipes,
+then `close(child)` to release the handle. Closing a running child kills it.
+`child_kill` accepts a Linux signal number; 0 checks whether the child is alive,
+and a nonzero signal terminates the instance with exit code `128 + signal`.
+This is instance termination, without guest POSIX signal handlers. Timeouts and
+abort signals use this same operation.
+
+The native launcher shares the compiled module and preopened host directories
+between independent stores on child threads. Filesystem changes are visible
+immediately to both sides, as with native processes. A shared budget permits at
+most four active children, including descendants; another spawn fails `EAGAIN`.
+Each store's linear memory is limited to 512 MiB. A 10 ms epoch ticker interrupts
+CPU-bound children; cancellation also wakes blocked WASI stdio and host polling.
+Parent teardown kills and joins its remaining children, including descendants.
+Handles are virtual identifiers, not host process IDs.
+
+Plain `wasmtime run` has no child slots and reports that spawning is not supported
+in bun-wasm. It never falls back to a native program.
 
 ## Hosts
 
