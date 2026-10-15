@@ -66,13 +66,14 @@ export class Previews {
 }
 
 export function activated(registration: ServiceWorkerRegistration): Promise<void> {
-  const worker = registration.installing ?? registration.waiting;
-  if (!worker || registration.active) return Promise.resolve();
-  return new Promise((resolve) => {
+  const worker = registration.installing ?? registration.waiting ?? registration.active;
+  if (!worker) return Promise.reject(new Error("service worker registration has no worker"));
+  return new Promise((resolve, reject) => {
     const check = () => {
       if (worker.state !== "activated" && worker.state !== "redundant") return;
       worker.removeEventListener("statechange", check);
-      resolve();
+      if (worker.state === "redundant") reject(new Error("service worker became redundant before activation"));
+      else resolve();
     };
     worker.addEventListener("statechange", check);
     check();

@@ -4,6 +4,7 @@
 // Needs web/dist/bun-browser.wasm.gz (dist/bun-browser.wasm from scripts/build-bun-browser.sh).
 // Starts web/serve.ts and a CORS fixture server on another origin (no public internet); kills both on exit.
 import { checkPhoneUI } from "./phone-ui.mjs";
+import { firstVisit } from "./first-visit.mjs";
 import { playwright, ready, run, session, terminalText, writeFile } from "./playground.mjs";
 
 const { chromium, webkit, devices } = playwright;
@@ -30,11 +31,21 @@ async function expectRun(page, label, command, code, want = [], not = []) {
 
 async function runBrowser(name, type, options, appUrl, fixtureBase) {
   const browser = await s.launch(type);
-  const page = await (await browser.newContext(options)).newPage();
+  const context = await browser.newContext(options);
+  const visit = await firstVisit(context, `${appUrl}?engine=${engine}`);
+  try {
+    await checkPage(name, await context.newPage(), visit, fixtureBase);
+  } finally {
+    await browser.close();
+    await visit.close();
+  }
+}
+
+async function checkPage(name, page, visit, fixtureBase) {
   const errors = [];
   // WebKit reports the deliberate CORS failure (/nocors) as a page error as well as rejecting.
   page.on("pageerror", (e) => /\/nocors due to access control checks/.test(String(e)) || errors.push(String(e)));
-  await page.goto(`${appUrl}?engine=${engine}`);
+  await page.goto(visit.url);
   const status = await ready(page);
   check(`${name}: status names the engine`, status.startsWith(`bun.wasm ready · ${engineName} ·`), status);
   check(`${name}: dropdown shows the engine`, (await page.inputValue("#engine")) === engine);
@@ -42,6 +53,8 @@ async function runBrowser(name, type, options, appUrl, fixtureBase) {
 
   await expectRun(page, `${name}: bun --version (native side)`, "bun --version", 0, [], ["error"]);
   await expectRun(page, `${name}: hello world (index.ts)`, "bun run index.ts", 0, ["Hello, world.", "Hello, Bun!", "cwd: /home/user"]);
+  await visit.check(page, engine === "browser");
+  check(`${name}: fresh visit waits for activation and serves worker bootstrap`, true);
 
   await writeFile(page, `${HOME}/lib/greet.ts`, `export interface Who { name: string }\nexport const greet = ({ name }: Who): string => \`hi \${name}\`;\nexport default 42;\n`);
   await writeFile(page, `${HOME}/app.ts`, `import answer, { greet, type Who } from "./lib/greet";\nconst who: Who = { name: "ts" };\nconsole.log(greet(who), answer satisfies number);\n`);
@@ -113,7 +126,6 @@ rl.on("close", () => console.log("readline closed:", JSON.stringify(lines)));
   check(`${name}: phone layout and terminal copy`, true);
 
   check(`${name}: no page errors`, errors.length === 0, errors.join("\n"));
-  await browser.close();
 }
 
 try {
