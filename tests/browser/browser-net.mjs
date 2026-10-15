@@ -1,5 +1,5 @@
 // End-to-end networking test of the playground in real browsers (Chromium desktop, WebKit iPhone).
-//   cd web && bun run build && node tests/browser-net.mjs [chromium|webkit …]
+//   cd web && bun run build && [ENGINES=browser,quickjs] node tests/browser-net.mjs [chromium|webkit …]
 // Starts web/serve.ts and a local fixture server on another origin (no public internet), drives
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
 // PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
@@ -157,7 +157,8 @@ function check(name, ok, detail = "") {
   if (!ok) failures.push(name);
 }
 
-async function runEngine(name, type, options, appUrl, fixtureBase) {
+async function runEngine(browserName, engine, type, options, appUrl, fixtureBase) {
+  const name = `${browserName}/${engine}`;
   const browser = await type.launch();
   browsers.push(browser);
   const context = await browser.newContext(options);
@@ -165,8 +166,7 @@ async function runEngine(name, type, options, appUrl, fixtureBase) {
   const errors = [];
   // WebKit reports the deliberate CORS failure (/nocors) as a page error as well as rejecting.
   page.on("pageerror", (e) => /\/nocors due to access control checks/.test(String(e)) || errors.push(String(e)));
-  // Bun.serve previews need a wasm engine (the default browser engine has none).
-  await page.goto(`${appUrl}?engine=quickjs`);
+  await page.goto(`${appUrl}?engine=${engine}`);
   await page.waitForFunction(() => document.querySelector("#status")?.textContent?.startsWith("bun.wasm ready"), null, { timeout: 60000 });
   check(`${name}: page is cross-origin isolated`, await page.evaluate(() => crossOriginIsolated));
 
@@ -174,7 +174,7 @@ async function runEngine(name, type, options, appUrl, fixtureBase) {
   await page.evaluate((src) => globalThis.playground.fs.writeFile("/home/user/net.ts", src), fetchTest(fixtureBase));
   await page.evaluate(() => globalThis.playground.shell.submit("bun run net.ts"));
   const out = await waitFor(page, /FETCH-DONE|error:|crashed/);
-  for (const line of expectedFetch(name)) check(`${name}: ${line.split(":")[0]}`, out.includes(line), `expected ${JSON.stringify(line)} in\n${out}`);
+  for (const line of expectedFetch(browserName)) check(`${name}: ${line.split(":")[0]}`, out.includes(line), `expected ${JSON.stringify(line)} in\n${out}`);
 
   // Bun.serve preview through the service worker
   await page.evaluate((src) => globalThis.playground.fs.writeFile("/home/user/serve.ts", src), serveTest);
@@ -213,10 +213,14 @@ try {
   const fixtureBase = `http://127.0.0.1:${fixturePort}`;
   const engines = { chromium: [chromium, { viewport: { width: 1200, height: 900 } }], webkit: [webkit, devices["iPhone 15"]] };
   const wanted = process.argv.slice(2).length ? process.argv.slice(2) : Object.keys(engines);
+  // The default engine (browser) and one wasm engine: they share the networking host (src/net/).
+  const runtimes = (process.env.ENGINES || "browser,quickjs").split(",");
   for (const name of wanted) {
-    const [type, options] = engines[name];
-    console.log(`== ${name}`);
-    await runEngine(name, type, options, app, fixtureBase);
+    for (const engine of runtimes) {
+      const [type, options] = engines[name];
+      console.log(`== ${name} ${engine}`);
+      await runEngine(name, engine, type, options, app, fixtureBase);
+    }
   }
 } catch (err) {
   console.error(err);

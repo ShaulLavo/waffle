@@ -16,7 +16,14 @@ import {
   UNSUPPORTED,
 } from "./protocol";
 import { RingReader } from "./ring";
-import type { SlotImpls } from "./trampoline";
+import { SLOT_NAMES, type SlotImpls } from "./trampoline";
+
+/** What engine-host.js takes as `net` (see engine-host.d.ts). */
+export interface EngineNet {
+  natives: Record<string, (...args: never[]) => unknown>;
+  caps: Record<string, boolean>;
+  onNews(cb: () => void): void;
+}
 
 interface Stream {
   chunks: Uint8Array[];
@@ -107,6 +114,56 @@ export class NetHost {
     };
   }
 
+  /**
+   * The same functions for the browser engine (engine-host.js), at the level the runtime's net.js
+   * calls them (`native.hostRead(handle)` and so on): strings and byte arrays instead of guest
+   * memory, and `onNews` instead of a blocking `poll`.
+   */
+  engineNet(): EngineNet {
+    const text = (result: Uint8Array | string | number) => (result instanceof Uint8Array ? decoder.decode(result) : result);
+    return {
+      natives: {
+        hostPoll: () => UNSUPPORTED,
+        hostFetch: (meta: string, body?: Uint8Array) => this.startFetch(meta, body ? new Uint8Array(body) : null),
+        hostFetchHead: (handle: number) => text(this.headOf(handle)),
+        hostRead: (handle: number, cap = 65536) => this.readBytes(handle, Math.max(1, cap)),
+        hostWrite: (handle: number, bytes: Uint8Array) => this.writeBytes(handle, new Uint8Array(bytes)),
+        hostClose: (handle: number) => this.close(handle),
+        hostListen: (host: string, port: number) => this.startListen(host, port),
+        hostLocalPort: (handle: number) => this.localPort(handle),
+        hostAccept: (listener: number) => this.accept(listener),
+        hostConnect: (host: string, port: number) => this.startConnect(host, port),
+        hostError: (handle: number) => this.errorText(handle),
+        hostPeerAddr: (handle: number) => this.peerText(handle),
+      },
+      caps: Object.fromEntries(SLOT_NAMES.map((name) => [name, name !== "poll"])),
+      onNews: (cb) => {
+        this.onNews = cb;
+        this.watchRing();
+      },
+    };
+  }
+
+  private onNews: (() => void) | null = null;
+
+  /** Something changed: wake a blocking `poll` (localNews) or the browser engine's loop. */
+  private news(): void {
+    this.localNews = true;
+    if (this.onNews) queueMicrotask(this.onNews);
+  }
+
+  /** Calls onNews whenever the helper writes to the ring (Atomics.waitAsync, else a short timer). */
+  private watchRing(): void {
+    const seen = this.ring.generation();
+    const again = () => {
+      if (this.ring.generation() !== seen && this.onNews) this.onNews();
+      this.watchRing();
+    };
+    const waiting = this.ring.waitAsync(seen);
+    if (waiting) waiting.then(again);
+    else setTimeout(again, 4);
+  }
+
   // ---------- slots ----------
 
   private poll(timeoutMs: number): number {
@@ -128,9 +185,13 @@ export class NetHost {
   }
 
   private fetch(metaPtr: number, metaLen: number, bodyPtr: number, bodyLen: number): number {
+    return this.startFetch(decoder.decode(this.bytes(metaPtr, metaLen)), bodyLen > 0 ? this.bytes(bodyPtr, bodyLen) : null);
+  }
+
+  private startFetch(metaText: string, bodyBytes: Uint8Array<ArrayBuffer> | null): number {
     let meta: { method?: string; url?: string; headers?: [string, string][]; redirect?: RequestRedirect };
     try {
-      meta = JSON.parse(decoder.decode(this.bytes(metaPtr, metaLen)));
+      meta = JSON.parse(metaText);
     } catch {
       return this.fail({ name: "TypeError", message: "fetch: malformed request metadata" });
     }
@@ -139,7 +200,7 @@ export class NetHost {
 
     const id = this.nextHandle++;
     const method = (meta.method ?? "GET").toUpperCase();
-    const body = bodyLen > 0 && method !== "GET" && method !== "HEAD" ? this.bytes(bodyPtr, bodyLen) : null;
+    const body = bodyBytes && bodyBytes.length > 0 && method !== "GET" && method !== "HEAD" ? bodyBytes : null;
     this.handles.set(id, { kind: "fetch", head: null, chunks: [], ended: false, error: null });
     this.send(
       { type: "fetch", id, method, url, headers: meta.headers ?? [], body, redirect: meta.redirect ?? "follow" },
@@ -149,34 +210,52 @@ export class NetHost {
   }
 
   private fetchHead(handle: number, ptr: number, cap: number): number {
+    const head = this.headOf(handle);
+    return typeof head === "number" ? head : this.writeSized(head, ptr, cap);
+  }
+
+  private headOf(handle: number): Uint8Array | number {
     this.drain();
     const h = this.handles.get(handle);
     if (h?.kind !== "fetch") return BADF;
-    if (h.head) return this.writeSized(h.head, ptr, cap);
+    if (h.head) return h.head;
     return h.error ? ERROR : AGAIN;
   }
 
   private read(handle: number, ptr: number, cap: number): number {
+    const chunk = this.readBytes(handle, cap);
+    if (typeof chunk === "number") return chunk;
+    new Uint8Array(this.memory!.buffer).set(chunk, ptr >>> 0);
+    return chunk.length;
+  }
+
+  /** Up to `cap` bytes, or 0 at the end, or an error code. */
+  private readBytes(handle: number, cap: number): Uint8Array | number {
     this.drain();
     const h = this.handles.get(handle);
     if (!h || h.kind === "listener") return BADF;
     if (h.kind === "fetch" && !h.head) return h.error ? ERROR : AGAIN;
     if (h.chunks.length > 0) {
-      const n = this.take(h, ptr, cap);
-      if (h.kind === "fetch") this.send({ type: "ack", id: handle, bytes: n });
-      return n;
+      const chunk = this.take(h, cap);
+      if (h.kind === "fetch") this.send({ type: "ack", id: handle, bytes: chunk.length });
+      return chunk;
     }
     if (h.error) return ERROR;
     return h.ended ? 0 : AGAIN;
   }
 
   private write(handle: number, ptr: number, len: number): number {
+    return this.writeBytes(handle, this.bytes(ptr, Math.min(len, MAX_WRITE)));
+  }
+
+  /** Queues `data` (a copy the host owns), at most MAX_WRITE bytes of it. */
+  private writeBytes(handle: number, bytes: Uint8Array<ArrayBuffer>): number {
     const h = this.handles.get(handle);
     if (!h) return BADF;
     if (h.kind !== "conn") return UNSUPPORTED;
-    const n = Math.min(len, MAX_WRITE);
+    const n = Math.min(bytes.length, MAX_WRITE);
     if (n === 0) return 0;
-    const data = this.bytes(ptr, n);
+    const data = n === bytes.length ? bytes : bytes.slice(0, n);
     if (h.pipe === null) {
       this.send({ type: "write", id: handle, data }, [data.buffer]);
       return n;
@@ -187,7 +266,7 @@ export class NetHost {
       return ERROR;
     }
     other.chunks.push(data);
-    this.localNews = true;
+    this.news();
     return n;
   }
 
@@ -201,7 +280,7 @@ export class NetHost {
     if (h.kind === "conn" && h.pipe !== null) {
       const other = this.connection(h.pipe);
       if (other) other.ended = true;
-      this.localNews = true;
+      this.news();
       return OK;
     }
     this.send({ type: "close", id: handle });
@@ -209,7 +288,11 @@ export class NetHost {
   }
 
   private listen(hostPtr: number, hostLen: number, port: number): number {
-    const host = decoder.decode(this.bytes(hostPtr, hostLen)) || "0.0.0.0";
+    return this.startListen(decoder.decode(this.bytes(hostPtr, hostLen)), port);
+  }
+
+  private startListen(hostname: string, port: number): number {
+    const host = hostname || "0.0.0.0";
     const inUse = new Set<number>();
     for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.port);
     if (port === 0) {
@@ -231,7 +314,10 @@ export class NetHost {
    * two handles; anything else is unsupported.
    */
   private connect(hostPtr: number, hostLen: number, port: number): number {
-    const host = decoder.decode(this.bytes(hostPtr, hostLen));
+    return this.startConnect(decoder.decode(this.bytes(hostPtr, hostLen)), port);
+  }
+
+  private startConnect(host: string, port: number): number {
     const listener = Array.from(this.handles.entries()).find(([, h]) => h.kind === "listener" && h.port === port);
     if (!LOOPBACK.has(host) || !listener) {
       this.lastError = { name: "Error", message: `connect ${host}:${port}: TCP connections are not available in the browser`, code: "ENOTSUP" };
@@ -245,7 +331,7 @@ export class NetHost {
     this.handles.set(client, { kind: "conn", port: clientPort, peer: { address: "127.0.0.1", port, family: "IPv4" }, pipe: server, ...stream() });
     this.unaccepted.set(server, { kind: "conn", port, peer: { address: "127.0.0.1", port: clientPort, family: "IPv4" }, pipe: client, ...stream() });
     state.pending.push(server);
-    this.localNews = true;
+    this.news();
     return client;
   }
 
@@ -274,15 +360,25 @@ export class NetHost {
   }
 
   private error(handle: number, ptr: number, cap: number): number {
+    const text = this.errorText(handle);
+    return typeof text === "number" ? text : this.writeSized(encoder.encode(text), ptr, cap);
+  }
+
+  private errorText(handle: number): string | number {
     const err = handle === 0 ? this.lastError : (this.handles.get(handle)?.error ?? null);
     if (handle !== 0 && !this.handles.has(handle)) return BADF;
-    return this.writeSized(encoder.encode(JSON.stringify(err ?? { name: "Error", message: "no error" })), ptr, cap);
+    return JSON.stringify(err ?? { name: "Error", message: "no error" });
   }
 
   private peerAddr(handle: number, ptr: number, cap: number): number {
+    const text = this.peerText(handle);
+    return typeof text === "number" ? text : this.writeSized(encoder.encode(text), ptr, cap);
+  }
+
+  private peerText(handle: number): string | number {
     const h = this.handles.get(handle);
     if (h?.kind !== "conn") return BADF;
-    return this.writeSized(encoder.encode(JSON.stringify(h.peer)), ptr, cap);
+    return JSON.stringify(h.peer);
   }
 
   // ---------- events from the helper ----------
@@ -335,19 +431,24 @@ export class NetHost {
     return data.length;
   }
 
-  /** Moves up to `cap` buffered bytes into guest memory. */
-  private take(stream: Stream, ptr: number, cap: number): number {
-    const memory = new Uint8Array(this.memory!.buffer);
+  /** Takes up to `cap` buffered bytes. */
+  private take(stream: Stream, cap: number): Uint8Array {
+    let size = 0;
+    for (const chunk of stream.chunks) {
+      size += chunk.length;
+      if (size >= cap) break;
+    }
+    const out = new Uint8Array(Math.min(size, cap));
     let n = 0;
-    while (n < cap && stream.chunks.length > 0) {
+    while (n < out.length) {
       const chunk = stream.chunks[0]!;
-      const count = Math.min(cap - n, chunk.length);
-      memory.set(chunk.subarray(0, count), (ptr >>> 0) + n);
+      const count = Math.min(out.length - n, chunk.length);
+      out.set(chunk.subarray(0, count), n);
       n += count;
       if (count === chunk.length) stream.chunks.shift();
       else stream.chunks[0] = chunk.subarray(count);
     }
-    return n;
+    return out;
   }
 
   private fail(err: NetError): number {

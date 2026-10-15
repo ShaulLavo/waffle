@@ -51,9 +51,11 @@ function sleep(ms: number): void {
   }
 }
 
+const sendNet = (req: NetRequest, transfer: Transferable[] = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer);
+
 /** Gives bun.wasm fetch and Bun.serve through the bun_wasm host slots (docs/host-abi.md). */
 function installNet(instance: WebAssembly.Instance, sab: SharedArrayBuffer): void {
-  const host = new NetHost(sab, (req, transfer = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer));
+  const host = new NetHost(sab, sendNet);
   host.attach(instance.exports.memory as WebAssembly.Memory);
   installHostSlots(instance, host.slots());
 }
@@ -108,10 +110,14 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     };
     ctx.addEventListener("error", onError);
     ctx.addEventListener("unhandledrejection", onRejection);
+    // With a ring (cross-origin isolated page): the same NetHost as the wasm engines, so fetch goes
+    // through the page's helper and Bun.serve gets /__preview/<port>/ connections.
+    const net = req.net ? new NetHost(req.net, sendNet).engineNet() : undefined;
     const code = await startEngineHost({
       instance,
       moduleUrls: "blob",
       fetch: ctx.fetch.bind(ctx),
+      net,
       onExit: (exitCode) => finish({ code: exitCode }),
     });
     finish({ code });

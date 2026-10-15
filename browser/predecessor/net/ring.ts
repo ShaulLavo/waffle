@@ -122,6 +122,14 @@ export class RingReader extends RingBase {
     return Atomics.wait(this.cells, GEN, seen, timeoutMs < 0 ? Infinity : timeoutMs);
   }
 
+  /** Resolves once the generation differs from `seen`; null where Atomics.waitAsync is missing. */
+  waitAsync(seen: number): Promise<unknown> | null {
+    const waitAsync = (Atomics as unknown as { waitAsync?: WaitAsync }).waitAsync;
+    if (!waitAsync) return null;
+    const result = waitAsync(this.cells, GEN, seen, Infinity);
+    return result.async ? result.value : Promise.resolve(result.value);
+  }
+
   /** Takes every complete record out of the ring. Payloads are copies the caller owns. */
   drain(): RingRecord[] {
     const records: RingRecord[] = [];
