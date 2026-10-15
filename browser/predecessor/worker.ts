@@ -52,6 +52,7 @@ function moduleStore(cacheName: string) {
 }
 
 export type WorkerMessage =
+  | { type: "phase"; name: string; duration: number }
   | { type: "stdout"; data: Uint8Array }
   | { type: "stderr"; data: Uint8Array }
   | { type: "net"; req: NetRequest }
@@ -99,6 +100,7 @@ function describeError(err: unknown): string {
 }
 
 ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
+  ctx.postMessage({ type: "phase", name: "worker-start", duration: 0 } satisfies WorkerMessage);
   const req = event.data;
   const fs = new MemFS(req.root);
   const post = (type: "stdout" | "stderr", data: Uint8Array) => ctx.postMessage({ type, data }, [data.buffer]);
@@ -127,7 +129,9 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     ctx.postMessage({ type: "error", message, root: fs.root, sleep: sleepMode } satisfies WorkerMessage);
   };
   try {
+    const instantiating = perfNow();
     const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    ctx.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating } satisfies WorkerMessage);
     const slots = req.slots ?? "imports";
     if (req.net && req.engine !== "browser" && slots !== "off") installNet(instance, req.net, wasi, slots);
     const exited = wasi.launch(instance);
