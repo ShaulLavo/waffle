@@ -127,3 +127,47 @@ test("request serialization sets host, length and connection: close", () => {
   );
   expect(decode(bytes)).toBe("POST /api?x=1 HTTP/1.1\r\nhost: localhost:3000\r\nContent-Type: text/plain\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi");
 });
+
+test("raw preview connections preserve upgrade and duplex frame bytes", async () => {
+  const { NetHelper } = await import("../src/net/helper");
+  const sab = createRing();
+  const reader = new RingReader(sab);
+  const helper = new NetHelper(sab);
+  const received: Uint8Array[] = [];
+  let ended = false;
+  try {
+    helper.handle({ type: "listen", id: 1, port: 3000, host: "localhost" });
+    const connection = helper.connect(3000, {
+      data: (bytes) => received.push(bytes),
+      end: () => { ended = true; },
+      error: (message) => { throw new Error(message); },
+    });
+    expect(connection).not.toBeNull();
+    connection!.write(encode("GET /hmr HTTP/1.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"));
+    await Bun.sleep(1);
+    const announced = reader.drain();
+    expect(announced[0]!.kind).toBe(5);
+    const conn = JSON.parse(decode(announced[0]!.payload)).conn;
+    expect(decode(announced[1]!.payload)).toContain("Upgrade: websocket");
+    helper.handle({ type: "write", id: conn, data: encode("HTTP/1.1 101 Switching Protocols\r\n\r\n") });
+    helper.handle({ type: "write", id: conn, data: new Uint8Array([0x82, 3, 0, 254, 255]) });
+    expect(ended).toBe(false);
+    expect(received[1]).toEqual(new Uint8Array([0x82, 3, 0, 254, 255]));
+    connection!.write(new Uint8Array([0x89, 0x80, 1, 2, 3, 4]));
+    await Bun.sleep(1);
+    expect(reader.drain()[0]!.payload).toEqual(new Uint8Array([0x89, 0x80, 1, 2, 3, 4]));
+    const big = new Uint8Array(130000).fill(42);
+    connection!.write(big);
+    connection!.write(new Uint8Array([7, 8, 9]));
+    big.fill(0);
+    await Bun.sleep(1);
+    const queued = reader.drain();
+    expect(queued.map((record) => record.payload.length)).toEqual([65536, 64464, 3]);
+    expect(queued[0]!.payload[0]).toBe(42);
+    expect(queued[1]!.payload.at(-1)).toBe(42);
+    expect(queued[2]!.payload).toEqual(new Uint8Array([7, 8, 9]));
+    helper.handle({ type: "close", id: conn });
+    expect(ended).toBe(true);
+    expect(helper.connect(9999, { data() {}, end() {}, error() {} })).toBeNull();
+  } finally { helper.dispose(); }
+});

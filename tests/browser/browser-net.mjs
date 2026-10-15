@@ -105,15 +105,24 @@ console.log("FETCH-DONE");
 const serveTest = `
 const server = Bun.serve({
   port: 3000,
-  async fetch(req) {
+  async fetch(req, srv) {
+    if (new URL(req.url).pathname === "/socket" && srv.upgrade(req)) return;
     const url = new URL(req.url);
     if (url.pathname === "/api") return Response.json({ hello: "preview", method: req.method, body: await req.text() });
     if (url.pathname === "/app.js") return new Response("document.title = 'app.js loaded';", { headers: { "content-type": "text/javascript" } });
     return new Response("<!doctype html><h1>preview ok " + url.pathname + "</h1><script src='/app.js'></script>", { headers: { "content-type": "text/html" } });
   },
+  websocket: { message(ws, data) { ws.send(data); } },
 });
 console.log("listening on", server.url.href);
 console.log("self:", await (await fetch(server.url.href + "api", { method: "POST", body: "me" })).text());
+await new Promise((resolve, reject) => {
+  const ws = new WebSocket("ws://localhost:3000/socket");
+  ws.onerror = reject;
+  ws.onopen = () => ws.send("browser websocket");
+  ws.onmessage = ({ data }) => { console.log("websocket:", data); ws.close(); };
+  ws.onclose = resolve;
+});
 `;
 
 const expectedFetch = (engine) => [
@@ -183,6 +192,8 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   const served = await waitFor(page, /\[preview\][^\n]*__preview\/3000\/|error:|crashed/);
   check(`${name}: preview link printed`, /\[preview\] http:\/\/[^\s]+\/__preview\/3000\//.test(served), served.slice(-500));
   const self = await waitFor(page, /self: .*|error:/);
+  const websocket = await waitFor(page, /websocket: browser websocket|error:|crashed/);
+  check(`${name}: guest WebSocket over virtual TCP`, websocket.includes("websocket: browser websocket"), websocket.slice(-500));
   check(`${name}: guest fetches its own server`, self.includes('self: {"hello":"preview","method":"POST","body":"me"}'), self.slice(-500));
 
   const preview = await context.newPage();

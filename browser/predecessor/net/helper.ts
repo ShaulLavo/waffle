@@ -20,9 +20,16 @@ interface FetchJob {
   wake: (() => void) | null;
 }
 
-interface Connection {
-  parser: ResponseParser;
-  sink: ResponseSink;
+/** Raw duplex stream for upgraded preview connections, including WebSockets. */
+export interface PreviewConnection {
+  write(bytes: Uint8Array): void;
+  close(): void;
+}
+
+export interface ConnectionSink {
+  data(bytes: Uint8Array): void;
+  end(): void;
+  error(message: string): void;
 }
 
 export interface NetHelperHooks {
@@ -39,7 +46,7 @@ export class NetHelper {
   private ring: RingWriter;
   private fetches = new Map<number, FetchJob>();
   private listeners = new Map<number, number>(); // listener handle -> port
-  private connections = new Map<number, Connection>();
+  private connections = new Map<number, ConnectionSink>();
   private nextConn = CONN_BASE;
   private disposed = false;
 
@@ -67,7 +74,7 @@ export class NetHelper {
         this.hooks.listening?.(req.port, req.host);
         return;
       case "write":
-        this.connections.get(req.id)?.parser.push(req.data);
+        this.connections.get(req.id)?.data(req.data);
         return;
     }
   }
@@ -78,7 +85,7 @@ export class NetHelper {
     this.disposed = true;
     for (const job of this.fetches.values()) job.controller.abort();
     this.fetches.clear();
-    for (const conn of this.connections.values()) conn.sink.error("the server stopped");
+    for (const conn of this.connections.values()) conn.error("the server stopped");
     this.connections.clear();
     for (const port of this.listeners.values()) this.hooks.stopped?.(port);
     this.listeners.clear();
@@ -95,27 +102,43 @@ export class NetHelper {
    * into `sink`. Returns false when nothing listens there.
    */
   request(port: number, req: PreviewRequest, sink: PreviewSink): boolean {
-    const listener = this.listenerFor(port);
-    if (listener === undefined || this.disposed) return false;
-    const conn = this.nextConn++;
-    // Once the response is complete, tell the guest the client is done (EOF) so it closes its side.
+    let connection: PreviewConnection | null = null;
     const finish: PreviewSink = {
       head: (head: ResponseHead) => sink.head(head),
       data: (chunk) => sink.data(chunk),
-      end: () => {
-        this.connections.delete(conn);
-        sink.end();
-        void this.ring.write(conn, Kind.End);
+      end: () => { connection?.close(); sink.end(); },
+      error: (message) => { connection?.close(); sink.error(message); },
+    };
+    const parser = new ResponseParser(finish, req.method === "HEAD");
+    connection = this.connect(port, {
+      data: (bytes) => parser.push(bytes),
+      end: () => parser.end(),
+      error: (message) => finish.error(message),
+    });
+    if (!connection) return false;
+    connection.write(serializeRequest(req, `localhost:${port}`));
+    return true;
+  }
+
+  /** Connects a host-side byte stream to the guest without HTTP response framing. */
+  connect(port: number, sink: ConnectionSink): PreviewConnection | null {
+    const listener = this.listenerFor(port);
+    if (listener === undefined || this.disposed) return null;
+    const conn = this.nextConn++;
+    this.connections.set(conn, sink);
+    const announce: NewConn = { conn, peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" } };
+    let sending = this.ring.write(listener, Kind.Conn, json(announce));
+    return {
+      write: (bytes) => {
+        if (!this.connections.has(conn)) return;
+        const owned = bytes.slice();
+        sending = sending.then(() => this.writeChunks(conn, owned));
       },
-      error: (message) => {
-        this.connections.delete(conn);
-        sink.error(message);
+      close: () => {
+        if (!this.connections.delete(conn)) return;
+        sending = sending.then(() => this.ring.write(conn, Kind.End));
       },
     };
-    this.connections.set(conn, { parser: new ResponseParser(finish, req.method === "HEAD"), sink: finish });
-    const announce: NewConn = { conn, peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" } };
-    void this.deliver(listener, conn, json(announce), serializeRequest(req, `localhost:${port}`));
-    return true;
   }
 
   // ---------- fetch ----------
@@ -255,13 +278,8 @@ export class NetHelper {
     const conn = this.connections.get(id);
     if (conn) {
       this.connections.delete(id);
-      conn.parser.end();
+      conn.end();
     }
-  }
-
-  private async deliver(listener: number, conn: number, announce: Uint8Array, bytes: Uint8Array): Promise<void> {
-    await this.ring.write(listener, Kind.Conn, announce);
-    await this.writeChunks(conn, bytes);
   }
 
   /** Data records for `bytes`, split to fit the ring's record size. */
