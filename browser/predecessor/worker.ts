@@ -87,6 +87,20 @@ function sleep(ms: number): void {
   }
 }
 
+// The engines' default stack budgets are measured on V8, whose first wasm tier uses frames close to
+// its optimized ones. JavaScriptCore starts in an interpreter with frames up to three times larger,
+// in 512 KiB worker stacks on Apple platforms, so other engines get the budgets measured there
+// (docs/stack-limits.md). V8 is the engine whose stack traces have "    at " frames.
+const smallStackKib: Partial<Record<Engine, string>> | null = /\n\s+at /.test(new Error().stack ?? "")
+  ? null
+  : { quickjs: "32", jsc: "192" };
+
+function guestEnv(req: RunRequest): Record<string, string> {
+  const kib = smallStackKib?.[req.engine];
+  if (!kib || "BUN_WASM_STACK_KIB" in req.env) return req.env;
+  return { ...req.env, BUN_WASM_STACK_KIB: kib };
+}
+
 const sendNet = (req: NetRequest, transfer: Transferable[] = []) => ctx.postMessage({ type: "net", req } satisfies WorkerMessage, transfer);
 
 /** `Name: message` plus the first stack frames (wasm function names when the build keeps them). */
@@ -133,7 +147,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   const wasi = new Wasi({
     hostCallFd: HOST_CALL_FD,
     args: req.args,
-    env: req.env,
+    env: guestEnv(req),
     fs,
     preopens: { "/": "/" },
     stdio: child ? { 0: wasiPipe(child.stdin, "read"), 1: wasiPipe(child.stdout, "write"), 2: wasiPipe(child.stderr, "write") } : undefined,
