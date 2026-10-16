@@ -225,7 +225,12 @@ export class FilesystemService {
     // Revocation precedes the admission-count observation. Looking only at held locks misses
     // an entrant between admission and acquisition, which may still be touching a pin or page.
     if (ownRevocation !== 2 && Atomics.load(new Int32Array(session.connection.sections), 0)) {
-      session.quiescing ??= waitForFilesystemQuiescence(session.connection).then(() => this.sweep());
+      session.quiescing ??= waitForFilesystemQuiescence(session.connection).then(() => {
+        // A later rejected entrant can briefly raise the count again. Let close() re-arm
+        // its waiter if the next sweep observes that admission before it aborts.
+        session.quiescing = undefined;
+        this.sweep();
+      });
       return;
     }
     if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, new Int32Array(session.connection.epoch));
