@@ -128,9 +128,9 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     if (snapshot && child.sendFilesystem(snapshot)) childFiles?.commit(snapshot);
   };
   const post = (type: "stdout" | "stderr", data: Uint8Array) => {
-    if (!child) { ctx.postMessage({ type, data }, [data.buffer]); return; }
+    if (!child) { ctx.postMessage({ type, data }, [data.buffer]); return true; }
     publishFilesystem();
-    child[type].writeAll(data);
+    return wasiPipe(child[type], "write").write([data]) === data.length;
   };
   const subprocess = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? new SubprocessHost({
     budget: req.child?.budget,

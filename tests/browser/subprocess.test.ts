@@ -347,3 +347,30 @@ test("WASI descriptors apply queued filesystem changes after input", () => {
     expect(decoder.decode(fs.readFile("/entry.ts"))).toBe("after");
   } finally { host.dispose(); }
 });
+
+for (const bridge of ["engine", "slots"]) {
+  test(`closed child stdin preserves write errno metadata on ${bridge}`, () => {
+    const state = budgetHost(createProcessBudget());
+    try {
+      const id = state.host.spawn(childCommand);
+      const input = state.host.pipe(id, 0);
+      childTransport(state.launched[0]).stdin.close();
+      const memory = new WebAssembly.Memory({ initial: 1 });
+      state.host.attach(memory);
+      const natives = state.host.engineNet({ natives: { hostError: () => -3 }, caps: {}, onNews() {} }).natives;
+      const slots = state.host.slots({ error: () => -3 });
+      if (bridge === "engine") {
+        expect(natives.hostWrite(input, encoder.encode("race"))).toBe(-1);
+        expect(JSON.parse(natives.hostError(input))).toMatchObject({ code: "EPIPE", errno: -32, syscall: "write" });
+      } else {
+        new Uint8Array(memory.buffer, 0, 4).set(encoder.encode("race"));
+        expect(slots.write?.(input, 0, 4)).toBe(-1);
+        const size = slots.error?.(input, 64, 1024);
+        expect(typeof size).toBe("number");
+        expect(size).toBeGreaterThan(0);
+        const error = JSON.parse(decoder.decode(new Uint8Array(memory.buffer, 64, size)));
+        expect(error).toMatchObject({ code: "EPIPE", errno: -32, syscall: "write" });
+      }
+    } finally { state.host.dispose(); }
+  });
+}

@@ -3,8 +3,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { playwright, session, ready, writeFile, run } from "./playground.mjs";
 const source = execFileSync("bun", ["build", fileURLToPath(new URL("../src/subprocess.js", import.meta.url)), "--target=browser"], { encoding: "utf8" });
+const closedOutput = readFileSync(new URL("../../tests/fixtures/pipe-closed-child/index.ts", import.meta.url), "utf8");
+const orderedOutput = readFileSync(new URL("../../tests/fixtures/pipe-write-order/index.ts", import.meta.url), "utf8");
+const orderedChild = readFileSync(new URL("../../tests/fixtures/pipe-write-order/child.ts", import.meta.url), "utf8");
+const stdinRace = readFileSync(new URL("../../tests/fixtures/pipe-stdin-race/index.ts", import.meta.url), "utf8");
 const apiProgram = `
 import { spawnSync, execSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -90,6 +95,22 @@ try {
       assert.equal(api.code, 0, api.output);
       for (const line of apiExpected) assert.ok(api.output.includes(line), `missing ${line} in ${api.output}`);
       console.log(`ok ${browserName} ${engine}: Bun/Node subprocess APIs, nested workers, large stdin, cwd, files, timeout`);
+      await writeFile(page, "/home/user/closed-output.ts", closedOutput);
+      const closed = await run(page, "bun run closed-output.ts");
+      assert.equal(closed.code, 0, closed.output);
+      for (const stream of ["stdout", "stderr"]) {
+        assert.ok(closed.output.includes(`closed child ${stream} false 1`), closed.output);
+        assert.ok(closed.output.includes(`closed child ${stream} true 42`), closed.output);
+        assert.ok(closed.output.includes(`closed inherited child ${stream} 42`), closed.output);
+      }
+      console.log(`ok ${browserName} ${engine}: closed child stdout/stderr reports EPIPE and exits`);
+      await writeFile(page, "/child.ts", orderedChild);
+      for (const [name, source] of [["pipe-write-order.ts", orderedOutput], ["pipe-stdin-race.ts", stdinRace]]) {
+        await writeFile(page, `/home/user/${name}`, source);
+        const checked = await run(page, `bun run ${name}`);
+        assert.equal(checked.code, 0, checked.output);
+        console.log(`ok ${browserName} ${engine}: ${name}`);
+      }
     }
     await browser.close();
   }
