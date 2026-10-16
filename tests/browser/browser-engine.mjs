@@ -5,6 +5,7 @@
 // Starts web/serve.ts and a CORS fixture server on another origin (no public internet); kills both on exit.
 import { checkPhoneUI } from "./phone-ui.mjs";
 import { firstVisit } from "./first-visit.mjs";
+import { readFile } from "node:fs/promises";
 import { playwright, ready, run, session, terminalText, writeFile } from "./playground.mjs";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -134,6 +135,18 @@ rl.on("close", () => console.log("readline closed:", JSON.stringify(lines)));
 `,
   );
   await expectRun(page, `${name}: readline sees end of input`, "bun run ask.ts", 0, ["readline closed: []"]);
+
+  const sinkFixture = new URL("../../tests/fixtures/array-buffer-sink/", import.meta.url);
+  await writeFile(page, `${HOME}/sink.js`, await readFile(new URL("index.js", sinkFixture), "utf8"));
+  const sinkOutput = (await readFile(new URL("expected.txt", sinkFixture), "utf8")).trim().split("\n");
+  await expectRun(page, `${name}: Bun.ArrayBufferSink ownership and lifecycle`, "bun run sink.js", 0, sinkOutput);
+
+  for (const fixture of ["array-buffer-sink-strings", "array-buffer-sink-view-slots", "array-buffer-sink-detached"]) {
+    const folder = new URL(`../../tests/fixtures/${fixture}/`, import.meta.url);
+    await writeFile(page, `${HOME}/${fixture}.js`, await readFile(new URL("index.js", folder), "utf8"));
+    const output = (await readFile(new URL("expected.txt", folder), "utf8")).trim().split("\n");
+    await expectRun(page, `${name}: ${fixture}`, `bun run ${fixture}.js`, 0, output);
+  }
 
   await writeFile(page, `${HOME}/shutdown.test.ts`, `import { test, afterAll } from "bun:test";
 test("live interval", () => { setInterval(() => {}, 1000); });
