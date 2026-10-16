@@ -3,13 +3,13 @@
 // program to engine-host.js, which runs it in this worker's own JS engine.
 
 import { startEngineHost } from "./engine-host.js";
-import { type DirNode, MemFS, adoptInodes, compactFs } from "./fs";
+import { type DirNode, MemFS, compactFs } from "./fs";
 import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
 import { HOST_CALL_FD, installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
 import { Wasi, WasiExit } from "@bun-wasm/runtime/core";
 import { SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "./subprocess.js";
-import { filesystemChanges, mergeFilesystemChanges } from "./subprocess-fs";
+import { filesystemSync } from "./subprocess-fs";
 
 export type Engine = "quickjs" | "jsc" | "browser";
 
@@ -117,9 +117,20 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   const fs = new MemFS(req.root);
   const initialRoot = req.child ? structuredClone(req.root) : null;
   const child = req.child ? childTransport(req.child) : null;
+  const childFiles = initialRoot ? filesystemSync(fs, initialRoot) : null;
+  const syncFilesystem = () => {
+    const snapshot = child?.receiveFilesystem();
+    if (snapshot) childFiles?.merge(snapshot);
+  };
+  const publishFilesystem = () => {
+    if (!child) return;
+    const snapshot = childFiles?.capture();
+    if (snapshot && child.sendFilesystem(snapshot)) childFiles?.commit(snapshot);
+  };
   const post = (type: "stdout" | "stderr", data: Uint8Array) => {
-    if (child) child[type].writeAll(data);
-    else ctx.postMessage({ type, data }, [data.buffer]);
+    if (!child) { ctx.postMessage({ type, data }, [data.buffer]); return; }
+    publishFilesystem();
+    child[type].writeAll(data);
   };
   const subprocess = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? new SubprocessHost({
     budget: req.child?.budget,
@@ -127,10 +138,8 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     token: req.child?.token,
     stdin: req.child?.pipes[0],
     output: (fd, data) => post(fd === 2 ? "stderr" : "stdout", data),
-    sync: (snapshot) => {
-      mergeFilesystemChanges(fs, snapshot);
-      adoptInodes(fs.root);
-    },
+    filesystem: () => filesystemSync(fs),
+    syncFilesystem,
     launch: (meta, transport) => {
       const cwd = meta.cwd || req.env.PWD || "/";
       if (fs.lookup(cwd)?.kind !== "dir") throw Object.assign(new Error(`spawn: cwd does not exist: ${cwd}`), { code: "ENOENT" });
@@ -144,13 +153,18 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
       return { terminate: () => { Atomics.store(control, 3, 1); } };
     },
   }) : null;
+  const stdio = child ? {
+    0: wasiPipe(child.stdin, "read", { afterRead: syncFilesystem }),
+    1: wasiPipe(child.stdout, "write", { beforeWrite: publishFilesystem }),
+    2: wasiPipe(child.stderr, "write", { beforeWrite: publishFilesystem }),
+  } : undefined;
   const wasi = new Wasi({
     hostCallFd: HOST_CALL_FD,
     args: req.args,
     env: guestEnv(req),
     fs,
     preopens: { "/": "/" },
-    stdio: child ? { 0: wasiPipe(child.stdin, "read"), 1: wasiPipe(child.stdout, "write"), 2: wasiPipe(child.stderr, "write") } : undefined,
+    stdio,
     stdout: (data) => post("stdout", data),
     stderr: (data) => post("stderr", data),
     sleep,
@@ -165,7 +179,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     compactFs(fs.root);
     if (child && initialRoot) {
       if ("error" in result) child.stderr.writeAll(new TextEncoder().encode(`${describeError(result.error)}\n`));
-      child.finish("code" in result ? result.code : 1, filesystemChanges(initialRoot, fs.root));
+      child.finish("code" in result ? result.code : 1, childFiles?.capture());
       wasi.descriptors.dispose();
       return;
     }

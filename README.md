@@ -58,3 +58,8 @@ installing playground dependencies.
 
 Run `bun install`, `bun test`, and `bun run check` in this directory. The web/sandbox builds
 consume the public entry, so their split output also exercises the package boundary.
+
+The repository's web and sandbox applications select hoisted installs locally.
+Native Bun 1.4.2 rejects `onResolve` paths containing `..`, including its own
+isolated `file:../runtime` cache directory names. Hoisting keeps those paths out
+of the build-plugin result while preserving the consumer's package exports.

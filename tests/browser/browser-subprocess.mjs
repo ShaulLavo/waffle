@@ -48,7 +48,7 @@ try {
         const module = await WebAssembly.compile(bytes);
         let snapshot;
         const host = new SubprocessHost({
-          sync: (value) => { snapshot = value; },
+          filesystem: () => ({ capture: () => "", commit() {}, merge: (value) => { snapshot = value; } }),
           output: () => {},
           launch(meta, transport, onError) {
             const worker = new Worker("/__bunwasm/worker.js", { type: "module" });

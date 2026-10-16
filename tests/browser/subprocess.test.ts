@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { MemFS } from "../src/fs";
-import { SharedPipe, SubprocessHost, childTransport, createProcessBudget, type ChildTransport } from "../src/subprocess.js";
-import { filesystemChanges, mergeFilesystemChanges } from "../src/subprocess-fs";
+import { SharedPipe, SubprocessHost, childTransport, createProcessBudget, wasiPipe, type ChildTransport } from "../src/subprocess.js";
+import { filesystemChanges, filesystemSync, mergeFilesystemChanges } from "../src/subprocess-fs";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -116,6 +116,146 @@ test("late completion cannot release a reused child slot or its descendants", ()
   }
 });
 
+test("host stdin reads wait without blocking and preserve EOF on both bridges", () => {
+  const budget = createProcessBudget();
+  const pipe = new SharedPipe(undefined, budget);
+  const host = new SubprocessHost({
+    budget, stdin: pipe.buffer, output() {},
+    launch() { throw new Error("this test does not spawn"); },
+  });
+  try {
+    const native = host.engineNet().natives;
+    expect(native.hostRead(0, 4)).toBe(-2);
+    pipe.write(encoder.encode("ping"));
+    expect(native.hostRead(0, 4)).toEqual(encoder.encode("ping"));
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    host.attach(memory);
+    const slots = host.slots();
+    expect(slots.read?.(0, 32, 4)).toBe(-2);
+    pipe.write(encoder.encode("pong"));
+    expect(slots.read?.(0, 32, 4)).toBe(4);
+    expect(new Uint8Array(memory.buffer, 32, 4)).toEqual(encoder.encode("pong"));
+    pipe.close();
+    expect(native.hostRead(0, 4)).toBe(0);
+    expect(slots.read?.(0, 32, 4)).toBe(0);
+  } finally { pipe.close(); host.dispose(); }
+});
+
+test("stdin wakes host-engine waiters without spawning another child", async () => {
+  const budget = createProcessBudget();
+  const pipe = new SharedPipe(undefined, budget);
+  const host = new SubprocessHost({
+    budget, stdin: pipe.buffer, output() {},
+    launch() { throw new Error("this test does not spawn"); },
+  });
+  try {
+    const net = host.engineNet();
+    expect(net.natives.hostRead(0, 4)).toBe(-2);
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error("stdin waiter was not woken")), 250);
+      net.onNews(() => { clearTimeout(deadline); resolve(); });
+      pipe.write(encoder.encode("ping"));
+    });
+    expect(net.natives.hostRead(0, 4)).toEqual(encoder.encode("ping"));
+  } finally { pipe.close(); host.dispose(); }
+});
+
+test("live child filesystem changes precede stdin and stdout without waiting for exit", () => {
+  const parent = new MemFS();
+  parent.writeFile("/seed", "before");
+  const launched: { transport: ChildTransport; fs: MemFS }[] = [];
+  const host = new SubprocessHost({
+    filesystem: () => filesystemSync(parent), output() {},
+    launch(_meta, transport) {
+      launched.push({ transport, fs: new MemFS(structuredClone(parent.root)) });
+      return { terminate() {} };
+    },
+  });
+  try {
+    const id = host.spawn(childCommand);
+    const info = launched[0];
+    const child = childTransport(info.transport);
+    const files = filesystemSync(info.fs);
+    parent.writeFile("/entry.ts", "export default 42");
+    host.write(host.pipe(id, 0), encoder.encode("build"));
+    parent.writeFile("/next.ts", "next");
+    expect(host.write(host.pipe(id, 0), encoder.encode("queued"))).toBe(-2);
+    expect(child.stdin.read()).toEqual(encoder.encode("build"));
+    const incoming = child.receiveFilesystem();
+    if (!incoming) throw new Error("parent changes were not published");
+    files.merge(incoming);
+    expect(decoder.decode(info.fs.readFile("/entry.ts"))).toBe("export default 42");
+    expect(host.write(host.pipe(id, 0), encoder.encode("queued"))).toBe(6);
+    child.stdin.read();
+    const queued = child.receiveFilesystem();
+    if (!queued) throw new Error("queued changes were not published");
+    files.merge(queued);
+    expect(decoder.decode(info.fs.readFile("/next.ts"))).toBe("next");
+    info.fs.writeFile("/out.js", "answer=42");
+    const outgoing = files.capture();
+    expect(child.sendFilesystem(outgoing)).toBe(true);
+    files.commit(outgoing);
+    child.stdout.write(encoder.encode("built"));
+    expect(host.read(host.pipe(id, 1))).toEqual(encoder.encode("built"));
+    expect(decoder.decode(parent.readFile("/out.js"))).toBe("answer=42");
+    expect(host.wait(id)).toBe(-2);
+    expect(files.capture()).toBe("");
+    parent.writeFile("/entry.ts", "export default 43");
+    parent.remove("/seed");
+    host.write(host.pipe(id, 0), encoder.encode("rebuild"));
+    child.stdin.read();
+    const updated = child.receiveFilesystem();
+    if (!updated) throw new Error("parent edits were not published");
+    files.merge(updated);
+    expect(decoder.decode(info.fs.readFile("/entry.ts"))).toBe("export default 43");
+    expect(info.fs.lookup("/seed")).toBeUndefined();
+    expect(files.capture()).toBe("");
+    child.finish(0, files.capture());
+    expect(host.wait(id)).toBe(0);
+  } finally { host.dispose(); }
+});
+
+test("idle host pumps publish edits and apply them without stdin", () => {
+  const parent = new MemFS();
+  parent.writeFile("/entry.ts", "before");
+  let childHost: SubprocessHost | undefined;
+  let childFS: MemFS | undefined;
+  const host = new SubprocessHost({
+    filesystem: () => filesystemSync(parent), output() {},
+    launch(_meta, transport) {
+      childFS = new MemFS(structuredClone(parent.root));
+      const files = filesystemSync(childFS);
+      const child = childTransport(transport);
+      childHost = new SubprocessHost({
+        budget: transport.budget, slot: transport.slot, token: transport.token,
+        stdin: transport.pipes[0], output() {},
+        syncFilesystem() {
+          const snapshot = child.receiveFilesystem();
+          if (snapshot) files.merge(snapshot);
+        },
+        launch() { throw new Error("this child does not spawn"); },
+      });
+      return { terminate() {} };
+    },
+  });
+  try {
+    host.spawn(childCommand);
+    parent.writeFile("/entry.ts", "after");
+    host.poll();
+    childHost?.poll();
+    expect(decoder.decode(childFS?.readFile("/entry.ts"))).toBe("after");
+    parent.writeFile("/entry.ts", "newest");
+    host.poll();
+    parent.writeFile("/next.ts", "queued");
+    host.poll();
+    childHost?.poll();
+    host.poll();
+    childHost?.poll();
+    expect(decoder.decode(childFS?.readFile("/entry.ts"))).toBe("newest");
+    expect(decoder.decode(childFS?.readFile("/next.ts"))).toBe("queued");
+  } finally { childHost?.dispose(); host.dispose(); }
+});
+
 for (const replacement of [false, true]) {
   test(`child ${replacement ? "replacement" : "removal"} releases lookup-only handles and preserves open descriptions`, () => {
     const parent = new MemFS();
@@ -156,4 +296,54 @@ test('merged directory removal does not permit creation through a retained desce
   if (typeof path === 'number') throw new Error('Expected a resolved capability');
   expect(parent.create(path, 'file')).toEqual({ error: 44 });
   parent.release(directory);
+});
+
+test("WASI descriptors publish live filesystem changes before output", () => {
+  const parent = new MemFS();
+  let transport: ChildTransport | undefined;
+  const host = new SubprocessHost({
+    filesystem: () => filesystemSync(parent), output() {},
+    launch(_meta, value) { transport = value; return { terminate() {} }; },
+  });
+  try {
+    const id = host.spawn(childCommand);
+    if (!transport) throw new Error("child was not launched");
+    const child = childTransport(transport);
+    const fs = new MemFS(structuredClone(parent.root));
+    const files = filesystemSync(fs);
+    const stdout = wasiPipe(child.stdout, "write", { beforeWrite() {
+      const snapshot = files.capture();
+      if (snapshot && child.sendFilesystem(snapshot)) files.commit(snapshot);
+    } });
+    fs.writeFile("/out.js", "answer=42");
+    expect(stdout.write([encoder.encode("built")])).toBe(5);
+    expect(host.read(host.pipe(id, 1))).toEqual(encoder.encode("built"));
+    expect(decoder.decode(parent.readFile("/out.js"))).toBe("answer=42");
+  } finally { host.dispose(); }
+});
+
+test("WASI descriptors apply queued filesystem changes after input", () => {
+  const parent = new MemFS(); parent.writeFile("/entry.ts", "before");
+  let transport: ChildTransport | undefined;
+  const host = new SubprocessHost({
+    filesystem: () => filesystemSync(parent), output() {},
+    launch(_meta, value) { transport = value; return { terminate() {} }; },
+  });
+  try {
+    const id = host.spawn(childCommand);
+    if (!transport) throw new Error("child was not launched");
+    const child = childTransport(transport);
+    const fs = new MemFS(structuredClone(parent.root));
+    const files = filesystemSync(fs);
+    const stdin = wasiPipe(child.stdin, "read", { afterRead() {
+      const snapshot = child.receiveFilesystem();
+      if (snapshot) files.merge(snapshot);
+    } });
+    parent.writeFile("/entry.ts", "after");
+    expect(host.write(host.pipe(id, 0), encoder.encode("read"))).toBe(4);
+    const bytes = new Uint8Array(4);
+    expect(stdin.read([bytes])).toBe(4);
+    expect(bytes).toEqual(encoder.encode("read"));
+    expect(decoder.decode(fs.readFile("/entry.ts"))).toBe("after");
+  } finally { host.dispose(); }
 });

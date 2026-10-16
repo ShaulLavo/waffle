@@ -73,6 +73,7 @@ Each row has one class. A file with independent changes has separate rows.
 
 | [`runtime/core/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, memory, path, descriptor and filesystem-boundary adapters extracted into a reusable package. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
+| [esbuild distribution, worker capability, and subprocess adapters](#esbuild-webassembly-distribution) | Host feature | Select the unchanged official wasm distribution, detect unavailable workers, and synchronize stdin and idle filesystem changes. |
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
@@ -795,6 +796,51 @@ console contract without changing the engine's global Error constructor.
 Bootstrap captures its default stack formatter identity for this adapter.
 An installed user formatter stays authoritative; the runtime's own default
 frame-only formatter still receives the Console Trace header.
+
+## esbuild WebAssembly distribution
+
+Class **Host feature**. The distribution selector in
+`crates/bunwasm-runtime/src/install/resolve.rs` maps `esbuild` to the matching
+`esbuild-wasm` version. The original subprocess adapter in
+`crates/bunwasm-runtime/src/js/spawn.js` accepts `node` as a guest runtime name.
+The original stdin adapters in `crates/bunwasm-runtime/src/js/node_fs.js`,
+`crates/bunwasm-runtime/src/natives.rs`,
+`crates/bunwasm-host/src/process/mod.rs`, `process/stdin.rs`, `process/stdio.rs`,
+its slot and notification hooks,
+and `web/src/subprocess.js` let callback reads wait through the host I/O loop.
+The original browser filesystem adapters in `web/src/subprocess-fs.ts`,
+`web/src/subprocess.js`, and `web/src/worker.ts` exchange changes through the
+host I/O pump as well as stdin, stdout, and exit boundaries. Each child has separate incoming and outgoing
+mailboxes and a baseline; native hosts use their shared physical filesystem.
+The synchronous path reads the WASI descriptor without Rust stdin prefetching.
+The native WASI and host interfaces share a buffer, including bytes read ahead.
+This prevents Go's service loop from blocking JavaScript callbacks and preserves
+stdin position when callers mix synchronous and callback reads.
+No upstream implementation is copied or patched. The published esbuild 0.25.12
+files `lib/main.js`, `bin/esbuild`, `wasm_exec_node.js`, `wasm_exec.js`, and
+`esbuild.wasm` install unchanged from the official npm tarball. Its source is
+`evanw/esbuild` tag `v0.25.12`, including `lib/npm/node.ts`,
+`lib/npm/node-platform.ts`, `npm/esbuild-wasm/bin/esbuild`, and the Go compiler runtime.
+The package owns that Go runtime revision. Our test fixtures and subprocess
+changes are original adapters, separate from those upstream files.
+
+The original builtin registry in `crates/bunwasm-runtime/src/js/builtins.js`
+rejects loading `worker_threads` because the guest engines cannot create Node
+workers. Packages can detect its absence with their ordinary `require` guard.
+The official esbuild package then uses its synchronous subprocess backend for
+`buildSync`, `transformSync`, `formatMessagesSync`, and `analyzeMetafileSync`.
+No package-specific environment override is installed.
+
+Idle filesystem synchronization retains byte-exact comparisons, including edits
+within one millisecond. A direct byte loop replaces the callback per byte when comparing the unchanged
+dependency wasm during host I/O polling.
+
+The runtime-core descriptor integration uses the original `wasiPipe` adapter's
+read/write hooks to apply queued filesystem changes after stdin and publish
+changes before stdout or stderr. The existing callback output path shares the
+same publisher. Snapshot replacement/removal uses MemFS's handle-lifetime APIs.
+The applications select hoisted native Bun installs to avoid the recorded build
+plugin path-validation bug; no upstream loader or global package state changes.
 
 ## Wasm stack guards
 
