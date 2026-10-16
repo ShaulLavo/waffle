@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBrowserEntries, buildClassicWorker } from "../../scripts/browser-build";
+import { buildBrowserEntries, buildClassicWorker, browserBuildConfig } from "../../scripts/browser-build";
 import { initialJavaScript } from "../../scripts/runtime-size";
 
 const owned: string[] = [];
@@ -31,6 +31,15 @@ test("split main/worker graph has all static and dynamic chunks in the worker sc
     expect(path).toStartWith("chunks/");
     expect(await Bun.file(join(out, "__bunwasm", path)).text()).toBe(await chunk.text());
   }
+});
+
+test("runtime-free entries do not require the runtime package", async () => {
+  const dir = await mkdtemp(join(import.meta.dir, "../node_modules/.runtime-free-test-"));
+  owned.push(dir);
+  const main = join(dir, "main.ts");
+  await Bun.write(main, "console.log('runtime-free');");
+  const result = await Bun.build(browserBuildConfig([main], join(dir, "dist")));
+  expect(result.success).toBe(true);
 });
 
 async function sandboxOnlyInstall() {

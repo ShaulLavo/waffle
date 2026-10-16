@@ -72,6 +72,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 
 | [`runtime/core/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, memory, path, descriptor and filesystem-boundary adapters extracted into a reusable package. |
+| [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
 | [esbuild distribution, worker capability, and subprocess adapters](#esbuild-webassembly-distribution) | Host feature | Select the unchanged official wasm distribution, detect unavailable workers, and synchronize stdin and idle filesystem changes. |
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
@@ -101,6 +102,13 @@ geometric file growth and snapshot compaction remain local MemFS implementation 
 reserved socket slot bridge stays configured by `web/`, not imported into the generic core.
 Unbundled Node host adapters import the extracted JavaScript memory helper by repository-relative
 path so headless CLI workflows remain dependency-free.
+
+## Browser package resolution
+
+Class **Host feature** for the original adapter in `scripts/browser-build.ts`. The adapter resolves
+the consuming app's `@bun-wasm/runtime` exports with Bun, then maps the resolved file back through
+the consumer's package path. This keeps the returned path absolute without exposing Bun's isolated
+package-cache spelling to the build plugin. No upstream source is copied.
 
 ## Portable semver host functions
 
