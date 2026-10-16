@@ -14,6 +14,7 @@ Each row has one class. A file with independent changes has separate rows.
 
 | Patch or source | Class | Change |
 | --- | --- | --- |
+| [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -71,7 +72,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
-| [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.js`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
+| [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.ts`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
 | [`patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`](#generated-function-parser-locations) | Port | Bun parser and printer import metadata, reused unchanged from the semantic-import lane. |
 | [`crates/bunwasm-runtime/src/engine_quickjs.rs`, data conversion; `host.rs`, native-test import gate](#quickjs-data-conversion) | Host feature | Original adapter checks buffer tags before calling a throwing getter. |
@@ -721,7 +722,7 @@ The numbered JavaScript files in `crates/bunwasm-runtime/generated/builtins/` re
 
 ## Builtin loader adapter
 
-Class **Host feature**. `scripts/generate-bun-builtins.mjs`, its shell runner, the selection manifest, and `crates/bunwasm-runtime/src/js/bun_builtins.js` are original adapters. `src/js/bun_builtin_globals.js` is the original bootstrap capture of intrinsic constructors, before application code can replace public globals. They call Bun's codegen and consume its generated module protocol. They do not copy the codegen implementation. Rust source lookup and Engine natives are original bun-wasm glue. The loader uses lazy factories, isolated caches, explicit unsupported errors, and the existing builtin implementations for dependencies not switched yet. [bun-builtins.md](bun-builtins.md) records its limits and hook status.
+Class **Host feature**. `scripts/generate-bun-builtins.mjs`, its shell runner, the selection manifest, and `crates/bunwasm-runtime/src/js/bun_builtins.js` are original adapters. `src/js/bun_builtin_globals.ts` is the original bootstrap capture of intrinsic constructors, before application code can replace public globals. They call Bun's codegen and consume its generated module protocol. They do not copy the codegen implementation. Rust source lookup and Engine natives are original bun-wasm glue. The loader uses lazy factories, isolated caches, explicit unsupported errors, and the existing builtin implementations for dependencies not switched yet. [bun-builtins.md](bun-builtins.md) records its limits and hook status.
 
 ## Generated-function parser locations
 
@@ -790,3 +791,18 @@ console contract without changing the engine's global Error constructor.
 Bootstrap captures its default stack formatter identity for this adapter.
 An installed user formatter stays authoritative; the runtime's own default
 frame-only formatter still receives the Console Trace header.
+
+## Runtime TypeScript
+
+Class **Host feature**. `scripts/transpile-runtime.ts`, the runtime embedding build step,
+`src/js/runtime.d.ts`, the typecheck configuration and build regression tests are original
+bun-wasm adapters. They call the host Node.js `node:module.stripTypeScriptTypes` API in whitespace-preserving
+strip mode. No Node implementation is copied. No upstream implementation
+is copied or changed. `src/js/glob.ts` and `src/js/bun_builtin_globals.ts` are the existing
+original adapters renamed from JavaScript with type annotations. Glob option assembly returns a tuple derived from the positional native contract. The builtin loader adapter
+section above records their original role; neither file is an upstream fork.
+
+The host stripper blanks erasable TypeScript during Cargo's build, preserving JavaScript
+constructor calls, class fields and source coordinates. The loader still
+looks up the same extension-free names. Existing `.js` sources remain raw. No TypeScript parser
+or typecheck is added to the wasm runtime.

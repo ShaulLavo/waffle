@@ -25,7 +25,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - run: bun install --frozen-lockfile
+      - name: Runtime type check
+        run: node_modules/.bin/tsc -p ../crates/bunwasm-runtime/tsconfig.json
+      - name: Runtime emission and native type regressions
+        run: bun test ../scripts/runtime-emission.test.ts ../scripts/runtime-types.test.ts
       - name: Install runtime and sandbox dependencies
         run: |
           bun install --cwd ../runtime --frozen-lockfile
