@@ -1,5 +1,5 @@
 import { MemoryBackend, type FilesystemBackend } from "./backend";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol";
+import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, waitForFilesystemQuiescence, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol";
 
 const mutations = new Set(["preopen", "release", "write", "append", "resize", "setMtime", "create", "link", "removePath", "rename", "writeFile", "mkdirp", "remove", "move"]);
 interface Session {
@@ -12,6 +12,7 @@ interface Session {
   references: Map<number, number>;
   responses: Map<number, Uint8Array>;
   pending: Map<number, SharedArrayBuffer>;
+  quiescing?: Promise<void>;
 }
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
@@ -221,10 +222,12 @@ export class FilesystemService {
   private close(session: Session): void {
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
-    const active = this.backend instanceof MemoryBackend && this.backend.shared.ownerActive(session.connection.owner);
-    // Cancellation is not proof of death. Keep pins/pages until the one operation already
-    // past its revocation check exits, or its controller confirms that the worker stopped.
-    if (active && ownRevocation !== 2) return;
+    // Revocation precedes the admission-count observation. Looking only at held locks misses
+    // an entrant between admission and acquisition, which may still be touching a pin or page.
+    if (ownRevocation !== 2 && Atomics.load(new Int32Array(session.connection.sections), 0)) {
+      session.quiescing ??= waitForFilesystemQuiescence(session.connection).then(() => this.sweep());
+      return;
+    }
     if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, new Int32Array(session.connection.epoch));
     for (const [id, buffer] of session.pending) {
       const cells = new Int32Array(buffer, 0, HEADER / 4);

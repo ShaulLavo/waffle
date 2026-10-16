@@ -1,5 +1,5 @@
 import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, type FilesystemConnection } from "./protocol";
+import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, type FilesystemConnection } from "./protocol";
 import { MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared";
 
 const asyncAtomics = Atomics as typeof Atomics & {
@@ -113,13 +113,15 @@ export class FilesystemClient implements FileSystem {
   private capabilities: Int32Array;
   private epoch: Int32Array;
   private revoked: () => boolean;
+  private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
   constructor(readonly connection: FilesystemConnection) {
     this.capabilities = new Int32Array(connection.capabilities);
     this.epoch = new Int32Array(connection.epoch);
     this.revoked = sharedRevoked(connection);
-    this.shared = new SharedFilesystemState(connection.shared, connection.maxBytes, connection.owner, connection.segments);
+    this.section = new FilesystemSection(connection, this.revoked);
+    this.shared = new SharedFilesystemState(connection.shared, connection.maxBytes, connection.owner, connection.segments, this.section);
     connection.port.onmessage = ({ data }) => { if (data.segment) this.shared.addSegment(data.segment, data.index); else this.completions.get(data.completed)?.notify(); };
     connection.port.start();
   }
@@ -146,10 +148,12 @@ export class FilesystemClient implements FileSystem {
     } finally { this.watchingRevocation = false; }
   }
   fork(): FilesystemConnection {
-    if (this.revoked()) throw new FilesystemError(11);
-    const connection = createFilesystemConnection(this.connection);
-    this.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
-    return connection.client;
+    this.section.enter();
+    try {
+      const connection = createFilesystemConnection(this.connection);
+      this.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
+      return connection.client;
+    } finally { this.section.exit(); }
   }
   sweep(): void { this.connection.port.postMessage({ sweep: true }); }
   submit(operation: string, args: unknown[] = [], data: Uint8Array = new Uint8Array(), capacity = operation === "read" || operation === "take" || operation === "readdir" ? PAGE : 1024): FilesystemCompletion {
@@ -207,36 +211,45 @@ export class FilesystemClient implements FileSystem {
     }
   }
   retain(handle: FileHandle): void {
-    if (!Number.isInteger(handle) || handle < 0) throw new FilesystemError(8);
-    for (;;) {
-      if (this.revoked()) throw new FilesystemError(11);
-      const key = this.capabilityEntry(handle);
-      if (key === undefined) throw new FilesystemError(8);
-      const count = Atomics.load(this.capabilities, key + 1);
-      if (count < 0 || Atomics.load(this.capabilities, key) !== handle) continue;
-      if (count === 0x7fffffff) throw new FilesystemError(33);
-      if (Atomics.compareExchange(this.capabilities, key + 1, count, count + 1) !== count) continue;
-      // An idle entry may have been evicted and reassigned between the key read and CAS.
-      // Our temporary reference prevents further reuse while we validate its identity.
-      if (Atomics.load(this.capabilities, key) !== handle) { this.dropReference(key); continue; }
-      if (this.revoked()) { this.dropReference(key); throw new FilesystemError(11); }
-      this.capabilityEntries.set(handle, key);
-      this.openHandles.set(handle, (this.openHandles.get(handle) ?? 0) + 1);
-      if (this.capabilityEntries.size > CAPABILITY_SLOTS) for (const [cachedHandle, entry] of this.capabilityEntries) {
-        if (!this.openHandles.has(cachedHandle) && (Atomics.load(this.capabilities, entry) !== cachedHandle || Atomics.load(this.capabilities, entry + 1) < 0)) this.capabilityEntries.delete(cachedHandle);
+    this.section.enter();
+    try {
+      if (!Number.isInteger(handle) || handle < 0) throw new FilesystemError(8);
+      for (;;) {
+        if (this.revoked()) throw new FilesystemError(11);
+        const key = this.capabilityEntry(handle);
+        if (key === undefined) throw new FilesystemError(8);
+        const count = Atomics.load(this.capabilities, key + 1);
+        if (count < 0 || Atomics.load(this.capabilities, key) !== handle) continue;
+        if (count === 0x7fffffff) throw new FilesystemError(33);
+        if (Atomics.compareExchange(this.capabilities, key + 1, count, count + 1) !== count) continue;
+        // An idle entry may have been evicted and reassigned between the key read and CAS.
+        // Our temporary reference prevents further reuse while we validate its identity.
+        if (Atomics.load(this.capabilities, key) !== handle) { this.dropReference(key); continue; }
+        if (this.revoked()) { this.dropReference(key); throw new FilesystemError(11); }
+        this.capabilityEntries.set(handle, key);
+        this.openHandles.set(handle, (this.openHandles.get(handle) ?? 0) + 1);
+        if (this.capabilityEntries.size > CAPABILITY_SLOTS) for (const [cachedHandle, entry] of this.capabilityEntries) {
+          if (!this.openHandles.has(cachedHandle) && (Atomics.load(this.capabilities, entry) !== cachedHandle || Atomics.load(this.capabilities, entry + 1) < 0)) this.capabilityEntries.delete(cachedHandle);
+        }
+        return;
       }
-      return;
-    }
+    } finally { this.section.exit(); }
   }
   release(handle: FileHandle): void {
-    const count = this.openHandles.get(handle) ?? 0;
-    if (this.revoked()) { this.openHandles.delete(handle); this.fileSlots.delete(handle); return; }
-    if (!count) throw new FilesystemError(8);
-    const key = this.capabilityEntries.get(handle)!;
-    if (count > 1) this.openHandles.set(handle, count - 1); else { this.openHandles.delete(handle); this.fileSlots.delete(handle); }
-    // Keep linked zero-reference capabilities as a bounded cache. dropReference queues any
-    // needed detached-file/budget trim without waiting for a worker acknowledgment.
-    this.dropReference(key);
+    try { this.section.enter(); }
+    catch (error) {
+      if (!(error instanceof FilesystemError) || error.errno !== 11) throw error;
+      this.openHandles.delete(handle); this.fileSlots.delete(handle); return;
+    }
+    try {
+      const count = this.openHandles.get(handle) ?? 0;
+      if (!count) throw new FilesystemError(8);
+      const key = this.capabilityEntries.get(handle)!;
+      if (count > 1) this.openHandles.set(handle, count - 1); else { this.openHandles.delete(handle); this.fileSlots.delete(handle); }
+      // Keep linked zero-reference capabilities as a bounded cache. dropReference queues any
+      // needed detached-file/budget trim without waiting for a worker acknowledgment.
+      this.dropReference(key);
+    } finally { this.section.exit(); }
   }
   /** The shared slot of a regular file this connection holds open, or 0. */
   private directSlot(handle: FileHandle): number {

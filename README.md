@@ -60,8 +60,9 @@ recheck readiness. No `runtime_proc` imports are implemented here. Read, stat an
 caches are bounded and validated by the shared mutation epoch. Retained open files read and
 write shared pages directly when capacity is already allocated; neither operation needs a port
 round trip. In-capacity appends select EOF and write atomically in the guest too; namespace edits and growth
-remain service-owned. A direct read takes the file's lock once, checks revocation once while holding it,
-and copies straight into the guest's buffers; writes and appends also hold the global mutation lock,
+remain service-owned. A direct read enters its connection's host section, checks revocation, then takes
+the file's lock once and checks revocation again before copying straight into the guest's buffers;
+writes and appends also hold the global mutation lock,
 so the epoch stays odd until their bytes, size and timestamp are in place. Cached opens/closes use per-connection shared reference counts, while the
 service alone owns backend pins. Preopens and open descriptions retain handles; transient path pins
 are bounded and evicting them invalidates cached paths.
@@ -80,10 +81,23 @@ for page reuse until the filesystem is disposed.
 
 Connections carry their own revocation word and every ancestor's word, plus a shared ancestry
 wake signal. Blocking waits recheck revocation after a signal change; asynchronous values use
-one `Atomics.waitAsync` watcher per active client alongside ordinary port notifications. The page
-revokes a killed guest, sweeps the service and terminates it; no service operation waits for a
-guest acknowledgment. A filesystem-worker error revokes the root and wakes all descendants,
-so an absent completion message cannot strand a guest or page startup.
+one `Atomics.waitAsync` watcher per active client alongside ordinary port notifications. Before
+physically terminating a guest, its controller must `await waitForFilesystemQuiescence(identity)`,
+then call `reapFilesystem(identity)` and sweep the service. Quiescence revokes synchronously and
+waits for the connection's shared host-section count to reach zero. Every direct lock, capability
+reference change and page write is admitted before checking revocation; a later entrant must abort
+before touching storage. Looking only at current lock owners is not a safe replacement for this fence.
+Each descendant has a separate count and must be quiesced separately, even after root revocation.
+
+The count supports nested synchronous host operations, but no host section or filesystem lock may
+span an `await` or a call into guest Wasm. The direct I/O hot path adds an admission increment and
+revocation check before locking, then a decrement and notification when its last section exits;
+it still uses the same file/global locks and shared-page copies. The service retains pins until
+quiescence without blocking its event loop or requiring a guest message. `reapFilesystem` may also
+be called after independently proven physical death to recover abandoned locks and settle an
+existing quiescence waiter; a termination request or worker error alone is not that proof.
+A filesystem-worker error revokes the root and wakes all descendants, so an absent completion
+message cannot strand a guest or page startup.
 When a blocked guest spawns a child, it creates only a `FilesystemIdentity`. The runnable page
 uses `connectFilesystemIdentity` to create the MessageChannel and attach the service endpoint,
 then transfers the client endpoint to the child. Creating a new channel in a blocked guest

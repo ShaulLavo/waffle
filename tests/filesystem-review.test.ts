@@ -135,8 +135,9 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
         return super.subarray(start, end);
       }
     }
-    backend.shared.mutate(epoch, undefined,
-      () => backend.shared.write(handle, [new InterruptedBytes([90])], 0, undefined, pair.client.owner), pair.client.owner);
+    // Exercise the guest's admitted state, not the service state with an impersonated owner.
+    client.shared.mutate(epoch, undefined,
+      () => client.shared.write(handle, [new InterruptedBytes([90])], 0));
     service.sweep();
     expect(Atomics.load(epoch, 0) & 1).toBe(0);
     expect(Atomics.load(backend.shared.cells, 1)).toBe(0);

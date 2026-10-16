@@ -42,7 +42,9 @@ export interface FilesystemConnection {
   segments: SharedArrayBuffer[];
   /** Private to this connection, not its descendants: capabilities and local open references. */
   capabilities: SharedArrayBuffer;
-  /** Nonzero lock owner token; service clears it when this identity is revoked. */
+  /** Active synchronous host filesystem sections, private to this connection. Never reused. */
+  sections: SharedArrayBuffer;
+  /** Nonzero lock owner token; service clears it when this identity is reaped. */
   owner: number;
   maxBytes: number;
 }
@@ -67,6 +69,7 @@ export function createFilesystemIdentity(parent?: FilesystemIdentity, maxBytes =
     shared,
     segments,
     capabilities,
+    sections: new SharedArrayBuffer(4),
     owner,
     maxBytes,
   };
@@ -85,9 +88,50 @@ export function revokeFilesystem(connection: FilesystemIdentity): void {
   Atomics.compareExchange(new Int32Array(connection.revocations[0]!), 0, 0, 1);
   wake(connection);
 }
-/** Call only after the guest has stopped, or from its own quiescent dispose path. */
+/** Admission must precede every client lock, pin change or page write. The shared count handles
+ * nested synchronous operations and multiple users of one identity. Never hold a section across
+ * an await or a call into guest Wasm. Revocation is checked AFTER admission: the supervisor's
+ * revoke-then-zero observation proves that any later entrant will abort before touching storage. */
+export class FilesystemSection {
+  private readonly cells: Int32Array;
+  constructor(connection: FilesystemIdentity, private readonly revoked: () => boolean = () => isRevoked(connection)) {
+    this.cells = new Int32Array(connection.sections);
+  }
+  enter(): void {
+    Atomics.add(this.cells, 0, 1);
+    if (!this.revoked()) return;
+    this.exit();
+    throw new FilesystemError(11);
+  }
+  exit(): void {
+    if (Atomics.sub(this.cells, 0, 1) === 1) Atomics.notify(this.cells, 0);
+  }
+}
+/** Revokes synchronously, then waits without blocking the supervisor's event loop. Resolving
+ * proves this identity cannot touch filesystem storage again, even if its worker is still alive.
+ * Descendants have their own sections; their controllers must quiesce each identity separately. */
+export async function waitForFilesystemQuiescence(connection: FilesystemIdentity): Promise<void> {
+  revokeFilesystem(connection);
+  const cells = new Int32Array(connection.sections);
+  const revocation = new Int32Array(connection.revocations[0]!);
+  const asyncAtomics = Atomics as typeof Atomics & {
+    waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
+  };
+  for (;;) {
+    const observed = Atomics.load(cells, 0);
+    if (!observed || Atomics.load(revocation, 0) === 2) return;
+    const waiting = asyncAtomics.waitAsync(cells, 0, observed);
+    // A proven-dead reap may have notified between the check and registration without
+    // changing an abandoned count. Recheck after registration and release that waiter too.
+    if (Atomics.load(revocation, 0) === 2) { Atomics.notify(cells, 0); return; }
+    if (waiting.async) await waiting.value;
+  }
+}
+/** Call only after the guest has stopped, after waitForFilesystemQuiescence(), or from its own
+ * quiescent dispose path. A stopped worker can leave an unfinished section and abandoned locks. */
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
+  Atomics.notify(new Int32Array(connection.sections), 0);
   wake(connection);
 }
 export function wake(connection: FilesystemIdentity): void {
