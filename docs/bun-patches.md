@@ -62,6 +62,9 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/temporal.js`](#temporal) | Host feature | Package the unmodified Temporal polyfill for engines without Temporal. |
 | [`crates/bunwasm-semver/src/lib.rs`](#portable-semver-host-functions) | Port | Compile Bun's semver host functions unchanged against a portable `bun_jsc` subset. |
 | [`crates/bunwasm-bun-jsc/`, `crates/bunwasm-bun-jsc-macros/`, runtime semver and host GC adapters](#portable-semver-host-functions) | Host feature | Original adapters connect Bun's host functions to the shared data-native interface and preserve the host GC hook. |
+| [`crates/bunwasm-runtime/src/js/stack_trace.js`](#structured-call-sites) | Host feature | Original CallSite adapter for QuickJS and JSC stack capture. |
+| [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
+
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
@@ -104,6 +107,47 @@ around `Bun.gc`; looking up global `gc` on every call otherwise recurses.
 This replaces our duplicated semver host-function logic, while retaining the existing
 pure Bun semver parser used by package installation. See
 [the backend spike](bun-jsc-backend.md) for the limits of this subset.
+
+## Structured call sites
+
+`crates/bunwasm-runtime/src/js/stack_trace.js` is an original adapter for the public
+`Error.captureStackTrace` and `Error.prepareStackTrace` contracts. It does not copy
+Bun, Node or WebKit source. QuickJS-ng at the vendored rquickjs-sys 0.13.0 revision
+already supplies structured frames but omits queries used by stack-inspection
+packages. The adapter extends that frame prototype. Bun's WebKit fork at
+`3d3257150c40a1aabdc5f8b48d5b33d0413674cb` supplies captured stack text through
+`Source/JavaScriptCore/runtime/ErrorConstructor.cpp`. The adapter parses those
+frames through our existing inspector before invoking a custom capture formatter.
+JSC captures raw frames immediately and selects the formatter only when the stack
+is read. Parsed JSC CallSites carry already-mapped locations so their string and
+getter forms use the same coordinates. Ordinary JSC Error construction stays native.
+QuickJS's private native formatter collects raw CallSites. Its public formatter is
+selected lazily by the Error prototype accessor or capture accessor. Successful
+results, including non-string values, are memoized; formatter exceptions propagate
+at access. A holder without a cached reentrant default permits a later read to retry.
+No engine constructor is replaced.
+Receiver and method metadata unavailable from these engines returns undefined or
+null; eval-origin metadata is unavailable and returns undefined. Engine placeholders such
+as `<input>` are not reported as source origins.
+The regression fixture uses the public capture API without copying a package.
+
+Successful stack values are memoized in an original WeakMap adapter, independently
+of the holder's descriptor. Mutable holders may receive a data property;
+frozen and sealed holders keep their accessor. Capture rejects non-extensible
+or non-configurable targets before native capture mutates them, matching the
+Node/V8 public contract. A single formatting guard covers all errors: reentrant
+reads memoize the default stack, successful outer formatters may replace that
+value, and throwing formatters clear the guard in finally. These are original
+adapters derived from behavior probes, with no Node/V8 implementation copied.
+
+## HTTP socket state
+
+The HTTP server socket facade in `crates/bunwasm-runtime/src/js/net.js` is an
+original adapter, with no upstream implementation copied. Its `writable` getter
+reads the existing host connection's closed and closing states. Published Koa
+3.0.1 checks this Node socket property before sending the response body; an
+absent property made a live connection appear unwritable. The lifecycle fixture
+checks both an open connection and a connection closed after its response.
 
 ## Rollup WebAssembly distribution
 
