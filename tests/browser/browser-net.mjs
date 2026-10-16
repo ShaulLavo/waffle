@@ -4,7 +4,7 @@
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
 // PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
 import { spawn } from "node:child_process";
-import { mkdtempSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const here = new URL(".", import.meta.url).pathname;
@@ -210,7 +210,7 @@ async function checkHtmlEntry(page, context, appUrl, name) {
   const ownerLog = (message) => logs.push("owner: " + message.text());
   page.on("console", ownerLog);
   preview.on("console", (message) => logs.push(message.text()));
-  preview.on("pageerror", (error) => logs.push(String(error)));
+  preview.on("pageerror", (error) => logs.push(error.stack || String(error)));
   try {
     const previewUrl = new URL("__preview/3000/", appUrl).href;
     await page.evaluate((url) => {
@@ -295,6 +295,16 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   await page.evaluate(() => globalThis.playground.shell.submit("bun run net.ts"));
   const out = await waitFor(page, /FETCH-DONE|error:|crashed/);
   for (const line of expectedFetch(browserName)) check(`${name}: ${line.split(":")[0]}`, out.includes(line), `expected ${JSON.stringify(line)} in\n${out}`);
+
+  for (const fixture of ["net-tcp", "net-bun-tcp", "net-http-upgrade"]) {
+    const source = readFileSync(join(web, "../tests/fixtures", fixture, "index.js"), "utf8");
+    const expected = readFileSync(join(web, "../tests/fixtures", fixture, "expected.txt"), "utf8").trim();
+    await page.evaluate(src => globalThis.playground.fs.writeFile("/home/user/tcp.js", src), source);
+    await page.evaluate(() => globalThis.playground.shell.submit("bun run tcp.js"));
+    const marker = fixture === "net-tcp" ? "refused connection ok" : fixture === "net-bun-tcp" ? "half-close ok" : "buffered head to its listener";
+    const output = await waitFor(page, new RegExp(marker + "|error:|crashed"));
+    check(`${name}: ${fixture}`, output.includes(expected), output.slice(-1500));
+  }
 
   await checkHtmlEntry(page, context, appUrl, name);
 

@@ -81,14 +81,37 @@ Each row has one class. A file with independent changes has separate rows.
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
 | [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.ts`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
+| [`crates/bunwasm-runtime/src/js/net_address.js`, IP predicates](#tcp-and-ip-helpers) | Port | Adapt Bun's engine independent IPv4 and IPv6 predicates. |
+| [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets and write-side shutdown over the existing host ABI. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
 | [`patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`](#generated-function-parser-locations) | Port | Bun parser and printer import metadata, reused unchanged from the semantic-import lane. |
 | [`crates/bunwasm-runtime/src/engine_quickjs.rs`, data conversion; `host.rs`, native-test import gate](#quickjs-data-conversion) | Host feature | Original adapter checks buffer tags before calling a throwing getter. |
 | [`third_party/rquickjs-sys/quickjs/quickjs.c`, buffer tag predicate](#quickjs-data-conversion) | Host feature | Original nonthrowing class query for ordinary and shared buffers. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
-
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
+
+## TCP and IP helpers
+
+The IP regular expressions in `crates/bunwasm-runtime/src/js/net_address.js` come
+from Bun `src/js/internal/net/isIP.ts` at
+`4ceda2c2868d3a7703c7737ddd9de7244ec384df`. The port removes TypeScript annotations
+and the module export wrapper. The predicates themselves are unchanged.
+
+The other address helpers, `node_net.js`, `bun_tcp.js`, and the changes to
+`net.js`, the Rust host and the browser hosts are original adapters. They share
+one byte transport with fetch, Bun.serve, and WebSockets. The added host slots
+provide write-side shutdown and the local endpoint. HTTP upgrade listeners get
+a real Socket with the bytes received after the request header. The original
+adapters also own pipe backpressure across multiple destinations, cancellation of queued writes, exact-size
+reads, timeout listener cancellation, and bounded HTTP upgrade handshakes.
+No additional upstream implementation was copied for these corrections.
+
+Bun's `src/js/node/net.ts` depends on native Bun sockets, private stream modules,
+and runtime intrinsics. Its BlockList and SocketAddress use native bindings.
+These adapters implement the public contracts over our host handles while those
+bindings remain unavailable. This is not a switch to Bun's full net module.
+The upstream comparisons are recorded in [TCP support](tcp.md).
 
 ## Browser runtime core
 
@@ -104,6 +127,9 @@ geometric file growth and snapshot compaction remain local MemFS implementation 
 reserved socket slot bridge stays configured by `web/`, not imported into the generic core.
 Unbundled Node host adapters import the extracted JavaScript memory helper by repository-relative
 path so headless CLI workflows remain dependency-free.
+The original browser-build adapter resolves declared exports through the consuming app.
+It returns equivalent public installed-package paths so encoded isolated-cache directory
+names do not trigger Bun's double-dot plugin-path rejection. No upstream code is copied.
 
 ## Browser package resolution
 

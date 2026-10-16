@@ -32,3 +32,13 @@ test("a failed close-frame write releases the close-handshake timer", () => {
     spy.mockRestore();
   }
 });
+
+
+test("WebSocket bufferedAmount uses its connection byte count", () => {
+  const factory = (0, eval)(readFileSync(new URL("../../crates/bunwasm-runtime/src/js/websocket.js", import.meta.url), "utf8"));
+  const api = factory({ require: () => ({ Buffer }), printError: error => { throw error; } });
+  const connection = { closed: false, bufferedAmount: 42, peer: () => ({ address: "127.0.0.1" }) };
+  const { socket } = api.serverSocket(connection, () => ({}), {}, () => {}, () => 0);
+  expect(socket.bufferedAmount).toBe(42);
+  expect(socket.getBufferedAmount()).toBe(42);
+});

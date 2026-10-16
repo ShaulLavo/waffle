@@ -93,6 +93,8 @@ reads as `UNSUPPORTED`. The playground and sandbox use this by default (`web/src
 | 13   | `child_wait` | `(child) -> exit_code`                                          |
 | 14   | `child_pipe` | `(child, fd) -> pipe`                                            |
 | 15   | `child_kill` | `(child, signal) -> i32`                                         |
+| 16   | `shutdown` | `(connection) -> i32`                                            |
+| 17   | `local_addr` | `(handle, buf_ptr, buf_cap) -> len`                              |
 
 ### `poll(timeout_ms) -> i32`
 
@@ -273,3 +275,23 @@ in bun-wasm. It never falls back to a native program.
   installed. `scripts/run.ts` offers the same slots when running the shim
   in Bun.
 - `wasmtime run`: no slots; network APIs report "not supported".
+
+
+## TCP half-close and local addresses
+
+`shutdown(connection)` flushes bytes already accepted by `write`, then sends FIN
+on that connection's write direction. The handle remains open for reads. A
+second shutdown succeeds without sending another FIN. `close` releases the
+handle after both directions are no longer needed.
+
+`local_addr` uses the same JSON and buffer protocol as `peer_addr`. It accepts
+listeners and connections and returns `AGAIN` while an outbound connection is
+still opening. An empty `write` on a connecting handle returns `AGAIN`, zero
+after the connection opens, or `ERROR` on connection failure. It does not send
+data. The guest uses this to delay the Socket connect event until success.
+
+All browser engines support raw TCP only between listeners and clients inside
+the same guest worker. An absent loopback listener fails with `ECONNREFUSED`.
+An outbound internet TCP connection fails with `ENOTSUP`; browsers provide no
+raw socket API. HTTP previews and WebSocket relays still use the existing host
+bridge. TLS and Unix sockets are outside this adapter.

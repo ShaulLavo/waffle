@@ -51,6 +51,7 @@ interface ConnHandle extends Stream {
   peer: PeerAddr;
   /** For a connection between two of the guest's own handles (connect to its own listener): the other end. */
   pipe: number | null;
+  writeEnded?: boolean;
 }
 
 type Handle = FetchHandle | ListenerHandle | ConnHandle;
@@ -115,6 +116,11 @@ export class NetHost {
       connect: (hostPtr, hostLen, port) => this.connect(hostPtr, hostLen, port),
       error: (handle, ptr, cap) => this.error(handle, ptr, cap),
       peer_addr: (handle, ptr, cap) => this.peerAddr(handle, ptr, cap),
+      shutdown: (handle) => this.shutdown(handle),
+      local_addr: (handle, ptr, cap) => {
+        const text = this.localText(handle);
+        return typeof text === "number" ? text : this.writeSized(encoder.encode(text), ptr, cap);
+      },
     };
   }
 
@@ -139,6 +145,8 @@ export class NetHost {
         hostConnect: (host: string, port: number) => this.startConnect(host, port),
         hostError: (handle: number) => this.errorText(handle),
         hostPeerAddr: (handle: number) => this.peerText(handle),
+        hostShutdown: (handle: number) => this.shutdown(handle),
+        hostLocalAddr: (handle: number) => this.localText(handle),
       },
       caps: Object.fromEntries(SLOT_NAMES.map((name) => [name, name !== "poll"])),
       onNews: (cb) => {
@@ -243,6 +251,7 @@ export class NetHost {
     if (h.chunks.length > 0) {
       const chunk = this.take(h, cap);
       if (h.kind === "fetch") this.send({ type: "ack", id: handle, bytes: chunk.length });
+      else if (h.pipe !== null) this.news();
       return chunk;
     }
     if (h.error) return ERROR;
@@ -258,6 +267,7 @@ export class NetHost {
     const h = this.handles.get(handle);
     if (!h) return BADF;
     if (h.kind !== "conn") return UNSUPPORTED;
+    if (h.writeEnded) return ERROR;
     const n = Math.min(bytes.length, MAX_WRITE);
     if (n === 0) return 0;
     const data = n === bytes.length ? bytes : bytes.slice(0, n);
@@ -270,9 +280,33 @@ export class NetHost {
       h.error = { name: "Error", message: "write after the other end closed", code: "EPIPE" };
       return ERROR;
     }
-    other.chunks.push(data);
+    const available = MAX_WRITE - other.chunks.reduce((size, chunk) => size + chunk.length, 0);
+    if (available <= 0) return AGAIN;
+    const count = Math.min(n, available);
+    other.chunks.push(count === n ? data : data.slice(0, count));
     this.news();
-    return n;
+    return count;
+  }
+
+  private shutdown(handle: number): number {
+    const h = this.handles.get(handle);
+    if (h?.kind !== "conn") return BADF;
+    if (h.writeEnded) return OK;
+    h.writeEnded = true;
+    if (h.pipe === null) this.send({ type: "close", id: handle });
+    else {
+      const peer = this.connection(h.pipe);
+      if (peer) peer.ended = true;
+      this.news();
+    }
+    return OK;
+  }
+
+  private localText(handle: number): string | number {
+    const h = this.handles.get(handle);
+    if (!h || h.kind === "fetch") return BADF;
+    const family = h.kind === "conn" ? h.peer.family : "IPv4";
+    return JSON.stringify({ address: family === "IPv4" ? "127.0.0.1" : "::1", family, port: h.port });
   }
 
   private close(handle: number): number {
@@ -324,11 +358,15 @@ export class NetHost {
 
   private startConnect(host: string, port: number): number {
     const listener = Array.from(this.handles.entries()).find(([, h]) => h.kind === "listener" && h.port === port);
-    if (!LOOPBACK.has(host) || !listener) {
+    if (LOOPBACK.has(host) && (!listener || listener[1].kind !== "listener")) {
+      return this.fail({ name: "Error", message: `connect ECONNREFUSED ${host}:${port}`, code: "ECONNREFUSED" });
+    }
+    if (!LOOPBACK.has(host)) {
       this.lastError = { name: "Error", message: `connect ${host}:${port}: TCP connections are not available in the browser`, code: "ENOTSUP" };
       return UNSUPPORTED;
     }
-    const state = listener[1] as ListenerHandle;
+    if (!listener || listener[1].kind !== "listener") return BADF;
+    const state = listener[1];
     const client = this.nextHandle++;
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);

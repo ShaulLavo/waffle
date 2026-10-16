@@ -43,7 +43,7 @@ test.skipIf(!existsSync(bunWasm))("installHostSlots fills bun.wasm's slot table"
   const ptr = (instance.exports.bun_wasm_host_slots as () => number)();
   const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
   expect(view.getUint32(ptr, true)).toBe(1);
-  expect(view.getUint32(ptr + 4, true)).toBe(16);
+  expect(view.getUint32(ptr + 4, true)).toBe(18);
   const table = instance.exports.__indirect_function_table as WebAssembly.Table;
   const slot = (i: number) => view.getUint32(ptr + 8 + 4 * i, true);
   expect(slot(0)).toBeGreaterThan(0);
@@ -223,4 +223,34 @@ test("stopping a worker rejects a file update blocked behind a full ring", async
     helper.dispose();
     await pending;
   }
+});
+
+
+test("guest TCP pipes keep reads open after write shutdown", async () => {
+  const { NetHost } = await import("../src/net/host");
+  const host = new NetHost(createRing(), () => {});
+  const api = host.engineNet().natives;
+  const call = (name: string, ...args: unknown[]) => Reflect.apply(api[name], null, args);
+  const listener = call("hostListen", "127.0.0.1", 0);
+  const port = call("hostLocalPort", listener);
+  const client = call("hostConnect", "127.0.0.1", port);
+  const peer = call("hostAccept", listener);
+  const full = new Uint8Array(1 << 20);
+  expect(call("hostWrite", client, full)).toBe(full.length);
+  expect(call("hostWrite", client, encode("full"))).toBe(-2);
+  expect(call("hostRead", peer, full.length)).toEqual(full);
+  expect(call("hostWrite", client, encode("request"))).toBe(7);
+  expect(call("hostShutdown", client)).toBe(0);
+  expect(call("hostRead", peer)).toEqual(encode("request"));
+  expect(call("hostRead", peer)).toBe(0);
+  expect(call("hostWrite", peer, encode("response"))).toBe(8);
+  expect(call("hostRead", client)).toEqual(encode("response"));
+  expect(call("hostWrite", client, encode("after-fin"))).toBe(-1);
+  expect(call("hostShutdown", peer)).toBe(0);
+  expect(call("hostRead", client)).toBe(0);
+  for (const handle of [peer, client, listener]) expect(call("hostClose", handle)).toBe(0);
+  expect(call("hostConnect", "127.0.0.1", port)).toBe(-1);
+  expect(JSON.parse(call("hostError", 0)).code).toBe("ECONNREFUSED");
+  expect(call("hostConnect", "example.com", 80)).toBe(-4);
+  expect(JSON.parse(call("hostError", 0)).code).toBe("ENOTSUP");
 });
