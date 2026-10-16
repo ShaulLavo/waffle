@@ -74,7 +74,8 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 | [`crates/bunwasm-runtime/src/directory.rs`, `src/js/node_fs.js`, `web/src/engine-host.js`, directory cursors](#directory-cursors) | Host feature | Original directory handles, bounded reads, recursive traversal and Node Dir adapters. |
 
-| [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, memory, path, descriptor and filesystem-boundary adapters extracted into a reusable package. |
+| [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
+| [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
@@ -232,6 +233,24 @@ WASI ENOSPC and the per-file page-table limit uses EFBIG. Owner-tagged locks let
 reclaim abandoned guest locks without changing allocator state. This is original bun-wasm code,
 not an adapted upstream allocator or filesystem. Path walking remains a local MemFS detail. Bun's
 reserved socket slot bridge stays configured by `web/`, not imported into the generic core.
+The persistence layer in `runtime/fs/{storage,indexeddb,persistent}.ts` is also an original adapter,
+not copied or translated from PGlite, SQLite, Emscripten, or another upstream. The storage spike
+informed its batched scheduling and crash-safety requirements. It adds immutable payloads,
+checksummed incremental metadata, dual base snapshots, strict atomic IndexedDB commits, lifetime
+Web Locks and lazy data hydration. Shared revision counters capture direct guest writes; clean
+persisted data can leave the pool without changing inode identity. The editor adapters wait for
+a durable checkpoint before marking a save complete, seed workspaces once, and explicitly reset
+sandbox templates. `runtime/core/wasi.ts` routes both preview1 sync calls through this boundary.
+The original persistence browser fixtures in `web/tests/persistence-browser-{main,worker}.ts`
+and their Playwright/Safari runners exercise these adapters without a wasm build. The corpus
+fixture retains only generated package-file sizes from the original local storage spike's
+`build-corpus.py` output, identified by its SHA-256 in `fixtures/persistence-corpus.json`.
+The worker reproduces the spike's original `fs-worker.js` synthetic seeded-word generator
+(SHA-256 `4ea7e6f89a64af1c53b3b5eb5deb30291ff9f2dbbf7222cdee03ca627fe6e3fc`),
+including its small-file seeds `17+i` and three large-file seeds `10033+i`. Local changes
+add browser-native payload-read counters, incremental checkpoint timings and full-byte
+integrity checks. This is original benchmark input, not copied package content or a Bun,
+Node, WebKit, PGlite, or SQLite implementation.
 Unbundled Node host adapters import the extracted JavaScript memory helper by repository-relative
 path so headless CLI workflows remain dependency-free.
 The original browser-build adapter resolves declared exports through the consuming app.

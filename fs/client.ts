@@ -1,6 +1,6 @@
 import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core";
 import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, type FilesystemConnection } from "./protocol";
-import { MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared";
+import { MissingDataError, MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared";
 
 const asyncAtomics = Atomics as typeof Atomics & {
   waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
@@ -299,7 +299,7 @@ export class FilesystemClient implements FileSystem {
     if (slot) {
       try { return this.shared.directRead(slot, handle, chunks, offset, this.revoked, this.connection.owner); }
       catch (error) {
-        if (!(error instanceof MissingSegmentError)) return -this.directFailure(handle, error);
+        if (!(error instanceof MissingSegmentError) && !(error instanceof MissingDataError)) return -this.directFailure(handle, error);
         // Only a standalone state can lack a segment; the service reply replaces every copied byte.
         try {
           let requested = 0; for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
@@ -400,7 +400,7 @@ export class FilesystemClient implements FileSystem {
           return this.shared.resize(handle, size, truncate, this.revoked, this.connection.owner);
         }, this.connection.owner);
         return result === undefined ? this.call("resize", [handle, size, truncate]) : result;
-      } catch (error) { if (error instanceof MissingSegmentError) return this.call("resize", [handle, size, truncate]); return errno(error); }
+      } catch (error) { if (error instanceof MissingSegmentError || error instanceof MissingDataError) return this.call("resize", [handle, size, truncate]); return errno(error); }
     }
     try { return this.call("resize", [handle, size, truncate]); } catch (error) { return errno(error); }
   }
@@ -411,6 +411,7 @@ export class FilesystemClient implements FileSystem {
     }
     try { return this.call("setMtime", [handle, mtime]); } catch (error) { return errno(error); }
   }
+  sync(handle: FileHandle): number { try { return this.call("sync", [handle]); } catch (error) { return errno(error); } }
   readdir(handle: FileHandle): DirectoryEntry[] {
     const epoch = this.version();
     const cached = this.readdirs.get(handle);

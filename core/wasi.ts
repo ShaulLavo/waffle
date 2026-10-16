@@ -350,11 +350,15 @@ export class Wasi {
       fd_close: (fd: number) => (this.descriptors.close(fd) ? SUCCESS : EBADF),
       fd_datasync: (fd: number) => {
         const entry = this.descriptors.get(fd);
-        return !entry ? EBADF : entry.rightsBase & RIGHT_FD_DATASYNC ? SUCCESS : ENOTCAPABLE;
+        if (!entry) return EBADF;
+        if (!(entry.rightsBase & RIGHT_FD_DATASYNC)) return ENOTCAPABLE;
+        return entry.resource.kind === "file" || entry.resource.kind === "directory" ? this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS : SUCCESS;
       },
       fd_sync: (fd: number) => {
         const entry = this.descriptors.get(fd);
-        return !entry ? EBADF : entry.rightsBase & RIGHT_FD_SYNC ? SUCCESS : ENOTCAPABLE;
+        if (!entry) return EBADF;
+        if (!(entry.rightsBase & RIGHT_FD_SYNC)) return ENOTCAPABLE;
+        return entry.resource.kind === "file" || entry.resource.kind === "directory" ? this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS : SUCCESS;
       },
       fd_fdstat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);

@@ -70,3 +70,13 @@ jobs:
         env:
           FS_SMOKE_PORT: "4181"
         run: bun tests/browser-filesystem.ts
+      - name: IndexedDB persistence, durable saves and crash recovery (no WASM)
+        env:
+          PERSIST_SMOKE: "1"
+          PERSISTENCE_PORT: "4182"
+        run: bun tests/browser-persistence.ts chromium
+      - name: Editor durable saves and template reset (no WASM)
+        env:
+          EDITOR_SCRATCH_ROOT: ${{ runner.temp }}
+          EDITOR_PORT: "4183"
+        run: bun tests/browser-editor.ts chromium

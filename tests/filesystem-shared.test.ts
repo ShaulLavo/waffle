@@ -25,7 +25,7 @@ test("the service grows into another SAB segment and preserves page data", () =>
   expect(out[0]).toBe(66);
 });
 
-test("storage cap reports ENOSPC while a single-file limit reports EFBIG", () => {
+test("storage cap reports ENOSPC while the address-space limit reports EFBIG", () => {
   const cap = new SharedFilesystemState(undefined, 16 * 1024 * 1024);
   cap.register(0, { kind: "file", ino: 1, size: PAGE * 256, mtime: 1 }, new Uint8Array(PAGE * 256));
   try { cap.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 }, new Uint8Array(PAGE)); throw new Error("expected ENOSPC"); }

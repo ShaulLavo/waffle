@@ -1,8 +1,8 @@
 import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, reapFilesystem, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
 
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
-/** Page-side API: never blocks the UI thread and owns no tree. Editor/shell saves are ordinary
- * service requests, ordered on this connection; flush establishes completion before starting a run.
+/** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
+ * drain orders service requests, while flush checkpoints their data and metadata to storage.
  */
 export class SharedFilesystem {
   readonly client: FilesystemClient;
@@ -10,7 +10,7 @@ export class SharedFilesystem {
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
   private fatal: Error | undefined;
-  constructor() {
+  constructor(options: { persistence?: boolean; name?: string } = {}) {
     this.worker = new Worker(new URL("./fs-worker.js", location.href), { type: "module" });
     const connection = createFilesystemConnection();
     this.client = new FilesystemClient(connection.client);
@@ -19,7 +19,7 @@ export class SharedFilesystem {
       this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
     });
     this.worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
-    try { this.worker.postMessage({ connect: connection.server }, [connection.server.port]); }
+    try { this.worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name }, [connection.server.port]); }
     catch (error) {
       connection.server.port.close();
       this.fail(error instanceof Error ? error : new Error(String(error)));
@@ -42,16 +42,29 @@ export class SharedFilesystem {
     return connection.client;
   }
   revoke(connection: FilesystemIdentity): void { reapFilesystem(connection); this.client.sweep(); }
+  private async request(operation: string, args: unknown[] = [], bytes?: Uint8Array): Promise<any> {
+    this.assertLive();
+    try { return await this.client.asyncCall(operation, args, bytes); }
+    catch (error) {
+      // Revocation wakes pending requests with ECANCELED. The page owns the worker's
+      // actual failure, such as a refused writer lock or unavailable browser storage.
+      this.assertLive();
+      throw error;
+    }
+  }
   private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
-    const result = this.writes.then(() => { this.assertLive(); return this.client.asyncCall(operation, args, bytes); });
+    const result = this.writes.then(() => this.request(operation, args, bytes));
     // Keep ordering after an error, while returning the failure to the caller that owns it.
     this.writes = result.catch(error => { this.failure ??= error; });
     return result;
   }
-  async flush(): Promise<void> { await this.writes; this.assertLive(); if (this.failure !== undefined) { const error = this.failure; this.failure = undefined; throw error; } }
-  async lookup(path: string): Promise<Entry | undefined> { await this.flush(); return this.client.asyncCall("lookup", [path]); }
-  async readFile(path: string): Promise<Uint8Array | undefined> { await this.flush(); return this.client.asyncCall("readFile", [path]); }
-  async listFiles(path = "/"): Promise<string[]> { await this.flush(); return this.client.asyncCall("listFiles", [path]); }
+  /** Wait for this page's queued mutations, without waiting for background persistence. */
+  async drain(): Promise<void> { await this.writes; this.assertLive(); if (this.failure !== undefined) { const error = this.failure; this.failure = undefined; throw error; } }
+  /** A save is durable only once both data and metadata have reached storage. */
+  async flush(): Promise<void> { await this.drain(); await this.request("flush"); }
+  async lookup(path: string): Promise<Entry | undefined> { await this.drain(); return this.request("lookup", [path]); }
+  async readFile(path: string): Promise<Uint8Array | undefined> { await this.drain(); return this.request("readFile", [path]); }
+  async listFiles(path = "/"): Promise<string[]> { await this.drain(); return this.request("listFiles", [path]); }
   mkdirp(path: string): Promise<void> { return this.mutate("mkdirp", [path]); }
   writeFile(path: string, text: string | Uint8Array, append = false): Promise<void> { return this.mutate("writeFile", [path, append], typeof text === "string" ? new TextEncoder().encode(text) : text); }
   remove(path: string): Promise<boolean> { return this.mutate("remove", [path]); }

@@ -1,10 +1,11 @@
 // Paired diagnostic experiment, not a hardware performance claim. BASELINE_ROOT is an archive of
-// the named main commit (runtime/core and web/src/fs.ts); no Rust or WASM artifacts are needed.
+// the named main commit (runtime/, web/src/fs.ts); no Rust or WASM artifacts are needed.
 import { strict as assert } from "node:assert";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { chromium, firefox, webkit, type Browser } from "playwright";
 import { browserBuildConfig } from "../../scripts/browser-build";
+import { filesystemBaselinePlugin } from "./filesystem-bench-baseline";
 let scratch: string | undefined, server: ReturnType<typeof Bun.serve> | undefined, browser: Browser | undefined, launch: Promise<Browser> | undefined;
 let cleanupPromise: Promise<void> | undefined;
 function cleanup(): Promise<void> {
@@ -22,9 +23,7 @@ try {
   const out = join(scratch, "dist"), main = join(scratch, "main.ts");
   await Bun.write(main, `import ${JSON.stringify(resolve(import.meta.dir, "filesystem-bench-main.ts"))};`);
   const config = browserBuildConfig([main, resolve(import.meta.dir, "filesystem-bench-worker.ts"), resolve(import.meta.dir, "../src/fs-worker.ts")], out);
-  config.plugins!.unshift({ name: "named-baseline", setup(build) {
-    build.onResolve({ filter: /^benchmark:baseline-/ }, ({ path }) => ({ path: resolve(process.env.BASELINE_ROOT!, path.endsWith("core") ? "runtime/core/index.ts" : "web/src/fs.ts") }));
-  } });
+  config.plugins!.unshift(filesystemBaselinePlugin(process.env.BASELINE_ROOT));
   const built = await Bun.build(config);
   assert.ok(built.success, built.logs.map(String).join("\n"));
   await Bun.write(join(out, "index.html"), '<!doctype html><script type="module" src="./main.js"></script>');

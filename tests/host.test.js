@@ -160,3 +160,14 @@ test('append writes reacquire guest iovecs after filesystem stat reentry', () =>
   expect(h.wasi.descriptors.get(fd).resource.offset).toBe(4);
   h.wasi.descriptors.dispose();
 });
+test('fd_sync and fd_datasync invoke the filesystem durability barrier and report failure', () => {
+  const fs = new MemFS(); fs.writeFile('/file', 'saved');
+  const calls = [];
+  fs.sync = handle => { calls.push(handle); return 29; };
+  const h = host(fs);
+  const fd = h.open('file');
+  expect(h.calls.fd_sync(fd)).toBe(29);
+  expect(h.calls.fd_datasync(fd)).toBe(29);
+  expect(calls.length).toBe(2);
+  expect(h.calls.fd_sync(999)).toBe(8);
+});

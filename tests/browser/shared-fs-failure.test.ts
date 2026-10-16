@@ -49,7 +49,7 @@ test("filesystem worker load failure rejects startup and wakes descendant reques
     try {
       await Promise.resolve();
       FailingWorker.current.crash("module load failed");
-      expect(await startup).toBeInstanceOf(Error);
+      expect((await startup).message).toBe("Filesystem worker failed: module load failed");
       expect((await childResult).errno).toBe(11);
       await expect(fs.flush()).rejects.toThrow("Filesystem worker failed: module load failed");
       expect(() => fs.fork()).toThrow("Filesystem worker failed: module load failed");
@@ -57,6 +57,32 @@ test("filesystem worker load failure rejects startup and wakes descendant reques
     } finally { request.release(); child.dispose(); fs.dispose(); }
   });
 }, 3000);
+
+for (const operation of ["flush", "readFile", "lookup", "listFiles"] as const) {
+  test(`pending ${operation} reports the worker's failure instead of cancellation errno`, async () => {
+    await fixture(async () => {
+      const backend = new MemoryBackend();
+      let entered!: () => void;
+      let finish!: () => void;
+      const running = new Promise<void>(resolve => { entered = resolve; });
+      const barrier = new Promise<void>(resolve => { finish = resolve; });
+      const original = backend.execute.bind(backend);
+      backend.execute = async (name, args, bytes) => {
+        if (name === operation) { entered(); await barrier; }
+        return original(name, args, bytes);
+      };
+      Object.assign(backend, { flush: async () => { entered(); await barrier; } });
+      FailingWorker.service = new FilesystemService(backend);
+      const fs = new SharedFilesystem();
+      try {
+        const pending = fs[operation]("/file").catch(error => error);
+        await running;
+        FailingWorker.current.crash("filesystem already has a writer");
+        expect((await pending).message).toBe("Filesystem worker failed: filesystem already has a writer");
+      } finally { finish(); fs.dispose(); }
+    });
+  }, 3000);
+}
 
 test("filesystem worker death cancels an in-flight service operation and all later calls", async () => {
   await fixture(async () => {
@@ -77,7 +103,7 @@ test("filesystem worker death cancels an in-flight service operation and all lat
       const pending = fs.writeFile("/pending", "not acknowledged").catch(error => error);
       await running;
       FailingWorker.current.crash("backend crashed");
-      expect((await pending).errno).toBe(11);
+      expect((await pending).message).toBe("Filesystem worker failed: backend crashed");
       await expect(fs.readFile("/existing")).rejects.toThrow("Filesystem worker failed: backend crashed");
       await expect(fs.writeFile("/later", "x")).rejects.toThrow("Filesystem worker failed: backend crashed");
       await expect(fs.flush()).rejects.toThrow("Filesystem worker failed: backend crashed");

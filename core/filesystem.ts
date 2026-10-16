@@ -40,6 +40,8 @@ export interface FileSystem {
   resize(handle: FileHandle, size: number, truncate: boolean): number;
   /** Zero on success, positive WASI errno on failure. */
   setMtime(handle: FileHandle, mtime: number): number;
+  /** Explicit durability barrier; pure-memory filesystems need no storage work. */
+  sync?(handle: FileHandle): number;
   readdir(handle: FileHandle): DirectoryEntry[];
   /** Atomically create at parent/name; exclusive rejects existing entries. Nonexclusive file
    * creation returns the current entry, even if it appeared after resolve. */

@@ -35,9 +35,49 @@ with `Atomics.wait`, without changing preview1.
 
 ## Shared filesystem service
 
-One filesystem worker runs `installFilesystemWorker(self)` and owns a `MemoryBackend`. Its
-serialized `execute` boundary accepts asynchronous backends, but this step has no persistence.
-The page, editor and every guest share that tree; completed writes are visible before exit.
+One filesystem worker runs `installFilesystemWorker(self, backendFactory)` and owns the tree.
+The browser entrypoint selects `PersistentBackend` with `IndexedDBStorage` by default; standalone
+workers may still use the default `MemoryBackend`. The page, editor and every guest share that
+tree; completed writes are visible before exit.
+
+### Persistence and durability
+
+`StorageBackend` separates index loading, immutable payload reads, batched commits and flushing
+from guest transport. `PersistentBackend.open(storage)` loads only the index. Payloads enter the
+shared pool on first read or modification; clean idle files can leave it again. The workspace
+may therefore exceed the 1 GiB resident pool, subject to browser storage quota. Dirty data cannot
+be evicted before its checkpoint commits. Files may span segments and are limited by the configured shared pool.
+
+Ordinary writes acknowledge shared-memory completion, not durability. Background checkpoints
+collect changed shared slots (including direct guest writes) and changed inode metadata. Each
+checkpoint copies a coherent view under the shared locks, releases them, and commits in the
+background. While a checkpoint is pending, timer-driven checkpoints coalesce later edits instead
+of queuing more payload copies. Namespace link counts track renames and removals incrementally;
+only deleting a subtree visits that subtree. A cold read leaves the service queue while waiting
+for storage, then revalidates its capability and current path before execution, so it cannot hold
+up unrelated memory reads or writes. `fd_sync`,
+`fd_datasync`, `client.asyncCall("flush")` and the page's `fs.flush()` explicitly wait for storage.
+`fs.drain()` is only a page-side ordering barrier. Editors mark a save successful and notify HMR
+only after the durable flush resolves; errors leave the edit unsaved. Startup publishes a hidden
+completion directory only after all examples or template files are written. An interrupted seed
+is retried as a clean initialization; completed workspaces preserve edits and intentional deletions.
+The sandbox's explicit reset restores its template and retries an interrupted reset on next startup.
+
+IndexedDB commits use strict-durability atomic transactions. Immutable payloads and checksummed
+metadata deltas commit beside the previous version, together with the active-generation marker.
+Every 128 checkpoints, a new checksummed base index replaces the older of two snapshot slots.
+Garbage collection retains payloads needed by both bases, their replayable deltas and still-open
+detached files; these runtime-only payload pins do not resurrect deleted names. Recovery discards
+abandoned journal successors before committing again, preventing an old broken branch from
+reconnecting to a new save. It validates checksums and the inode graph; existing
+but unrecoverable storage raises an error rather than silently creating an empty filesystem.
+
+One Web Lock is held for the database connection's lifetime. A second tab using the same database
+is refused with a filesystem-worker error, not made a competing writer or a stale read-only
+copy. Closing the first tab releases its lock. `SharedFilesystem({ persistence: false })` selects
+a disposable memory-only filesystem; `name` selects an isolated database for tests/workspaces.
+The worker is not a power-loss-safe host filesystem beyond the browser's strict IndexedDB
+transaction guarantee; closing a page without a completed flush may lose its uncommitted edits.
 
 Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
 JSON operation/arguments and optional binary input. Results overwrite the data region. Large
@@ -72,8 +112,9 @@ The service owns the page allocator and grows capacity geometrically in 64 KiB p
 before execution; only the service grows their backing storage. A synchronous guest therefore
 sees completed growth without returning to its event loop or receiving another port message.
 `createFilesystemIdentity(undefined, maxBytes)` configures
-the pool cap (1 GiB by default, rounded to whole segments); an individual file supports 256 pages
-(16 MiB). A full pool reports WASI ENOSPC; exceeding the per-file limit reports EFBIG.
+the pool cap (1 GiB by default, rounded to whole segments); files can span segments up to the
+shared address space. A full pool reports WASI ENOSPC, while a request beyond the addressable
+maximum reports WASI EFBIG.
 `resources()` reports allocated backing bytes, data-pool and metadata bytes (including private
 capability tables), used/free bytes, the configured cap, and registered identities. Zero-byte
 segment references do not count as allocated backing storage. Grown segments are retained

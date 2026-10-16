@@ -3,4 +3,8 @@ export { FilesystemService, installFilesystemWorker } from "./service";
 export { MemoryBackend, type FilesystemBackend } from "./backend";
 export { createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection, FilesystemError } from "./protocol";
 
-export { DEFAULT_SHARED_MAX_BYTES, SHARED_SEGMENT_BYTES, MissingSegmentError, SharedFilesystemState, sharedRevoked, type SharedFileInfo } from "./shared";
+export { DEFAULT_SHARED_MAX_BYTES, SHARED_SEGMENT_BYTES, MissingSegmentError, MissingDataError, SharedFilesystemState, sharedRevoked, type SharedFileInfo } from "./shared";
+
+export { PersistentBackend } from "./persistent";
+export { IndexedDBStorage } from "./indexeddb";
+export type { StorageBackend, PersistedIndex, PersistedNode, PersistenceBatch } from "./storage";

@@ -12,10 +12,14 @@ export interface FilesystemBackend {
   revokeOwner?(owner: number, epoch?: Int32Array): void;
   takeSharedSegments?(): SharedSegment[];
   sharedSegments?(): SharedSegment[];
+  /** Lazy storage reads finish before the service acquires its mutation lock. */
+  prepare?(operation: string, args: any[], data: Uint8Array): void | Promise<void>;
+  flush?(): Promise<void>;
 }
 const namespaceOperations = new Set(["preopen", "create", "link", "removePath", "rename", "writeFile", "mkdirp", "remove", "move"]);
 export class MemoryBackend implements FilesystemBackend {
-  readonly fs = new MemFS();
+  readonly fs: MemFS;
+  constructor(fs = new MemFS()) { this.fs = fs; }
   shared = new SharedFilesystemState();
   private sharedAttached = false;
   private directoryTimes = new Map<FileHandle, number>();
@@ -35,15 +39,16 @@ export class MemoryBackend implements FilesystemBackend {
     this.shared = new SharedFilesystemState(buffer, maxBytes, undefined, segments);
     this.sharedAttached = true;
   }
-  private sync(handle: FileHandle): void {
+  protected sync(handle: FileHandle): void {
     const node = this.fs.nodeForHandle(handle);
     const stat = this.fs.stat(handle);
     if (node.kind === "file") this.shared.register(handle, stat, node.data);
-    else if (this.directoryTimes.get(handle) !== stat.mtime) {
+    else if (this.directoryTimes.get(handle) !== stat.mtime || !this.shared.stat(handle)) {
       this.shared.register(handle, stat);
       this.directoryTimes.set(handle, stat.mtime);
     }
   }
+  protected isLinked(node: Node): boolean { return this.fs.hasNode(node); }
   retain(handle: number): void { this.check(handle); this.fs.retain(handle); this.shared.retain(handle); }
   release(handle: number): void { this.shared.release(handle); this.fs.release(handle); }
   private check(handle: number, kind?: "file" | "directory"): void {
@@ -77,6 +82,8 @@ export class MemoryBackend implements FilesystemBackend {
   private executeOperation(operation: string, args: any[], data: Uint8Array): unknown {
     const [a, b, c] = args;
     switch (operation) {
+      case "flush": return;
+      case "sync": this.check(a); return 0;
       case "preopen": { const handle = this.fs.preopen(a); this.sync(handle); return handle; }
       case "resolve": this.check(a, "directory"); return this.fs.resolve(a, b);
       case "stat": this.check(a); return this.shared.stat(a)!;
@@ -93,19 +100,24 @@ export class MemoryBackend implements FilesystemBackend {
         if (typeof result === "number") this.sync(result);
         return result;
       }
-      case "link": this.path(a); this.path(b); return this.fs.link(a, b);
+      case "link": {
+        this.path(a); this.path(b);
+        const result = this.fs.link(a, b);
+        if (!result && a.node !== undefined) this.shared.relink(a.node);
+        return result;
+      }
       case "removePath": {
         this.path(a); const handle = a.node;
         const removed = handle === undefined ? undefined : this.fs.nodeForHandle(handle);
         const result = this.fs.removePath(a, b);
-        if (!result && handle !== undefined && removed && !this.fs.hasNode(removed)) this.shared.unlink(handle);
+        if (!result && handle !== undefined && removed && !this.isLinked(removed)) this.shared.unlink(handle);
         return result;
       }
       case "rename": {
         this.path(a); this.path(b); const target = b.node;
         const replaced = target === undefined ? undefined : this.fs.nodeForHandle(target);
         const result = this.fs.rename(a, b);
-        if (!result && target !== undefined && target !== a.node && replaced && !this.fs.hasNode(replaced)) this.shared.unlink(target);
+        if (!result && target !== undefined && target !== a.node && replaced && !this.isLinked(replaced)) this.shared.unlink(target);
         return result;
       }
       case "lookup": {
@@ -149,7 +161,7 @@ export class MemoryBackend implements FilesystemBackend {
         const node = this.fs.lookup(a);
         if (node) collect(node);
         const result = this.fs.remove(a);
-        if (result) for (const entry of detached) if (!this.fs.hasNode(entry.node)) this.shared.unlink(entry.handle);
+        if (result) for (const entry of detached) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
         return result;
       }
       case "listFiles": return this.fs.listFiles(a);
@@ -162,7 +174,7 @@ export class MemoryBackend implements FilesystemBackend {
         const target = to.node;
         const replaced = target === undefined ? undefined : this.fs.nodeForHandle(target);
         const result = this.fs.rename(from, to);
-        if (!result && target !== undefined && target !== from.node && replaced && !this.fs.hasNode(replaced)) this.shared.unlink(target);
+        if (!result && target !== undefined && target !== from.node && replaced && !this.isLinked(replaced)) this.shared.unlink(target);
         return result;
       }
       default: throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
