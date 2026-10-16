@@ -83,6 +83,8 @@ Each row has one class. A file with independent changes has separate rows.
 | [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.ts`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
 | [`crates/bunwasm-runtime/src/js/net_address.js`, IP predicates](#tcp-and-ip-helpers) | Port | Adapt Bun's engine independent IPv4 and IPv6 predicates. |
 | [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets and write-side shutdown over the existing host ABI. |
+| [`crates/bunwasm-runtime/src/js/ws_builtin.js`](#portable-ws-builtin) | Port | Bundle the unchanged published ws implementation for the shared Node APIs. |
+| [`scripts/generate-ws.sh` and builtin resolution](#portable-ws-builtin) | Host feature | Original module wrapper supplies Bun's builtin ws import on every engine. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
 | [`patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`](#generated-function-parser-locations) | Port | Bun parser and printer import metadata, reused unchanged from the semantic-import lane. |
 | [`crates/bunwasm-runtime/src/engine_quickjs.rs`, data conversion; `host.rs`, native-test import gate](#quickjs-data-conversion) | Host feature | Original adapter checks buffer tags before calling a throwing getter. |
@@ -90,6 +92,29 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
+
+## Portable ws builtin
+
+`crates/bunwasm-runtime/src/js/ws_builtin.js` is generated from `index.js` and
+`lib/*.js` in the published websockets/ws release `v8.18.3`. Its npm tarball
+integrity is
+`sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg==`,
+pinned in `docs/bun-test-suite/dependencies/bun.lock`. The original MIT license
+is embedded in the generated source and retained in `third_party/ws/LICENSE`.
+
+`scripts/generate-ws.sh` uses native Bun to bundle those CommonJS files without
+changing their implementation. Its original wrapper preserves strict mode,
+maps Node imports to the runtime builtin registry, and returns module.exports.
+Optional native addons remain external and unavailable. The library's existing
+JavaScript implementations handle their absence. The Rust resolver recognizes
+`ws` as a Bun builtin; no project dependency is injected.
+
+Bun's own `src/js/thirdparty/ws.js` at
+`ddab8382bdf6b02f22653758d901fb83ceb85aa8` requires the private C++ WebSocket
+constructor and private HTTP upgrade hooks. Those bindings are not available
+on our engines. The portable upstream implementation uses the existing
+node:net and node:http adapters instead. It adds no host networking path.
+See [the ws builtin](ws-builtin.md) for generation and verification.
 
 ## TCP and IP helpers
 
