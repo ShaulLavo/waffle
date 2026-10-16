@@ -151,6 +151,6 @@ export function unpack(bytes: Uint8Array): any {
 export type RequestMessage = { id: number; buffer: SharedArrayBuffer } | { connect: FilesystemConnection } | { sweep: true } | { trim: true } | { discard: number };
 export function errno(error: unknown): number {
   if (error instanceof FilesystemError) return error.errno;
-  if (error instanceof RangeError) return 27; // EFBIG
+  if (error instanceof RangeError) return 22; // EFBIG
   return 29; // EIO, never invent ENOENT for an internal failure.
 }

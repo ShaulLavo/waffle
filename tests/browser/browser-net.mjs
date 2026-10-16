@@ -1,3 +1,4 @@
+import { stopShell } from "./stop-shell.ts";
 // End-to-end networking test of the playground in real browsers (Chromium desktop, WebKit iPhone).
 //   cd web && bun run build && [ENGINES=browser,quickjs] [SLOTS=imports] node tests/browser-net.mjs [chromium|webkit …]
 // Starts web/serve.ts and a local fixture server on another origin (no public internet), drives
@@ -270,8 +271,7 @@ async function checkHtmlEntry(page, context, appUrl, name) {
     page.off("console", ownerLog);
     await preview.close();
     await page.evaluate(() => document.querySelector("#hmr-fixture")?.remove());
-    await page.click(".xterm");
-    await page.keyboard.press("Control+c");
+    await stopShell(page);
     await waitFor(page, /\^C/);
   }
 }
@@ -391,8 +391,7 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   check(`${name}: external WebSockets retain native networking`, external.reply === "native external websocket" && external.instance);
 
   // Ctrl-C stops the server; the preview then reports nothing listening.
-  await page.click(".xterm");
-  await page.keyboard.press("Control+C");
+  await stopShell(page);
   await waitFor(page, /\^C/);
   const after = await preview.goto(previewUrl);
   check(`${name}: preview gone after Ctrl-C`, after?.status() === 502, `status ${after?.status()}`);
