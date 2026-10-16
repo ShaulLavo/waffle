@@ -81,7 +81,9 @@ export function basename(path: string): string {
 }
 
 export class MemFS {
-  constructor(public root: DirNode = newDir()) {}
+  constructor(public root: DirNode = newDir()) {
+    adoptInodes(root);
+  }
 
   lookup(path: string): Node | undefined {
     let node: Node = this.root;

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  web:
+    name: Web host
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Unit tests
+        run: bun run test
+      - name: Type check
+        run: bun run check
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Browser host smoke (no Rust or dist artifacts)
+        env:
+          SMOKE_PORT: "4179"
+        run: |
+          listeners=$(ss -H -ltn "sport = :$SMOKE_PORT")
+          test -z "$listeners"
+          bun run test:browser

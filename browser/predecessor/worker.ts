@@ -3,7 +3,7 @@
 // program to engine-host.js, which runs it in this worker's own JS engine.
 
 import { startEngineHost } from "./engine-host.js";
-import { type DirNode, MemFS } from "./fs";
+import { type DirNode, MemFS, adoptInodes } from "./fs";
 import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
 import { installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
@@ -113,7 +113,10 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     token: req.child?.token,
     stdin: req.child?.pipes[0],
     output: (fd, data) => post(fd === 2 ? "stderr" : "stdout", data),
-    sync: (snapshot) => mergeFilesystemChanges(fs, snapshot),
+    sync: (snapshot) => {
+      mergeFilesystemChanges(fs, snapshot);
+      adoptInodes(fs.root);
+    },
     launch: (meta, transport) => {
       const cwd = meta.cwd || req.env.PWD || "/";
       if (fs.lookup(cwd)?.kind !== "dir") throw Object.assign(new Error(`spawn: cwd does not exist: ${cwd}`), { code: "ENOENT" });
