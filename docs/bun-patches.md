@@ -27,6 +27,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`jsc/webkit-wasi.patch`, module slots](#webkit-module-import-slots) | Upstream bug | Give import slots a full JSValue stride and initialize the whole slot. |
 | [`jsc/webkit-wasi.patch`, non-JIT declarations](#webkit-non-jit-declarations) | Upstream bug | Expose a required enum without DFG and add two missing includes. |
 | [`third_party/libc/src/wasi/mod.rs` and `posix_compat.rs`](#libc) | Port | Declare missing WASI POSIX types and functions. |
+| [`third_party/rquickjs-sys/quickjs/quickjs.c`, buffer tags](#quickjs-data-conversion) | Host feature | Query ordinary and shared buffer classes without throwing. |
 | [`third_party/rquickjs-sys/quickjs/quickjs.c`, call locations](#quickjs) | Host feature | Match JSC's call-site stack columns. |
 | [`third_party/rquickjs-sys/quickjs/quickjs.c`, inspection helpers](#quickjs) | Host feature | Inspect keys and iterator entries without consuming them. |
 | [`third_party/rquickjs-sys/quickjs/quickjs.c`, async context](#quickjs) | Host feature | Capture and restore async context in promise reactions. |
@@ -66,6 +67,12 @@ Each row has one class. A file with independent changes has separate rows.
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
 | [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.js`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
+| [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
+| [`patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`](#generated-function-parser-locations) | Port | Bun parser and printer import metadata, reused unchanged from the semantic-import lane. |
+| [`crates/bunwasm-runtime/src/engine_quickjs.rs`, data conversion; `host.rs`, native-test import gate](#quickjs-data-conversion) | Host feature | Original adapter checks buffer tags before calling a throwing getter. |
+| [`third_party/rquickjs-sys/quickjs/quickjs.c`, buffer tag predicate](#quickjs-data-conversion) | Host feature | Original nonthrowing class query for ordinary and shared buffers. |
+| [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
+
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
 
@@ -147,6 +154,42 @@ All other retained upstream files are unchanged.
 ## App compatibility fixtures
 
 `scripts/app-matrix/apps.mjs` contains original minimal projects that use published framework APIs. The dependency versions in that file identify the npm upstream revisions. No template source or upstream implementation is copied or adapted. The runner, registry recorder, network namespace wrapper, shared assertions/classifier, and browser driver are original bun-wasm host adapters. The namespace wrapper uses Linux user/network namespaces without changing any upstream source. Retained diagnostic fixtures under `scripts/app-matrix/review-evidence/` are unmodified logs from the pinned packages in the 2026-10-15 census, including Next 15.5.6, Prisma 6.17.1, Vite 7.1.12 and Rollup 4.64.7; they are regression inputs, not adapted implementations. The browser driver calls the existing playground test helpers. Recorded dependency tarballs remain unmodified in the external cache, verified by SHA-256; registry metadata is rewritten only in loopback responses to point tarballs at that mirror.
+
+## QuickJS data conversion
+
+`engine_quickjs.rs::to_val` is an original adapter over rquickjs 0.13.0 and the
+vendored QuickJS-ng API. No upstream source is copied. The adapter now checks
+`JS_bunwasm_IsArrayBufferLike` before `ArrayBuffer::from_object`. The latter calls the throwing
+`JS_GetArrayBuffer` getter even for non-buffer objects and leaves a TypeError
+pending while returning None. Ordinary arrays and objects must cross the native
+boundary without creating an exception. Native Rust tests also require the
+WASI-only import in the original `host.rs` adapter to be target-gated; native
+builds report that import route unsupported rather than linking a WASI symbol. The import-selector regression exposed
+this on QuickJS; a native Rust regression also observes the pending exception.
+The original helper added to `third_party/rquickjs-sys/quickjs/quickjs.c` checks
+both ArrayBuffer and SharedArrayBuffer class tags without invoking a getter.
+QuickJS's existing `JS_IsArrayBuffer` recognizes only the first class, so using it
+alone would lose the shared-buffer conversion that the getter already supports.
+
+## Generated function imports
+
+`crates/bunwasm-runtime/src/js/function.js` is an original adapter for the public
+Function, AsyncFunction, GeneratorFunction and AsyncGeneratorFunction constructors.
+It uses the caller-origin helper and Bun parser keyword positions to route
+generated dynamic imports through the runtime resolver. No Bun, Node, QuickJS or WebKit implementation is
+copied. Native constructors still parse the arguments and construct the function. On QuickJS
+and the host engine, native parsing validates the original function before Bun's
+parser identifies replacements. Methods named `import` remain intact and invalid
+original syntax still throws. Temporary
+validation functions are never executed. JSC keeps its native constructors because
+its generated imports already preserve the caller origin. The host adapter also
+attaches the creating module's source URL to generated bodies. Otherwise the
+constructor proxy itself would replace available eval-origin metadata with an
+internal runtime location, even in a body without an import. This directive is
+visible in generated function source, as is the dynamic-import replacement.
+This fixes the published Prettier 3.6.2 CLI's generated import without changing
+its package or fixture. Caller-origin lookup temporarily uses the runtime's own
+stack formatter so user custom formatters cannot change module resolution.
 
 ## Caller source origin
 
@@ -612,6 +655,29 @@ The numbered JavaScript files in `crates/bunwasm-runtime/generated/builtins/` re
 ## Builtin loader adapter
 
 Class **Host feature**. `scripts/generate-bun-builtins.mjs`, its shell runner, the selection manifest, and `crates/bunwasm-runtime/src/js/bun_builtins.js` are original adapters. `src/js/bun_builtin_globals.js` is the original bootstrap capture of intrinsic constructors, before application code can replace public globals. They call Bun's codegen and consume its generated module protocol. They do not copy the codegen implementation. Rust source lookup and Engine natives are original bun-wasm glue. The loader uses lazy factories, isolated caches, explicit unsupported errors, and the existing builtin implementations for dependencies not switched yet. [bun-builtins.md](bun-builtins.md) records its limits and hook status.
+
+## Generated-function parser locations
+
+The generated-function adapter now uses original import-keyword byte positions
+from Bun's full parser, then converts them to UTF-16 offsets in each original
+constructor argument. It keeps comments, templates, property names, regex literals
+and caller strings intact. Native constructors validate the original arguments
+before rewriting. A function literal accesses a fixed intrinsic-prototype helper,
+so lexical globalThis bindings and with scopes cannot capture the callback.
+Specifier conversion occurs once inside an async function and rejects Symbols.
+This is original glue, with no package implementation copied.
+
+| File | Classification | Upstream and local changes |
+| --- | --- | --- |
+| patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch | Upstream patch | Reused unchanged from the semantic-import lane, Bun wasm commit cd95fa7a13b3f13be73e512b38ec111c1c228084. Exposes parser keyword positions and printer metadata. |
+| crates/bunwasm-transpiler/src/lib.rs function_imports | Original adapter | Constructs the native function grammar around original argument ranges and translates parser offsets. |
+
+Patch 0010 touches src/js_parser/lib.rs, src/js_parser/parse/parse_import_export.rs
+and src/js_printer/lib.rs at upstream Bun revision
+9510e74152073d850a18758ca41114d8f214ffa6. The parser collector records only real import
+expressions and restores its previous thread-local state on unwind. The printer
+metadata is consumed by the semantic-import lane; this adapter consumes only the
+parser collector. The existing shared vendor checkout was read, never edited.
 
 ## Bun Console constructor
 
