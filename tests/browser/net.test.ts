@@ -200,6 +200,50 @@ test("disposing a full ring releases blocked writes and drops queued records", a
   }
 });
 
+test("shared-filesystem notifications wake HMR without replaying stale saved bytes", async () => {
+  const { NetHelper } = await import("../src/net/helper");
+  const { NetHost } = await import("../src/net/host");
+  const sab = createRing();
+  const fs = new MemFS();
+  const replacements: string[] = [];
+  const helper = new NetHelper(sab);
+  const host = new NetHost(sab, () => {}, (path, bytes) => {
+    replacements.push(path);
+    fs.writeFile(path, bytes);
+  });
+  try {
+    for (const latest of ["newer", "", "x".repeat(MAX_RECORD * 2)]) {
+      // Save A, queue its wakeup, then commit save B before the guest consumes A.
+      // The old changeFile(A) path used to write A again at this point, rolling B back.
+      fs.writeFile("/app.ts", "older");
+      await helper.notifyFileChanged("/app.ts");
+      fs.writeFile("/app.ts", latest);
+      expect(host.slots().poll(0)).toBe(1);
+      expect(decode(fs.readFile("/app.ts")!)).toBe(latest);
+      expect(replacements).toEqual([]);
+      await helper.notifyFileChanged("/app.ts");
+      host.slots().poll(0);
+      expect(decode(fs.readFile("/app.ts")!)).toBe(latest);
+    }
+    // Callers that have not written the shared filesystem can still replace a guest file.
+    await helper.changeFile("/app.ts", "direct replacement");
+    host.slots().poll(0);
+    expect(decode(fs.readFile("/app.ts")!)).toBe("direct replacement");
+    expect(replacements).toEqual(["/app.ts"]);
+  } finally { helper.dispose(); }
+});
+
+test("shared-filesystem notifications reject invalid paths and stopped workers", async () => {
+  const { NetHelper } = await import("../src/net/helper");
+  const helper = new NetHelper(createRing());
+  try {
+    await expect(helper.notifyFileChanged("relative.ts")).rejects.toThrow("Expected an absolute guest path");
+    await expect(helper.notifyFileChanged("/bad\0path")).rejects.toThrow("Expected an absolute guest path");
+    helper.dispose();
+    await expect(helper.notifyFileChanged("/app.ts")).rejects.toThrow("The server stopped");
+  } finally { helper.dispose(); }
+});
+
 test("stopping a worker rejects a file update blocked behind a full ring", async () => {
   const { NetHelper } = await import("../src/net/helper");
   const sab = createRing();

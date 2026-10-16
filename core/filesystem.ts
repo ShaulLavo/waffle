@@ -33,12 +33,17 @@ export interface FileSystem {
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number;
   /** Bytes transferred, or negative WASI errno; partial success returns its byte count. */
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number;
+  /** Select EOF and write all chunks atomically. Success includes the resulting description offset;
+   * failure is negative WASI errno. A partial write reports only its committed bytes and offset. */
+  append(handle: FileHandle, chunks: readonly Uint8Array[]): { written: number; offset: number } | number;
   /** Zero on success, positive WASI errno on failure. */
   resize(handle: FileHandle, size: number, truncate: boolean): number;
   /** Zero on success, positive WASI errno on failure. */
   setMtime(handle: FileHandle, mtime: number): number;
   readdir(handle: FileHandle): DirectoryEntry[];
-  create(path: ResolvedPath, kind: "file" | "directory"): FileHandle | { error: number };
+  /** Atomically create at parent/name; exclusive rejects existing entries. Nonexclusive file
+   * creation returns the current entry, even if it appeared after resolve. */
+  create(path: ResolvedPath, kind: "file" | "directory", exclusive?: boolean): FileHandle | { error: number };
   link(from: ResolvedPath, to: ResolvedPath): number;
   removePath(path: ResolvedPath, directory: boolean): number;
   rename(from: ResolvedPath, to: ResolvedPath): number;

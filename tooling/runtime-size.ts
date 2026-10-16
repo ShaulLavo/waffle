@@ -57,7 +57,7 @@ async function layer(name: string, entries: readonly string[], guideKiB: number)
 
 async function application(name: "web" | "sandbox", splitting: boolean, serviceWorker: { minified: number; gzip: number }) {
   const outdir = resolve(root, ".runtime-size", `${name}-${splitting ? "split" : "unsplit"}`);
-  const result = await build(browserBuildConfig([resolve(root, name, "src/main.ts"), resolve(root, "web/src/worker.ts")], outdir, { splitting }));
+  const result = await build(browserBuildConfig([resolve(root, name, "src/main.ts"), resolve(root, "web/src/worker.ts"), resolve(root, "web/src/fs-worker.ts")], outdir, { splitting }));
   const outputs = result.metafile!.outputs;
   const keyFor = (name: string) => {
     const key = Object.keys(outputs).find((path) => posix.normalize(path) === name);
@@ -72,17 +72,20 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
   const rowFor = async (key: string) => ({ path: posix.normalize(key), ...await bytes(fileFor(key)) });
   const main = initialJavaScript(outputs, [keyFor("main.js")]);
   const worker = initialJavaScript(outputs, [keyFor("worker.js")]);
-  const initialKeys = Array.from(new Set(main.concat(worker))).sort();
+  const initialKeys = Array.from(new Set(main.concat(worker, initialJavaScript(outputs, [keyFor("fs-worker.js")])))).sort();
   const logicalFiles = (await Promise.all(initialKeys.map(rowFor))).concat([{ path: "sw.js", ...serviceWorker }]);
-  const logicalEntries = await Promise.all(["main.js", "worker.js"].map(async (entry) => {
+  const logicalEntries = await Promise.all(["main.js", "worker.js", "fs-worker.js"].map(async (entry) => {
     const files = await Promise.all(initialJavaScript(outputs, [keyFor(entry)]).map(rowFor));
     return { entry, ...totals(files), files };
   }));
   // Root page and scoped worker resolve a shared chunk to different URLs, so both count.
-  const initialDownloads = (await Promise.all(main.map(rowFor))).concat(
+  const downloadRows = (await Promise.all(main.map(rowFor))).concat(
     await Promise.all(worker.map(async (key) => { const row = await rowFor(key); return { ...row, path: `__bunwasm/${row.path}` }; })),
+    await Promise.all(initialJavaScript(outputs, [keyFor("fs-worker.js")]).map(rowFor)),
     [{ path: "sw.js", ...serviceWorker }],
   );
+  // Page and filesystem worker share root URLs; a cold URL downloads once, not once per importer.
+  const initialDownloads = Array.from(new Map(downloadRows.map(row => [row.path, row])).values());
   const inputs = Array.from(new Set(initialKeys.flatMap((key) => Object.keys(outputs[key]!.inputs)))).sort();
   const procInputs = inputs.filter((path) => /(?:\/|^)subprocess(?:[-.]|\/)/.test(path));
   return {
@@ -102,9 +105,9 @@ export async function runtimeSizeReport() {
   const previewSocketScript = await previewWebsocketScript();
   const layers = await Promise.all([
     layer("core", ["runtime/core/index.ts"], 6),
-    layer("fs", ["web/src/fs.ts"], 6),
+    layer("fs", ["runtime/fs/index.ts"], 6),
     layer("net", ["web/src/net/host.ts", "web/src/net/helper.ts", "web/src/preview.ts"], 14),
-    layer("proc", ["web/src/subprocess.js", "web/src/subprocess-broker.ts", "web/src/subprocess-fs.ts"], 8),
+    layer("proc", ["web/src/subprocess.js", "web/src/subprocess-broker.ts"], 8),
   ]);
   // This separately linked preview client uses a source-wrapper plugin; measure its real build.
   const net = layers.find((layer) => layer.name === "net")!;

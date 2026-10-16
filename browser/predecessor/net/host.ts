@@ -431,6 +431,14 @@ export class NetHost {
   }
 
   private dispatch(handle: number, kind: number, payload: Uint8Array): void {
+    if (kind === Kind.FileChanged) {
+      const meta: unknown = JSON.parse(decoder.decode(payload));
+      if (!meta || typeof meta !== "object" || !("path" in meta) || typeof meta.path !== "string" || !meta.path.startsWith("/") || meta.path.includes("\0")) throw new TypeError("Invalid file change notification");
+      // HMR polls file contents. The completed shared-FS write is already visible; wake
+      // the guest to inspect it without replaying stale bytes through writeFile.
+      this.news();
+      return;
+    }
     if (kind === Kind.FileStart || kind === Kind.FileData || kind === Kind.FileEnd) {
       this.receiveFile(kind, payload);
       return;

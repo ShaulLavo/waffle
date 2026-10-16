@@ -123,7 +123,22 @@ export class NetHelper {
     return true;
   }
 
-  /** Replace a running worker's file, even while wasm blocks its event loop. */
+  /** Wake a running guest after a shared-filesystem write has completed. No bytes are reapplied:
+   * an older notification must not overwrite a newer save already visible to the guest.
+   */
+  notifyFileChanged(path: string): Promise<void> {
+    if (!path.startsWith("/") || path.includes("\0")) return Promise.reject(new TypeError("Expected an absolute guest path"));
+    this.fileWrites = this.fileWrites.then(async () => {
+      if (this.disposed) throw new Error("The server stopped");
+      await this.ring.write(0, Kind.FileChanged, json({ path }));
+      if (this.disposed) throw new Error("The server stopped");
+    });
+    return this.fileWrites;
+  }
+
+  /** Replace a running worker's file, even while wasm blocks its event loop. For callers that
+   * have not already written to its shared filesystem; editor saves use notifyFileChanged instead.
+   */
   changeFile(path: string, contents: string | Uint8Array): Promise<void> {
     if (!path.startsWith("/") || path.includes("\0")) return Promise.reject(new TypeError("Expected an absolute guest path"));
     const bytes = typeof contents === "string" ? encoder.encode(contents) : contents.slice();

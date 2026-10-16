@@ -196,11 +196,11 @@ function check(name, ok, detail = "") {
 }
 
 async function checkHtmlEntry(page, context, appUrl, name) {
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const fs = globalThis.playground.fs;
-    fs.writeFile("/home/user/index.html", '<!doctype html><title>HTML entry</title><link rel="stylesheet" href="./app.css"><h1 id="html-app"></h1><script type="module" src="./app.ts"></script>');
-    fs.writeFile("/home/user/app.ts", 'const message: string = "bundled HTML entry"; document.querySelector("#html-app").textContent = message; if (import.meta.hot) { import.meta.hot.accept(); import.meta.hot.on("bun:ws:connect", () => { globalThis.__hmrConnected = true; }); }');
-    fs.writeFile("/home/user/app.css", 'body { color: rgb(12, 34, 56); }');
+    await fs.writeFile("/home/user/index.html", '<!doctype html><title>HTML entry</title><link rel="stylesheet" href="./app.css"><h1 id="html-app"></h1><script type="module" src="./app.ts"></script>');
+    await fs.writeFile("/home/user/app.ts", 'const message: string = "bundled HTML entry"; document.querySelector("#html-app").textContent = message; if (import.meta.hot) { import.meta.hot.accept(); import.meta.hot.on("bun:ws:connect", () => { globalThis.__hmrConnected = true; }); }');
+    await fs.writeFile("/home/user/app.css", 'body { color: rgb(12, 34, 56); }');
   });
   await page.evaluate(() => void globalThis.playground.shell.submit("bun ./index.html"));
   const output = await waitFor(page, /Started development server:|error:|crashed/);
@@ -251,7 +251,7 @@ async function checkHtmlEntry(page, context, appUrl, name) {
     const markers = await Promise.all([preview.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID()), iframe.evaluate(() => globalThis.__hmrVisit = crypto.randomUUID())]);
     await page.evaluate(async () => {
       const helper = globalThis.playground.previews.servers.get(3000);
-      const original = new TextDecoder().decode(globalThis.playground.fs.readFile("/home/user/app.ts"));
+      const original = new TextDecoder().decode(await globalThis.playground.fs.readFile("/home/user/app.ts"));
       const edited = original.replace("bundled HTML entry", "bundled HMR update");
       if (new TextEncoder().encode(original).length !== new TextEncoder().encode(edited).length) throw new Error("HMR fixture edit must preserve the file size");
       await helper.changeFile("/home/user/app.ts", edited);

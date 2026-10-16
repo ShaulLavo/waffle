@@ -31,6 +31,8 @@ export const Kind = {
   FileStart: 6,
   FileData: 7,
   FileEnd: 8,
+  /** A file already changed in the shared filesystem: JSON {path}. Wake only; never replace bytes. */
+  FileChanged: 9,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 

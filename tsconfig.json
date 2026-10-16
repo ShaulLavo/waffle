@@ -4,5 +4,5 @@
     "lib": ["ES2022", "DOM"], "strict": true, "noUncheckedIndexedAccess": true,
     "noEmit": true, "skipLibCheck": true
   },
-  "include": ["core"]
+  "include": ["core", "fs"]
 }

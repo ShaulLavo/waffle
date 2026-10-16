@@ -62,13 +62,13 @@ async function printSandboxOutput(page, long) {
 }
 
 async function openLongFile(page, app, path, long) {
-  await page.evaluate(([app, path, long]) => {
+  await page.evaluate(async ([app, path, long]) => {
     const ui = globalThis[app];
-    ui.fs.writeFile(`${app === "playground" ? "/home/user" : "/home/user/app"}/${path}`, `// ${long}`);
+    await ui.fs.writeFile(`${app === "playground" ? "/home/user" : "/home/user/app"}/${path}`, `// ${long}`);
     if (app === "sandbox" && !document.querySelector(`#file-select option[value="${path}"]`)) {
       document.querySelector("#file-select").add(new Option(path, path));
     }
-    ui.editor.open(app === "playground" ? `/home/user/${path}` : path);
+    await ui.editor.open(app === "playground" ? `/home/user/${path}` : path);
   }, [app, path, long]);
 }
 

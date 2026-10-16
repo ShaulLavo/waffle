@@ -49,7 +49,7 @@ export async function buildBrowserEntries(entrypoints: string[], outdir: string)
   // chunk (including dynamic chunks and their maps), not just today's static closure.
   for (const output of result.outputs) {
     const path = relative(outdir, output.path);
-    if (path === "worker.js" || path === "worker.js.map" || path.startsWith("chunks/")) {
+    if (path === "worker.js" || path === "worker.js.map" || path === "fs-worker.js" || path === "fs-worker.js.map" || path.startsWith("chunks/")) {
       await Bun.write(join(outdir, "__bunwasm", path), output);
     }
   }

@@ -281,10 +281,15 @@ export class Wasi {
 
   private writeOut(file: Extract<Resource, { kind: "file" }>, iovs: number, count: number, at: number | null): number {
     if (count === 0) return 0;
-    // Append metadata can reenter and grow memory; build guest ranges only after it returns.
-    const pos = at ?? (file.append ? this.opts.fs.stat(file.handle).size : file.offset);
     const chunks = this.iovecs(iovs, count);
     if (chunks.every(chunk => chunk.length === 0)) return 0;
+    if (at === null && file.append) {
+      const result = this.opts.fs.append(file.handle, chunks);
+      if (typeof result === "number") return result;
+      file.offset = result.offset;
+      return result.written;
+    }
+    const pos = at ?? file.offset;
     const written = this.opts.fs.write(file.handle, chunks, pos);
     if (written >= 0 && at === null) file.offset = pos + written;
     return written;
@@ -406,6 +411,7 @@ export class Wasi {
         if ((entry.rightsBase & (RIGHT_FD_READ | RIGHT_FD_SEEK)) !== (RIGHT_FD_READ | RIGHT_FD_SEEK)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
+        if (offset < 0n) return EINVAL;
         const read = this.readIn(entry.resource, this.iovecs(iovs, count), Number(offset));
         if (read < 0) return -read;
         this.view().setUint32(nreadPtr, read, true);
@@ -417,6 +423,7 @@ export class Wasi {
         if ((entry.rightsBase & (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) !== (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
+        if (offset < 0n) return EINVAL;
         const written = this.writeOut(entry.resource, iovs, count, Number(offset));
         if (written < 0) return -written;
         this.view().setUint32(nwrittenPtr, written, true);
@@ -563,7 +570,7 @@ export class Wasi {
         if (node === undefined) {
           if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
           if (oflags & O_DIRECTORY) return EINVAL;
-          const result = this.opts.fs.create(path, "file");
+          const result = this.opts.fs.create(path, "file", (oflags & O_EXCL) !== 0);
           if (typeof result !== "number") return result.error;
           node = result;
         }

@@ -62,3 +62,7 @@ jobs:
         env:
           SPLIT_SMOKE_PORT: "4180"
         run: bun tests/browser-splitting.mjs
+      - name: Shared filesystem service and blocking worker adapter (no WASM)
+        env:
+          FS_SMOKE_PORT: "4181"
+        run: bun tests/browser-filesystem.ts

@@ -74,10 +74,10 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 | [`crates/bunwasm-runtime/src/directory.rs`, `src/js/node_fs.js`, `web/src/engine-host.js`, directory cursors](#directory-cursors) | Host feature | Original directory handles, bounded reads, recursive traversal and Node Dir adapters. |
 
-| [`runtime/core/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, memory, path, descriptor and filesystem-boundary adapters extracted into a reusable package. |
+| [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, memory, path, descriptor and filesystem-boundary adapters extracted into a reusable package. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
-| [esbuild distribution, worker capability, and subprocess adapters](#esbuild-webassembly-distribution) | Host feature | Select the unchanged official wasm distribution, detect unavailable workers, and synchronize stdin and idle filesystem changes. |
+| [esbuild distribution, worker capability, and subprocess adapters](#esbuild-webassembly-distribution) | Host feature | Select the unchanged official wasm distribution, detect unavailable workers, and support asynchronous stdin with live shared filesystem changes. |
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
@@ -179,15 +179,35 @@ The upstream comparisons are recorded in [TCP support](tcp.md).
 
 ## Browser runtime core
 
-Class **Host feature**, **original adapters** in `runtime/core/`, `web/src/fs.ts`, and the
-`wasiPipe` adapter in `web/src/subprocess.js`, and snapshot merges in `web/src/subprocess-fs.ts`.
+Class **Host feature**, **original adapters** in `runtime/core/`, `web/src/fs.ts`, `runtime/fs/`, and the `wasiPipe` adapter in `web/src/subprocess.js`.
 The extraction starts from bun-wasm's own
 `web/src/{wasi.ts,memory-views.js,fs.ts}` at `8716f92`; there is no copied Bun, Node, WebKit,
 brush-web, or browser_wasi_shim implementation in this layer. The preview1 adapter now uses
 opaque filesystem handles keyed by object identity (not serialized inode metadata), reference-counted
-descriptions and descriptor readiness. Snapshot removal/replacement delegates cleanup to MemFS,
-preserving retained descriptions without pinning detached lookup-only nodes. Path walking,
-geometric file growth and snapshot compaction remain local MemFS implementation details. Bun's
+descriptions and descriptor readiness. The filesystem worker and shared-memory protocol are original TypeScript adapters. Their
+memory backend moves the local MemFS implementation from `web/src/fs.ts` at `53a22c6`;
+there is no copied upstream implementation. The OPFS spike informed the scheduling choice,
+not the implementation. One worker allocates inodes, owns open identities and services all
+guests. Ancestor revocation cancels requests and releases each guest's references; bounded
+read/stat caches use a shared mutation epoch. Atomic append selects EOF and writes the whole
+request under shared mutation and file locks; conditional creation carries the caller's exclusivity intent. Transient
+result handles are pinned together before eviction, and rejected cache reads do not touch guest
+buffers. Shared ancestor wakeups also cancel blocked and asynchronous guests if the filesystem
+worker fails. The sandbox's original network adapters send notification-only file-change events
+after a shared-FS save, rather than replaying its old bytes. Copy-at-spawn and merge-at-exit are removed.
+The original `runtime/fs/shared.ts` adapter adds shared file metadata, per-inode locks and
+service-owned 64 KiB page tables across 16 MiB SAB segments. Original connection adapters
+publish zero-byte growable segment references before execution, so service-owned backing
+growth is visible even to a synchronous guest that cannot drain port messages. Retained file reads and in-capacity
+writes and appends stay in the guest; namespace edits and geometric capacity growth stay
+at the backend boundary. A guest read holds the file lock once and copies straight into guest
+buffers; writes and appends also hold the global mutation lock. Each checks revocation once
+while holding its locks and reads or writes slot fields only under the lock that guards them.
+Negative `fd_pread`/`fd_pwrite` offsets return EINVAL. Original per-connection capability tables let cached opens and closes
+change atomic local references while the service retains sole ownership of backend pins. The default configurable storage cap is 1 GiB; pool exhaustion uses
+WASI ENOSPC and the per-file page-table limit uses EFBIG. Owner-tagged locks let revocation
+reclaim abandoned guest locks without changing allocator state. This is original bun-wasm code,
+not an adapted upstream allocator or filesystem. Path walking remains a local MemFS detail. Bun's
 reserved socket slot bridge stays configured by `web/`, not imported into the generic core.
 Unbundled Node host adapters import the extracted JavaScript memory helper by repository-relative
 path so headless CLI workflows remain dependency-free.
@@ -953,10 +973,13 @@ The original stdin adapters in `crates/bunwasm-runtime/src/js/node_fs.js`,
 `crates/bunwasm-host/src/process/mod.rs`, `process/stdin.rs`, `process/stdio.rs`,
 its slot and notification hooks,
 and `web/src/subprocess.js` let callback reads wait through the host I/O loop.
-The original browser filesystem adapters in `web/src/subprocess-fs.ts`,
-`web/src/subprocess.js`, and `web/src/worker.ts` exchange changes through the
-host I/O pump as well as stdin, stdout, and exit boundaries. Each child has separate incoming and outgoing
-mailboxes and a baseline; native hosts use their shared physical filesystem.
+The original browser filesystem service in `runtime/fs/`, connected by
+`web/src/fs-worker.ts` and `web/src/worker.ts`, gives parents and descendants
+one live filesystem identity. Changes are visible before stdin, stdout, or exit
+boundaries, including parent edits while a persistent child waits without stdin.
+The service replaces the earlier snapshot baselines and filesystem mailboxes;
+open descriptors retain their original file identity across removal or replacement.
+Native hosts use their shared physical filesystem.
 The synchronous path reads the WASI descriptor without Rust stdin prefetching.
 The native WASI and host interfaces share a buffer, including bytes read ahead.
 This prevents Go's service loop from blocking JavaScript callbacks and preserves
@@ -976,14 +999,10 @@ The official esbuild package then uses its synchronous subprocess backend for
 `buildSync`, `transformSync`, `formatMessagesSync`, and `analyzeMetafileSync`.
 No package-specific environment override is installed.
 
-Idle filesystem synchronization retains byte-exact comparisons, including edits
-within one millisecond. A direct byte loop replaces the callback per byte when comparing the unchanged
-dependency wasm during host I/O polling.
-
-The runtime-core descriptor integration uses the original `wasiPipe` adapter's
-read/write hooks to apply queued filesystem changes after stdin and publish
-changes before stdout or stderr. The existing callback output path shares the
-same publisher. Snapshot replacement/removal uses MemFS's handle-lifetime APIs.
+Filesystem visibility does not depend on timestamp comparisons or host I/O
+polling: the shared service owns namespace changes and the allocator, and shared
+file locks and epochs protect direct reads and writes. The original `wasiPipe`
+adapter only transports bytes; it has no filesystem synchronization hooks.
 The applications select hoisted native Bun installs to avoid the recorded build
 plugin path-validation bug; no upstream loader or global package state changes.
 

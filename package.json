@@ -1,11 +1,13 @@
 {
   "name": "@bun-wasm/runtime",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "private": true,
   "type": "module",
   "exports": {
     "./core": "./core/index.ts",
-    "./core/memory-views": "./core/memory-views.js"
+    "./core/memory-views": "./core/memory-views.js",
+    "./fs": "./fs/index.ts",
+    "./fs/memory": "./fs/memory.ts"
   },
   "scripts": {
     "test": "bun test ./tests",
