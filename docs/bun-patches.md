@@ -1089,3 +1089,73 @@ The host stripper blanks erasable TypeScript during Cargo's build, preserving Ja
 constructor calls, class fields and source coordinates. The loader still
 looks up the same extension-free names. Existing `.js` sources remain raw. No TypeScript parser
 or typecheck is added to the wasm runtime.
+
+
+### Round-5 native stream reflection and abort cleanup
+
+Class **Host feature**, original bridge refinement. `web/src/native-stream-state.ts` now rewrites each wrapped native stream prototype's `constructor` descriptor to the wrapper, preserving `instance.constructor === GlobalConstructor` and subclassing while retaining native prototypes and brands. Guest abort signals passed to native `pipeTo` are mirrored through a native controller. The guest listener is detached when the native pipe fulfills or rejects and when the native call throws synchronously. The browser fixture counts add/remove operations across repeated successful pipes.
+
+### Native browser stream completion
+
+Class **Host feature**, original bun-wasm implementation. No upstream source was
+copied or adapted for `web/src/native-stream-state.ts`. Chromium and WebKit lack
+Node's private closed-promise and controller-error symbols. The host installs
+those hooks before the runtime bootstrap; Node-host execution retains Node's
+existing hooks and embedded engines retain the reference ponyfill hooks.
+
+Construction proxies delegate to the browser's native ReadableStream,
+WritableStream and TransformStream constructors and capture their controllers.
+Native prototypes, instance brands, byte/BYOB queues and algorithms stay native.
+The global constructor references change. Frozen underlying dictionaries are
+wrapped without mutation, and callbacks retain their original receiver.
+
+Completion comes from actual native reader/writer `closed` promises. Temporary
+probes release locks immediately without reading or writing. Releasing a pending
+closed promise rejects it in place; releasing a terminal promise replaces it.
+That identity change distinguishes terminal observation from release errors.
+Notifications from controllers and underlying callbacks trigger another probe.
+Pending sink abort promises delay completion. Internally acquired native locks,
+such as async iterators and pipeTo, use weak polling with host timers. Session
+exit stops the timers. No private stream state or promise status is invented.
+
+Streams created outside the construction bridge, including saved original
+constructors and opaque native factory outputs, support completion observation.
+Their controllers are unavailable through browser APIs, so the error hook cannot
+provide Node-style error injection for those opaque readables. The bridge raises
+an explicit error rather than treating cancellation as an errored stream.
+
+`scripts/test-native-stream-interop.mjs` executes the exact runtime stream modules
+and this host bridge in Chromium and WebKit. Its minimal process/async-context
+boundary is a direct-module test, not a wasm-build claim. The same fixture also
+runs through the actual built browser engine in `web/tests/browser-engine.mjs`.
+CI runs the direct native-browser proof so Node-host symbols cannot mask a gap.
+
+The copied Node stream licenses retain their text with whitespace-only normalization
+of blank EOF lines and one mixed space/tab indent.
+
+
+### TCP streams after the portable-core merge
+
+Class **Host feature**, original adapters. `node_net.js` retains the TCP transport,
+lookup, address, timeout and server behavior from main PR14. Socket now uses the
+portable Duplex's actual readable/writable states and `_read`, `_write`, `_final`
+and `_destroy` hooks. Its old public write/end/destroy, byte queues and synthetic
+state records are removed. Connection callbacks drive stream callbacks and
+`push`; the native read waiter pauses when `push` reaches the high-water mark.
+This is original API glue, not copied upstream stream logic.
+
+`net.js` retains PR14's Connection shutdown/ref/write callbacks and complete HTTP
+upgrade handling. The Streams byte-body producer and HTTP request hooks are
+applied to that implementation. Socket and upgrade cleanup run from the real
+ClientRequest `_destroy` hook. The host engine releases both native stream
+observers and directory cursors at exit. The suite runner retains explicit plain
+script selection and opt-in Node assertion scripts without counting registered
+Node tests as assertion scripts. The merged TCP fixture exercises successful
+Readable.toWeb reads and cancellation of a connected socket.
+
+The original Node-host TCP adapter in `web/scripts/node-net.mjs` now limits each
+write to the remaining one-MiB host queue capacity and returns the short byte
+count. Checking the queue only before accepting an entire large write allowed
+the first write to bypass the limit. The bounded host test fails with that
+implementation and passes with capacity-aware writes, including full-queue,
+zero-length and owned-copy cases. No upstream implementation is copied.

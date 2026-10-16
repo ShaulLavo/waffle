@@ -49,8 +49,8 @@ jobs:
           bun run --cwd ../sandbox check
       - name: Runtime bundle budgets and Bun light initial downloads (no WASM)
         run: bun ../scripts/runtime-size.ts
-      - name: Install Chromium
-        run: bunx playwright install --with-deps chromium
+      - name: Install Chromium and WebKit
+        run: bunx playwright install --with-deps chromium webkit
       - name: Browser host smoke (no Rust or dist artifacts)
         env:
           SMOKE_PORT: "4179"
@@ -62,6 +62,10 @@ jobs:
         env:
           SPLIT_SMOKE_PORT: "4180"
         run: bun tests/browser-splitting.mjs
+      - name: Native browser stream completion and abort
+        env:
+          PLAYWRIGHT: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
+        run: node ../scripts/test-native-stream-interop.mjs
       - name: Shared filesystem service and blocking worker adapter (no WASM)
         env:
           FS_SMOKE_PORT: "4181"

@@ -31,7 +31,7 @@ test('unbundled headless hosts load in a dependency-free source checkout', async
   const dir = await mkdtemp(join(base, 'bun-wasm-node-clean-'));
   try {
     for (const path of ['web/package.json', 'runtime/package.json', 'runtime/core/memory-views.js',
-      'web/scripts/node-host.mjs', 'web/scripts/node-stdio.ts', 'web/scripts/node-install-net.mjs', 'web/src/subprocess.js', 'web/src/engine-host.js']) {
+      'web/scripts/node-host.mjs', 'web/scripts/node-stdio.ts', 'web/scripts/node-install-net.mjs', 'web/src/subprocess.js', 'web/src/engine-host.js', 'web/src/native-stream-state.ts']) {
       const target = join(dir, path);
       await mkdir(dirname(target), { recursive: true });
       await copyFile(new URL(`../../${path}`, import.meta.url), target);

@@ -152,7 +152,7 @@ rl.on("close", () => console.log("readline closed:", JSON.stringify(lines)));
   const sinkOutput = (await readFile(new URL("expected.txt", sinkFixture), "utf8")).trim().split("\n");
   await expectRun(page, `${name}: Bun.ArrayBufferSink ownership and lifecycle`, "bun run sink.js", 0, sinkOutput);
 
-  for (const fixture of ["array-buffer-sink-strings", "array-buffer-sink-view-slots", "array-buffer-sink-detached"]) {
+  for (const fixture of ["array-buffer-sink-strings", "array-buffer-sink-view-slots", "array-buffer-sink-detached", "node-native-web-streams"]) {
     const folder = new URL(`../../tests/fixtures/${fixture}/`, import.meta.url);
     await writeFile(page, `${HOME}/${fixture}.js`, await readFile(new URL("index.js", folder), "utf8"));
     const output = (await readFile(new URL("expected.txt", folder), "utf8")).trim().split("\n");
