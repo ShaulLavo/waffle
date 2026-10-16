@@ -57,6 +57,8 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/temporal.js`](#temporal) | Host feature | Package the unmodified Temporal polyfill for engines without Temporal. |
 | [`crates/bunwasm-semver/src/lib.rs`](#portable-semver-host-functions) | Port | Compile Bun's semver host functions unchanged against a portable `bun_jsc` subset. |
 | [`crates/bunwasm-bun-jsc/`, `crates/bunwasm-bun-jsc-macros/`, runtime semver and host GC adapters](#portable-semver-host-functions) | Host feature | Original adapters connect Bun's host functions to the shared data-native interface and preserve the host GC hook. |
+| [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
+| [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
 | [`scripts/app-matrix/`](#app-compatibility-fixtures) | Host feature | Original app fixtures and local registry recorder, with no copied framework implementation. |
 | [`crates/bunwasm-runtime/generated/builtins/`](#bun-generated-builtins) | Port | Lower Bun-generated JavaScript builtins to a lexical intrinsic table shared by all engines. |
 | [`scripts/generate-bun-builtins.mjs`, `src/js/bun_builtins.js`, `src/js/bun_builtin_globals.js`](#builtin-loader-adapter) | Host feature | Generate the selected builtin closure and load factories through Engine. |
@@ -89,6 +91,52 @@ around `Bun.gc`; looking up global `gc` on every call otherwise recurses.
 This replaces our duplicated semver host-function logic, while retaining the existing
 pure Bun semver parser used by package installation. See
 [the backend spike](bun-jsc-backend.md) for the limits of this subset.
+
+## Rollup WebAssembly distribution
+
+`crates/bunwasm-runtime/src/install/resolve.rs` selects the official
+`@rollup/wasm-node` npm distribution for Rollup 4 at the same version. The
+measured package is 4.64.7, including `dist/native.js`,
+`dist/wasm-node/bindings_wasm.js`, and `dist/wasm-node/bindings_wasm_bg.wasm`.
+These upstream files remain unchanged inside installed projects. No Rollup
+implementation is retained in this repository.
+
+`crates/bunwasm-runtime/src/wasm.rs` and `src/js/webassembly.js` are original
+adapters over the public `wasmi` 0.46.0 API and the WebAssembly JavaScript API.
+They do not adapt an upstream implementation. The Wasmi dependency has the
+small port described below. Resumable host traps let JavaScript imports reenter
+wasm without holding a Rust borrow across JavaScript execution. Memory synchronization keeps
+JavaScript views and interpreter memory consistent across those calls.
+`tests/fixtures/webassembly` is original test code; `tests/rollup/run.mjs`
+executes the real published parser and hashes through the recorded registry.
+
+
+## Wasmi memory identity and growth
+
+Class **Port**. `third_party/wasmi` copies the published Wasmi 0.46.0 crate,
+upstream `crates/wasmi` at revision `50ac76771d631f642e8c4c61bf44c99546024461`
+from `wasmi-labs/wasmi`. The MIT and Apache license files come from that revision.
+Cargo uses this local crate through `[patch.crates-io]`; Wasmi Core and its other
+dependencies remain published crates.
+
+Local changes are limited to these files:
+
+- `src/memory/mod.rs` derives equality on store-guarded memory handles and exposes
+  the growth generation. Successful public growth increments that generation.
+- `src/store/inner.rs` owns a generation counter for each allocated memory.
+- `src/store/pruned.rs` increments the counter after successful wasm growth.
+- `src/engine/translator/visit.rs` and `src/engine/executor/instrs/memory.rs`
+  preserve zero-page growth instead of replacing it with a memory-size read.
+- `src/engine/translator/tests/op/memory/memory_grow.rs` updates the corresponding
+  translation expectation to retain the zero-page growth instruction.
+
+The JavaScript API requires a new buffer after every successful unshared growth,
+even when its size stays the same. Tracking growth inside the interpreter covers
+both constant and dynamic wasm instructions, as well as JavaScript calls. Failed
+growth does not increment the counter. Store-guarded handle equality lets aliased
+exports share one JavaScript object without conflating separate empty memories.
+All other retained upstream files are unchanged.
+
 
 ## App compatibility fixtures
 
