@@ -26,10 +26,22 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - name: Unit tests
-        run: bun run test
+      - name: Install runtime and sandbox dependencies
+        run: |
+          bun install --cwd ../runtime --frozen-lockfile
+          bun install --cwd ../sandbox --frozen-lockfile
+      - name: Unit tests (web, runtime and download accounting)
+        run: |
+          bun run test
+          bun test ../runtime/tests ../scripts/runtime-size.test.ts
+          PYTHONDONTWRITEBYTECODE=1 python3 ../scripts/test-bun-suite.py ReportTests.test_browser_provenance_hashes_runtime_core
       - name: Type check
-        run: bun run check
+        run: |
+          bun run check
+          bun run --cwd ../runtime check
+          bun run --cwd ../sandbox check
+      - name: Runtime bundle budgets and Bun light initial downloads (no WASM)
+        run: bun ../scripts/runtime-size.ts
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Browser host smoke (no Rust or dist artifacts)
@@ -39,3 +51,7 @@ jobs:
           listeners=$(ss -H -ltn "sport = :$SMOKE_PORT")
           test -z "$listeners"
           bun run test:browser
+      - name: Scoped split-worker and classic service-worker smoke (no WASM)
+        env:
+          SPLIT_SMOKE_PORT: "4180"
+        run: bun tests/browser-splitting.mjs

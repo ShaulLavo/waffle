@@ -7,7 +7,7 @@ import { MAX_RECORD } from "../src/net/protocol";
 import { CAPACITY, RingReader, RingWriter, createRing } from "../src/net/ring";
 import { installHostSlots, trampolineModule } from "../src/net/trampoline";
 import { MemFS } from "../src/fs";
-import { Wasi } from "../src/wasi";
+import { Wasi } from "@bun-wasm/runtime/core";
 
 const encode = (s: string) => new TextEncoder().encode(s);
 const decode = (b: Uint8Array) => new TextDecoder().decode(b);

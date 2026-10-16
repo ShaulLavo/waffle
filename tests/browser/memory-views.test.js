@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { memoryViews } from "../src/memory-views.js";
+import { memoryViews } from "@bun-wasm/runtime/core";
 
 for (const shared of [false, true]) {
   for (const fallback of [false, true]) {

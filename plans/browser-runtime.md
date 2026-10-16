@@ -181,7 +181,7 @@ are non-blocking except `poll`.
 | `kill` | `(pid, sig) -> 0` | Signals one process. |
 | `kill_job` | `(job, sig) -> 0` | Signals every process in a job, including descendants spawned into it. |
 | `poll` | `(subs_ptr, n, timeout_ms, out_ptr) -> n_ready` | Each subscription is 16 bytes: `u32 kind` (0 readable, 1 writable, 2 child exit, 3 filesystem completion), `u32 id` (fd, pid or request), `u64 userdata`. Each event written is 16 bytes: `u64 userdata`, `u32 kind`, `u32 flags` (bit 0 hang-up). Also returns when this process's interrupt word is set (`n_ready` may be 0). The only call that blocks. |
-| `interrupted` | `() -> sig` | Returns and clears the pending signal for this process (0 if none). Guests call it at checkpoints. Being a host call, it also lets `terminate()` stop the guest in Safari. |
+| `interrupted` | `() -> sig` | Returns and clears the pending signal for this process (0 if none). Guests call it at checkpoints and stop when it returns a signal. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
 
 Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. `kill` revokes the target's descriptors
 at once and sets its interrupt word; physical teardown follows. The supervisor records the
@@ -191,8 +191,9 @@ own keeps its own code.
 
 WASI preview1 programs use the same descriptors through ordinary fd calls: a spawned child's
 `fd_read(0)` blocks on its bound pipe, and `poll_oneoff` reports pipe readiness. Third-party
-programs get `interrupted` checks injected (step 9); a check that sees a signal traps, and the
-recorded signal sets the status.
+programs get `interrupted` checks injected (step 9): every 256th loop iteration plus function
+entries, costing 1.27-1.8x on a real `bun build` in spike 5. A check that sees a signal traps,
+and the recorded signal sets the status.
 
 ### Steps
 

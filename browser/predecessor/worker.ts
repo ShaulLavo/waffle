@@ -3,12 +3,12 @@
 // program to engine-host.js, which runs it in this worker's own JS engine.
 
 import { startEngineHost } from "./engine-host.js";
-import { type DirNode, MemFS, adoptInodes } from "./fs";
+import { type DirNode, MemFS, adoptInodes, compactFs } from "./fs";
 import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
-import { installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
-import { Wasi, WasiExit, compactFs } from "./wasi";
-import { SubprocessHost, childTransport, type ChildTransport } from "./subprocess.js";
+import { HOST_CALL_FD, installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
+import { Wasi, WasiExit } from "@bun-wasm/runtime/core";
+import { SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "./subprocess.js";
 import { filesystemChanges, mergeFilesystemChanges } from "./subprocess-fs";
 
 export type Engine = "quickjs" | "jsc" | "browser";
@@ -131,11 +131,12 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     },
   }) : null;
   const wasi = new Wasi({
+    hostCallFd: HOST_CALL_FD,
     args: req.args,
     env: req.env,
     fs,
     preopens: { "/": "/" },
-    stdin: child ? (cap) => child.stdin.readBlocking(cap) : undefined,
+    stdio: child ? { 0: wasiPipe(child.stdin, "read"), 1: wasiPipe(child.stdout, "write"), 2: wasiPipe(child.stderr, "write") } : undefined,
     stdout: (data) => post("stdout", data),
     stderr: (data) => post("stderr", data),
     sleep,
@@ -151,8 +152,10 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     if (child && initialRoot) {
       if ("error" in result) child.stderr.writeAll(new TextEncoder().encode(`${describeError(result.error)}\n`));
       child.finish("code" in result ? result.code : 1, filesystemChanges(initialRoot, fs.root));
+      wasi.descriptors.dispose();
       return;
     }
+    wasi.descriptors.dispose();
     if ("code" in result) {
       ctx.postMessage({ type: "exit", code: result.code, root: fs.root, sleep: sleepMode } satisfies WorkerMessage);
       return;

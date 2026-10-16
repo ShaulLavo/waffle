@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { memoryViews } from "../src/memory-views.js";
+import { memoryViews } from "@bun-wasm/runtime/core";
 
 for (const shared of [false, true]) {
   for (const conversion of ["missing", "throws"]) {

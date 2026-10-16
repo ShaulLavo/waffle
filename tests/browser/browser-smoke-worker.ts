@@ -1,7 +1,7 @@
 // Tiny WASI guest assembled here: this smoke never needs dist/ or a Rust build.
 import { MemFS } from "../src/fs";
-import { memoryViews } from "../src/memory-views.js";
-import { Wasi } from "../src/wasi";
+import { memoryViews } from "@bun-wasm/runtime/core";
+import { Wasi } from "@bun-wasm/runtime/core";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

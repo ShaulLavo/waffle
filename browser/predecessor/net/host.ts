@@ -3,7 +3,7 @@
 // results come back through the shared ring (ring.ts), which is drained into per-handle state on
 // every call.
 
-import { memoryViews, type MemoryViews } from "../memory-views.js";
+import { memoryViews, type MemoryViews } from "@bun-wasm/runtime/core";
 
 import {
   AGAIN,

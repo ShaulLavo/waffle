@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { MemFS } from "../src/fs";
-import { Wasi } from "../src/wasi";
+import { Wasi } from "@bun-wasm/runtime/core";
 
 const encoder = new TextEncoder();
 const signatures = {
