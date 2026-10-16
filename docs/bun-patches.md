@@ -23,6 +23,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [0007](#0007-string-equality) | Upstream bug | Correct string comparisons that skip bytes with 32-bit `usize`. |
 | [0008](#0008-await-context-hooks) | Host feature | Add optional printer hooks to preserve browser async context. |
 | [0009](#0009-bake-completion) | Port | Complete bake bundles through the synchronous WASI event loop. |
+| [0010](#0010-semantic-import-locations) | Host feature | Collect semantic import locations in Bun's scan and print passes for host module linking. |
 | [`jsc/webkit-wasi.patch`, platform hunks](#webkit-platform-hunks) | Port | Compile the C-loop interpreter and WTF for WASI. |
 | [`jsc/webkit-wasi.patch`, module slots](#webkit-module-import-slots) | Upstream bug | Give import slots a full JSValue stride and initialize the whole slot. |
 | [`jsc/webkit-wasi.patch`, non-JIT declarations](#webkit-non-jit-declarations) | Upstream bug | Expose a required enum without DFG and add two missing includes. |
@@ -415,7 +416,13 @@ File `0009-Drive-bake-completion-from-the-WASI-mini-event-loop.patch`. Class **P
 
 `src/bundler/bundle_v2.rs` exposes `finish_wasi_dev_server` to wait for parsing and call the existing bake completion path. Without it bun-wasm's synchronous mini event loop cannot drive the native asynchronous completion task, so dev-server bundles cannot finish through that path. Native bake already schedules its completion.
 
-## Other vendored changes
+### 0010 semantic import locations
+
+File `0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`. Class **Host feature**.
+
+Upstream paths are `src/js_parser/lib.rs`, `src/js_parser/parse/parse_import_export.rs`, and `src/js_printer/lib.rs` at pinned Bun revision `9510e74152073d850a18758ca41114d8f214ffa6`. A scoped, thread-local parser collector records the original UTF-8 keyword offset when Bun scans a dynamic import expression. A printer collector records emitted UTF-8 spans for static paths and dynamic keywords during the existing transpile pass. Both restore the previous collector on return or unwind. Import.meta and property names never enter the dynamic-import branches. Parsing and printing otherwise behave unchanged.
+
+The original adapters in `crates/bunwasm-transpiler/src/lib.rs`, `crates/bunwasm-cli/src/main.rs`, and `crates/bunwasm-runtime/src/{transpiler,modules,engine_host}.rs` return spans with transpiled code and cache them by source path. Transformed modules are not parsed again for linking. Unchanged JavaScript reuses the AST and dynamic-import locations from the parse already required for module classification, skips printing and keeps original source offsets. For `.mjs` and `.cjs`, whose extensions already decide the format, Bun's scan-only parser supplies imports without a full transform. An absence check for `import` and `from` skips that scan when neither can occur. The scan adapter changes a leading `#!` into `//` before parsing, matching runtime normalization and preserving all UTF-8 byte offsets, including CRLF and Unicode prefixes. Eval sources use Bun's scan-only parser once; an absence check for `import` and `from` skips eval scanning when no import or re-export is possible. The ESM-to-CJS adapter sets a scoped referrer so the bundler printer emits dynamic-import hooks directly, then caches its output. It does not scan the bundle again. Host prologues shift the stored byte spans without parsing. The import arguments remain intact, including import attributes and template substitutions. This is a bun-wasm host requirement, not an upstream Bun bug.
 
 ### WebKit platform hunks
 
@@ -686,7 +693,7 @@ git ls-files crates web sandbox scripts jsc site third_party
 rg -n -i --max-columns 240 'copyright|license|ported|port of|adapted|copied|derived|based on' crates web sandbox scripts jsc site
 ```
 
-Retained libc and rquickjs-sys files were compared byte-for-byte with the matching published crates in Cargo's registry. The `vendor/bun` working tree must be clean after applying all nine commits. There are no additional unexported Bun source modifications in the audited checkout.
+Retained libc and rquickjs-sys files were compared byte-for-byte with the matching published crates in Cargo's registry. The `vendor/bun` working tree must be clean after applying all ten commits. There are no additional unexported Bun source modifications in the audited checkout.
 
 SQLite is supplied by the unmodified `libsqlite3-sys` crate. `.cargo/config.toml` sets its documented compile flags to match Bun where possible and disable unsupported WASI facilities; it does not rewrite the amalgamation. No additional third-party source rewrites were found in crate build scripts. Test fixture npm packages are source inputs for compatibility tests, not runtime forks.
 
