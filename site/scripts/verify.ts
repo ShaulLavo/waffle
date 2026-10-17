@@ -75,7 +75,11 @@ async function prepare(page: Page, url: string) {
     await page.evaluate(() => (window as any).__advance(0));
     await page.waitForTimeout(30);
   }
-  await page.waitForFunction(() => !!document.querySelector('canvas') && !!(window as any).__scene);
+  // The deterministic frame clock replaces requestAnimationFrame, so the
+  // default waitForFunction RAF poller would stop polling after the fixed
+  // startup pumps. A wall-clock poll observes async scene imports without
+  // advancing synthetic time or changing the readiness condition.
+  await page.waitForFunction(() => !!document.querySelector('canvas') && !!(window as any).__scene, undefined, { polling: 100 });
   await page.evaluate(async () => { await document.fonts.ready; });
   // Give original React and the Astro controller equal deterministic frame time.
   for (let i = 0; i < 3; i++) {
