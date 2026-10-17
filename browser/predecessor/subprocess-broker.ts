@@ -42,6 +42,7 @@ interface Child {
   closed: boolean;
   stopped: boolean;
   stopping?: Promise<void>;
+  quiescence?: Promise<void>;
 }
 
 interface RuntimeChild {
@@ -51,8 +52,10 @@ interface RuntimeChild {
   request: RunRequest;
   worker: Worker;
   acknowledged: boolean;
+  failed?: boolean;
   stopped: boolean;
   stopping?: Promise<void>;
+  quiescence?: Promise<void>;
 }
 
 export class SubprocessBroker {
@@ -72,10 +75,17 @@ export class SubprocessBroker {
   private loaderErrors = new Map<string, string>();
   private diagnosedRuntimeRefusals = new WeakSet<WorkerProcessTransport>();
   private activation?: Promise<ProcessSupervisor>;
+  private rootSupervisor?: ProcessSupervisor;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private root?: SignalTransport & { pid: number; job: number };
   constructor(private workerUrl: string, private filesystem: SharedFilesystem,
-    private options: { activate?: () => Promise<Proc>; root?: RootProcessOptions; output?(fd: 1 | 2, data: Uint8Array): void } = {}) {
+    private options: {
+      activate?: () => Promise<Proc>;
+      root?: RootProcessOptions;
+      output?(fd: 1 | 2, data: Uint8Array): void;
+      /** The runner owns root execution, including its filesystem acknowledgement/fence. */
+      quiesceRoot?(): void | Promise<void>;
+    } = {}) {
     // Root control is available before the optional process service is imported. Non-isolated
     // runs never supply shared root words and never allocate them unless they activate spawning.
     if (options.root) this.rootTransport();
@@ -109,9 +119,17 @@ export class SubprocessBroker {
         // The final ordered worker message acknowledges that output and resource release.
         canConfirmExit: pid => {
           this.reportRuntimeRefusal(supervisor, pid);
-          return this.disposed || this.runtimeChildren.get(pid)?.acknowledged !== false;
+          const child = this.runtimeChildren.get(pid);
+          return this.disposed || !child || child.acknowledged || child.failed === true;
         },
+        // An immutable outcome may precede an admitted filesystem operation's last write.
+        // Process and job exit are confirmed only after this admission fence completes.
+        quiesce: pid => this.quiesceProcess(pid),
+        retainJobResults: this.runtimeRoot !== undefined,
       });
+      // Retain partial initialization too: a later descriptor import can throw after
+      // createRoot has already given this controller ownership of root resources.
+      this.rootSupervisor = supervisor;
       const pid = supervisor.createRoot({ ...this.options.root, ...this.rootTransport() });
       if (this.runtimeRoot) {
         supervisor.registerRevocation(pid, () => this.revokeRuntimeProcess(pid));
@@ -140,6 +158,7 @@ export class SubprocessBroker {
         onPipe: handle => { this.runtimePipes!.attach(handle as import("../../runtime/proc/pipes").PipeEndpointHandle); },
         pumpPipes: () => this.runtimePipes!.pump(),
         onError: error => this.report(error),
+        quiesce: (_pid, transport) => this.filesystem.quiesce(this.runtimeFilesystem(transport)),
       });
       if (this.disposed) { broker.dispose(); this.runtimePipes.dispose(); }
       return broker;
@@ -175,30 +194,53 @@ export class SubprocessBroker {
   }
   async runtimeMessage(message: WorkerProcessMessage, senderPid: number): Promise<void> {
     const broker = await this.runtimeReady();
-    const sender = broker.get(senderPid);
+    const sender = broker.getIdentity(senderPid);
     const result = sender && readOutcome(this.runtimeApi!.workerProcessState(sender).signals.outcome);
     // A reserved notification may arrive after ordinary parent teardown. Its independent
     // filesystem references were retained before publication; fatal senders have no authority.
-    if (!sender || this.disposed || result?.kind === "signaled" || (!result && isRevoked(this.runtimeFilesystem(sender)))) {
-      this.rejectRuntimeMessage(message);
+    if (!sender || this.disposed || (message.operation !== "reap-job" && (result?.kind === "signaled" || (!result && isRevoked(this.runtimeFilesystem(sender)))))) {
+      this.rejectRuntimeMessage(message, senderPid);
       return;
     }
     await broker.handle(message, senderPid);
     if (message.operation !== "pipe") this.watch();
   }
-  rejectRuntimeMessage(message: WorkerProcessMessage): void {
+  rejectRuntimeMessage(message: WorkerProcessMessage, senderPid = this.root?.pid): void {
+    if (message.operation === "reap-job") {
+      // The guest already committed its one-shot job reap. This is authenticated cleanup,
+      // not a new capability: retain it even if a fatal outcome won before dispatch.
+      if (!this.disposed && senderPid !== undefined && this.runtime?.getIdentity(senderPid)) {
+        void this.runtime.handle(message, senderPid).catch(error => this.report(error));
+      }
+      return;
+    }
     if (message.operation !== "spawn") return;
     // A generic sender is adopted before it can run, so this path never activates Bun runs.
     if (!this.runtimeApi || !this.runtimeCodec) return;
     const transport = message.transport;
     const state = this.runtimeApi.workerProcessState(transport);
+    const existing = this.runtime?.getIdentity(state.pid);
+    // Duplicate notifications own no new references. An admitted independent child retains
+    // its authority even when a repeated message arrives after its parent has been revoked.
+    if (existing && this.runtimeApi.workerProcessDirectoryId(existing) === this.runtimeApi.workerProcessDirectoryId(transport)) return;
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid);
     const identity = this.runtimeFilesystem(transport);
     this.filesystem.revoke(identity);
     const codec = this.runtimeDescriptorCodec(transport);
-    for (const token of transport.resources) codec.discard(token);
+    let cleaned = true;
+    for (const token of transport.resources) {
+      try { codec.discard(token); }
+      catch (error) { cleaned = false; this.report(error); }
+    }
     this.runtimeApi.wakeWorkerProcess(transport);
+    // Rejected reservations still own descriptor references and a filesystem identity. Their
+    // outcome is immediate, but neither process nor job waits may confirm before the fence.
+    void this.filesystem.quiesce(identity).then(() => {
+      if (!cleaned) return;
+      Atomics.store(state.confirmed, 0, 1);
+      this.runtimeApi!.confirmWorkerProcessJob(transport);
+    }).catch(error => this.report(error));
   }
 
   /** Loader failures have no worker to buffer diagnostics. Emit before confirmation closes fd2. */
@@ -302,7 +344,7 @@ export class SubprocessBroker {
     worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
       const selected = readOutcome(outcomeWord(spawn.child.outcome));
       if (data.type === "runtime-proc") {
-        if (selected?.kind === "signaled" || isRevoked(spawn.filesystem)) this.rejectRuntimeMessage(data);
+        if (selected?.kind === "signaled" || isRevoked(spawn.filesystem)) this.rejectRuntimeMessage(data, context.pid);
         else void this.runtimeMessage(data, context.pid).catch(error => this.report(error));
         return;
       }
@@ -332,8 +374,8 @@ export class SubprocessBroker {
       event.preventDefault();
       childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: child worker failed: ${event.message}\n`));
       context.fail(new Error(event.message));
-      // Error events are not quiescent acknowledgements. Logical exit is already visible,
-      // but a filesystem critical section must finish before physical termination.
+      // Error events are not quiescent acknowledgements. The outcome is already selected,
+      // but filesystem work must drain before exit confirmation or physical termination.
       this.stopSafely(child);
     };
     try { worker.postMessage(request, [request.filesystem.port]); }
@@ -373,7 +415,7 @@ export class SubprocessBroker {
     worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
       const selected = readOutcome(context.outcome);
       if (data.type === "runtime-proc") {
-        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data);
+        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data, context.pid);
         else void this.runtimeMessage(data, context.pid).catch(error => this.report(error));
         return;
       }
@@ -401,12 +443,27 @@ export class SubprocessBroker {
     };
     worker.onerror = event => {
       event.preventDefault();
+      // No ordered final message will follow a host failure. This permits confirmation,
+      // but is not an acknowledgement: quiesceChild must still drain filesystem work.
+      child.failed = true;
       context.fail(new Error(event.message));
       this.stopRuntimeSafely(child);
     };
     try { worker.postMessage(request, [request.filesystem.port]); }
-    catch (error) { request.filesystem.port.close(); this.stopRuntimeSafely(child); throw error; }
+    catch (error) { child.failed = true; request.filesystem.port.close(); this.stopRuntimeSafely(child); throw error; }
     return { terminate: () => this.stopRuntime(child) };
+  }
+  private quiesceProcess(pid: number): void | Promise<void> {
+    if (pid === this.root?.pid && this.options.quiesceRoot) return this.options.quiesceRoot();
+    const child = this.children.get(pid) ?? this.runtimeChildren.get(pid);
+    if (child) return this.quiesceChild(child);
+    // Reserved generic identities can exit before executable resolution creates a worker.
+    const transport = this.runtime?.get(pid);
+    if (transport) return this.filesystem.quiesce(this.runtimeFilesystem(transport));
+  }
+  private quiesceChild(child: Child | RuntimeChild): void | Promise<void> {
+    if (child.acknowledged) return;
+    return child.quiescence ??= this.filesystem.quiesce("filesystem" in child ? child.filesystem : child.spawn.filesystem);
   }
   private stopRuntime(child: RuntimeChild): void | Promise<void> {
     if (child.stopped) return;
@@ -418,7 +475,7 @@ export class SubprocessBroker {
       this.runtimeChildren.delete(child.context.pid);
     };
     if (child.acknowledged) { stop(); return; }
-    return child.stopping ??= this.filesystem.quiesce(child.filesystem).then(stop);
+    return child.stopping ??= Promise.resolve(this.quiesceChild(child)).then(stop);
   }
   private stopRuntimeSafely(child: RuntimeChild): void {
     try { const pending = this.stopRuntime(child); if (pending) void pending.catch(error => this.report(error)); }
@@ -507,9 +564,23 @@ export class SubprocessBroker {
     }).catch(error => this.report(error));
   }
   /** Parent exit is not job teardown: independently running/background children stay alive. */
-  rootExit(code: number): void {
+  rootExit(code: number): void | Promise<void> {
     if (this.root) this.revokeRuntimeProcess(this.root.pid);
-    if (this.activation) void this.activation.then(supervisor => supervisor.exit(this.root?.pid ?? this.options.root?.pid ?? 1, code)).catch(error => this.report(error));
+    if (!this.activation) return;
+    const pid = this.root?.pid ?? this.options.root?.pid ?? 1;
+    const finish = async (supervisor: ProcessSupervisor) => {
+      supervisor.exit(pid, code);
+      // Only this process's descriptors and admission fence matter, not background jobs.
+      await supervisor.waitForExit(0, pid);
+    };
+    return this.activation.then(finish, error => {
+      const partial = this.rootSupervisor;
+      if (partial && !partial.get(pid)) throw error;
+      this.report(error);
+      // Import failure has no host root to release. Partial initialization does: exit
+      // that concrete root normally, without swallowing its cleanup/fence failures.
+      if (partial) return finish(partial);
+    });
   }
 
   private cleanupCache(child: Child): void { if (child.request?.moduleCache) void caches.delete(child.request.moduleCache); }
@@ -523,7 +594,7 @@ export class SubprocessBroker {
   private stop(child: Child): void | Promise<void> {
     if (child.stopped) return;
     if (child.acknowledged) { this.physicallyStop(child); return; }
-    return child.stopping ??= this.filesystem.quiesce(child.spawn.filesystem).then(() => this.physicallyStop(child));
+    return child.stopping ??= Promise.resolve(this.quiesceChild(child)).then(() => this.physicallyStop(child));
   }
   private stopSafely(child: Child): void {
     try { const pending = this.stop(child); if (pending) void pending.catch(error => this.report(error)); }

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { SubprocessBroker, type ExecutableRegistration } from "../src/subprocess-broker";
 import { SubprocessHost, childTransport, type ChildTransport } from "../src/subprocess.ts";
 import { createFilesystemIdentity, revokeFilesystem, type FilesystemIdentity } from "../../runtime/fs";
+import { FilesystemSection, waitForFilesystemQuiescence } from "../../runtime/fs/protocol";
 import type { SharedFilesystem } from "../src/shared-fs";
 import type { SpawnRequest } from "../src/worker";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome";
@@ -9,7 +10,7 @@ import { createSignalState, setSignalDisposition, takeSignal } from "../../runti
 
 function fixture(activate?: () => Promise<typeof import("../../runtime/proc")>) {
   const revoked: number[] = [];
-  const filesystem = { revoke(identity: { owner: number }) { revoked.push(identity.owner); }, reap() {} } as unknown as SharedFilesystem;
+  const filesystem = { revoke(identity: { owner: number }) { revoked.push(identity.owner); }, reap() {}, async quiesce() {} } as unknown as SharedFilesystem;
   const broker = new SubprocessBroker("http://localhost/worker.js", filesystem, { activate });
   let transport!: ChildTransport;
   const host = new SubprocessHost({ output() {}, launch(_meta, value) {
@@ -63,14 +64,14 @@ test("disposing during delayed activation revokes pending children without start
 });
 
 const fixtureModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: () => Promise<void>; postFailure?: boolean; activate?: () => Promise<typeof import("../../runtime/proc")>; root?: import("../../runtime/proc").RootProcessOptions } = {}) {
+function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: (identity: FilesystemIdentity) => Promise<void>; slowModule?: () => Promise<WebAssembly.Module>; postFailure?: boolean; activate?: () => Promise<typeof import("../../runtime/proc")>; root?: import("../../runtime/proc").RootProcessOptions } = {}) {
   const originalWorker = globalThis.Worker;
   const workers = new Map<number, FakeWorker>();
   class FakeWorker {
     onmessage: ((event: MessageEvent) => void) | null = null;
     onerror: ((event: ErrorEvent) => void) | null = null;
     terminated = 0;
-    request?: import("../src/worker").RunRequest;
+    request!: import("../src/worker").RunRequest;
     postMessage(request: import("../src/worker").RunRequest) {
       this.request = request;
       workers.set(request.pid!, this);
@@ -84,10 +85,11 @@ function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: (
   const filesystem = {
     connect(identity: object) { return { ...identity, port: { close() {} } }; },
     revoke(identity: FilesystemIdentity) { revokeFilesystem(identity); }, reap() {},
-    async quiesce(identity: FilesystemIdentity) { quiescences++; revokeFilesystem(identity); await options.quiesce?.(); },
+    async quiesce(identity: FilesystemIdentity) { quiescences++; revokeFilesystem(identity); await options.quiesce?.(identity); },
   } as unknown as SharedFilesystem;
   const broker = new SubprocessBroker("http://localhost/worker.js", filesystem, { activate: options.activate, root: options.root });
   broker.register("fixture", options.executable ?? { module: fixtureModule, adapter: "preview1", cooperative: true });
+  if (options.slowModule) broker.register("slow", { module: options.slowModule, adapter: "preview1", cooperative: true });
   const transports = new Map<number, ChildTransport>();
   const hosts: SubprocessHost[] = [];
   function hostFor(parent?: ChildTransport, capture?: (request: SpawnRequest) => void) {
@@ -127,6 +129,11 @@ function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: (
   };
 }
 const timerTurn = () => new Promise<void>(resolve => setTimeout(resolve, 12));
+function exitConfirmation(broker: SubprocessBroker, pid: number) {
+  let confirmed = false;
+  const result = broker.wait(pid).then(value => { confirmed = true; return value; });
+  return { result, confirmed: () => confirmed };
+}
 
 test("broker observes each guest signal without replaying an interrupt consumed before its watch", async () => {
   const state = liveFixture();
@@ -250,17 +257,21 @@ function quiescenceBarrier() {
   return { promise, release };
 }
 
-test("logical SIGKILL resolves before quiescence, but physical termination waits for it", async () => {
+test("SIGKILL selects its immutable outcome immediately but confirms exit only after filesystem quiescence", async () => {
   const barrier = quiescenceBarrier();
   const state = liveFixture({ quiesce: () => barrier.promise });
   try {
     await state.started(state.pid);
     const worker = state.workers.get(state.pid)!;
     await state.broker.kill(state.pid, 9);
-    expect((await state.broker.wait(state.pid)).status).toBe(137);
+    const waiting = exitConfirmation(state.broker, state.pid);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
+    expect(readOutcome(outcomeWord(state.transports.get(state.pid)!.outcome))?.status).toBe(137);
     expect(worker.terminated).toBe(0);
     expect(state.quiescences()).toBe(1);
     barrier.release();
+    expect((await waiting.result).status).toBe(137);
     await timerTurn();
     expect(worker.terminated).toBe(1);
   } finally { barrier.release(); state.dispose(); }
@@ -288,9 +299,12 @@ test("postMessage failure also waits for quiescence before terminating its worke
   try {
     await state.started(state.pid);
     const worker = state.workers.get(state.pid)!;
-    expect((await state.broker.wait(state.pid)).status).toBe(126);
+    const waiting = exitConfirmation(state.broker, state.pid);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
     expect(worker.terminated).toBe(0);
     barrier.release();
+    expect((await waiting.result).status).toBe(126);
     await timerTurn();
     expect(worker.terminated).toBe(1);
   } finally { barrier.release(); state.dispose(); }
@@ -318,7 +332,7 @@ test("closing a handle before activation completes cannot retain a reserved proc
     state.broker.close(1, state.pid);
     release();
     const supervisor = await state.broker.ready();
-    await Promise.resolve();
+    await timerTurn();
     expect(supervisor.get(state.pid)).toBeUndefined();
     expect(Array.from(supervisor.table.values())).toHaveLength(1);
   } finally { release(); state.dispose(); }
@@ -379,6 +393,7 @@ test("a parent SIGKILL racing page failure finalization has one shared terminal 
     try { supervisor.failStart(state.pid, new Error("worker failed")); }
     finally { Atomics.load = original; }
     expect(raced).toBe(true);
+    expect(await state.broker.wait(state.pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
     expect(supervisor.wait(1, state.pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
     expect(state.host.wait(state.pid)).toBe(137);
   } finally { state.dispose(); }
@@ -397,15 +412,19 @@ for (const kind of ["exited", "signaled"] as const) {
       expect(Atomics.load(new Int32Array(transport.control), 0)).toBe(0);
       await timerTurn();
       const status = kind === "signaled" ? 137 : 23;
-      expect(supervisor.wait(1, state.pid)).toEqual({ kind, code, status });
+      expect(supervisor.wait(1, state.pid)).toBeNull();
+      const waiting = exitConfirmation(state.broker, state.pid);
+      await Promise.resolve();
+      expect(waiting.confirmed()).toBe(false);
       expect(Atomics.load(new Int32Array(transport.requestedSignal), 0)).toBe(kind === "signaled" ? 9 : 0);
       expect(Atomics.load(new Int32Array(transport.interrupt), 0)).toBe(kind === "signaled" ? 9 : 0);
-      expect(state.host.wait(state.pid)).toBe(status);
+      expect(state.host.wait(state.pid)).toBe(-2);
       expect(state.quiescences()).toBe(1);
       expect(state.workers.get(state.pid)!.terminated).toBe(0);
       barrier.release();
-      await Promise.resolve();
-      await Promise.resolve();
+      expect(await waiting.result).toEqual({ kind, code, status });
+      expect(state.host.wait(state.pid)).toBe(status);
+      await timerTurn();
       expect(state.workers.get(state.pid)!.terminated).toBe(1);
     } finally { barrier.release(); state.dispose(); }
   });
@@ -644,4 +663,138 @@ test("unsupported but natively valid modules fail with the instrumentation refus
     expect(new TextDecoder().decode(data as Uint8Array)).toMatch(/Cannot instrument WebAssembly:.*SIMD/);
     expect(state.workers.size).toBe(0);
   } finally { state.dispose(); }
+});
+
+for (const completion of ["kill", "default-signal", "ordinary-word", "worker-error"] as const) {
+  test(`${completion} confirms neither process nor job exit until its admitted filesystem work drains`, async () => {
+    const barrier = quiescenceBarrier();
+    const state = liveFixture({ quiesce: () => barrier.promise });
+    try {
+      const supervisor = await state.started(state.pid);
+      const pid = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
+      await state.started(pid);
+      const transport = state.transports.get(pid)!;
+      const wake = new Int32Array(new SharedArrayBuffer(4));
+      const unlisten = supervisor.registerJobWake(1, transport.jobId, wake);
+      try {
+        if (completion === "kill") await state.broker.kill(pid, 9);
+        else if (completion === "default-signal") await state.broker.kill(pid, 15);
+        else if (completion === "ordinary-word") {
+          claimOutcome(outcomeWord(transport.outcome), { kind: "exited", code: 23 });
+          supervisor.exit(pid, 23);
+        } else state.workers.get(pid)!.onerror?.({ preventDefault() {}, message: "worker failed" } as ErrorEvent);
+        const waiting = exitConfirmation(state.broker, pid);
+        await Promise.resolve();
+        expect(waiting.confirmed()).toBe(false);
+        expect(supervisor.wait(1, pid)).toBeNull();
+        expect(supervisor.jobEmpty(1, transport.jobId)).toBe(false);
+        expect(supervisor.waitJob(1, transport.jobId)).toBeNull();
+        expect(Atomics.load(wake, 0)).toBe(0);
+        expect(state.workers.get(pid)!.terminated).toBe(0);
+        expect(state.quiescences()).toBe(1);
+        barrier.release();
+        expect((await waiting.result).status).toBe(completion === "kill" ? 137 : completion === "default-signal" ? 143 : completion === "ordinary-word" ? 23 : 126);
+        await timerTurn();
+        expect(supervisor.jobEmpty(1, transport.jobId)).toBe(true);
+        expect(Atomics.load(wake, 0)).toBe(1);
+        expect(state.workers.get(pid)!.terminated).toBe(1);
+      } finally { unlisten(); }
+    } finally { barrier.release(); state.dispose(); }
+  });
+}
+
+test("an unlaunched legacy job is fenced before becoming empty", async () => {
+  const barrier = quiescenceBarrier();
+  const loading = quiescenceBarrier();
+  const state = liveFixture({ quiesce: () => barrier.promise, slowModule: async () => { await loading.promise; return fixtureModule; } });
+  try {
+    const supervisor = await state.started(state.pid);
+    const pid = state.host.spawn(JSON.stringify({ argv: ["slow"], job: -1 }));
+    // reserveAdmittedSpawn runs before the asynchronous executable resolution completes.
+    await Promise.resolve();
+    const job = state.transports.get(pid)!.jobId;
+    await state.broker.kill(pid, 9);
+    const waiting = exitConfirmation(state.broker, pid);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
+    expect(supervisor.wait(1, pid)).toBeNull();
+    expect(state.workers.has(pid)).toBe(false);
+    expect(supervisor.jobEmpty(1, job)).toBe(false);
+    expect(state.quiescences()).toBe(1);
+    barrier.release();
+    expect((await waiting.result).status).toBe(137);
+    await timerTurn();
+    expect(supervisor.jobEmpty(1, job)).toBe(true);
+  } finally { barrier.release(); loading.release(); state.dispose(); }
+});
+
+test("an acknowledged legacy job is empty without an extra filesystem fence", async () => {
+  const state = liveFixture();
+  try {
+    const supervisor = await state.started(state.pid);
+    const pid = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
+    await state.started(pid);
+    state.workers.get(pid)!.exit(23);
+    expect(supervisor.jobEmpty(1, state.transports.get(pid)!.jobId)).toBe(true);
+    expect(state.quiescences()).toBe(0);
+  } finally { state.dispose(); }
+});
+
+test("job readiness follows the real filesystem admitted-operation fence, not just worker termination", async () => {
+  const state = liveFixture({ quiesce: waitForFilesystemQuiescence });
+  let section: FilesystemSection | undefined;
+  let admitted = false;
+  try {
+    const supervisor = await state.started(state.pid);
+    const pid = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
+    await state.started(pid);
+    const worker = state.workers.get(pid)!;
+    const job = state.transports.get(pid)!.jobId;
+    section = new FilesystemSection(worker.request.filesystem);
+    section.enter();
+    admitted = true;
+    await state.broker.kill(pid, 9);
+    const waiting = exitConfirmation(state.broker, pid);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
+    expect(supervisor.wait(1, pid)).toBeNull();
+    expect(supervisor.jobEmpty(1, job)).toBe(false);
+    expect(worker.terminated).toBe(0);
+    expect(() => new FilesystemSection(worker.request.filesystem).enter()).toThrow();
+    // An operation admitted before revocation is allowed its final mutation and lock release.
+    const mutation = new Int32Array(new SharedArrayBuffer(4));
+    Atomics.store(mutation, 0, 7);
+    section.exit();
+    admitted = false;
+    expect((await waiting.result).status).toBe(137);
+    await timerTurn();
+    expect(supervisor.jobEmpty(1, job)).toBe(true);
+    expect(Atomics.load(mutation, 0)).toBe(7);
+    expect(worker.terminated).toBe(1);
+    expect(() => new FilesystemSection(worker.request.filesystem).enter()).toThrow();
+  } finally { if (admitted) section!.exit(); state.dispose(); }
+});
+
+for (const acknowledged of [false, true]) test(`legacy closed background jobs release completion metadata after their fence (acknowledged ${acknowledged})`, async () => {
+  const barrier = quiescenceBarrier();
+  const state = liveFixture({ quiesce: () => barrier.promise });
+  try {
+    const supervisor = await state.started(state.pid);
+    const pid = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
+    await state.started(pid);
+    const job = state.transports.get(pid)!.jobId;
+    if (acknowledged) state.workers.get(pid)!.exit(23);
+    else await state.broker.kill(pid, 9);
+    state.host.close(pid);
+    state.broker.close(1, pid);
+    await Promise.resolve();
+    if (!acknowledged) {
+      expect(supervisor.get(pid)!.result).toBeNull();
+      expect(supervisor.job(job)).toBeDefined();
+      barrier.release();
+      await timerTurn();
+    }
+    expect(supervisor.get(pid)).toBeUndefined();
+    expect(supervisor.job(job)).toBeUndefined();
+  } finally { barrier.release(); state.dispose(); }
 });

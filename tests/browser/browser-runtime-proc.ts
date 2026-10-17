@@ -6,9 +6,9 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { chromium, firefox, webkit, type Browser } from "playwright";
+import { chromium, firefox, webkit, type Browser, type Page } from "playwright";
 import { buildBrowserEntries } from "../../scripts/browser-build";
-import { runtimeProcChecks } from "./runtime-proc-fixtures";
+import { runtimeProcChecks, runtimeProcJobWaitChecks } from "./runtime-proc-fixtures";
 
 const names = process.argv.slice(2);
 if (!names.length) names.push("chromium");
@@ -37,7 +37,7 @@ function cleanup(): Promise<void> {
   })();
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
-const deadline = setTimeout(() => { console.error("runtime_proc browser gate timed out"); void cleanup().finally(() => process.exit(1)); }, 120_000);
+const deadline = setTimeout(() => { console.error("runtime_proc browser gate timed out"); void cleanup().finally(() => process.exit(1)); }, Math.max(120_000, names.length * 100_000));
 try {
   const base = process.env.RUNNER_TEMP ?? process.env.SCRATCH ?? originalTmpdir ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir());
   scratch = await (scratchCreation = mkdtemp(join(base, "bun-wasm-runtime-proc-browser-")));
@@ -66,21 +66,22 @@ try {
   for (const name of names) {
     launch = types[name as keyof typeof types].launch({ headless: true, downloadsPath: join(scratch, "downloads"), tracesDir: join(scratch, "traces") });
     browser = await launch;
-    for (const mode of ["automatic", "explicit"]) {
-      const page = await browser.newPage();
+    for (const scenario of ["pipes", "job-wait"]) for (const mode of ["automatic", "explicit"]) {
+      const page: Page = await browser.newPage();
       const errors: string[] = [];
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
       try {
         // slots=off also lets the pre-wiring baseline fail on missing ABI imports, rather than
         // on unrelated Bun slot setup; the production preview1 adapter independently skips slots.
-        await page.goto(`http://127.0.0.1:${server.port}/?slots=off${mode === "explicit" ? "&explicit=1" : ""}`);
+        await page.goto(`http://127.0.0.1:${server.port}/?slots=off${mode === "explicit" ? "&explicit=1" : ""}${scenario === "job-wait" ? "&job-wait=1" : ""}`);
         await page.waitForFunction(() => (globalThis as any).runtimeProcResult, undefined, { timeout: 40_000 });
-        const result = await page.evaluate(() => (globalThis as any).runtimeProcResult);
-        console.log(JSON.stringify({ browser: name, version: browser.version(), mode, ...result, pageErrors: errors }));
+        const result: { ok: boolean; checks: string[]; cleanup: { activeWorkers: number };
+          teardown: { forcedWorkers: number; activeWorkers: number } } = await page.evaluate(() => (globalThis as any).runtimeProcResult);
+        console.log(JSON.stringify({ browser: name, version: browser.version(), mode, scenario, ...result, pageErrors: errors }));
         try {
           assert.equal(result.ok, true, JSON.stringify(result));
-          assert.deepEqual(result.checks, Array.from(runtimeProcChecks));
+          assert.deepEqual(result.checks, Array.from<string>(scenario === "job-wait" ? runtimeProcJobWaitChecks : runtimeProcChecks));
           assert.equal(result.cleanup.activeWorkers, 0);
           assert.equal(result.teardown.forcedWorkers, 0);
           assert.equal(result.teardown.activeWorkers, 0);

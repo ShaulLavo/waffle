@@ -395,3 +395,39 @@ the same guest worker. An absent loopback listener fails with `ECONNREFUSED`.
 An outbound internet TCP connection fails with `ENOTSUP`; browsers provide no
 raw socket API. HTTP previews and WebSocket relays still use the existing host
 bridge. TLS and Unix sockets are outside this adapter.
+
+
+## Generic runtime job completion
+
+The preview1 `runtime_proc` namespace adds `wait_job(job, flags, status_ptr) -> errno`.
+All arguments are i32. Flag `NOHANG = 1` returns `-EAGAIN` (`-6`) while any member is unsafe;
+flag 0 blocks. Other flags return `-EINVAL` (`-28`). Success returns 0, writes **one
+little-endian i32** containing the leader's final status (ordinary exit code, or `128 + signal`
+for selected signal death), and reaps the job plus its remaining member process records.
+The existing `wait(pid, out)` still writes its separate eight-byte kind/code result and can
+only observe a direct child; it does not establish descendant job completion.
+
+Poll subscription **kind 4** means job-empty; its id is the job ID. Subscriptions remain
+16 bytes (`u32 kind`, `u32 id`, `u64 userdata`) and events remain 16 bytes (`u64 userdata`,
+`u32 kind`, `u32 flags`), all little-endian. Job readiness is level-triggered, non-consuming,
+and has flags 0. It can be mixed with readable/writable, child-exit and filesystem subscriptions.
+After `wait_job` reaps, both repeated wait and job-empty observation return `-ECHILD` (`-12`),
+not another successful completion. An unknown job returns `-ESRCH` (`-71`); a caller outside
+the owner's ancestry returns `-EPERM` (`-63`). Owner-chain authority survives intermediate
+individual reaping. Blocking wait returns `-EINTR` (`-27`) for a pending handled signal,
+without consuming that signal or the job. Invalid memory returns `-EFAULT` (`-21`) before reap.
+
+The first member's status is authoritative even if its direct parent already reaped it, it
+exited normally while descendants kept running, or descendants later died from different
+signals. Process job identity is immutable: there is no membership-movement operation today.
+Spawning into a separate foreground/background job creates an independent lifetime; completed
+jobs reject new members, while previously accepted reservations remain counted during admission.
+`kill_job` is unchanged and selects only that job's members.
+
+Job-empty follows immutable outcomes, revocation, descriptor release and the quiescence fence
+for **every** member. Individual process wait/child-exit confirmation and root `run.done` also
+follow their own fence. The supervisor's `quiesce(pid)` hook must finish admitted filesystem
+and adapter work (including terminal critical sections); confirmation never waits for physical
+worker termination. Shared pending membership includes accepted but not yet admitted spawns;
+completion and one-time reaping are atomic with respect to joins and competing host/guest waits. Poll/wait capture their wake sequence before scanning readiness,
+so completion racing registration or the scan cannot be lost.

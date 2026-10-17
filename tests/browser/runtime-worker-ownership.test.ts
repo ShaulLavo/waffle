@@ -91,6 +91,143 @@ test("generic worker kills quiesce the filesystem before physical termination", 
   } finally { state.dispose(); }
 });
 
+test("generic host failure confirms after its filesystem fence before physical termination", async () => {
+  const state = fixture();
+  let releasePhysical!: () => void;
+  const physicalTermination = new Promise<void>(resolve => { releasePhysical = resolve; });
+  try {
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const transport = state.messages[0]!.transport;
+    await state.dispatch();
+    const supervisor = await state.broker.ready();
+    await supervisor.start(pid);
+    const worker = state.workers.get(pid)!;
+    let confirmedAtTermination = -1;
+    worker.terminate = () => {
+      confirmedAtTermination = Atomics.load(workerProcessState(transport).confirmed, 0);
+      return physicalTermination;
+    };
+    worker.onerror?.({ preventDefault() {}, message: "worker startup failed" } as ErrorEvent);
+    const waiting = state.broker.wait(pid);
+    expect(supervisor.wait(1, pid)).toBeNull();
+    expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+    expect(state.quiescences()).toBe(1);
+    expect(confirmedAtTermination).toBe(-1);
+    state.release();
+    expect((await waiting).status).toBe(126);
+    await Promise.resolve();
+    expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(1);
+    expect(confirmedAtTermination).toBe(1);
+    expect(supervisor.jobEmpty(1, workerProcessState(transport).job)).toBe(true);
+    // Physical termination is deliberately unresolved; it cannot be the safe point.
+  } finally { releasePhysical(); state.dispose(); }
+});
+
+test("generic process and job confirmation both wait for the filesystem fence", async () => {
+  const state = fixture();
+  try {
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const transport = state.messages[0]!.transport;
+    await state.dispatch();
+    const supervisor = await state.broker.ready();
+    await supervisor.start(pid);
+    const job = workerProcessState(transport).job;
+    const wake = new Int32Array(new SharedArrayBuffer(4));
+    const unlisten = supervisor.registerJobWake(1, job, wake);
+    try {
+      await state.broker.kill(pid, 9);
+      const waiting = state.broker.wait(pid);
+      expect(supervisor.wait(1, pid)).toBeNull();
+      expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+      expect(supervisor.jobEmpty(1, job)).toBe(false);
+      expect(supervisor.waitJob(1, job)).toBeNull();
+      expect(Atomics.load(wake, 0)).toBe(0);
+      expect(state.quiescences()).toBe(1);
+      state.release();
+      expect((await waiting).status).toBe(137);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(supervisor.jobEmpty(1, job)).toBe(true);
+      expect(Atomics.load(wake, 0)).toBe(1);
+      expect(state.workers.get(pid)!.terminated).toBe(true);
+    } finally { unlisten(); }
+  } finally { state.dispose(); }
+});
+
+test("an unlaunched generic job is fenced before becoming empty", async () => {
+  const state = fixture();
+  let release!: () => void;
+  const loading = new Promise<void>(resolve => { release = resolve; });
+  state.broker.register("slow", { module: async () => { await loading; return module; }, adapter: "preview1", cooperative: true });
+  try {
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "slow", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const transport = state.messages[0]!.transport;
+    await state.dispatch();
+    const supervisor = await state.broker.ready();
+    const job = workerProcessState(transport).job;
+    await state.broker.kill(pid, 9);
+    const waiting = state.broker.wait(pid);
+    expect(supervisor.wait(1, pid)).toBeNull();
+    expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+    expect(state.workers.has(pid)).toBe(false);
+    expect(supervisor.jobEmpty(1, job)).toBe(false);
+    expect(state.quiescences()).toBe(1);
+    state.release();
+    expect((await waiting).status).toBe(137);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(supervisor.jobEmpty(1, job)).toBe(true);
+  } finally { release(); state.dispose(); }
+});
+
+test("rejecting a repeated spawn cannot revoke or safe-confirm an already admitted independent child", async () => {
+  const state = fixture();
+  try {
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const repeated = structuredClone(state.messages[0]!);
+    await state.dispatch();
+    const supervisor = await state.broker.ready();
+    await supervisor.start(pid);
+    state.broker.rejectRuntimeMessage(repeated);
+    const child = workerProcessState(repeated.transport);
+    expect(Atomics.load(child.signals.outcome, 0)).toBe(0n);
+    expect(Atomics.load(child.confirmed, 0)).toBe(0);
+    expect(Atomics.load(child.jobConfirmed, 0)).toBe(0);
+    expect(state.quiescences()).toBe(0);
+    expect(supervisor.jobEmpty(1, child.job)).toBe(false);
+    state.workers.get(pid)!.message({ type: "exit", code: 23, sleep: "atomics" });
+    expect((await state.broker.wait(pid)).status).toBe(23);
+    expect(supervisor.jobEmpty(1, child.job)).toBe(true);
+  } finally { state.dispose(); }
+});
+
+for (const dispatch of ["runtime", "rejected"] as const) test(`a committed job reap reaches host cleanup after sender fatal selection (${dispatch})`, async () => {
+  const state = fixture();
+  try {
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const transport = state.messages[0]!.transport;
+    await state.dispatch();
+    const supervisor = await state.broker.ready();
+    await supervisor.start(pid);
+    state.workers.get(pid)!.message({ type: "exit", code: 23, sleep: "atomics" });
+    const job = workerProcessState(transport).job;
+    expect(state.client.waitJob(1, job)?.status).toBe(23);
+    const reap = state.messages.pop()!;
+    expect(reap.operation).toBe("reap-job");
+    await state.broker.kill(1, 9);
+    if (dispatch === "runtime") await state.broker.runtimeMessage(reap, 1);
+    else {
+      state.broker.rejectRuntimeMessage(reap);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    expect(supervisor.get(pid)).toBeUndefined();
+    expect(supervisor.job(job)).toBeUndefined();
+  } finally { state.dispose(); }
+});
+
 test("a killed generic child cannot queue a new spawn capability", async () => {
   const state = fixture();
   try {
@@ -107,7 +244,14 @@ test("a killed generic child cannot queue a new spawn capability", async () => {
     state.workers.get(pid)!.message(queued);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(state.workers.has(descendant)).toBe(false);
-    expect(workerProcessState(queued.transport).signals.outcome[0]).not.toBe(0n);
+    const rejected = workerProcessState(queued.transport);
+    expect(rejected.signals.outcome[0]).not.toBe(0n);
+    expect(Atomics.load(rejected.confirmed, 0)).toBe(0);
+    expect(Atomics.load(rejected.jobConfirmed, 0)).toBe(0);
+    state.release();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(Atomics.load(rejected.confirmed, 0)).toBe(1);
+    expect(Atomics.load(rejected.jobConfirmed, 0)).toBe(1);
   } finally { state.dispose(); }
 });
 

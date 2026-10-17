@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { runtimeProcFixture } from "./runtime-proc-fixtures";
+import type { SpawnRequest } from "../../runtime/proc/types";
+import { runtimeProcFixture, runtimeProcJobWaitFixture } from "./runtime-proc-fixtures";
 
 test("failed spawn reports its exact negative return and request without changing stage48", () => {
   let memory: WebAssembly.Memory, nextFd = 123;
@@ -147,4 +148,127 @@ for (const returned of [0, -8]) test(`child fixture still fails early EOF or une
   memory = instance.exports.memory as WebAssembly.Memory;
   try { (instance.exports._start as () => void)(); throw new Error("bad child read was accepted"); }
   catch (error) { expect(error).toBeInstanceOf(Exit); expect((error as Exit).code).toBe(83); }
+});
+
+// These stubs validate the encoded guest itself, not the implementation under test. The browser
+// gate below runs the same bytes through actual guest-created workers and the real broker.
+function jobWaitShell(options: { pending?: number; status?: number; eof?: number } = {}) {
+  let memory: WebAssembly.Memory;
+  const reads: (string | number)[] = ["DG", "LL", -6, "XX", options.eof ?? 0];
+  const spawned: SpawnRequest[] = [], waits: [number, number][] = [], operations: string[] = [];
+  let nextFd = 20;
+  class Exit extends Error { constructor(readonly code: number) { super(`exit ${code}`); } }
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(runtimeProcJobWaitFixture()), {
+    runtime_proc: {
+      read(fd: number, ptr: number, length: number) {
+        expect(fd).toBe(20); const value = reads.shift(); operations.push(`read:${value}`);
+        if (typeof value === "number") return value;
+        if (value === undefined) throw new Error("unexpected fixture read");
+        const bytes = new TextEncoder().encode(value); expect(bytes.length).toBeLessThanOrEqual(length);
+        new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes); return bytes.length;
+      },
+      write(fd: number, ptr: number, length: number) {
+        operations.push(`write:${fd}:${new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length))}`); return length;
+      },
+      pipe(ptr: number) { const view = new DataView(memory.buffer); view.setUint32(ptr, nextFd++, true); view.setUint32(ptr + 4, nextFd++, true); return 0; },
+      dup: () => { throw new Error("unused dup"); },
+      spawn(ptr: number, length: number) { spawned.push(JSON.parse(new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length)))); return spawned.length + 1; },
+      job_of(pid: number) { return pid === 2 ? 22 : 33; },
+      wait(pid: number, ptr: number) {
+        if (pid === 2) return -6;
+        expect(pid).toBe(3); const view = new DataView(memory.buffer); view.setUint32(ptr, 0, true); view.setInt32(ptr + 4, 0, true); return 0;
+      },
+      wait_job(job: number, flags: number, ptr: number) {
+        waits.push([job, flags]); operations.push(`wait_job:${job}:${flags}`);
+        if (flags === 1) return options.pending ?? -6;
+        new DataView(memory.buffer).setInt32(ptr, options.status ?? 0, true); return 0;
+      },
+      kill_job(job: number, signal: number) { expect(job).toBe(33); expect(signal).toBe(15); operations.push("kill_job"); return 0; },
+      signal: () => { throw new Error("shell installed a signal handler"); }, interrupted: () => 0,
+      poll(ptr: number, _count: number, timeout: number, out: number) {
+        const view = new DataView(memory.buffer), kind = view.getUint32(ptr, true);
+        if (kind === 4 && timeout === 0) { expect(view.getUint32(ptr + 4, true)).toBe(33); return 0; }
+        view.setBigUint64(out, view.getBigUint64(ptr + 8, true), true); view.setUint32(out + 8, kind, true); view.setUint32(out + 12, kind === 0 ? 1 : 0, true); return 1;
+      },
+    },
+    wasi_snapshot_preview1: {
+      args_sizes_get(ptr: number) { new DataView(memory.buffer).setUint32(ptr, 2, true); return 0; },
+      fd_close: () => 0, proc_exit(code: number) { throw new Exit(code); },
+    },
+  });
+  memory = instance.exports.memory as WebAssembly.Memory;
+  let stage: number | undefined;
+  try { (instance.exports._start as () => void)(); }
+  catch (error) { if (!(error instanceof Exit)) throw error; stage = error.code; }
+  return { spawned, waits, operations, stage };
+}
+
+test("artifact-free job wait guest imports generic job operations, not Bun or browser shortcuts", () => {
+  const bytes = runtimeProcJobWaitFixture(); expect(WebAssembly.validate(bytes)).toBe(true);
+  const imports = WebAssembly.Module.imports(new WebAssembly.Module(bytes));
+  expect(imports.filter(item => item.module === "runtime_proc").map(item => item.name)).toEqual([
+    "read", "write", "pipe", "dup", "spawn", "wait", "job_of", "poll", "kill_job", "wait_job", "signal", "interrupted",
+  ]);
+  expect(imports.every(item => item.module === "runtime_proc" || item.module === "wasi_snapshot_preview1")).toBe(true);
+});
+
+test("shell checks leader zero, pending job, postleader output, safe exit and independent background", () => {
+  const result = jobWaitShell(); expect(result.stage).toBeUndefined();
+  expect(result.waits).toEqual([[33, 1], [33, 1], [33, 0], [22, 1], [22, 0]]);
+  expect(result.spawned.map(item => item.fds)).toEqual([
+    [{ child: 0, parent: 26 }, { child: 2, parent: 2 }],
+    [{ child: 0, parent: 22 }, { child: 1, parent: 21 }, { child: 10, parent: 24 }, { child: 2, parent: 2 }],
+  ]);
+  expect(result.operations.indexOf("kill_job")).toBeGreaterThan(result.operations.indexOf("read:LL"));
+  expect(result.operations.indexOf("wait_job:33:0")).toBeLessThan(result.operations.indexOf("read:XX"));
+  expect(result.operations.indexOf("write:27:b")).toBeGreaterThan(result.operations.indexOf("read:0"));
+  expect(result.operations.at(-1)).toBe("write:1:job-wait-ok\n");
+});
+
+for (const [options, stage] of [[{ pending: 0 }, 110], [{ status: 143 }, 120], [{ eof: -6 }, 122]] as const) {
+  test(`job fixture rejects early job completion, overwritten leader or unsafe EOF (${stage})`, () => {
+    expect(jobWaitShell(options).stage).toBe(stage);
+  });
+}
+
+for (const argc of [1, 3, 4, 5]) test(`job guest role argc=${argc} uses inherited job and safe-exit gates`, () => {
+  let memory: WebAssembly.Memory, deliveries = 0;
+  const spawned: SpawnRequest[] = [], writes: string[] = [], signals: number[][] = [];
+  class RoleExit extends Error { constructor(readonly code: number) { super(`exit ${code}`); } }
+  const job = new Uint8Array(4); new DataView(job.buffer).setUint32(0, 97, true);
+  const chunks = (argc === 1 ? [job] : argc === 3 ? [job, new Uint8Array([112]), new Uint8Array([120])]
+    : argc === 4 ? [new Uint8Array([112]), new Uint8Array([120])] : [new Uint8Array([98])]);
+  const unused = () => { throw new Error("role called shell-only operation"); };
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(runtimeProcJobWaitFixture()), {
+    runtime_proc: {
+      read(fd: number, ptr: number, length: number) {
+        expect(fd).toBe((argc === 3 && chunks.length < 3) || argc === 4 ? 10 : 0);
+        const bytes = chunks.shift()!; expect(length).toBe(bytes.length); new Uint8Array(memory.buffer, ptr, length).set(bytes); return length;
+      },
+      write(fd: number, ptr: number, length: number) { expect(fd).toBe(1); writes.push(new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length))); return length; },
+      spawn(ptr: number, length: number) { spawned.push(JSON.parse(new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length)))); return 7; },
+      pipe: unused, dup: unused, wait: unused, job_of: unused, kill_job: unused, wait_job: unused,
+      signal(signal: number, disposition: number) { signals.push([signal, disposition]); return 0; },
+      interrupted: () => ++deliveries === 1 ? 0 : 15,
+      poll(_ptr: number, count: number, timeout: number) { expect(count).toBe(0); expect([10, 75]).toContain(timeout); return 0; },
+    },
+    wasi_snapshot_preview1: {
+      args_sizes_get(ptr: number) { new DataView(memory.buffer).setUint32(ptr, argc, true); return 0; },
+      fd_close: () => 0, proc_exit: (stage: number) => { throw new RoleExit(stage); },
+    },
+  });
+  memory = instance.exports.memory as WebAssembly.Memory;
+  let exit: number | undefined;
+  try { (instance.exports._start as () => void)(); }
+  catch (error) { if (!(error instanceof RoleExit)) throw error; exit = error.code; }
+  expect(exit).toBe(argc === 3 ? 31 : argc === 4 ? 32 : undefined);
+  expect(chunks).toEqual([]);
+  expect(writes).toEqual(argc === 3 ? ["D", "L", "X"] : argc === 4 ? ["G", "L", "X"] : []);
+  expect(signals).toEqual(argc === 3 || argc === 4 ? [[15, 2]] : []);
+  expect(spawned.length).toBe(argc === 1 || argc === 3 ? 1 : 0);
+  if (spawned.length) {
+    expect(spawned[0]!.job).toBe(97);
+    expect(spawned[0]!.argv.length).toBe(argc === 1 ? 3 : 4);
+    expect(spawned[0]!.fds).toEqual([{ child: 0, parent: 0 }, { child: 1, parent: 1 }, { child: 10, parent: 10 }, { child: 2, parent: 2 }]);
+  }
 });
