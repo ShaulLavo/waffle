@@ -1,15 +1,11 @@
 import { MAX_ACCESS_REQUESTS } from "./access.js";
+import { controlLoad, controlStore, controlCas } from "./control.js";
+import { createDirectory, directoryState, directorySlots, directoryJobs, directoryJob, reserveDirectoryProcess, confirmDirectoryProcess, collectDirectoryProcess, collectDirectoryJob, wakeDirectory } from "./directory.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import { requestSignal, type SignalTransport } from "./signals.js";
 import { ProcessErrno, ProcessError, checkedSignal, type ProcessExit, type SpawnRequest } from "./types.js";
-
-// Fixed shared records make job signalling synchronous even when descendants' messages have
-// not reached the page. Slots never recycle: a delayed capability cannot address a new guest.
-const HEADER_WORDS = 4;
-const RECORD_WORDS = 80;
-const SIGNAL_OFFSET = 9;
 
 export { MAX_ACCESS_REQUESTS } from "./access.js";
 // Two words: pending=0, complete=1, retired=2; then the signed WASI result.
@@ -35,6 +31,7 @@ export interface WorkerProcessTransport {
   directory: SharedArrayBuffer;
   identity: SharedArrayBuffer;
   slot: number;
+  pid: number;
   bindings: WorkerDescriptorBinding[];
   resources: unknown[];
   /** Host adapter context, such as an independently reserved filesystem identity. */
@@ -48,71 +45,12 @@ export type WorkerProcessMessage =
   | { type: "runtime-proc"; operation: "access"; transport: WorkerProcessTransport; request: WorkerAccessRequest; path: string; cwd: string }
   | { type: "runtime-proc"; operation: "access-cancel"; transport: WorkerProcessTransport; request: WorkerAccessRequest };
 
-function record(transport: WorkerProcessTransport, slot = transport.slot): Int32Array {
-  const capacity = (transport.directory.byteLength / 4 - HEADER_WORDS) / RECORD_WORDS;
-  if (!Number.isInteger(capacity) || !Number.isInteger(slot) || slot < 0 || slot >= capacity) throw new TypeError("invalid process directory slot");
-  return new Int32Array(transport.directory, (HEADER_WORDS + slot * RECORD_WORDS) * 4, RECORD_WORDS);
-}
-export function workerProcessState(transport: WorkerProcessTransport, slot = transport.slot) {
-  const cells = record(transport, slot);
-  const leader = record(transport, Atomics.load(cells, 77));
-  return {
-    pid: Atomics.load(cells, 0), parentPid: Atomics.load(cells, 1), job: Atomics.load(cells, 2),
-    jobOwner: Atomics.load(cells, 75),
-    jobLeaderPid: Atomics.load(leader, 0),
-    jobForeground: Atomics.load(leader, 79) !== 0,
-    jobOutcome: new BigInt64Array(leader.buffer, leader.byteOffset + 6 * 4, 1),
-    confirmed: new Int32Array(cells.buffer, cells.byteOffset + 74 * 4, 1),
-    // Both acknowledgments follow the host-work fence. Jobs additionally publish
-    // membership completion and retain their leader's gate after direct child reap.
-    jobConfirmed: new Int32Array(cells.buffer, cells.byteOffset + 78 * 4, 1),
-    jobPending: new Int32Array(cells.buffer, record(transport, Atomics.load(cells, 77)).byteOffset + 76 * 4, 1),
-    signals: {
-      interrupt: new Int32Array(cells.buffer, cells.byteOffset + 3 * 4, 1),
-      requestedSignal: new Int32Array(cells.buffer, cells.byteOffset + 4 * 4, 1),
-      outcome: new BigInt64Array(cells.buffer, cells.byteOffset + 6 * 4, 1),
-      signalState: new Int32Array(cells.buffer, cells.byteOffset + SIGNAL_OFFSET * 4, 65),
-    } satisfies SignalTransport,
-    // One readiness sequence for the entire service; inherited endpoints can wake every
-    // interested process without retaining a cross-worker list of subscriber addresses.
-    wake: new Int32Array(transport.directory, 4, 1),
-  };
-}
-function reserveRecord(transport: WorkerProcessTransport, pid: number, parentPid: number, job: number, jobOwner: number, leaderSlot?: number, foreground = true): WorkerProcessTransport {
-  const header = new Int32Array(transport.directory, 0, HEADER_WORDS);
-  const capacity = (transport.directory.byteLength / 4 - HEADER_WORDS) / RECORD_WORDS;
-  const pending = leaderSlot === undefined ? undefined : new Int32Array(transport.directory, record(transport, leaderSlot).byteOffset + 76 * 4, 1);
-  // Reserve membership before publishing a slot. A concurrent final confirmation can
-  // seal only at zero; a successful join therefore cannot disappear from a job wait.
-  if (pending) {
-    for (;;) {
-      const count = Atomics.load(pending, 0);
-      if (count <= 0) throw new ProcessError(ProcessErrno.CHILD, "job has completed or been reaped");
-      if (Atomics.compareExchange(pending, 0, count, count + 1) === count) break;
-    }
-  }
-  let slot: number;
-  for (;;) {
-    slot = Atomics.load(header, 0);
-    if (slot >= capacity) {
-      if (pending) { Atomics.sub(pending, 0, 1); wakeWorkerProcess(transport); }
-      throw new ProcessError(ProcessErrno.AGAIN, "process directory is full");
-    }
-    if (Atomics.compareExchange(header, 0, slot, slot + 1) === slot) break;
-  }
-  const child: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot, bindings: [], resources: [] };
-  const cells = record(child);
-  Atomics.store(cells, 1, parentPid);
-  Atomics.store(cells, 2, job);
-  Atomics.store(cells, 75, jobOwner);
-  Atomics.store(cells, 77, leaderSlot ?? slot);
-  if (!pending) { Atomics.store(cells, 76, 1); Atomics.store(cells, 79, Number(foreground)); }
-  // Publish identity last. Unpublished reservations cannot be signalled as live processes.
-  Atomics.store(cells, 0, pid);
-  return child;
+export const workerProcessState = directoryState;
+function reserveRecord(transport: WorkerProcessTransport, pid: number, parentPid: number, job: number, jobOwner: number, jobSlot?: number, foreground = true): WorkerProcessTransport {
+  return { ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground), identity: transport.identity, bindings: [], resources: [] };
 }
 export function workerProcessDirectoryId(transport: WorkerProcessTransport): string {
-  const header = new Uint32Array(transport.directory, 0, HEADER_WORDS);
+  const header = new Uint32Array(transport.directory, 0, 8);
   return `${header[2]}:${header[3]}`;
 }
 export function createWorkerProcessTransport(options: { pid?: number; job?: number; identity?: SharedArrayBuffer; capacity?: number; foreground?: boolean } = {}): WorkerProcessTransport {
@@ -121,26 +59,15 @@ export function createWorkerProcessTransport(options: { pid?: number; job?: numb
   const identities = new ProcessIdentityAllocator(options.identity);
   identities.observePid(pid); identities.observeJob(job);
   const transport: WorkerProcessTransport = {
-    directory: new SharedArrayBuffer((HEADER_WORDS + capacity * RECORD_WORDS) * 4), identity: identities.buffer,
-    slot: 0, bindings: [], resources: [],
+    directory: createDirectory(capacity), identity: identities.buffer,
+    slot: 0, pid, bindings: [], resources: [],
   };
-  new Uint32Array(transport.directory, 8, 2).set(crypto.getRandomValues(new Uint32Array(2)));
   return reserveRecord(transport, pid, 0, job, pid, undefined, options.foreground ?? true);
 }
-export function wakeWorkerProcess(transport: WorkerProcessTransport, slot = transport.slot): void {
-  const wake = workerProcessState(transport, slot).wake;
-  Atomics.add(wake, 0, 1); Atomics.notify(wake, 0);
-}
+export function wakeWorkerProcess(transport: WorkerProcessTransport, _slot = transport.slot): void { wakeDirectory(transport.directory); }
 /** Publish only after resource revocation, descriptor release and the host teardown fence. */
-export function confirmWorkerProcessJob(transport: WorkerProcessTransport): void {
-  const state = workerProcessState(transport);
-  if (Atomics.compareExchange(state.jobConfirmed, 0, 0, 1) === 0) Atomics.sub(state.jobPending, 0, 1);
-  wakeWorkerProcess(transport);
-}
-export function workerProcessSlots(transport: WorkerProcessTransport): number[] {
-  const count = Atomics.load(new Int32Array(transport.directory, 0, HEADER_WORDS), 0);
-  return Array.from({ length: count }, (_, slot) => slot).filter(slot => workerProcessState(transport, slot).pid !== 0);
-}
+export const confirmWorkerProcessJob = confirmDirectoryProcess;
+export function workerProcessSlots(transport: WorkerProcessTransport): number[] { return directorySlots(transport.directory); }
 
 export interface WorkerSpawnTransfer {
   data?: unknown;
@@ -243,8 +170,8 @@ export class WorkerProcessClient {
     });
     if (!Number.isInteger(request.job) || request.job < -1) throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const job = request.job > 0 ? request.job : this.identities.job();
-    const existingJob = workerProcessSlots(this.options.transport).map(slot => ({ slot, ...workerProcessState(this.options.transport, slot) })).find(state => state.job === job);
-    if (request.job > 0 && !existingJob) throw new ProcessError(ProcessErrno.SRCH, "unknown job");
+    const existingJob = directoryJobs(this.options.transport.directory).map(slot => directoryJob(this.options.transport.directory, slot)).find(group => group.id === job);
+    if (request.job > 0 && !existingJob) throw new ProcessError(this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH, "unknown or collected job");
     const pid = this.identities.pid();
     const references = new Map<OpenDescription, number>();
     let child: WorkerProcessTransport | undefined;
@@ -255,7 +182,7 @@ export class WorkerProcessClient {
       // teardown must not stop this worker with an anonymous outstanding reservation.
       transfer = this.options.prepareSpawn?.(pid);
       codec = transfer?.codec ?? codec;
-      child = reserveRecord(this.options.transport, pid, this.pid, job, existingJob?.jobOwner ?? this.pid, existingJob?.slot, request.job === 0);
+      child = reserveRecord(this.options.transport, pid, this.pid, job, existingJob?.ownerPid ?? this.pid, existingJob?.slot, request.job === 0);
       child.data = transfer?.data;
       for (let i = 0; i < sources.length; i++) {
         const source = sources[i]!;
@@ -272,18 +199,25 @@ export class WorkerProcessClient {
       this.admit();
       this.options.postMessage({ type: "runtime-proc", operation: "spawn", transport: child, request: snapshot });
     } catch (error) {
+      let cleaned = true;
       try {
         if (child) claimOutcome(workerProcessState(child).signals.outcome, { kind: "start-failed", code: 13 });
-        let cleaned = true;
         for (const token of child?.resources ?? []) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
         }
         try { transfer?.cancel?.(); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
         if (child && cleaned) {
-          Atomics.store(workerProcessState(child).confirmed, 0, 1);
+          controlStore(workerProcessState(child).confirmed, 0, 1);
           confirmWorkerProcessJob(child);
         }
       } finally { transfer?.release?.(); }
+      if (child && cleaned) {
+        const state = workerProcessState(child);
+        // No caller received this PID. Cache its leader value before freeing its row;
+        // a reentrant exporter may already have admitted another member to the job.
+        collectDirectoryProcess(child);
+        if (controlLoad(state.jobPending) === 0) collectDirectoryJob(child.directory, state.jobSlot, state.job);
+      }
       throw error;
     }
     // Publication transferred ownership. Never discard published resources if a host
@@ -294,47 +228,39 @@ export class WorkerProcessClient {
   private find(pid: number, retained = false) {
     for (const slot of workerProcessSlots(this.options.transport)) {
       const state = workerProcessState(this.options.transport, slot);
-      if (state.pid === pid && (retained || Atomics.load(state.jobPending, 0) >= 0)) return { slot, ...state };
+      if (state.pid === pid && (retained || controlLoad(state.jobPending, 0) >= 0)) return state;
     }
     throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
   }
   wait(parentPid: number, pid: number): ProcessExit | null {
-    const target = this.find(pid, true);
-    if (parentPid !== this.pid || target.parentPid !== this.pid || Atomics.load(target.jobPending, 0) < 0) throw new ProcessError(ProcessErrno.CHILD, "not a child process");
-    return Atomics.load(target.confirmed, 0) ? readOutcome(target.signals.outcome) : null;
+    let target: ReturnType<WorkerProcessClient["find"]>;
+    try { target = this.find(pid, true); } catch { throw new ProcessError(ProcessErrno.CHILD, "not a retained child process"); }
+    if (parentPid !== this.pid || target.parentPid !== this.pid || controlLoad(target.jobPending, 0) < 0) throw new ProcessError(ProcessErrno.CHILD, "not a child process");
+    return controlLoad(target.confirmed, 0) ? readOutcome(target.signals.outcome) : null;
   }
   private requireJob(callerPid: number, job: number) {
-    const leader = workerProcessSlots(this.options.transport).map(slot => ({ slot, ...workerProcessState(this.options.transport, slot) })).find(state => state.job === job);
-    if (!leader) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
-    if (Atomics.load(leader.jobPending, 0) < 0) throw new ProcessError(ProcessErrno.CHILD, `job ${job} has been reaped`);
-    let owner = leader.jobOwner;
+    this.admit();
+    const group = directoryJobs(this.options.transport.directory).map(slot => directoryJob(this.options.transport.directory, slot)).find(group => group.id === job);
+    if (!group) throw new ProcessError(this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH, `unknown or collected job ${job}`);
+    let owner = controlLoad(group.controlParent);
     const seen = new Set<number>();
     while (callerPid === this.pid && owner !== 0 && !seen.has(owner)) {
-      if (owner === callerPid) return leader;
+      if (owner === callerPid) return group;
       seen.add(owner);
-      owner = this.find(owner, true).parentPid;
+      owner = controlLoad(this.find(owner, true).controlParent);
     }
     throw new ProcessError(63, `job ${job} is outside the caller's owner chain`);
   }
-  private jobIsEmpty(leader: ReturnType<typeof workerProcessState>): boolean {
-    // The gate includes reservations not yet visible in the slot directory. Check safe
-    // words too: an outcome (or direct-child acknowledgement) is not a teardown fence.
-    const pending = Atomics.load(leader.jobPending, 0);
-    if (pending < 0) throw new ProcessError(ProcessErrno.CHILD, `job ${leader.job} has been reaped`);
-    return pending === 0 && workerProcessSlots(this.options.transport).every(slot => {
-      const state = workerProcessState(this.options.transport, slot);
-      return state.job !== leader.job || Atomics.load(state.jobConfirmed, 0) !== 0;
-    });
+  private jobIsEmpty(group: ReturnType<typeof directoryJob>): boolean {
+    const pending = controlLoad(group.pending);
+    if (pending < 0) throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
+    return pending === 0;
   }
   jobEmpty(callerPid: number, job: number): boolean { return this.jobIsEmpty(this.requireJob(callerPid, job)); }
   waitJob(callerPid: number, job: number): ProcessExit | null {
-    const leader = this.requireJob(callerPid, job);
-    if (!this.jobIsEmpty(leader)) return null;
-    const result = readOutcome(leader.signals.outcome);
-    if (!result) return null;
-    if (Atomics.compareExchange(leader.jobPending, 0, 0, -1) !== 0) throw new ProcessError(ProcessErrno.CHILD, `job ${job} has been reaped`);
-    // Reaping is synchronous even while the caller's WASM blocks the worker message
-    // loop. The page removes its retained supervisor records when this notice arrives.
+    const group = this.requireJob(callerPid, job);
+    if (!this.jobIsEmpty(group)) return null;
+    const result = collectDirectoryJob(this.options.transport.directory, group.slot, job);
     this.options.postMessage({ type: "runtime-proc", operation: "reap-job", transport: this.options.transport, job });
     return result;
   }
@@ -345,25 +271,23 @@ export class WorkerProcessClient {
     let target = this.find(pid);
     for (;;) {
       if (target.pid === this.pid) return true;
-      if (target.parentPid === 0 || seen.has(target.parentPid)) return false;
+      const parent = controlLoad(target.controlParent);
+      if (parent === 0 || seen.has(parent)) return false;
       seen.add(target.pid);
-      target = this.find(target.parentPid, true);
+      target = this.find(parent, true);
     }
   }
   canSignalJob(callerPid: number, job: number): boolean {
     if (callerPid !== this.pid) return false;
-    return workerProcessSlots(this.options.transport).some(slot => {
-      const state = workerProcessState(this.options.transport, slot);
-      return state.job === job && state.jobOwner === this.pid && Atomics.load(state.jobPending, 0) >= 0;
-    });
+    try { const group = this.requireJob(callerPid, job); return controlLoad(group.controlParent) === this.pid; }
+    catch (error) { if (error instanceof ProcessError && error.errno === 63) return false; throw error; }
   }
   kill(pid: number, signal: number): void {
     if (!this.canSignal(this.pid, pid)) throw new ProcessError(63, "process is outside the caller's ancestry");
     this.deliver([this.find(pid)], checkedSignal(signal));
   }
   killJob(job: number, signal: number): void {
-    const targets = workerProcessSlots(this.options.transport).map(slot => ({ slot, ...workerProcessState(this.options.transport, slot) })).filter(state => state.job === job && Atomics.load(state.jobPending, 0) >= 0);
-    if (!targets.length) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
+    const targets = workerProcessSlots(this.options.transport).map(slot => workerProcessState(this.options.transport, slot)).filter(state => state.job === job && controlLoad(state.jobPending, 0) >= 0);
     if (!this.canSignalJob(this.pid, job)) throw new ProcessError(63, "job is not owned by the caller");
     this.deliver(targets, checkedSignal(signal));
   }
@@ -385,7 +309,7 @@ export class WorkerProcessClient {
   defaultSignal(pid: number, signal: number): void {
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid default signal process");
     if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, "invalid default signal");
-    const winner = claimOutcome(this.signals.outcome, { kind: "signaled", code: Atomics.load(this.signals.requestedSignal, 0) === 9 ? 9 : signal });
+    const winner = claimOutcome(this.signals.outcome, { kind: "signaled", code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal });
     this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);

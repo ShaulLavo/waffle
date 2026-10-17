@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
@@ -21,12 +22,12 @@ test("runtime_proc.signal(0,4) preserves handled deliveries, dispositions and wa
     expect(f.abi.imports.signal!(2, 2)).toBe(0);
     expect(f.abi.imports.signal!(15, 2)).toBe(0);
     requestSignal(f.signals, 2); requestSignal(f.signals, 15);
-    const state = Array.from(f.signals.signalState), interrupt = Atomics.load(f.signals.interrupt, 0);
-    const requested = Atomics.load(f.signals.requestedSignal, 0);
+    const state = Array.from(f.signals.signalState), interrupt = controlLoad(f.signals.interrupt, 0);
+    const requested = controlLoad(f.signals.requestedSignal, 0);
     for (let index = 0; index < 3; index++) expect(f.abi.imports.signal!(0, 4)).toBe(0);
     expect(Array.from(f.signals.signalState)).toEqual(state);
-    expect(Atomics.load(f.signals.interrupt, 0)).toBe(interrupt);
-    expect(Atomics.load(f.signals.requestedSignal, 0)).toBe(requested);
+    expect(controlLoad(f.signals.interrupt, 0)).toBe(interrupt);
+    expect(controlLoad(f.signals.requestedSignal, 0)).toBe(requested);
     expect(f.abi.imports.signal!(2, 4)).toBe(-22);
     expect(f.abi.imports.signal!(-1, 4)).toBe(-22);
     expect(f.abi.imports.signal!(65, 4)).toBe(-22);
@@ -43,14 +44,14 @@ test("dequeue preserves a publisher racing after wake-hint clear", () => {
     const previous = exchange(word, index, value);
     if (word === f.signals.interrupt && !raced) { raced = true; requestSignal(f.signals, 15); }
     return previous;
-  }) as typeof Atomics.exchange);
+  }) as typeof controlExchange);
   try {
     f.abi.imports.signal!(2, 2); f.abi.imports.signal!(15, 2); requestSignal(f.signals, 2);
     expect(f.abi.imports.interrupted!()).toBe(2);
     expect(raced).toBe(true);
-    expect(Atomics.load(f.signals.interrupt, 0)).toBe(15);
+    expect(controlLoad(f.signals.interrupt, 0)).toBe(15);
     expect(f.abi.imports.interrupted!()).toBe(15);
-    expect(Atomics.load(f.signals.interrupt, 0)).toBe(0);
+    expect(controlLoad(f.signals.interrupt, 0)).toBe(0);
   } finally { hook.mockRestore(); f.dispose(); }
 });
 
@@ -62,14 +63,14 @@ test("rearming a remaining handled signal never overwrites a racing KILL", () =>
       raced = true; requestSignal(f.signals, 9);
     }
     return compareExchange(word, index, expected, value);
-  }) as typeof Atomics.compareExchange);
+  }) as typeof controlCas);
   try {
     f.abi.imports.signal!(2, 2); f.abi.imports.signal!(15, 2);
     requestSignal(f.signals, 2); requestSignal(f.signals, 15);
     expect(() => f.abi.imports.interrupted!()).toThrow(ProcessSignalExit);
     expect(raced).toBe(true);
-    expect(Atomics.load(f.signals.interrupt, 0)).toBe(9);
-    expect(Atomics.load(f.signals.requestedSignal, 0)).toBe(9);
+    expect(controlLoad(f.signals.interrupt, 0)).toBe(9);
+    expect(controlLoad(f.signals.requestedSignal, 0)).toBe(9);
   } finally { hook.mockRestore(); f.dispose(); }
 });
 
@@ -78,13 +79,13 @@ for (const signal of [2, 9, 15]) test(`runtime_proc.signal(0,4) admits fatal sig
   try {
     f.abi.imports.signal!(2, 2); requestSignal(f.signals, 2);
     claimOutcome(f.signals.outcome, { kind: "signaled", code: signal });
-    const pending = Atomics.load(f.signals.signalState, 2), interrupt = Atomics.load(f.signals.interrupt, 0);
+    const pending = controlLoad(f.signals.signalState, 2), interrupt = controlLoad(f.signals.interrupt, 0);
     let thrown: unknown;
     try { f.abi.imports.signal!(0, 4); } catch (error) { thrown = error; }
     expect(thrown).toBeInstanceOf(ProcessSignalExit);
     expect((thrown as ProcessSignalExit).signal).toBe(signal);
     expect((thrown as ProcessSignalExit).status).toBe(128 + signal);
-    expect(Atomics.load(f.signals.signalState, 2)).toBe(pending);
-    expect(Atomics.load(f.signals.interrupt, 0)).toBe(interrupt);
+    expect(controlLoad(f.signals.signalState, 2)).toBe(pending);
+    expect(controlLoad(f.signals.interrupt, 0)).toBe(interrupt);
   } finally { f.dispose(); }
 });

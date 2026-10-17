@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { expect, test } from "bun:test";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 

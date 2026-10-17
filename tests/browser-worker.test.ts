@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { expect, test } from "bun:test";
 import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
 import { createFilesystemConnection, FilesystemService, MemoryBackend } from "../fs";
@@ -254,7 +255,7 @@ for (const interruptible of [false, true]) test(`handled TERM dequeues only thro
       expect(signal(15, 2)).toBe(0);
       expect(requestSignal(state.signals, 15).action).toBe("handled");
       for (let i = 0; i < 3; i++) deliveries.push(interrupted());
-      expect(Atomics.load(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(interruptible ? SIGNAL_PENDING : 0);
+      expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(interruptible ? SIGNAL_PENDING : 0);
       return 0;
     },
   }, { runtimeProcess, module: signalModule(), interruptible });

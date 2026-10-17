@@ -73,23 +73,28 @@ function counter(value: bigint): number { return Number(value & MASK); }
 function distance(written: bigint, read: bigint): number { return (counter(written) - counter(read)) >>> 0; }
 function validLimit(value: number): boolean { return Number.isInteger(value) && value > 0 && value <= 65536; }
 
+const OWNER_REVOKED = 1n << 31n;
+const OWNER_HEAD = OWNER_REVOKED - 1n;
+function registryPid(value: bigint): number { return Number(value >> 32n); }
+function registryOwner(pid: number): bigint { return BigInt(pid) << 32n; }
+
 /** Host-only service capability: never expose this control buffer as guest WASM memory.
  * Authorization (parent chain/job ownership) belongs to the process service, BEFORE revoke.
- * Each process gets a permanent row. Canonical cells have append-only global indices in a
- * growable SAB: neither live-process pipe churn nor delayed calls can reuse a frozen cell.
- * A cell is initialized and linked BEFORE allocation's final revoked check. Killing marks
- * the row revoked before walking its immutable list; late-linked cells self-freeze before
- * mapping exposure. Abandoned allocations may leave holes but never block another process.
+ * The service enrolls each newly issued, never-reused PID before exporting any endpoints.
+ * Collection freezes its cursors and releases its bounded owner row. PID, revoked flag and
+ * list head share one CAS word: a paused allocator or killer cannot change a reused row.
+ * Only enrollment creates owners; delayed allocate/revoke/collect calls never recreate one.
+ * Canonical cells have append-only global indices in a growable SAB. Their full cursor
+ * payload has no incarnation tag, so retained raw views must NEVER alias another cursor.
  * No guest holds a lock. This requires modern growable SharedArrayBuffer support.
- * Lifetime bounds: 1024 distinct pids by default; 16777216 global cells (256 MiB maximum
- * committed cell storage), about 4194304 simple pipes at four cells/pipe. Exhaustion is
- * ENFILE, never recycling or an unbounded allocation. Default initial storage is ~2 MiB.
+ * Bounds: 1024 simultaneous enrolled processes by default; 16777216 lifetime cells
+ * (256 MiB maximum committed cell storage), about 4194304 simple pipes at four cells/pipe.
+ * Cell exhaustion is ENFILE, not unsafe reuse or unbounded allocation. Initial storage is
+ * ~2 MiB. Collecting owners does not reclaim the intentionally permanent cursor arena.
  */
 export class PipePublicationRegistry {
   readonly wake: Int32Array;
-  private readonly owners: Int32Array;
-  private readonly revoked: Int32Array;
-  private readonly heads: Int32Array;
+  private readonly owners: BigInt64Array;
   private readonly allocated: Int32Array;
   private readonly cellBase: number;
   private readonly maxCells: number;
@@ -100,7 +105,7 @@ export class PipePublicationRegistry {
     if (!validLimit(processCapacity) || !validLimit(cellsPerProcess)) throw new RangeError("invalid pipe registry capacity");
     this.wake = attached?.wake ?? options.wake ?? (defaultWake ??= new Int32Array(new SharedArrayBuffer(4)));
     if (!(this.wake.buffer instanceof SharedArrayBuffer) || this.wake.length !== 1) throw new TypeError("registry wake must be one shared int32");
-    this.cellBase = 16 + processCapacity * 16;
+    this.cellBase = 16 + processCapacity * 8;
     this.maxCells = attached ? ((attached.buffer as SharedArrayBuffer & { readonly maxByteLength: number }).maxByteLength - this.cellBase) / 16 : options.maxCells ?? 1 << 24;
     if (!Number.isInteger(this.maxCells) || this.maxCells <= 0 || this.maxCells > 1 << 24) throw new RangeError("invalid pipe registry cell limit");
     const initialCells = Math.min(processCapacity * cellsPerProcess, this.maxCells);
@@ -109,27 +114,49 @@ export class PipePublicationRegistry {
     const buffer = attached?.buffer ?? new SharedBuffer(this.cellBase + initialCells * 16, { maxByteLength: this.cellBase + this.maxCells * 16 });
     this.data = { buffer, processCapacity, cellsPerProcess, wake: this.wake };
     this.allocated = new Int32Array(buffer, 0, 1);
-    this.owners = new Int32Array(buffer, 16, processCapacity);
-    this.revoked = new Int32Array(buffer, 16 + processCapacity * 4, processCapacity);
-    this.heads = new Int32Array(buffer, 16 + processCapacity * 8, processCapacity);
+    this.owners = new BigInt64Array(buffer, 16, processCapacity);
   }
   handle(): PipePublicationRegistryHandle { return { ...this.data }; }
-  private process(pid: number, create: boolean): number {
+  get processCount(): number {
+    let count = 0;
+    for (let slot = 0; slot < this.owners.length; slot++) if (Atomics.load(this.owners, slot)) count++;
+    return count;
+  }
+  private process(pid: number): { slot: number; value: bigint } | undefined {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) throw new Error("invalid registry process");
+    // Collection leaves holes. An empty earlier probe does not end a lookup.
     for (let probe = 0; probe < this.owners.length; probe++) {
       const slot = (pid + probe) % this.owners.length;
-      let owner = Atomics.load(this.owners, slot);
-      if (owner === pid) return slot;
-      if (!owner && create) owner = Atomics.compareExchange(this.owners, slot, 0, pid);
-      if (!owner) return create ? slot : -1;
-      if (owner === pid) return slot;
+      const value = Atomics.load(this.owners, slot);
+      if (registryPid(value) === pid) return { slot, value };
     }
-    if (create) throw new ProcessError(PipeErrno.NFILE, "pipe process registry is full");
-    return -1;
+    return undefined;
+  }
+  /** Creation-only service capability. Register a newly issued PID before publishing it to
+   * workers or exporting its descriptors. Repeated registration of a live owner is harmless;
+   * callers MUST NOT enroll historical PIDs after collection. Attached workers only use the
+   * pre-existing enrollment, so late worker startup cannot resurrect a collected process.
+   */
+  registerProcess(pid: number): void {
+    const existing = this.process(pid);
+    if (existing) {
+      if (existing.value & OWNER_REVOKED) throw new Error("pipe process is revoked");
+      return;
+    }
+    for (let probe = 0; probe < this.owners.length; probe++) {
+      const slot = (pid + probe) % this.owners.length;
+      const previous = Atomics.compareExchange(this.owners, slot, 0n, registryOwner(pid));
+      if (!previous) return;
+      if (registryPid(previous) === pid) {
+        if (previous & OWNER_REVOKED) throw new Error("pipe process is revoked");
+        return;
+      }
+    }
+    throw new ProcessError(PipeErrno.NFILE, "pipe process registry is full");
   }
   isRevoked(pid: number): boolean {
-    const slot = this.process(pid, false);
-    return slot >= 0 && Atomics.load(this.revoked, slot) !== 0;
+    const owner = this.process(pid);
+    return !owner || (owner.value & OWNER_REVOKED) !== 0n;
   }
   private reserveCell(): number {
     for (;;) {
@@ -151,24 +178,31 @@ export class PipePublicationRegistry {
       if (!(error instanceof RangeError) || buffer.byteLength < needed) throw error;
     }
   }
-  /** Internal registration; the returned global cell never moves or gets recycled. */
+  /** Internal cursor allocation; the returned global cell never moves or gets recycled. */
   allocate(pid: number): number {
-    const slot = this.process(pid, true);
-    if (Atomics.load(this.revoked, slot)) throw new Error("pipe process is revoked");
+    const owner = this.process(pid);
+    if (!owner || (owner.value & OWNER_REVOKED)) throw new Error("pipe process is revoked");
     const index = this.reserveCell();
     this.ensureCell(index);
     const entry = new Int32Array(this.data.buffer, this.cellBase + index * 16, 2);
+    const cell = this.canonical(index);
     Atomics.store(entry, 0, pid);
-    Atomics.store(this.canonical(index), 0, ALLOCATED);
+    Atomics.store(cell, 0, ALLOCATED);
     for (;;) {
-      const head = Atomics.load(this.heads, slot);
-      Atomics.store(entry, 1, head);
-      if (Atomics.compareExchange(this.heads, slot, head, index + 1) === head) break;
+      const value = Atomics.load(this.owners, owner.slot);
+      if (registryPid(value) !== pid || (value & OWNER_REVOKED)) {
+        Atomics.or(cell, 0, STOP);
+        throw new Error("pipe process is revoked");
+      }
+      Atomics.store(entry, 1, Number(value & OWNER_HEAD));
+      const linked = (value & ~OWNER_HEAD) | BigInt(index + 1);
+      if (Atomics.compareExchange(this.owners, owner.slot, value, linked) === value) break;
     }
-    // The next pointer is immutable from the successful head CAS onwards. Revocation
-    // either sees this linked cell or won before linking and is observed here.
-    if (Atomics.load(this.revoked, slot)) {
-      Atomics.or(this.canonical(index), 0, STOP);
+    // Linking and revoking contend on the SAME incarnation-tagged word. Once linked, the
+    // next pointer is immutable. Revocation either freezes this cell or wins before the CAS.
+    const value = Atomics.load(this.owners, owner.slot);
+    if (registryPid(value) !== pid || (value & OWNER_REVOKED)) {
+      Atomics.or(cell, 0, STOP);
       throw new Error("pipe process is revoked");
     }
     return index;
@@ -179,15 +213,34 @@ export class PipePublicationRegistry {
     // Per-cell views remain valid after growth, including in a handle cloned before growth.
     return new BigInt64Array(this.data.buffer, offset, 1);
   }
-  revoke(pid: number): void {
-    const slot = this.process(pid, true);
-    Atomics.store(this.revoked, slot, 1);
-    let link = Atomics.load(this.heads, slot);
-    while (link) {
-      const index = link - 1;
-      Atomics.or(this.canonical(index), 0, STOP);
-      link = Atomics.load(new Int32Array(this.data.buffer, this.cellBase + index * 16 + 4, 1), 0);
+  private freezeOwner(pid: number): { slot: number; value: bigint } | undefined {
+    const owner = this.process(pid);
+    if (!owner) return undefined;
+    for (;;) {
+      const value = Atomics.load(this.owners, owner.slot);
+      if (registryPid(value) !== pid) return undefined;
+      const revoked = value | OWNER_REVOKED;
+      if (Atomics.compareExchange(this.owners, owner.slot, value, revoked) !== value) continue;
+      let link = Number(revoked & OWNER_HEAD);
+      while (link) {
+        const index = link - 1;
+        Atomics.or(this.canonical(index), 0, STOP);
+        link = Atomics.load(new Int32Array(this.data.buffer, this.cellBase + index * 16 + 4, 1), 0);
+      }
+      return { slot: owner.slot, value: revoked };
     }
+  }
+  revoke(pid: number): void {
+    this.freezeOwner(pid);
+    notify(this.wake);
+  }
+  /** Host resource-fence completion: freeze even unannounced descendant-created pipes and
+   * release this owner's metadata. Physical worker termination is not required. Retained
+   * handles can still address only the old permanent cells, never a new occupant's row/list.
+   */
+  collectProcess(pid: number): void {
+    const owner = this.freezeOwner(pid);
+    if (owner) Atomics.compareExchange(this.owners, owner.slot, owner.value, 0n);
     notify(this.wake);
   }
 }

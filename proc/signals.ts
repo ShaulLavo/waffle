@@ -1,3 +1,5 @@
+import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlNotify } from "./control.ts";
+import type { OutcomeWord } from "./outcome.ts";
 import { claimOutcome, readOutcome } from "./outcome.ts";
 import { ProcessErrno, ProcessError, Signal, type ProcessExit } from "./types.ts";
 
@@ -6,8 +8,8 @@ export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 
 export const SIGNAL_PENDING = 4;
 const DISPOSITION_MASK = 3;
 
-export function createSignalState(source?: Int32Array | SharedArrayBuffer): Int32Array {
-  const state = source instanceof Int32Array ? source : new Int32Array(source ?? new SharedArrayBuffer(65 * 4));
+export function createSignalState(source?: ControlCells | SharedArrayBuffer): ControlCells {
+  const state = source instanceof TaggedCells ? source : source instanceof Int32Array ? source : new Int32Array(source ?? new SharedArrayBuffer(65 * 4));
   if (!(state.buffer instanceof SharedArrayBuffer) || state.length !== 65) throw new TypeError("signal state must be 65 shared int32 cells");
   return state;
 }
@@ -15,94 +17,94 @@ export function checkedSignalNumber(signal: number): number {
   if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);
   return signal;
 }
-export function signalDisposition(state: Int32Array, signal: number): number {
+export function signalDisposition(state: ControlCells, signal: number): number {
   checkedSignalNumber(signal);
-  return Atomics.load(state, signal) & DISPOSITION_MASK;
+  return controlLoad(state, signal) & DISPOSITION_MASK;
 }
 /** The caller must synchronously claim the default terminal outcome when this returns true. */
-export function setSignalDisposition(state: Int32Array, signal: number, disposition: number): boolean {
+export function setSignalDisposition(state: ControlCells, signal: number, disposition: number): boolean {
   checkedSignalNumber(signal);
   if (signal === Signal.SIGKILL || !Number.isInteger(disposition) || disposition < 0 || disposition > 2) {
     throw new ProcessError(ProcessErrno.INVAL, "invalid signal disposition");
   }
   for (;;) {
-    const previous = Atomics.load(state, signal);
+    const previous = controlLoad(state, signal);
     const next = disposition | (disposition === SignalDisposition.HANDLE ? previous & SIGNAL_PENDING : 0);
-    if (Atomics.compareExchange(state, signal, previous, next) === previous) {
+    if (controlCas(state, signal, previous, next) === previous) {
       return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0;
     }
   }
 }
 /** Classification and pending publication share one CAS, so registration cannot race delivery. */
-export function publishSignal(state: Int32Array, signal: number): "default" | "ignore" | "handled" {
+export function publishSignal(state: ControlCells, signal: number): "default" | "ignore" | "handled" {
   checkedSignalNumber(signal);
   if (signal === Signal.SIGKILL) return "default";
   for (;;) {
-    const previous = Atomics.load(state, signal);
+    const previous = controlLoad(state, signal);
     const disposition = previous & DISPOSITION_MASK;
     if (disposition === SignalDisposition.DEFAULT) return "default";
     if (disposition === SignalDisposition.IGNORE) return "ignore";
     if (disposition !== SignalDisposition.HANDLE) throw new ProcessError(ProcessErrno.INVAL, "invalid shared signal disposition");
-    if (Atomics.compareExchange(state, signal, previous, previous | SIGNAL_PENDING) === previous) return "handled";
+    if (controlCas(state, signal, previous, previous | SIGNAL_PENDING) === previous) return "handled";
   }
 }
 /** Clear before dispatch: removing a once handler must not reinterpret its delivered pending bit.
  * Keep the wake hint armed while another authoritative pending bit remains, including for WASI
  * waits that observe the interrupt word rather than the entire signal-state table. */
-export function takeSignal(state: Int32Array, interrupt?: Int32Array): number {
+export function takeSignal(state: ControlCells, interrupt?: ControlCells): number {
   // A racing publisher must retain either its wake hint or its pending bit.
-  if (interrupt) Atomics.exchange(interrupt, 0, 0);
+  if (interrupt) controlExchange(interrupt, 0, 0);
   const taken = takePendingSignal(state);
   if (interrupt) {
     for (let signal = 1; signal <= 64; signal++) {
-      if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
-      Atomics.compareExchange(interrupt, 0, 0, signal);
+      if ((controlLoad(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
+      controlCas(interrupt, 0, 0, signal);
       break;
     }
   }
   return taken;
 }
-function takePendingSignal(state: Int32Array): number {
+function takePendingSignal(state: ControlCells): number {
   for (let signal = 1; signal <= 64; signal++) {
     if (signal === Signal.SIGKILL) continue;
     for (;;) {
-      const previous = Atomics.load(state, signal);
+      const previous = controlLoad(state, signal);
       if ((previous & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) break;
-      if (Atomics.compareExchange(state, signal, previous, previous & ~SIGNAL_PENDING) === previous) return signal;
+      if (controlCas(state, signal, previous, previous & ~SIGNAL_PENDING) === previous) return signal;
     }
   }
   return 0;
 }
 
 export interface SignalTransport {
-  readonly signalState: Int32Array;
-  readonly interrupt: Int32Array;
-  readonly requestedSignal: Int32Array;
-  readonly outcome: BigInt64Array;
+  readonly signalState: ControlCells;
+  readonly interrupt: ControlCells;
+  readonly requestedSignal: ControlCells;
+  readonly outcome: OutcomeWord;
 }
 export interface SignalRequestResult {
   readonly action: "default" | "ignore" | "handled" | "settled";
   readonly outcome: ProcessExit | null;
 }
 // Preserve KILL across writers, including publication racing an already consumed wake hint.
-function publishWord(word: Int32Array, signal: number): number {
+function publishWord(word: ControlCells, signal: number): number {
   for (;;) {
-    const previous = Atomics.load(word, 0);
+    const previous = controlLoad(word, 0);
     if (previous === Signal.SIGKILL) return previous;
-    if (Atomics.compareExchange(word, 0, previous, signal) === previous) return signal;
+    if (controlCas(word, 0, previous, signal) === previous) return signal;
   }
 }
 function publishWake(transport: SignalTransport, signal: number): void {
   let delivered = publishWord(transport.requestedSignal, signal);
-  if (Atomics.load(transport.requestedSignal, 0) === Signal.SIGKILL) delivered = Signal.SIGKILL;
+  if (controlLoad(transport.requestedSignal, 0) === Signal.SIGKILL) delivered = Signal.SIGKILL;
   delivered = publishWord(transport.interrupt, delivered);
-  if (Atomics.load(transport.requestedSignal, 0) === Signal.SIGKILL) delivered = Signal.SIGKILL;
+  if (controlLoad(transport.requestedSignal, 0) === Signal.SIGKILL) delivered = Signal.SIGKILL;
   if (delivered === Signal.SIGKILL) {
     claimOutcome(transport.outcome, { kind: "signaled", code: Signal.SIGKILL });
     publishWord(transport.requestedSignal, Signal.SIGKILL);
     publishWord(transport.interrupt, Signal.SIGKILL);
   }
-  Atomics.notify(transport.interrupt, 0);
+  controlNotify(transport.interrupt, 0);
 }
 /** One authoritative delivery, usable before supervisor activation. No callbacks or teardown.
  * Publish all job members before observing outcomes to avoid reentrant sibling exits/spawns.
@@ -114,7 +116,7 @@ export function requestSignal(transport: SignalTransport, signal: number): Signa
     if (settled.kind === "signaled" && settled.code === Signal.SIGKILL) publishWake(transport, Signal.SIGKILL);
     return { action: "settled", outcome: settled };
   }
-  if (Atomics.load(transport.requestedSignal, 0) === Signal.SIGKILL) signal = Signal.SIGKILL;
+  if (controlLoad(transport.requestedSignal, 0) === Signal.SIGKILL) signal = Signal.SIGKILL;
   const action = publishSignal(transport.signalState, signal);
   if (action === "ignore") return { action, outcome: readOutcome(transport.outcome) };
   if (action === "default") {

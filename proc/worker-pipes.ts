@@ -71,6 +71,8 @@ export class WorkerPipeHost {
     this.registry = options.registry instanceof PipePublicationRegistry ? options.registry
       : options.registry ? attachPipePublicationRegistry(options.registry)
       : new PipePublicationRegistry({ wake: state.wake });
+    if (!options.registry) this.registry.registerProcess(this.pid);
+    else if (this.registry.isRevoked(this.pid)) throw new Error("pipe process is revoked");
   }
   codec(fallback: WorkerDescriptorCodec | undefined = this.options.fallback): WorkerDescriptorCodec {
     return createWorkerPipeCodec({ fallback });

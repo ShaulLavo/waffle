@@ -1,3 +1,5 @@
+import type { ControlCells } from "./control.js";
+import type { OutcomeWord } from "./outcome.js";
 import type { DescriptorTable } from "../core/descriptors.js";
 
 export const Signal = Object.freeze({ SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGTERM: 15 });
@@ -20,17 +22,20 @@ export interface SpawnRequest {
 /** Immutable shared-directory job identity, independent of controller message order. */
 export interface SharedJobIdentity {
   readonly ownerPid: number;
+  readonly controlParent?: number;
   readonly leaderPid: number;
-  readonly outcome: BigInt64Array;
+  readonly outcome: OutcomeWord;
   readonly foreground: boolean;
 }
 export interface SpawnReservation {
+  controlParent?: number;
+  rootPid?: number;
   pid?: number;
   job?: number;
-  interrupt?: Int32Array | SharedArrayBuffer;
-  requestedSignal?: Int32Array | SharedArrayBuffer;
-  signalState?: Int32Array | SharedArrayBuffer;
-  outcome?: BigInt64Array | SharedArrayBuffer;
+  interrupt?: ControlCells | SharedArrayBuffer;
+  requestedSignal?: ControlCells | SharedArrayBuffer;
+  signalState?: ControlCells | SharedArrayBuffer;
+  outcome?: OutcomeWord | SharedArrayBuffer;
 }
 export interface ProcessHandle {
   /** Physical teardown only: revoked shared buffers are never reused, even after this returns. */
@@ -47,13 +52,13 @@ export interface ProcessContext {
   readonly interruptible: boolean;
   readonly descriptors: DescriptorTable;
   /** Wake hint only; signal identity and pending delivery live in signalState. */
-  readonly interrupt: Int32Array;
+  readonly interrupt: ControlCells;
   /** Unlike interrupt, this word preserves the last requested signal after a checkpoint. */
-  readonly requestedSignal: Int32Array;
+  readonly requestedSignal: ControlCells;
   /** Shared per-signal disposition and pending cells, indexed by signal number. */
-  readonly signalState: Int32Array;
+  readonly signalState: ControlCells;
   /** Shared immutable terminal outcome, atomically arbitrated with synchronous parent stubs. */
-  readonly outcome: BigInt64Array;
+  readonly outcome: OutcomeWord;
   exit(code: number): void;
   /** Execution failures after startup retain ordinary exit status 126. */
   fail(error: unknown): void;

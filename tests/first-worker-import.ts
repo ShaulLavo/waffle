@@ -1,3 +1,5 @@
+import { directoryState } from "../proc/directory";
+import { controlLoad, controlWait } from "../proc/control";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { WasiExit } from "../core/wasi";
@@ -17,7 +19,7 @@ const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
 export async function failFirstWorkerImport(request: RuntimeWorkerRequest, postMessage: (message: RuntimeWorkerMessage) => void) {
   const context = {
     performance, Error, SharedArrayBuffer, Int32Array, BigInt64Array, Atomics, TextEncoder,
-    WasiExit, sharedRevoked, revokeFilesystem, claimOutcome, outcomeWord, processOutcome, readOutcome, waitStatus,
+    directoryState, controlLoad, controlWait, WasiExit, sharedRevoked, revokeFilesystem, claimOutcome, outcomeWord, processOutcome, readOutcome, waitStatus,
     FilesystemClient: class {
       connection = request.filesystem;
       dispose() { request.filesystem.port.close(); }

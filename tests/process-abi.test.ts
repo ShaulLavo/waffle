@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import type { PipeEndpointHandle } from "../proc/pipes";
@@ -316,7 +317,7 @@ test("signal registration, shared dequeue, ignored delivery and explicit default
   expect(f.abi.imports.interrupted!()).toBe(2);
   expect(f.abi.imports.signal!(0, 0)).toBe(15);
   expect(f.abi.imports.interrupted!()).toBe(0);
-  expect(Atomics.load(f.signals.interrupt, 0)).toBe(0);
+  expect(controlLoad(f.signals.interrupt, 0)).toBe(0);
   expect(f.abi.imports.signal!(2, 1)).toBe(0);
   expect(f.abi.imports.signal!(2, 3)).toBe(0);
   expect(f.abi.imports.interrupted!()).toBe(0);
@@ -406,18 +407,18 @@ test("shared file-offset contention returns EAGAIN until poll can observe the lo
   const identity = createFilesystemIdentity(undefined, 16 * 1024 * 1024);
   cleanups.push(() => reapFilesystem(identity));
   let cells!: Int32Array;
-  const f = fixture({ wait() { Atomics.store(cells, 0, 0); } });
+  const f = fixture({ wait() { controlStore(cells, 0, 0); } });
   const resource = { kind: "file" as const, handle: 0, offset: 0, append: false };
   const buffer = shareFileResource(resource, identity);
   cells = new Int32Array(buffer);
   const otherOwner = identity.owner + 1;
-  Atomics.store(cells, 0, otherOwner);
+  controlStore(cells, 0, otherOwner);
   const fd = f.descriptors.open(resource, ALL, ALL);
   expect(f.abi.imports.read!(fd, 4096, 1)).toBe(-6);
   expect(resource.offset).toBe(0);
   f.sub(0, 0, fd);
   expect(f.abi.imports.poll!(256, 1, 100, 512)).toBe(1);
-  expect(Atomics.load(cells, 0)).toBe(0);
+  expect(controlLoad(cells, 0)).toBe(0);
 });
 
 test("poll observes remaining handled signals after a wake hint is consumed and returns on fatal interrupts", () => {
@@ -428,7 +429,7 @@ test("poll observes remaining handled signals after a wake hint is consumed and 
   expect(f.abi.imports.interrupted!()).toBe(2);
   // Dequeue keeps the WASI hint armed for remaining signals. Generic poll must also
   // observe authoritative pending state if an independent checkpoint consumed that hint.
-  expect(Atomics.exchange(f.signals.interrupt, 0, 0)).toBe(15);
+  expect(controlExchange(f.signals.interrupt, 0, 0)).toBe(15);
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(0);
   expect(f.abi.imports.interrupted!()).toBe(15);
   f.supervisor.kill(f.pid, 9);
@@ -600,7 +601,7 @@ for (const mode of ["signal", "child"] as const) {
         });
       });
       expect(result).toEqual(mode === "signal" ? { phase: "done", ready: 0, interrupt: 2, code: 0 } : { phase: "done", ready: 1, interrupt: 0, code: 23 });
-      expect(Atomics.load(wake, 0)).toBe(0);
+      expect(controlLoad(wake, 0)).toBe(0);
     } finally { clearTimeout(timer); await worker.terminate(); }
   });
 }

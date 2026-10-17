@@ -1,3 +1,4 @@
+import { type ControlCells, controlLoad, controlWait } from "./control.js";
 import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
 import { withFileOffset } from "../core/open-file.js";
@@ -56,7 +57,7 @@ export interface ProcessABIOptions {
   /** One shared readiness sequence. Publishers increment and notify after publishing state. */
   wake?: Int32Array;
   /** Synchronous wait hook, primarily for embedders and deterministic tests. poll and blocking wait_job call it. */
-  wait?(milliseconds: number, word: Int32Array, expected: number): void;
+  wait?(milliseconds: number, word: ControlCells, expected: number): void;
   now?(): number;
 }
 
@@ -265,16 +266,16 @@ export class ProcessABI {
           if (result) { this.view(ptr, 4).setInt32(0, waitStatus(result), true); return 0; }
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return -27; // EINTR; no signal consumed.
+        if (controlLoad(this.options.signals.interrupt, 0) !== 0 || this.pending()) return -27; // EINTR; no signal consumed.
         const word = wake ?? this.options.signals.interrupt;
         if (this.options.wait) this.options.wait(10, word, wake ? sequence : 0);
-        else Atomics.wait(word, 0, wake ? sequence : 0, 10);
+        else controlWait(word, 0, wake ? sequence : 0, 10);
       }
     } finally { release?.(); }
   }
   private pending(): boolean {
     for (let signal = 1; signal <= 64; signal++) {
-      if (Atomics.load(this.options.signals.signalState, signal) & SIGNAL_PENDING) return true;
+      if (controlLoad(this.options.signals.signalState, signal) & SIGNAL_PENDING) return true;
     }
     return false;
   }
@@ -358,7 +359,7 @@ export class ProcessABI {
       if (sub.kind > 5) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
-    if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+    if (controlLoad(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
     try {
@@ -384,7 +385,7 @@ export class ProcessABI {
       for (;;) {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
         const sequence = wake ? Atomics.load(wake, 0) : 0;
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+        if (controlLoad(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
         const ready: { sub: Subscription; flags: number }[] = [];
         for (const sub of subscriptions) {
           const state = this.readiness(sub);
@@ -401,7 +402,7 @@ export class ProcessABI {
           });
           return ready.length;
         }
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+        if (controlLoad(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
         // Signals, local child exits and filesystem locks may publish on independent cells.
@@ -411,7 +412,7 @@ export class ProcessABI {
         const word = wake ?? this.options.signals.interrupt;
         const expected = wake ? sequence : 0;
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
-        else Atomics.wait(word, 0, expected, milliseconds);
+        else controlWait(word, 0, expected, milliseconds);
       }
     } finally { for (const release of unregister.reverse()) release(); }
   }
