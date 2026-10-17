@@ -101,7 +101,9 @@ The interrupt cell is an advisory wake hint, not signal readiness. Process poll 
 job wait consult the authoritative handled-pending table and fatal outcome without
 consuming either. Preview1 polling uses the same readiness through the worker
 bootstrap. A delayed publisher or rearm scan may leave a discarded hint behind;
-it must not cause `EINTR` or an early process-poll return.
+it must not cause `EINTR` or an early process-poll return. Advisory waits snapshot
+the observed word and rescan within 10 ms, including clock-only preview1 polling,
+because a same-number publication can leave the hint unchanged.
 
 ## Network and preview
 

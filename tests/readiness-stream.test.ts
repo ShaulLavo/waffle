@@ -226,3 +226,23 @@ test("preview1 process readiness ignores a stale wake without consuming real pen
   expect(f.poll()).toBe(27);
   expect(takeSignal(signals.signalState)).toBe(10);
 });
+
+test("clock-only advisory waits rescan after same-number publication cannot change the hint", () => {
+  const signals = { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() };
+  setSignalDisposition(signals.signalState, 17, 2);
+  Atomics.store(signals.interrupt, 0, 17);
+  let waits = 0;
+  const f = fixture({ interrupt: signals.interrupt, interruptPending: () => signalPending(signals), wait(word, expected, milliseconds) {
+    expect(word).toBe(signals.interrupt);
+    expect(expected).toBe(17);
+    // Publication after the scan but before wait has the same hint and its notify can be lost.
+    requestSignal(signals, 17);
+    expect(Atomics.load(word, 0)).toBe(expected);
+    expect(milliseconds).toBeLessThanOrEqual(10);
+    waits++;
+  } });
+  f.clock(0, 1_000_000_000n);
+  expect(f.poll()).toBe(27);
+  expect(waits).toBe(1);
+  expect(takeSignal(signals.signalState)).toBe(17);
+});

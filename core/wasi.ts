@@ -704,9 +704,9 @@ export class Wasi {
           }
           if (ready.length > 0) break;
           if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && Atomics.load(this.opts.interrupt, 0) !== 0)) return EINTR;
-          // One shared source wakes directly; distinct sources or legacy streams need a bounded
-          // rescan because Atomics.wait cannot wait on several addresses at once.
-          if (mixedSources) waitMs = Math.min(waitMs, 10);
+          // Advisory signal hints can repeat the same value after the readiness scan, losing
+          // a notify before wait. Bound rescans for those as well as independent sources.
+          if (mixedSources || this.opts.interruptPending) waitMs = Math.min(waitMs, 10);
           if (notification) {
             if (this.opts.wait) this.opts.wait(notification, observed, waitMs);
             else Atomics.wait(notification, 0, observed, waitMs);
