@@ -3,6 +3,7 @@ import type { FileSystem } from "../core/filesystem.js";
 import { withFileOffset } from "../core/open-file.js";
 import { PipeController } from "./pipes.js";
 import { readOutcome } from "./outcome.js";
+import { WasiExit } from "../core/wasi.js";
 import { waitStatus } from "./wait-status.js";
 import { checkedSignalNumber, defaultSignalTerminates, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals.js";
 import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
@@ -300,7 +301,7 @@ export class ProcessABI {
       if (mode === 3) {
         const result = requestSignal(this.options.signals, signal);
         if (result.action === "default" && result.outcome?.kind === "signaled") this.defaultSignal(result.outcome.code);
-      } else if (setSignalDisposition(this.options.signals.signalState, signal, mode)) this.defaultSignal(signal);
+      } else if (setSignalDisposition(this.options.signals.signalState, signal, mode, this.options.signals.interrupt)) this.defaultSignal(signal);
       return 0;
     } catch (error) {
       if (error instanceof ProcessError) return -error.errno;
@@ -309,15 +310,16 @@ export class ProcessABI {
   }
   private defaultSignal(signal: number): number {
     checkedSignalNumber(signal);
-    const winner = readOutcome(this.options.signals.outcome);
-    if (winner?.kind === "signaled") {
-      this.options.service.defaultSignal(this.options.pid, winner.code);
-      throw new ProcessSignalExit(winner.code);
+    let winner = readOutcome(this.options.signals.outcome);
+    const killed = Atomics.load(this.options.signals.requestedSignal, 0) === Signal.SIGKILL;
+    if (!winner && !killed && !defaultSignalTerminates(signal)) return 0;
+    if (!winner || winner.kind === "signaled") {
+      this.options.service.defaultSignal(this.options.pid, winner?.code ?? (killed ? Signal.SIGKILL : signal));
+      winner = readOutcome(this.options.signals.outcome);
     }
-    if (!defaultSignalTerminates(signal)) return 0;
-    this.options.service.defaultSignal(this.options.pid, signal);
-    const selected = readOutcome(this.options.signals.outcome);
-    throw new ProcessSignalExit(selected?.kind === "signaled" ? selected.code : signal);
+    if (!winner) throw new Error("default signal action did not publish a terminal outcome");
+    if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
+    throw new ProcessSignalExit(winner.code);
   }
   private readiness(sub: Subscription): Readiness | null {
     if (sub.kind === 5) {

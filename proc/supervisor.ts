@@ -345,10 +345,12 @@ export class ProcessSupervisor {
    * catchable interrupt the guest may have consumed before this host notification arrived.
    */
   observeSignal(pid: number, signal: number): void {
-    const sig = checkedSignalNumber(signal), record = this.table.require(pid);
+    checkedSignalNumber(signal);
+    const record = this.table.require(pid);
     if (record.result) return;
-    if (Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
-    else if (record.signal !== Signal.SIGKILL) record.signal = sig;
+    const requested = Atomics.load(record.requestedSignal, 0);
+    if (requested === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
+    else if (record.signal !== Signal.SIGKILL && requested !== 0) record.signal = requested;
     if (record.signal === Signal.SIGKILL || readOutcome(record.outcome)) this.finish(pid, { kind: "signaled", code: Signal.SIGKILL });
   }
   private recordSignal(record: ProcessRecord, signal: number): void {

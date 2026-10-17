@@ -1092,3 +1092,22 @@ for (const activation of ["lazy", "eager"] as const) for (const signalAt of ["re
     expect(table.job(job)).toBeUndefined();
   } finally { for (const descriptors of tables) descriptors.dispose(); await broker.dispose(); }
 });
+
+test("ignored broker notifications preserve the last actually delivered signal for argument-free defaults", async () => {
+  const { setSignalDisposition, takeSignal } = await import("../proc/signals");
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unused"); },
+  });
+  try {
+    const pid = await broker.adoptRoot({}), supervisor = await broker.ready(), record = supervisor.get(pid)!;
+    setSignalDisposition(record.signalState, 2, 2);
+    await broker.kill(pid, 2);
+    expect(takeSignal(record.signalState, record.interrupt)).toBe(2);
+    await broker.kill(pid, 17);
+    expect(record.signal).toBe(2);
+    supervisor.defaultSignal(pid);
+    expect(readOutcome(record.outcome)).toMatchObject({ kind: "signaled", code: 2 });
+  } finally { await broker.dispose(); }
+});

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
 import { ProcessABI, ProcessSignalExit } from "../proc/abi";
@@ -9,11 +9,11 @@ import { createSignalState, requestSignal, setSignalDisposition, SIGNAL_PENDING,
 import { checkedSignal, ProcessError } from "../proc/types";
 import { confirmWorkerProcessJob, createWorkerProcessTransport, workerProcessState, WorkerProcessClient } from "../proc/worker-client";
 
-function fixture() {
+function fixture(wait?: (milliseconds: number, word: Int32Array, expected: number) => void) {
   const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); } });
   const pid = supervisor.createRoot(), record = supervisor.get(pid)!;
   const abi = new ProcessABI({ memory: new WebAssembly.Memory({ initial: 1 }), descriptors: record.descriptors,
-    fs: new MemFS(), pid, service: supervisor, signals: record });
+    fs: new MemFS(), pid, service: supervisor, signals: record, wait });
   return { supervisor, pid, record, abi };
 }
 const ignored = [17, 18, 23, 28];
@@ -165,4 +165,64 @@ test("ABI default action reports a KILL selected during service confirmation", (
     expect((thrown as ProcessSignalExit).signal).toBe(9);
     expect(f.record.result).toMatchObject({ kind: "signaled", code: 9 });
   } finally { f.supervisor.dispose(); }
+});
+
+for (const signal of [17, 18, 23, 28]) test(`resetting pending default-ignore signal ${signal} removes stale poll/job-wait hints`, () => {
+  let child = 0, waits = 0;
+  const f = fixture(() => { waits++; f.supervisor.exit(child, 0); });
+  try {
+    child = f.supervisor.reserveSpawn(f.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    f.abi.imports.signal!(signal, 2);
+    f.supervisor.kill(f.pid, signal);
+    f.abi.imports.signal!(signal, 0);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(0);
+    expect(f.abi.imports.poll!(0, 0, 0, 64)).toBe(0);
+    expect(f.abi.imports.wait_job!(f.supervisor.jobOf(child), 0, 64)).toBe(0);
+    expect(waits).toBe(1);
+  } finally { f.supervisor.dispose(); }
+});
+
+for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 }, { kind: "start-failed", code: 13 }] as const) test(`ABI explicit default preserves existing ${winner.kind} ${winner.code}`, async () => {
+  const { WasiExit } = await import("../core");
+  const { waitStatus } = await import("../proc/wait-status");
+  const f = fixture();
+  try {
+    const selected = claimOutcome(f.record.outcome, winner);
+    let thrown: unknown;
+    try { f.abi.imports.default_signal!(15); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(WasiExit);
+    expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
+  } finally { f.supervisor.dispose(); }
+});
+
+
+test("discarding a pending ignored default rearms another handled signal", () => {
+  const f = fixture();
+  try {
+    f.abi.imports.signal!(10, 2); f.abi.imports.signal!(17, 2);
+    f.supervisor.kill(f.pid, 10); f.supervisor.kill(f.pid, 17);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(17);
+    f.abi.imports.signal!(17, 0);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(10);
+    expect(f.abi.imports.interrupted!()).toBe(10);
+    expect(f.abi.imports.interrupted!()).toBe(0);
+  } finally { f.supervisor.dispose(); }
+});
+
+test("discarding a pending ignored default cannot clear a racing KILL wake", () => {
+  const f = fixture(), compareExchange = Atomics.compareExchange;
+  let raced = false;
+  const hook = spyOn(Atomics, "compareExchange").mockImplementation(((word: Int32Array, index: number, expected: number, replacement: number) => {
+    if (!raced && word === f.record.interrupt && expected === 17 && replacement === 0) {
+      raced = true; requestSignal(f.record, 9);
+    }
+    return compareExchange(word, index, expected, replacement);
+  }) as typeof Atomics.compareExchange);
+  try {
+    f.abi.imports.signal!(17, 2); f.supervisor.kill(f.pid, 17);
+    f.abi.imports.signal!(17, 0);
+    expect(raced).toBe(true);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(9);
+    expect(readOutcome(f.record.outcome)).toMatchObject({ kind: "signaled", code: 9 });
+  } finally { hook.mockRestore(); f.supervisor.dispose(); }
 });

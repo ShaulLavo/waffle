@@ -137,6 +137,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
     if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.

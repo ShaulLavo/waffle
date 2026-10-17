@@ -24,7 +24,7 @@ export function signalDisposition(state: Int32Array, signal: number): number {
   return Atomics.load(state, signal) & DISPOSITION_MASK;
 }
 /** The caller must synchronously claim the default terminal outcome when this returns true. */
-export function setSignalDisposition(state: Int32Array, signal: number, disposition: number): boolean {
+export function setSignalDisposition(state: Int32Array, signal: number, disposition: number, interrupt?: Int32Array): boolean {
   checkedSignalNumber(signal);
   if (signal === Signal.SIGKILL || !Number.isInteger(disposition) || disposition < 0 || disposition > 2) {
     throw new ProcessError(ProcessErrno.INVAL, "invalid signal disposition");
@@ -33,6 +33,12 @@ export function setSignalDisposition(state: Int32Array, signal: number, disposit
     const previous = Atomics.load(state, signal);
     const next = disposition | (disposition === SignalDisposition.HANDLE ? previous & SIGNAL_PENDING : 0);
     if (Atomics.compareExchange(state, signal, previous, next) === previous) {
+      if (interrupt && disposition !== SignalDisposition.HANDLE) {
+        // Remove only this discarded delivery's hint, never a racing signal or KILL.
+        // A publisher racing the clear retains either its pending bit or its wake.
+        Atomics.compareExchange(interrupt, 0, signal, 0);
+        rearmPendingSignal(state, interrupt);
+      }
       return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0 && defaultSignalTerminates(signal);
     }
   }
@@ -57,14 +63,15 @@ export function takeSignal(state: Int32Array, interrupt?: Int32Array): number {
   // A racing publisher must retain either its wake hint or its pending bit.
   if (interrupt) Atomics.exchange(interrupt, 0, 0);
   const taken = takePendingSignal(state);
-  if (interrupt) {
-    for (let signal = 1; signal <= 64; signal++) {
-      if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
-      Atomics.compareExchange(interrupt, 0, 0, signal);
-      break;
-    }
-  }
+  if (interrupt) rearmPendingSignal(state, interrupt);
   return taken;
+}
+function rearmPendingSignal(state: Int32Array, interrupt: Int32Array): void {
+  for (let signal = 1; signal <= 64; signal++) {
+    if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
+    Atomics.compareExchange(interrupt, 0, 0, signal);
+    break;
+  }
 }
 function takePendingSignal(state: Int32Array): number {
   for (let signal = 1; signal <= 64; signal++) {

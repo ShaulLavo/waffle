@@ -655,3 +655,24 @@ test("generic default-ignore action cannot discard an already selected KILL", as
   } });
   expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: 137, signal: 9 });
 });
+
+for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 }, { kind: "start-failed", code: 13 }] as const) {
+  test(`generic default action preserves existing ${winner.kind} ${winner.code} without signal unwind`, async () => {
+    const { WasiExit } = await import("../core");
+    const { waitStatus } = await import("../proc/wait-status");
+    const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
+    let signalCalls = 0;
+    const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },
+      run(context) {
+        const selected = claimOutcome(state.signals.outcome, winner);
+        let thrown: unknown;
+        try { context.defaultSignal(18); } catch (error) { thrown = error; }
+        expect(thrown).toBeInstanceOf(WasiExit);
+        expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
+        return 0;
+      },
+    }, { runtimeProcess });
+    expect(signalCalls).toBe(0);
+    expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: winner.kind === "start-failed" ? 126 : winner.code, signal: undefined });
+  });
+}
