@@ -27,6 +27,7 @@ const source = `(function(native) {
         .then(() => { globalThis.__cryptoSettled = true; });
       return Promise.resolve();
     },
+    pumpSignals: () => false,
     runTimers: () => -1, ioPending: () => 0, emitBeforeExit: () => false,
     beforeExit: () => 0, handleRejection: error => { console.error("native rejection", error.name); return false; }, handleUncaught: error => { throw error; }
   };

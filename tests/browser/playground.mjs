@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runForeground } from "./foreground.ts";
 
 export const web = join(new URL(".", import.meta.url).pathname, "..");
 const playwrightPath =
@@ -130,26 +131,11 @@ export async function writeFile(page, path, text) {
 /**
  * Types `command` at the prompt and waits for it to finish. Returns its exit code, the terminal
  * output it produced (prompt line excluded) and its wall time in ms; `code` is null on timeout
- * (the program is then stopped with Ctrl-C).
+ * (the test then requests forceful foreground cleanup and waits for the shell to become idle).
  */
 export async function run(page, command, ms = 60000) {
   const before = (await terminalText(page)).split("\n").length;
-  const result = await page.evaluate(
-    async ([cmd, timeout]) => {
-      const { shell } = globalThis.playground;
-      const t0 = performance.now();
-      const done = shell.submit(cmd).then(() => shell.lastExit);
-      const code = await Promise.race([done, new Promise((r) => setTimeout(() => r(null), timeout))]);
-      const ms = performance.now() - t0;
-      // On timeout, Ctrl-C the program so the shell takes the next command.
-      if (code === null) {
-        shell.input("\x03");
-        await done;
-      }
-      return { code, ms };
-    },
-    [command, ms],
-  );
+  const result = await runForeground(page, command, ms);
   const lines = (await terminalText(page)).split("\n");
   // The command's own prompt line is before[-1]; the new prompt is the last line.
   const output = lines.slice(before, -1).join("\n");

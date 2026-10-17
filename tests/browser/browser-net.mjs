@@ -1,4 +1,3 @@
-import { stopShell } from "./stop-shell.ts";
 // End-to-end networking test of the playground in real browsers (Chromium desktop, WebKit iPhone).
 //   cd web && bun run build && [ENGINES=browser,quickjs] [SLOTS=imports] node tests/browser-net.mjs [chromium|webkit …]
 // Starts web/serve.ts and a local fixture server on another origin (no public internet), drives
@@ -7,6 +6,7 @@ import { stopShell } from "./stop-shell.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stopForeground } from "./foreground.ts";
 
 const here = new URL(".", import.meta.url).pathname;
 const web = join(here, "..");
@@ -15,7 +15,7 @@ const playwrightPath =
   `${process.env.HOME}/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/.mise/playwright@1.63.0/node_modules/playwright/index.mjs`;
 const { chromium, webkit, devices } = await import(playwrightPath);
 
-const scratch = mkdtempSync("/work/tmp/bun-wasm-web-net-");
+const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? "/work/tmp", "bun-wasm-web-net-"));
 const children = [];
 const browsers = [];
 let cleaned = false;
@@ -271,8 +271,7 @@ async function checkHtmlEntry(page, context, appUrl, name) {
     page.off("console", ownerLog);
     await preview.close();
     await page.evaluate(() => document.querySelector("#hmr-fixture")?.remove());
-    await stopShell(page);
-    await waitFor(page, /\^C/);
+    await stopForeground(page);
   }
 }
 
@@ -390,11 +389,10 @@ async function runEngine(browserName, engine, type, options, appUrl, fixtureBase
   }, fixtureBase.replace(/^http/, "ws") + "/socket");
   check(`${name}: external WebSockets retain native networking`, external.reply === "native external websocket" && external.instance);
 
-  // Ctrl-C stops the server; the preview then reports nothing listening.
-  await stopShell(page);
-  await waitFor(page, /\^C/);
+  // Explicit test teardown completes before checking that the preview is no longer listening.
+  await stopForeground(page);
   const after = await preview.goto(previewUrl);
-  check(`${name}: preview gone after Ctrl-C`, after?.status() === 502, `status ${after?.status()}`);
+  check(`${name}: preview gone after foreground teardown`, after?.status() === 502, `status ${after?.status()}`);
 
   check(`${name}: no page errors`, errors.length === 0, errors.join("\n"));
   await browser.close();

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { SharedPipe, SubprocessHost, childTransport, createProcessBudget, type ChildTransport } from "../src/subprocess.js";
+import { SharedPipe, SubprocessHost, childTransport, createProcessBudget, type ChildTransport } from "../src/subprocess.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -21,7 +21,7 @@ test("shared child pipes preserve bytes across wrap, capacity and EOF", () => {
   expect(pipe.write(encoder.encode("closed"))).toBe(-1);
 });
 
-test.skipIf(!existsSync(new URL("../../dist/bun-browser.wasm", import.meta.url)))("fresh wasm subprocess workers support pipes, exit, kill and bounds", () => {
+test.skipIf(!existsSync(process.env.BUN_WASM_TEST_BROWSER_WASM || new URL("../../dist/bun-browser.wasm", import.meta.url)))("fresh wasm subprocess workers support pipes, exit, kill and bounds", () => {
   const result = Bun.spawnSync(["node", "--no-warnings", new URL("./subprocess.mjs", import.meta.url).pathname]);
   expect(decoder.decode(result.stderr)).toBe("");
   expect(result.exitCode).toBe(0);
@@ -34,6 +34,7 @@ function budgetHost(budget: SharedArrayBuffer, parent?: ChildTransport) {
   const launched: ChildTransport[] = [];
   const host = new SubprocessHost({
     budget, slot: parent?.slot, token: parent?.token,
+    identity: parent?.identity, pid: parent?.pid, jobId: parent?.jobId,
     output() {},
     launch(_meta, transport) {
       launched.push(transport);
@@ -72,6 +73,11 @@ test("late completion cannot release a reused child slot or its descendants", ()
   const oldChild = stale.host.spawn(childCommand);
   try {
     root.host.kill(parent, 9);
+    // Killing one process neither frees its independent descendant nor leaves guest control authority.
+    expect(stale.host.wait(oldChild)).toBe(-1);
+    expect(Atomics.load(new Int32Array(stale.launched[0]!.control), 0)).toBe(0);
+    // Explicit host-owned teardown, unlike a new guest kill from the dead parent, may clean it up.
+    stale.host.dispose();
     root.host.spawn(childCommand);
     root.host.spawn(childCommand);
     const reused = root.launched[2];
@@ -83,7 +89,8 @@ test("late completion cannot release a reused child slot or its descendants", ()
       if (!old) throw new Error("old child was not launched");
       childTransport(old).finish(0);
       const before = Array.from(new Int32Array(budget));
-      expect(stale.host.wait(oldChild)).toBe(0);
+      expect(stale.host.wait(oldChild)).toBe(-1);
+      expect(Atomics.load(new Int32Array(old.control), 1)).toBe(137);
       expect(Array.from(new Int32Array(budget))).toEqual(before);
       expect(root.host.spawn(childCommand)).toBeGreaterThan(0);
       expect(root.host.spawn(childCommand)).toBe(-1);

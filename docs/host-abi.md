@@ -91,10 +91,11 @@ reads as `UNSUPPORTED`. The playground and sandbox use this by default (`web/src
 | 11   | `peer_addr`  | `(handle, buf_ptr, buf_cap) -> len`                              |
 | 12   | `spawn`      | `(meta_ptr, meta_len) -> child`                                  |
 | 13   | `child_wait` | `(child) -> exit_code`                                          |
-| 14   | `child_pipe` | `(child, fd) -> pipe`                                            |
+| 14   | `child_pipe` | `(child, selector) -> pipe_or_final_signal`                       |
 | 15   | `child_kill` | `(child, signal) -> i32`                                         |
 | 16   | `shutdown` | `(connection) -> i32`                                            |
 | 17   | `local_addr` | `(handle, buf_ptr, buf_cap) -> len`                              |
+| 18   | `signal`     | `(signal, mode) -> i32`                                         |
 
 ### `poll(timeout_ms) -> i32`
 
@@ -203,18 +204,64 @@ for handle `0`), same length protocol as `fetch_head`:
 JSON `{ "address": "127.0.0.1", "port": 51234, "family": "IPv4" }` for a
 connection, same length protocol as `fetch_head`.
 
+## Signal dispositions
+
+Optional slot 18, `signal(sig, mode)`, connects Node/Bun signal listeners to the process host
+without adding mandatory WebAssembly imports. ABI version 1 and slots 0–17 retain their meaning.
+A plain preview1 host may leave the slot unset. The browser's ordinary WASI adapter also exposes
+`runtime_proc.signal(sig, mode)` with the same operations.
+
+- Modes 0, 1 and 2 synchronously set default, ignored and handled dispositions, respectively.
+  Signal numbers are 1–64; SIGKILL (9) cannot be registered or ignored.
+- Mode 3 raises a signal against this process's current disposition, including SIGKILL. It does
+  not force the default action when a handler is registered.
+- `(0, 0)` dequeues one pending handled signal, lowest signal number first; 0 means none.
+  `runtime_proc.interrupted()` consumes that same queue, not a second copy. If signal death has
+  already been selected, entering this checkpoint instead unwinds through that typed default
+  action; an empty handled queue cannot hide a selected fatal outcome.
+- Set/raise returns 0 on success; invalid arguments return -22. A selected default action may
+  instead unwind the current execution through the host's typed signal termination path.
+
+This layer supports SIGINT (2), SIGKILL (9), SIGPIPE (13) and SIGTERM (15). For a default
+SIGINT/SIGTERM/SIGPIPE disposition, the supervisor immediately selects the signaled outcome,
+revokes capabilities and requests termination. Ignored signals do nothing. Handled signals queue
+without cancellation, so their handler can clean up and retain the guest's own exit code. SIGKILL
+always selects 137 and cannot be caught or ignored. Registration and removal publish synchronously
+with listener mutation, before user `removeListener` observers run. Removing a pending handler to
+default immediately selects its default action; setting ignored clears the pending signal.
+
+Browser/Node processes share 65 Int32 cells, indexed by signal number. The low two bits encode
+the disposition and bit `0x4` records pending delivery. Atomic updates couple disposition and
+pending state; distinct pending signals cannot overwrite one another, while repeats of one
+standard signal may coalesce. Dequeue clears pending before a once-listener removes itself.
+The existing interrupt word is only a wake hint. Native stores use the same disposition and
+pending rules under their process-state synchronization. Polling/listener registration alone
+does not keep an otherwise idle guest alive. Cooperative guest event-loop turns deliver handlers;
+CPU-bound engine checkpoints remain step 7a. Unhandled default actions do not wait for that step.
+
+An EPIPE remains an error through guest stream callbacks/listeners or try/catch. If it escapes
+all guest error handling, the adapter raises SIGPIPE through mode 3; a handled EPIPE keeps the
+guest's own status, while default SIGPIPE selects 141. An explicit parent SIGPIPE request uses
+the disposition immediately, just like SIGINT or SIGTERM.
+
 ## Bun child processes
 
-`spawn` starts a fresh instance of the same compiled module. It never invokes a
-native executable or shell. The metadata is JSON:
+`spawn` returns a child handle without waiting for execution. The browser starts a fresh worker
+using a registered compiled module and guest adapter; it never invokes a native executable.
+The native launcher and Node adapter support their configured Bun executables. Metadata is JSON:
 
 ```json
 {"argv":["bun","run","/app.ts"],"cwd":"/","env":{"HOME":"/"},
  "stdin":"pipe","stdout":"pipe","stderr":"pipe"}
 ```
 
-`argv[0]` must be `bun` or `/bun`. The guest recognizes its own `process.execPath`
-and `process.argv0`, then sends `bun`. Other commands fail with `ENOENT`.
+The guest preserves `argv[0]`; executable selection belongs to the host's registry.
+The browser registers `bun`, `/bun`, `node`, `/node`, `/usr/local/bin/bun` and
+`/usr/local/bin/node` with the page/root command's selected engine and compiled module.
+`bun-quickjs`, `bun-jsc` and `bun-browser` select an engine explicitly. Generic aliases keep
+using the page/root engine even when an explicitly selected child uses another engine.
+A browser start failure appears through `child_wait`: 127 for an
+unregistered executable, 126 for a registered executable that cannot start.
 `env` replaces the child environment; the host sets `PWD` to `cwd` because the
 WASI guest changes directory there at startup. Each stdio mode is `pipe`,
 `inherit`, or `ignore`. Inheritance refers to the immediate parent's stream,
@@ -228,13 +275,38 @@ closing an output read end discards remaining output and makes child writes fail
 Reads return `AGAIN` until bytes or EOF arrive. Pipe buffers are bounded to 1 MiB
 on the native launcher and apply backpressure.
 
+Slot 14 also reserves the named selector `CHILD_FINAL_SIGNAL = 3`:
+`child_pipe(child, 3)` returns `AGAIN` until completion is published, then 0 for
+an ordinary exit or the signal number for a selected signal death. An unknown
+child or unsupported selector returns `BADF`. This is a metadata query, not a pipe
+handle, and does not allocate or close a descriptor. Slots 12–15 retain their
+numbers and integer signatures; selectors 0–2 retain their existing meaning.
+The guest reads the final signal after `child_wait` completes and before closing
+the child. Both queries remain repeatable. Status 143 alone never implies SIGTERM:
+ordinary `process.exit(143)` reports `exitCode: 143, signalCode: null`, whereas
+selected SIGTERM reports `exitCode: null, signalCode: "SIGTERM"`. Signal requests
+and timeout flags do not classify the final outcome.
+
+Separate-guest workers use two additional control-pipe selectors, without reusing
+signal metadata selector 3. Selector 4 is parent-to-worker input (parent writes,
+worker reads); selector 5 is worker-to-parent output (worker writes, parent reads).
+The parent queries these with the worker's child handle; a worker queries its own
+endpoints with child handle 0. Handle 0 does not turn selector 3 into a pipe or
+provide root completion metadata. These private channels do not change stdio
+selectors 0–2 or their inheritance modes. Native worker completion closes its incoming
+reader and outgoing writer before publishing completion, so pending parent writes
+observe EPIPE and readers can reach EOF.
+
 `child_wait` is nonblocking and repeatable: `AGAIN` while running, then the exit
 code. Waiting does not close the child or its pipes. Drain and close the pipes,
 then `close(child)` to release the handle. Closing a running child kills it.
-`child_kill` accepts a Linux signal number; 0 checks whether the child is alive,
-and a nonzero signal terminates the instance with exit code `128 + signal`.
-This is instance termination, without guest POSIX signal handlers. Timeouts and
-abort signals use this same operation.
+`child_kill(..., 0)` checks whether the child is alive. SIGINT, SIGTERM and SIGPIPE examine the
+child's registered disposition: default immediately selects `128 + sig` and revokes; ignored
+does nothing; handled queues delivery and preserves the guest's own exit code. An explicit
+`runtime_proc.default_signal(sig)` also records a typed default action. SIGKILL immediately
+selects 137 and revokes regardless of disposition. Late worker messages cannot override a
+selected outcome. There are no escalation timers. Timeouts and abort signals use the same
+operation; a prior request or timeout flag is not evidence of the eventual signal kind.
 
 The native launcher shares the compiled module and preopened host directories
 between independent stores on child threads. Filesystem changes are visible
@@ -243,15 +315,39 @@ most four active children, including descendants; another spawn fails `EAGAIN`.
 Each store's linear memory is limited to 512 MiB. A 10 ms epoch ticker interrupts
 CPU-bound children; cancellation also wakes blocked WASI stdio and host polling.
 Parent teardown kills and joins its remaining children, including descendants.
-Handles are virtual identifiers, not host process IDs. Guest timer waits and
-`Bun.sleepSync` use host polling so cancellation also interrupts long sleeps.
+Handles are virtual identifiers, not host process IDs. Native process/pipe and
+network handle ranges are disjoint and bounded; exhaustion returns `EAGAIN` before
+creating a child, pipe or network operation, never a wrapped or misrouted handle.
+Guest timer waits and `Bun.sleepSync` use host polling so cancellation also interrupts long sleeps.
+A native unhandled signal selects typed signal death immediately; epoch, poll and stdio
+checkpoints observe that selected cancellation to stop execution. A handled request instead
+queues delivery without fatal cancellation, so an ordinary guest exit keeps its code.
+SIGKILL selects signal 9 immediately if no outcome has already won. Selection is
+immutable and precedes pipe closure and completion publication. A signal request
+against a selected but not yet observed native child is a successful no-op, even
+while publication is pending. Once a successful wait or final-signal query observes
+completion, further native signal requests return `BADF`; the completion metadata
+remains available for repeatable queries until `close(child)`.
+
+Root and child stores share a native WASI `proc_exit` adapter that retains ordinary
+exit codes 126–255 instead of Wasmtime's default trap for those values. It applies
+the launcher's byte-sized OS exit convention (-1 becomes 255, 256 becomes 0), then
+reports a typed ordinary exit. The browser WASI and host-JS engine exit adapters use the same
+byte-sized convention, keeping negative values out of the child-control result namespace.
+Thus `process.exit(143)` is an ordinary exit with status 143 and no signal, not a
+trap or a SIGTERM result. The guest flushes buffered stdout before a blocking stdin
+read, allowing the parent to wait for readiness output before sending input.
 
 Browser and Node hosts implement the same process slots. The browser uses a page
-broker to start child workers while their parent is blocked in `spawnSync`. Its
-filesystem is copied at spawn and changed paths merge back on normal exit, with
-an 8 MiB serialized change limit. Node workers share their real preopens. See
-[the browser host notes](../web/README.md#bun-subprocess-workers) for sync-back,
-networking and isolation details.
+broker to start child workers while their parent is blocked in `spawnSync`. The broker lazily
+activates the generic process service on first spawn and shares compiled modules across workers.
+Processes register independent identities with the live filesystem service; no snapshots or
+merge-at-exit are used. Revocation is immediate at logical death. Before lock reaping and physical
+termination, a shared critical-section admission fence proves host filesystem operations quiescent;
+an ordinary guest exit acknowledgement also provides that proof. Merely calling
+`Worker.terminate()` does not.
+Node workers share their real preopens. See
+[the browser host notes](../web/README.md#bun-subprocess-workers) for networking and isolation.
 
 The guest exposes Bun spawn APIs and Node spawn/exec/fork wrappers over these
 slots. Fork launches a bun child; IPC channels and native descriptors are not

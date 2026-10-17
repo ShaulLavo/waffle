@@ -32,6 +32,18 @@ export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > budget) throw new Error(`core exceeds ${budget} B gzip budget by ${gzipBytes - budget} B; inspect runtime/core imports and the layer report`);
 }
 
+/** Reservation and synchronous signal-control primitives are eager, not the process service. */
+export function processServiceInputs(inputs: readonly string[]): string[] {
+  return inputs.filter(path => {
+    const match = /(?:^|\/)runtime\/proc\/(.+)\.ts$/.exec(path);
+    return match !== null && !["identity", "stub", "outcome", "signals", "types"].includes(match[1]!);
+  });
+}
+export function checkLazyProcessService(inputs: readonly string[]): void {
+  const eager = processServiceInputs(inputs);
+  if (eager.length) throw new Error(`process service is eager before first spawn: ${eager.join(", ")}`);
+}
+
 const root = resolve(import.meta.dir, "..");
 const bytes = async (output: Blob) => {
   const buffer = Buffer.from(await output.arrayBuffer());
@@ -87,7 +99,9 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
   // Page and filesystem worker share root URLs; a cold URL downloads once, not once per importer.
   const initialDownloads = Array.from(new Map(downloadRows.map(row => [row.path, row])).values());
   const inputs = Array.from(new Set(initialKeys.flatMap((key) => Object.keys(outputs[key]!.inputs)))).sort();
-  const procInputs = inputs.filter((path) => /(?:\/|^)subprocess(?:[-.]|\/)/.test(path));
+  const procInputs = processServiceInputs(inputs);
+  const bunAdapterInputs = inputs.filter(path => /(?:\/|^)subprocess(?:[-.]|\/)/.test(path));
+  if (splitting) checkLazyProcessService(inputs);
   return {
     splitting, logicalEntries: logicalEntries.concat([{ entry: "sw.js", ...serviceWorker, files: [{ path: "sw.js", ...serviceWorker }] }]),
     logicalJavaScript: { ...totals(logicalFiles), files: logicalFiles },
@@ -97,7 +111,8 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
     coldJavaScriptWithBothRegistrations: totals(initialDownloads.concat([{ path: "sw.js (second registration)", ...serviceWorker }])),
     otherBunLightDownloads: ["index.html", "main.css", "bun-browser.wasm.gz"].concat(name === "sandbox" ? ["template.json"] : []),
     excludedDownloads: ["bun.wasm.gz", "bun-jsc.wasm.gz", "*.map"],
-    proc: { eager: procInputs.length > 0, inputs: procInputs, note: "Step 2 preserves the current eager process graph; first-spawn loading belongs to step 4a." },
+    proc: { eager: procInputs.length > 0, inputs: procInputs, bunAdapterInputs,
+      note: "The generic registry/table/supervisor loads on first spawn; Bun's existing slot and pipe adapter remains in its initial closure (pipe replacement is step 4b)." },
   };
 }
 
@@ -107,7 +122,9 @@ export async function runtimeSizeReport() {
     layer("core", ["runtime/core/index.ts"], 6),
     layer("fs", ["runtime/fs/index.ts"], 6),
     layer("net", ["web/src/net/host.ts", "web/src/net/helper.ts", "web/src/preview.ts"], 14),
-    layer("proc", ["web/src/subprocess.js", "web/src/subprocess-broker.ts"], 8),
+    layer("proc", ["runtime/proc/index.ts"], 8),
+    layer("proc-stub", ["runtime/proc/stub.ts", "runtime/proc/outcome.ts"], 1),
+    layer("bun-process-adapter", ["web/src/subprocess.ts", "web/src/subprocess-broker.ts"], 8),
   ]);
   // This separately linked preview client uses a source-wrapper plugin; measure its real build.
   const net = layers.find((layer) => layer.name === "net")!;

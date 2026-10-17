@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
-import { SharedPipe, createProcessBudget } from "../src/subprocess.js";
+import { SharedPipe, createProcessBudget } from "../src/subprocess.ts";
 
 for (const budgeted of [false, true]) {
   test(`shared pipes can write, read, wrap and close (${budgeted ? "with" : "without"} process budget)`, () => {

@@ -17,7 +17,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-jsc/cpp/helpers.cpp`, finalizer dispatch](#jsc-finalizer-dispatch) | Host feature | Original adapter for full collection and deferred cleanup in the wasm event loop. |
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
-| [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances. |
+| [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -56,6 +56,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/path.js`](#node-path) | Port | Adapt Node's POSIX path implementation to the guest filesystem. |
 | [`crates/bunwasm-runtime/src/js/buffer.js`](#node-buffer-fragments) | Port | Adapt Node Buffer construction and concatenation routines over typed arrays. |
 | [`crates/bunwasm-runtime/src/js/events.js`](#node-event-emitter) | Port | Adapt Node listener bookkeeping without native async hooks. |
+| [`crates/bunwasm-runtime/src/js/events.js`, listener publication](#node-event-emitter) | Host feature | Original mutation hook publishes signal dispositions before user listener-removal callbacks. |
 | [`crates/bunwasm-runtime/src/js/util.js`](#node-utility-fragments) | Port | Adapt argument parsing, comparison helpers, and inspection tables. |
 | [`crates/bunwasm-runtime/src/js/assert.js`](#node-assertions) | Port | Adapt assertion helpers and messages to the local inspector and equality implementation. |
 | [`crates/bunwasm-runtime/src/js/bun_sqlite.js`](#bun-sqlite) | Port | Move Bun's SQLite wrapper and inherited transaction code onto Rust SQLite natives. |
@@ -77,6 +78,7 @@ Each row has one class. A file with independent changes has separate rows.
 
 | [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
+| [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions, immutable final-kind query and byte-sized exit statuses. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
@@ -92,7 +94,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/crypto_keys.js` and `crypto_host_keys.js`, Node key adapters](#node-crypto-key-adapters) | Host feature | Original Node key objects, encodings and signatures over the WebCrypto backend. |
 | [`crates/bunwasm-runtime/src/js/crypto.js`, shared key adapters and `web/src/engine-host.js` provider capture`](#webcrypto-backend) | Host feature | Original WebCrypto validation and opaque keys over RustCrypto. |
 | [`crates/bunwasm-runtime/src/js/net_address.js`, IP predicates](#tcp-and-ip-helpers) | Port | Adapt Bun's engine independent IPv4 and IPv6 predicates. |
-| [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets and write-side shutdown over the existing host ABI. |
+| [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets, write-side shutdown and bounded native handle allocation over the existing host ABI. |
 | [HTTP request and response framing](#http-framing) | Host feature | Original header state, validation, streaming, Agent pool and upgrade response adapters shared by all engines. |
 | [`crates/bunwasm-runtime/src/js/ws_builtin.js`](#portable-ws-builtin) | Port | Bundle the unchanged published ws implementation for the shared Node APIs. |
 | [`scripts/generate-ws.sh` and builtin resolution](#portable-ws-builtin) | Host feature | Original module wrapper supplies Bun's builtin ws import on every engine. |
@@ -103,6 +105,79 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
+
+## Browser process service
+
+Class **Host feature**, **original adapters** in `runtime/proc/`,
+`web/src/{subprocess,subprocess-broker,worker,runner,shared-fs}.ts`,
+`web/src/engine-host.js`, `web/src/net/{host,trampoline}.ts`,
+`web/scripts/{node-spawn,node-signals,node-process}.ts`, `web/scripts/node-host.mjs`, `runtime/core/wasi.ts`,
+`crates/bunwasm-host/src/{main,slots}.rs`,
+`crates/bunwasm-host/src/process/{mod,stdio}.rs`, and
+`crates/bunwasm-runtime/src/{host,natives,lib}.rs` plus `src/js/{spawn,process,bootstrap}.js`
+and their runtime types. These implement this project's process contract; no upstream
+implementation is copied into these original adapters. The separate original mutation hook in
+the already-ported EventEmitter is classified under [Node event emitter](#node-event-emitter).
+The process slots retain Bun host ABI version 1 and slots 12–15, appending optional signal
+slot 18 after the existing networking slots (`docs/host-abi.md`).
+The generic service shares compiled modules and keeps process ids separate from job ids.
+The browser launcher selects an executable's guest adapter instead of inheriting the
+spawning process's engine. A small reservation/activation bridge is separate from the
+first-spawn-loaded supervisor. The existing Bun pipe transport remains until step 4b.
+The shared guest keeps executable names intact; native and Node host registries explicitly
+recognize `bun`, `/bun`, `node`, `/node`, `/usr/local/bin/bun` and `/usr/local/bin/node`
+instead of silently running Bun for an arbitrary executable.
+
+Each process has per-signal default, ignored or handled dispositions. An unhandled SIGINT,
+SIGTERM or SIGPIPE immediately selects its typed default outcome and revokes; only handled
+signals queue for guest delivery and retain the guest's own exit status. Registration/removal
+publish synchronously, and removing a pending handler to default takes that action immediately.
+A 65-cell signal table couples disposition with a per-signal pending bit, preserving distinct
+signals and clearing pending before once-listener removal. Slot 18 supplies registration,
+dequeue and self-signals without mandatory Wasm imports. Cooperative guest event-loop turns
+pump handlers without keeping an otherwise idle program alive. EPIPE remains catchable by the
+guest; only an escaping EPIPE raises SIGPIPE through the same disposition logic.
+That decision precedes worker error hooks, which must not relabel default signal death
+as an ordinary worker error. The Node import dispatcher composes process, worker,
+network and optional signal slots through the same guarded subprocess adapter.
+SIGKILL immediately records 137 and revokes before physical termination; it cannot be caught
+or ignored. A shared atomic terminal-result primitive arbitrates guest completion, startup
+failures and default actions, preserving the winning status and whether it came from an ordinary
+exit or a signal. The native Wasmtime adapter also retains an immutable typed outcome: default
+actions select immediately, while handled signals do not take the fatal cancellation path.
+The original slot-14 metadata
+selector `CHILD_FINAL_SIGNAL = 3` exposes the completed signal kind on every host without
+changing slots 12–15 or pipe selectors 0–2. The worker adapters use selectors 4/5
+for their two directional control pipes on every host, leaving selector 3 exclusively
+for final signal metadata. Native worker completion closes the incoming reader and
+outgoing writer before publication, preserving EPIPE/EOF at the correct endpoints.
+The shared Bun facade reads that selected kind
+rather than guessing from status 143 or a prior kill request. Synchronous spawn error
+paths also observe completion before reading the final kind; a forced-stop request is not
+proof that signal death won. Worker receivers consult that typed kind before synthesizing
+an ordinary uncaught-worker error. Native process, pipe and network allocations check
+their disjoint handle ranges before creating resources, returning EAGAIN at exhaustion
+instead of wrapping or routing a handle into another service.
+The native linker's original
+`wasi_snapshot_preview1::proc_exit` adapter preserves ordinary exit codes 126–255, which
+Wasmtime 39.0.2's standard preview-1 implementation rejects as traps. The upstream reference
+is `bytecodealliance/wasmtime`, `crates/wasi/src/p1.rs` at
+`f66a5b61465c937aba66d73cd5d82f763cc3074f`; no implementation is copied. The adapter
+uses the launcher's existing byte-sized OS exit convention (for example, -1 becomes 255),
+then returns Wasmtime's typed `I32Exit` so normal exits cannot be confused with traps or
+negative child-control results. Root and child stores use the same linker setup. The browser
+WASI adapter and host-JS engine exit adapter apply the same byte-sized convention before
+publishing completion. Original tiny-Wasm and host-engine tests cover negative and oversized
+values through the real exit path and child wait/final-signal transport. The original Rust `readStdin` adapter flushes buffered
+stdout before blocking, so a parent's readiness-before-input handshake cannot deadlock.
+These are original host protocol extensions, not copied upstream implementations.
+Filesystem revocation no longer claims
+that `Worker.terminate()` proves death: an original admission/critical-section guard in
+`runtime/fs/{protocol,client,shared,service}.ts` proves host operations quiescent before lock
+reaping and physical termination; an ordinary guest exit acknowledgement also proves quiescence.
+Children use independent process revocation identities while
+sharing the filesystem service's root revocation word. New browser fixtures and timing
+harnesses are original test programs, not copies of the spike implementations.
 
 ## Filesystem quiescence
 
@@ -201,6 +276,9 @@ provide write-side shutdown and the local endpoint. HTTP upgrade listeners get
 a real Socket with the bytes received after the request header. The original
 adapters also own pipe backpressure across multiple destinations, cancellation of queued writes, exact-size
 reads, timeout listener cancellation, and bounded HTTP upgrade handshakes.
+The native network allocator also rejects handle exhaustion before starting an
+operation or consuming an accepted socket, preserving the separate process/pipe
+handle range and returning EAGAIN without partial resource creation.
 No additional upstream implementation was copied for these corrections.
 
 Bun's `src/js/node/net.ts` depends on native Bun sockets, private stream modules,
@@ -211,7 +289,7 @@ The upstream comparisons are recorded in [TCP support](tcp.md).
 
 ## Browser runtime core
 
-Class **Host feature**, **original adapters** in `runtime/core/`, `web/src/fs.ts`, `runtime/fs/`, and the `wasiPipe` adapter in `web/src/subprocess.js`.
+Class **Host feature**, **original adapters** in `runtime/core/`, `web/src/fs.ts`, `runtime/fs/`, and the `wasiPipe` adapter in `web/src/subprocess.ts`.
 The extraction starts from bun-wasm's own
 `web/src/{wasi.ts,memory-views.js,fs.ts}` at `8716f92`; there is no copied Bun, Node, WebKit,
 brush-web, or browser_wasi_shim implementation in this layer. The preview1 adapter now uses
@@ -768,6 +846,13 @@ Retain recognizable Buffer constructor dispatch, `fromObject` array-like handlin
 
 Retain listener storage conventions, once-wrapper state, listener removal, and remove-all behavior. Replace primordials, internal validators, and native async-resource or EventTarget integration with local validation and runtime scheduling. The module also supplies local promise and async-iterator helpers. These changes provide Node-style listener semantics on the guest event loop without native async hooks.
 
+The listener-publication hook is a separate **Host feature**, an **original adapter**, not copied
+from Node or Bun. It runs immediately after listener storage mutates and before user removal
+observers, publishing this host's signal disposition synchronously. It covers prototype calls,
+once wrappers, removal, remove-all and reentrant observers without replacing the retained
+EventEmitter bookkeeping or adding native async hooks. Its process/stdout consumers are original
+host adapters described under [Browser process service](#browser-process-service).
+
 ### Node utility fragments
 
 `crates/bunwasm-runtime/src/js/util.js`. Class **Port**. Upstream Node `lib/internal/util/parse_args/{parse_args,utils}.js`, `lib/internal/util/comparisons.js`, `lib/internal/util.js`, and `lib/util.js` at the Node comparison revision. Also compare Bun `src/js/node/util.ts` and inspection tables in `src/js/internal/util/inspect.js` at the Bun pin. The direct Node import revision is not recorded.
@@ -1105,7 +1190,7 @@ The original stdin adapters in `crates/bunwasm-runtime/src/js/node_fs.js`,
 `crates/bunwasm-runtime/src/natives.rs`,
 `crates/bunwasm-host/src/process/mod.rs`, `process/stdin.rs`, `process/stdio.rs`,
 its slot and notification hooks,
-and `web/src/subprocess.js` let callback reads wait through the host I/O loop.
+and `web/src/subprocess.ts` let callback reads wait through the host I/O loop.
 The original browser filesystem service in `runtime/fs/`, connected by
 `web/src/fs-worker.ts` and `web/src/worker.ts`, gives parents and descendants
 one live filesystem identity. Changes are visible before stdin, stdout, or exit
@@ -1221,7 +1306,7 @@ subprocess streams to Node streams. These are original TypeScript implementation
 The original Rust adapters in `crates/bunwasm-host/src/process/` give each worker
 its own Wasmtime instance and control pipes. The original Node host adapter in
 `web/scripts/node-host.mjs` starts another physical Node worker. The browser host
-adapters in `web/src/{worker.ts,worker-pipes.ts,subprocess.js}` use Web Workers and
+adapters in `web/src/{worker.ts,worker-pipes.ts,subprocess.ts}` use Web Workers and
 shared pipe buffers. Nested guests share a root port broker and the existing child
 budget. Bootstrap, process, spawn and structured-clone hooks connect those
 adapters to the guest event loop. No upstream source was copied.
@@ -1234,7 +1319,8 @@ run through the builtin loader with the hooks currently available.
 
 `web/scripts/node-process.ts` is an original adapter that installs the same
 subprocess slots through Node WASI for embedded QuickJS and JSC guests. It
-composes them with the existing CLI fetch slots and shares their wake signal.
+composes them with the existing CLI fetch slots and registered signal slot 18 through
+one import dispatcher, and shares their wake signal.
 The host slot installer uses the runtime memory helper by a relative source
 path so unbundled Node hosts still load without installed packages.
 

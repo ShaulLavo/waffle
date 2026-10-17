@@ -148,7 +148,7 @@ export class NetHost {
         hostShutdown: (handle: number) => this.shutdown(handle),
         hostLocalAddr: (handle: number) => this.localText(handle),
       },
-      caps: Object.fromEntries(SLOT_NAMES.map((name) => [name, name !== "poll"])),
+      caps: Object.fromEntries(SLOT_NAMES.map((name) => [name, name !== "poll" && name !== "signal"])),
       onNews: (cb) => {
         this.onNews = cb;
         this.watchRing();

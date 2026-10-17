@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { SharedPipe, createProcessBudget } from "../src/subprocess.js";
+import { SharedPipe, createProcessBudget } from "../src/subprocess.ts";
 
 for (const buffered of [false, true]) {
   for (const closed of [false, true]) {

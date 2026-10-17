@@ -59,8 +59,14 @@ than it is today. The process layer loads on the first spawn.
   optimization. Our own programs check it at their checkpoints, including inside the JS engines
   (QuickJS's interrupt handler, a JSC trap hook); third-party WASM gets checks injected at loop
   headers and function entries (covering tail-call cycles) when loaded, or is refused.
-  `terminate()` stays as the backstop. Revocation wakes blocked peers at once (EOF in about
-  0.06 ms, EPIPE in about 0.3 ms), so pipelines never wait on a dying worker.
+  `terminate()` stays as the backstop. Each process has a per-signal disposition: default,
+  ignored or handled. Unless the guest registered a handler, the supervisor applies SIGINT,
+  SIGTERM or SIGPIPE's default action immediately, recording `128 + sig` and revoking; it does
+  not wait for an engine checkpoint. Only handled signals are queued for guest delivery, and
+  that guest keeps its own exit code. Removing the last handler restores the default action.
+  SIGKILL is always immediate and cannot be caught or ignored. Revocation
+  wakes blocked peers at once (EOF in about 0.06 ms, EPIPE in about 0.3 ms), so pipelines never
+  wait on a dying worker. There is no automatic escalation timer.
 - **A killed process can't corrupt shared state.** Shared memory can't be taken back from a
   running worker, and a worker can be killed between checking a flag and publishing a write. So
   no ring is ever written by two processes: each (writing process, pipe) pair gets its own
@@ -141,8 +147,9 @@ sections 7 and 8) maps its `ProcessHost` trait onto this layer. The process laye
 A new `runtime/` directory in bun-wasm: a TypeScript package (`@bun-wasm/runtime`) with one entry
 per layer (`core`, `fs`, `net`, `proc`, `term`) so a bundler includes only what a page imports,
 and `proc` loaded on the first spawn. A guest's `spawn` import can't await an `import()`, so the
-guest worker keeps a stub of about 1 KiB: it reserves a pid, takes the inherited descriptor
-references and returns at once, and the supervisor loads proc and starts the process
+guest worker keeps a stub of about 1 KiB gzipped, including identity and atomic terminal-result
+primitives: it reserves a pid, takes the inherited descriptor references and returns at once,
+and the supervisor loads proc and starts the process
 asynchronously. A start failure shows up through `wait` (127 for a missing program, 126 for one
 that can't run) and as a child-exit event in `poll`. A synchronous caller such as Bun's
 `spawnSync` polls afterwards; the shell never blocks on a first spawn. The builds (`web/build.ts`,
@@ -166,8 +173,9 @@ before it returns, so the parent may close its copy immediately. A child's `fd_c
 `fd_renumber`, exit or kill releases its references. EOF reaches readers after the last writer
 reference closes; EPIPE reaches writers after the last reader reference closes.
 
-All calls return 0 or a non-negative result on success and a negative WASI errno on failure. All
-are non-blocking except `poll`.
+Calls return 0 or a non-negative result on success and a negative error on failure (WASI errno
+for descriptor operations; `signal` uses the Bun slot's -22 invalid-argument result). All are
+non-blocking except `poll`.
 
 | Import | Signature | Meaning |
 |---|---|---|
@@ -181,13 +189,38 @@ are non-blocking except `poll`.
 | `kill` | `(pid, sig) -> 0` | Signals one process. |
 | `kill_job` | `(job, sig) -> 0` | Signals every process in a job, including descendants spawned into it. |
 | `poll` | `(subs_ptr, n, timeout_ms, out_ptr) -> n_ready` | Each subscription is 16 bytes: `u32 kind` (0 readable, 1 writable, 2 child exit, 3 filesystem completion), `u32 id` (fd, pid or request), `u64 userdata`. Each event written is 16 bytes: `u64 userdata`, `u32 kind`, `u32 flags` (bit 0 hang-up). Also returns when this process's interrupt word is set (`n_ready` may be 0). The only call that blocks. |
-| `interrupted` | `() -> sig` | Returns and clears the pending signal for this process (0 if none). Guests call it at checkpoints and stop when it returns a signal. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
+| `signal` | `(sig, mode) -> result` | Synchronously sets this process's disposition: 0 default, 1 ignored, 2 handled; mode 3 raises a signal against the current disposition. `(0, 0)` dequeues the next pending handled signal (0 if none), sharing the queue with `interrupted`. Set/raise returns 0, invalid arguments -22. SIGKILL cannot be registered or ignored. Bun reaches the same adapter through optional host slot 18. |
+| `interrupted` | `() -> sig` | Dequeues one pending handled signal for this process (0 if none); the guest dispatches its handler at a checkpoint. Unhandled default actions have already been selected by the supervisor. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
+| `default_signal` | `(sig) -> never` | Takes the default action for the signal returned by a checkpoint. The adapter reports it explicitly before unwinding; the supervisor records `128 + sig`, revokes descriptors and requests physical termination. An unrelated later trap is not inferred to be a signal exit. |
 
-Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. `kill` revokes the target's descriptors
-at once and sets its interrupt word; physical teardown follows. The supervisor records the
-requested signal, and that record, not the way the guest happened to stop, decides the status:
-shells see 128 + sig (130, 143, 137, 141). A guest that handles a signal or EPIPE and exits on its
-own keeps its own code.
+Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. Each process starts with the default
+per-signal disposition, rather than assuming every program handles a signal. For SIGINT, SIGTERM
+and SIGPIPE, `kill` examines that disposition synchronously: default selects signal death,
+records `128 + sig` and revokes immediately; ignored does nothing; handled queues delivery
+without revoking the guest. Node/Bun listener mutations publish registration and removal before
+user callbacks; preview1 guests register through `runtime_proc.signal`. A handled guest's own
+exit code stands, including 0 or ordinary 143. Removing the final handler restores default;
+removing a pending handler to default applies that action immediately, while ignoring a signal
+clears its pending state. Standard signals may coalesce per signal, but distinct pending signals
+must not overwrite one another. Dequeue clears pending before a once-listener removes itself.
+The per-signal state is authoritative; the shared interrupt word only wakes checkpoints.
+
+An explicit `runtime_proc.default_signal(sig)` still reports a typed default action. SIGKILL
+always selects 137 and revokes immediately; it cannot be caught or ignored. Guest completion
+and signal death compete for one immutable outcome, so a late worker message or prior request
+cannot relabel an ordinary exit. Physical termination waits for host filesystem critical sections,
+not guest WASM: a per-connection section count is published before the revocation check and lock
+acquisition, and cleared on exit. After revoking, the supervisor waits asynchronously for zero,
+then reaps filesystem locks and terminates. A guest entering after revocation must abort before
+acquiring any lock. This proves quiescence without claiming `terminate()` proves death.
+Default-action statuses are 130, 143, 137 and 141. A JS EPIPE error remains catchable through
+normal stream callbacks/listeners or try/catch; an EPIPE escaping guest error handling raises
+SIGPIPE through the same disposition logic. An EPIPE-handling guest keeps its own status.
+
+One Ctrl+C stops an ordinary foreground program with 130 without waiting for step 7a. A
+registered SIGINT handler may clean up and keep its own status. Ctrl+C signals the foreground
+job and waits; a second Ctrl+C or explicit kill may send SIGKILL. Listener registration and
+signal polling do not keep an otherwise idle guest alive. The runtime has no escalation timers.
 
 WASI preview1 programs use the same descriptors through ordinary fd calls: a spawned child's
 `fd_read(0)` blocks on its bound pipe, and `poll_oneoff` reports pipe readiness. Third-party
@@ -207,13 +240,13 @@ the CI gate.
 | 3a | **Filesystem worker and protocol.** In-memory tree owned by one worker; non-blocking submit and completion handles over shared memory; blocking preview1 adapter; open-file identity across rename and unlink. Memory-only backend. Replaces copy-at-spawn and merge-at-exit. | 1,500-2,200 |
 | 3b | **Persistence.** Backend interface; IndexedDB backend (default); background batched persistence; `fsync`; checksummed metadata written beside the old copy then swapped; Web Locks for one writer tab; the editor's persisted save. Reload test immediately after a save resolves. | 1,200-1,800 |
 | 3c | **OPFS backend.** One file per file, lazy loading, bounded handle cache under Safari's 253, per-browser create concurrency. | 600-1,000 |
-| 4a | **Processes.** Supervisor, process table, generic registry (module plus guest adapter), shared compiled modules, the first-spawn stub, spawn/wait/kill/kill_job, jobs, interrupt words and recorded signals, revocation. Optional per-browser pool. Test: a deliberately delayed first activation while another shell task keeps running. | 1,200-1,800 |
+| 4a | **Processes.** Supervisor, process table, generic registry (module plus guest adapter), shared compiled modules, first-spawn stub, spawn/wait/kill/kill_job, jobs, per-signal dispositions and registration, immutable outcomes and revocation. Unhandled signals apply their default action immediately; handled signals retain the guest's own exit. Optional per-browser pool. Tests: delayed first activation while another shell task runs; one Ctrl+C stops an unhandled program with 130; a SIGINT handler exits 0 and keeps 0; removing it restores default; handled EPIPE retains its status. | 1,200-1,800 |
 | 4b | **Pipes.** Per-writer rings built from `SharedPipe`, reader merging, relay mode for multiple reading processes, reference counts, readiness, the `runtime_proc` imports. Tests: inherited concurrent writers, inherited readers, kill between a writer's check and publish, output queued before a kill still drained, a delayed publish after a kill never read, zero-length and partial I/O. | 1,000-1,500 |
 | 4c | **Process gate for the shell.** The own-shell spike's section 8 gate on real workers: external producer and consumer with a builtin filter, bounded flow and early reader close across workers, interrupt while WASM runs, descendant kill with reaping, an inherited nonstandard fd closed by the parent right after spawn, a background job surviving one command and controlled by the next. Runs against a preview1 fixture until the shell lands. | 500-800 |
 | 4d | **IPC.** Node `fork()` and Bun `spawn({ipc})` as a pipe pair on a child fd with newline-delimited JSON; guest send and receive on QuickJS and JSC as well as Bun light. | 400-700 |
 | 5 | **Terminal.** Terminal descriptor kind with a foreground owner; cooked mode (echo, line editing, Ctrl+D) ported from brush-web; raw mode passes Ctrl+C through as a byte; resize events. | 600-1,000 |
 | 6 | **Network.** One socket namespace shared by all processes (children get networking; loopback works across workers); fetch bridge; bounded connection writes; preview routing split from Bun's module-serving service worker, one registration; the preview client loads only when a preview opens. | 1,000-1,600 |
-| 7a | **Engine interruption.** QuickJS's interrupt handler and a JSC trap hook call `interrupted`; CPU-bound JS in each engine stops on Ctrl+C in Chromium, Firefox and real Safari. | 300-600 |
+| 7a | **Engine interruption.** QuickJS's interrupt handler and a JSC trap hook check shared interruption while CPU-bound JS runs, delivering registered handlers and stopping revoked guests in Chromium, Firefox and real Safari. Immediate unhandled default actions already belong to 4a; they do not wait for these engine hooks. | 300-600 |
 | 7b | **Bun onto the runtime.** Bun's slots as an adapter over the services; remove the Bun-only spawn restrictions (`spawn.js:49-65`, `subprocess.js:170-179`) and engine inheritance; playground migrated; demo UI out of the runtime import graph; WebKit engine-cache retention fixed. Bun light meets the budgets, measured on real downloads before and after the first spawn. | 1,000-1,500 |
 | 8 | **The shell on the runtime.** Owned by the shell track: its `ProcessHost` maps onto the process ABI. This track supplies the ABI, the 4c gate and the milestone's Playwright acceptance tests (`/work/reports/browser-shell-research/pipelines.acceptance.spec.ts`). | shell track |
 | 9 | **Interrupt injection for third-party WASM.** Spike first: rewrite a module at load time to call `interrupted` at loop headers and function entries, measuring rewrite time and overhead on a real program; refuse modules it can't instrument; then build it into the loader. | 800-1,500 |

@@ -1,5 +1,5 @@
-import { SharedPipe } from "./subprocess.js";
-import type { ChildTransport, SpawnMeta } from "./subprocess.js";
+import { SharedPipe } from "./subprocess.ts";
+import type { ChildTransport, SpawnMeta } from "./subprocess.ts";
 
 export function workerBuffers(meta: SpawnMeta) {
   if (!meta.worker) return [];
@@ -13,9 +13,14 @@ export class InheritedWorkerPipes {
       ? [new SharedPipe(transport.pipes[3], transport.budget), new SharedPipe(transport.pipes[4], transport.budget)] : null;
   }
   get active() { return this.pipes !== null; }
-  handle(fd: number) { return this.pipes && fd >= 3 && fd <= 4 ? 0x7fff0000 + fd : -3; }
-  owns(handle: number) { return this.pipes !== null && (handle === 0x7fff0003 || handle === 0x7fff0004); }
-  read(handle: number, capacity?: number) { return handle === 0x7fff0003 ? this.pipes?.[0].read(capacity) ?? -3 : -3; }
-  write(handle: number, bytes: Uint8Array) { return handle === 0x7fff0004 ? this.pipes?.[1].write(bytes) ?? -3 : -3; }
-  close(handle: number) { this.pipes?.[handle === 0x7fff0003 ? 0 : 1].close(); return 0; }
+  // Selector 3 belongs to final-signal metadata, not the first worker pipe at buffer index 3.
+  handle(fd: number) { return this.pipes && (fd === 4 || fd === 5) ? 0x7fff0000 + fd : -3; }
+  owns(handle: number) { return this.pipes !== null && (handle === 0x7fff0004 || handle === 0x7fff0005); }
+  read(handle: number, capacity?: number) { return handle === 0x7fff0004 ? this.pipes?.[0].read(capacity) ?? -3 : -3; }
+  write(handle: number, bytes: Uint8Array) { return handle === 0x7fff0005 ? this.pipes?.[1].write(bytes) ?? -3 : -3; }
+  close(handle: number) {
+    if (!this.owns(handle)) return -3;
+    this.pipes?.[handle === 0x7fff0004 ? 0 : 1].close();
+    return 0;
+  }
 }

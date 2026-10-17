@@ -1,4 +1,4 @@
-import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, reapFilesystem, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
+import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
 
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
@@ -41,7 +41,15 @@ export class SharedFilesystem {
     this.client.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
     return connection.client;
   }
-  revoke(connection: FilesystemIdentity): void { reapFilesystem(connection); this.client.sweep(); }
+  /** Cancellation is immediate, but terminate() does not establish worker death. */
+  revoke(connection: FilesystemIdentity): void { revokeFilesystem(connection); this.client.sweep(); }
+  /** A guest exit acknowledgement or the admission fence below proves filesystem quiescence. */
+  reap(connection: FilesystemIdentity): void { reapFilesystem(connection); this.client.sweep(); }
+  /** Revoke immediately, then wait for host critical sections before physical termination. */
+  async quiesce(connection: FilesystemIdentity): Promise<void> {
+    await waitForFilesystemQuiescence(connection);
+    this.reap(connection);
+  }
   private async request(operation: string, args: unknown[] = [], bytes?: Uint8Array): Promise<any> {
     this.assertLive();
     try { return await this.client.asyncCall(operation, args, bytes); }

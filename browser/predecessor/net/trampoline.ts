@@ -27,6 +27,7 @@ export const SLOT_NAMES = [
   "child_kill",
   "shutdown",
   "local_addr",
+  "signal",
 ] as const;
 export type SlotName = (typeof SLOT_NAMES)[number];
 
@@ -50,6 +51,7 @@ const ARITY: Record<SlotName, number> = {
   child_kill: 2,
   shutdown: 1,
   local_addr: 3,
+  signal: 2,
 };
 
 export type SlotFunction = (...args: number[]) => number;

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { SharedPipe, wasiPipe } from '../src/subprocess.js';
+import { SharedPipe, wasiPipe } from '../src/subprocess.ts';
 
 test('existing shared pipe exposes empty, data, full, and hang-up readiness without consuming bytes', () => {
   const pipe = new SharedPipe();

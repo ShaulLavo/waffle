@@ -8,6 +8,7 @@ import { firstVisit } from "./first-visit.mjs";
 import { readFile } from "node:fs/promises";
 import { playwright, ready, run, session, terminalText, writeFile } from "./playground.mjs";
 import { readFileSync, readdirSync } from "node:fs";
+import { stopForeground } from "./foreground.ts";
 
 const { chromium, webkit, devices } = playwright;
 const s = session("bun-wasm-web-engine-");
@@ -173,15 +174,16 @@ afterAll(async () => {
 `);
   await expectRun(page, `${name}: test reports pending rejections on shutdown`, "bun test ./rejection.test.ts", 1, ["shutdown rejection", "Unhandled error"]);
 
-  // Ctrl-C ends a program that would run forever.
+  // The test explicitly chooses forced cleanup for a program that would run forever.
   await writeFile(page, `${HOME}/forever.ts`, `setInterval(() => {}, 1000);\nconsole.log("RUNNING");\n`);
   const pending = page.evaluate(() => globalThis.playground.shell.submit("bun run forever.ts").then(() => globalThis.playground.shell.lastExit));
   const t0 = Date.now();
   while (!/RUNNING/.test(await terminalText(page)) && Date.now() - t0 < 30000) await page.waitForTimeout(100);
-  await page.click(".xterm");
-  await page.keyboard.press("Control+C");
-  check(`${name}: Ctrl-C exits 130`, (await pending) === 130);
-  await expectRun(page, `${name}: runs again after Ctrl-C`, "bun run app.ts", 0, ["hi ts 42"]);
+  await stopForeground(page);
+  const stopped = await pending;
+  // SIGINT may finish first; an already completed exit must not be overwritten by SIGKILL.
+  check(`${name}: foreground interrupt/force-kill exits`, stopped === 130 || stopped === 137, `exit ${stopped}`);
+  await expectRun(page, `${name}: runs again after foreground teardown`, "bun run app.ts", 0, ["hi ts 42"]);
 
   await checkPhoneUI(page, "playground", name === "chromium");
   check(`${name}: phone layout and terminal copy`, true);

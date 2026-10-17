@@ -43,11 +43,12 @@ test.skipIf(!existsSync(bunWasm))("installHostSlots fills bun.wasm's slot table"
   const ptr = (instance.exports.bun_wasm_host_slots as () => number)();
   const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
   expect(view.getUint32(ptr, true)).toBe(1);
-  expect(view.getUint32(ptr + 4, true)).toBe(18);
+  expect(view.getUint32(ptr + 4, true)).toBe(19);
   const table = instance.exports.__indirect_function_table as WebAssembly.Table;
   const slot = (i: number) => view.getUint32(ptr + 8 + 4 * i, true);
   expect(slot(0)).toBeGreaterThan(0);
   expect(slot(2)).toBe(0); // fetch_head not provided
+  expect(slot(18)).toBe(0); // signal is optional and not provided
   expect((table.get(slot(1)) as Function)(0, 0, 0, 0)).toBe(-1);
 });
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection } from "../../runtime/fs";
-import { SharedPipe, SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "../src/subprocess.js";
+import { SharedPipe, SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "../src/subprocess.ts";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);

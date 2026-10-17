@@ -677,7 +677,8 @@ export class Wasi {
 
       proc_exit: (code: number) => {
         this.descriptors.dispose();
-        throw new WasiExit(code);
+        // Match native process exits; negative i32 values must not alias child-control errors.
+        throw new WasiExit(code & 0xff);
       },
       proc_raise: () => ENOSYS,
       random_get: (ptr: number, len: number) => {

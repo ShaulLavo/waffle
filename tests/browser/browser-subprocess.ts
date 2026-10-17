@@ -8,10 +8,17 @@ const closedOutput = readFileSync(new URL("../../tests/fixtures/pipe-closed-chil
 const orderedOutput = readFileSync(new URL("../../tests/fixtures/pipe-write-order/index.ts", import.meta.url), "utf8");
 const orderedChild = readFileSync(new URL("../../tests/fixtures/pipe-write-order/child.ts", import.meta.url), "utf8");
 const stdinRace = readFileSync(new URL("../../tests/fixtures/pipe-stdin-race/index.ts", import.meta.url), "utf8");
+const executableAliases = ["bun", "/bun", "/usr/local/bin/bun", "node", "/node", "/usr/local/bin/node"];
 const apiProgram = `
 import { spawnSync, execSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const cmd = code => [process.execPath, "-e", code];
+for (const alias of ${JSON.stringify(executableAliases)}) {
+  const child = Bun.spawnSync([alias, "-e", "console.log('alias-ready')"]);
+  console.log("api alias", alias, child.exitCode, JSON.stringify(child.signalCode), JSON.stringify(child.error ?? null), child.stdout.toString().trim());
+}
+const missing = Bun.spawnSync(["bun-wasm-command-does-not-exist"]);
+console.log("api unknown", missing.exitCode, JSON.stringify(missing.signalCode), JSON.stringify(missing.error ?? null), missing.success);
 const sync = Bun.spawnSync(cmd("console.log(process.env.VALUE); console.error('err')"), { env: { VALUE: "fresh" } });
 console.log("api sync", sync.exitCode, sync.stdout.toString().trim(), sync.stderr.toString().trim());
 const input = Bun.spawn(cmd("console.log((await Bun.stdin.text()).length)"), { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -35,12 +42,68 @@ const nested = Bun.spawnSync(cmd("const p=Bun.spawnSync(['bun','-e','console.log
 console.log("api nested", nested.exitCode, nested.stdout.toString().trim());
 const cycle = Bun.spawnSync([process.execPath, "run", "cycle/a.js"]);
 console.log("api cycle", cycle.exitCode, cycle.stdout.toString().trim());
+if (cycle.exitCode !== 0) console.error("api cycle error", cycle.stderr.toString().trim());
 console.log("api exec", execSync("bun -e 'console.log(42)'", { encoding: "utf8" }).trim());
-const timeout = spawnSync("bun", ["-e", "while(true){}"], { timeout: 100 });
+const timeout = spawnSync("bun", ["-e", "while(true){}"], { timeout: 100, killSignal: "SIGKILL" });
 console.log("api timeout", timeout.signal, timeout.error.code);
+for (const code of [23, 143]) {
+  // Keep the guest event loop live: a blocking stdin read cannot pump its signal handler.
+  const child = Bun.spawn(cmd('process.on("SIGTERM", () => { console.log("term-handled"); process.exit(' + code + '); }); setInterval(() => {}, 1000); console.log("term-ready");'), { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const reader = child.stdout.getReader();
+  try {
+    const first = await reader.read();
+    if (first.done || new TextDecoder().decode(first.value).trim() !== "term-ready") throw new Error("TERM child was not ready");
+    child.kill("SIGTERM");
+    // Retain stdout readiness before closing stdin, without requiring EOF to dispatch TERM.
+    child.stdin.end();
+    const handled = await reader.read();
+    if (handled.done || new TextDecoder().decode(handled.value).trim() !== "term-handled") throw new Error("TERM handler did not acknowledge delivery");
+    const exited = await child.exited;
+    // The readiness read disturbed stdout; drain its existing reader, not a new Response body.
+    while (!(await reader.read()).done) { /* Drain through EOF. */ }
+    console.log("api term", code, exited, child.exitCode, JSON.stringify(child.signalCode), child.killed);
+  } finally {
+    reader.releaseLock();
+  }
+}
+// No listener: a synchronous timeout must apply TERM's default, even before guest activation.
+// Handled timeout testing would need a readiness channel before the timeout clock starts.
+const timed = Bun.spawnSync(cmd("setInterval(() => {}, 1000)"), { timeout: 1, killSignal: "SIGTERM" });
+console.log("api term timeout default", timed.exitCode, JSON.stringify(timed.signalCode), timed.exitedDueToTimeout, timed.success, JSON.stringify(timed.error ?? null));
+for (const [signal, number] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]]) {
+  for (const mode of ["default", "handled", "removed"]) {
+    const code = 'const handler = () => process.exit(0); ' +
+      (mode === "default" ? '' : 'process.on(' + JSON.stringify(signal) + ', handler); ') +
+      (mode === "removed" ? 'process.removeListener(' + JSON.stringify(signal) + ', handler); ' : '') +
+      'console.log("signal-ready"); setInterval(() => {}, 1000);';
+    const child = Bun.spawn(cmd(code), { stdout: "pipe", stderr: "pipe" });
+    const reader = child.stdout.getReader();
+    try {
+      const first = await reader.read();
+      if (first.done || new TextDecoder().decode(first.value).trim() !== "signal-ready") throw new Error("signal child was not ready");
+      child.kill(signal);
+      const exited = await child.exited;
+      while (!(await reader.read()).done) { /* Drain the readiness reader through EOF. */ }
+      const stderr = await new Response(child.stderr).text();
+      if (stderr) throw new Error(stderr);
+      console.log("api signal", mode, signal, exited, child.exitCode, JSON.stringify(child.signalCode));
+      if (exited !== (mode === "handled" ? 0 : 128 + number)) throw new Error("incorrect signal status");
+    } finally { reader.releaseLock(); }
+  }
+}
 console.log("api cwd", Bun.spawnSync(cmd("0"), { cwd: "/missing-child-cwd" }).error.code);
 `;
-const apiExpected = ["api nodefsstdin 0 stdin", "api sync 0 fresh err", "api input 0 1200000", "api files 0 child shared", "api nested 0 0 99", "api exec 42", "api cycle 0 ab", "api timeout SIGTERM ETIMEDOUT", "api cwd ENOENT", "api live child", "api ack 0"];
+const apiExpected = [
+  "api nodefsstdin 0 stdin", "api sync 0 fresh err", "api input 0 1200000", "api files 0 child shared",
+  "api nested 0 0 99", "api exec 42", "api cycle 0 ab", "api timeout SIGKILL ETIMEDOUT", "api cwd ENOENT",
+  "api live child", "api ack 0", "api unknown 127 null null false",
+  "api term 23 23 23 null true", "api term 143 143 143 null true",
+  'api term timeout default null "SIGTERM" true false null',
+].concat(executableAliases.map(alias => `api alias ${alias} 0 null null alias-ready`), [["SIGINT", 130], ["SIGTERM", 143], ["SIGPIPE", 141]].flatMap(([signal, status]) => [
+  `api signal default ${signal} ${status} null "${signal}"`,
+  `api signal handled ${signal} 0 0 null`,
+  `api signal removed ${signal} ${status} null "${signal}"`,
+]));
 process.env.BUN_WASM_TEST_PORT ??= "4183";
 const s = session("bun-wasm-self-spawn-browser-");
 const deadline = setTimeout(() => { console.error("subprocess browser gate timed out"); void s.cleanup().finally(() => process.exit(1)); }, 900_000);

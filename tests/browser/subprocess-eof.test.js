@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { SharedPipe, createProcessBudget } from "../src/subprocess.js";
+import { SharedPipe, createProcessBudget } from "../src/subprocess.ts";
 
 test("a final write racing an empty read cannot publish EOF before its bytes", () => {
   const pipe = new SharedPipe(undefined, createProcessBudget());

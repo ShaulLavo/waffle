@@ -2,20 +2,23 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { Worker } from "node:worker_threads";
-import { SubprocessHost, MAX_CHILDREN } from "../src/subprocess.js";
+import { SubprocessHost, MAX_CHILDREN } from "../src/subprocess.ts";
+import { launchNodeExecutable } from "../scripts/node-spawn.ts";
 
-const module = await WebAssembly.compile(readFileSync(new URL("../../dist/bun-browser.wasm", import.meta.url)));
+const module = await WebAssembly.compile(readFileSync(process.env.BUN_WASM_TEST_BROWSER_WASM || new URL("../../dist/bun-browser.wasm", import.meta.url)));
 const scratch = mkdtempSync("/work/tmp/bun-wasm-self-spawn-browser-");
 const inherited = [];
 const host = new SubprocessHost({
   output: (fd, bytes) => inherited.push([fd, new TextDecoder().decode(bytes)]),
   launch(meta, transport, onError) {
-    const worker = new Worker(new URL("../scripts/node-host.mjs", import.meta.url), {
-      workerData: { bunwasmChild: true, module, preopens: { "/": scratch }, meta, transport, withNet: false },
-      resourceLimits: { maxOldGenerationSizeMb: 128 },
+    return launchNodeExecutable(meta, transport, () => {
+      const worker = new Worker(new URL("../scripts/node-host.mjs", import.meta.url), {
+        workerData: { bunwasmChild: true, module, preopens: { "/": scratch }, meta, transport, withNet: false },
+        resourceLimits: { maxOldGenerationSizeMb: 128 },
+      });
+      worker.on("error", onError);
+      return worker;
     });
-    worker.on("error", onError);
-    return worker;
   },
 });
 const encode = (text) => new TextEncoder().encode(text);
@@ -70,13 +73,15 @@ try {
   assert.equal(collect(inherit).code, 0);
   assert.deepEqual(inherited, [[1, "inherited\n"]]);
   const infinite = spawn("while(true){}");
-  assert.equal(host.kill(infinite, 15), 0);
-  assert.equal(collect(infinite).code, 143);
+  assert.equal(host.kill(infinite, 9), 0);
+  assert.equal(collect(infinite).code, 137);
   const ids = Array.from({ length: MAX_CHILDREN }, () => spawn("while(true){}"));
   assert.ok(ids.every((id) => id > 0));
   assert.equal(spawn("1"), -1);
   for (const id of ids) { host.kill(id, 9); assert.equal(collect(id).code, 137); }
-  assert.equal(host.spawn(JSON.stringify({ argv: ["/bin/sh", "-c", "true"] })), -1);
+  const missing = host.spawn(JSON.stringify({ argv: ["/bin/sh", "-c", "true"] }));
+  assert.ok(missing > 1);
+  assert.equal(collect(missing).code, 127);
   console.log("9 subprocess worker checks passed");
 } finally {
   host.dispose();
