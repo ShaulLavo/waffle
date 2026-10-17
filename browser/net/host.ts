@@ -386,7 +386,15 @@ export class NetHost {
   }
 
   private closeUnaccepted(conn: number): void {
+    const state = this.unaccepted.get(conn);
     this.unaccepted.delete(conn);
+    if (!state) return;
+    if (state.pipe !== null) {
+      const peer = this.connection(state.pipe);
+      if (peer) peer.ended = true;
+      this.news();
+      return;
+    }
     this.send({ type: "close", id: conn });
   }
 

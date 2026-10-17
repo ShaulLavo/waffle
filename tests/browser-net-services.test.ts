@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { NetHelper, type NetFetch } from "../browser/net/helper";
 import { NetHost } from "../browser/net/host";
 import { AGAIN, BADF, ERROR, Kind, type NetRequest, OK, UNSUPPORTED } from "../browser/net/protocol";
-import { createRing, RingWriter } from "../browser/net/ring";
+import { createRing, type RingRecord, RingReader, RingWriter } from "../browser/net/ring";
 
 const encode = (value: string) => new TextEncoder().encode(value);
 const decode = (value: Uint8Array | number) => {
@@ -196,6 +196,108 @@ test("generic filesystem notices wake the host without replaying contents", asyn
     helper.dispose();
   }
 });
+
+for (const ending of ["end", "error"] as const) {
+  test(`loopback response writes keep every chunk in FIFO order with ${ending} last`, async () => {
+    const sab = createRing();
+    const reader = new RingReader(sab);
+    const helper = new NetHelper(sab, async () => { throw new Error("Unexpected external fetch"); });
+    let records: RingRecord[] = [];
+    try {
+      helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
+      helper.handle({ type: "fetch", id: 2, method: "GET", url: "http://localhost:3000/", headers: [], body: null, redirect: "follow" });
+      await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.Conn); });
+      const connection = JSON.parse(decode(records.find(record => record.kind === Kind.Conn)!.payload)).conn;
+      const body = "A".repeat(130000).concat("BBB");
+      const length = ending === "end" ? body.length : body.length + 1;
+      const first = encode(`HTTP/1.1 200 OK\r\nContent-Length: ${length}\r\n\r\n${"A".repeat(130000)}`);
+      const second = encode("BBB");
+      helper.handle({ type: "write", id: connection, data: first });
+      helper.handle({ type: "write", id: connection, data: second });
+      first.fill(0);
+      second.fill(0);
+      if (ending === "error") helper.handle({ type: "close", id: connection });
+      const terminal = ending === "end" ? Kind.End : Kind.Error;
+      await until(() => {
+        records = records.concat(reader.drain());
+        const response = records.filter(record => record.handle === 2);
+        return response.some(record => record.kind === terminal) && response.reduce((size, record) => size + (record.kind === Kind.Data ? record.payload.length : 0), 0) === body.length;
+      });
+      const response = records.filter(record => record.handle === 2);
+      expect(response.map(record => record.kind)).toEqual([Kind.Head, Kind.Data, Kind.Data, Kind.Data, terminal]);
+      expect(response.filter(record => record.kind === Kind.Data).map(record => decode(record.payload)).join("")).toBe(body);
+      expect(response.at(-1)!.kind).toBe(terminal);
+    } finally {
+      helper.dispose();
+      reader.drain();
+    }
+  });
+}
+
+test("closing a listener terminalizes pending local peers without helper close requests", () => {
+  const requests: NetRequest[] = [];
+  const host = new NetHost(createRing(), request => requests.push(request));
+  const listener = host.listen("localhost", 3000);
+  const client = host.connect("localhost", 3000);
+  expect(client).toBeGreaterThan(0);
+  expect(host.poll(0)).toBe(1);
+  expect(host.poll(0)).toBe(0);
+  try {
+    expect(host.close(listener)).toBe(OK);
+    expect(host.read(client, 1)).toBe(0);
+    expect(host.poll(0)).toBe(1);
+    expect(host.write(client, encode("too late"))).toBe(ERROR);
+    expect(JSON.parse(String(host.error(client))).code).toBe("EPIPE");
+    expect(requests.filter(request => request.type === "close")).toEqual([{ type: "close", id: listener }]);
+  } finally {
+    host.close(client);
+    host.close(listener);
+  }
+});
+
+test("closing a listener still refuses unaccepted helper-owned connections", async () => {
+  const sab = createRing();
+  const requests: NetRequest[] = [];
+  const host = new NetHost(sab, request => requests.push(request));
+  const writer = new RingWriter(sab);
+  const listener = host.listen("localhost", 3000);
+  const remote = 0x40000001;
+  try {
+    await writer.write(listener, Kind.Conn, encode(JSON.stringify({ conn: remote, peer: { address: "127.0.0.1", family: "IPv4", port: 40000 } })));
+    host.poll(0);
+    expect(host.close(listener)).toBe(OK);
+    expect(requests.filter(request => request.type === "close")).toEqual([{ type: "close", id: remote }, { type: "close", id: listener }]);
+  } finally {
+    host.close(listener);
+    writer.dispose();
+  }
+});
+
+for (const delivered of [false, true]) {
+  test(`closing a loopback fetch releases its preview connection ${delivered ? "after" : "before"} request delivery`, async () => {
+    const sab = createRing();
+    const reader = new RingReader(sab);
+    const helper = new NetHelper(sab, async () => { throw new Error("Unexpected external fetch"); });
+    let records: RingRecord[] = [];
+    try {
+      helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
+      helper.handle({ type: "fetch", id: 2, method: "GET", url: "http://localhost:3000/stream", headers: [], body: null, redirect: "follow" });
+      if (delivered) await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.Data); });
+      expect(Reflect.get(helper, "connections").size).toBe(1);
+      helper.handle({ type: "close", id: 2 });
+      expect(Reflect.get(helper, "connections").size).toBe(0);
+      await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.End); });
+      const announcement = records.find(record => record.kind === Kind.Conn)!;
+      const connection = JSON.parse(decode(announcement.payload)).conn;
+      expect(records.filter(record => record.handle === connection).map(record => record.kind)).toEqual([Kind.Data, Kind.End]);
+      expect(records.filter(record => record.handle === 2)).toEqual([]);
+      expect(Reflect.get(helper, "fetches").size).toBe(0);
+    } finally {
+      helper.dispose();
+      reader.drain();
+    }
+  });
+}
 
 test("generic network services contain no Bun engine, cache or guest-memory bindings", async () => {
   for (const name of ["helper", "host"]) {

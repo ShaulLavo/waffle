@@ -108,6 +108,10 @@ export class NetHelper {
    * into `sink`. Returns false when nothing listens there.
    */
   request(port: number, req: PreviewRequest, sink: PreviewSink): boolean {
+    return this.requestConnection(port, req, sink) !== null;
+  }
+
+  private requestConnection(port: number, req: PreviewRequest, sink: PreviewSink): PreviewConnection | null {
     let connection: PreviewConnection | null = null;
     const finish: PreviewSink = {
       head: (head: ResponseHead) => sink.head(head),
@@ -121,9 +125,9 @@ export class NetHelper {
       end: () => parser.end(),
       error: (message) => finish.error(message),
     });
-    if (!connection) return false;
+    if (!connection) return null;
     connection.write(serializeRequest(req, `localhost:${port}`));
-    return true;
+    return connection;
   }
 
   /** Wake a running guest after a shared-filesystem write has completed. No bytes are reapplied:
@@ -257,23 +261,33 @@ export class NetHelper {
    */
   private loopback(req: NetRequest & { type: "fetch" }, port: number): void {
     const id = req.id;
-    const live = () => this.fetches.has(id);
-    const finish = (kind: number, payload?: Uint8Array) => {
-      if (!live()) return;
-      this.fetches.delete(id);
-      void this.ring.write(id, kind, payload);
+    const job = this.fetches.get(id)!;
+    const live = () => this.fetches.get(id) === job;
+    // Queue whole response operations, not individual ring records: splitting a large data
+    // chunk must finish before the next chunk or terminal record can overtake it.
+    let sending: Promise<void> = Promise.resolve();
+    const enqueue = (operation: () => Promise<void>) => {
+      sending = sending.then(() => live() ? operation() : undefined);
     };
+    const finish = (kind: number, payload?: Uint8Array) => enqueue(async () => {
+      await this.ring.write(id, kind, payload);
+      if (live()) this.fetches.delete(id);
+    });
     const url = new URL(req.url);
-    this.request(port, { method: req.method, target: url.pathname + url.search, headers: req.headers, body: req.body }, {
+    const connection = this.requestConnection(port, { method: req.method, target: url.pathname + url.search, headers: req.headers, body: req.body }, {
       head: (head) => {
-        if (live()) void this.ring.write(id, Kind.Head, json({ ...head, url: req.url, redirected: false } satisfies FetchHead));
+        const payload = json({ ...head, url: req.url, redirected: false } satisfies FetchHead);
+        enqueue(() => this.ring.write(id, Kind.Head, payload));
       },
       data: (chunk) => {
-        if (live()) void this.writeChunks(id, chunk);
+        const owned = chunk.slice();
+        enqueue(() => this.writeChunks(id, owned, live));
       },
       end: () => finish(Kind.End),
       error: (message) => finish(Kind.Error, json({ name: "TypeError", message } satisfies NetError)),
     });
+    // A cancelled fetch owns the other end of this virtual connection, not just its job entry.
+    job.controller.signal.addEventListener("abort", () => connection?.close(), { once: true });
   }
 
   /** Backpressure: don't send more than FETCH_WINDOW bytes ahead of what the guest has read. */
@@ -325,8 +339,9 @@ export class NetHelper {
   }
 
   /** Data records for `bytes`, split to fit the ring's record size. */
-  private async writeChunks(handle: number, bytes: Uint8Array): Promise<void> {
+  private async writeChunks(handle: number, bytes: Uint8Array, live?: () => boolean): Promise<void> {
     for (let at = 0; at < bytes.length; at += MAX_RECORD) {
+      if (live && !live()) return;
       await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD));
     }
   }
