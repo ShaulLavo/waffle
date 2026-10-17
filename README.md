@@ -67,12 +67,14 @@ does not load the generic ownership adapters. Startup failure releases the trans
 Each process has per-signal default, ignored or handled dispositions. `kill` immediately selects
 SIGINT/SIGTERM/SIGPIPE's default signaled outcome (`128 + signal`) and revokes descriptors when
 no handler is registered. Ignored signals do nothing; handled signals set their own pending bit
-without revoking the guest, whose ordinary `exit` retains its code. Registration and removal are
-synchronous, including restoring the default when the last listener is removed. Distinct pending
-signals cannot overwrite one another; repeated instances of one signal may coalesce. Removing a
-pending handler to default applies that default immediately; ignoring it clears the pending bit.
-The shared interrupt word is a wake hint, not the authoritative queue. `observeSignal` adopts a
-request already published by a guest without publishing it again.
+without revoking the guest, whose ordinary `exit` retains its code. The preview1 adapter starts
+all signals at default; the Node/Bun JS runtime starts SIGPIPE ignored to match Node and Bun,
+changes it to handled while a JS listener exists, and restores default on final listener removal.
+Registration and removal are synchronous. Distinct pending signals cannot overwrite one another;
+repeated instances of one signal may coalesce. Removing a pending handler to default applies that
+default immediately; ignoring it clears the pending bit. The shared interrupt word is a wake hint,
+not the authoritative queue. `observeSignal` adopts a request already published by a guest without
+publishing it again.
 
 The preview1 adapter exposes `runtime_proc.signal(sig, mode)` for registration and self-signals,
 `runtime_proc.interrupted()` for dequeue, and `runtime_proc.default_signal(sig)` for an explicit
@@ -225,9 +227,10 @@ reserved Mac, `safari` uses the real Safari WebDriver, not Playwright WebKit. Se
 ## Shared filesystem service
 
 One filesystem worker runs `installFilesystemWorker(self, backendFactory)` and owns the tree.
-The browser entrypoint selects `PersistentBackend` with `IndexedDBStorage` by default; standalone
-workers may still use the default `MemoryBackend`. The page, editor and every guest share that
-tree; completed writes are visible before exit.
+The browser entrypoint selects `PersistentBackend` with `IndexedDBStorage` by default; pass
+`storage: "opfs"` to `SharedFilesystem` (or `?storage=opfs` in the demo) to select the OPFS
+backend. Standalone workers may still use the default `MemoryBackend`. The page, editor and every
+guest share that tree; completed writes are visible before exit.
 
 ### Persistence and durability
 
@@ -244,10 +247,11 @@ background. While a checkpoint is pending, timer-driven checkpoints coalesce lat
 of queuing more payload copies. Namespace link counts track renames and removals incrementally;
 only deleting a subtree visits that subtree. A cold read leaves the service queue while waiting
 for storage, then revalidates its capability and current path before execution, so it cannot hold
-up unrelated memory reads or writes. `fd_sync`,
-`fd_datasync`, `client.asyncCall("flush")` and the page's `fs.flush()` explicitly wait for storage.
+up unrelated memory reads or writes. `fd_sync` and `fd_datasync` explicitly make their file durable; `client.asyncCall("flush")` and
+the page's `fs.flush()` make all outstanding payloads durable. `fs.flush(path)` limits payload
+sync to an editor's saved file. Each also waits for the metadata snapshot naming that file.
 `fs.drain()` is only a page-side ordering barrier. Editors mark a save successful and notify HMR
-only after the durable flush resolves; errors leave the edit unsaved. Startup publishes a hidden
+only after their file's durable flush resolves; errors leave the edit unsaved. Startup publishes a hidden
 completion directory only after all examples or template files are written. An interrupted seed
 is retried as a clean initialization; completed workspaces preserve edits and intentional deletions.
 The sandbox's explicit reset restores its template and retries an interrupted reset on next startup.
@@ -261,12 +265,93 @@ abandoned journal successors before committing again, preventing an old broken b
 reconnecting to a new save. It validates checksums and the inode graph; existing
 but unrecoverable storage raises an error rather than silently creating an empty filesystem.
 
-One Web Lock is held for the database connection's lifetime. A second tab using the same database
-is refused with a filesystem-worker error, not made a competing writer or a stale read-only
-copy. Closing the first tab releases its lock. `SharedFilesystem({ persistence: false })` selects
-a disposable memory-only filesystem; `name` selects an isolated database for tests/workspaces.
-The worker is not a power-loss-safe host filesystem beyond the browser's strict IndexedDB
-transaction guarantee; closing a page without a completed flush may lose its uncommitted edits.
+OPFS stores one immutable payload file per file revision and two full, checksummed metadata
+snapshots. A new snapshot is flushed at a new filename; an interrupted write cannot truncate its
+predecessor. Before the first checkpoint, a flushed empty-root baseline provides the old state.
+Recovery validates metadata checksums and the inode graph and selects the newest valid snapshot;
+unrecoverable established metadata raises an error rather than silently opening an empty tree.
+Loading and listing the index never enumerate, open or read payload files. Unknown files left by
+an interrupted checkpoint are collected after the next successful checkpoint, not during startup.
+Payload collection retains both recoverable snapshots and runtime pins for still-open detached files.
+Unlike IndexedDB's journal, OPFS serializes and checksums the full index for each checkpoint, so
+metadata work is proportional to workspace size even when only one file changed.
+
+| Operation | IndexedDB | OPFS |
+| --- | --- | --- |
+| Shared-memory write completion | Visible to this workspace; not yet persisted | Same |
+| Background checkpoint | Payloads and metadata in one atomic transaction requesting `durability: "strict"` | Payload writes close without per-file `flush()`; the new naming snapshot is flushed |
+| File `fsync` / editor `fs.flush(path)` | Waits for the strict transaction; it may also persist other dirty files | Flushes that file's immutable payload, then the snapshot naming it; unrelated payloads are not promised durable |
+| Workspace `fs.flush()` | Waits for strict transactions | Flushes all current outstanding payloads, then the naming snapshot |
+
+These are the requested browser durability boundaries: IndexedDB transactions with
+`durability: "strict"` and explicit OPFS `SyncAccessHandle.flush()` calls. They are not an independent
+promise about hardware, browser eviction, private-browsing retention, or quota. OPFS close-only checkpoints survive normal document reloads,
+but are not a power-loss guarantee for payloads. After a device/browser crash, a flushed file must
+remain named even if an unrelated unsynced payload is absent or short. Recovery therefore does not
+reject an otherwise valid naming snapshot because of unrelated payload damage; accessing that
+unsynced file reports an I/O error. It never substitutes empty bytes. A failed save remains an error
+and can be retried. OPFS requires sync access handles in its dedicated filesystem worker; there is
+no silent fallback to a weaker writable-stream implementation.
+
+The OPFS read-handle LRU defaults to 64 entries, with at most 32 concurrent creates (1 on Firefox)
+and one metadata handle: a 97-handle total budget, below Safari's observed 253 limit. Eviction happens
+before opening a replacement. Custom cache/create limits must fit a conservative 192-handle ceiling.
+Transient exclusive-handle failures get bounded retries; quota errors report ENOSPC.
+
+One Web Lock is held for the storage connection's lifetime. Both backends use the same workspace
+lock name, so a second tab is refused even if it selects the other backend. It is not made a competing
+writer or stale read-only copy. Closing the first tab releases its lock. `name` selects a workspace;
+IndexedDB and OPFS have separate stored contents, so choosing OPFS does not migrate existing data.
+The explicit runtime option keeps IndexedDB the default and permits host policy without adding a
+second filesystem implementation. The demo query parameter is a reproducible, bookmarkable opt-in
+without a browser-wide setting or automatic migration. `SharedFilesystem({ persistence: false })`
+selects disposable memory-only storage. Closing a page without a completed flush may lose edits.
+
+### OPFS corpus measurements
+
+The [2026-10-17 evidence](../docs/benchmarks/filesystem-persistence-opfs-2026-10-17.json)
+records the spike's exact geometry: 10,003 files and 92,687,646 bytes, with deterministic synthetic
+contents and full byte validation. These are single-sample diagnostics on one M1 MacBook Air,
+on AC power but with owner activity and nonzero background load; they are not performance gates.
+The artifact records exact source commits and hashes for each run.
+
+| Browser | Background persist | One-file fsync | Index reload | First payload | Full read | Raw OPFS persist |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Chromium 156.0.8078.4 | 7,510.6 ms | 0.8 ms | 47.5 ms | 1.9 ms | 7,431.3 ms | 3,837.2 ms |
+| Firefox 157.0 | 36,008.1 ms | 4.1 ms | 66.0 ms | 2.8 ms | 22,248.9 ms | 37,359.7 ms |
+| Real Safari 26.4 | 3,930.5 ms | 1.6 ms | 55.0 ms | 1.9 ms | 3,427.1 ms | 2,700.2 ms |
+
+Background persist includes forty 256-file-or-smaller checkpoints and the initial empty baseline,
+with zero payload flushes. The separately measured file fsync flushes exactly one payload and one
+snapshot. A workspace-wide flush happens outside persist timing, before reload. Index reload opens
+no payload handles; cache churn revisits files after 1,200 distinct reads, and the observed read
+handle peak stays at 64. Reload, writer exclusion and interruption after half an actual native payload
+or snapshot write pass in Chromium, Firefox and real Safari. These interruption tests terminate the
+page; they do not simulate power loss.
+
+The earlier IndexedDB ledger reports 1.1–1.8 s persist and 45–72 ms index reload. OPFS index reload
+is in that range, but writes are slower, so IndexedDB remains the default. Those ledger timings are
+historical rather than a paired same-load rerun. The same-host raw comparator uses identical paths,
+sizes and bytes, 32 create/write/close workers, and one final minimal naming snapshot; it omits the
+runtime, checksums, rollback snapshots and garbage collection. Against it, the adapter is about
+1.96x slower on Chromium and 1.46x on Safari, with no measured regression on Firefox. Firefox's
+native file operations serialize even for the raw parallel writer.
+
+The standalone storage runner uses a new temporary persistent profile for each WebKit OPFS case.
+On the tested Mac Playwright WebKit 27.2 build, an ephemeral context throws a native OPFS
+`UnknownError`, with or without cross-origin isolation; the same empty/atomic-save case passes
+with a fresh persistent profile. IndexedDB controls still use fresh ephemeral contexts. These are
+task-owned profiles, never the owner's Safari data. Real Safari 26.4 supplies the Safari corpus and
+crash-recovery evidence above; the artifact preserves the failed ephemeral trials and successful
+persistent-profile probe separately.
+
+The adapter serializes, validates and checksums a growing full index forty times, rather than one
+minimal manifest. Timed storage batches account for about 5.79 s of Chromium's 7.51 s, with about
+1.72 s outside storage (including 0.063 s generating contents). Native metadata calls alone account
+for only about 0.06 s there, so they do not explain the whole gap. Cloning, validation, checksumming
+and truncation are not individually timed. Native asynchronous duration sums overlap and must not
+be added as critical-path time. The artifact retains the per-batch and native measurements rather
+than claiming an unmeasured cause.
 
 Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
 JSON operation/arguments and optional binary input. Results overwrite the data region. Large

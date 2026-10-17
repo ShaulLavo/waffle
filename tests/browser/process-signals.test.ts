@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
+import { createNodeSignalController } from "../scripts/node-signals.ts";
 
 const eventsSource = readFileSync(new URL("../../crates/bunwasm-runtime/src/js/events.js", import.meta.url), "utf8");
 const processSource = readFileSync(new URL("../../crates/bunwasm-runtime/src/js/process.js", import.meta.url), "utf8");
@@ -31,7 +32,9 @@ function fixture() {
           pending.delete(next.value);
           return next.value;
         }
-        changes.push([signal, mode]);
+        // The JS runtime publishes Node's SIGPIPE=IGNORE default during construction;
+        // keep the mutation log focused on test actions below.
+        if (!(signal === 13 && mode === 1 && !dispositions.has(signal))) changes.push([signal, mode]);
         if (mode === 3) {
           const disposition = signal === 9 ? 0 : dispositions.get(signal) ?? 0;
           if (disposition === 2) pending.add(signal);
@@ -72,6 +75,27 @@ function fixture() {
   };
 }
 
+test("JS guests start with SIGPIPE ignored like Node and Bun", () => {
+  const f = fixture();
+  expect(f.dispositions.get(13)).toBe(1);
+  expect(f.process.kill(f.process.pid, "SIGPIPE")).toBe(true);
+  expect(f.selected()).toBeUndefined();
+});
+
+test("unrelated removeAllListeners preserves the initial SIGPIPE ignore", () => {
+  const f = fixture();
+  f.process.on("SIGINT", () => {});
+  f.process.removeAllListeners();
+  expect(f.dispositions.get(13)).toBe(1);
+  f.send(13);
+  expect(f.selected()).toBeUndefined();
+});
+
+test("generic Node controllers retain preview1 SIGPIPE default", () => {
+  const controller = createNodeSignalController();
+  expect(Atomics.load(new Int32Array(controller.buffers.signalState), 13)).toBe(0);
+});
+
 for (const [name, signal] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]] as const) {
   for (const method of ["on", "addListener", "prependListener", "once", "prependOnceListener"] as const) {
     test(`process.${method} publishes ${name} before returning and delivers its name`, () => {
@@ -90,7 +114,7 @@ for (const [name, signal] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]] a
     });
   }
 
-  test(`last ${name} removal restores default synchronously`, () => {
+  test(`last ${name} removal restores its runtime default synchronously`, () => {
     const f = fixture();
     const handler = () => {};
     f.process.on(name, handler);
@@ -100,7 +124,7 @@ for (const [name, signal] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]] a
     expect(f.selected()).toEqual({ status: 128 + signal, signal });
   });
 
-  test(`pending ${name} removal defaults rather than losing the queued signal`, () => {
+  test(`pending ${name} removal applies its runtime default without losing unrelated state`, () => {
     const f = fixture();
     const handler = () => {};
     f.process.on(name, handler);
@@ -184,10 +208,15 @@ test("a signal handler is not itself an event-loop keepalive", () => {
 });
 
 for (const [name, signal] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]] as const) {
-  test(`self ${name} defaults immediately and a real handler keeps its own exit`, () => {
+  test(`self ${name} respects the runtime default and a real handler keeps its own exit`, () => {
     const plain = fixture();
-    expect(() => plain.process.kill(plain.process.pid, name)).toThrow(GuestExit);
-    expect(plain.selected()).toEqual({ status: 128 + signal, signal });
+    if (signal === 13) {
+      expect(plain.process.kill(plain.process.pid, name)).toBe(true);
+      expect(plain.selected()).toBeUndefined();
+    } else {
+      expect(() => plain.process.kill(plain.process.pid, name)).toThrow(GuestExit);
+      expect(plain.selected()).toEqual({ status: 128 + signal, signal });
+    }
     const handled = fixture();
     handled.process.on(name, () => handled.process.exit(0));
     expect(handled.process.kill(handled.process.pid, name)).toBe(true);
@@ -219,7 +248,7 @@ const bootstrapSource = readFileSync(new URL("../../crates/bunwasm-runtime/src/j
 function errorFixture() {
   const f = fixture();
   // Execute the actual bootstrap error-policy section against the actual process/EventEmitter.
-  const start = bootstrapSource.indexOf("  function handleBrokenPipe(err)");
+  const start = bootstrapSource.indexOf("  internal.handleUncaught =");
   const end = bootstrapSource.indexOf("  internal.emitBeforeExit", start);
   if (start < 0 || end < 0) throw new Error("bootstrap error section missing");
   f.context.internal = f.internal;
@@ -238,24 +267,27 @@ function errorFixture() {
 const epipe = () => Object.assign(new Error("broken pipe"), { code: "EPIPE", errno: -32, syscall: "write" });
 
 for (const method of ["handleUncaught", "handleRejection"] as const) {
-  test(`${method} escaping EPIPE takes default SIGPIPE`, () => {
+  test(`${method} escaping EPIPE reports the error under SIGPIPE's ignored Node default`, () => {
     const f = errorFixture();
-    expect(() => f.internal[method](epipe())).toThrow("guest exit 141");
-    expect(f.selected()).toEqual({ status: 141, signal: 13 });
-    expect(f.changes).toEqual([[13, 3]]);
+    expect(f.internal[method](epipe())).toBe(false);
+    expect(f.selected()).toBeUndefined();
+    expect(f.changes).toEqual([]);
+    expect(f.process.exitCode).toBe(method === "handleUncaught" ? 1 : undefined);
   });
-  test(`${method} respects handled and ignored SIGPIPE`, () => {
-    const handled = errorFixture();
-    handled.process.once("SIGPIPE", () => handled.process.exit(23));
-    expect(() => handled.internal[method](epipe())).toThrow("guest exit 23");
-    expect(handled.selected()).toBeUndefined();
-    expect(handled.dispositions.get(13)).toBe(0);
-    const ignored = errorFixture();
-    ignored.internal.native.hostSignal(13, 1);
-    expect(ignored.internal[method](epipe())).toBe(true);
-    expect(ignored.selected()).toBeUndefined();
+  test(`${method} does not synthesize SIGPIPE or consume unrelated pending signals`, () => {
+    const f = errorFixture();
+    const seen: string[] = [];
+    f.process.on("SIGPIPE", () => seen.push("SIGPIPE"));
+    f.process.on("SIGINT", () => seen.push("SIGINT"));
+    f.send(2);
+    expect(f.internal[method](epipe())).toBe(false);
+    expect(seen).toEqual([]);
+    expect(f.pending.has(2)).toBe(true);
+    expect(f.pending.has(13)).toBe(false);
+    expect(f.selected()).toBeUndefined();
+    expect(f.process.exitCode).toBe(method === "handleUncaught" ? 1 : undefined);
   });
-  test(`${method} user error handlers get first opportunity before SIGPIPE`, () => {
+  test(`${method} user error handlers can consume EPIPE`, () => {
     const f = errorFixture();
     const event = method === "handleUncaught" ? "uncaughtException" : "unhandledRejection";
     const errors: unknown[] = [];
@@ -297,7 +329,7 @@ test("stdio callback, callback tick, and error listener retain their order and o
   expect(f.selected()).toBeUndefined();
 });
 
-test("unhandled stdio EPIPE reaches the bootstrap signal policy only after error delivery", () => {
+test("unhandled stdio EPIPE reaches the ordinary uncaught-error policy after error delivery", () => {
   const f = errorFixture();
   f.writeFails(epipe());
   f.process.stdout.write("output");
@@ -305,15 +337,17 @@ test("unhandled stdio EPIPE reaches the bootstrap signal policy only after error
   let error: unknown;
   try { f.ticks(); } catch (err) { error = err; }
   expect((error as Error & { code: string }).code).toBe("EPIPE");
-  expect(() => f.internal.handleUncaught(error)).toThrow("guest exit 141");
+  expect(f.internal.handleUncaught(error)).toBe(false);
+  expect(f.process.exitCode).toBe(1);
 });
 
-test("stdio error listeners do not ignore an explicitly delivered SIGPIPE", () => {
+test("stdio error listeners do not turn Node's ignored SIGPIPE into a fatal signal", () => {
   const f = fixture();
   f.process.stdout.on("error", () => {});
   f.process.stderr.on("error", () => {});
   expect(f.changes).toEqual([]);
   f.send(13);
-  expect(f.selected()).toEqual({ status: 141, signal: 13 });
-  expect(() => f.process.kill(f.process.pid, "SIGPIPE")).toThrow("guest exit 141");
+  expect(f.selected()).toBeUndefined();
+  expect(f.process.kill(f.process.pid, "SIGPIPE")).toBe(true);
+  expect(f.selected()).toBeUndefined();
 });

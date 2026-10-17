@@ -10,7 +10,7 @@ export class SharedFilesystem {
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
   private fatal: Error | undefined;
-  constructor(options: { persistence?: boolean; name?: string } = {}) {
+  constructor(options: { persistence?: boolean; name?: string; storage?: "indexeddb" | "opfs" } = {}) {
     this.worker = new Worker(new URL("./fs-worker.js", location.href), { type: "module" });
     const connection = createFilesystemConnection();
     this.client = new FilesystemClient(connection.client);
@@ -19,7 +19,7 @@ export class SharedFilesystem {
       this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
     });
     this.worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
-    try { this.worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name }, [connection.server.port]); }
+    try { this.worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb" }, [connection.server.port]); }
     catch (error) {
       connection.server.port.close();
       this.fail(error instanceof Error ? error : new Error(String(error)));
@@ -70,7 +70,7 @@ export class SharedFilesystem {
   /** Wait for this page's queued mutations, without waiting for background persistence. */
   async drain(): Promise<void> { await this.writes; this.assertLive(); if (this.failure !== undefined) { const error = this.failure; this.failure = undefined; throw error; } }
   /** A save is durable only once both data and metadata have reached storage. */
-  async flush(): Promise<void> { await this.drain(); await this.request("flush"); }
+  async flush(path?: string): Promise<void> { await this.drain(); await this.request("flush", path === undefined ? [] : [path]); }
   async lookup(path: string): Promise<Entry | undefined> { await this.drain(); return this.request("lookup", [path]); }
   async readFile(path: string): Promise<Uint8Array | undefined> { await this.drain(); return this.request("readFile", [path]); }
   async listFiles(path = "/"): Promise<string[]> { await this.drain(); return this.request("listFiles", [path]); }
