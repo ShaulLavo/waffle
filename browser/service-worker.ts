@@ -31,6 +31,7 @@ export function createPreviewServiceWorker(options: PreviewServiceWorkerOptions)
   const scope = new URL(options.scope);
   const prefix = scope.pathname;
   const portPath = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\d{1,5})(/.*)?$`);
+  const fetchRequest = options.fetch;
   const createChannel = options.createChannel ?? (() => new MessageChannel());
   const claimTimeout = options.claimTimeoutMs ?? 3000;
   const isPreview = (client: PreviewClient) => {
@@ -106,7 +107,7 @@ export function createPreviewServiceWorker(options: PreviewServiceWorkerOptions)
   async function fromClient(request: Request, clientId: string, target: string): Promise<Response> {
     const client = await options.clients.get(clientId);
     const match = client && isPreview(client) ? portPath.exec(new URL(client.url).pathname) : null;
-    return match ? forward(request, Number(match[1]), target) : options.fetch(request);
+    return match ? forward(request, Number(match[1]), target) : fetchRequest(request);
   }
 
   function claimsSocket(client: PreviewClient, port: number): Promise<boolean> {

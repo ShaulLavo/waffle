@@ -60,6 +60,26 @@ test("root-relative requests use their preview client's port, not application po
   expect(f.worker.fetch(new Request("https://example.test/nested/customXpreview/8123/"), "")).toBeUndefined();
 });
 
+test("non-preview fallback calls an injected fetch without an options receiver", async () => {
+  let received: Request | undefined;
+  const worker = createPreviewServiceWorker({
+    scope,
+    clients: {
+      async get() { return { url: "https://example.test/app", postMessage() {} }; },
+      async matchAll() { return []; },
+    },
+    fetch: async function (this: undefined, request: Request) {
+      if (this !== undefined) throw new TypeError("Illegal invocation: fetch received an options receiver");
+      received = request;
+      return new Response("native-style fetch");
+    },
+  });
+  const request = new Request("https://example.test/app.css");
+  const response = await worker.fetch(request, "application");
+  expect(await response?.text()).toBe("native-style fetch");
+  expect(received).toBe(request);
+});
+
 test("replacing a registered server preserves it when an older owner unregisters", () => {
   const f = fixture();
   const replacement = { ...f.server };
