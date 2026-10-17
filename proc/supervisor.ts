@@ -8,6 +8,8 @@ import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent,
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  /** Emit a startup diagnostic while this process still owns its inherited output descriptors. */
+  startFailed?(pid: number, error: unknown): void;
   table?: ProcessTable;
   /** Message-bearing hosts defer ordinary completion until ordered output/exit messages drain.
    * Fatal outcomes and explicit disposal never wait for this acknowledgement.
@@ -53,6 +55,7 @@ export class ProcessSupervisor {
   private disposed = false;
   /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
   private readonly finishing = new Map<number, ProcessRecord>();
+  private readonly startFailures = new WeakSet<ProcessRecord>();
   constructor(options: SupervisorOptions) { this.options = options; this.table = options.table ?? new ProcessTable(); }
   get(pid: number): ProcessRecord | undefined { return this.table.get(pid); }
   job(id: number) { return this.table.job(id); }
@@ -267,7 +270,14 @@ export class ProcessSupervisor {
     } catch (error) { this.failStart(record.pid, error); }
   }
   failStart(pid: number, error: unknown): void {
-    this.finish(pid, { kind: "exited", code: error instanceof ExecutableNotFound ? 127 : 126 });
+    const code = error instanceof ExecutableNotFound ? 127 : 126;
+    const record = this.table.get(pid);
+    if (record && !record.result && !record.revoked && !readOutcome(record.outcome) && !this.startFailures.has(record)) {
+      // Mark before notification: a diagnostic sink may reenter failure handling.
+      this.startFailures.add(record);
+      this.safely(() => this.options.startFailed?.(pid, error));
+    }
+    this.finish(pid, { kind: "exited", code });
   }
   exit(pid: number, code: number): void {
     if (!Number.isInteger(code)) throw new ProcessError(ProcessErrno.INVAL, "exit code must be an integer");
