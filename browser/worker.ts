@@ -21,8 +21,10 @@ export type SleepMode = "atomics" | "busy-wait";
 export type RuntimeWorkerMessage = WorkerProcessMessage
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
-  | { type: "exit"; code: number; signal?: number; sleep?: SleepMode }
-  | { type: "error"; code: number; message: string; sleep?: SleepMode }
+  | { type: "exit"; code: number; signal?: number; sleep?: SleepMode; cleanupErrors?: string[] }
+  | { type: "error"; code: number; message: string; sleep?: SleepMode; cleanupErrors?: string[] }
+  /** Owned-resource release failed: diagnostic only, never a quiescence acknowledgement. */
+  | { type: "cleanup-error"; code: number; signal?: number; message: string; cleanupErrors: string[]; sleep?: SleepMode }
   | { type: "default-signal"; signal: number };
 
 export interface RuntimeWorkerHost {
@@ -134,26 +136,44 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const settled = outcome ? readOutcome(outcome) : localOutcome;
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
-    executor.beforeFinish?.();
+    const ownResult = ownSignal === undefined ? { kind: "exited" as const, code: ownCode } : { kind: "signaled" as const, code: ownSignal };
+    // Generic commands select their winner before any reentrant cleanup callback. Legacy
+    // transports still publish completion only after their buffered diagnostics and release.
+    let winner = executor.complete ? settled : claim(ownResult);
+    const cleanupErrors: string[] = [];
+    const collect = (error: unknown): void => {
+      if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
+      else cleanupErrors.push(describeWorkerError(error));
+    };
+    const attempt = (cleanup: () => void): boolean => {
+      try { cleanup(); return true; } catch (error) { collect(error); return false; }
+    };
+    attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
-    if (executor.complete) {
-      if ("error" in result && !settled) executor.diagnostic?.(`${describeWorkerError(result.error)}\n`);
-      wasi?.descriptors.dispose();
-      fs.dispose();
-      const winner = executor.complete(ownCode, ownSignal);
-      host.postMessage({ type: "exit", code: winner.status, signal: winner.kind === "signaled" ? winner.code : undefined, sleep: sleepMode });
+    if (executor.complete && "error" in result && !settled) {
+      attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
+    }
+    const descriptorsReleased = attempt(() => wasi?.descriptors.dispose());
+    const filesystemReleased = attempt(() => fs.dispose());
+    if (!descriptorsReleased || !filesystemReleased) {
+      // A failed local release cannot certify quiescence. Leave completion unpublished so
+      // the page must fence this process before termination or releasing inherited refs.
+      winner ??= claim(ownResult);
+      host.postMessage({ type: "cleanup-error", code: winner.status,
+        signal: winner.kind === "signaled" ? winner.code : undefined,
+        message: cleanupErrors.join("\n"), cleanupErrors, sleep: sleepMode });
       return;
     }
-    const winner = claim(ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal });
+    if (executor.complete) attempt(() => { winner = executor.complete!(ownCode, ownSignal); });
+    winner ??= claim(ownResult);
     const code = winner.status;
     const signal = winner.kind === "signaled" ? winner.code : undefined;
-    wasi?.descriptors.dispose();
-    fs.dispose();
-    runtimeProcess?.exit(code);
-    if ("code" in result || settled || winner.kind === "signaled") {
-      host.postMessage({ type: "exit", code, signal, sleep: sleepMode });
+    if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
+    const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
+    if (executor.complete || "code" in result || settled || winner.kind === "signaled") {
+      host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
-      host.postMessage({ type: "error", code, message: describeWorkerError(result.error), sleep: sleepMode });
+      host.postMessage({ type: "error", code, message: describeWorkerError(result.error), sleep: sleepMode, ...diagnostics });
     }
   };
   const terminalResult = (error: unknown): { code: number; signal?: number } | null => {
