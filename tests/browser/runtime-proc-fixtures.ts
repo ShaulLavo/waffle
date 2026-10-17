@@ -55,12 +55,13 @@ function poll(fd: number[], kind: number, stage: number, hangup = false, onEmpty
 }
 // Nonblocking readiness is not a read reservation. A relay may have queued source bytes but
 // still need this reader's demand publication, and successful stream reads can be short.
-// Keep every byte assertion: only AGAIN and positive short reads are retried; early EOF and any
-// other errno retain the original failing stage. The browser driver bounds the full sequence.
+// Keep every byte assertion: AGAIN, zero-ready wake hints, and positive short reads continue the
+// readiness loop; early EOF and every other errno retain the original failing stage. A signal
+// wake or poll deadline can legally report no ready events. The browser driver bounds the loop.
 function readExact(fd: number[], length: number, stage: number, onEmpty?: number[]): number[] {
   return c(0).concat(set(7), [0x03, 0x40],
     call(0, fd, c(4096).concat(get(7), [0x6a]), c(length).concat(get(7), [0x6b])), set(8),
-    get(8), c(-6), [0x46, 0x04, 0x40], poll(fd, 0, stage, false, onEmpty), [0x0c, 1, 0x0b],
+    get(8), c(-6), [0x46, 0x04, 0x40], poll(fd, 0, stage, false, onEmpty ?? []), [0x0c, 1, 0x0b],
     check(get(8).concat(c(0), [0x4c]), 0, stage),
     check(get(8).concat(c(length), get(7), [0x6b, 0x4b]), 0, stage),
     get(7), get(8), [0x6a, 0x22, 7], c(length), [0x49, 0x0d, 0, 0x0b]);

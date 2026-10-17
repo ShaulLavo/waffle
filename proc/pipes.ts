@@ -382,7 +382,20 @@ class PipeState {
   signal(): void { notify(this.changed); notify(this.wake); }
   readerAlive(ring: Ring): boolean { return ring.owner > 0 && ring.references > 0 && !this.registry?.isRevoked(ring.owner); }
   hasReaders(): boolean { return this.readers.some(ring => this.readerAlive(ring)); }
-  eof(): boolean { return this.writers.every(ring => ring.owner === 0 || ring.closed); }
+  eof(): boolean {
+    const generation = Atomics.load(this.control, 5);
+    if (!this.writers.every(ring => ring.owner === 0 || ring.closed)) return false;
+    // Closed flags never reopen, but a child can reserve an earlier, already-scanned slot
+    // before its parent closes a later slot. Validate the admission epoch so those two
+    // observations cannot manufacture EOF while a reserved writer is still alive.
+    if (Atomics.load(this.control, 5) !== generation) {
+      // Return AGAIN instead of spinning. Wake the caller even when the overlapping
+      // handoff already completed (and sent its last notification) inside this scan.
+      this.signal();
+      return false;
+    }
+    return true;
+  }
   queued(): number { return this.writers.reduce((total, ring) => total + (ring.owner > 0 ? ring.available : 0), 0); }
   relayAvailable(): number {
     return this.queued() + Math.max(0, Atomics.load(this.control, 4)) + this.readers.reduce((total, ring) => total + (ring.owner > 0 ? ring.available : 0), 0);

@@ -954,6 +954,42 @@ describe("terminal controller lifecycle", () => {
   });
 });
 
+for (const check of ["read", "readiness"] as const) for (const closeChild of [false, true]) test(`EOF ${check} rejects a writer handoff during its scan${closeChild ? " even when the child closes immediately" : ""}`, () => {
+  const controller = new PipeController({ capacity: 8, relay: "manual" });
+  controllers.push(controller);
+  const reader = controller.retain(1, "read"), writer = controller.retain(15, "write");
+  const handle = writer.handle(), pidOffset = ringOffset(handle), original = Atomics.load;
+  let visits = 0, handoffWake = 0, child: ReturnType<PipeController["retain"]> | undefined;
+  Atomics.load = ((array: Int32Array, index: number) => {
+    if (array instanceof Int32Array && array.buffer === handle.buffer && array.byteOffset === pidOffset && ++visits === 2) {
+      // source()/queued() scans first, then EOF. EOF has already passed slot 0 when it
+      // reaches the parent's slot 15. Complete spawn's synchronous writer reservation
+      // in slot 0 and parent exit here, before the child's worker has started.
+      Atomics.load = original;
+      child = writer.forProcess(16);
+      writer.close();
+      if (closeChild) child.close();
+      handoffWake = original(controller.notification, 0);
+    }
+    return original(array, index);
+  }) as typeof Atomics.load;
+  try {
+    if (check === "read") expect(output(reader)).toBe(-PipeErrno.AGAIN);
+    else expect(reader.readiness()).toMatchObject({ readable: false, hangup: false });
+  } finally { Atomics.load = original; }
+  expect(child).toBeDefined();
+  // The conservative AGAIN must publish its own wake even if the handoff (including
+  // the final close) already published all of its notifications during the scan.
+  expect(Atomics.load(controller.notification, 0)).toBeGreaterThan(handoffWake);
+  if (!closeChild) {
+    expect(output(reader)).toBe(-PipeErrno.AGAIN);
+    expect(child!.tryWrite([encode.encode("child")])).toBe(5);
+    child!.close();
+    expect(output(reader)).toBe("child");
+  }
+  expect(output(reader)).toBe("");
+});
+
 test("terminal lifecycle commit loses to a newly admitted writer after its scan passed writer slots", () => {
   const controller = new PipeController({ capacity: 8, relay: "manual" });
   controllers.push(controller);

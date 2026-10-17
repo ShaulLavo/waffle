@@ -49,7 +49,14 @@ async function instrumentJobWaitWorker(sourceURL: string) {
     constructor(module: WebAssembly.Module, imports: WebAssembly.Imports = {}) {
       const runtime = imports.runtime_proc;
       if (runtime) {
-        const waitJob = runtime.wait_job, poll = runtime.poll;
+        const waitJob = runtime.wait_job, poll = runtime.poll, read = runtime.read;
+        // Preserve each return value rather than guessing whether a failed readExact saw EOF,
+        // an errno, or a legal zero-ready wake. These messages never change the ABI result.
+        if (typeof read === "function") runtime.read = (fd: number, ptr: number, length: number) => {
+          const result = Reflect.apply(read, runtime, [fd, ptr, length]);
+          scope.postMessage({ type: "job-wait-test-io", operation: "read", fd, length, result });
+          return result;
+        };
         if (typeof waitJob === "function") runtime.wait_job = (job: number, flags: number, ptr: number) => {
           const previous = waitingJob;
           if (flags === 0) waitingJob = job;
@@ -65,7 +72,9 @@ async function instrumentJobWaitWorker(sourceURL: string) {
               Reflect.apply(nativeWait, Atomics, [gate, 0, 0, 10]);
             }
           }
-          return Reflect.apply(poll, runtime, [ptr, count, timeout, out]);
+          const result = Reflect.apply(poll, runtime, [ptr, count, timeout, out]);
+          scope.postMessage({ type: "job-wait-test-io", operation: "poll", count, timeout, result });
+          return result;
         };
       }
       super(module, imports);
@@ -82,6 +91,7 @@ const jobWaitScenario = new URLSearchParams(location.search).has("job-wait");
 const jobWaitGate = jobWaitScenario ? new SharedArrayBuffer(4) : undefined;
 const bootstrapURLs = new Set<string>();
 const blockingWaitEntries: number[] = [];
+const ioCalls: { worker: number; operation: "read" | "poll"; result: number; fd?: number; length?: number; count?: number; timeout?: number }[] = [];
 const NativeWorker = globalThis.Worker;
 const activeWorkers = new Set<Worker>();
 const messages: string[] = [];
@@ -105,6 +115,11 @@ globalThis.Worker = class extends NativeWorker {
       const { data } = event;
       if (data.type === "job-wait-test-blocking-entry") {
         blockingWaitEntries.push(data.job); event.stopImmediatePropagation(); return;
+      }
+      if (data.type === "job-wait-test-io") {
+        const { operation, result, fd, length, count, timeout } = data;
+        ioCalls.push({ worker, operation, result, fd, length, count, timeout });
+        event.stopImmediatePropagation(); return;
       }
       if (data.type === "runtime-proc") {
         messages.push(data.operation);
@@ -179,9 +194,9 @@ try {
   filesystem.dispose(); filesystem = undefined;
   await until(() => activeWorkers.size === 0, "all task-created workers terminated");
   result = { ok: true, mode: explicit ? "explicit" : "automatic", scenario: jobWait ? "job-wait" : "pipes", checks, stdout,
-    messages, exits, reaps, blockingWaitEntries, workerErrors, bufferDecode, cleanup: { activeWorkers: activeWorkers.size, workersCreated } };
+    messages, exits, reaps, blockingWaitEntries, ioCalls, workerErrors, bufferDecode, cleanup: { activeWorkers: activeWorkers.size, workersCreated } };
 } catch (error) {
-  result = { ok: false, stdout, stderr, messages, exits, reaps, blockingWaitEntries, workerErrors, bufferDecode,
+  result = { ok: false, stdout, stderr, messages, exits, reaps, blockingWaitEntries, ioCalls, workerErrors, bufferDecode,
     error: error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error) };
 } finally {
   if (run && !settled) {

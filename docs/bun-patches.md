@@ -26,7 +26,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
 | [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing, browser module loading and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
 | [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
-| [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, reader relay and descriptor-transfer adapters. |
+| [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, admission-validated EOF, reader relay and descriptor-transfer adapters. |
 | [Guest process ABI](#guest-process-abi) | Host feature | Original runtime_proc imports, nonblocking filesystem preparation, preview1 notification waits and lazy browser process integration. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
@@ -1625,6 +1625,10 @@ original bun-wasm host adapter, not a copied upstream implementation. The proces
 adds independent producer rings, atomic committed-position/revocation cursors, a host-only
 process publication registry, reference-counted endpoints, reader merging and supervisor relay.
 These changes prevent a terminated worker's delayed publication from altering the live stream.
+EOF also validates the pipe's atomic admission generation around its monotonic closed-ring scan:
+a concurrent child reservation in an earlier slot cannot be missed while the parent closes a
+later slot. An overlapping scan reports not-EOF and publishes a wake, keeping registry revocation
+as the authority for freezing committed output rather than adding a second writer-lifetime count.
 
 `runtime/proc/worker-pipes.ts` is a separate original adapter for cloneable endpoint capabilities,
 filesystem-codec composition and supervisor relay ownership. Spawn retains a process endpoint

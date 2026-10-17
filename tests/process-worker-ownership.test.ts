@@ -5,7 +5,8 @@ import { ProcessSupervisor } from "../proc/supervisor";
 import { SignalDisposition, setSignalDisposition } from "../proc/signals";
 import { readOutcome } from "../proc/outcome";
 import { WorkerProcessBroker } from "../proc/worker-broker";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
+import { createWorkerProcessTransport, installWorkerBindings, WorkerProcessClient, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
+import { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes";
 import type { ProcessContext, SpawnRequest } from "../proc/types";
 
 const cleanups: (() => void)[] = [];
@@ -107,6 +108,47 @@ test("worker spawn synchronously retains arbitrary bindings across lazy activati
   expect(f.root.wait(1, pid)).toEqual({ kind: "exited", code: 7, status: 7 });
   expect(counts[0]).toBe(0);
   expect(counts[1]).toBe(2);
+});
+
+test("spawned pipe writers survive parent exit before the child worker starts", () => {
+  const transport = createWorkerProcessTransport({ capacity: 16 });
+  const spawnMessages: WorkerProcessMessage[] = [];
+  const pipes = new WorkerPipeHost({ transport, postMessage() {} });
+  const [reader, writer] = pipes.createPipe();
+  const rootDescriptors = new DescriptorTable();
+  const readFd = rootDescriptors.open(reader, 1n, 1n), writeFd = rootDescriptors.open(writer, 1n, 1n);
+  const codec = createWorkerPipeCodec();
+  const root = new WorkerProcessClient({ transport, descriptors: rootDescriptors, codec, postMessage(message) { spawnMessages.push(message); } });
+  try {
+    // The root launches a leader, which is the parent whose worker will exit before its child
+    // starts. The root reader remains alive as an observer of the leader's inherited writer.
+    const leaderPid = root.spawn(1, request({ job: -1, fds: [{ child: 1, parent: writeFd }] }));
+    const leaderTransport = spawnMessages[0]!.transport;
+    const leaderDescriptors = new DescriptorTable();
+    try {
+      const leader = new WorkerProcessClient({ transport: leaderTransport, descriptors: leaderDescriptors, codec, postMessage(message) { spawnMessages.push(message); } });
+      leader.installBindings();
+      rootDescriptors.close(writeFd);
+      const childPid = leader.spawn(leaderPid, request({ job: workerProcessState(leaderTransport).job, fds: [{ child: 1, parent: 1 }] }));
+      expect(childPid).toBeGreaterThan(leaderPid);
+      // Parent exit closes its descriptor only after spawn returned; the child reservation already
+      // owns a distinct writer ring, so the observer must see AGAIN rather than premature EOF.
+      leaderDescriptors.dispose();
+      const pending = new Uint8Array(1);
+      expect(reader.tryRead([pending])).toBe(-6);
+      const childTransport = spawnMessages[1]!.transport;
+      const childDescriptors = new DescriptorTable();
+      try {
+        expect(workerProcessState(childTransport).pid).toBe(childPid);
+        installWorkerBindings(childTransport, childDescriptors, codec);
+        childDescriptors.close(1);
+      } finally { childDescriptors.dispose(); }
+      expect(reader.tryRead([pending])).toBe(0);
+    } finally { leaderDescriptors.dispose(); }
+  } finally {
+    rootDescriptors.close(readFd);
+    rootDescriptors.dispose();
+  }
 });
 
 test("worker spawn validates both fd bindings within the signed WASM success range before exporting", async () => {
