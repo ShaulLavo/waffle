@@ -1,3 +1,4 @@
+import { type ControlCells, controlLoad, controlWait } from "./control.js";
 import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
 import { withFileOffset } from "../core/open-file.js";
@@ -57,7 +58,7 @@ export interface ProcessABIOptions {
   /** One shared readiness sequence. Publishers increment and notify after publishing state. */
   wake?: Int32Array;
   /** Synchronous wait hook, primarily for embedders and deterministic tests. poll and blocking wait_job call it. */
-  wait?(milliseconds: number, word: Int32Array, expected: number): void;
+  wait?(milliseconds: number, word: ControlCells, expected: number): void;
   now?(): number;
 }
 
@@ -258,7 +259,7 @@ export class ProcessABI {
     try {
       for (;;) {
         const word = wake ?? this.options.signals.interrupt;
-        const sequence = Atomics.load(word, 0);
+        const sequence = controlLoad(word, 0);
         // Validate/read readiness separately so a host callback growing memory cannot cause
         // a fault after the consuming operation. No guest code runs between validation/reap.
         if (this.options.service.jobEmpty(this.options.pid, job)) {
@@ -269,7 +270,7 @@ export class ProcessABI {
         if (flags === 1) return -ProcessErrno.AGAIN;
         if (this.pending()) return -27; // EINTR; no signal consumed.
         if (this.options.wait) this.options.wait(10, word, sequence);
-        else Atomics.wait(word, 0, sequence, 10);
+        else controlWait(word, 0, sequence, 10);
       }
     } finally { release?.(); }
   }
@@ -390,7 +391,7 @@ export class ProcessABI {
       for (;;) {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
         const word = wake ?? this.options.signals.interrupt;
-        const sequence = Atomics.load(word, 0);
+        const sequence = controlLoad(word, 0);
         if (this.pending()) return 0;
         const ready: { sub: Subscription; flags: number }[] = [];
         for (const sub of subscriptions) {
@@ -417,7 +418,7 @@ export class ProcessABI {
         const milliseconds = Math.min(remaining, 10);
         const expected = sequence;
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
-        else Atomics.wait(word, 0, expected, milliseconds);
+        else controlWait(word, 0, expected, milliseconds);
       }
     } finally { for (const release of unregister.reverse()) release(); }
   }

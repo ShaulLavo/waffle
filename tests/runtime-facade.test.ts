@@ -692,7 +692,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
   }
   visit(root!);
   const inputs = Array.from(initial).flatMap(path => Object.keys(outputs.get(path)!.inputs));
-  const processInputs = inputs.filter(path => /(?:^|\/)proc\//.test(path) && !/(?:^|\/)(identity|stub|outcome|signals|types)\.ts$/.test(path));
+  const processInputs = inputs.filter(path => /(?:^|\/)proc\//.test(path) && !/(?:^|\/)(identity|stub|outcome|signals|control|types)\.ts$/.test(path));
   expect(processInputs).toEqual([]);
   expect(inputs.filter(path => /(?:^|\/)interrupt\//.test(path))).toEqual([]);
   expect(Array.from(outputs.values()).some(output => Object.keys(output.inputs).some(path => path.endsWith("proc/supervisor.ts")))).toBe(true);

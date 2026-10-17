@@ -48,7 +48,7 @@ async function fixture(options: { observerFailure?: "throw" | "reject"; failModu
   cleanups.push(() => { reader.close(); });
   function spawn(transport = root) {
     const client = new WorkerProcessClient({ transport, descriptors, codec: host.codec(), postMessage(message) { messages.push(message); },
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }),
+      prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; },
     });
     const pid = client.spawn(client.pid, { executable: "fixture", argv: ["private argument"], env: { SECRET: "private environment" }, cwd: "/", job: -1, fds: [{ child: 1, parent: fd }] });
     descriptors.close(fd);

@@ -33,7 +33,7 @@ for (const rejection of ["external", "unknown-sender"] as const) test(`rejecting
   const pair = host.createPipe(); reader = pair[0];
   const fd = descriptors.open(pair[1], 1n, 1n), messages: WorkerProcessMessage[] = [];
   const client = new WorkerProcessClient({ transport: root, descriptors, codec: host.codec(), postMessage(message) { messages.push(message); },
-    prepareSpawn: () => ({ data: { filesystem: childFilesystem, pipeRegistry: host.registry.handle() } }),
+    prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: childFilesystem, pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; },
   });
   const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [{ child: 1, parent: fd }] };
   const pid = client.spawn(client.pid, request);

@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker";
 import { ProcessIdentityAllocator } from "../proc/identity";
@@ -66,7 +67,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
     for (const root of roots) await broker.adoptRuntimeRoot(root);
     await broker.ready();
     for (const root of roots) await broker.rootExit(workerProcessState(root).pid, 0);
-    expect(roots.map(root => readOutcome(workerProcessState(root).signals.outcome)?.status)).toEqual([0, 0]);
+    expect(roots.map(root => { try { workerProcessState(root); return false; } catch { return true; } })).toEqual([true, true]);
     expect(Array.from(table.values())).toHaveLength(0);
   } finally { await broker.dispose(); }
 });
@@ -208,6 +209,7 @@ test("disposal settles every consumer stop before disposing fenced relays and re
   const roots = [0, 1].map(() => {
     const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
     const registry = new PipePublicationRegistry();
+    registry.registerProcess(root.pid);
     root.data = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
     return { root, registry };
   });
@@ -258,6 +260,7 @@ test("a rejected filesystem fence does not stop consumers or force relay disposa
   });
   const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
   const registry = new PipePublicationRegistry();
+  registry.registerProcess(root.pid);
   root.data = { filesystem: createFilesystemIdentity(), pipeRegistry: registry.handle() };
   const publications: Promise<void>[] = [];
   const host = new WorkerPipeHost({ transport: root, registry,
@@ -398,7 +401,7 @@ test("a completed runtime root retains queued background descendants until their
   const messages: WorkerProcessMessage[] = [], descriptors = new DescriptorTable();
   const host = new WorkerPipeHost({ transport: root, postMessage: message => messages.push(message) });
   const client = new WorkerProcessClient({ transport: root, descriptors, codec: host.codec(),
-    postMessage: message => messages.push(message), prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }) });
+    postMessage: message => messages.push(message), prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; } });
   try {
     const controller = { retired() { retired++; } };
     await broker.adoptRuntimeRoot(root, controller);
@@ -487,7 +490,7 @@ for (const terminal of ["cleanup-error", "exit", "error"] as const) test(`generi
     expect(reaped).toBe(terminal === "cleanup-error" ? 0 : 1);
     if (terminal === "cleanup-error") {
       expect(supervisor.get(pid)?.result).toBeNull();
-      expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+      expect(controlLoad(workerProcessState(transport).confirmed, 0)).toBe(0);
       expect(workers[0]!.terminations).toBe(0);
     }
     releaseFence();
@@ -650,7 +653,7 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       });
       const client = new WorkerProcessClient({ transport, descriptors, codec: host.codec(),
         postMessage(message) { messages.push(structuredClone(message)); },
-        prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }),
+        prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; },
       });
       client.installBindings();
       return { client, descriptors, host };
@@ -671,7 +674,7 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       const notice = messages.shift()!;
       expect(notice.operation).toBe("spawn");
       const inherited = notice.transport.resources[0] as { endpoint: import("../proc/pipes").PipeEndpointHandle };
-      const control = new Int32Array(inherited.endpoint.buffer, 0, 6), generation = Atomics.load(control, 5);
+      const control = new Int32Array(inherited.endpoint.buffer, 0, 6), generation = controlLoad(control, 5);
       const lifetime = new Int32Array(inherited.endpoint.lifetime);
       const parentWorker = workers.get(parentPid)!;
       if (exitAt === "before-launch") {
@@ -692,8 +695,8 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       expect(parentWorker.terminations).toBe(1);
       expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
       expect(reader.readiness().hangup).toBe(false);
-      expect(Atomics.load(control, 5)).toBe(generation);
-      expect(Atomics.load(lifetime, 0)).toBe(0);
+      expect(controlLoad(control, 5)).toBe(generation);
+      expect(controlLoad(lifetime, 0)).toBe(0);
       expect(contexts.has(childPid)).toBe(false);
       await bounded(moduleRequested);
       releaseModule();
@@ -702,15 +705,16 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       const child = makeClient(broker.transportFor(childPid)!);
       const writer = child.descriptors.get(1)!.resource as PipeEndpoint;
       expect(writer.tryWrite([new Uint8Array([68])])).toBe(1);
+      const childExited = supervisor.waitForExit(parentPid, childPid);
       child.descriptors.dispose(); child.client.exit(0);
       workers.get(childPid)!.emit({ type: "exit", code: 0 });
-      await bounded(supervisor.waitForExit(parentPid, childPid));
+      await bounded(childExited);
       const bytes = new Uint8Array(1);
       expect(reader.tryRead([bytes])).toBe(1);
       expect(bytes[0]).toBe(68);
       expect(reader.tryRead([bytes])).toBe(0);
-      expect(Atomics.load(lifetime, 0)).toBe(1);
-      expect(Atomics.load(control, 5)).toBe(generation);
+      expect(controlLoad(lifetime, 0)).toBe(1);
+      expect(controlLoad(control, 5)).toBe(generation);
       expect(diagnostics).toEqual([]);
     } finally { await cleanup(); }
   });

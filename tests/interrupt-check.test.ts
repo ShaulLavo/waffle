@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { expect, test } from "bun:test";
 import { fatalInterrupt } from "../interrupt/check";
 import { claimOutcome, outcomeWord } from "../proc/outcome";
@@ -21,7 +22,7 @@ test("a handled signal remains queued for a cooperative guest's existing handler
   const state = transport();
   setSignalDisposition(state.signalState, 2, 2);
   requestSignal(state, 2);
-  expect(Atomics.load(state.interrupt, 0)).toBe(2);
+  expect(controlLoad(state.interrupt, 0)).toBe(2);
   expect(fatalInterrupt(state.outcome)).toBe(0);
   expect(takeSignal(state.signalState)).toBe(2);
   expect(takeSignal(state.signalState)).toBe(0);

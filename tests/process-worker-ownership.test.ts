@@ -1,13 +1,15 @@
+import { collectDirectoryProcess, collectDirectoryJob, directorySlots, directoryJobs, directoryJob, reserveDirectoryProcess } from "../proc/directory";
+import { packedControl, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, test } from "bun:test";
 import { DescriptorTable, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
 import { ExecutableRegistry } from "../proc/registry";
 import { ProcessSupervisor } from "../proc/supervisor";
 import { SignalDisposition, setSignalDisposition } from "../proc/signals";
-import { readOutcome } from "../proc/outcome";
+import { claimOutcome, readOutcome } from "../proc/outcome";
 import { WorkerProcessBroker } from "../proc/worker-broker";
-import { createWorkerProcessTransport, installWorkerBindings, WorkerProcessClient, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
+import { createWorkerProcessTransport, confirmWorkerProcessJob, installWorkerBindings, WorkerProcessClient, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
 import { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes";
-import type { ProcessContext, SpawnRequest } from "../proc/types";
+import type { ProcessContext, ProcessHandle, SpawnRequest } from "../proc/types";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -22,7 +24,7 @@ interface Token { state: SharedArrayBuffer; lifetime: SharedArrayBuffer; pid: nu
 function fakeCodec() {
   const states = new WeakMap<Resource, SharedArrayBuffer>();
   const release = (token: Token) => {
-    if (Atomics.compareExchange(new Int32Array(token.lifetime), 0, 0, 1) !== 0) return;
+    if (controlCas(new Int32Array(token.lifetime), 0, 0, 1) !== 0) return;
     const state = new Int32Array(token.state);
     Atomics.sub(state, 0, 1); Atomics.add(state, 1, 1);
   };
@@ -52,18 +54,18 @@ function fakeCodec() {
   };
   return { codec, source(descriptors: DescriptorTable, kind: Token["kind"] = "pipe") {
     const state = new SharedArrayBuffer(12);
-    Atomics.store(new Int32Array(state), 0, 1);
+    controlStore(new Int32Array(state), 0, 1);
     const token = { state, lifetime: new SharedArrayBuffer(4), pid: 1, kind };
     const fd = descriptors.open(resource(token), 127n, 63n, () => release(token));
     return { fd, counts: new Int32Array(state) };
   } };
 }
-function fixture(options: { capacity?: number; activate?: (supervisor: ProcessSupervisor) => Promise<ProcessSupervisor>; beforeActivation?(supervisor: ProcessSupervisor): void; terminate?(): void | Promise<void>; quiesce?(pid: number): void | Promise<void>; rejectedQuiesce?(pid: number): void | Promise<void> } = {}) {
+function fixture(options: { capacity?: number; launch?(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>; activate?: (supervisor: ProcessSupervisor) => Promise<ProcessSupervisor>; beforeActivation?(supervisor: ProcessSupervisor): void; terminate?(): void | Promise<void>; quiesce?(pid: number): void | Promise<void>; rejectedQuiesce?(pid: number): void | Promise<void> } = {}) {
   const transport = createWorkerProcessTransport({ capacity: options.capacity });
   const state = workerProcessState(transport);
   const registry = new ExecutableRegistry(); registry.register("fixture", { module: emptyModule, adapter: "preview1" });
   const contexts = new Map<number, ProcessContext>();
-  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, launch(context) { contexts.set(context.pid, context); return { terminate() { return options.terminate?.(); } }; } });
+  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, launch(context) { contexts.set(context.pid, context); return options.launch?.(context) ?? { terminate() { return options.terminate?.(); } }; } });
   supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
   options.beforeActivation?.(supervisor);
   const { codec, source } = fakeCodec();
@@ -118,7 +120,7 @@ test("spawned pipe writers survive parent exit before the child worker starts", 
   const rootDescriptors = new DescriptorTable();
   const readFd = rootDescriptors.open(reader, 1n, 1n), writeFd = rootDescriptors.open(writer, 1n, 1n);
   const codec = createWorkerPipeCodec();
-  const root = new WorkerProcessClient({ transport, descriptors: rootDescriptors, codec, postMessage(message) { spawnMessages.push(message); } });
+  const root = new WorkerProcessClient({ transport, descriptors: rootDescriptors, codec, postMessage(message) { spawnMessages.push(message); }, prepareSpawn(pid) { pipes.registry.registerProcess(pid); return { cancel: () => pipes.registry.collectProcess(pid) }; } });
   try {
     // The root launches a leader, which is the parent whose worker will exit before its child
     // starts. The root reader remains alive as an observer of the leader's inherited writer.
@@ -126,7 +128,7 @@ test("spawned pipe writers survive parent exit before the child worker starts", 
     const leaderTransport = spawnMessages[0]!.transport;
     const leaderDescriptors = new DescriptorTable();
     try {
-      const leader = new WorkerProcessClient({ transport: leaderTransport, descriptors: leaderDescriptors, codec, postMessage(message) { spawnMessages.push(message); } });
+      const leader = new WorkerProcessClient({ transport: leaderTransport, descriptors: leaderDescriptors, codec, postMessage(message) { spawnMessages.push(message); }, prepareSpawn(pid) { pipes.registry.registerProcess(pid); return { cancel: () => pipes.registry.collectProcess(pid) }; } });
       leader.installBindings();
       rootDescriptors.close(writeFd);
       const childPid = leader.spawn(leaderPid, request({ job: workerProcessState(leaderTransport).job, fds: [{ child: 1, parent: 1 }] }));
@@ -198,15 +200,15 @@ test("fatal selection freezes resources synchronously but wait stays pending unt
   const pid = f.root.spawn(1, request({ fds: [{ child: 1, parent: fd }] }));
   await f.flush(); await f.supervisor.start(pid);
   const state = workerProcessState(f.broker.get(pid)!);
-  const before = Atomics.load(f.root.wake, 0);
+  const before = controlLoad(f.root.wake, 0);
   f.root.kill(pid, 9);
   expect(f.revoked).toEqual([pid]);
   expect(readOutcome(state.signals.outcome)?.status).toBe(137);
   expect(f.root.wait(1, pid)).toBeNull();
-  expect(Atomics.load(f.root.wake, 0)).toBeGreaterThan(before);
+  expect(controlLoad(f.root.wake, 0)).toBeGreaterThan(before);
   await f.flush();
   expect(f.root.wait(1, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
-  expect(Atomics.load(state.confirmed, 0)).toBe(1);
+  expect(controlLoad(state.confirmed, 0)).toBe(1);
 });
 
 test("handled and ignored signals preserve resource authority and share the disposition state", async () => {
@@ -215,7 +217,7 @@ test("handled and ignored signals preserve resource authority and share the disp
   const child = f.client(f.broker.get(pid)!);
   setSignalDisposition(child.signals.signalState, 15, SignalDisposition.HANDLE);
   f.root.kill(pid, 15); expect(f.revoked).toEqual([]);
-  expect(Atomics.load(child.signals.signalState, 15)).toBe(SignalDisposition.HANDLE | 4);
+  expect(controlLoad(child.signals.signalState, 15)).toBe(SignalDisposition.HANDLE | 4);
   setSignalDisposition(child.signals.signalState, 2, SignalDisposition.IGNORE);
   f.root.kill(pid, 2); expect(f.revoked).toEqual([]);
   await f.flush(); expect(f.root.wait(1, pid)).toBeNull();
@@ -369,14 +371,14 @@ test("worker process and job completion both await the host-work fence", async (
   child.exit(0); await f.flush();
   const state = workerProcessState(f.broker.get(pid)!);
   expect(f.root.wait(1, pid)).toBeNull();
-  expect(Atomics.load(state.confirmed, 0)).toBe(0);
-  expect(Atomics.load(state.jobConfirmed, 0)).toBe(0);
+  expect(controlLoad(state.confirmed, 0)).toBe(0);
+  expect(controlLoad(state.jobConfirmed, 0)).toBe(0);
   expect(f.root.waitJob(1, child.job)).toBeNull();
-  const before = Atomics.load(f.root.wake, 0);
+  const before = controlLoad(f.root.wake, 0);
   finish(); await fence; await Promise.resolve();
-  expect(Atomics.load(f.root.wake, 0)).toBeGreaterThan(before);
+  expect(controlLoad(f.root.wake, 0)).toBeGreaterThan(before);
   expect(f.root.wait(1, pid)?.status).toBe(0);
-  expect(Atomics.load(state.confirmed, 0)).toBe(1);
+  expect(controlLoad(state.confirmed, 0)).toBe(1);
   expect(f.root.jobEmpty(1, child.job)).toBe(true);
   expect(f.root.waitJob(1, child.job)?.status).toBe(0);
   await f.flush();
@@ -430,7 +432,7 @@ test("queued worker reap notices retain authority after their caller is itself r
   owner.exit(0); await f.flush();
   expect(f.root.waitJob(1, owner.job)?.status).toBe(0); await f.flush();
   expect(f.supervisor.get(ownerPid)).toBeUndefined();
-  expect(f.supervisor.get(childPid)).toBeDefined();
+  expect(f.supervisor.get(childPid)).toBeUndefined();
   await f.broker.handle(delayed, ownerPid);
   expect(f.supervisor.get(childPid)).toBeUndefined();
   expect(f.broker.get(childPid)).toBeUndefined();
@@ -447,8 +449,7 @@ test("accepted separate-job spawns keep their descriptors after the parent job i
   owner.exit(0); await f.flush();
   expect(f.root.waitJob(1, owner.job)?.status).toBe(0); await f.flush();
   expect(f.broker.get(ownerPid)).toBeUndefined();
-  const identity = f.broker.getIdentity(ownerPid)!;
-  expect(identity.bindings).toEqual([]); expect(identity.resources).toEqual([]); expect(identity.data).toBeUndefined();
+  expect(f.broker.getIdentity(ownerPid)).toBeUndefined();
   await f.broker.handle(delayed, ownerPid); await f.supervisor.start(childPid);
   expect(f.contexts.get(childPid)!.descriptors.get(19)!.resource.kind).toBe("directory");
   expect(counts[0]).toBe(1);
@@ -483,13 +484,13 @@ test("worker transfer fences precede membership reservation and cancel on direct
   const f = fixture({ capacity: 1 });
   let prepared = 0, cancelled = 0;
   const client = new WorkerProcessClient({ ...f.root.options, prepareSpawn() {
-    expect(Atomics.load(new Int32Array(f.transport.directory), 0)).toBe(1);
+    expect(directorySlots(f.transport.directory)).toHaveLength(1);
     prepared++;
     return { cancel() { cancelled++; } };
   } });
   expectErrno(() => client.spawn(1, request({ job: f.root.job })), 6);
   expect(prepared).toBe(1); expect(cancelled).toBe(1);
-  expect(Atomics.load(workerProcessState(f.transport).jobPending, 0)).toBe(1);
+  expect(controlLoad(workerProcessState(f.transport).jobPending, 0)).toBe(1);
 });
 
 test("failed leader imports retain host leader identity and outcome for queued job members", async () => {
@@ -560,20 +561,20 @@ test("host job reap tombstones worker-visible processes synchronously", async ()
   expectErrno(() => f.root.waitJob(1, child.job), 12);
   expectErrno(() => f.root.jobOf(pid), 71);
   expect(f.broker.get(pid)).toBeUndefined();
-  expect(f.broker.getIdentity(pid)?.resources).toEqual([]);
+  expect(f.broker.getIdentity(pid)).toBeUndefined();
 });
 
-test("failed synchronous worker transfers confirm cleanup and allow one atomic job reap", async () => {
+test("failed synchronous worker transfers release inaccessible process and job reservations", async () => {
   const f = fixture();
   const { fd } = f.source(f.root.options.descriptors);
   const client = new WorkerProcessClient({ ...f.root.options, codec: { ...f.codec, export() { throw new Error("transfer failed"); } } });
-  expect(() => client.spawn(1, request({ fds: [{ child: 1, parent: fd }] }))).toThrow("transfer failed");
-  const childTransport = { ...f.transport, slot: 1 };
-  const job = workerProcessState(childTransport).job;
-  const otherRoot = f.client(structuredClone(f.transport));
-  expect(f.root.jobEmpty(1, job)).toBe(true);
-  expect(f.root.waitJob(1, job)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
-  expectErrno(() => otherRoot.waitJob(1, job), 12);
+  for (let cycle = 0; cycle < 12; cycle++) {
+    expect(() => client.spawn(1, request({ fds: [{ child: 1, parent: fd }] }))).toThrow("transfer failed");
+    expect(directorySlots(f.transport.directory)).toEqual([0]);
+    expect(directoryJobs(f.transport.directory).length).toBe(1);
+    expectErrno(() => f.root.wait(1, cycle + 2), 12);
+  }
+  expect(f.messages.length).toBe(0);
   await f.flush();
 });
 
@@ -615,35 +616,36 @@ test("a locally failed unposted leader remains authoritative for its admitted sh
   const owner = f.client(f.broker.get(ownerPid)!);
   const { fd } = f.source(owner.options.descriptors);
   let leaderTransport!: WorkerProcessTransport;
-  let memberPid = 0, released = false;
+  let memberPid = 0, released = false, failedLeaderJob = 0;
   const client = new WorkerProcessClient({ ...owner.options,
     prepareSpawn() { return {
       release() {
         const state = workerProcessState(leaderTransport);
-        expect(Atomics.load(state.confirmed, 0)).toBe(1);
-        expect(Atomics.load(state.jobConfirmed, 0)).toBe(1);
-        expect(Atomics.load(state.jobPending, 0)).toBe(1);
+        expect(controlLoad(state.confirmed, 0)).toBe(1);
+        expect(controlLoad(state.jobConfirmed, 0)).toBe(1);
+        expect(controlLoad(state.jobPending, 0)).toBe(1);
         released = true;
       },
     }; },
-    codec: { ...f.codec, export() {
+    codec: { ...f.codec, export(_source, pid) {
       // The reservation is visible to another live worker before this exporter fails.
-      leaderTransport = { ...f.transport, slot: 2 };
-      memberPid = f.root.spawn(1, request({ job: workerProcessState(leaderTransport).job }));
+      leaderTransport = { ...f.transport, slot: 2, pid };
+      failedLeaderJob = workerProcessState(leaderTransport).job;
+      memberPid = f.root.spawn(1, request({ job: failedLeaderJob }));
       throw new Error("local export failed");
     } },
   });
   expect(() => client.spawn(ownerPid, request({ fds: [{ child: 1, parent: fd }] }))).toThrow("local export failed");
   expect(released).toBe(true);
-  const state = workerProcessState(leaderTransport);
+  expect(() => workerProcessState(leaderTransport)).toThrow();
   expect(f.messages.length).toBe(1);
   await f.flush();
-  expect(f.supervisor.get(state.pid)).toBeUndefined();
-  expect(f.supervisor.job(state.job)).toMatchObject({ ownerPid, leaderPid: state.pid, foreground: true, leaderResult: null });
-  expect(f.supervisor.canWaitJob(ownerPid, state.job)).toBe(true);
+  expect(f.supervisor.get(leaderTransport.pid)).toBeUndefined();
+  expect(f.supervisor.job(failedLeaderJob)).toMatchObject({ ownerPid, leaderPid: leaderTransport.pid, foreground: true, leaderResult: null });
+  expect(f.supervisor.canWaitJob(ownerPid, failedLeaderJob)).toBe(true);
   const member = f.client(f.broker.get(memberPid)!);
   member.exit(7); await f.flush();
-  expect(f.supervisor.waitJob(ownerPid, state.job)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(f.supervisor.waitJob(ownerPid, failedLeaderJob)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
 });
 
 test("worker transfer release follows published commit or failed cancellation confirmation", () => {
@@ -660,10 +662,10 @@ test("worker transfer release follows published commit or failed cancellation co
     prepareSpawn() { return {
       cancel() { order.push("cancel"); },
       release() {
-        const state = workerProcessState({ ...f.transport, slot: 2 });
-        expect(Atomics.load(state.confirmed, 0)).toBe(1);
-        expect(Atomics.load(state.jobConfirmed, 0)).toBe(1);
-        expect(Atomics.load(state.jobPending, 0)).toBe(0);
+        const state = workerProcessState({ ...f.transport, slot: 2, pid: 3 });
+        expect(controlLoad(state.confirmed, 0)).toBe(1);
+        expect(controlLoad(state.jobConfirmed, 0)).toBe(1);
+        expect(controlLoad(state.jobPending, 0)).toBe(0);
         order.push("failed-release");
       },
     }; },
@@ -692,18 +694,18 @@ test("broker disposal preserves safe confirmation after listener cleanup without
     expect(physicallyTerminated).toBe(false);
     expect(f.broker.get(pid)).toBeUndefined();
     expect(f.broker.getIdentity(pid)).toBeUndefined();
-    expect(Atomics.load(state.confirmed, 0)).toBe(0);
-    expect(Atomics.load(state.jobConfirmed, 0)).toBe(0);
+    expect(controlLoad(state.confirmed, 0)).toBe(0);
+    expect(controlLoad(state.jobConfirmed, 0)).toBe(0);
     expect(f.root.wait(1, pid)).toBeNull();
-    const before = Atomics.load(state.wake, 0);
+    const before = controlLoad(state.wake, 0);
     finishFence(); await fence; await Promise.resolve();
     expect(terminationStarted).toBe(true);
     expect(physicallyTerminated).toBe(false);
-    expect(Atomics.load(state.confirmed, 0)).toBe(1);
-    expect(Atomics.load(state.jobConfirmed, 0)).toBe(1);
-    expect(Atomics.load(state.jobPending, 0)).toBe(0);
-    expect(Atomics.load(state.wake, 0)).toBeGreaterThan(before);
-    expect(f.root.wait(1, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+    expect(controlLoad(state.confirmed, 0)).toBe(1);
+    expect(controlLoad(state.jobConfirmed, 0)).toBe(1);
+    expect(controlLoad(state.jobPending, 0)).toBe(0);
+    expect(controlLoad(state.wake, 0)).toBeGreaterThan(before);
+    expectErrno(() => f.root.wait(1, pid), 12);
   } finally { finishFence(); finishTermination(); await termination; }
 });
 
@@ -716,8 +718,203 @@ test("broker disposal remains unconfirmed when the host-work fence fails", async
   f.broker.dispose(); f.supervisor.dispose();
   failFence(new Error("fence failed"));
   await fence.catch(() => {}); await Promise.resolve();
-  expect(Atomics.load(state.confirmed, 0)).toBe(0);
-  expect(Atomics.load(state.jobConfirmed, 0)).toBe(0);
+  expect(controlLoad(state.confirmed, 0)).toBe(0);
+  expect(controlLoad(state.jobConfirmed, 0)).toBe(0);
   expect(f.root.wait(1, pid)).toBeNull();
   expect(f.broker.getIdentity(pid)).toBeUndefined();
+});
+
+
+test("more than three thousand same-job child lifetimes recycle bounded process slots", async () => {
+  const f = fixture({ capacity: 3 });
+  for (let cycle = 0; cycle < 3101; cycle++) {
+    const pid = f.root.spawn(1, request({ job: f.root.job }));
+    await f.flush();
+    f.supervisor.exit(pid, cycle);
+    expect(f.root.wait(1, pid)?.code).toBe(cycle);
+    expect(f.supervisor.reap(1, pid).code).toBe(cycle);
+    expectErrno(() => f.root.wait(1, pid), 12);
+    f.contexts.delete(pid);
+    expect(directorySlots(f.transport.directory)).toHaveLength(1);
+    expect(directoryJobs(f.transport.directory)).toHaveLength(1);
+    expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+    expect(Reflect.get(f.broker, "transports").size).toBe(1);
+  }
+});
+
+test("more than three thousand distinct job lifetimes recycle process and job slots", async () => {
+  const f = fixture({ capacity: 3 });
+  for (let cycle = 0; cycle < 3101; cycle++) {
+    const pid = f.root.spawn(1, request());
+    const job = f.root.jobOf(pid);
+    await f.flush();
+    f.supervisor.exit(pid, cycle);
+    expect(f.root.waitJob(1, job)?.code).toBe(cycle);
+    await f.flush();
+    f.contexts.delete(pid);
+    expect(directorySlots(f.transport.directory)).toHaveLength(1);
+    expect(directoryJobs(f.transport.directory)).toHaveLength(1);
+    expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+    expect(f.supervisor.job(job)).toBeUndefined();
+    expect(Reflect.get(f.broker, "transports").size).toBe(1);
+  }
+});
+
+test("captured signals, outcomes and confirmation cells cannot write a reused process slot", async () => {
+  const f = fixture({ capacity: 2 });
+  const oldPid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const oldTransport = f.broker.get(oldPid)!;
+  const old = workerProcessState(oldTransport);
+  f.supervisor.exit(oldPid, Number.MAX_SAFE_INTEGER);
+  const returned = f.supervisor.reap(1, oldPid);
+  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const next = workerProcessState(f.broker.get(pid)!);
+  expect(next.slot).toBe(old.slot);
+  expectErrno(() => controlStore(old.confirmed, 0, 1), 71);
+  expectErrno(() => controlStore(old.signals.interrupt, 0, 9), 71);
+  expectErrno(() => controlStore(old.signals.requestedSignal, 0, 9), 71);
+  expectErrno(() => setSignalDisposition(old.signals.signalState, 15, SignalDisposition.HANDLE), 71);
+  expectErrno(() => claimOutcome(old.signals.outcome, { kind: "signaled", code: 9 }), 71);
+  expectErrno(() => readOutcome(old.signals.outcome), 71);
+  expectErrno(() => workerProcessState(oldTransport), 71);
+  expect(readOutcome(next.signals.outcome)).toBeNull();
+  expect(controlLoad(next.confirmed)).toBe(0);
+  expect(controlLoad(next.signals.interrupt)).toBe(0);
+  expect(returned.code).toBe(Number.MAX_SAFE_INTEGER);
+});
+
+function readyForCollection(transport: WorkerProcessTransport): void {
+  const state = workerProcessState(transport);
+  claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
+  controlStore(state.confirmed, 0, 1);
+  controlStore(state.jobConfirmed, 0, 1);
+  state.jobPending.add(0, -1);
+  if (state.pid === state.jobLeaderPid) claimOutcome(state.jobOutcome, { kind: "exited", code: 0 });
+}
+
+test("concurrent ancestor collectors help frozen forwarding edges without resurrecting a retired ancestor", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  const a = { ...root, ...reserveDirectoryProcess(root, 2, 1, 1, 1, 0) };
+  const b = { ...root, ...reserveDirectoryProcess(a, 3, 2, 1, 1, 0) };
+  const c = { ...root, ...reserveDirectoryProcess(b, 4, 3, 1, 1, 0) };
+  readyForCollection(a); readyForCollection(b);
+  const edge = workerProcessState(b).controlParent;
+  const original = Atomics.compareExchange;
+  let raced = false;
+  Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+    const previous = original(array, index, expected, replacement);
+    if (!raced && array.buffer === edge.buffer && array.byteOffset === edge.byteOffset && replacement === packedControl(3, -3)) {
+      raced = true;
+      collectDirectoryProcess(a);
+    }
+    return previous;
+  }) as typeof Atomics.compareExchange;
+  try { collectDirectoryProcess(b); }
+  finally { Atomics.compareExchange = original; }
+  expect(raced).toBe(true);
+  expect(controlLoad(workerProcessState(c).controlParent)).toBe(1);
+  expect(directorySlots(root.directory)).toHaveLength(2);
+});
+
+test("a job collector completes when an individual collector wins after its slot snapshot", () => {
+  const root = createWorkerProcessTransport({ capacity: 3 });
+  const leader = { ...root, ...reserveDirectoryProcess(root, 2, 1, 2, 1) };
+  const member = { ...root, ...reserveDirectoryProcess(leader, 3, 2, 2, 1, workerProcessState(leader).jobSlot) };
+  readyForCollection(leader); readyForCollection(member);
+  const state = workerProcessState(member);
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const value = original(array, index);
+    if (!raced && array instanceof BigInt64Array && index === 0 && array.byteOffset === state.signals.outcome.byteOffset - 5 * 8 && controlLoad(state.jobPending) === -1) {
+      raced = true;
+      collectDirectoryProcess(member);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try { expect(collectDirectoryJob(root.directory, workerProcessState(leader).jobSlot, 2).code).toBe(0); }
+  finally { Atomics.load = original; }
+  expect(raced).toBe(true);
+  expect(directorySlots(root.directory)).toHaveLength(1);
+  expect(directoryJobs(root.directory)).toHaveLength(1);
+});
+
+
+test("a pending wait resolves its captured immutable result after another collector reuses the slot", async () => {
+  const f = fixture({ capacity: 2 });
+  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const transport = f.broker.get(pid)!;
+  const waiting = f.supervisor.waitForExit(1, pid);
+  f.supervisor.exit(pid, 47);
+  const selected = f.supervisor.reap(1, pid);
+  const replacement = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const state = workerProcessState(f.broker.get(replacement)!);
+  expect(state.slot).toBe(transport.slot);
+  expect(await waiting).toEqual({ kind: "exited", code: 47, status: 47 });
+  expect(Object.isFrozen(selected)).toBe(true);
+  expectErrno(() => f.root.wait(1, pid), 12);
+  expectErrno(() => confirmWorkerProcessJob(transport), 71);
+  expect(readOutcome(state.signals.outcome)).toBeNull();
+  expect(controlLoad(state.confirmed)).toBe(0);
+});
+
+test("a pending launch stops only its captured old handle after collection and row reuse", async () => {
+  let finishLaunch!: (handle: ProcessHandle) => void;
+  let first = true, oldStops = 0, newStops = 0;
+  let enteredLaunch!: () => void;
+  const entered = new Promise<void>(resolve => { enteredLaunch = resolve; });
+  const pending = new Promise<ProcessHandle>(resolve => { finishLaunch = resolve; });
+  const f = fixture({ capacity: 2, launch() {
+    if (first) { first = false; enteredLaunch(); return pending; }
+    return { terminate() { newStops++; } };
+  } });
+  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const starting = f.supervisor.start(pid);
+  cleanups.push(() => finishLaunch({ terminate() { oldStops++; } }));
+  await entered;
+  const context = f.contexts.get(pid)!;
+  expect(context).toBeDefined();
+  f.supervisor.exit(pid, 8); f.supervisor.reap(1, pid);
+  const replacement = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  await f.supervisor.start(replacement);
+  finishLaunch({ terminate() { oldStops++; } });
+  await starting;
+  expect(oldStops).toBe(1); expect(newStops).toBe(0);
+  context.exit(99);
+  expect(readOutcome(workerProcessState(f.broker.get(replacement)!).signals.outcome)).toBeNull();
+  expect(f.supervisor.get(replacement)?.result).toBeNull();
+});
+
+test("reentrant process reap before job confirmation completes shared collection once confirmed", async () => {
+  const f = fixture({ capacity: 2 });
+  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  const waiting = f.supervisor.waitForExit(1, pid);
+  f.supervisor.onChildExit(event => { if (event.pid === pid) f.supervisor.reap(1, pid); });
+  f.supervisor.exit(pid, 21);
+  expect(await waiting).toEqual({ kind: "exited", code: 21, status: 21 });
+  expect(f.broker.get(pid)).toBeUndefined();
+  expect(directorySlots(f.transport.directory)).toEqual([0]);
+  const replacement = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  expect(replacement).toBeGreaterThan(pid);
+});
+
+test("numeric admitted identities cannot reuse collected rows but captured out-of-order admissions remain valid", async () => {
+  const f = fixture({ capacity: 3 });
+  const earlier = f.root.spawn(1, request());
+  const held = f.messages.shift()!;
+  const earlierJob = workerProcessState(held.transport).job;
+  const later = f.root.spawn(1, request()); await f.flush();
+  const oldTransport = f.broker.get(later)!;
+  const old = workerProcessState(oldTransport);
+  f.supervisor.exit(later, 0);
+  const oldJob = old.job;
+  expect(f.root.waitJob(1, oldJob)?.code).toBe(0); await f.flush();
+  expect(() => f.supervisor.reserveAdmittedSpawn(1, request({ job: f.root.job }), { pid: later, job: f.root.job })).toThrow();
+  expect(() => f.supervisor.reserveAdmittedSpawn(1, request({ job: f.root.job }), { pid: later, job: f.root.job, outcome: old.signals.outcome })).toThrow();
+  expect(() => f.supervisor.createRoot({ pid: later, outcome: old.signals.outcome })).toThrow();
+  expect(() => f.supervisor.table.createJob(1, true, oldJob)).toThrow();
+  await f.broker.handle(held);
+  expect(f.supervisor.get(earlier)?.job).toBe(earlierJob);
+  expect(earlier).toBeLessThan(later);
+  expect(earlierJob).toBeLessThan(oldJob);
 });

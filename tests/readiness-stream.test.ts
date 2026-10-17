@@ -1,3 +1,4 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { Wasi, type WasiOptions } from "../core/wasi";
@@ -66,7 +67,7 @@ test("notification sequence is observed before readiness so a racing publish can
   };
   const f = fixture({ wait(word, expected) {
     waits++;
-    expect(expected).toBe(0); expect(Atomics.load(word, 0)).toBe(1);
+    expect(expected).toBe(0); expect(controlLoad(word, 0)).toBe(1);
     expect(Atomics.wait(word, 0, expected, 0)).toBe("not-equal");
   } });
   const fd = f.wasi.descriptors.open(stream, ALL, ALL);
@@ -153,29 +154,29 @@ test("a handled signal interrupts preview1 poll without consuming its hint or pe
   } });
   f.subscribe(0, f.wasi.descriptors.open(endpoint(idle(), notification), ALL, ALL));
   expect(f.poll()).toBe(27);
-  expect(Atomics.load(signals.interrupt, 0)).toBe(2);
+  expect(controlLoad(signals.interrupt, 0)).toBe(2);
   expect(takeSignal(signals.signalState)).toBe(2);
 });
 
 test("an already pending interrupt returns EINTR without sleeping or changing event memory", () => {
-  const interrupt = new Int32Array(new SharedArrayBuffer(4)); Atomics.store(interrupt, 0, 15);
+  const interrupt = new Int32Array(new SharedArrayBuffer(4)); controlStore(interrupt, 0, 15);
   const f = fixture({ interrupt, wait() { throw new Error("pending interrupt slept"); } });
   f.subscribe(0, f.wasi.descriptors.open(endpoint(idle()), ALL, ALL));
   f.view().setUint32(1024, 0xabcdef12, true);
   expect(f.poll()).toBe(27);
   expect(f.view().getUint32(1024, true)).toBe(0xabcdef12);
-  expect(Atomics.load(interrupt, 0)).toBe(15);
+  expect(controlLoad(interrupt, 0)).toBe(15);
 });
 
 test("clock-only preview1 poll can wait on the interrupt cell and preserve signal delivery", () => {
   const interrupt = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ interrupt, wait(word, expected, milliseconds) {
     expect(word).toBe(interrupt); expect(expected).toBe(0); expect(milliseconds).toBeGreaterThan(0);
-    expect(milliseconds).toBeLessThanOrEqual(1000); Atomics.store(interrupt, 0, 2); Atomics.notify(interrupt, 0);
+    expect(milliseconds).toBeLessThanOrEqual(1000); controlStore(interrupt, 0, 2); Atomics.notify(interrupt, 0);
   } });
   f.clock(0, 1_000_000_000n);
   expect(f.poll()).toBe(27);
-  expect(Atomics.load(interrupt, 0)).toBe(2);
+  expect(controlLoad(interrupt, 0)).toBe(2);
 });
 
 test("preview1 poll refreshes its output view after a notification wait grows guest memory", () => {

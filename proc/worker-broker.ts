@@ -1,3 +1,5 @@
+import { collectDirectoryProcess, collectDirectoryJob, directoryJobs, directoryJob } from "./directory.js";
+import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "./admission.js";
@@ -25,8 +27,8 @@ export interface WorkerProcessBrokerOptions {
  */
 export class WorkerProcessBroker {
   private readonly transports = new Map<number, WorkerProcessTransport>();
-  /** Authenticate delayed messages without retaining reaped descriptor/adapter payloads. */
-  private readonly identities = new Map<number, WorkerProcessTransport>();
+  /** One root per active directory, not one tombstone per historical process. */
+  private readonly directories = new Map<string, WorkerProcessTransport>();
   private readonly failedCleanup = new Set<number>();
   private acknowledgingJob?: number;
   private supervisor?: ProcessSupervisor;
@@ -42,39 +44,45 @@ export class WorkerProcessBroker {
     const existing = this.getIdentity(state.pid);
     if (existing && workerProcessDirectoryId(existing) !== workerProcessDirectoryId(transport)) throw new TypeError("process identity is already registered");
     this.transports.set(state.pid, transport);
+    this.directories.set(workerProcessDirectoryId(transport), transport);
   }
   /** Drop one completed root directory only after all descendant consumers and jobs retire. */
   releaseRoot(pid: number): void {
     const root = this.getIdentity(pid);
     if (!root) return;
     const state = workerProcessState(root);
-    if (state.parentPid !== 0 || Atomics.load(state.confirmed, 0) === 0 || workerProcessSlots(root).some(slot => {
+    if (state.parentPid !== 0 || controlLoad(state.confirmed, 0) === 0 || directoryJobs(root.directory).some(slot => directoryJob(root.directory, slot).id !== state.job) || workerProcessSlots(root).some(slot => {
       const child = workerProcessState(root, slot);
-      return child.pid !== pid && (Atomics.load(child.confirmed, 0) === 0 || this.supervisor?.get(child.pid) ||
-        (child.job !== state.job && Atomics.load(child.jobPending, 0) >= 0));
+      return child.pid !== pid && (controlLoad(child.confirmed, 0) === 0 || this.supervisor?.get(child.pid) ||
+        (child.job !== state.job && controlLoad(child.jobPending, 0) >= 0));
     })) throw new Error("Root directory still has unconfirmed or unreaped processes");
     const directory = workerProcessDirectoryId(root);
-    for (const entries of [this.transports, this.identities]) for (const [member, transport] of entries) {
+    const ownJob = this.sharedJob(state.job);
+    if (ownJob && controlLoad(ownJob.group.pending) === 0) collectDirectoryJob(root.directory, ownJob.group.slot, state.job);
+    for (const entries of [this.transports]) for (const [member, transport] of entries) {
       if (workerProcessDirectoryId(transport) !== directory) continue;
       entries.delete(member);
       this.failedCleanup.delete(member);
     }
+    this.directories.delete(directory);
   }
   get(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid); }
-  getIdentity(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid) ?? this.identities.get(pid); }
-  private retainIdentity(pid: number, transport: WorkerProcessTransport): void {
-    this.identities.set(pid, { directory: transport.directory, identity: transport.identity, slot: transport.slot, bindings: [], resources: [] });
-  }
-  private jobTransport(job: number): WorkerProcessTransport | undefined {
-    for (const transport of this.transports.values()) if (workerProcessState(transport).job === job) return transport;
-    for (const transport of this.identities.values()) if (workerProcessState(transport).job === job) return transport;
+  getIdentity(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid); }
+  private sharedJob(job: number) {
+    for (const root of this.directories.values()) for (const slot of directoryJobs(root.directory)) {
+      const group = directoryJob(root.directory, slot);
+      if (group.id === job) return { root, group };
+    }
     return undefined;
   }
   private reapTransports(job: number): void {
-    const leader = this.jobTransport(job);
-    if (leader) { Atomics.compareExchange(workerProcessState(leader).jobPending, 0, 0, -1); wakeWorkerProcess(leader); }
+    const shared = this.sharedJob(job);
+    if (shared && controlLoad(shared.group.pending) === 0) collectDirectoryJob(shared.root.directory, shared.group.slot, job);
     for (const [pid, transport] of this.transports) {
-      if (workerProcessState(transport).job === job) { this.retainIdentity(pid, transport); this.transports.delete(pid); }
+      try { if (workerProcessState(transport).job !== job) continue; }
+      catch (error) { if (!(error instanceof ProcessError)) throw error; }
+      this.transports.delete(pid);
+      this.failedCleanup.delete(pid);
     }
   }
   private codec(transport: WorkerProcessTransport): WorkerDescriptorCodec {
@@ -89,36 +97,64 @@ export class WorkerProcessBroker {
           const transport = this.transports.get(event.pid);
           // The supervisor publishes exit only after revocation, descriptor cleanup and
           // its asynchronous host-work fence; process and job waits share that boundary.
-          if (transport && !this.failedCleanup.has(event.pid)) { Atomics.store(workerProcessState(transport).confirmed, 0, 1); wakeWorkerProcess(transport); }
+          if (transport && !this.failedCleanup.has(event.pid)) { controlStore(workerProcessState(transport).confirmed, 0, 1); wakeWorkerProcess(transport); }
         });
         const stopQuiescent = supervisor.onProcessQuiescent(event => {
           if (this.disposed) return;
           const transport = this.transports.get(event.pid);
-          if (transport && !this.failedCleanup.has(event.pid)) confirmWorkerProcessJob(transport);
+          if (transport && !this.failedCleanup.has(event.pid)) {
+            confirmWorkerProcessJob(transport);
+            // An exit observer may already have consumed the host process record before
+            // this final job fence. Honor that collection after safe confirmation.
+            if (!supervisor.get(event.pid)) {
+              try { collectDirectoryProcess(transport); }
+              catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
+              this.transports.delete(event.pid);
+              this.failedCleanup.delete(event.pid);
+            }
+          }
         });
         const stopReadiness = supervisor.registerJobReadiness(job => {
-          const transport = this.jobTransport(job);
-          if (!transport) return true;
-          const pending = Atomics.load(workerProcessState(transport).jobPending, 0);
+          const shared = this.sharedJob(job);
+          if (!shared) {
+            if (supervisor.table.jobClaimed(job) && this.acknowledgingJob !== job) throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
+            return true;
+          }
+          const pending = controlLoad(shared.group.pending);
           if (pending === -1 && this.acknowledgingJob !== job) throw new ProcessError(ProcessErrno.CHILD, "job was already reaped by another observer");
           return pending === 0 || (pending === -1 && this.acknowledgingJob === job);
         });
         const stopClaim = supervisor.registerJobReapClaim(job => {
-          const transport = this.jobTransport(job);
-          if (!transport) return true;
-          const pending = workerProcessState(transport).jobPending;
-          // Only the worker's acknowledgment may consume an already-claimed job. A
-          // normal host consumer must win the same CAS as every blocked guest worker.
-          return this.acknowledgingJob === job ? Atomics.load(pending, 0) === -1 : Atomics.compareExchange(pending, 0, 0, -1) === 0;
+          const shared = this.sharedJob(job);
+          if (!shared) return this.acknowledgingJob === job || !supervisor.table.jobClaimed(job);
+          if (controlLoad(shared.group.pending) !== 0) return false;
+          collectDirectoryJob(shared.root.directory, shared.group.slot, job);
+          return true;
+        });
+        const stopRemove = supervisor.table.onRemove(record => {
+          const transport = this.transports.get(record.pid);
+          if (!transport || !record.result) return;
+          try { collectDirectoryProcess(transport); } catch (error) {
+            if (!(error instanceof ProcessError) || (error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD && error.errno !== ProcessErrno.AGAIN)) throw error;
+            if (error.errno === ProcessErrno.AGAIN) return;
+          }
+          this.transports.delete(record.pid);
+          this.failedCleanup.delete(record.pid);
         });
         const stopReap = supervisor.onJobReap(job => this.reapTransports(job));
-        this.stopListening = () => { stopExit(); stopQuiescent(); stopReadiness(); stopClaim(); stopReap(); };
+        this.stopListening = () => { stopExit(); stopQuiescent(); stopReadiness(); stopClaim(); stopReap(); stopRemove(); };
       }
       return supervisor;
     });
   }
   handle(message: WorkerProcessMessage, senderPid?: number): Promise<void> {
-    const state = workerProcessState(message.transport);
+    let state: ReturnType<typeof workerProcessState>;
+    try { state = workerProcessState(message.transport); }
+    catch (error) {
+      if (message.operation !== "reap-job") return Promise.resolve();
+      if (!this.directories.has(workerProcessDirectoryId(message.transport))) return Promise.resolve();
+      state = { pid: message.transport.pid } as ReturnType<typeof workerProcessState>;
+    }
     if (senderPid !== undefined && (message.operation === "spawn" ? state.parentPid : state.pid) !== senderPid) {
       if (message.operation === "spawn") this.trace(message.transport, "rejected", "wrong-sender");
       return Promise.reject(new ProcessError(ProcessErrno.SRCH, "process message has the wrong sender"));
@@ -143,7 +179,9 @@ export class WorkerProcessBroker {
         const previous = this.acknowledgingJob;
         this.acknowledgingJob = message.job;
         try {
-          if (!supervisor.waitJob(state.pid, message.job)) return;
+          const job = supervisor.job(message.job);
+          if (!job || this.sharedJob(message.job)) return;
+          if (!supervisor.waitJob(job.controlParent, message.job)) return;
         } catch (error) {
           // A wholly rejected transfer has only a shared directory record. A host-side
           // consumer may also have reaped first; neither notice should recreate a job.
@@ -168,7 +206,7 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       if (this.disposed) { reason = "broker-disposed"; throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed"); }
-      const parentTransport = this.getIdentity(state.parentPid);
+      const parentTransport = this.getIdentity(state.parentPid) ?? this.directories.get(workerProcessDirectoryId(transport));
       if (!parentTransport || workerProcessDirectoryId(parentTransport) !== workerProcessDirectoryId(transport)) {
         reason = parentTransport ? "directory-mismatch" : "unknown-parent"; throw new ProcessError(ProcessErrno.SRCH, "unknown process parent");
       }
@@ -180,8 +218,8 @@ export class WorkerProcessBroker {
       this.transports.set(state.pid, transport);
       reason = "reservation-failed";
       supervisor.reserveAdmittedSpawn(state.parentPid, { ...request, fds: [] }, {
-        pid: state.pid, job: state.job, ...state.signals,
-      }, new DescriptorTable(), { ownerPid: state.jobOwner, leaderPid: state.jobLeaderPid, outcome: state.jobOutcome, foreground: state.jobForeground });
+        pid: state.pid, job: state.job, controlParent: controlLoad(state.controlParent), rootPid: state.rootPid, ...state.signals,
+      }, new DescriptorTable(), { ownerPid: state.jobOwner, controlParent: controlLoad(state.jobControlParent), leaderPid: state.jobLeaderPid, outcome: state.jobOutcome, foreground: state.jobForeground });
       admitted = true;
       this.trace(transport, "reserved");
       const descriptors = supervisor.get(state.pid)!.descriptors;
@@ -223,7 +261,7 @@ export class WorkerProcessBroker {
         }
         await this.options.quiesce?.(state.pid, transport);
         if (cleaned) {
-          Atomics.store(state.confirmed, 0, 1);
+          controlStore(state.confirmed, 0, 1);
           confirmWorkerProcessJob(transport);
         }
       }
@@ -238,12 +276,18 @@ export class WorkerProcessBroker {
     for (const [pid, transport] of this.transports) {
       const record = supervisor.get(pid);
       if (!record || record.result) continue;
-      const state = workerProcessState(transport);
+      let state: ReturnType<typeof workerProcessState>;
+      try { state = workerProcessState(transport); } catch (error) {
+        if (!(error instanceof ProcessError)) throw error;
+        if (record.result) supervisor.table.remove(pid);
+        continue;
+      }
       const outcome = readOutcome(state.signals.outcome);
       if (outcome?.kind === "signaled") supervisor.defaultSignal(pid, outcome.code);
+      else if (outcome?.kind === "start-failed") supervisor.failStart(pid, { code: outcome.error });
       else if (outcome) supervisor.exit(pid, outcome.code);
       else {
-        const signal = Atomics.load(state.signals.requestedSignal, 0);
+        const signal = controlLoad(state.signals.requestedSignal, 0);
         if (signal) supervisor.observeSignal(pid, signal);
       }
     }
@@ -260,14 +304,15 @@ export class WorkerProcessBroker {
       // Exit waiters resolve at the host-work fence even if the embedding immediately
       // disposes the supervisor and clears its event listeners. Retain shared identity
       // only, never descriptor tokens, adapter payloads, or the broker itself.
-      const identity: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot: transport.slot, bindings: [], resources: [] };
+      const identity: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot: transport.slot, pid: transport.pid, bindings: [], resources: [] };
       void this.supervisor!.waitForExit(record.parentPid, pid).then(() => {
         if (!gate.complete) return;
-        Atomics.store(workerProcessState(identity).confirmed, 0, 1);
-        confirmWorkerProcessJob(identity);
+        try { confirmWorkerProcessJob(identity); } catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH) this.report(error); }
       });
     }
-    for (const transport of this.transports.values()) requestSignal(workerProcessState(transport).signals, 9);
+    for (const transport of this.transports.values()) {
+      try { requestSignal(workerProcessState(transport).signals, 9); } catch (error) { if (!(error instanceof ProcessError)) throw error; }
+    }
     this.pump();
     for (const [pid, transport] of this.transports) {
       if (transport.resources.length === 0) { wakeWorkerProcess(transport); continue; }
@@ -282,7 +327,7 @@ export class WorkerProcessBroker {
       wakeWorkerProcess(transport);
     }
     this.transports.clear();
-    this.identities.clear();
+    this.directories.clear();
     this.failedCleanup.clear();
     this.stopListening?.(); this.stopListening = undefined;
   }
