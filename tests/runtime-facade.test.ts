@@ -10,14 +10,20 @@ const previousWorker = globalThis.Worker;
 let runtimes: Runtime[];
 let events: string[];
 let ports: MessagePort[];
+let workerListeners: Map<string, EventListener[]>;
 
 beforeEach(() => {
   runtimes = [];
   events = [];
   ports = [];
+  workerListeners = new Map();
   globalThis.Worker = class {
     constructor() { events.push("filesystem:start"); }
-    addEventListener() {}
+    addEventListener(type: string, listener: EventListener) {
+      let listeners = workerListeners.get(type);
+      if (!listeners) workerListeners.set(type, listeners = []);
+      listeners.push(listener);
+    }
     postMessage(message: { connect: { port: MessagePort } }) { ports.push(message.connect.port); }
     terminate() { events.push("filesystem:stop"); }
   } as unknown as typeof Worker;
@@ -154,6 +160,55 @@ test("process activation is lazy, shared, and adopts the runtime identity alloca
   expect("dispose" in runtime.filesystem).toBe(false);
 });
 
+test.each(["filesystem", "process", "supervisor"] as const)("borrowed %s projection exposes no owner fields, descriptors, or prototype", async name => {
+  const runtime = create();
+  const service = await runtime.processes();
+  const supervisor = await service.ready();
+  const surfaces = {
+    filesystem: { value: runtime.filesystem, hidden: ["worker", "client", "writes", "failure", "fatal", "fail", "assertLive", "request", "mutate", "dispose"] },
+    process: { value: service, hidden: ["options", "supervisor", "transport", "pipes", "controllers", "roots", "children", "activation", "suspend", "quiesce", "dispose"] },
+    supervisor: { value: supervisor, hidden: ["options", "listeners", "jobListeners", "finishing", "disposed", "launch", "finish", "terminate", "dispose"] },
+  };
+  const { value, hidden } = surfaces[name];
+  for (const key of hidden) {
+    expect(Reflect.get(value, key) === undefined).toBe(true);
+    expect(Reflect.has(value, key)).toBe(false);
+    expect(Reflect.ownKeys(value).includes(key)).toBe(false);
+    expect(Object.getOwnPropertyDescriptor(value, key)).toBeUndefined();
+  }
+  expect(Object.getPrototypeOf(value)).toBeNull();
+  expect(Reflect.has(value, "constructor")).toBe(false);
+  expect(Object.isFrozen(value)).toBe(true);
+});
+
+test("positive projections keep bound public methods, stable identity, and disposal admission checks", async () => {
+  const runtime = create();
+  const filesystem = runtime.filesystem;
+  const createIdentity = Object.getOwnPropertyDescriptor(filesystem, "createIdentity")!.value as typeof filesystem.createIdentity;
+  const identity = createIdentity.call(null);
+  const sibling = filesystem.createIdentity();
+  expect(identity.ownerStates).toBe(sibling.ownerStates);
+  expect(identity.owner).not.toBe(sibling.owner);
+  const service = await runtime.processes();
+  const ready = Object.getOwnPropertyDescriptor(service, "ready")!.value as typeof service.ready;
+  const supervisor = await ready.call(null);
+  expect(await service.ready()).toBe(supervisor);
+  expect(service.ready).toBe(ready);
+  const createRoot = Object.getOwnPropertyDescriptor(supervisor, "createRoot")!.value as typeof supervisor.createRoot;
+  const pid = createRoot.call(null);
+  expect(supervisor.get(pid)?.pid).toBe(pid);
+  expect(supervisor.table.identities).toBe(runtime.identities);
+  expect(Reflect.set(filesystem, "worker", {})).toBe(false);
+  expect(Reflect.defineProperty(service, "options", { value: {} })).toBe(false);
+  expect(Reflect.deleteProperty(supervisor, "createRoot")).toBe(false);
+  await filesystem.drain();
+  await runtime.dispose();
+  expect(() => createIdentity()).toThrow(/disposed/i);
+  expect(() => createRoot()).toThrow(/disposed/i);
+  await expect(ready()).rejects.toThrow(/disposed/i);
+  await expect(filesystem.drain()).rejects.toThrow(/disposed/i);
+});
+
 test("program registration stays lazy and accepts new programs after activation", async () => {
   let loads = 0;
   const contexts: ProcessContext[] = [];
@@ -216,6 +271,27 @@ test("disposal blocks previously borrowed capabilities and never activates unuse
   await expect(filesystem.writeFile("/late", "no")).rejects.toThrow(/disposed/i);
 });
 
+test("borrowed filesystem forwards its allowlisted ownership callback and preserves failure state", async () => {
+  const runtime = create();
+  let lost = 0;
+  let receiver: unknown;
+  const callback = function (this: unknown) { lost++; receiver = this; };
+  runtime.filesystem.onOwnershipLost = callback;
+  expect(runtime.filesystem.onOwnershipLost).toBe(callback);
+  const event = new MessageEvent("message", { data: { type: "filesystem-ownership-lost" } });
+  for (const listener of workerListeners.get("message") ?? []) listener(event);
+  expect(lost).toBe(1);
+  // A method-style callback must receive the borrowed projection, never the private owner.
+  expect(receiver === runtime.filesystem).toBe(true);
+  expect(runtime.filesystem.ownershipLost).toBe(true);
+  expect(Reflect.set(runtime.filesystem, "ownershipLost", false)).toBe(false);
+  expect(() => runtime.filesystem.fork()).toThrow(/another tab/i);
+  await expect(runtime.filesystem.writeFile("/lost", "no")).rejects.toThrow(/another tab/i);
+  await expect(runtime.dispose()).rejects.toThrow(/another tab/i);
+  expect(() => { runtime.filesystem.onOwnershipLost = undefined; }).toThrow(/disposed/i);
+  expect(create().disposed).toBe(false);
+});
+
 test("an activation racing disposal is awaited and cleaned before filesystem ownership closes", async () => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
@@ -229,6 +305,44 @@ test("an activation racing disposal is awaited and cleaned before filesystem own
   expect((await rejected).message).toMatch(/disposed/i);
   await disposal;
   expect(events.slice(-3)).toEqual(["process:outcomes", "process:stop", "filesystem:stop"]);
+});
+
+test("disposal owns late adapter launch completion and asynchronous handle termination", async () => {
+  let releaseLaunch!: () => void;
+  let releaseStop!: () => void;
+  let entered!: () => void;
+  const launching = new Promise<void>(resolve => { entered = resolve; });
+  const launchGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+  const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
+  let stops = 0;
+  const runtime = create({ processHost: processHost() });
+  runtime.registerAdapter("delayed", async () => {
+    entered();
+    await launchGate;
+    return { terminate: async () => { stops++; await stopGate; } };
+  });
+  runtime.registerProgram("app", { adapter: "delayed", module: emptyModule, cooperative: true });
+  const service = await runtime.processes();
+  const supervisor = await service.ready();
+  const root = supervisor.createRoot();
+  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const starting = supervisor.start(child);
+  await launching;
+  const disposal = runtime.dispose();
+  let finished = false;
+  void disposal.then(() => { finished = true; });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(finished).toBe(false);
+    expect(() => create()).toThrow(/live|owner|runtime/i);
+    releaseLaunch();
+    await starting;
+    expect(stops).toBe(1);
+    expect(finished).toBe(false);
+  } finally { releaseLaunch(); releaseStop(); }
+  await disposal;
+  expect(stops).toBe(1);
+  expect(events.at(-1)).toBe("filesystem:stop");
 });
 
 test("facade initial browser graph keeps process services and interrupt compilation lazy", async () => {
@@ -253,7 +367,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
   expect(processInputs).toEqual([]);
   expect(inputs.filter(path => /(?:^|\/)interrupt\//.test(path))).toEqual([]);
   expect(Array.from(outputs.values()).some(output => Object.keys(output.inputs).some(path => path.endsWith("proc/supervisor.ts")))).toBe(true);
-  expect(Array.from(outputs.values()).some(output => Object.keys(output.inputs).some(path => path.endsWith("/interrupt/rewriter.ts")))).toBe(true);
+  expect(Array.from(outputs.values()).some(output => Object.keys(output.inputs).some(path => path.endsWith("interrupt/rewriter.ts")))).toBe(true);
 });
 
 test("cleanup errors still close the filesystem and release page ownership", async () => {

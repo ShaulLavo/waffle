@@ -34,33 +34,64 @@ export interface Runtime {
 
 const ownerKey = Symbol.for("waffle.runtime.owner");
 const owners = globalThis as typeof globalThis & { [ownerKey]?: object };
-const hostOwnership = new Set<PropertyKey>(["dispose", "suspend", "quiesce"]);
-const supervisorOwnership = new Set<PropertyKey>(["dispose"]);
-const filesystemOwnership = new Set<PropertyKey>(["dispose", "client"]);
-const asyncFilesystem = new Set<PropertyKey>(["quiesce", "drain", "flush", "lookup", "readFile", "listFiles", "mkdirp", "writeFile", "remove", "move"]);
+type CapabilityKind = "method" | "async" | "readonly" | "callback";
+// Positive, exhaustive projections: a new public owner member requires an explicit capability
+// decision here. TypeScript-private owner fields and future implementation details never leak.
+const filesystemCapabilities = {
+  createIdentity: "method", fork: "method", connect: "method", revoke: "method", reap: "method",
+  quiesce: "async", drain: "async", flush: "async", lookup: "async", readFile: "async", listFiles: "async",
+  mkdirp: "async", writeFile: "async", remove: "async", move: "async",
+  ownershipLost: "readonly", onOwnershipLost: "callback",
+} satisfies Record<keyof RuntimeFilesystem, CapabilityKind>;
+const processCapabilities = {
+  ready: "async", registerController: "method", reserveRoot: "method", adoptRoot: "async", adoptRuntimeRoot: "async",
+  revokeRuntimeProcess: "method", runtimeMessage: "async", rejectRuntimeMessage: "method", transportFor: "method",
+  releaseLegacyJob: "method", launchWorker: "method", kill: "async", killJob: "async", rootExit: "async",
+} satisfies Record<keyof ProcessService, CapabilityKind>;
+const supervisorCapabilities = {
+  table: "readonly", get: "method", job: "method", jobOf: "method", canSignal: "method", canSignalJob: "method", canWaitJob: "method",
+  registerJobReadiness: "method", registerJobReapClaim: "method", onJobReap: "method", jobEmpty: "method", registerJobWake: "method",
+  createRoot: "method", reserveSpawn: "method", reserveAdmittedSpawn: "method", spawn: "method", start: "async",
+  failStart: "method", exit: "method", kill: "method", observeSignal: "method", defaultSignal: "method", killJob: "method",
+  wait: "method", waitJob: "method", reapJob: "method", waitForExit: "async", reap: "method",
+  onChildExit: "method", onProcessQuiescent: "method", registerRevocation: "method",
+} satisfies Record<keyof RuntimeSupervisor, CapabilityKind>;
 
-/** Keep method receivers on the owner, but never expose its teardown capabilities. */
-function borrow<T extends object>(owner: T, excluded: ReadonlySet<PropertyKey>, assertLive: () => void,
-  overrides = new Map<PropertyKey, unknown>(), asyncMethods = new Set<PropertyKey>()): T {
-  const methods = new Map<PropertyKey, unknown>();
-  return new Proxy(owner, {
-    get(target, key) {
-      if (excluded.has(key)) return undefined;
-      if (overrides.has(key)) return overrides.get(key);
-      const value: unknown = Reflect.get(target, key, target);
-      if (typeof value !== "function") return value;
-      if (!methods.has(key)) methods.set(key, asyncMethods.has(key)
-        ? async (...args: unknown[]) => { assertLive(); return Reflect.apply(value, target, args); }
-        : (...args: unknown[]) => { assertLive(); return Reflect.apply(value, target, args); });
-      return methods.get(key);
-    },
-    has: (target, key) => !excluded.has(key) && Reflect.has(target, key),
-    ownKeys: target => Reflect.ownKeys(target).filter(key => !excluded.has(key)),
-    getOwnPropertyDescriptor: (target, key) => excluded.has(key) ? undefined : Reflect.getOwnPropertyDescriptor(target, key),
-    set: () => false,
-    defineProperty: () => false,
-    deleteProperty: () => false,
-  });
+/** Fresh capabilities, never an owner-backed Proxy. Even descriptors and prototype inspection
+ * expose only wrappers/getters; the owner is reachable solely through their private closures.
+ */
+function borrow<T extends object>(owner: T, capabilities: Record<keyof T, CapabilityKind>, assertLive: () => void,
+  overrides = new Map<PropertyKey, unknown>()): T {
+  const projection = Object.create(null) as T;
+  for (const [key, kind] of Object.entries(capabilities)) {
+    if (kind === "readonly") {
+      Object.defineProperty(projection, key, { enumerable: true, get: () => Reflect.get(owner, key, owner) });
+      continue;
+    }
+    if (kind === "callback") {
+      let callback: unknown = Reflect.get(owner, key, owner);
+      // Owner-side method invocation must not give a consumer callback the private owner as `this`.
+      const bridge = (value: unknown) => typeof value === "function"
+        ? (...args: unknown[]) => Reflect.apply(value, projection, args) : value;
+      Reflect.set(owner, key, bridge(callback), owner);
+      Object.defineProperty(projection, key, {
+        enumerable: true, get: () => callback,
+        set: (value: unknown) => { assertLive(); Reflect.set(owner, key, bridge(value), owner); callback = value; },
+      });
+      continue;
+    }
+    const invoke = (args: unknown[]) => {
+      assertLive();
+      const method: unknown = overrides.has(key) ? overrides.get(key) : Reflect.get(owner, key, owner);
+      if (typeof method !== "function") throw new TypeError(`Missing runtime capability: ${key}`);
+      return Reflect.apply(method, owner, args);
+    };
+    Object.defineProperty(projection, key, {
+      enumerable: true,
+      value: kind === "async" ? async (...args: unknown[]) => invoke(args) : (...args: unknown[]) => invoke(args),
+    });
+  }
+  return Object.freeze(projection);
 }
 
 /** The page is the sole owner. Duplicate bundles share only the guard, not a service locator. */
@@ -81,6 +112,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   }
   const adapters = new Map<string, GuestLauncher>();
   const programs = new Map<string, Executable>();
+  const launching = new Set<Promise<ProcessHandle>>();
+  const handles = new Set<ProcessHandle>();
   let disposed = false;
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
@@ -88,7 +121,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let disposal: Promise<void> | undefined;
   let service: ProcessService | undefined;
   const assertLive = () => { if (disposed) throw new Error("Runtime is disposed"); };
-  const borrowedFilesystem = borrow(filesystem, filesystemOwnership, assertLive, undefined, asyncFilesystem);
+  const borrowedFilesystem = borrow<RuntimeFilesystem>(filesystem, filesystemCapabilities, assertLive);
   const suspend = (failures: unknown[]) => {
     if (!host) return;
     try { host.suspend(); } catch (error) { failures.push(error); }
@@ -156,7 +189,22 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             assertLive();
             const launch = adapters.get(context.adapter);
             if (!launch) throw new Error(`Unknown adapter: ${context.adapter}`);
-            return launch(context, service!);
+            const pending = Promise.resolve(launch(context, service!)).then(handle => {
+              if (!handle || typeof handle.terminate !== "function") throw new TypeError("Adapter launcher must return a process handle");
+              let stopping: Promise<void> | undefined;
+              const owned: ProcessHandle = { terminate() {
+                if (!stopping) {
+                  stopping = Promise.resolve().then(() => handle.terminate());
+                  void stopping.then(() => handles.delete(owned), () => {});
+                }
+                return stopping;
+              } };
+              handles.add(owned);
+              return owned;
+            });
+            launching.add(pending);
+            void pending.then(() => launching.delete(pending), () => launching.delete(pending));
+            return pending;
           },
         };
         const created = await (options.processHost
@@ -174,10 +222,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           const supervisor = await owner.ready();
           assertLive();
           let borrowed = supervisors.get(supervisor);
-          if (!borrowed) { borrowed = borrow(supervisor, supervisorOwnership, assertLive); supervisors.set(supervisor, borrowed); }
+          if (!borrowed) { borrowed = borrow<RuntimeSupervisor>(supervisor, supervisorCapabilities, assertLive); supervisors.set(supervisor, borrowed); }
           return borrowed;
         };
-        service = borrow(owner, hostOwnership, assertLive, new Map([["ready", ready]])) as ProcessService;
+        service = borrow<ProcessService>(owner, processCapabilities, assertLive, new Map([["ready", ready]]));
         return service;
       });
       return activation;
@@ -196,12 +244,17 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           await attempt(async () => { host = await ownedActivation; });
           suspend(failures);
         }
+        // A controller may be awaiting an adapter's launch handle when suspension wins.
+        // Its late handle and asynchronous stop still belong to this page, not the next owner.
+        while (launching.size) await Promise.allSettled(Array.from(launching));
         await attempt(() => filesystem.drain());
         // Keep the backend and relays alive while every admitted filesystem request fences.
         await Promise.all([
           attempt(() => host?.quiesce()),
           attempt(() => filesystem.quiesce(filesystem.client.connection)),
         ]);
+        await Promise.all(Array.from(handles, handle => attempt(() => handle.terminate())));
+        handles.clear();
         await attempt(() => host?.dispose());
         await attempt(() => filesystem.dispose());
         adapters.clear();
