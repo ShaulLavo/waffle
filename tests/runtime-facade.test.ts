@@ -161,6 +161,20 @@ test("process activation is lazy, shared, and adopts the runtime identity alloca
   expect("dispose" in runtime.filesystem).toBe(false);
 });
 
+test("the public admission observer reaches the lazily activated process host unchanged", async () => {
+  const onProcessAdmission: NonNullable<RuntimeOptions["onProcessAdmission"]> = () => {};
+  const factory = processHost();
+  let calls = 0;
+  const runtime = create({ onProcessAdmission, processHost: options => {
+    calls++;
+    expect(options.onProcessAdmission).toBe(onProcessAdmission);
+    return factory(options);
+  } });
+  expect(calls).toBe(0);
+  await runtime.processes();
+  expect(calls).toBe(1);
+});
+
 test.each(["filesystem", "process", "supervisor"] as const)("borrowed %s projection exposes no owner fields, descriptors, or prototype", async name => {
   const runtime = create();
   const service = await runtime.processes();

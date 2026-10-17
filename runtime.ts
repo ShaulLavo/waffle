@@ -5,6 +5,8 @@ import type { ExecutableRegistry, Executable } from "./proc/registry";
 import type { ProcessSupervisor } from "./proc/supervisor";
 import type { ProcessContext, ProcessHandle } from "./proc/types";
 import type { FilesystemIdentity } from "./fs/protocol";
+import type { ProcessAdmissionObserver } from "./proc/admission";
+export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
 export interface RuntimeConsumer {
@@ -30,6 +32,9 @@ export interface RuntimeOptions {
   filesystem?: SharedFilesystemOptions;
   /** Inject a host, not a second runtime. The factory receives this runtime's exact owners. */
   processHost?: (options: BrowserProcessBrokerOptions) => BrowserProcessBroker | Promise<BrowserProcessBroker>;
+  /** Optional admission metadata; retain a bounded history in the consumer if needed.
+   * Observers must not reenter process control. Throws and rejected async returns are ignored. */
+  onProcessAdmission?: ProcessAdmissionObserver;
 }
 export interface Runtime {
   readonly filesystem: RuntimeFilesystem;
@@ -214,7 +219,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             quiesce: identity => filesystem.quiesce(identity),
             sweep: () => filesystem.client.sweep(),
           },
-          identities, registry, table,
+          identities, registry, table, onProcessAdmission: options.onProcessAdmission,
           launch: context => {
             assertLive();
             const launch = adapters.get(context.adapter);

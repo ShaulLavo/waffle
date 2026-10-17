@@ -139,6 +139,43 @@ only after every endpoint lifetime is closed or revoked, including pending trans
 may still drain data after writer EOF. Worker-created controllers use manual relay mode; only
 a responsive controller starts the automatic relay.
 
+### Process admission diagnostics
+
+Pass `onProcessAdmission` to `createRuntime` to observe child admission without console logging:
+
+```ts
+import { createRuntime, type ProcessAdmissionEvent } from "waffle";
+
+const admissions: ProcessAdmissionEvent[] = [];
+const runtime = createRuntime({
+  onProcessAdmission(event) {
+    if (admissions.length === 256) admissions.shift();
+    admissions.push(event);
+  },
+});
+```
+
+Each frozen event contains `pid`, `parentPid`, `job`, `stage`, and an optional stable `reason`.
+Transport-backed events also include `directory`, an opaque shared-directory identity string;
+PID and directory together distinguish independent transport namespaces. Direct-supervisor
+launches may omit it. No buffers, arguments, environment variables, or error messages are included. The consumer owns history
+and its size limit. The runtime retains none, and work without an observer avoids event allocation.
+Observers must not reenter process control; thrown exceptions and rejected async returns are ignored.
+
+`received` precedes the browser's sender guards, followed by `queued`, `reserved`, `bound`, and
+`starting` for an accepted transfer. A reservation or start request is **not** proof of launch:
+`launching` marks adapter entry and `launched` means that adapter returned its process handle.
+`skipped` with `preselected-exit`, `preselected-signal` or `preselected-start-failed` identifies an outcome already selected
+when admission requests startup. A cancellation during module resolution may leave history at
+`starting`. These events describe admission, not process exit or teardown.
+`rejected` reasons distinguish unknown, revoked, or signaled senders, a wrong sender, a missing
+parent or mismatched directory, disposal, activation, reservation, binding, and startup failures.
+`dropped` means a duplicate/already-registered transfer did not acquire a second resource lifetime.
+External rejection uses `external-rejection` unless the caller supplies a more specific reason.
+Lower-level `BrowserProcessBroker` and `WorkerProcessBroker` expose the same observer through
+`onProcessAdmission` and `onAdmission` options respectively. The standalone transport broker
+reports only transport admission; its host owns adapter launch and startup-failure diagnostics.
+
 ## Guest process ABI
 
 `ProcessABI` is exported from `waffle/proc`. Install its `imports` as the

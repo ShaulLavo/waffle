@@ -1,3 +1,4 @@
+export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./admission";
 export type { SignalTransport, SignalRequestResult } from "./signals";
 export { SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal } from "./signals";
 export { ProcessIdentityAllocator } from "./identity";

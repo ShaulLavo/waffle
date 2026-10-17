@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker";
 import { ProcessIdentityAllocator } from "../proc/identity";
 import { ExecutableRegistry } from "../proc/registry";
@@ -7,10 +7,10 @@ import type { RootProcessOptions } from "../proc/supervisor";
 import type { WorkerProcessBroker } from "../proc/worker-broker";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
 import { DescriptorTable } from "../core/descriptors";
-import { connectFilesystemIdentity, createFilesystemIdentity } from "../fs/protocol";
+import { connectFilesystemIdentity, createFilesystemIdentity, revokeFilesystem } from "../fs/protocol";
 import { createSignalState, type SignalTransport } from "../proc/signals";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { PipePublicationRegistry } from "../proc/pipes";
+import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes";
 
 test("one browser process owner admits multiple roots with shared monotonically allocated identities", async () => {
@@ -578,3 +578,140 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
     try { await broker.dispose(); } finally { for (const port of ports) port.close(); globalThis.Worker = previousWorker; }
   }
 });
+const regressionCleanups: (() => Promise<void>)[] = [];
+afterEach(async () => { while (regressionCleanups.length) await regressionCleanups.pop()!(); });
+async function bounded<T>(pending: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([pending, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("accepted-writer regression gate timed out")), 1000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["before-admission", "before-launch"] as const) {
+  test(`accepted inherited writers survive parent exit ${exitAt} with ${activation} root activation`, async () => {
+    const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+    const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    let releaseModule!: () => void, resolvingModule!: () => void;
+    const moduleGate = new Promise<void>(resolve => { releaseModule = resolve; });
+    const moduleRequested = new Promise<void>(resolve => { resolvingModule = resolve; });
+    registry.register("leader", { adapter: "fixture", module, interruptible: true });
+    registry.register("descendant", { adapter: "fixture", async module() { resolvingModule(); await moduleGate; return module; }, interruptible: true });
+    const contexts = new Map<number, import("../proc/types").ProcessContext>();
+    const diagnostics: unknown[] = [], ports: MessagePort[] = [];
+    const previousWorker = globalThis.Worker, workers = new Map<number, FakeWorker>();
+    class FakeWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      terminations = 0;
+      postMessage(request: import("../browser/worker").RuntimeWorkerRequest) {
+        workers.set(workerProcessState(request.runtimeProcess!).pid, this);
+      }
+      terminate() { this.terminations++; }
+      emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    }
+    const tables: DescriptorTable[] = [];
+    let broker: BrowserProcessBroker | undefined, reader: PipeEndpoint | undefined, cleaned = false;
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      releaseModule();
+      // Restore global state before any asynchronous fence, including after a test timeout.
+      globalThis.Worker = previousWorker;
+      try {
+        for (const descriptors of tables) descriptors.dispose();
+        reader?.close();
+        if (broker) await bounded(broker.dispose());
+      } finally { for (const port of ports) port.close(); }
+    };
+    regressionCleanups.push(cleanup);
+    globalThis.Worker = FakeWorker as unknown as typeof Worker;
+    broker = new BrowserProcessBroker({ identities, table, registry,
+      filesystem: {
+        connect(identity) { const { client, server } = connectFilesystemIdentity(identity); ports.push(client.port, server.port); return client; },
+        revoke: revokeFilesystem, reap: revokeFilesystem, async quiesce() {},
+      },
+      launch(context) {
+        contexts.set(context.pid, context);
+        return broker!.launchWorker(context, { workerUrl: "https://example.test/fixture-worker.js",
+          request: { module: context.module, args: context.request.argv, env: context.request.env } });
+      },
+      onError(error) { diagnostics.push(error); },
+    });
+    const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
+    root.data = { filesystem: createFilesystemIdentity() };
+    const messages: WorkerProcessMessage[] = [];
+    const makeClient = (transport: typeof root) => {
+      const descriptors = new DescriptorTable(); tables.push(descriptors);
+      const host = new WorkerPipeHost({ transport,
+        registry: (transport.data as { pipeRegistry: ConstructorParameters<typeof WorkerPipeHost>[0]["registry"] }).pipeRegistry,
+        postMessage(message) { messages.push(structuredClone(message)); }, pipe: { capacity: 8, maxWriters: 8, maxReaders: 8 },
+      });
+      const client = new WorkerProcessClient({ transport, descriptors, codec: host.codec(),
+        postMessage(message) { messages.push(structuredClone(message)); },
+        prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }),
+      });
+      client.installBindings();
+      return { client, descriptors, host };
+    };
+    const spawn = (executable: string, job: number, parent: number) => ({ executable, argv: [executable], env: {}, cwd: "/", job, fds: [{ child: 1, parent }] });
+    try {
+      await bounded(broker.adoptRuntimeRoot(root));
+      if (activation === "eager") await bounded(broker.ready());
+      const owner = makeClient(root), pair = owner.host.createPipe(); reader = pair[0];
+      const writerFd = owner.descriptors.open(pair[1], 127n, 63n);
+      const parentPid = owner.client.spawn(owner.client.pid, spawn("leader", -1, writerFd));
+      owner.descriptors.close(writerFd);
+      while (messages.length) await bounded(broker.runtimeMessage(messages.shift()!, owner.client.pid));
+      const supervisor = await bounded(broker.ready());
+      await bounded(supervisor.start(parentPid));
+      const parent = makeClient(broker.transportFor(parentPid)!);
+      const childPid = parent.client.spawn(parentPid, spawn("descendant", parent.client.job, 1));
+      const notice = messages.shift()!;
+      expect(notice.operation).toBe("spawn");
+      const inherited = notice.transport.resources[0] as { endpoint: import("../proc/pipes").PipeEndpointHandle };
+      const control = new Int32Array(inherited.endpoint.buffer, 0, 6), generation = Atomics.load(control, 5);
+      const lifetime = new Int32Array(inherited.endpoint.lifetime);
+      const parentWorker = workers.get(parentPid)!;
+      if (exitAt === "before-launch") {
+        parentWorker.emit(notice);
+        await bounded(moduleRequested);
+      }
+      // The guest can complete before the page dispatches its already-posted spawn event.
+      // Acknowledgement then closes the parent's proxy before queued admission executes.
+      parent.descriptors.dispose();
+      parent.client.exit(0);
+      revokeFilesystem((broker.transportFor(parentPid)!.data as { filesystem: import("../fs/protocol").FilesystemIdentity }).filesystem);
+      if (exitAt === "before-admission") {
+        parentWorker.emit(notice);
+        expect(supervisor.get(childPid)).toBeUndefined();
+      }
+      parentWorker.emit({ type: "exit", code: 0 });
+      expect((await bounded(supervisor.waitForExit(owner.client.pid, parentPid))).status).toBe(0);
+      expect(parentWorker.terminations).toBe(1);
+      expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+      expect(reader.readiness().hangup).toBe(false);
+      expect(Atomics.load(control, 5)).toBe(generation);
+      expect(Atomics.load(lifetime, 0)).toBe(0);
+      expect(contexts.has(childPid)).toBe(false);
+      await bounded(moduleRequested);
+      releaseModule();
+      await bounded(supervisor.start(childPid));
+      expect(contexts.has(childPid)).toBe(true);
+      const child = makeClient(broker.transportFor(childPid)!);
+      const writer = child.descriptors.get(1)!.resource as PipeEndpoint;
+      expect(writer.tryWrite([new Uint8Array([68])])).toBe(1);
+      child.descriptors.dispose(); child.client.exit(0);
+      workers.get(childPid)!.emit({ type: "exit", code: 0 });
+      await bounded(supervisor.waitForExit(parentPid, childPid));
+      const bytes = new Uint8Array(1);
+      expect(reader.tryRead([bytes])).toBe(1);
+      expect(bytes[0]).toBe(68);
+      expect(reader.tryRead([bytes])).toBe(0);
+      expect(Atomics.load(lifetime, 0)).toBe(1);
+      expect(Atomics.load(control, 5)).toBe(generation);
+      expect(diagnostics).toEqual([]);
+    } finally { await cleanup(); }
+  });
+}
