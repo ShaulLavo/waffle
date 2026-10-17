@@ -16,7 +16,8 @@ candidate build.
   Astro bundles it with the pinned `three` dependency.
 - Fonts live in `src/assets/`. Scripts and fonts receive content-hashed URLs under
   `dist/_astro/`; `public/_headers` supplies immutable caching for those URLs.
-  HTML is revalidated. Font licenses are in `public/assets/FONTS-LICENSE.txt`.
+  HTML is revalidated. Font licenses are in `public/assets/FONTS-LICENSE.txt`;
+  Three.js's unchanged MIT notice is in `public/assets/THREE-LICENSE.txt`.
 
 The owner's original self-extracting HTML remains outside the repository. It
 contains three design boards, not just this landing page. The extracted React/DC
