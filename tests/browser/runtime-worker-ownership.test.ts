@@ -35,7 +35,7 @@ function fixture() {
   const root = createWorkerProcessTransport();
   root.data = { filesystem: createFilesystemIdentity() };
   const broker = new SubprocessBroker("http://localhost/worker.js", filesystem);
-  broker.register("fixture", { module, adapter: "preview1" });
+  broker.register("fixture", { module, adapter: "preview1", cooperative: true });
   const messages: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
   const client = new WorkerProcessClient({ transport: root, descriptors, codec: {
@@ -164,7 +164,7 @@ for (const beforeAdmission of [false, true]) test(`job kill reaches reserved gen
   const state = fixture();
   let release!: () => void;
   const loading = new Promise<void>(resolve => { release = resolve; });
-  state.broker.register("slow", { module: async () => { await loading; return module; }, adapter: "preview1" });
+  state.broker.register("slow", { module: async () => { await loading; return module; }, adapter: "preview1", cooperative: true });
   try {
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.client.spawn(1, { executable: "slow", argv: [], env: {}, cwd: "/", job: 1, fds: [] });

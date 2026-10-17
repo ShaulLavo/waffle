@@ -10,6 +10,7 @@ import { HOST_CALL_FD, installHostSlots, installHostSlotsViaImport } from "./net
 import { Wasi, WasiExit, type Stream } from "@bun-wasm/runtime/core";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome.ts";
 import type { ProcessExit } from "../../runtime/proc/types.ts";
+import { fatalInterrupt } from "../../runtime/interrupt/check";
 import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport } from "../../runtime/proc/worker-client";
 import { SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "./subprocess.ts";
 
@@ -18,6 +19,8 @@ export type Engine = "quickjs" | "jsc" | "browser";
 export interface RunRequest {
   engine: Engine;
   adapter?: "bun" | "preview1";
+  /** Third-party preview1 code rewritten with fatal-only interruption checks. */
+  interruptible?: boolean;
   pid?: number;
   jobId?: number;
   identity?: SharedArrayBuffer;
@@ -286,7 +289,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     let instance: WebAssembly.Instance;
     const processImports: Record<string, (...args: number[]) => number | void> = {
       signal: (signal, mode) => subprocess?.signal(signal!, mode!) ?? -38,
-      interrupted: () => subprocess?.signal(0, 0) ?? 0,
+      interrupted: () => req.interruptible ? fatalInterrupt(outcome) : subprocess?.signal(0, 0) ?? 0,
       default_signal: defaultSignal,
     };
     wasi = new Wasi({
@@ -343,6 +346,8 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
         wait: (ms, word, expected) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       });
       for (const [name, call] of Object.entries(abi.imports)) {
+        // Injected checks must never dequeue handled signals or replace their trap with an ABI unwind.
+        if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => { checkActive(); return call(...args); };
       }
     }

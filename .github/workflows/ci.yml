@@ -111,6 +111,10 @@ jobs:
           PROCESS_SMOKE_PORT: "4186"
           TMPDIR: ${{ runner.temp }}
         run: bun tests/browser-process.ts ${{ matrix.browser }}
+      - name: Injected third-party interrupt checks (no Rust or dist artifacts)
+        env:
+          INTERRUPT_SCRATCH_ROOT: ${{ runner.temp }}
+        run: bun tests/browser-interrupt.ts ${{ matrix.browser }}
       - name: Process pipes and runtime_proc guest ABI (no Rust or dist artifacts)
         env:
           TMPDIR: ${{ runner.temp }}

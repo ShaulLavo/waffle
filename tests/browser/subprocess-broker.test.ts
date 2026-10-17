@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SubprocessBroker } from "../src/subprocess-broker";
+import { SubprocessBroker, type ExecutableRegistration } from "../src/subprocess-broker";
 import { SubprocessHost, childTransport, type ChildTransport } from "../src/subprocess.ts";
 import { createFilesystemIdentity, revokeFilesystem, type FilesystemIdentity } from "../../runtime/fs";
 import type { SharedFilesystem } from "../src/shared-fs";
@@ -63,15 +63,17 @@ test("disposing during delayed activation revokes pending children without start
 });
 
 const fixtureModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-function liveFixture(options: { quiesce?: () => Promise<void>; postFailure?: boolean; activate?: () => Promise<typeof import("../../runtime/proc")>; root?: import("../../runtime/proc").RootProcessOptions } = {}) {
+function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: () => Promise<void>; postFailure?: boolean; activate?: () => Promise<typeof import("../../runtime/proc")>; root?: import("../../runtime/proc").RootProcessOptions } = {}) {
   const originalWorker = globalThis.Worker;
   const workers = new Map<number, FakeWorker>();
   class FakeWorker {
     onmessage: ((event: MessageEvent) => void) | null = null;
     onerror: ((event: ErrorEvent) => void) | null = null;
     terminated = 0;
-    postMessage(request: { pid: number }) {
-      workers.set(request.pid, this);
+    request?: import("../src/worker").RunRequest;
+    postMessage(request: import("../src/worker").RunRequest) {
+      this.request = request;
+      workers.set(request.pid!, this);
       if (options.postFailure) throw new Error("worker post failed");
     }
     terminate() { this.terminated++; }
@@ -85,7 +87,7 @@ function liveFixture(options: { quiesce?: () => Promise<void>; postFailure?: boo
     async quiesce(identity: FilesystemIdentity) { quiescences++; revokeFilesystem(identity); await options.quiesce?.(); },
   } as unknown as SharedFilesystem;
   const broker = new SubprocessBroker("http://localhost/worker.js", filesystem, { activate: options.activate, root: options.root });
-  broker.register("fixture", { module: fixtureModule, adapter: "preview1" });
+  broker.register("fixture", options.executable ?? { module: fixtureModule, adapter: "preview1", cooperative: true });
   const transports = new Map<number, ChildTransport>();
   const hosts: SubprocessHost[] = [];
   function hostFor(parent?: ChildTransport, capture?: (request: SpawnRequest) => void) {
@@ -579,5 +581,67 @@ test("child dispatch rejects queued close after fatal selection before revocatio
     expect(supervisor.get(background)!.result).toBeNull();
     expect(readOutcome(outcomeWord(state.transports.get(background)!.outcome))).toBeNull();
     state.workers.get(background)!.exit(23);
+  } finally { state.dispose(); }
+});
+
+test("third-party preview1 registrations are rewritten before the worker starts", async () => {
+  let loads = 0;
+  const state = liveFixture({ executable: { adapter: "preview1", bytes: async () => {
+    loads++;
+    return new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+  } } });
+  try {
+    await state.started(state.pid);
+    const request = state.workers.get(state.pid)!.request!;
+    expect(request.interruptible).toBe(true);
+    expect(WebAssembly.Module.imports(request.module)).toContainEqual({ module: "runtime_proc", name: "interrupted", kind: "function" });
+    const second = state.host.spawn(JSON.stringify({ argv: ["fixture"] }));
+    await state.started(second);
+    expect(state.workers.get(second)!.request!.module).toBe(request.module);
+    expect(loads).toBe(1);
+  } finally { state.dispose(); }
+});
+
+test("cooperative own preview1 modules and Bun modules bypass rewriting", async () => {
+  for (const executable of [
+    { module: fixtureModule, adapter: "preview1", cooperative: true },
+    { module: fixtureModule, adapter: "bun", engine: "browser" },
+    { module: fixtureModule, adapter: "bun", engine: "quickjs" },
+    { module: fixtureModule, adapter: "bun", engine: "jsc" },
+  ] as const) {
+    const state = liveFixture({ executable });
+    try {
+      await state.started(state.pid);
+      const request = state.workers.get(state.pid)!.request!;
+      expect(request.module).toBe(fixtureModule);
+      expect(request.interruptible).not.toBe(true);
+    } finally { state.dispose(); }
+  }
+});
+
+test("compiled-only third-party modules fail closed with status 126 and an actionable error", async () => {
+  // JavaScript callers must not bypass byte rewriting merely by supplying a compiled module.
+  const state = liveFixture({ executable: { module: fixtureModule, adapter: "preview1" } as ExecutableRegistration });
+  try {
+    expect((await state.broker.wait(state.pid)).status).toBe(126);
+    const data = childTransport(state.transports.get(state.pid)!).stderr.read(4096);
+    expect(data).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(data as Uint8Array)).toContain("source bytes");
+    expect(state.workers.size).toBe(0);
+  } finally { state.dispose(); }
+});
+
+test("unsupported but natively valid modules fail with the instrumentation refusal on stderr", async () => {
+  const body = [0, 0xfd, 0x0c].concat(new Array<number>(16).fill(0), [0x1a, 0x0b]); // v128.const; drop
+  const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 2, 1, 0,
+    10, body.length + 2, 1, body.length].concat(body));
+  expect(WebAssembly.validate(bytes)).toBe(true);
+  const state = liveFixture({ executable: { adapter: "preview1", bytes } });
+  try {
+    expect((await state.broker.wait(state.pid)).status).toBe(126);
+    const data = childTransport(state.transports.get(state.pid)!).stderr.read();
+    expect(data).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(data as Uint8Array)).toMatch(/Cannot instrument WebAssembly:.*SIMD/);
+    expect(state.workers.size).toBe(0);
   } finally { state.dispose(); }
 });
