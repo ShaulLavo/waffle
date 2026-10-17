@@ -89,6 +89,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-crypto-sys/`, standalone crypto linkage](#standalone-crypto-linkage) | Host feature | Original native archive owner shared by runtime and parser/glue consumers. |
 | [`third_party/licenses/boringssl-LICENSE`](#webcrypto-backend) | Port | Retain BoringSSL license notices with the wasm backend. |
 | [`crates/bunwasm-runtime/src/crypto.rs`, GCM adapter and `third_party/licenses/aes-gcm-MIT`](#webcrypto-backend) | Port | Adapt RustCrypto GCM to WebCrypto nonce and tag lengths. |
+| [`crates/bunwasm-runtime/src/js/crypto_keys.js` and `crypto_host_keys.js`, Node key adapters](#node-crypto-key-adapters) | Host feature | Original Node key objects, encodings and signatures over the WebCrypto backend. |
 | [`crates/bunwasm-runtime/src/js/crypto.js`, shared key adapters and `web/src/engine-host.js` provider capture`](#webcrypto-backend) | Host feature | Original WebCrypto validation and opaque keys over RustCrypto. |
 | [`crates/bunwasm-runtime/src/js/net_address.js`, IP predicates](#tcp-and-ip-helpers) | Port | Adapt Bun's engine independent IPv4 and IPv6 predicates. |
 | [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets and write-side shutdown over the existing host ABI. |
@@ -950,6 +951,24 @@ expressions and restores its previous thread-local state on unwind. The printer
 metadata is consumed by the semantic-import lane; this adapter consumes only the
 parser collector. The existing shared vendor checkout was read, never edited.
 
+
+## Node crypto key adapters
+
+`src/js/crypto_keys.js` is an original adapter, not copied Bun or Node code. It shares the
+WebCrypto backend while providing synchronous Node operations, Writable signing objects,
+PEM encoding, encrypted PKCS#8/PKCS#1/SEC1 formats and WebCrypto key conversions. BoringSSL's original PEM and PKCS#8 APIs perform key encryption and decryption in `crates/bunwasm-crypto-sys/c/rsa.c`. `src/crypto.rs` adds Node's PKCS#1 and SEC1
+formats through the BoringSSL and RustCrypto parsers and converts ECDSA signatures between DER
+and IEEE P1363. Bun's Node crypto builtin requires a native binding, so loading its generated
+JavaScript alone cannot supply this behavior. The new fixture is original test code.
+
+`scripts/generate-node-key-vectors.mjs` generates six native Node encrypted-key and signature
+vectors for the original Node key fixture. Its synthetic keys and passphrase are test data.
+
+The pinned cipher-name registry references BoringSSL's CFB and Blowfish entry points. The
+Node build selects these objects in `crates/bunwasm-crypto-sys/build.rs` and compiles the unchanged `decrepit/cfb/cfb.cc` and `decrepit/blowfish/blowfish.cc`
+from the same pin into its own Cargo output directory. The shared prebuilt archive remains
+read-only. These are dependency build selections, not copied or patched implementations.
+
 ## Bun Console constructor
 
 `crates/bunwasm-runtime/src/js/bun_console_constructor.js` is generated from
@@ -1005,6 +1024,14 @@ before allocating key material. The ECDSA adapter left-pads short P-384 prehashe
 preserving the integer defined by ECDSA while meeting ecdsa 0.16.9's prehash input bound.
 No upstream source was copied or changed for these corrections.
 
+### Node key review corrections
+
+Class **Host feature**. The original `crypto_host_keys.js` adapter retains the browser's
+native provider and connects its asynchronous keys to synchronous Node key records. It
+imports wasm keys into that provider before native operations. Matching native KeyObject
+roundtrips retain their native CryptoKey. Secret conversion uses raw material instead of
+JWK; RSA signatures reject unsupported padding before dispatch. No upstream implementation
+was copied or changed for these corrections.
 ## Native crypto capabilities
 
 Class **Host feature**. Original host adapters. `web/src/crypto-host.js` probes each native
