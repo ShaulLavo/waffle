@@ -1,16 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome.ts";
-import { createSignalState, publishSignal, setSignalDisposition } from "../../runtime/proc/signals.ts";
+import { claimOutcome, outcomeWord, readOutcome } from "@bun-wasm/runtime/proc/outcome";
+import { createSignalState, publishSignal, setSignalDisposition } from "@bun-wasm/runtime/proc/signals";
 import { SharedPipe, SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "../src/subprocess.ts";
 import type { RunRequest, WorkerMessage } from "../src/worker.ts";
-import type { Stream } from "../../runtime/core/descriptors.ts";
+import type { Stream } from "@bun-wasm/runtime/core/descriptors";
 import { DefaultSignal } from "../src/default-signal.ts";
 
 // Execute the actual worker lifecycle with host boundaries injected, without replacing runner globals.
 const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(
-  readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8")
+  (readFileSync(new URL(import.meta.resolve("@bun-wasm/runtime/browser/worker")), "utf8") + "\n" +
+    readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8"))
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, ""),
 );

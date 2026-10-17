@@ -92,7 +92,7 @@ for (const name of networkNatives) test(`fatal admission guards merged network n
       caps: {}, onNews() {},
     }).natives;
     f.fatal();
-    expect(native[name]!(1, bytes)).toBe(-1);
+    expect(Reflect.apply(native[name]!, native, [1, bytes])).toBe(-1);
     expect(calls).toEqual([]);
     expect(f.defaults).toEqual([9]);
     expect(f.host.lastError).toBe("preserved error");
@@ -152,7 +152,7 @@ test("fatal callbacks escape merged network guards without admitting the underly
     f.host.options.defaultSignal = () => { throw stopped; };
     const native = f.host.engineNet({ natives: { hostFetch() { called = true; return 1; } }, caps: {}, onNews() {} }).natives;
     f.fatal();
-    expect(() => native.hostFetch!("request")).toThrow(stopped);
+    expect(() => Reflect.apply(native.hostFetch!, native, ["request"])).toThrow(stopped);
     expect(called).toBe(false);
     expect(takeSignal(f.state)).toBe(15);
   } finally { f.dispose(); }
@@ -183,12 +183,12 @@ for (const mode of [0, 1, 2]) test(`alive mode ${mode} preserves network calls a
       natives: { hostFetch() { networkCalls++; return 123; } }, caps: {}, onNews() {},
     }).natives;
     const slots = f.host.slots({ fetch() { networkCalls++; return 123; } });
-    expect(native.hostFetch!("request")).toBe(123);
+    expect(Reflect.apply(native.hostFetch!, native, ["request"])).toBe(123);
     expect(slots.fetch!(0, 0, 0, 0)).toBe(123);
     expect(networkCalls).toBe(2);
     childTransport(f.transport).stdin.close();
-    expect(native.hostWrite!(f.input, bytes)).toBe(-1);
-    expect(JSON.parse(native.hostError!(f.input) as string).code).toBe("EPIPE");
+    expect(Reflect.apply(native.hostWrite!, native, [f.input, bytes])).toBe(-1);
+    expect(JSON.parse(Reflect.apply(native.hostError!, native, [f.input]) as string).code).toBe("EPIPE");
     expect(f.defaults).toEqual([]);
     expect(readOutcome(outcomeWord(f.outcome))).toBeNull();
     childTransport(f.transport).finish(23);

@@ -1,3 +1,4 @@
+import { processRuntimeFixture } from "./process-runtime-fixture";
 import { expect, test } from "bun:test";
 import { claimOutcome } from "../../runtime/proc/outcome";
 import { DescriptorTable } from "../../runtime/core/descriptors";
@@ -16,11 +17,12 @@ function fixture() {
   const fence = new Promise<void>(resolve => { release = resolve; });
   let quiescences = 0;
   class FakeWorker {
+    constructor(readonly url: string) {}
     request!: RunRequest;
     onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
     onerror: ((event: ErrorEvent) => void) | null = null;
     terminated = false;
-    postMessage(request: RunRequest) { this.request = request; workers.set(request.pid!, this); }
+    postMessage(request: RunRequest) { this.request = request; workers.set(workerProcessState(request.runtimeProcess!).pid, this); }
     terminate() { this.terminated = true; }
     message(data: WorkerMessage) { this.onmessage?.({ data } as MessageEvent<WorkerMessage>); }
   }
@@ -32,9 +34,10 @@ function fixture() {
     reap() {},
     async quiesce(identity: FilesystemIdentity) { quiescences++; revokeFilesystem(identity); await fence; },
   } as unknown as SharedFilesystem;
-  const root = createWorkerProcessTransport();
+  const runtime = processRuntimeFixture(filesystem);
+  const root = createWorkerProcessTransport({ pid: runtime.identities.pid(), job: runtime.identities.job(), identity: runtime.identities.buffer });
   root.data = { filesystem: createFilesystemIdentity() };
-  const broker = new SubprocessBroker("http://localhost/worker.js", filesystem);
+  const broker = new SubprocessBroker("http://localhost/worker.js", runtime);
   broker.register("fixture", { module, adapter: "preview1", cooperative: true });
   const messages: WorkerProcessMessage[] = [];
   const descriptors = new DescriptorTable();
@@ -45,7 +48,11 @@ function fixture() {
     broker, root, client, messages, workers, release, fence,
     quiescences: () => quiescences,
     async dispatch() { for (const message of messages.splice(0)) await broker.runtimeMessage(message, 1); },
-    dispose() { broker.dispose(); descriptors.dispose(); release(); globalThis.Worker = originalWorker; },
+    async dispose() {
+      broker.dispose(); descriptors.dispose(); release();
+      try { await runtime.dispose(); }
+      finally { for (const worker of workers.values()) worker.terminate(); globalThis.Worker = originalWorker; }
+    },
   };
 }
 
@@ -66,11 +73,11 @@ test("generic worker root and child use the same lazy supervisor and exact share
     const request = state.workers.get(pid)!.request;
     expect(request.runtimeProcess).toBeDefined();
     expect(request.child).toBeUndefined();
-    expect(request.adapter).toBe("preview1");
+    expect(state.workers.get(pid)!.url).toBe("http://localhost/preview1-worker.js");
     expect(request.filesystem.owner).toBe((request.runtimeProcess!.data as { filesystem: FilesystemIdentity }).filesystem.owner);
     state.workers.get(pid)!.message({ type: "exit", code: 7, sleep: "atomics" });
     expect((await state.broker.wait(pid)).status).toBe(7);
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 test("generic worker kills quiesce the filesystem before physical termination", async () => {
@@ -88,7 +95,7 @@ test("generic worker kills quiesce the filesystem before physical termination", 
     await state.fence;
     await Promise.resolve();
     expect(worker.terminated).toBe(true);
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 test("generic host failure confirms after its filesystem fence before physical termination", async () => {
@@ -121,7 +128,7 @@ test("generic host failure confirms after its filesystem fence before physical t
     expect(confirmedAtTermination).toBe(1);
     expect(supervisor.jobEmpty(1, workerProcessState(transport).job)).toBe(true);
     // Physical termination is deliberately unresolved; it cannot be the safe point.
-  } finally { releasePhysical(); state.dispose(); }
+  } finally { releasePhysical(); await state.dispose(); }
 });
 
 test("generic process and job confirmation both wait for the filesystem fence", async () => {
@@ -152,7 +159,7 @@ test("generic process and job confirmation both wait for the filesystem fence", 
       expect(Atomics.load(wake, 0)).toBe(1);
       expect(state.workers.get(pid)!.terminated).toBe(true);
     } finally { unlisten(); }
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 test("an unlaunched generic job is fenced before becoming empty", async () => {
@@ -178,7 +185,7 @@ test("an unlaunched generic job is fenced before becoming empty", async () => {
     expect((await waiting).status).toBe(137);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(supervisor.jobEmpty(1, job)).toBe(true);
-  } finally { release(); state.dispose(); }
+  } finally { release(); await state.dispose(); }
 });
 
 test("rejecting a repeated spawn cannot revoke or safe-confirm an already admitted independent child", async () => {
@@ -200,7 +207,7 @@ test("rejecting a repeated spawn cannot revoke or safe-confirm an already admitt
     state.workers.get(pid)!.message({ type: "exit", code: 23, sleep: "atomics" });
     expect((await state.broker.wait(pid)).status).toBe(23);
     expect(supervisor.jobEmpty(1, child.job)).toBe(true);
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 for (const dispatch of ["runtime", "rejected"] as const) test(`a committed job reap reaches host cleanup after sender fatal selection (${dispatch})`, async () => {
@@ -225,7 +232,7 @@ for (const dispatch of ["runtime", "rejected"] as const) test(`a committed job r
     }
     expect(supervisor.get(pid)).toBeUndefined();
     expect(supervisor.job(job)).toBeUndefined();
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 test("a killed generic child cannot queue a new spawn capability", async () => {
@@ -252,7 +259,7 @@ test("a killed generic child cannot queue a new spawn capability", async () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(Atomics.load(rejected.confirmed, 0)).toBe(1);
     expect(Atomics.load(rejected.jobConfirmed, 0)).toBe(1);
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 for (const early of [false, true]) test(`explicit generic runner roots preserve their identity and signal views (early kill ${early})`, async () => {
@@ -260,9 +267,7 @@ for (const early of [false, true]) test(`explicit generic runner roots preserve 
   const originalLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
   const originalIsolation = Object.getOwnPropertyDescriptor(globalThis, "crossOriginIsolated");
   const channel = new MessageChannel();
-  const transport = createWorkerProcessTransport({ pid: 11, job: 7 });
   const identity = createFilesystemIdentity();
-  transport.data = { filesystem: identity };
   let sent!: RunRequest;
   let posted!: () => void;
   const ready = new Promise<void>(resolve => { posted = resolve; });
@@ -277,12 +282,16 @@ for (const early of [false, true]) test(`explicit generic runner roots preserve 
   const filesystem = {
     connect(value: FilesystemIdentity) { expect(value.owner).toBe(identity.owner); connections++; return { ...value, port: channel.port1 }; },
     fork() { throw new Error("explicit root identity must not be replaced"); },
+    revoke: revokeFilesystem, reap() {},
     async quiesce(value: FilesystemIdentity) { revokeFilesystem(value); },
     client: { sweep() {} },
   } as unknown as SharedFilesystem;
+  const runtime = processRuntimeFixture(filesystem);
+  const transport = createWorkerProcessTransport({ pid: 11, job: 7, identity: runtime.identities.buffer });
+  transport.data = { filesystem: identity };
   let run: ReturnType<typeof startRun> | undefined;
   try {
-    run = startRun({ engine: "browser", module, args: [], env: {}, filesystem, moduleScope: false, runtimeProcess: transport }, { stdout() {}, stderr() {} });
+    run = startRun({ engine: "browser", module, args: [], env: {}, runtime, moduleScope: false, runtimeProcess: transport }, { stdout() {}, stderr() {} });
     if (early) run.kill(9);
     await ready;
     expect(sent.runtimeProcess).toBe(transport);
@@ -295,12 +304,13 @@ for (const early of [false, true]) test(`explicit generic runner roots preserve 
     await Promise.resolve();
     expect(terminated).toBe(1);
   } finally {
-    run?.kill(9);
-    await run?.done;
-    globalThis.Worker = originalWorker;
-    if (originalLocation) Object.defineProperty(globalThis, "location", originalLocation); else Reflect.deleteProperty(globalThis, "location");
-    if (originalIsolation) Object.defineProperty(globalThis, "crossOriginIsolated", originalIsolation); else Reflect.deleteProperty(globalThis, "crossOriginIsolated");
-    channel.port1.close(); channel.port2.close();
+    try { run?.kill(9); await run?.done; await runtime.dispose(); }
+    finally {
+      globalThis.Worker = originalWorker;
+      if (originalLocation) Object.defineProperty(globalThis, "location", originalLocation); else Reflect.deleteProperty(globalThis, "location");
+      if (originalIsolation) Object.defineProperty(globalThis, "crossOriginIsolated", originalIsolation); else Reflect.deleteProperty(globalThis, "crossOriginIsolated");
+      channel.port1.close(); channel.port2.close();
+    }
   }
 });
 
@@ -320,7 +330,7 @@ for (const beforeAdmission of [false, true]) test(`job kill reaches reserved gen
     if (beforeAdmission) await state.dispatch();
     else await (await state.broker.ready()).start(pid);
     expect(state.workers.has(pid)).toBe(false);
-  } finally { release(); state.dispose(); }
+  } finally { release(); await state.dispose(); }
 });
 
 test("generic child workers route cloned descendant messages back through the shared supervisor", async () => {
@@ -342,7 +352,7 @@ test("generic child workers route cloned descendant messages back through the sh
     expect(supervisor.get(descendant)!.parentPid).toBe(pid);
     state.workers.get(descendant)!.message({ type: "exit", code: 4, sleep: "atomics" });
     expect((await state.broker.wait(descendant)).status).toBe(4);
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });
 
 test("an admitted generic job survives ordinary parent teardown before its queued spawn is handled", async () => {
@@ -358,5 +368,5 @@ test("an admitted generic job survives ordinary parent teardown before its queue
     expect(state.workers.has(pid)).toBe(true);
     expect(supervisor.get(pid)!.result).toBeNull();
     state.workers.get(pid)!.message({ type: "exit", code: 0, sleep: "atomics" });
-  } finally { state.dispose(); }
+  } finally { await state.dispose(); }
 });

@@ -1,0 +1,289 @@
+// Process bootstrap shared by preview1 commands and injected guest executors.
+import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
+import { Wasi, WasiExit, type Stream } from "../core";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
+import type { ProcessExit } from "../proc/types";
+import { fatalInterrupt } from "../interrupt/check";
+import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client";
+
+export interface RuntimeWorkerRequest {
+  module: WebAssembly.Module;
+  args: string[];
+  env: Record<string, string>;
+  filesystem: FilesystemConnection;
+  runtimeProcess?: WorkerProcessTransport;
+  /** Admitted code with fatal-only instrumentation, not an admission bypass. */
+  interruptible?: boolean;
+  trace?: boolean;
+}
+
+export type SleepMode = "atomics" | "busy-wait";
+export type RuntimeWorkerMessage = WorkerProcessMessage
+  | { type: "phase"; name: string; duration: number }
+  | { type: "stdout" | "stderr"; data: Uint8Array }
+  | { type: "exit"; code: number; signal?: number; sleep?: SleepMode }
+  | { type: "error"; code: number; message: string; sleep?: SleepMode }
+  | { type: "default-signal"; signal: number };
+
+export interface RuntimeWorkerHost {
+  readonly crossOriginIsolated: boolean;
+  postMessage(message: RuntimeWorkerMessage, transfer?: Transferable[]): void;
+  addEventListener?(type: "error" | "unhandledrejection", listener: (event: WorkerTerminalEvent) => void): void;
+  removeEventListener?(type: "error" | "unhandledrejection", listener: (event: WorkerTerminalEvent) => void): void;
+}
+interface WorkerTerminalEvent { error?: unknown; reason?: unknown; preventDefault(): void }
+export type WorkerResult = { code: number; signal?: number } | { error: unknown };
+export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
+
+export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
+  request: R;
+  fs: FilesystemClient;
+  isolated: boolean;
+  outcome: BigInt64Array | null;
+  interrupt?: Int32Array;
+  runtimeState: RuntimeWorkerState | null;
+  checkActive(): void;
+  defaultSignal(signal: number): never;
+  post(type: "stdout" | "stderr", data: Uint8Array): boolean;
+  finish(result: WorkerResult): void;
+}
+export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerSetupContext<R> {
+  wasi: Wasi;
+  instance: WebAssembly.Instance;
+}
+
+/** Guest policy stays with the executor. Hooks explicitly adapt older transports without
+ * making their pipe protocol, engine bindings or module cache part of this bootstrap. */
+export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
+  hostCallFd?: number;
+  env?(request: R): Record<string, string>;
+  outcome?: SharedArrayBuffer;
+  requestedSignal?: SharedArrayBuffer;
+  interrupt?: SharedArrayBuffer;
+  stdio?: Partial<Record<0 | 1 | 2, Stream>>;
+  setup?(context: WorkerSetupContext<R>): void;
+  signal?(signal: number, mode: number): number;
+  signalError?(signal: number): never;
+  terminalSignal?(error: unknown): number | undefined;
+  beforeFinish?(): void;
+  diagnostic?(message: string): void;
+  /** Runs after descriptors/filesystem have been released, before the exit acknowledgement. */
+  complete?(code: number, signal?: number): ProcessExit;
+  instantiated?(context: WorkerExecutionContext<R>): void;
+  run(context: WorkerExecutionContext<R>, exited: number | null): number | Promise<number>;
+}
+
+export class RuntimeWorkerSignal extends Error {
+  constructor(readonly signal: number) { super(`Process stopped by signal ${signal}`); }
+}
+
+// Keep the native clock before an executor can install guest-side globals.
+const perfNow = performance.now.bind(performance);
+
+/** `Name: message` plus the first stack frames. */
+export function describeWorkerError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const head = `${err.name}: ${err.message}`;
+  const frames = (err.stack ?? "").split("\n").filter(line => line.trim() && !line.includes(err.message)).slice(0, 15);
+  return frames.length ? `${head}\n${frames.map(frame => `    ${frame.trim()}`).join("\n")}` : head;
+}
+
+/** Instantiate one process using explicit capabilities; never creates a page runtime. */
+export async function bootstrap<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R>,
+  host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
+): Promise<void> {
+  host.postMessage({ type: "phase", name: "worker-start", duration: 0 });
+  const fs = new FilesystemClient(req.filesystem);
+  let runtimeProcess: WorkerProcessClient | null = null;
+  let processSignalExit: typeof import("../proc/abi").ProcessSignalExit | undefined;
+  const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
+  const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
+  let outcome = executor.outcome || isolated ? outcomeWord(executor.outcome) : null;
+  let requestedSignal: Int32Array | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
+  const revoked = sharedRevoked(req.filesystem);
+  let localOutcome: ProcessExit | null = null;
+  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
+    ? claimOutcome(outcome, result)
+    : localOutcome ??= { ...result, status: result.kind === "signaled" ? 128 + result.code : result.code };
+  const defaultSignal = (signal: number): never => {
+    if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
+    const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
+    const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
+    revokeFilesystem(fs.connection);
+    // Logical death is not an acknowledgement that filesystem references were released.
+    if (!outcome && winner.kind === "signaled") host.postMessage({ type: "default-signal", signal: winner.code });
+    if (executor.signalError) return executor.signalError(signal);
+    throw new RuntimeWorkerSignal(signal);
+  };
+  const checkActive = () => {
+    const winner = outcome ? readOutcome(outcome) : localOutcome;
+    if (winner?.kind === "signaled") defaultSignal(winner.code);
+    if (winner) throw new WasiExit(winner.status);
+    if (revoked()) throw new WasiExit(1);
+  };
+  let wasi: Wasi | null = null;
+  let done = false;
+  let started = false;
+  const finish = (result: WorkerResult) => {
+    if (done) return;
+    done = true;
+    const settled = outcome ? readOutcome(outcome) : localOutcome;
+    const ownCode = "code" in result ? result.code : started ? 1 : 126;
+    const ownSignal = "signal" in result ? result.signal : undefined;
+    executor.beforeFinish?.();
+    // Legacy transports must buffer diagnostics before publishing logical completion.
+    if (executor.complete) {
+      if ("error" in result && !settled) executor.diagnostic?.(`${describeWorkerError(result.error)}\n`);
+      wasi?.descriptors.dispose();
+      fs.dispose();
+      const winner = executor.complete(ownCode, ownSignal);
+      host.postMessage({ type: "exit", code: winner.status, signal: winner.kind === "signaled" ? winner.code : undefined, sleep: sleepMode });
+      return;
+    }
+    const winner = claim(ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal });
+    const code = winner.status;
+    const signal = winner.kind === "signaled" ? winner.code : undefined;
+    wasi?.descriptors.dispose();
+    fs.dispose();
+    runtimeProcess?.exit(code);
+    if ("code" in result || settled || winner.kind === "signaled") {
+      host.postMessage({ type: "exit", code, signal, sleep: sleepMode });
+    } else {
+      host.postMessage({ type: "error", code, message: describeWorkerError(result.error), sleep: sleepMode });
+    }
+  };
+  const terminalResult = (error: unknown): { code: number; signal?: number } | null => {
+    if (error instanceof WasiExit) return { code: error.code };
+    const signal = error instanceof RuntimeWorkerSignal || (processSignalExit && error instanceof processSignalExit)
+      ? error.signal : executor.terminalSignal?.(error);
+    return signal === undefined ? null : { code: 128 + signal, signal };
+  };
+  const onError = (event: WorkerTerminalEvent) => {
+    const result = terminalResult(event.error);
+    if (result) { event.preventDefault(); finish(result); }
+  };
+  const onRejection = (event: WorkerTerminalEvent) => {
+    const result = terminalResult(event.reason);
+    if (result) { event.preventDefault(); finish(result); }
+  };
+  try {
+    const runtime = req.runtimeProcess ? await import("../proc/worker-client") : null;
+    const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
+    const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
+    if (runtimeState) {
+      outcome = runtimeState.signals.outcome;
+      requestedSignal = runtimeState.signals.requestedSignal;
+    }
+    const guardStream = (stream: Stream): Stream => ({
+      ...stream,
+      read(chunks) { checkActive(); return stream.read(chunks); },
+      write(chunks) { checkActive(); return stream.write(chunks); },
+      readiness() { checkActive(); return stream.readiness(); },
+    });
+    const stdio = executor.stdio ? {
+      ...(executor.stdio[0] ? { 0: guardStream(executor.stdio[0]) } : {}),
+      ...(executor.stdio[1] ? { 1: guardStream(executor.stdio[1]) } : {}),
+      ...(executor.stdio[2] ? { 2: guardStream(executor.stdio[2]) } : {}),
+    } : undefined;
+    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
+      const stream = stdio?.[type === "stderr" ? 2 : 1];
+      if (stream) return stream.write([data]) === data.length;
+      checkActive();
+      host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
+      return true;
+    };
+    const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
+    executor.setup?.(context);
+    let instance: WebAssembly.Instance;
+    const processImports: Record<string, (...args: number[]) => number | void> = {
+      signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -38,
+      interrupted: () => req.interruptible ? fatalInterrupt(outcome) : executor.signal?.(0, 0) ?? 0,
+      default_signal: defaultSignal,
+    };
+    wasi = new Wasi({
+      hostCallFd: executor.hostCallFd,
+      args: req.args, env: executor.env?.(req) ?? req.env, fs, preopens: { "/": "/" }, stdio,
+      stdout: data => { post("stdout", data); }, stderr: data => { post("stderr", data); },
+      sleep: ms => {
+        checkActive();
+        if (ms > 0) {
+          if (sleepCell) Atomics.wait(sleepCell, 0, 0, ms);
+          else { const end = perfNow() + ms; while (perfNow() < end) { /* worker-local spin */ } }
+        }
+        checkActive();
+      },
+      interrupt,
+      wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+      namespaces: { runtime_proc: processImports },
+      trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
+    });
+    if (req.runtimeProcess) {
+      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec");
+      const { createProcessFilesystemIdentity } = await import("../fs/protocol");
+      const { WorkerPipeHost } = await import("../proc/worker-pipes");
+      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi");
+      const { createRuntimeTerminalCodec } = await import("./runtime-terminals");
+      processSignalExit = ProcessSignalExit;
+      const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
+      const pipes = new WorkerPipeHost({
+        transport: req.runtimeProcess, postMessage,
+        fallback: createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs),
+          descriptors: wasi.descriptors, output: (fd, data) => { post(fd === 2 ? "stderr" : "stdout", data); }, checkActive }),
+        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
+      });
+      runtimeProcess = new runtime!.WorkerProcessClient({
+        transport: req.runtimeProcess, descriptors: wasi.descriptors,
+        codec: pipes.codec(), postMessage,
+        createPipe: () => { checkActive(); return pipes.createPipe(); },
+        revokeProcess: pid => pipes.revokeProcess(pid),
+        prepareSpawn: () => {
+          checkActive();
+          const end = fs.beginTransfer();
+          try {
+            const filesystem = createProcessFilesystemIdentity(fs.connection);
+            return { data: { filesystem, pipeRegistry: pipes.registry.handle() },
+              codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), release: end };
+          } catch (error) { end(); throw error; }
+        },
+      });
+      runtimeProcess.installBindings();
+      const abi = new ProcessABI({
+        memory: () => instance.exports.memory as WebAssembly.Memory,
+        descriptors: wasi.descriptors, fs, pid: runtimeProcess.pid, service: runtimeProcess,
+        signals: runtimeProcess.signals, wake: runtimeProcess.wake,
+        createPipe: () => runtimeProcess!.createPipe(),
+        wait: (ms, word, expected) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+      });
+      for (const [name, call] of Object.entries(abi.imports)) {
+        // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.
+        if (req.interruptible && name === "interrupted") continue;
+        processImports[name] = (...args) => { checkActive(); return call(...args); };
+      }
+    }
+    const instantiating = perfNow();
+    instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
+    executor.instantiated?.({ ...context, wasi, instance });
+    if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
+    if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
+    started = true;
+    const exited = wasi.launch(instance);
+    host.addEventListener?.("error", onError);
+    host.addEventListener?.("unhandledrejection", onRejection);
+    const completion = executor.run({ ...context, wasi, instance }, exited);
+    // Synchronous commands claim their result before guest-scheduled microtasks can run.
+    finish({ code: typeof completion === "number" ? completion : await completion });
+  } catch (error) {
+    finish(terminalResult(error) ?? { error });
+  } finally {
+    host.removeEventListener?.("error", onError);
+    host.removeEventListener?.("unhandledrejection", onRejection);
+  }
+}
+
+/** Plain preview1 commands have no engine, native slots or module-cache policy. */
+export const preview1Executor: WorkerExecutor = { run: (_context, exited) => exited ?? 0 };
