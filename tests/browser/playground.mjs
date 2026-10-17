@@ -1,7 +1,7 @@
 // Shared helpers for the playwright scripts that drive the playground (browser-engine.mjs,
 // bench-engines.mjs): start web/serve.ts and a CORS fixture server, run shell commands through
 // `playground` (main.ts), read the terminal, and kill everything that was started.
-// PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
+// PLAYWRIGHT=<path to playwright/index.mjs> overrides the project's installed package.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { runForeground } from "./foreground.ts";
 export const web = join(new URL(".", import.meta.url).pathname, "..");
 const playwrightPath =
   process.env.PLAYWRIGHT ??
-  `${process.env.HOME}/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/.mise/playwright@1.63.0/node_modules/playwright/index.mjs`;
+  "playwright";
 export const playwright = await import(playwrightPath);
 
 /** Children, browsers and a scratch directory, all removed by `cleanup` (also on SIGINT/SIGTERM). */
