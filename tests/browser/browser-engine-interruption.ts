@@ -303,7 +303,7 @@ async function main(): Promise<boolean> {
         const out = process.env.ENGINE_INTERRUPTION_BROWSER_BUNDLE ? resolve(process.env.ENGINE_INTERRUPTION_BROWSER_BUNDLE) : join(scratch, "browser");
         if (!process.env.ENGINE_INTERRUPTION_BROWSER_BUNDLE) {
           await buildBrowserEntries([join(import.meta.dir, "engine-interruption-main.ts"), join(import.meta.dir, "engine-interruption-worker.ts"),
-            join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out);
+            join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out, { runtimeWorker: true });
           assertRunning();
           await Bun.write(join(out, "index.html"), '<!doctype html><script type="module" src="./engine-interruption-main.js"></script>');
         }

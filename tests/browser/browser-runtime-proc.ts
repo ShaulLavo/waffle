@@ -49,7 +49,7 @@ try {
   const out = captured ? resolve(captured) : join(scratch, "dist"), root = resolve(import.meta.dir, "../..");
   if (captured) assert.ok(await Bun.file(join(out, "index.html")).exists(), "captured bundle needs index.html");
   else {
-    await buildBrowserEntries([join(import.meta.dir, "runtime-proc-browser-main.ts"), join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out);
+    await buildBrowserEntries([join(import.meta.dir, "runtime-proc-browser-main.ts"), join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out, { runtimeWorker: true });
     await Bun.write(join(out, "index.html"), '<!doctype html><script type="module" src="./runtime-proc-browser-main.js"></script>');
   }
   server = Bun.serve({ hostname: "127.0.0.1", port: 0,

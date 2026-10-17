@@ -1,4 +1,4 @@
-import { SharedFilesystem } from "../src/shared-fs";
+import { createRuntime, type Runtime } from "@bun-wasm/runtime";
 import { startRun, type Run } from "../src/runner";
 import { createWorkerProcessTransport } from "../../runtime/proc/worker-client";
 import { runtimeProcChecks, runtimeProcFixture, runtimeProcStages, runtimeProcJobWaitChecks, runtimeProcJobWaitFixture, runtimeProcJobWaitStages } from "./runtime-proc-fixtures";
@@ -103,7 +103,7 @@ globalThis.Worker = class extends NativeWorker {
   constructor(url: string | URL, options?: WorkerOptions) {
     const sourceURL = new URL(url, location.href);
     let bootstrapURL: string | undefined;
-    if (jobWaitGate && sourceURL.pathname.endsWith("/worker.js")) {
+    if (jobWaitGate && /\/(?:preview1-)?worker\.js$/.test(sourceURL.pathname)) {
       bootstrapURL = URL.createObjectURL(new Blob([`await (${instrumentJobWaitWorker.toString()})(${JSON.stringify(sourceURL.href)})`], { type: "text/javascript" }));
       bootstrapURLs.add(bootstrapURL);
     }
@@ -142,15 +142,15 @@ async function until(condition: () => boolean, label: string) {
   while (!condition()) { if (performance.now() >= deadline) throw new Error(`${label} timed out`); await pause(); }
 }
 
-let filesystem: SharedFilesystem | undefined;
+let runtime: Runtime | undefined;
 let run: Run | undefined;
 let settled = false;
 let result: Record<string, unknown>;
 let stdout = "", stderr = "";
 try {
   equal(crossOriginIsolated, true, "SharedArrayBuffer isolation");
-  filesystem = new SharedFilesystem();
-  await filesystem.mkdirp("/home/user"); await filesystem.flush();
+  runtime = createRuntime({ filesystem: { workerURL: new URL("./fs-worker.js", location.href) } });
+  await runtime.filesystem.mkdirp("/home/user"); await runtime.filesystem.flush();
   const parameters = new URLSearchParams(location.search);
   const jobWait = parameters.has("job-wait");
   const checks = jobWait ? runtimeProcJobWaitChecks : runtimeProcChecks;
@@ -160,7 +160,9 @@ try {
   // Omitting runtimeProcess is intentional: a generic root must be recognized from real imports,
   // not only when a privileged caller already knows to manufacture the transport.
   run = startRun({ engine: "browser", adapter: "preview1", module, args: ["abi-parent"], env: { PWD: "/" },
-    filesystem, moduleScope: false, ...(explicit ? { runtimeProcess: createWorkerProcessTransport() } : {}) }, {
+    runtime, moduleScope: false, ...(explicit ? { runtimeProcess: createWorkerProcessTransport({
+      pid: runtime.identities.pid(), job: runtime.identities.job(), identity: runtime.identities.buffer,
+    }) } : {}) }, {
     stdout(bytes) { stdout += new TextDecoder().decode(bytes); },
     stderr(bytes) { stderr += new TextDecoder().decode(bytes); },
   });
@@ -191,7 +193,7 @@ try {
   if (workersCreated < (jobWait ? 6 : 3)) throw new Error(`expected real filesystem and all guest workers, saw ${workersCreated}`);
   // Completion acknowledges guest descriptor release. The run and broker must stop both guests.
   await until(() => activeWorkers.size === 1, "completed guests terminated before filesystem disposal");
-  filesystem.dispose(); filesystem = undefined;
+  await runtime.dispose(); runtime = undefined;
   await until(() => activeWorkers.size === 0, "all task-created workers terminated");
   result = { ok: true, mode: explicit ? "explicit" : "automatic", scenario: jobWait ? "job-wait" : "pipes", checks, stdout,
     messages, exits, reaps, blockingWaitEntries, ioCalls, workerErrors, bufferDecode, cleanup: { activeWorkers: activeWorkers.size, workersCreated } };
@@ -205,11 +207,13 @@ try {
     await Promise.race([run.done, new Promise(resolve => { timeout = setTimeout(resolve, 5000); })])
       .finally(() => { if (timeout) clearTimeout(timeout); });
   }
-  filesystem?.dispose();
+  let teardownError: string | undefined;
+  try { await runtime?.dispose(); }
+  catch (error) { teardownError = String(error); result = { ...result!, ok: false, teardownError }; }
   const forcedWorkers = activeWorkers.size;
   for (const worker of activeWorkers) worker.terminate();
   for (const url of bootstrapURLs) URL.revokeObjectURL(url);
   bootstrapURLs.clear();
   globalThis.Worker = NativeWorker;
-  Object.assign(globalThis, { runtimeProcResult: { ...result!, teardown: { forcedWorkers, activeWorkers: activeWorkers.size } } });
+  Object.assign(globalThis, { runtimeProcResult: { ...result!, teardown: { forcedWorkers, activeWorkers: activeWorkers.size, error: teardownError } } });
 }

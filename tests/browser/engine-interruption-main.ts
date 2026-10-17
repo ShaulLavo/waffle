@@ -1,4 +1,4 @@
-import { SharedFilesystem } from "../src/shared-fs";
+import { createRuntime, type Runtime } from "@bun-wasm/runtime";
 import type { Engine, RunRequest } from "../src/worker";
 import { startRun, type Run } from "../src/runner";
 import { preview1SignalClockGuest } from "./engine-interruption-preview1";
@@ -6,8 +6,8 @@ import { assertCausalIdleWake, assertFatalEngineCompletion, assertNativeEngineCo
 import { measureInterruptionOverhead } from "./engine-interruption-benchmark";
 import { defaultSignalGuest, handledSignalGuest, idleSignalGuest } from "./engine-interruption-guests";
 import { engineInterruptionTransport } from "./engine-interruption-transport";
-import { createLegacyEngineScope, createRuntimeEngineScope, type EngineInterruptionChild as Child, type EngineInterruptionRoute, type EngineSignalDelivery } from "./engine-interruption-scope";
-import { FunctionalCases, assertGuestQuiescence, cleanupFunctionalResources, waitFunctionalCondition, type FunctionalCaseIdentity } from "./engine-interruption-cases";
+import { createLegacyEngineScope, createRuntimeEngineScope, type EngineInterruptionChild as Child, type EngineInterruptionRoute, type EngineInterruptionScope, type EngineSignalDelivery } from "./engine-interruption-scope";
+import { FunctionalCases, assertGuestQuiescence, waitFunctionalCondition, type FunctionalCaseIdentity } from "./engine-interruption-cases";
 
 interface CaseResources {
   workers: Set<ObservedWorker>;
@@ -19,9 +19,11 @@ const functional = new FunctionalCases();
 function captureContext(read: () => unknown): unknown {
   try { return read(); } catch (error) { return { diagnosticError: String(error) }; }
 }
-function cleanupCase(actions: readonly (() => void)[]): void {
+async function cleanupCase(actions: readonly (() => void | Promise<void>)[]): Promise<void> {
   const errors: unknown[] = [];
-  cleanupFunctionalResources(actions, error => { errors.push(error); });
+  for (const action of actions) {
+    try { await action(); } catch (error) { errors.push(error); }
+  }
   if (currentCase) currentCase.cleanupErrors.push(...errors);
   else if (errors.length) throw new AggregateError(errors, "owned cleanup failed");
 }
@@ -74,26 +76,42 @@ class ObservedWorker extends NativeWorker {
 // Install teardown before creating the filesystem or any guest worker. In particular,
 // default-action tests deliberately suppress the supervisor's physical backstop.
 globalThis.Worker = ObservedWorker;
-let filesystem: SharedFilesystem | undefined;
+let runtime: Runtime | undefined;
 const scopes = new Set<Awaited<ReturnType<typeof scope>>>();
 let destroyed = false;
 let watchdogExpired = false;
 const destroyErrors: string[] = [];
-function destroy(): void {
-  if (destroyed) return;
+let destruction: Promise<void> | undefined;
+function destroy(): Promise<void> {
+  if (destruction) return destruction;
   destroyed = true;
-  for (const owned of Array.from(scopes)) {
-    try { owned.dispose(); } catch (error) { destroyErrors.push(String(error)); }
-  }
-  try { filesystem?.dispose(); } catch (error) { destroyErrors.push(String(error)); }
-  for (const worker of Array.from(activeWorkers)) {
-    try { worker.forceTerminate(); } catch (error) { destroyErrors.push(String(error)); }
-  }
-  globalThis.Worker = NativeWorker;
+  return destruction = (async () => {
+    for (const owned of Array.from(scopes)) {
+      try { await owned.dispose(); } catch (error) { destroyErrors.push(String(error)); }
+    }
+    try { await runtime?.dispose(); } catch (error) { destroyErrors.push(String(error)); }
+    for (const worker of Array.from(activeWorkers)) {
+      try { worker.forceTerminate(); } catch (error) { destroyErrors.push(String(error)); }
+    }
+    globalThis.Worker = NativeWorker;
+  })();
 }
-addEventListener("pagehide", destroy, { once: true });
+addEventListener("pagehide", () => { void destroy(); }, { once: true });
 Object.assign(globalThis, { engineInterruptionHarness: { destroy } });
-const watchdog = setTimeout(() => { watchdogExpired = true; destroy(); }, new URLSearchParams(location.search).has("benchmark") ? 480_000 : 600_000);
+const watchdog = setTimeout(() => { watchdogExpired = true; void destroy(); }, new URLSearchParams(location.search).has("benchmark") ? 480_000 : 600_000);
+async function fixtureRuntime(): Promise<Runtime> {
+  if (destroyed) throw new Error("engine interruption harness was destroyed");
+  const owner = createRuntime({ filesystem: { workerURL: new URL("./fs-worker.js", location.href) } });
+  runtime = owner;
+  try {
+    await owner.filesystem.mkdirp("/home/user"); await owner.filesystem.flush();
+    return owner;
+  } catch (error) { await disposeRuntime(owner); throw error; }
+}
+async function disposeRuntime(owner: Runtime | undefined): Promise<void> {
+  try { await owner?.dispose(); }
+  finally { if (runtime === owner) runtime = undefined; }
+}
 const decoder = new TextDecoder();
 const checks: { engine: Engine; name: string; route?: EngineInterruptionRoute; delivery?: string; evidence: unknown; elapsedMs?: number }[] = [];
 function guestFinished(worker: ObservedWorker | undefined): boolean {
@@ -118,8 +136,12 @@ function assertDeferredHandledSignal(worker: ObservedWorker): void {
 }
 async function scope(module: WebAssembly.Module, engine: Engine, route: EngineInterruptionRoute = "legacy", adapter: "bun" | "preview1" = "bun") {
   const workerName = engine === "browser" && adapter !== "preview1" ? "worker.js" : "engine-interruption-worker.js";
-  const base = route === "runtimeProcess" ? await createRuntimeEngineScope(module, engine, filesystem!)
-    : createLegacyEngineScope(module, engine, filesystem!, new URL(`./${workerName}`, location.href).href, adapter);
+  const owner = await fixtureRuntime();
+  let base: EngineInterruptionScope;
+  try {
+    base = route === "runtimeProcess" ? await createRuntimeEngineScope(module, engine, owner)
+      : createLegacyEngineScope(module, engine, owner, new URL(`./${workerName}`, location.href).href, adapter);
+  } catch (error) { await disposeRuntime(owner); throw error; }
   const resources = currentCase;
   const context = { read: () => Array.from(base.children.values(), child => ({
     pid: child.pid, engine, route, adapter, requestedSignal: Atomics.load(child.requestedSignal, 0),
@@ -144,7 +166,7 @@ async function scope(module: WebAssembly.Module, engine: Engine, route: EngineIn
       await until(() => { base.drain(child); return base.wait(child) !== -2; }, `guest exit (${child.stderr})`, 15_000, () => guestFinished(guestWorkers.get(child.pid)));
       base.drain(child); equal(base.wait(child), status, `exit status (${child.stderr})`);
     },
-    dispose(): void {
+    async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
       // Preserve diagnostics before broker disposal can forget process metadata.
@@ -152,6 +174,7 @@ async function scope(module: WebAssembly.Module, engine: Engine, route: EngineIn
       const children = Array.from(base.children.values());
       const errors: unknown[] = [];
       try { base.dispose(); } catch (error) { errors.push(error); }
+      try { await disposeRuntime(owner); } catch (error) { errors.push(error); }
       for (const child of children) {
         try { guestWorkers.get(child.pid)?.forceTerminate(); } catch (error) { errors.push(error); }
         guestWorkers.delete(child.pid);
@@ -178,9 +201,9 @@ async function runCase(identity: FunctionalCaseIdentity, body: () => Promise<unk
       processes: resources.contexts.map(context => context.final ?? captureContext(context.read)),
       workers: Array.from(resources.workers, worker => ({ engine: worker.guestEngine, adapter: worker.guestAdapter,
         evidence: snapshotProbe(worker.probe), exitObserved: worker.exitObserved, diagnostics: worker.diagnostics })),
-    }), () => {
+    }), async () => {
       for (const owned of Array.from(scopes)) if (!beforeScopes.has(owned)) {
-        try { owned.dispose(); } catch (error) { resources.cleanupErrors.push(error); }
+        try { await owned.dispose(); } catch (error) { resources.cleanupErrors.push(error); }
       }
       for (const worker of Array.from(activeWorkers)) if (!beforeWorkers.has(worker)) {
         try { worker.forceTerminate(); } catch (error) { resources.cleanupErrors.push(error); }
@@ -254,7 +277,7 @@ async function testDefault(module: WebAssembly.Module, engine: Engine, signal: 2
       evidence: snapshotProbe(worker.probe), elapsedMs: performance.now() - started });
   } catch (error) {
     throw engineInterruptionFailure(`${engine}/${route} ${nestedHandler ? "nested-handler " : ""}default signal ${signal} proof failed`, error, diagnostics);
-  } finally { owned.dispose(); }
+  } finally { await owned.dispose(); }
 }
 async function testNativeInterrupt(module: WebAssembly.Module, engine: Engine): Promise<void> {
   const owned = await scope(module, engine);
@@ -291,7 +314,7 @@ async function testNativeInterrupt(module: WebAssembly.Module, engine: Engine): 
     checks.push({ engine, route: "legacy", delivery: "native-callback", name: "native-interrupt-true-unwinds-current-frame", evidence: { ...evidence, outcome: result } });
   } catch (error) {
     throw engineInterruptionFailure(`${engine} native true-return proof failed`, error, diagnostics);
-  } finally { owned.dispose(); }
+  } finally { await owned.dispose(); }
 }
 async function testHandled(module: WebAssembly.Module, engine: Engine, route: EngineInterruptionRoute = "legacy"): Promise<void> {
   const owned = await scope(module, engine, route);
@@ -309,7 +332,7 @@ async function testHandled(module: WebAssembly.Module, engine: Engine, route: En
     assertDeferredHandledSignal(worker);
     checks.push({ engine, route, delivery: route === "legacy" ? "host" : "page-kill",
       name: `${route === "runtimeProcess" ? "runtimeProcess-page-" : ""}handled-SIGINT-queued-until-yield-and-exits-23`, evidence: snapshotProbe(worker.probe) });
-  } finally { owned.dispose(); }
+  } finally { await owned.dispose(); }
 }
 async function testIdleHandled(module: WebAssembly.Module, engine: Engine, route: EngineInterruptionRoute = "legacy", pageDelivered = false): Promise<void> {
   async function runTrial(suppressNotify: boolean, delivery: EngineSignalDelivery) {
@@ -349,7 +372,7 @@ async function testIdleHandled(module: WebAssembly.Module, engine: Engine, route
         truth(handlerLatencyMs >= 250, "removed notify must not hide behind production4ms timeout");
       } else assertCausalIdleWake(evidence, generation);
       return { delivery, handlerLatencyMs, generation, suppressedNotifications: mutation?.count() ?? 0, causalRejection, evidence };
-    } finally { cleanupCase([() => mutation?.restore(), () => owned.dispose()]); }
+    } finally { await cleanupCase([() => mutation?.restore(), () => owned.dispose()]); }
   }
   // Only idle test workers receive this long timeout. Production scheduling and
   // all other waits remain unchanged; CPU benchmark interception stays disabled.
@@ -395,6 +418,7 @@ async function testPreview1Clock(root: boolean): Promise<void> {
   async function runTrial(suppressNotify: boolean) {
     let owned: Awaited<ReturnType<typeof scope>> | undefined;
     let run: Run | undefined;
+    let rootRuntime: Runtime | undefined;
     let rootSettled = false;
     let worker: ObservedWorker | undefined;
     let mutation: ReturnType<typeof suppressBudgetNotifications> | undefined;
@@ -407,10 +431,11 @@ async function testPreview1Clock(root: boolean): Promise<void> {
     currentCase?.contexts.push(context);
     try {
       if (root) {
+        rootRuntime = await fixtureRuntime();
         instrumentPreview1Root = true;
         try {
           run = startRun({ engine: "browser", adapter: "preview1", module, args: [], env: { PWD: "/home/user" },
-            filesystem: filesystem!, moduleScope: false }, {
+            runtime: rootRuntime, moduleScope: false }, {
             stdout(bytes) { stdout += decoder.decode(bytes); }, stderr(bytes) { stderr += decoder.decode(bytes); },
           });
         } finally { instrumentPreview1Root = false; }
@@ -463,10 +488,11 @@ async function testPreview1Clock(root: boolean): Promise<void> {
     } finally {
       context.final = captureContext(context.read);
       instrumentPreview1Root = false;
-      cleanupCase([
+      await cleanupCase([
         () => mutation?.restore(),
         () => { if (run && !rootSettled) run.kill(9); },
         () => owned?.dispose(),
+        () => disposeRuntime(rootRuntime),
         () => { if (root) { (worker ?? guestWorkers.get(1))?.forceTerminate(); guestWorkers.delete(1); } },
       ]);
     }
@@ -499,7 +525,7 @@ async function benchmark(module: WebAssembly.Module, engine: Engine, pristine?: 
         const match = /BENCH (\d+) (\d+)/.exec(child.stdout); truth(match, `benchmark output: ${child.stdout} ${child.stderr}`);
         equal(Atomics.load(worker.probe, probeCell.slotMasked), hooks ? 0 : 1, "disabled baseline masks optional signal slot before _start");
         return { milliseconds: Number(match[1]), checksum: Number(match[2]) };
-      } finally { owned.dispose(); }
+      } finally { await owned.dispose(); }
     }, Boolean(pristine));
     return { engine, ...result };
   } finally { hooks = true; observeCheckpoints = true; }
@@ -513,8 +539,6 @@ void (async () => {
   let functionalComplete = false;
   try {
     truth(crossOriginIsolated, "engine interruption requires cross-origin isolation");
-    filesystem = new SharedFilesystem();
-    await filesystem.mkdirp("/home/user"); await filesystem.flush();
     for (const [engine, name] of [["quickjs", "bun.wasm"], ["jsc", "bun-jsc.wasm"], ["browser", "bun-browser.wasm"]] as const) {
       let module: WebAssembly.Module | undefined, hash = "";
       await runCase({ engine, route: "artifact", name: "load-candidate" }, async () => {
@@ -534,7 +558,7 @@ void (async () => {
           const child = boot.spawn("require('node:fs').writeSync(2,'boot\\n');");
           await boot.exit(child, 0);
           equal(child.stderr, "boot\n", `${engine} guest bootstrap`);
-        } finally { boot.dispose(); }
+        } finally { await boot.dispose(); }
       });
       for (const signal of [2, 15] as const) await runCase({ engine, route: "legacy", name: `default-${signal}` }, () => testDefault(loaded, engine, signal));
       if (engine !== "browser") {
@@ -570,7 +594,7 @@ void (async () => {
     }
   } catch (error) { fatalError = error; }
   finally {
-    destroy(); clearTimeout(watchdog);
+    await destroy(); clearTimeout(watchdog);
     const safe = functional.safe && destroyErrors.length === 0 && activeWorkers.size === 0 && !watchdogExpired;
     Object.assign(globalThis, { engineInterruptionResult: {
       ok: !fatalError && functional.ok && safe,

@@ -1,11 +1,11 @@
 import { DescriptorTable } from "../../runtime/core/descriptors";
-import { createFilesystemIdentity, type FilesystemIdentity } from "../../runtime/fs";
+import type { FilesystemIdentity } from "../../runtime/fs";
 import { readOutcome } from "../../runtime/proc/outcome";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState } from "../../runtime/proc/worker-client";
 import { createRuntimeTerminalCodec } from "../src/runtime-terminals";
 import { SubprocessBroker } from "../src/subprocess-broker";
 import { SubprocessHost } from "../src/subprocess";
-import type { SharedFilesystem } from "../src/shared-fs";
+import type { Runtime } from "@bun-wasm/runtime";
 import type { Engine } from "../src/worker";
 
 export type EngineInterruptionRoute = "legacy" | "runtimeProcess";
@@ -31,8 +31,9 @@ export interface EngineInterruptionScope {
 
 /** Original test adapter. Admission, descriptor tokens and launchRuntime are the
  * production path; no RunRequest or detached generic budget is manufactured. */
-export async function createRuntimeEngineScope(module: WebAssembly.Module, engine: Engine, filesystem: SharedFilesystem,
+export async function createRuntimeEngineScope(module: WebAssembly.Module, engine: Engine, runtime: Runtime,
   workerUrl = new URL("./engine-interruption-worker.js", location.href).href) {
+  const filesystem = runtime.filesystem;
   const descriptors = new DescriptorTable();
   const identities: FilesystemIdentity[] = [];
   const children = new Map<number, EngineInterruptionChild>();
@@ -51,17 +52,17 @@ export async function createRuntimeEngineScope(module: WebAssembly.Module, engin
     }
   }
   try {
-    const root = createWorkerProcessTransport();
-    const identity = createFilesystemIdentity(filesystem.client.connection); identities.push(identity);
+    const root = createWorkerProcessTransport({ pid: runtime.identities.pid(), job: runtime.identities.job(), identity: runtime.identities.buffer });
+    const identity = filesystem.createIdentity(); identities.push(identity);
     root.data = { filesystem: identity };
     const decoder = new TextDecoder();
-    broker = new SubprocessBroker(workerUrl, filesystem, {
+    broker = new SubprocessBroker(workerUrl, runtime, {
       output(fd, bytes) {
         if (!active) throw new Error("generic output has no test-owned child");
         if (fd === 2) active.stderr += decoder.decode(bytes); else active.stdout += decoder.decode(bytes);
       },
     });
-    broker.register("bun", { module, adapter: "bun", engine });
+    runtime.registerProgram("bun", { module, adapter: `bun:${engine}`, cooperative: true });
     for (const fd of [0, 1, 2]) {
       const installed = descriptors.open({ kind: "terminal", read: () => 0,
         write: chunks => chunks.reduce((size, bytes) => size + bytes.length, 0),
@@ -77,7 +78,7 @@ export async function createRuntimeEngineScope(module: WebAssembly.Module, engin
     const pageBroker = broker;
     const client = new WorkerProcessClient({ transport: root, descriptors, codec,
       prepareSpawn() {
-        const filesystemIdentity = createFilesystemIdentity(filesystem.client.connection); identities.push(filesystemIdentity);
+        const filesystemIdentity = filesystem.createIdentity(); identities.push(filesystemIdentity);
         return { data: { filesystem: filesystemIdentity,
           pipeRegistry: (root.data as { pipeRegistry: unknown }).pipeRegistry } };
       },
@@ -112,18 +113,21 @@ export async function createRuntimeEngineScope(module: WebAssembly.Module, engin
   } catch (error) { dispose(); throw error; }
 }
 
-export function createLegacyEngineScope(module: WebAssembly.Module, engine: Engine, fs: SharedFilesystem,
+export function createLegacyEngineScope(module: WebAssembly.Module, engine: Engine, runtime: Runtime,
   workerUrl: string, adapter: "bun" | "preview1" = "bun"): EngineInterruptionScope {
+  const fs = runtime.filesystem;
   const decoder = new TextDecoder();
-  const broker = new SubprocessBroker(workerUrl, fs);
+  const pid = runtime.identities.pid(), job = runtime.identities.job();
+  const broker = new SubprocessBroker(workerUrl, runtime, { root: { pid, job } });
   // Preview1 here is only our byte-encoded signal-clock fixture: it explicitly
   // handles/dequeues signals through poll_oneoff, not an untrusted guest upload.
   broker.register("bun", adapter === "preview1" ? { module, adapter, cooperative: true } : { module, adapter, engine });
   const children = new Map<number, EngineInterruptionChild>();
   const host = new SubprocessHost({
-    output() {}, onChildClose: pid => broker.close(1, pid),
+    pid, jobId: job, identity: runtime.identities.buffer,
+    output() {}, onChildClose: childPid => broker.close(pid, childPid),
     launch(meta, transport) {
-      const identity = createFilesystemIdentity(fs.client.connection);
+      const identity = fs.createIdentity();
       children.set(transport.pid, { pid: transport.pid, jobId: transport.jobId,
         requestedSignal: new Int32Array(transport.requestedSignal), signalState: new Int32Array(transport.signalState), stdout: "", stderr: "" });
       broker.spawn({ executable: "bun", argv: meta.argv, pid: transport.pid, parentPid: transport.parentPid,
