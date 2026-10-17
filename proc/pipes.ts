@@ -42,7 +42,7 @@ export interface PipeEndpointHandle {
   registry?: PipePublicationRegistryHandle;
 }
 
-// The ring wrap/copy/notification scheme is adapted from web/src/subprocess.ts SharedPipe.
+// The ring wrap/copy/notification scheme is adapted from browser/worker.ts SharedPipe.
 // Unlike SharedPipe, the committed cursor and its permanent close flag are ONE atomic value.
 // Revocation freezes the committed watermark with atomic OR. A producer paused after copying
 // cannot publish over that watermark: its compareExchange necessarily loses to revocation.

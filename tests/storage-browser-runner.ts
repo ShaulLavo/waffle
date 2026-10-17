@@ -106,7 +106,7 @@ async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent 
     if (cleaning) throw new Error("Storage runner stopped before starting worker work");
     const page = await context.newPage();
     await page.goto(`http://127.0.0.1:${server!.port}`);
-    return await page.evaluate(request => new Promise<T>((resolve, reject) => {
+    return await page.evaluate((request: WorkerRequest) => new Promise<T>((resolve, reject) => {
       const worker = new Worker("/worker.js", { type: "module" });
       const timeout = setTimeout(() => { worker.terminate(); reject(new Error("storage case worker timed out")); }, 45_000);
       const finish = () => { clearTimeout(timeout); worker.terminate(); };

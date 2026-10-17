@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@bun-wasm/runtime",
+      "name": "waffle",
       "dependencies": {
         "acorn": "^8.17.0",
       },

@@ -1,71 +1,30 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  pull_request:
 
 jobs:
-  web:
-    name: Web host
+  package:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - name: Web host unit, type and bundle gates
-        run: bash ../scripts/test-web-host.sh --unit
-      - name: Install Chromium and WebKit
-        run: bunx playwright install --with-deps chromium webkit
-      - name: Web host browser gates
-        env:
-          EDITOR_SCRATCH_ROOT: ${{ runner.temp }}
-        run: bash ../scripts/test-web-host.sh --browser
-
-  browser-process:
-    name: Processes (${{ matrix.browser }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [chromium, firefox, webkit]
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
+          bun-version: latest
       - run: bun install --frozen-lockfile
-      - name: Install browser
-        run: bunx playwright install --with-deps ${{ matrix.browser }}
-      - name: Process supervisor, generic preview1 and interrupt gate (no Rust or dist artifacts)
-        env:
-          PROCESS_SMOKE_PORT: "4186"
-          TMPDIR: ${{ runner.temp }}
-        run: bun tests/browser-process.ts ${{ matrix.browser }}
-      - name: Injected third-party interrupt checks (no Rust or dist artifacts)
-        env:
-          INTERRUPT_SCRATCH_ROOT: ${{ runner.temp }}
-        run: bun tests/browser-interrupt.ts ${{ matrix.browser }}
-      - name: Process pipes and runtime_proc guest ABI (no Rust or dist artifacts)
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: bun tests/browser-runtime-proc.ts ${{ matrix.browser }}
+      - run: bun run prepare
+      - run: bun run check
+      - run: bun test ./tests
+      - run: bun run size
+      - run: test -z "$(git ls-files dist)"
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run prepare
+      - run: bun tests/storage-browser-runner.ts
