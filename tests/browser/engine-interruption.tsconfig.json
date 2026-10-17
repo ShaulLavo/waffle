@@ -1,0 +1,30 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"]
+  },
+  "include": [
+    "browser-engine-interruption.ts",
+    "browser-engine-interruption.test.ts",
+    "engine-interruption-main.ts",
+    "engine-interruption-cases.ts",
+    "engine-interruption-cases.test.ts",
+    "engine-interruption-worker.ts",
+    "engine-interruption-transport.ts",
+    "engine-interruption-transport.test.ts",
+    "engine-interruption-scope.ts",
+    "engine-interruption-scope.test.ts",
+    "engine-interruption-preview1.ts",
+    "engine-interruption-preview1.test.ts",
+    "engine-interruption-probe.ts",
+    "engine-interruption-probe.test.ts",
+    "engine-interruption-benchmark.ts",
+    "engine-interruption-benchmark.test.ts",
+    "engine-interruption-guests.ts",
+    "engine-interruption-guests.test.ts",
+    "engine-interruption-safari.ts",
+    "engine-interruption-safari.test.ts",
+    "engine-interruption-idle.test.ts",
+    "engine-interruption-idle-worker.ts"
+  ]
+}

@@ -403,7 +403,9 @@ test("poll observes remaining handled signals after a wake hint is consumed and 
   f.abi.imports.signal!(2, 2); f.abi.imports.signal!(15, 2);
   f.supervisor.kill(f.pid, 2); f.supervisor.kill(f.pid, 15);
   expect(f.abi.imports.interrupted!()).toBe(2);
-  expect(Atomics.load(f.signals.interrupt, 0)).toBe(0);
+  // Dequeue keeps the WASI hint armed for remaining signals. Generic poll must also
+  // observe authoritative pending state if an independent checkpoint consumed that hint.
+  expect(Atomics.exchange(f.signals.interrupt, 0, 0)).toBe(15);
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(0);
   expect(f.abi.imports.interrupted!()).toBe(15);
   f.supervisor.kill(f.pid, 9);

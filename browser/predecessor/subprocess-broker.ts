@@ -6,7 +6,7 @@ import { createSignalState, requestSignal, type SignalTransport } from "../../ru
 import { isRevoked } from "../../runtime/fs/protocol";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome";
 import type { SharedFilesystem } from "./shared-fs";
-import { childTransport } from "./subprocess.ts";
+import { childTransport, createProcessBudget } from "./subprocess.ts";
 import type { Engine, RunRequest, SpawnRequest, WorkerMessage } from "./worker";
 import type { WorkerProcessBroker } from "../../runtime/proc/worker-broker";
 import type { WorkerProcessMessage, WorkerProcessTransport } from "../../runtime/proc/worker-client";
@@ -83,10 +83,12 @@ export class SubprocessBroker {
     private options: {
       activate?: () => Promise<Proc>;
       root?: RootProcessOptions;
+      budget?: SharedArrayBuffer;
       output?(fd: 1 | 2, data: Uint8Array): void;
       /** The runner owns root execution, including its filesystem acknowledgement/fence. */
       quiesceRoot?(): void | Promise<void>;
     } = {}) {
+
     // Root control is available before the optional process service is imported. Non-isolated
     // runs never supply shared root words and never allocate them unless they activate spawning.
     if (options.root) this.rootTransport();
@@ -400,7 +402,7 @@ export class SubprocessBroker {
       adapter: preview1 ? "preview1" : "bun", interruptible, args: context.request.argv,
       env: { ...context.request.env, PWD: context.request.cwd },
       filesystem: this.filesystem.connect(filesystem), runtimeProcess: transport,
-      pid: context.pid, jobId: context.job, trace: false, spawnBroker: true, net: null, moduleCache: null,
+      pid: context.pid, jobId: context.job, budget: createProcessBudget(), trace: false, spawnBroker: true, net: null, moduleCache: null,
     };
     if (!preview1 && request.engine === "browser" && new URL(this.workerUrl).pathname.endsWith("/__bunwasm/worker.js")) request.moduleCache = `bunwasm-m-${crypto.randomUUID()}`;
     let worker: Worker;
@@ -498,9 +500,22 @@ export class SubprocessBroker {
     // Publication has no callbacks. Every default member's terminal choice precedes any revoke,
     // stream closure, or worker stop, including reentrant exits caused by those operations.
     const deliveries = targets.map(target => ({ ...target, delivery: requestSignal(target.transport, signal) }));
-    for (const { pid, delivery } of deliveries) {
+    let wakeRuntime = false;
+    for (const { pid, child, delivery } of deliveries) {
+      if (delivery.action === "handled" || delivery.outcome?.kind === "signaled") {
+        // Signal interrupt hints are not the readiness word on which hostPoll sleeps.
+        // Preserve that existing pipe/child wake source, including roots without children.
+        const budget = child?.spawn.child.budget ?? (pid === this.root?.pid ? this.options.budget : this.runtimeChildren.get(pid)?.request.budget);
+        if (budget) {
+          const cells = new Int32Array(budget);
+          Atomics.add(cells, 1, 1); Atomics.notify(cells, 1);
+        }
+        wakeRuntime = true;
+      }
       if (delivery.outcome?.kind === "signaled") this.revokeRuntimeProcess(pid);
     }
+    // Generic ProcessABI.poll uses the service-wide directory sequence instead.
+    if (wakeRuntime && this.runtimeRoot) this.runtimeApi!.wakeWorkerProcess(this.runtimeRoot);
     for (const { child, delivery } of deliveries) {
       if (!child) continue;
       if (delivery.action !== "ignore") child.signal = Atomics.load(new Int32Array(child.spawn.child.requestedSignal), 0);

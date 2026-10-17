@@ -46,8 +46,23 @@ export function publishSignal(state: Int32Array, signal: number): "default" | "i
     if (Atomics.compareExchange(state, signal, previous, previous | SIGNAL_PENDING) === previous) return "handled";
   }
 }
-/** Clear before dispatch: removing a once handler must not reinterpret its delivered pending bit. */
-export function takeSignal(state: Int32Array): number {
+/** Clear before dispatch: removing a once handler must not reinterpret its delivered pending bit.
+ * Keep the wake hint armed while another authoritative pending bit remains, including for WASI
+ * waits that observe the interrupt word rather than the entire signal-state table. */
+export function takeSignal(state: Int32Array, interrupt?: Int32Array): number {
+  // A racing publisher must retain either its wake hint or its pending bit.
+  if (interrupt) Atomics.exchange(interrupt, 0, 0);
+  const taken = takePendingSignal(state);
+  if (interrupt) {
+    for (let signal = 1; signal <= 64; signal++) {
+      if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
+      Atomics.compareExchange(interrupt, 0, 0, signal);
+      break;
+    }
+  }
+  return taken;
+}
+function takePendingSignal(state: Int32Array): number {
   for (let signal = 1; signal <= 64; signal++) {
     if (signal === Signal.SIGKILL) continue;
     for (;;) {

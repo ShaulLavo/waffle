@@ -6,6 +6,7 @@ import { createSignalState, publishSignal, setSignalDisposition } from "../../ru
 import { SharedPipe, SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "../src/subprocess.ts";
 import type { RunRequest, WorkerMessage } from "../src/worker.ts";
 import type { Stream } from "../../runtime/core/descriptors.ts";
+import { DefaultSignal } from "../src/default-signal.ts";
 
 // Execute the actual worker lifecycle with host boundaries injected, without replacing runner globals.
 const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(
@@ -88,6 +89,7 @@ async function run(options: {
     claimOutcome, outcomeWord, readOutcome,
     HOST_CALL_FD: 3,
     WasiExit: TestWasiExit,
+    DefaultSignal,
     Wasi: class {
       descriptors = { dispose() { events.push("dispose descriptors"); } };
       constructor(opts: WasiBoundary & { namespaces: { runtime_proc: ProcImports } }) { proc = opts.namespaces.runtime_proc; io = opts; }

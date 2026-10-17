@@ -257,15 +257,18 @@ export class ProcessABI {
     // Fatal outcomes are not handled deliveries. Stop before user code can run another handler.
     const fatal = readOutcome(this.options.signals.outcome);
     if (fatal?.kind === "signaled") throw new ProcessSignalExit(fatal.code);
-    // Clear before dequeue: a racing publisher either leaves a wake or a pending signal.
-    Atomics.exchange(this.options.signals.interrupt, 0, 0);
-    const signal = takeSignal(this.options.signals.signalState);
+    const signal = takeSignal(this.options.signals.signalState, this.options.signals.interrupt);
     const raced = readOutcome(this.options.signals.outcome);
     if (raced?.kind === "signaled") throw new ProcessSignalExit(raced.code);
     return signal;
   }
   private signal(signal: number, mode: number): number {
     if (signal === 0 && mode === 0) return this.interrupted();
+    if (signal === 0 && mode === 4) {
+      const fatal = readOutcome(this.options.signals.outcome);
+      if (fatal?.kind === "signaled") throw new ProcessSignalExit(fatal.code);
+      return 0;
+    }
     try {
       checkedSignalNumber(signal);
       if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -22;

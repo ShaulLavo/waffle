@@ -32,7 +32,7 @@ jobs:
       - name: Runtime type check
         run: node_modules/.bin/tsc -p ../crates/bunwasm-runtime/tsconfig.json
       - name: Runtime emission and native type regressions
-        run: bun test ../scripts/runtime-emission.test.ts ../scripts/runtime-types.test.ts ../scripts/worker-codec.test.ts ../scripts/worker-selectors.test.ts ../scripts/worker-outcome.test.ts
+        run: bun test ../scripts/runtime-emission.test.ts ../scripts/runtime-types.test.ts ../scripts/runtime-signal-dispatch.test.ts ../scripts/worker-codec.test.ts ../scripts/worker-selectors.test.ts ../scripts/worker-outcome.test.ts
       - name: Install runtime and sandbox dependencies
         run: |
           bun install --cwd ../runtime --frozen-lockfile
@@ -45,6 +45,7 @@ jobs:
       - name: Type check
         run: |
           bun run check
+          bun x tsc -p tests/engine-interruption.tsconfig.json
           bun run --cwd ../runtime check
           bun run --cwd ../sandbox check
       - name: Runtime bundle budgets and Bun light initial downloads (no WASM)

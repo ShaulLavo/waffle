@@ -18,6 +18,7 @@ import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outco
 import { SubprocessHost } from "../src/subprocess";
 import { fatalInterrupt } from "../../runtime/interrupt/check";
 import { requestSignal, setSignalDisposition, SIGNAL_PENDING } from "../../runtime/proc/signals";
+import { DefaultSignal } from "../src/default-signal";
 import type { RunRequest, WorkerMessage } from "../src/worker";
 
 const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(
@@ -87,6 +88,7 @@ test("worker installs arbitrary file, dup and directory bindings before launch w
       HOST_CALL_FD: 3,
       WebAssembly: { Memory: WebAssembly.Memory, Instance: class { exports = { memory, _start() {} }; } },
       WasiExit: class extends Error {},
+      DefaultSignal,
       Wasi: class {
         descriptors = workerTable = new DescriptorTable();
         imports() { return {}; }
@@ -186,6 +188,7 @@ for (const failure of ["client", "codec", "protocol", "pipes", "abi", "terminals
       HOST_CALL_FD: 3,
       WebAssembly: { Memory: WebAssembly.Memory, Instance: class { constructor() { throw new Error("must not instantiate"); } } },
       WasiExit: class extends Error {},
+      DefaultSignal,
       Wasi: class {
         descriptors = descriptors = new DescriptorTable();
         constructor() { this.descriptors.open(stream, 1n, 0n, () => events.push("dispose default")); }
@@ -246,6 +249,7 @@ for (const mode of ["sync", "caught", "error", "rejection"] as const) test(`gene
         exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {}, bunwasm_ready: () => 1 };
       } },
       WasiExit: class extends Error {},
+      DefaultSignal,
       Wasi: class {
         descriptors = new DescriptorTable();
         constructor(options: { namespaces: typeof imports }) { imports = options.namespaces; }
@@ -317,6 +321,7 @@ for (const kind of ["wasi", "abi"] as const) for (const phase of ["before", "aft
       HOST_CALL_FD: 3,
       WebAssembly: { Memory: WebAssembly.Memory, Instance: class { exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {} }; } },
       WasiExit: class extends Error {},
+      DefaultSignal,
       Wasi: class {
         descriptors = new DescriptorTable();
         constructor(options: typeof wasiOptions) { wasiOptions = options; }
@@ -370,6 +375,7 @@ for (const kind of ["signaled", "exited"] as const) test(`injected runtime worke
         exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {} };
       } },
       WasiExit: class extends Error {},
+      DefaultSignal,
       Wasi: class {
         descriptors = new DescriptorTable();
         constructor(options: { namespaces: typeof imports }) { imports = options.namespaces; }

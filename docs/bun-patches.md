@@ -14,6 +14,8 @@ Each row has one class. A file with independent changes has separate rows.
 
 | Patch or source | Class | Change |
 | --- | --- | --- |
+| [`jsc/webkit-wasi.patch`, C-loop host interruption](#engine-interruption) | Host feature | Poll the process host at saved interpreter trap points; preserve native uncatchable termination. |
+| [Engine signal adapters](#engine-interruption) | Host feature | Original QuickJS/JSC callbacks poll fatal cancellation without entering JS; handled signals stay pending for ordinary event-loop delivery. |
 | [HTMLRewriter adapters and lol-html linkage](#htmlrewriter) | Host feature | Original parser sessions, async handler dispatch and streaming wrappers on all engines. |
 | [X509Certificate adapters](#x509certificate) | Host feature | Original BoringSSL data bindings and Node certificate wrapper over existing KeyObjects. |
 | [X.509 hostname option matcher](#x509-hostname-option-matcher) | Port | Adapt Bun's OpenSSL-compatible Rust matcher because BoringSSL removed four option behaviors. |
@@ -85,7 +87,6 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/stack_trace.js`](#structured-call-sites) | Host feature | Original CallSite adapter for QuickJS and JSC stack capture. |
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 | [`crates/bunwasm-runtime/src/directory.rs`, `src/js/node_fs.js`, `web/src/engine-host.js`, directory cursors](#directory-cursors) | Host feature | Original directory handles, bounded reads, recursive traversal and Node Dir adapters. |
-
 | [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
 | [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions including Node/Bun's ignored SIGPIPE default, immutable final-kind query and byte-sized exit statuses. |
@@ -122,6 +123,54 @@ Each row has one class. A file with independent changes has separate rows.
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
 
+## Engine interruption
+
+Class **Host feature**. The WebKit patch changes
+`Source/JavaScriptCore/llint/{LowLevelInterpreter.asm,LLIntSlowPaths.cpp}` and
+`Source/JavaScriptCore/runtime/VMTraps.h` at Bun's WebKit revision
+`3d3257150c40a1aabdc5f8b48d5b33d0413674cb`. Single-threaded WASI cannot use a
+watchdog thread to publish VM trap bits while JavaScript runs. A per-VM countdown
+therefore polls the host every 1,024 ordinary C-loop trap points, including loop
+backedges and function entries. The existing trap slow path saves the interpreter
+PC and stack before polling; generic exception/unwind checks do not poll the host.
+A true callback result requests JSC's distinguished uncatchable termination
+exception. Polling is disabled for hosts without optional signal slot 18. This is
+a host extension, not an upstream bug.
+
+Original adapters in `crates/bunwasm-runtime/src/{engine,engine_quickjs,engine_jsc,lib,host}.rs`,
+`crates/bunwasm-jsc/{cpp/helpers.cpp,src/sys.rs}`,
+`crates/bunwasm-host/src/{slots,process/stdio}.rs`, and `web/src/subprocess.ts`
+add `(signal=0, mode=4)` to existing slot 18. It observes fatal cancellation
+without consuming the authoritative per-signal handled pending set. QuickJS
+installs its public `JS_SetInterruptHandler` through rquickjs's interrupt API,
+without changing upstream QuickJS, amortizing host calls across eight ordinary
+engine polls (about 80,000 backedges/calls). Neither engine callback enters JS.
+
+Handled signals wait for the next ordinary event-loop turn, matching Node. An
+earlier design dispatched them inside engine callbacks; review rejected that
+because QuickJS also polls during native regexp operations, and reentry can break
+native borrowed state or runtime timer invariants. No interpreter-specific
+reentry hook or runtime critical-section suppression is needed. The original
+`crates/bunwasm-runtime/src/js/{process.js,process_signals.ts}` adapter serializes cooperative dispatch,
+including recursive broken-pipe handling. Default signals already have an
+immutable host outcome; a fatal checkpoint unwinds Wasm without entering guest
+catch/finally blocks, including while a handled callback is CPU-bound. The
+browser-native engine needs no new hook and remains covered by worker termination.
+
+The original `runtime/proc/abi.ts` adapter implements the same fatal-only mode 4
+for generic process imports. The original `runtime/proc/signals.ts` helper preserves
+pending-signal wake hints during cooperative dequeue. The original
+`web/src/{runner,worker,subprocess-broker,subprocess}.ts`
+adapters share each process's existing budget with its page-side broker. Signal delivery
+notifies that budget's wait word and, for generic process polling, the directory wake word;
+short timeout rescans are not the signal notification mechanism. Legacy preview1 guests
+also receive their root or child's interrupt channel, with cooperative dequeue consuming
+its wake hint without consuming another pending signal.
+
+These adapters and the browser proof/benchmark harness are original implementations,
+not copied source. JSC polling covers JS safe points, not a single uninterrupted
+native operation; QuickJS retains its existing native-operation interrupt polls.
+
 ## Third-party interrupt instrumentation
 
 **Class: Host feature (original adapter).** `runtime/interrupt/rewriter.ts`, `loader.ts` and
@@ -151,6 +200,7 @@ clang 23.1.0 / LLVM `895aa2c896ada719451be2e3673c83da8ddf1141`, `-O2 -nostdlib`,
 wasm32 target, exported memory and a 16 MiB maximum memory. Source comments preserve exact
 flags. The benchmark optionally takes the retained spike rewriter as an external input; it is
 bundled only into the disposable measurement app, never into the shipped runtime.
+
 
 ## Browser process service
 

@@ -50,6 +50,8 @@ export interface SubprocessOptions {
   workerTransport?: ChildTransport;
   /** Current process dispositions and pending signals; never inherited by a new child. */
   signalState?: Int32Array | SharedArrayBuffer;
+  /** Shared current-process wake hint; dequeue clears it before consuming pending state. */
+  interrupt?: Int32Array | SharedArrayBuffer;
   /** Adopt the current process's existing terminal decision for signal-entry checkpoints. */
   outcome?: BigInt64Array | SharedArrayBuffer;
   /** Synchronously apply a raised, selected, or newly unhandled fatal signal. */
@@ -488,10 +490,18 @@ export class SubprocessHost {
     this.children.delete(id);
     this.options.onChildClose?.(child.transport.pid);
   }
-  /** Current-process disposition, handled-pending dequeue, and mode 3 RAISE (Bun host slot 18). */
+  /** Current-process dispositions, dequeue, RAISE, and non-dequeue poll (Bun host slot 18). */
   signal(signal: number, mode: number): number {
     if (!this.admit()) return 0;
-    if (signal === 0) return mode === 0 ? takeSignal(this.signalState) : -22;
+    // Admission above observes selected fatal outcomes. Engine polling must not
+    // consume handled pending signals before the ordinary guest event loop.
+    if (signal === 0) {
+      if (mode === 4) return 0;
+      if (mode !== 0) return -22;
+      const interrupt = this.options.interrupt ?? this.options.workerTransport?.interrupt;
+      const pending = takeSignal(this.signalState, interrupt instanceof Int32Array ? interrupt : interrupt ? new Int32Array(interrupt) : undefined);
+      return this.admit() ? pending : 0;
+    }
     let applyDefault: boolean;
     try {
       applyDefault = mode === 3

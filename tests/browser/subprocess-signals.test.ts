@@ -62,6 +62,37 @@ for (const signal of [2, 15, 13]) for (const code of [0, 23, 143]) {
   });
 }
 
+test("engine polls preserve the authoritative handled pending set", () => {
+  const f = fixture();
+  try {
+    for (const signal of [2, 15]) {
+      expect(f.current.signal(signal, 2)).toBe(0);
+      expect(f.host.kill(f.pid, signal)).toBe(0);
+    }
+    const pending = Array.from(new Int32Array(f.transport.signalState));
+    for (let i = 0; i < 3; i++) expect(f.current.signal(0, 4)).toBe(0);
+    expect(Array.from(new Int32Array(f.transport.signalState))).toEqual(pending);
+    expect(f.current.engineNet().natives.hostSignal!(0, 4)).toBe(0);
+    expect(f.current.slots().signal!(0, 4)).toBe(0);
+    expect(f.current.signal(0, 0)).toBe(2);
+    expect(f.current.signal(0, 0)).toBe(15);
+    expect(f.current.signal(0, 0)).toBe(0);
+    expect(f.current.signal(2, 4)).toBe(-22);
+  } finally { f.dispose(); }
+});
+
+for (const disposition of [0, 1]) test(`disposition ${disposition} still sees handled pending after engine polls`, () => {
+  const f = fixture();
+  try {
+    f.current.signal(15, 2);
+    f.host.kill(f.pid, 15);
+    expect(f.current.signal(0, 4)).toBe(0);
+    expect(f.current.signal(15, disposition)).toBe(0);
+    expect(f.defaults).toEqual(disposition === 0 ? [15] : []);
+    expect(f.current.signal(0, 0)).toBe(0);
+  } finally { f.dispose(); }
+});
+
 test("removing a pending handler applies the default synchronously and clears pending", () => {
   const f = fixture();
   try {
@@ -330,7 +361,7 @@ test("RAISE works through both native and numeric bridges", () => {
   } finally { f.dispose(); }
 });
 
-for (const signal of [2, 9, 10, 13, 15]) test(`preselected fatal ${signal} stops dequeue without consuming a handled pending signal`, () => {
+for (const signal of [2, 9, 10, 13, 15]) for (const mode of [0, 4]) test(`preselected fatal ${signal} stops mode ${mode} without consuming a handled pending signal`, () => {
   const f = fixture();
   const stopped = new Error(`fatal checkpoint ${signal}`);
   try {
@@ -339,7 +370,7 @@ for (const signal of [2, 9, 10, 13, 15]) test(`preselected fatal ${signal} stops
     f.current.options.outcome = f.transport.outcome;
     claimOutcome(outcomeWord(f.transport.outcome), { kind: "signaled", code: signal });
     f.current.options.defaultSignal = winner => { f.defaults.push(winner); throw stopped; };
-    expect(() => f.current.signal(0, 0)).toThrow(stopped);
+    expect(() => f.current.signal(0, mode)).toThrow(stopped);
     expect(f.defaults).toEqual([signal]);
     expect(takeSignal(createSignalState(f.transport.signalState))).toBe(15);
     childTransport(f.transport).finish(0);

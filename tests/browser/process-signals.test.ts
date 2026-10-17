@@ -5,6 +5,7 @@ import { createNodeSignalController } from "../scripts/node-signals.ts";
 
 const eventsSource = readFileSync(new URL("../../crates/bunwasm-runtime/src/js/events.js", import.meta.url), "utf8");
 const processSource = readFileSync(new URL("../../crates/bunwasm-runtime/src/js/process.js", import.meta.url), "utf8");
+const processSignalsSource = new Bun.Transpiler({ loader: "ts" }).transformSync(`globalThis.__signalFactory = ${readFileSync(new URL("../../crates/bunwasm-runtime/src/js/process_signals.ts", import.meta.url), "utf8")}`);
 
 class GuestExit extends Error {
   constructor(readonly code: number) { super(`guest exit ${code}`); }
@@ -55,6 +56,7 @@ function fixture() {
     traceExit() {},
     require(name: string) {
       if (name === "events") return events;
+      if (name === "process_signals") return runInContext(processSignalsSource, context)(internal);
       throw new Error(`unexpected polyfill ${name}`);
     },
     pumpSignals: undefined as undefined | (() => boolean),

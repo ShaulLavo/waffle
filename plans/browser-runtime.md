@@ -222,7 +222,8 @@ non-blocking except `poll` and `wait_job` without NOHANG.
 | `kill` | `(pid, sig) -> 0` | Signals one process. |
 | `kill_job` | `(job, sig) -> 0` | Signals every process in a job, including descendants spawned into it. |
 | `poll` | `(subs_ptr, n, timeout_ms, out_ptr) -> n_ready` | Each subscription is 16 bytes: `u32 kind` (0 readable, 1 writable, 2 child exit, 3 filesystem completion, 4 job-empty), `u32 id` (fd, pid, request or job), `u64 userdata`. Each event written is 16 bytes: `u64 userdata`, `u32 kind`, `u32 flags` (bit 0 hang-up). Also returns when this process's interrupt word is set (`n_ready` may be 0). Blocks unless timeout is zero. |
-| `signal` | `(sig, mode) -> result` | Synchronously sets this process's disposition: 0 default, 1 ignored, 2 handled; mode 3 raises a signal against the current disposition. `(0, 0)` dequeues the next pending handled signal (0 if none), sharing the queue with `interrupted`. Set/raise returns 0, invalid arguments -22. SIGKILL cannot be registered or ignored. Bun reaches the same adapter through optional host slot 18. |
+| `signal` | `(sig, mode) -> result` | Synchronously sets this process's disposition: 0 default, 1 ignored, 2 handled; mode 3 raises a signal against the current disposition. `(0, 0)` dequeues the next pending handled signal (0 if none), sharing the queue with `interrupted`; `(0, 4)` polls fatal cancellation without consuming handled pending signals. Set/raise/poll returns 0, invalid arguments -22. SIGKILL cannot be registered or ignored. Bun reaches the same adapter through optional host slot 18. |
+
 | `interrupted` | `() -> sig` | Dequeues one pending handled signal for this process (0 if none); the guest dispatches its handler at a checkpoint. Unhandled default actions have already been selected by the supervisor. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
 | `default_signal` | `(sig) -> never` | Takes the default action for the signal returned by a checkpoint. The adapter reports it explicitly before unwinding; the supervisor records `128 + sig`, revokes descriptors and requests physical termination. An unrelated later trap is not inferred to be a signal exit. |
 
@@ -253,6 +254,16 @@ ignoring a signal clears its pending state. Standard signals may coalesce per si
 pending signals must not overwrite one another. Dequeue clears pending before a once-listener
 removes itself. The per-signal state is authoritative; the shared interrupt word only wakes
 checkpoints.
+
+Like Node, handled signals remain pending through synchronous JavaScript and dispatch on the
+next ordinary event-loop turn. Engine polls use `(0, 4)` and never call JavaScript: arbitrary
+reentry can invalidate native regexp state and runtime timer bookkeeping. An infinite JS loop
+with a registered handler therefore stays busy until an unhandled/default signal or SIGKILL
+stops it. Idle event-loop waits must wake promptly for handled delivery. Acceptance signals
+through the page broker's `kill` and `killJob` on both legacy and runtime-process routes. A
+long test-only wait must return native `ok` for the exact sampled wait generation, while
+removing its notification fails the same check; a short timeout rescan is not wake evidence.
+
 
 An explicit `runtime_proc.default_signal(sig)` still reports a typed default action. SIGKILL
 always selects 137 and revokes immediately; it cannot be caught or ignored. Guest completion
@@ -297,7 +308,7 @@ the CI gate.
 | 4d | **IPC.** Node `fork()` and Bun `spawn({ipc})` as a pipe pair on a child fd with newline-delimited JSON; guest send and receive on QuickJS and JSC as well as Bun light. | 400-700 |
 | 5 | **Terminal.** Terminal descriptor kind with a foreground owner; cooked mode (echo, line editing, Ctrl+D) ported from brush-web; raw mode passes Ctrl+C through as a byte; resize events. | 600-1,000 |
 | 6 | **Network.** One socket namespace shared by all processes (children get networking; loopback works across workers); fetch bridge; bounded connection writes; preview routing split from Bun's module-serving service worker, one registration; the preview client loads only when a preview opens. | 1,000-1,600 |
-| 7a | **Engine interruption.** QuickJS's interrupt handler and a JSC trap hook check shared interruption while CPU-bound JS runs, delivering registered handlers and stopping revoked guests in Chromium, Firefox and real Safari. Immediate unhandled default actions already belong to 4a; they do not wait for these engine hooks. | 300-600 |
+| 7a | **Engine interruption.** QuickJS's interrupt handler and a JSC trap hook poll fatal cancellation while CPU-bound JS runs, stopping revoked guests in Chromium, Firefox and real Safari. Handled signals stay in the authoritative host pending set until the next event-loop turn, matching Node; engine callbacks never enter JS. Check idle handled-signal wake latency as well as fatal busy-loop interruption. Immediate unhandled default actions already belong to 4a; they do not wait for these engine hooks. | 300-600 |
 | 7b | **Bun onto the runtime.** Bun's slots as an adapter over the services; remove the Bun-only spawn restrictions (`spawn.js:49-65`, `subprocess.js:170-179`) and engine inheritance; playground migrated; demo UI out of the runtime import graph; WebKit engine-cache retention fixed. Bun light meets the budgets, measured on real downloads before and after the first spawn. | 1,000-1,500 |
 | 8 | **The shell on the runtime.** Owned by the shell track: its `ProcessHost` maps onto the process ABI. This track supplies the ABI, the 4c gate and the milestone's Playwright acceptance tests (`/work/reports/browser-shell-research/pipelines.acceptance.spec.ts`). | shell track |
 | 9 | **Interrupt injection for third-party WASM.** Spike first: rewrite a module at load time to call `interrupted` at loop headers and function entries, measuring rewrite time and overhead on a real program; refuse modules it can't instrument; then build it into the loader. | 800-1,500 |
