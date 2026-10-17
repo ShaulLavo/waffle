@@ -7,7 +7,9 @@ import { DescriptorTable } from "../../runtime/core/descriptors";
 import { SubprocessBroker, type ExecutableRegistration } from "../src/subprocess-broker";
 import { WorkerPipeBroker } from "../../runtime/proc/worker-pipes";
 import { PipeController, attachPipePublicationRegistry, type PipePublicationRegistryHandle } from "../../runtime/proc/pipes";
-import { setSignalDisposition } from "../../runtime/proc/signals";
+import { setSignalDisposition, takeSignal } from "../../runtime/proc/signals";
+import { readOutcome } from "../../runtime/proc/outcome";
+import { suppressBudgetNotifications } from "./engine-interruption-probe";
 import { startRun, type RunOptions } from "../src/runner";
 import type { RunRequest } from "../src/worker";
 import type { SharedFilesystem } from "../src/shared-fs";
@@ -346,3 +348,49 @@ for (const refusal of ["compiled", "SIMD"] as const) test(refusal === "compiled"
     expect(output[0]!.text).toMatch(refusal === "SIMD" ? /Cannot instrument WebAssembly:.*SIMD/ : /require source bytes/);
   } finally { await state.dispose(); }
 });
+
+for (const engine of ["quickjs", "jsc", "browser"] as const) for (const delivery of ["kill", "killJob"] as const) {
+  test(`generic ${engine} ${delivery} wakes the actual Bun host-poll budget without replaying handled SIGINT`, async () => {
+    const nativeWorker = globalThis.Worker;
+    const requests: RunRequest[] = [];
+    globalThis.Worker = class {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      postMessage(request: RunRequest) { requests.push(request); }
+      terminate() {}
+    } as unknown as typeof Worker;
+    const state = registryFixture();
+    let mutation: ReturnType<typeof suppressBudgetNotifications> | undefined;
+    try {
+      state.broker.register("fixture", { module: imported("signal"), adapter: "bun", engine });
+      await state.broker.adoptRuntimeRoot(state.root);
+      const pid = state.client.spawn(1, { executable: "fixture", argv: ["fixture"], env: {}, cwd: "/", job: -1, fds: [] });
+      await state.broker.runtimeMessage(state.messages[0]!, 1);
+      const supervisor = await state.broker.ready();
+      await supervisor.start(pid);
+      expect(requests).toHaveLength(1);
+      const request = requests[0]!;
+      expect(request.engine).toBe(engine);
+      const shared = workerProcessState(request.runtimeProcess!);
+      setSignalDisposition(shared.signals.signalState, 2, 2);
+      const word = new Int32Array(request.budget!, 4, 1);
+      const generation = Atomics.load(word, 0);
+      // Reuse the browser causal-wake negative control on the real production request,
+      // never a manufactured budget. Even suppressed notify must advance this generation.
+      mutation = suppressBudgetNotifications(word);
+      if (delivery === "kill") await state.broker.kill(pid, 2);
+      else await state.broker.killJob(shared.job, 2);
+      expect(mutation.count()).toBe(1);
+      expect(Atomics.load(word, 0)).toBe(generation + 1);
+      expect(takeSignal(shared.signals.signalState)).toBe(2);
+      expect(readOutcome(shared.signals.outcome)).toBeNull();
+      expect(supervisor.get(pid)!.result).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 12));
+      expect(takeSignal(shared.signals.signalState)).toBe(0);
+      expect(mutation.count()).toBe(1);
+    } finally {
+      mutation?.restore();
+      try { await state.dispose(); } finally { globalThis.Worker = nativeWorker; }
+    }
+  });
+}

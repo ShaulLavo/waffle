@@ -332,7 +332,9 @@ export class SubprocessBroker {
     const sig = checkedSignal(signal), child = this.children.get(pid);
     if (child) return this.deliver([{ pid, child, transport: this.childSignalTransport(child) }], sig);
     if (this.root?.pid === pid) return this.service ? this.service.kill(pid, sig) : this.deliver([{ pid, transport: this.root }], sig);
-    return this.ready().then(supervisor => supervisor.kill(pid, sig));
+    // Generic children belong to the page service, including their executor-specific
+    // wake hooks. Calling the supervisor directly queues SIGINT but strands host-poll.
+    return this.processService().then(service => service.kill(pid, sig));
   }
   killJob(job: number, signal: number): Promise<void> {
     const sig = checkedSignal(signal);
