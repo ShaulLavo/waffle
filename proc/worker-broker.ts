@@ -199,7 +199,9 @@ export class WorkerProcessBroker {
       // start() adopts the shared decision and never launches an already-dead worker.
       if (this.options.onAdmission) {
         const selected = readOutcome(state.signals.outcome);
-        this.trace(transport, selected ? "skipped" : "starting", selected ? selected.kind === "signaled" ? "preselected-signal" : "preselected-exit" : undefined);
+        const selectedReason = !selected ? undefined : selected.kind === "exited" ? "preselected-exit"
+          : selected.kind === "signaled" ? "preselected-signal" : "preselected-start-failed";
+        this.trace(transport, selected ? "skipped" : "starting", selectedReason);
       }
       void supervisor.start(state.pid).catch(error => this.report(error));
       this.pump();
@@ -214,7 +216,7 @@ export class WorkerProcessBroker {
         this.supervisor!.failStart(state.pid, error);
       } else {
         this.transports.delete(state.pid);
-        claimOutcome(state.signals.outcome, { kind: "exited", code: 126 });
+        claimOutcome(state.signals.outcome, { kind: "start-failed", code: 13 });
         let cleaned = true;
         for (const token of transport.resources) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }

@@ -257,7 +257,7 @@ export class ProcessSupervisor {
         pid: record.pid, parentPid: record.parentPid, job: record.job, request: record.request!,
         module: executable.module, adapter: executable.adapter, interruptible: executable.interruptible,
         descriptors: record.descriptors, interrupt: record.interrupt, requestedSignal: record.requestedSignal, signalState: record.signalState, outcome: record.outcome,
-        exit: code => this.exit(record.pid, code), fail: error => this.failStart(record.pid, error),
+        exit: code => this.exit(record.pid, code), fail: () => this.exit(record.pid, 126), startFailed: error => this.failStart(record.pid, error),
         defaultSignal: signal => this.defaultSignal(record.pid, signal),
         registerRevocation: hook => this.registerRevocation(record.pid, hook),
       };
@@ -270,14 +270,14 @@ export class ProcessSupervisor {
     } catch (error) { this.failStart(record.pid, error); }
   }
   failStart(pid: number, error: unknown): void {
-    const code = error instanceof ExecutableNotFound ? 127 : 126;
     const record = this.table.get(pid);
     if (record && !record.result && !record.revoked && !readOutcome(record.outcome) && !this.startFailures.has(record)) {
       // Mark before notification: a diagnostic sink may reenter failure handling.
       this.startFailures.add(record);
       this.safely(() => this.options.startFailed?.(pid, error));
     }
-    this.finish(pid, { kind: "exited", code });
+    const missing = error instanceof ExecutableNotFound || error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
+    this.finish(pid, { kind: "start-failed", code: missing ? 2 : 13 });
   }
   exit(pid: number, code: number): void {
     if (!Number.isInteger(code)) throw new ProcessError(ProcessErrno.INVAL, "exit code must be an integer");

@@ -9,7 +9,7 @@ export interface ProcessAdmissionEvent {
   /** Opaque shared-directory identity, present for transport-backed events. Never a buffer. */
   readonly directory?: string;
   readonly stage: "received" | "queued" | "reserved" | "bound" | "starting" | "skipped" | "launching" | "launched" | "rejected" | "dropped";
-  readonly reason?: "unknown-sender" | "wrong-sender" | "sender-signaled" | "sender-revoked" | "broker-disposed" | "duplicate-process" | "unknown-parent" | "directory-mismatch" | "admission-failed" | "activation-failed" | "reservation-failed" | "binding-failed" | "start-failed" | "external-rejection" | "already-registered" | "preselected-exit" | "preselected-signal";
+  readonly reason?: "unknown-sender" | "wrong-sender" | "sender-signaled" | "sender-revoked" | "broker-disposed" | "duplicate-process" | "unknown-parent" | "directory-mismatch" | "admission-failed" | "activation-failed" | "reservation-failed" | "binding-failed" | "start-failed" | "external-rejection" | "already-registered" | "preselected-exit" | "preselected-signal" | "preselected-start-failed";
 }
 export type ProcessAdmissionObserver = (event: ProcessAdmissionEvent) => void | PromiseLike<void>;
 

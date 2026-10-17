@@ -9,6 +9,7 @@ import { ProcessIdentityAllocator } from "../proc/identity";
 import { PipeEndpoint, PipeErrno } from "../proc/pipes";
 import { ExecutableRegistry } from "../proc/registry";
 import { requestSignal } from "../proc/signals";
+import { claimOutcome, readOutcome } from "../proc/outcome";
 import { ProcessTable } from "../proc/table";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
 import { WorkerPipeHost } from "../proc/worker-pipes";
@@ -159,9 +160,10 @@ test("a parent identity from a different shared directory has a distinct rejecti
   expect(Atomics.load(child.lifetime, 0)).toBe(1);
 });
 
-for (const selected of ["exited", "signaled"] as const) test(`preselected child ${selected} is distinguished from a launched worker`, async () => {
+for (const selected of ["exited", "signaled", "start-failed"] as const) test(`preselected child ${selected} is distinguished from a launched worker`, async () => {
   const f = await fixture(), child = f.spawn();
   if (selected === "signaled") requestSignal(workerProcessState(child.message.transport).signals, 9);
+  else if (selected === "start-failed") claimOutcome(workerProcessState(child.message.transport).signals.outcome, { kind: "start-failed", code: 13 });
   else {
     const client = new WorkerProcessClient({ transport: child.message.transport, descriptors: new DescriptorTable(), codec: f.host.codec(), postMessage() {} });
     client.exit(0);
@@ -169,7 +171,8 @@ for (const selected of ["exited", "signaled"] as const) test(`preselected child 
   await f.broker.runtimeMessage(child.message, workerProcessState(f.root).pid);
   const supervisor = await f.broker.ready();
   await supervisor.waitForExit(workerProcessState(f.root).pid, child.pid);
-  expect(f.events.filter(event => event.stage === "skipped")).toMatchObject([{ reason: selected === "signaled" ? "preselected-signal" : "preselected-exit" }]);
+  expect(f.events.filter(event => event.stage === "skipped")).toMatchObject([{ reason: selected === "signaled" ? "preselected-signal"
+    : selected === "start-failed" ? "preselected-start-failed" : "preselected-exit" }]);
   expect(f.events.some(event => event.stage === "launching" || event.stage === "launched")).toBe(false);
   expect(Atomics.load(child.lifetime, 0)).toBe(1);
 });
@@ -185,6 +188,7 @@ for (const failure of ["activation", "binding", "start"] as const) test(`a ${fai
     await supervisor.waitForExit(workerProcessState(f.root).pid, child.pid);
   }
   expect(f.events.filter(event => event.stage === "rejected")).toMatchObject([{ reason: `${failure}-failed` }]);
+  expect(readOutcome(workerProcessState(child.message.transport).signals.outcome)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   expect(f.events.some(event => event.stage === "launched")).toBe(false);
   expect(Atomics.load(child.lifetime, 0)).toBe(1);
 });

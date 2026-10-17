@@ -6,7 +6,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | --- | --- | --- |
 | `core/`, `fs/`, `proc/`, `interrupt/` | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked. |
 | `browser/net/` | Original adapter | Generic ring, HTTP framing, fetch and host transport. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle. |
-| `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
+| `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
 | `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload and quota implementation is original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `core/memory-views.js` | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity. |
 
@@ -17,3 +17,12 @@ The sync-access retry fragment in `fs/opfs.ts` is adapted from SLICC-kernel `src
 ## Extraction provenance
 
 The history-preserving filter-repo commit map is kept outside the published tree with the cutover evidence. The extracted repository retains the rewritten commit history, including predecessor paths for the WASI shim, filesystem scaffold and memory views.
+
+## Typed process startup failures
+
+The original adapters in `proc/{types,outcome,wait-status,supervisor,abi,worker-client,worker-broker}.ts`
+and `browser/{process-broker,worker}.ts` port the generic part of
+[bun-wasm PR #65](https://github.com/ShaulLavo/bun-wasm/pull/65), reviewed at
+`bed7084763154adc8bd33ee6d06eb48873eab559`, to the extracted runtime. Waffle retains
+its diagnostic hooks, quiescence fences and lazy adapters. The port adds a typed
+startup outcome and shell-facing wait translation without copying Bun or Node code.

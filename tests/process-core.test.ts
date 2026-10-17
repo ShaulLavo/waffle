@@ -109,7 +109,7 @@ test("first-spawn returns and retains arbitrary descriptor references before act
   expect(closed).toBe(1);
 });
 
-test("activation rejection becomes exit 126 for every reserved child and releases fds", async () => {
+test("activation rejection records EACCES for every reserved child and releases fds", async () => {
   const { supervisor, root } = fixture();
   const stub = new FirstSpawnStub({
     reserve: (parent, spec) => supervisor.reserveSpawn(parent, spec),
@@ -117,25 +117,37 @@ test("activation rejection becomes exit 126 for every reserved child and release
     fail: (pid, error) => supervisor.failStart(pid, error),
   });
   const a = stub.spawn(root, request()), b = stub.spawn(root, request());
-  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "exited", code: 126, status: 126 });
-  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "exited", code: 126, status: 126 });
+  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
 });
 
-test("missing and unrunnable executables report 127/126 via wait and child-exit events", async () => {
+test("missing and unrunnable executables retain distinct typed start failures", async () => {
   const { registry, supervisor, root } = fixture();
   registry.register("bad", { module: async () => { throw new Error("invalid wasm"); }, adapter: "preview1" });
   const events: number[] = [];
   const unsubscribe = supervisor.onChildExit(event => events.push(event.pid));
   const missing = supervisor.spawn(root, request({ executable: "missing" }));
   const bad = supervisor.spawn(root, request({ executable: "bad" }));
-  expect(await supervisor.waitForExit(root, missing)).toEqual({ kind: "exited", code: 127, status: 127 });
-  expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "exited", code: 126, status: 126 });
+  expect(await supervisor.waitForExit(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
+  expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   expect(events.sort()).toEqual([missing, bad].sort());
-  expect(supervisor.wait(root, missing)).toEqual({ kind: "exited", code: 127, status: 127 });
+  expect(supervisor.wait(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
   supervisor.reap(root, missing);
   expect(() => supervisor.wait(root, missing)).toThrow();
   unsubscribe();
 });
+
+for (const [error, code] of [["ENOENT", 2], ["EACCES", 13]] as const) {
+  test(`a provisional worker handle can report typed startup failure ${error}`, async () => {
+    const { supervisor, root, contexts } = fixture();
+    try {
+      const pid = supervisor.reserveSpawn(root, request());
+      await supervisor.start(pid);
+      contexts.get(pid)!.startFailed(Object.assign(new Error("could not start"), { code: error }));
+      expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "start-failed", code, error, status: null });
+    } finally { supervisor.dispose(); }
+  });
+}
 
 test("spawn snapshots request data and atomically rejects bad descriptor bindings", async () => {
   const { supervisor, root, contexts } = fixture();

@@ -1,7 +1,8 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
 import { Wasi, WasiExit, type Stream } from "../core";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
+import { waitStatus } from "../proc/wait-status";
 import type { ProcessExit } from "../proc/types";
 import { fatalInterrupt } from "../interrupt/check";
 import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client";
@@ -12,6 +13,8 @@ export interface RuntimeWorkerRequest {
   env: Record<string, string>;
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
+  /** Authoritative terminal word available before loading process adapters. */
+  outcome?: SharedArrayBuffer | BigInt64Array;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -59,7 +62,7 @@ export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = Runtime
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
-  outcome?: SharedArrayBuffer;
+  outcome?: SharedArrayBuffer | BigInt64Array;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
@@ -103,13 +106,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
-  let outcome = executor.outcome || isolated ? outcomeWord(executor.outcome) : null;
+  const sharedOutcome = req.outcome ?? executor.outcome;
+  let outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
   let requestedSignal: Int32Array | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
     ? claimOutcome(outcome, result)
-    : localOutcome ??= { ...result, status: result.kind === "signaled" ? 128 + result.code : result.code };
+    : localOutcome ??= processOutcome(result);
   const defaultSignal = (signal: number): never => {
     if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
     const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
@@ -124,7 +128,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const checkActive = () => {
     const winner = outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
-    if (winner) throw new WasiExit(winner.status);
+    if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked()) throw new WasiExit(1);
   };
   let wasi: Wasi | null = null;
@@ -136,7 +140,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const settled = outcome ? readOutcome(outcome) : localOutcome;
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
-    const ownResult = ownSignal === undefined ? { kind: "exited" as const, code: ownCode } : { kind: "signaled" as const, code: ownSignal };
+    const startupFailure = "error" in result && !started;
+    const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? { kind: "start-failed", code: 13 }
+      : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
     // Generic commands select their winner before any reentrant cleanup callback. Legacy
     // transports still publish completion only after their buffered diagnostics and release.
     let winner = executor.complete ? settled : claim(ownResult);
@@ -153,20 +159,21 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (executor.complete && "error" in result && !settled) {
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
+    if (executor.complete && startupFailure) winner = claim(ownResult);
     const descriptorsReleased = attempt(() => wasi?.descriptors.dispose());
     const filesystemReleased = attempt(() => fs.dispose());
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
       winner ??= claim(ownResult);
-      host.postMessage({ type: "cleanup-error", code: winner.status,
+      host.postMessage({ type: "cleanup-error", code: waitStatus(winner),
         signal: winner.kind === "signaled" ? winner.code : undefined,
         message: cleanupErrors.join("\n"), cleanupErrors, sleep: sleepMode });
       return;
     }
     if (executor.complete) attempt(() => { winner = executor.complete!(ownCode, ownSignal); });
     winner ??= claim(ownResult);
-    const code = winner.status;
+    const code = waitStatus(winner);
     const signal = winner.kind === "signaled" ? winner.code : undefined;
     if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
@@ -286,10 +293,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const instantiating = perfNow();
     instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
-    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
-    executor.instantiated?.({ ...context, wasi, instance });
     if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
+    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
+    executor.instantiated?.({ ...context, wasi, instance });
     started = true;
     const exited = wasi.launch(instance);
     host.addEventListener?.("error", onError);

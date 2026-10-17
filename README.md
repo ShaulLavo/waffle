@@ -47,7 +47,9 @@ combines them without waiting. `FirstSpawnStub` from `./proc/stub` reserves befo
 shares a single delayed activation promise. `ProcessIdentityAllocator` supplies monotonic ids in
 shared memory so a blocked guest can reserve its pid before the page imports the service.
 `wait` is nonblocking; `waitForExit` and `onChildExit` provide asynchronous completion.
-Missing executables exit 127, and loader/adapter startup failures exit 126.
+Missing and non-runnable executables publish a typed `start-failed` outcome with
+`ENOENT` or `EACCES`, separate from ordinary exits. The runtime_proc wait adapters
+map those outcomes to 127 and 126 for guest compatibility.
 
 `WorkerProcessClient` and `WorkerProcessBroker` connect a worker's descriptor table to that same
 supervisor. `createWorkerProcessTransport` reserves shared process identities; spawn retains
@@ -163,7 +165,7 @@ Observers must not reenter process control; thrown exceptions and rejected async
 `received` precedes the browser's sender guards, followed by `queued`, `reserved`, `bound`, and
 `starting` for an accepted transfer. A reservation or start request is **not** proof of launch:
 `launching` marks adapter entry and `launched` means that adapter returned its process handle.
-`skipped` with `preselected-exit` or `preselected-signal` identifies an outcome already selected
+`skipped` with `preselected-exit`, `preselected-signal` or `preselected-start-failed` identifies an outcome already selected
 when admission requests startup. A cancellation during module resolution may leave history at
 `starting`. These events describe admission, not process exit or teardown.
 `rejected` reasons distinguish unknown, revoked, or signaled senders, a wrong sender, a missing
