@@ -125,6 +125,16 @@ calls can delay a check. Hosts must expose only their trusted implementations of
 imported uninstrumented Wasm functions or external table entries could otherwise escape the
 policy. `Worker.terminate()` remains a backstop; revocation is the shared-state safety boundary.
 
+The artifact-free browser gate runs with `bun web/tests/browser-interrupt.ts chromium firefox
+webkit`; it exercises five loop shapes, foreground-job Ctrl+C and per-process SIGTERM, checks
+both shared-memory and message trap acknowledgements, and independently proves teardown rescue
+works on the original programs. `--benchmark` additionally requires `INTERRUPT_BUN_WASM`,
+`INTERRUPT_BRUSH_WASM` and `INTERRUPT_PROTOTYPE` paths to existing artifacts. It compares warmed,
+interleaved original/countdown/spike-per-entry execution with matching checksums, records rewrite
+times, and removes its listener, browser sessions and build/profile scratch on every exit. On the
+reserved Mac, `safari` uses the real Safari WebDriver, not Playwright WebKit. Set
+`INTERRUPT_OUTPUT` to retain the small JSON results outside disposable scratch.
+
 ## Shared filesystem service
 
 One filesystem worker runs `installFilesystemWorker(self, backendFactory)` and owns the tree.
