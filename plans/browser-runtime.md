@@ -176,9 +176,15 @@ sections 7 and 8) maps its `ProcessHost` trait onto this layer. The process laye
 
 ### Where it lives
 
-A new `runtime/` directory in bun-wasm: a TypeScript package (`@bun-wasm/runtime`) with one entry
-per layer (`core`, `fs`, `net`, `proc`, `term`) so a bundler includes only what a page imports,
-and `proc` loaded on the first spawn. A guest's `spawn` import can't await an `import()`, so the
+The generic implementation currently lives in bun-wasm's `runtime/` package while the
+[approved Waffle split](waffle-split.md) is prepared. After the split it lives in the public
+MIT-licensed `ShaulLavo/waffle` repository, package `waffle`, with curated layer and browser
+entry points so a bundler includes only what a page imports. Generic filesystem, process,
+interruption, worker/bootstrap, network and preview services, tests and follow-on plan steps
+move there. Bun's guest engines, executor, native-slot/legacy-pipe adapters and application
+policy remain in `web/` here. The application creates one page-owned runtime and explicitly
+passes it to Bun and `createShell({ runtime })`; runs borrow its filesystem, identities and
+lazy process service. `proc` loads on the first spawn. A guest's `spawn` import can't await an `import()`, so the
 guest worker keeps a stub of about 1 KiB gzipped, including identity and atomic terminal-result
 primitives: it reserves a pid, takes the inherited descriptor references and returns at once,
 and the supervisor loads proc and starts the process
@@ -186,11 +192,11 @@ asynchronously. A start failure shows up through `wait` (127 for a missing progr
 that can't run) and as a child-exit event in `poll`. A synchronous caller such as Bun's
 `spawnSync` polls afterwards; the shell never blocks on a first spawn. The builds (`web/build.ts`,
 `sandbox/build.ts`) enable code splitting and serve the split chunks under every worker scope.
-Bun's adapter and executor stay in
-`web/`. brush-web and the own shell consume the package as a pinned copy, the way brush-web
-vendors `third-party/bun-wasm/` today, until the product repository exists. Every new file that
-adapts upstream code (brush-web's terminal discipline, SQLite's OPFS bridge pattern) gets its row
-in `docs/bun-patches.md`.
+bun-wasm consumes an explicitly trusted Waffle Git dependency pinned to an exact commit;
+bash-web declares a Waffle peer dependency and uses an exact development pin for its own
+tests. Follow the split plan's ownership, installed-package and cross-repository gates before
+removing the in-tree package. Every new file that adapts upstream code gets its classified row
+in the owning repository's provenance ledger, including applicable notices.
 
 ### Process ABI (for the shell lane)
 

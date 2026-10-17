@@ -87,6 +87,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/stack_trace.js`](#structured-call-sites) | Host feature | Original CallSite adapter for QuickJS and JSC stack capture. |
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 | [`crates/bunwasm-runtime/src/directory.rs`, `src/js/node_fs.js`, `web/src/engine-host.js`, directory cursors](#directory-cursors) | Host feature | Original directory handles, bounded reads, recursive traversal and Node Dir adapters. |
+| [Page-owned runtime and generic browser services](#waffle-preparation) | Host feature | Original runtime ownership, worker/executor, filesystem, terminal, network and preview adapters separated from Bun policy for Waffle extraction. |
 | [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
 | [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions including Node/Bun's ignored SIGPIPE default, immutable final-kind query and byte-sized exit statuses. |
@@ -122,6 +123,47 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
+
+## Waffle preparation
+
+Class **Host feature**. These are original bun-wasm adapters, not copied Bun, Node or
+WebKit implementations. The source boundary is bun-wasm main
+`4e475302e4dabab0d0a404e7dd95f7e2a3eface5`, with the startup-outcome and
+filesystem-writer-lock contracts integrated before extraction. The new
+`runtime/index.ts` / `runtime/runtime.ts` composition owns the page filesystem,
+registration, shared process identities and lazy supervision. A stable global symbol guards
+one live owner; consumers borrow capabilities rather than receiving teardown ownership.
+
+The original page filesystem and terminal adapters moved from
+`web/src/{shared-fs,fs-worker,runtime-terminals}.ts` to `runtime/browser/`. Their local changes
+inject consumer worker URLs/storage configuration, retain Bun's workspace namespace in the
+web wrapper, and remove outward runtime imports. Terminal destinations remain callback codecs,
+not interactive terminal discipline. The generic tests moved with framing/terminal code and
+no longer depend on Bun's MemFS shim; legacy subprocess assertions stay in web tests.
+
+The original ring, protocol and HTTP/1 framing moved from `web/src/net/` to
+`runtime/browser/net/`. Generic `helper.ts` requires an injected fetch function instead of
+importing Bun's installation cache. Generic `host.ts` owns handles/rings/connection state and
+ordinary bytes; `web/src/net/host.ts` retains guest-memory pointers, native function names and
+numeric slot bindings. `web/src/net/helper.ts` retains only Bun's installed-fetch policy.
+
+The original preview protocol, request/socket routing and configurable service-worker handler
+live in `runtime/browser/`. Bun's `web/src/{preview,sw}.ts` keep registration defaults, fixed
+module-cache scope and guest websocket injection. These are a separation of existing original
+adapters, not an upstream service-worker implementation.
+
+Generic worker bootstrap/protocol and process admission, descriptor transport, finalization and
+supervision live in `runtime/`; injected executors keep Bun engines, slots, cache policy and
+legacy `SubprocessHost`/Worker-channel transports in `web/`. The process-owned generic pipes
+and Bun's legacy pipes retain distinct ownership/EOF contracts. Existing upstream-derived pipe
+fragments and interruption provenance remain classified in their sections below; this boundary
+change does not remove those notices or claim new physical worker-death guarantees.
+
+`runtime/build.ts`, explicit conditional exports, the trusted-Git install check and installed
+package/source-asset/provenance tooling are original build/test adapters. They emit ignored
+per-module JavaScript for Node without bundling independent state copies, preserve source-first
+browser/Bun use and keep the 7 KiB core gate. No upstream implementation is copied by these
+packaging changes.
 
 ## Engine interruption
 
