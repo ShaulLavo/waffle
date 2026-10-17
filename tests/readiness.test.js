@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Wasi } from "../core/index";
-import { MemFS } from '../../web/src/fs';
+import { MemFS } from '../fs/memory';
 const ALL = (1n << 29n) - 1n;
 function host(sleep = () => {}) {
   const h = new Wasi({ args: [], env: {}, fs: new MemFS(), preopens: {}, stdout() {}, stderr() {}, sleep });

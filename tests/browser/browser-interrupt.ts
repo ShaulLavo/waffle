@@ -6,7 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadavg } from "node:os";
+import { loadavg, tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import type { Browser, Page } from "playwright";
 import { cleanupInterruptResources, finishInterruptCleanup } from "../../runtime/tests/interrupt-browser-runner-control";
 
@@ -91,7 +92,7 @@ try {
   assert.equal(await preexisting.exited, 0);
   if (stopping) throw new Error("interrupt browser setup was cancelled");
   console.log(JSON.stringify({ beforeSetup: { browserProcesses, loadAverage: loadavg(), taskOwns: ["ephemeral HTTP listener", "unique build/profile scratch", "automation browser/session", "own safaridriver if Safari"] } }));
-  scratch = await (scratchCreation = mkdtemp(join(process.env.INTERRUPT_SCRATCH_ROOT ?? (process.platform === "darwin" ? process.env.HOME! + "/tmp" : "/work/tmp"), "bun-wasm-interrupt-")));
+  scratch = await (scratchCreation = mkdtemp(join(process.env.INTERRUPT_SCRATCH_ROOT ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()), "bun-wasm-interrupt-")));
   if (stopping) throw new Error("interrupt browser setup was cancelled");
   process.env.TMPDIR = scratch;
   const out = join(scratch, "dist");

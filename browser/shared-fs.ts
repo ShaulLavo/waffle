@@ -1,4 +1,11 @@
-import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
+import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index";
+
+export interface SharedFilesystemOptions {
+  workerURL?: string | URL;
+  persistence?: boolean;
+  name?: string;
+  storage?: "indexeddb" | "opfs";
+}
 
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
@@ -10,8 +17,8 @@ export class SharedFilesystem {
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
   private fatal: Error | undefined;
-  constructor(options: { persistence?: boolean; name?: string; storage?: "indexeddb" | "opfs" } = {}) {
-    this.worker = new Worker(new URL("./fs-worker.js", location.href), { type: "module" });
+  constructor(options: SharedFilesystemOptions = {}) {
+    this.worker = new Worker(options.workerURL ?? new URL("./fs-worker.js", location.href), { type: "module" });
     const connection = createFilesystemConnection();
     this.client = new FilesystemClient(connection.client);
     this.worker.addEventListener("error", event => {

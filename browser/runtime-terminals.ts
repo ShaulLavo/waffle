@@ -1,7 +1,7 @@
 // Original browser adapter: terminal destinations are host callbacks, not shared pipe rings.
-import { OpenDescription, type DescriptorTable, type Stream } from "../../runtime/core/descriptors";
-import { ProcessError } from "../../runtime/proc/types";
-import type { WorkerDescriptorCodec } from "../../runtime/proc/worker-client";
+import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors";
+import { ProcessError } from "../proc/types";
+import type { WorkerDescriptorCodec } from "../proc/worker-client";
 
 type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken { kind: "web-terminal"; target: TerminalTarget }
