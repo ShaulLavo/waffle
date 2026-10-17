@@ -18,3 +18,7 @@ export { WorkerProcessBroker } from "./worker-broker";
 export type { WorkerProcessBrokerOptions } from "./worker-broker";
 export { createFilesystemDescriptorCodec, isFilesystemDescriptorToken } from "./filesystem-codec";
 export type { FilesystemDescriptorToken } from "./filesystem-codec";
+export { PipeController, PipeEndpoint, PipePublicationRegistry, PipeErrno, attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry } from "./pipes";
+export type { PipeMode, PipeOptions, PipeEndpointHandle, PipePublicationRegistryHandle } from "./pipes";
+export { WorkerPipeHost, WorkerPipeBroker, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "./worker-pipes";
+export type { WorkerPipeDescriptorToken, WorkerPipeCodecOptions, WorkerPipeHostOptions, WorkerPipeBrokerOptions } from "./worker-pipes";

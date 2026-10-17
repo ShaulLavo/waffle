@@ -70,14 +70,35 @@ than it is today. The process layer loads on the first spawn.
 - **A killed process can't corrupt shared state.** Shared memory can't be taken back from a
   running worker, and a worker can be killed between checking a flag and publishing a write. So
   no ring is ever written by two processes: each (writing process, pipe) pair gets its own
-  single-producer ring, and the reader takes from all of a pipe's rings. When a writer is
-  revoked, the supervisor records that ring's committed write position at that moment; the
-  reader still drains every byte committed before it, then treats the ring as closed. Anything a
-  zombie publishes afterwards lies past the recorded position and is never read, and since a
-  writer only fills free space, it can't overwrite unread bytes. A pipe with more than one reading process
-  (rare, such as two children inheriting one stdin) switches to relay mode through the
-  supervisor, which checks revocation on every chunk. A killed process's buffers are never handed
-  to another process; new processes get fresh ones. A guest that stops cooperatively acknowledges
+  single-producer ring, and the reader takes from all of a pipe's rings. Each writer's canonical
+  publication cursor lives in a host-only shared process directory: one atomic word holds both
+  its committed position and its revoked bit. Authorized host code (the target's parent chain
+  or job owner) freezes every cursor before exposing child exit; guest WASM cannot access this
+  control memory. A writer publishes only by compare-and-swap on that same word, so publication
+  racing revocation either commits before it or fails. Registry cells are append-only in a growable
+  shared buffer. Revocation marks the process before walking its immutable linked cursor list;
+  allocation initializes and links its cell, then rechecks revocation before admitting the endpoint.
+  A cell missed by the killer's snapshot therefore freezes itself and cannot publish. No cell is
+  recycled: stale publisher, reader or killer references can never acquire a new occupant. The reader
+  drains every byte through the frozen watermark, then treats the ring as closed. Anything a zombie tries to publish afterwards is
+  never read, and since a writer only fills free space, it can't overwrite unread bytes. This
+  makes guest-initiated kill safe without waiting for a supervisor message round trip. Per-write
+  records also preserve causal order between writers: a completed write precedes any write
+  that begins later. Writes up to 4 KiB stay contiguous across short reads (a deliberately tiny
+  test pipe uses its smaller capacity as that bound); larger concurrent writes may interleave.
+  Record metadata is bounded and participates in publication and backpressure, not a separate
+  unbounded log. A pipe with more than one reading process (rare, such as two children inheriting
+  one stdin) switches to relay mode through the supervisor, which checks revocation on every
+  chunk. Polling and an idle inherited reader cannot reserve bytes; unread deliveries remain
+  reclaimable when a reader stops retrying, closes or dies. Relay work is bounded and yields to
+  supervisor message tasks so continuous traffic cannot starve kill or exit. A killed process's
+  buffers are never handed to another process; new processes get fresh ones. The default registry
+  grows from about 2 MiB to at most 16,777,216 cells (256 MiB plus its header), enough for about
+  4,194,304 simple same-process pipes at four 16-byte cells per pipe; extra inherited endpoints
+  use more cells. The append-only lifetime bound is service-wide, not a fixed per-process cursor quota.
+  The separate process directory keeps 1,024 permanent PID rows. Exhausting either bound reports
+  WASI ENFILE (41). Cell recycling is not needed for this target and must never reset a cursor
+  that a stale publisher, reader or killer could still reference. A guest that stops cooperatively acknowledges
   its exit; for an uncooperative kill the browser gives no teardown signal, so revocation, not
   silence, is the correctness boundary.
 - **Pipes run directly between workers** over shared memory, not through the supervisor, except in

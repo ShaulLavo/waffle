@@ -19,6 +19,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
 | [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
 | [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
+| [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, reader relay and descriptor-transfer adapters. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -1505,3 +1506,18 @@ open description, including a shared file cursor. Cursor operations participate 
 host sections so revocation and reaping cannot strand a lock. Stream descriptions may create
 a fresh process-owned endpoint during inheritance, and termination freezes all capabilities
 before making the child waitable. No upstream patch is added by these adapters.
+
+## Process-owned pipe adapters
+
+`runtime/proc/pipes.ts` adapts the bounded ring wrap/copy and notification scheme from this
+project's `web/src/subprocess.ts` (`SharedPipe`, bun-wasm revision `52576274`). That source is an
+original bun-wasm host adapter, not a copied upstream implementation. The process-owned layer
+adds independent producer rings, atomic committed-position/revocation cursors, a host-only
+process publication registry, reference-counted endpoints, reader merging and supervisor relay.
+These changes prevent a terminated worker's delayed publication from altering the live stream.
+
+`runtime/proc/worker-pipes.ts` is a separate original adapter for cloneable endpoint capabilities,
+filesystem-codec composition and supervisor relay ownership. Spawn retains a process endpoint
+synchronously; worker and controller imports release that same lifetime idempotently. Stable pipe
+identities survive structured cloning without using SharedArrayBuffer wrapper identity. No Bun,
+Node, WebKit or third-party pipe implementation is copied or patched by these modules.
