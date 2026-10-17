@@ -17,7 +17,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-jsc/cpp/helpers.cpp`, finalizer dispatch](#jsc-finalizer-dispatch) | Host feature | Original adapter for full collection and deferred cleanup in the wasm event loop. |
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
-| [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
+| [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing, browser module loading and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
 | [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
 | [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, reader relay and descriptor-transfer adapters. |
 | [Guest process ABI](#guest-process-abi) | Host feature | Original runtime_proc imports, nonblocking filesystem preparation, preview1 notification waits and lazy browser process integration. |
@@ -1315,6 +1315,16 @@ adapters in `web/src/{worker.ts,worker-pipes.ts,subprocess.ts}` use Web Workers 
 shared pipe buffers. Nested guests share a root port broker and the existing child
 budget. Bootstrap, process, spawn and structured-clone hooks connect those
 adapters to the guest event loop. No upstream source was copied.
+
+The original loader in `web/src/content-modules.ts` creates blob module URLs for
+acyclic browser imports. Only a cycle reserves a named URL before its source is
+available. Eval workers need no HTTP module request, so an uncontrolled WebKit
+worker cannot bypass the module service worker and get a 404. Named URLs retain
+native import cycles. Failed source builds retain unfinished cycle reservations;
+recorded dependency edges repair them when retrying the root or a cached child,
+without discarding successful reentrant imports. The Node host keeps its existing
+named module loader. `web/tests/browser-worker-modules.ts` repeats atomic transfer rollback twenty
+times per browser and also starts children outside the module scope.
 
 The inspected upstream implementation is `src/js/node/worker_threads.ts` at Bun
 revision `9510e74152073d850a18758ca41114d8f214ffa6`. Its module initialization needs

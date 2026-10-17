@@ -33,8 +33,8 @@ export interface RunRequest {
   /** The networking ring (net/ring.ts); null when the page is not cross-origin isolated. */
   net: SharedArrayBuffer | null;
   /**
-   * Browser engine: the Cache Storage cache for this run's ES modules, which the service worker
-   * serves under ./m/ (this worker runs from its ./__bunwasm/ scope). Null: blob URLs, no cycles.
+   * Browser engine: the Cache Storage cache for import cycles, served by the service worker
+   * under ./m/. Acyclic modules use blob URLs. Null disables import cycles.
    */
   moduleCache: string | null;
   /**
@@ -58,12 +58,14 @@ const NativeResponse = Response;
 function moduleStore(cacheName: string) {
   const run = cacheName.replace(/^bunwasm-m-/, "");
   const base = new URL(`./m/${run}/`, self.location.href).href;
-  const cache = caches.open(cacheName);
+  const openCache = caches.open.bind(caches, cacheName);
+  let cache: Promise<Cache> | undefined;
   return {
     url: (key: string) => base + encodeURIComponent(key),
     put: async (url: string, source: string) => {
       const headers = { "content-type": "text/javascript; charset=utf-8" };
-      await (await cache).put(url, new NativeResponse(source, { headers }));
+      const store = await (cache ??= openCache());
+      await store.put(url, new NativeResponse(source, { headers }));
     },
   };
 }
