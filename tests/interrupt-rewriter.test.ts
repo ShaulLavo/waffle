@@ -85,6 +85,23 @@ test("runs under Node's native strip-only TypeScript and WebAssembly engine", ()
   expect(result.status).toBe(0);
 });
 
+test("preserves leading BOM characters in length-delimited Wasm names", () => {
+  const customName = "﻿linking";
+  const custom = binary(section(0, name(customName)));
+  expect(WebAssembly.validate(custom)).toBe(true);
+  expect(WebAssembly.Module.customSections(new WebAssembly.Module(custom), customName)).toHaveLength(1);
+  expect(WebAssembly.validate(rewriteInterrupts(custom))).toBe(true);
+
+  const namespace = "﻿runtime_proc";
+  const imported = binary(types(type()), section(2, vec([name(namespace).concat(name("run"), [0, 0])])));
+  expect(WebAssembly.validate(imported)).toBe(true);
+  const output = rewriteInterrupts(imported);
+  expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual([
+    { module: namespace, name: "run", kind: "function" },
+    { module: "runtime_proc", name: "interrupted", kind: "function" },
+  ]);
+});
+
 test("synthesizes missing type, import and global sections even for an empty module", () => {
   const output = rewriteInterrupts(binary());
   expect(WebAssembly.validate(output)).toBe(true);

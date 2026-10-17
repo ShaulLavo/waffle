@@ -90,7 +90,9 @@ default actions are immediate and do not depend on those future engine hooks.
 
 `./interrupt` exposes `rewriteInterrupts(bytes)` and `compileInterruptible(bytes)`. The latter
 validates, rewrites and compiles a preview1 module once per SHA-256 content hash; concurrent
-loads share the work and an LRU retains at most 16 compiled modules. Each process instantiates
+loads share the work and the shared content-cache LRU retains at most 16 compiled modules.
+Active executable registries additionally retain their resolved registrations for their own
+lifetime, so that limit is not a bound on all live executable modules. Each process instantiates
 its own module-global countdown. No process state is cached with compiled modules.
 
 The rewriter inserts a private mutable i32 countdown at every defined function entry and loop

@@ -1,7 +1,8 @@
 import { rewriteInterrupts } from "./rewriter";
 
 /** Content-addressed, process-independent modules. Instances always get fresh countdown globals.
- * Bounded in-memory caching avoids retaining every executable ever seen by a long-lived page.
+ * The shared content cache is bounded. Active executable registries separately retain their
+ * resolved modules for their own lifetime, so repeated spawns never recompile a registration.
  * No filesystem authority or process signal state is captured by a cached module.
  */
 export class InterruptModuleCache {

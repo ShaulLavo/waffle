@@ -20,7 +20,8 @@ export interface InterruptRewriteOptions {
 }
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+// Wasm names are length-delimited: a leading U+FEFF is content, not a BOM.
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const HEADER = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const SECTION_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 10, 11];
 

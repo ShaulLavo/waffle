@@ -43,6 +43,14 @@ export function checkLazyProcessService(inputs: readonly string[]): void {
   const eager = processServiceInputs(inputs);
   if (eager.length) throw new Error(`process service is eager before first spawn: ${eager.join(", ")}`);
 }
+/** Own Bun programs need only the tiny fatal-outcome check, never the load-time compiler. */
+export function checkLazyInterruptRewriter(inputs: readonly string[]): void {
+  const eager = inputs.filter(path => {
+    const match = /(?:^|\/)runtime\/interrupt\/(.+)\.ts$/.exec(path);
+    return match !== null && match[1] !== "check";
+  });
+  if (eager.length) throw new Error(`interrupt rewriter is eager before third-party load: ${eager.join(", ")}`);
+}
 
 const root = resolve(import.meta.dir, "..");
 const bytes = async (output: Blob) => {
@@ -101,7 +109,10 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
   const inputs = Array.from(new Set(initialKeys.flatMap((key) => Object.keys(outputs[key]!.inputs)))).sort();
   const procInputs = processServiceInputs(inputs);
   const bunAdapterInputs = inputs.filter(path => /(?:\/|^)subprocess(?:[-.]|\/)/.test(path));
-  if (splitting) checkLazyProcessService(inputs);
+  if (splitting) {
+    checkLazyProcessService(inputs);
+    checkLazyInterruptRewriter(inputs);
+  }
   return {
     splitting, logicalEntries: logicalEntries.concat([{ entry: "sw.js", ...serviceWorker, files: [{ path: "sw.js", ...serviceWorker }] }]),
     logicalJavaScript: { ...totals(logicalFiles), files: logicalFiles },

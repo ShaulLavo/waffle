@@ -606,6 +606,8 @@ test("cooperative own preview1 modules and Bun modules bypass rewriting", async 
   for (const executable of [
     { module: fixtureModule, adapter: "preview1", cooperative: true },
     { module: fixtureModule, adapter: "bun", engine: "browser" },
+    { module: fixtureModule, adapter: "bun", engine: "quickjs" },
+    { module: fixtureModule, adapter: "bun", engine: "jsc" },
   ] as const) {
     const state = liveFixture({ executable });
     try {
@@ -625,6 +627,21 @@ test("compiled-only third-party modules fail closed with status 126 and an actio
     const data = childTransport(state.transports.get(state.pid)!).stderr.read(4096);
     expect(data).toBeInstanceOf(Uint8Array);
     expect(new TextDecoder().decode(data as Uint8Array)).toContain("source bytes");
+    expect(state.workers.size).toBe(0);
+  } finally { state.dispose(); }
+});
+
+test("unsupported but natively valid modules fail with the instrumentation refusal on stderr", async () => {
+  const body = [0, 0xfd, 0x0c].concat(new Array<number>(16).fill(0), [0x1a, 0x0b]); // v128.const; drop
+  const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 2, 1, 0,
+    10, body.length + 2, 1, body.length].concat(body));
+  expect(WebAssembly.validate(bytes)).toBe(true);
+  const state = liveFixture({ executable: { adapter: "preview1", bytes } });
+  try {
+    expect((await state.broker.wait(state.pid)).status).toBe(126);
+    const data = childTransport(state.transports.get(state.pid)!).stderr.read();
+    expect(data).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(data as Uint8Array)).toMatch(/Cannot instrument WebAssembly:.*SIMD/);
     expect(state.workers.size).toBe(0);
   } finally { state.dispose(); }
 });

@@ -8,6 +8,7 @@ import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadavg } from "node:os";
 import type { Browser, Page } from "playwright";
+import { cleanupInterruptResources, finishInterruptCleanup } from "../../runtime/tests/interrupt-browser-runner-control";
 
 const root = resolve(import.meta.dir, "../..");
 const args = process.argv.slice(2), benchmark = args.includes("--benchmark");
@@ -45,39 +46,53 @@ async function safariEvaluate(script: string, params: unknown[] = []): Promise<a
 }
 async function cleanup(): Promise<void> {
   stopping = true;
-  return cleaning ??= (async () => {
-    const errors: string[] = [];
-    // Set the original rescue words before closing any browser/session, even on failed tests.
-    if (page) await page.evaluate(async () => { await (globalThis as any).interruptHarness?.clean(); }).catch(error => errors.push(`page rescue: ${error}`));
-    if (session) {
-      await safariEvaluate("await globalThis.interruptHarness?.clean();return true;").catch(error => errors.push(`Safari rescue: ${error}`));
-      await webdriver(`/session/${session}`, "DELETE").catch(error => errors.push(`Safari session: ${error}`)); session = undefined;
-    }
-    try { await (browser ?? await launching?.catch(() => undefined))?.close(); }
-    catch (error) { errors.push(`browser close: ${error}`); }
-    finally {
-      if (driver) {
-        driver.kill("SIGTERM"); const ownedDriver = driver;
+  return cleaning ??= finishInterruptCleanup(async () => {
+    const rescueAttempted = { page: !!page, safari: !!session };
+    const steps = await cleanupInterruptResources([
+      // A wedged page must not block the watchdog before physical browser teardown.
+      { name: "pageRescue", timeoutMs: 2000, async run() { if (page) await page.evaluate(async () => { await (globalThis as any).interruptHarness?.clean(); }); } },
+      { name: "safariRescue", timeoutMs: 2000, async run() { if (session) await safariEvaluate("await globalThis.interruptHarness?.clean();return true;"); } },
+      { name: "safariSessionDeleted", async run() { if (session) { await webdriver(`/session/${session}`, "DELETE"); session = undefined; } } },
+      { name: "browserClosed", async run() { await (browser ?? await launching?.catch(() => undefined))?.close(); } },
+      { name: "ownedDriverExited", async run() {
+        if (!driver) return;
+        const ownedDriver = driver; ownedDriver.kill("SIGTERM");
         const watchdog = setTimeout(() => ownedDriver.kill("SIGKILL"), 5000);
-        try { await driver.exited; } finally { clearTimeout(watchdog); driver = undefined; }
-      }
-      server?.stop(true);
-      const directory = scratch ?? await scratchCreation?.catch(() => undefined);
-      if (directory) await rm(directory, { recursive: true, force: true });
-      if (previousTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmp;
-      report.cleanup = { browserClosed: true, safariSessionDeleted: true, ownedDriverExited: true, listenerStopped: true, scratchRemoved: true, rescuePublishedBeforeTermination: true, errors };
+        try { await ownedDriver.exited; } finally { clearTimeout(watchdog); driver = undefined; }
+      } },
+      { name: "listenerStopped", run() { server?.stop(true); } },
+      { name: "scratchRemoved", async run() {
+        const directory = scratch ?? await scratchCreation?.catch(() => undefined);
+        if (directory) await rm(directory, { recursive: true, force: true });
+      } },
+      { name: "environmentRestored", run() { if (previousTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmp; } },
+    ]);
+    const errors = steps.filter(step => !step.ok).map(step => `${step.name}: ${step.error}`);
+    report.cleanup = { ...Object.fromEntries(steps.map(step => [step.name, step.ok])), rescueAttempted,
+      rescuePublishedBeforeTermination: steps.filter(step => step.name === "pageRescue" || step.name === "safariRescue").every(step => step.ok), steps, errors };
+    if (errors.length) {
+      report.error ??= "interrupt browser teardown failed";
+      throw new AggregateError(errors, "interrupt browser teardown failed");
     }
-    if (errors.length) throw new AggregateError(errors, "interrupt browser teardown failed");
-  })();
+  }, async () => {
+    if (process.env.INTERRUPT_OUTPUT) await Bun.write(process.env.INTERRUPT_OUTPUT, JSON.stringify(report, null, 2) + "\n");
+  });
 }
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
-const deadline = setTimeout(() => { console.error("interrupt browser gate exceeded deadline"); void cleanup().finally(() => process.exit(1)); }, Number(process.env.INTERRUPT_TIMEOUT_MS ?? 600_000));
+let aborting = false;
+function abort(message: string, code: number): void {
+  if (aborting) return; aborting = true; report.error ??= message;
+  void cleanup().catch(error => console.error(error)).finally(() => process.exit(code));
+}
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => abort(`interrupt browser gate received ${signal}`, signal === "SIGINT" ? 130 : 143));
+const deadline = setTimeout(() => abort("interrupt browser gate exceeded deadline", 1), Number(process.env.INTERRUPT_TIMEOUT_MS ?? 600_000));
 try {
   const preexisting = Bun.spawn(["ps", "-eo", "pid,comm"], { stdout: "pipe", stderr: "inherit" });
   const browserProcesses = (await new Response(preexisting.stdout).text()).split("\n").filter(line => /Safari|safaridriver|WebKit|chromium|firefox|chrome/.test(line));
   assert.equal(await preexisting.exited, 0);
+  if (stopping) throw new Error("interrupt browser setup was cancelled");
   console.log(JSON.stringify({ beforeSetup: { browserProcesses, loadAverage: loadavg(), taskOwns: ["ephemeral HTTP listener", "unique build/profile scratch", "automation browser/session", "own safaridriver if Safari"] } }));
   scratch = await (scratchCreation = mkdtemp(join(process.env.INTERRUPT_SCRATCH_ROOT ?? (process.platform === "darwin" ? process.env.HOME! + "/tmp" : "/work/tmp"), "bun-wasm-interrupt-")));
+  if (stopping) throw new Error("interrupt browser setup was cancelled");
   process.env.TMPDIR = scratch;
   const out = join(scratch, "dist");
   const built = await Bun.build({ entrypoints: [join(root, "runtime/tests/interrupt-browser.ts"), join(root, "runtime/tests/fixtures/interrupt-browser-worker.ts")], outdir: out, target: "browser", format: "esm", splitting: true, minify: true, naming: { entry: "[name].[ext]", chunk: "chunks/[name]-[hash].[ext]" } });
@@ -136,12 +151,9 @@ try {
       await browser.close(); browser = undefined; launching = undefined; page = undefined;
     }
   }
-} catch (error) { report.error = error instanceof Error ? error.stack : String(error); throw error; }
+} catch (error) { report.error ??= error instanceof Error ? error.stack : String(error); throw error; }
 finally {
   clearTimeout(deadline);
   try { await cleanup(); }
-  finally {
-    if (process.env.INTERRUPT_OUTPUT) await Bun.write(process.env.INTERRUPT_OUTPUT, JSON.stringify(report, null, 2) + "\n");
-    console.log(JSON.stringify({ cleanup: report.cleanup }));
-  }
+  finally { console.log(JSON.stringify({ cleanup: report.cleanup })); }
 }
