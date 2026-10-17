@@ -344,6 +344,8 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
         wait: (ms, word, expected) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       });
       for (const [name, call] of Object.entries(abi.imports)) {
+        // Injected checks must never dequeue handled signals or replace their trap with an ABI unwind.
+        if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => { checkActive(); return call(...args); };
       }
     }

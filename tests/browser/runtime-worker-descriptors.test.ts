@@ -16,6 +16,8 @@ import * as abi from "../../runtime/proc/abi";
 import * as terminals from "../src/runtime-terminals";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome";
 import { SubprocessHost } from "../src/subprocess";
+import { fatalInterrupt } from "../../runtime/interrupt/check";
+import { requestSignal, setSignalDisposition, SIGNAL_PENDING } from "../../runtime/proc/signals";
 import type { RunRequest, WorkerMessage } from "../src/worker";
 
 const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(
@@ -130,10 +132,10 @@ test("ordinary Bun worker and page startup do not eagerly load generic ownership
     const initial = initialJavaScript(outputs, roots);
     const inputs = initial.flatMap(path => Object.keys(outputs[path]!.inputs));
     for (const name of ["worker-client", "worker-broker", "filesystem-codec", "pipes", "abi"]) {
-      expect(inputs.some(path => path.endsWith(`/runtime/proc/${name}.ts`))).toBe(false);
+      expect(inputs.some(path => path === `runtime/proc/${name}.ts` || path.endsWith(`/runtime/proc/${name}.ts`))).toBe(false);
     }
-    expect(inputs.some(path => path.endsWith("/web/src/runtime-terminals.ts"))).toBe(false);
-    expect(Object.keys(build.metafile!.inputs).some(path => path.endsWith("/runtime/proc/worker-client.ts"))).toBe(true);
+    expect(inputs.some(path => /(?:^|\/)web\/src\/runtime-terminals\.ts$/.test(path))).toBe(false);
+    expect(Object.keys(build.metafile!.inputs).some(path => /(?:^|\/)runtime\/proc\/worker-client\.ts$/.test(path))).toBe(true);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 
@@ -338,6 +340,60 @@ for (const kind of ["wasi", "abi"] as const) for (const phase of ["before", "aft
     expect(waits).toEqual(phase === "before" ? [] : [[notification, 0, 19, 7]]);
     expect(sent.filter(message => message.type === "exit" || message.type === "error")).toEqual([
       { type: "exit", code: 137, signal: 9, sleep: "atomics" },
+    ]);
+  } finally { connection.client.port.close(); connection.server.port.close(); }
+});
+
+for (const kind of ["signaled", "exited"] as const) test(`injected runtime worker check preserves handled signals and reads only ${kind} outcome`, async () => {
+  const transport = client.createWorkerProcessTransport();
+  const shared = client.workerProcessState(transport);
+  const connection = createFilesystemConnection();
+  const sent: WorkerMessage[] = [];
+  let imports!: { runtime_proc: Record<string, (...args: number[]) => number> };
+  let checked = false;
+  const context = {
+    crossOriginIsolated: true, location: { href: "http://localhost/worker.js" },
+    postMessage(message: WorkerMessage) { sent.push(message); },
+    onmessage: undefined as unknown as (event: { data: RunRequest }) => Promise<void>,
+  };
+  try {
+    setSignalDisposition(shared.signals.signalState, 10, 2);
+    requestSignal(shared.signals, 10);
+    runInNewContext(source, {
+      self: context, performance, Response, TextEncoder, URL, console, Error,
+      SharedArrayBuffer, Atomics, Int32Array, BigInt64Array,
+      FilesystemClient: class { connection = connection.client; dispose() {} },
+      revokeFilesystem, sharedRevoked, SubprocessHost, claimOutcome, outcomeWord, readOutcome, fatalInterrupt,
+      loadRuntime: async (name: string) => ({ client, codec, protocol, pipes, abi, terminals })[name as "client"],
+      HOST_CALL_FD: 3,
+      WebAssembly: { Memory: WebAssembly.Memory, Instance: class {
+        exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {} };
+      } },
+      WasiExit: class extends Error {},
+      Wasi: class {
+        descriptors = new DescriptorTable();
+        constructor(options: { namespaces: typeof imports }) { imports = options.namespaces; }
+        imports() { return {}; }
+        launch() {
+          expect(imports.runtime_proc.interrupted!()).toBe(0);
+          expect(Atomics.load(shared.signals.signalState, 10) & SIGNAL_PENDING).toBe(SIGNAL_PENDING);
+          expect(Atomics.load(shared.signals.interrupt, 0)).toBe(10);
+          claimOutcome(shared.signals.outcome, { kind, code: kind === "signaled" ? 15 : 143 });
+          expect(imports.runtime_proc.interrupted!()).toBe(kind === "signaled" ? 15 : 0);
+          expect(Atomics.load(shared.signals.signalState, 10) & SIGNAL_PENDING).toBe(SIGNAL_PENDING);
+          checked = true;
+          return 0;
+        }
+      },
+    });
+    await context.onmessage({ data: {
+      engine: "browser", adapter: "preview1", interruptible: true,
+      module: {} as WebAssembly.Module, args: [], env: {}, filesystem: connection.client,
+      runtimeProcess: transport, trace: false, net: null, moduleCache: null,
+    } });
+    expect(checked).toBe(true);
+    expect(sent.filter(message => message.type === "exit" || message.type === "error")).toEqual([
+      { type: "exit", code: 143, signal: kind === "signaled" ? 15 : undefined, sleep: "atomics" },
     ]);
   } finally { connection.client.port.close(); connection.server.port.close(); }
 });

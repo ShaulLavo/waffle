@@ -60,7 +60,7 @@ for (const trigger of ["watcher", "late-kill", "handled-signal-before-exit", "pu
   const output: { fd: number; text: string }[] = [];
   const state = fixture({ output(fd, data) { output.push({ fd, text: new TextDecoder().decode(data) }); } });
   try {
-    state.broker.register("child", { adapter: "preview1", module: emptyModule() });
+    state.broker.register("child", { adapter: "preview1", cooperative: true, module: emptyModule() });
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.parent.spawn(1, { executable: "child", argv: [], env: {}, cwd: "/", job: 1, fds: [] });
     await state.broker.runtimeMessage(state.messages[0]!, 1);
@@ -120,7 +120,7 @@ for (const trigger of ["watcher", "late-kill", "handled-signal-before-exit", "pu
 for (const failure of ["error-event", "initial-post-message"] as const) test(`generic child startup failure confirms without a final guest acknowledgement (${failure})`, async () => {
   const state = fixture(undefined, failure === "initial-post-message");
   try {
-    state.broker.register("child", { adapter: "preview1", module: emptyModule() });
+    state.broker.register("child", { adapter: "preview1", cooperative: true, module: emptyModule() });
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.parent.spawn(1, { executable: "child", argv: [], env: {}, cwd: "/", job: 1, fds: [] });
     await state.broker.runtimeMessage(state.messages[0]!, 1);
@@ -138,7 +138,7 @@ for (const failure of ["error-event", "initial-post-message"] as const) test(`ge
 test("explicit disposal releases a selected ordinary child exit without a final acknowledgement", async () => {
   const state = fixture();
   try {
-    state.broker.register("child", { adapter: "preview1", module: emptyModule() });
+    state.broker.register("child", { adapter: "preview1", cooperative: true, module: emptyModule() });
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.parent.spawn(1, { executable: "child", argv: [], env: {}, cwd: "/", job: 1, fds: [] });
     await state.broker.runtimeMessage(state.messages[0]!, 1);
@@ -156,7 +156,7 @@ test("generic worker loaded after first watcher tick still confirms a caught def
   const loading = deferred();
   const state = fixture();
   try {
-    state.broker.register("slow", { adapter: "preview1", module: async () => { await loading.promise; return emptyModule(); } });
+    state.broker.register("slow", { adapter: "preview1", cooperative: true, module: async () => { await loading.promise; return emptyModule(); } });
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.parent.spawn(1, { executable: "slow", argv: [], env: {}, cwd: "/", job: 1, fds: [] });
     await state.broker.runtimeMessage(state.messages[0]!, 1);
@@ -180,7 +180,7 @@ test("already-published background spawn survives root exit during lazy supervis
   const activation = deferred(); let activating = false;
   const state = fixture({ activate: async () => { activating = true; await activation.promise; return import("../../runtime/proc"); } });
   try {
-    state.broker.register("child", { adapter: "preview1", module: emptyModule() });
+    state.broker.register("child", { adapter: "preview1", cooperative: true, module: emptyModule() });
     await state.broker.adoptRuntimeRoot(state.root);
     const pid = state.parent.spawn(1, { executable: "child", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
     const admitted = state.broker.runtimeMessage(state.messages[0]!, 1);

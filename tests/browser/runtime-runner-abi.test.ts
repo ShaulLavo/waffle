@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createFilesystemIdentity, revokeFilesystem } from "../../runtime/fs";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../../runtime/proc/worker-client";
 import { DescriptorTable } from "../../runtime/core/descriptors";
-import { SubprocessBroker } from "../src/subprocess-broker";
+import { SubprocessBroker, type ExecutableRegistration } from "../src/subprocess-broker";
 import { WorkerPipeBroker } from "../../runtime/proc/worker-pipes";
 import { PipeController, attachPipePublicationRegistry, type PipePublicationRegistryHandle } from "../../runtime/proc/pipes";
 import { setSignalDisposition } from "../../runtime/proc/signals";
@@ -123,6 +123,11 @@ function registryFixture(options?: ConstructorParameters<typeof SubprocessBroker
   const root = createWorkerProcessTransport();
   root.data = { filesystem: createFilesystemIdentity() };
   const filesystem = {
+    connect(identity: object) {
+      const channel = new MessageChannel();
+      channel.port2.close();
+      return { ...identity, port: channel.port1 };
+    },
     revoke: revokeFilesystem, client: { sweep() {} },
     async quiesce(identity: Parameters<typeof revokeFilesystem>[0]) { revokeFilesystem(identity); },
   } as unknown as SharedFilesystem;
@@ -130,11 +135,14 @@ function registryFixture(options?: ConstructorParameters<typeof SubprocessBroker
   const descriptors = new DescriptorTable();
   const messages: WorkerProcessMessage[] = [];
   const client = new WorkerProcessClient({ transport: root, descriptors,
-    codec: { export() { throw new Error("unexpected export"); }, import() { throw new Error("unexpected import"); }, discard() {} },
+    codec: { export(descriptor) {
+      if (descriptor.resource.kind === "terminal") return { kind: "web-terminal", target: 2 };
+      throw new Error("unexpected export");
+    }, import() { throw new Error("unexpected import"); }, discard() {} },
     postMessage: message => messages.push(message),
     prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: (root.data as { pipeRegistry: unknown }).pipeRegistry } }),
   });
-  return { root, broker, client, messages, dispose() { broker.dispose(); descriptors.dispose(); } };
+  return { root, broker, client, messages, descriptors, dispose() { broker.dispose(); descriptors.dispose(); } };
 }
 
 for (const path of ["supervisor", "dispose"] as const) test(`${path} freezes root-created pipe endpoints absent from supervisor descriptors`, async () => {
@@ -247,4 +255,56 @@ test("pipe-only generic work uses the responsive relay without activating the pr
     expect(activations).toBe(0);
     writer.close(); reader.close();
   } finally { controller?.dispose(); state.dispose(); }
+});
+
+test("generic runtime byte registrations retain injected-check metadata at worker launch", async () => {
+  const NativeWorker = globalThis.Worker;
+  const requests: RunRequest[] = [];
+  let terminated = false;
+  globalThis.Worker = class {
+    postMessage(request: RunRequest) { requests.push(request); request.filesystem.port.close(); }
+    terminate() { terminated = true; }
+  } as unknown as typeof Worker;
+  const state = registryFixture();
+  try {
+    state.broker.register("injected", { adapter: "preview1", bytes: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]) });
+    await state.broker.adoptRuntimeRoot(state.root);
+    const pid = state.client.spawn(1, { executable: "injected", argv: [], env: {}, cwd: "/", job: 1, fds: [] });
+    await state.broker.runtimeMessage(state.messages[0]!, 1);
+    const deadline = performance.now() + 1000;
+    while (!requests.length && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.pid).toBe(pid);
+    expect(requests[0]!.interruptible).toBe(true);
+  } finally {
+    state.dispose();
+    const deadline = performance.now() + 1000;
+    while (requests.length && !terminated && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 0));
+    globalThis.Worker = NativeWorker;
+  }
+});
+
+for (const refusal of ["compiled", "SIMD"] as const) test(`generic runtime ${refusal} refusal writes actionable inherited stderr before closing descriptors`, async () => {
+  const output: { fd: number; text: string }[] = [];
+  const state = registryFixture({ output(fd, data) { output.push({ fd, text: new TextDecoder().decode(data) }); } });
+  try {
+    const body = [0, 0xfd, 0x0c].concat(new Array<number>(16).fill(0), [0x1a, 0x0b]);
+    const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 2, 1, 0,
+      10, body.length + 2, 1, body.length].concat(body));
+    expect(WebAssembly.validate(bytes)).toBe(true);
+    const entry = refusal === "SIMD" ? { adapter: "preview1", bytes } : {
+      adapter: "preview1", module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+    };
+    state.broker.register("refused", entry as ExecutableRegistration);
+    await state.broker.adoptRuntimeRoot(state.root);
+    const fd = state.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
+      readiness: () => ({ readable: false, writable: true, hangup: false }) }, 0xffffn, 0n);
+    const pid = state.client.spawn(1, { executable: "refused", argv: [], env: {}, cwd: "/", job: 1,
+      fds: [{ child: 2, parent: fd }] });
+    await state.broker.runtimeMessage(state.messages[0]!, 1);
+    expect((await state.broker.wait(pid)).status).toBe(126);
+    expect(output).toHaveLength(1);
+    expect(output[0]!.fd).toBe(2);
+    expect(output[0]!.text).toMatch(refusal === "SIMD" ? /Cannot instrument WebAssembly:.*SIMD/ : /require source bytes/);
+  } finally { state.dispose(); }
 });

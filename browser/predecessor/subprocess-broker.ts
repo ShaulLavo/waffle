@@ -70,6 +70,7 @@ export class SubprocessBroker {
   private children = new Map<number, Child>();
   private registrations = new Map<string, ExecutableRegistration>();
   private loaderErrors = new Map<string, string>();
+  private diagnosedRuntimeRefusals = new WeakSet<WorkerProcessTransport>();
   private activation?: Promise<ProcessSupervisor>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private root?: SignalTransport & { pid: number; job: number };
@@ -106,7 +107,10 @@ export class SubprocessBroker {
         registry, launch: context => this.launch(context), onError: error => this.report(error),
         // A shared ordinary exit can win before queued terminal output reaches this page.
         // The final ordered worker message acknowledges that output and resource release.
-        canConfirmExit: pid => this.disposed || this.runtimeChildren.get(pid)?.acknowledged !== false,
+        canConfirmExit: pid => {
+          this.reportRuntimeRefusal(supervisor, pid);
+          return this.disposed || this.runtimeChildren.get(pid)?.acknowledged !== false;
+        },
       });
       const pid = supervisor.createRoot({ ...this.options.root, ...this.rootTransport() });
       if (this.runtimeRoot) {
@@ -195,6 +199,23 @@ export class SubprocessBroker {
     const codec = this.runtimeDescriptorCodec(transport);
     for (const token of transport.resources) codec.discard(token);
     this.runtimeApi.wakeWorkerProcess(transport);
+  }
+
+  /** Loader failures have no worker to buffer diagnostics. Emit before confirmation closes fd2. */
+  private reportRuntimeRefusal(supervisor: ProcessSupervisor, pid: number): void {
+    const transport = this.runtime?.get(pid);
+    if (!transport || this.runtimeChildren.has(pid) || this.diagnosedRuntimeRefusals.has(transport)) return;
+    const record = supervisor.get(pid);
+    const result = record && readOutcome(record.outcome);
+    const executable = record?.request?.executable;
+    const refused = executable && this.loaderErrors.get(executable);
+    if (!refused || result?.kind !== "exited" || result.code !== 126) return;
+    this.diagnosedRuntimeRefusals.add(transport);
+    const stderr = record!.descriptors.get(2)?.resource;
+    if (stderr?.kind !== "pipe" && stderr?.kind !== "terminal") return;
+    // A full or closed redirected stream must not block the page's control plane.
+    try { stderr.tryWrite?.([new TextEncoder().encode(`bun-wasm: ${executable}: ${refused}\n`)]); }
+    catch (error) { this.report(error); }
   }
 
   private exited(supervisor: ProcessSupervisor, event: ChildExitEvent): void {
@@ -328,9 +349,11 @@ export class SubprocessBroker {
     if (this.disposed) throw new Error("Process no longer has a live controller");
     const filesystem = this.runtimeFilesystem(transport);
     const preview1 = context.adapter === "preview1";
+    const registration = this.registrations.get(context.request.executable);
+    const interruptible = registration?.adapter === "preview1" && registration.cooperative !== true;
     const request: RunRequest = {
       module: context.module, engine: preview1 ? "browser" : context.adapter.slice(4) as Engine,
-      adapter: preview1 ? "preview1" : "bun", args: context.request.argv,
+      adapter: preview1 ? "preview1" : "bun", interruptible, args: context.request.argv,
       env: { ...context.request.env, PWD: context.request.cwd },
       filesystem: this.filesystem.connect(filesystem), runtimeProcess: transport,
       pid: context.pid, jobId: context.job, trace: false, spawnBroker: true, net: null, moduleCache: null,
