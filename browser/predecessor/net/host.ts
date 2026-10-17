@@ -35,7 +35,7 @@ export class NetHost {
     return {
       poll: (timeout) => this.host.poll(timeout),
       fetch: (metaPtr, metaLen, bodyPtr, bodyLen) => this.host.fetch(
-        decoder.decode(this.bytes(metaPtr, metaLen)),
+        this.text(metaPtr, metaLen),
         bodyLen > 0 ? this.bytes(bodyPtr, bodyLen) : null,
       ),
       fetch_head: (handle, ptr, cap) => this.writeResult(this.host.fetchHead(handle), ptr, cap),
@@ -47,10 +47,10 @@ export class NetHost {
       },
       write: (handle, ptr, len) => this.host.write(handle, this.bytes(ptr, len)),
       close: (handle) => this.host.close(handle),
-      listen: (hostPtr, hostLen, port) => this.host.listen(decoder.decode(this.bytes(hostPtr, hostLen)), port),
+      listen: (hostPtr, hostLen, port) => this.host.listen(this.text(hostPtr, hostLen), port),
       local_port: (handle) => this.host.localPort(handle),
       accept: (listener) => this.host.accept(listener),
-      connect: (hostPtr, hostLen, port) => this.host.connect(decoder.decode(this.bytes(hostPtr, hostLen)), port),
+      connect: (hostPtr, hostLen, port) => this.host.connect(this.text(hostPtr, hostLen), port),
       error: (handle, ptr, cap) => this.writeResult(this.host.error(handle), ptr, cap),
       peer_addr: (handle, ptr, cap) => this.writeResult(this.host.peerAddr(handle), ptr, cap),
       shutdown: (handle) => this.host.shutdown(handle),
@@ -81,6 +81,11 @@ export class NetHost {
       caps: Object.fromEntries(SLOT_NAMES.map((name) => [name, name !== "poll" && name !== "signal"])),
       onNews: (cb) => this.host.onNews(cb),
     };
+  }
+
+  /** TextDecoder requires fixed, unshared storage even when guest memory can grow in place. */
+  private text(ptr: number, len: number): string {
+    return decoder.decode(new Uint8Array(this.bytes(ptr, len)));
   }
 
   /** Borrow guest bytes for this call only; the generic host copies any outgoing payload. */

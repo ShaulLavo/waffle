@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { NetHost as RuntimeNetHost } from "@bun-wasm/runtime/browser/net/host";
 import { AGAIN, BADF, Kind, type NetRequest, UNSUPPORTED } from "@bun-wasm/runtime/browser/net/protocol";
 import { createRing, RingWriter } from "@bun-wasm/runtime/browser/net/ring";
@@ -32,6 +32,75 @@ test("Bun slots decode grown guest memory and preserve transferred request bytes
   expect(messages[0]).toMatchObject({ type: "fetch", body });
   expect(bytes.subarray(66000, 66000 + body.length)).toEqual(body);
 });
+
+for (const kind of ["resizable", "growable"] as const) {
+  for (const operation of ["fetch", "listen", "connect"] as const) {
+    test(`Bun ${operation} slots decode fixed private copies of ${kind} guest memory before and after growth`, () => {
+      const messages: NetRequest[] = [];
+      const host = new NetHost(createRing(), (request, transfer) => messages.push(structuredClone(request, { transfer })));
+      const memory = new WebAssembly.Memory({ initial: 1, maximum: 3, shared: kind === "growable" });
+      const backing = Reflect.apply(Reflect.get(memory, "toResizableBuffer"), memory, []) as ArrayBufferLike;
+      expect(Reflect.get(backing, kind)).toBe(true);
+      host.attach(memory);
+      const slots = host.slots();
+      const natives = host.engineNet().natives;
+      const call = (name: string, ...args: unknown[]) => Reflect.apply(natives[name]!, null, args);
+      const decoded: ArrayBufferLike[] = [];
+      const nativeDecode = TextDecoder.prototype.decode;
+      const strict = spyOn(TextDecoder.prototype, "decode").mockImplementation(function (this: TextDecoder, input, options) {
+        const buffer = ArrayBuffer.isView(input) ? input.buffer : input;
+        if (buffer) {
+          if (Reflect.get(buffer, "resizable") || Reflect.get(buffer, "growable")) throw new TypeError("resizable or growable BufferSource is not allowed");
+          decoded.push(buffer);
+        }
+        return nativeDecode.call(this, input, options);
+      });
+      try {
+        for (let round = 0; round < 2; round++) {
+          if (round) memory.grow(1);
+          const ptr = round * 65536 + 128;
+          const text = operation === "fetch" ? JSON.stringify({ url: "https://network.invalid/", method: "POST" }) : "localhost";
+          const source = encode(text);
+          const body = encode("request body");
+          const bytes = new Uint8Array(backing);
+          bytes.fill(0xff, ptr - 1, ptr + source.length + 1);
+          bytes.set(source, ptr);
+          bytes.set(body, ptr + 1000);
+          if (operation === "fetch") {
+            const handle = slots.fetch!(ptr, source.length, ptr + 1000, body.length);
+            expect(handle).toBeGreaterThan(0);
+            expect(messages.at(-1)).toMatchObject({ type: "fetch", url: "https://network.invalid/", body });
+            expect(bytes.subarray(ptr + 1000, ptr + 1000 + body.length)).toEqual(body);
+            expect(call("hostClose", handle)).toBe(0);
+            const nativeHandle = call("hostFetch", text, bytes.subarray(ptr + 1000, ptr + 1000 + body.length));
+            expect(nativeHandle).toBeGreaterThan(0);
+            expect(messages.at(-1)).toMatchObject({ type: "fetch", body });
+            expect(slots.close!(nativeHandle)).toBe(0);
+          } else {
+            const listener = operation === "listen" ? slots.listen!(ptr, source.length, 0) : call("hostListen", "localhost", 0);
+            const port = call("hostLocalPort", listener);
+            const client = operation === "connect" ? slots.connect!(ptr, source.length, port) : call("hostConnect", "localhost", port);
+            const server = call("hostAccept", listener);
+            expect(client).toBeGreaterThan(0);
+            expect(server).toBeGreaterThan(0);
+            expect(JSON.parse(call("hostPeerAddr", client)).port).toBe(port);
+            expect(JSON.parse(call("hostLocalAddr", server)).port).toBe(port);
+            for (const handle of [client, server, listener]) expect(slots.close!(handle)).toBe(0);
+          }
+          expect(decoded).toHaveLength(round + 1);
+          const copy = decoded[round]!;
+          expect(copy).not.toBe(backing);
+          expect(Object.prototype.toString.call(copy)).toBe("[object ArrayBuffer]");
+          expect(Reflect.get(copy, "resizable")).toBe(false);
+          expect(new Uint8Array(copy)).toEqual(source);
+        }
+      } finally {
+        strict.mockRestore();
+      }
+      expect(TextDecoder.prototype.decode).toBe(nativeDecode);
+    });
+  }
+}
 
 test("Bun sized-result slots return full length without overwriting a small buffer", async () => {
   const sab = createRing();
