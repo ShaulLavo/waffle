@@ -19,8 +19,8 @@ Process startup failures use a third atomic outcome tag. `ENOENT` carries code 2
 remain ordinary exits. `runtime_proc.wait` and `wait_job` map the typed outcomes to
 127 and 126 while preserving the typed result for browser and host adapters.
 The initial worker request carries the authoritative outcome view before any
-dynamic process import. Startup errors select typed EACCES; failures after the
-worker's instantiate phase retain an ordinary execution exit.
+dynamic process import. Startup errors select typed EACCES; after WASI execution
+begins, failures retain an ordinary execution exit.
 The instantiate phase and executor ready hook run only after validating the
 callable `_start` export and the exported WebAssembly memory. A later exit notice
 or numeric completion cannot replace the atomic typed startup outcome.
