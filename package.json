@@ -308,8 +308,7 @@
     "./browser/fs-worker": {
       "types": "./browser/fs-worker.ts",
       "bun": "./browser/fs-worker.ts",
-      "browser": "./browser/fs-worker.ts",
-      "default": "./browser/fs-worker.ts"
+      "browser": "./browser/fs-worker.ts"
     },
     "./browser/net/helper": {
       "types": "./browser/net/helper.ts",
@@ -405,20 +404,17 @@
     "./testing/interrupt-browser-runner-control": {
       "types": "./tests/interrupt-browser-runner-control.ts",
       "bun": "./tests/interrupt-browser-runner-control.ts",
-      "browser": "./tests/interrupt-browser-runner-control.ts",
-      "default": "./tests/interrupt-browser-runner-control.ts"
+      "browser": "./tests/interrupt-browser-runner-control.ts"
     },
     "./testing/storage-browser": {
       "types": "./tests/storage-browser.ts",
       "bun": "./tests/storage-browser.ts",
-      "browser": "./tests/storage-browser.ts",
-      "default": "./tests/storage-browser.ts"
+      "browser": "./tests/storage-browser.ts"
     },
     "./testing/opfs-storage-browser": {
       "types": "./tests/opfs-storage-browser.ts",
       "bun": "./tests/opfs-storage-browser.ts",
-      "browser": "./tests/opfs-storage-browser.ts",
-      "default": "./tests/opfs-storage-browser.ts"
+      "browser": "./tests/opfs-storage-browser.ts"
     }
   },
   "scripts": {
