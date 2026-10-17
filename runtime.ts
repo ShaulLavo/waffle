@@ -4,6 +4,16 @@ import { ProcessIdentityAllocator } from "./proc/identity";
 import type { ExecutableRegistry, Executable } from "./proc/registry";
 import type { ProcessSupervisor } from "./proc/supervisor";
 import type { ProcessContext, ProcessHandle } from "./proc/types";
+import type { FilesystemIdentity } from "./fs/protocol";
+
+/** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
+export interface RuntimeConsumer {
+  readonly filesystem: FilesystemIdentity;
+  /** Select logical cancellation without physically stopping the consumer. */
+  revoke(): void;
+  /** Physical cleanup; the runtime invokes this only after successful filesystem fences. */
+  stop(): void | Promise<void>;
+}
 
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
 export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose">;
@@ -28,6 +38,9 @@ export interface Runtime {
   readonly disposed: boolean;
   registerProgram(name: string, program: ProgramDefinition): void;
   registerAdapter(name: string, launch: GuestLauncher): void;
+  /** Adapter plumbing, not an application/shell API. Release only after another owner accepts
+   * the consumer synchronously, or its physical cleanup is proven complete. */
+  retainConsumer(consumer: RuntimeConsumer): () => void;
   processes(): Promise<ProcessService>;
   dispose(): Promise<void>;
 }
@@ -114,6 +127,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const programs = new Map<string, Executable>();
   const launching = new Set<Promise<ProcessHandle>>();
   const handles = new Set<ProcessHandle>();
+  const consumers = new Set<RuntimeConsumer>();
   let disposed = false;
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
@@ -168,6 +182,21 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       }
       programs.set(name, executable);
       registry?.register(name, executable);
+    },
+    retainConsumer(consumer) {
+      assertLive();
+      // Capture authority and callbacks before admission. Accessors can reenter disposal;
+      // the final liveness check prevents inserting behind its synchronous ownership snapshot.
+      const identity = consumer.filesystem;
+      const filesystem = { ...identity, revocations: identity.revocations.slice() };
+      const revoke = consumer.revoke.bind(consumer), stop = consumer.stop.bind(consumer);
+      assertLive();
+      const owned: RuntimeConsumer = { filesystem, revoke, stop };
+      consumers.add(owned);
+      return () => {
+        // Disposal now owns this fence and stop, including releases from cancellation hooks.
+        if (!disposed) consumers.delete(owned);
+      };
     },
     processes() {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
@@ -264,13 +293,15 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         await Promise.all([
           attempt(() => host?.quiesce()),
           attempt(() => filesystem.quiesce(filesystem.client.connection)),
-        ]);
+        ].concat(Array.from(consumers, consumer => attempt(() => filesystem.quiesce(consumer.filesystem)))));
         // Rejection is not a proof of quiescence. Retain consumers, filesystem and the page
         // guard until this page is destroyed rather than allowing a new owner to overlap them.
         if (failures.length !== failuresBeforeFences) throwFailures();
         releaseTermination();
-        await Promise.all(Array.from(handles, handle => attempt(() => handle.terminate())));
+        await Promise.all(Array.from(handles, handle => attempt(() => handle.terminate()))
+          .concat(Array.from(consumers, consumer => attempt(() => consumer.stop()))));
         handles.clear();
+        consumers.clear();
         await attempt(() => host?.dispose());
         await attempt(() => filesystem.dispose());
         adapters.clear();
@@ -281,6 +312,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       });
       // Publish the memoized promise before suspension invokes external revocation callbacks.
       // Suspension itself remains synchronous so no new work can race teardown admission.
+      for (const consumer of consumers) {
+        try { filesystem.revoke(consumer.filesystem); } catch (error) { failures.push(error); }
+        try { consumer.revoke(); } catch (error) { failures.push(error); }
+      }
       suspend(failures);
       return disposal;
     },

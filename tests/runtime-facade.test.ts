@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { posix } from "node:path";
-import { createRuntime, type Runtime, type RuntimeOptions } from "../index";
+import { createRuntime, type Runtime, type RuntimeOptions, type RuntimeConsumer } from "../index";
 import { ProcessSupervisor } from "../proc/supervisor";
 import { FilesystemSection } from "../fs/protocol";
 import type { ProcessContext } from "../proc/types";
@@ -473,6 +473,177 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     const [exitCode, stdout, stderr] = await Promise.all([page.exited, new Response(page.stdout).text(), new Response(page.stderr).text()]);
     expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(JSON.parse(stdout)).toEqual({ error: "fence failed", filesystemStops: 0, consumerStops: 0, relayStops: 0, guardHeld: true, sameDisposal: true });
+  } finally { page.kill(); await page.exited; }
+});
+
+test("adapter retention owns synchronous pre-service acceptance through the filesystem fence and async stop", async () => {
+  let hostStarts = 0, cancels = 0, stops = 0;
+  let releaseStop!: () => void;
+  const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
+  const runtime = create({ processHost: options => { hostStarts++; return processHost()(options); } });
+  const identity = runtime.filesystem.createIdentity();
+  const section = new FilesystemSection(identity);
+  let active = false, stoppedActive = false, settled = false;
+  const consumer: RuntimeConsumer = {
+    filesystem: identity,
+    revoke() { cancels++; },
+    async stop() { stops++; stoppedActive ||= active; await stopGate; },
+  };
+  const release = runtime.retainConsumer(consumer);
+  section.enter(); active = true;
+  const disposal = runtime.dispose();
+  void disposal.then(() => { settled = true; });
+  try {
+    expect(cancels).toBe(1);
+    expect(hostStarts).toBe(0);
+    release(); release(); // A late handoff cannot erase an already-owned fence.
+    await Bun.sleep(0);
+    expect(stops).toBe(0);
+    expect(events).not.toContain("filesystem:stop");
+    expect(() => create()).toThrow(/live|owner|runtime/i);
+    expect(() => runtime.retainConsumer(consumer)).toThrow(/disposed/i);
+    active = false; section.exit();
+    await Bun.sleep(0);
+    expect(stops).toBe(1);
+    expect(settled).toBe(false);
+    expect(events).not.toContain("filesystem:stop");
+  } finally {
+    if (active) { active = false; section.exit(); }
+    releaseStop();
+    await disposal;
+  }
+  expect(stoppedActive).toBe(false);
+  expect(events.at(-1)).toBe("filesystem:stop");
+});
+
+test("retained adapter cancellation is reentrant and cannot release another disposal-owned consumer", async () => {
+  const runtime = create();
+  const first = runtime.filesystem.createIdentity(), second = runtime.filesystem.createIdentity();
+  let nested: Promise<void> | undefined;
+  let releaseSecond!: () => void;
+  const stopped: string[] = [];
+  runtime.retainConsumer({ filesystem: first, revoke() { nested = runtime.dispose(); releaseSecond(); }, stop() { stopped.push("first"); } });
+  releaseSecond = runtime.retainConsumer({ filesystem: second, revoke() { events.push("second:cancel"); }, stop() { stopped.push("second"); } });
+  const section = new FilesystemSection(second);
+  section.enter();
+  const disposal = runtime.dispose();
+  try {
+    expect(nested).toBe(disposal);
+    expect(events).toContain("second:cancel");
+    await Bun.sleep(0);
+    expect(stopped).toEqual([]);
+    expect(events).not.toContain("filesystem:stop");
+  } finally { section.exit(); }
+  await disposal;
+  expect(stopped).toEqual(["first", "second"]);
+});
+
+test("adapter retention snapshots its identity and callbacks", async () => {
+  const runtime = create();
+  const identity = runtime.filesystem.createIdentity();
+  const consumer: RuntimeConsumer = { filesystem: { ...identity }, revoke() { events.push("original:cancel"); }, stop() { events.push("original:stop"); } };
+  runtime.retainConsumer(consumer);
+  consumer.revoke = () => { throw new Error("replacement cancellation"); };
+  consumer.stop = () => { throw new Error("replacement stop"); };
+  consumer.filesystem.sections = new SharedArrayBuffer(0);
+  const section = new FilesystemSection(identity);
+  section.enter();
+  const disposal = runtime.dispose();
+  try {
+    await Bun.sleep(0);
+    expect(events).toContain("original:cancel");
+    expect(events).not.toContain("original:stop");
+    expect(events).not.toContain("filesystem:stop");
+  } finally { section.exit(); }
+  await disposal;
+  expect(events.slice(-2)).toEqual(["original:stop", "filesystem:stop"]);
+});
+
+test("a successful synchronous broker handoff releases only the temporary adapter retention", async () => {
+  const runtime = create();
+  const identity = runtime.filesystem.createIdentity();
+  let cancels = 0, stops = 0;
+  const consumer: RuntimeConsumer = { filesystem: identity, revoke() { cancels++; }, stop() { stops++; } };
+  const release = runtime.retainConsumer(consumer);
+  const service = await runtime.processes();
+  service.registerController(runtime.identities.pid(), consumer);
+  release(); release(); // Ownership has transferred only after the broker accepted the controller.
+  const section = new FilesystemSection(identity);
+  section.enter();
+  const disposal = runtime.dispose();
+  try {
+    expect(cancels).toBe(1);
+    await Bun.sleep(0);
+    expect(stops).toBe(0);
+    expect(events).not.toContain("filesystem:stop");
+  } finally { section.exit(); }
+  await disposal;
+  expect(stops).toBe(1);
+});
+
+test("failed lazy host activation cannot lose an accepted adapter consumer", async () => {
+  const runtime = create({ processHost: () => { throw new Error("host activation failed"); } });
+  const identity = runtime.filesystem.createIdentity();
+  let cancels = 0, stops = 0;
+  runtime.retainConsumer({ filesystem: identity, revoke() { cancels++; }, stop() { stops++; } });
+  await expect(runtime.processes()).rejects.toThrow("host activation failed");
+  const section = new FilesystemSection(identity);
+  section.enter();
+  const disposal = runtime.dispose();
+  const result = disposal.catch(error => error);
+  try {
+    expect(cancels).toBe(1);
+    await Bun.sleep(0);
+    expect(stops).toBe(0);
+    expect(events).not.toContain("filesystem:stop");
+  } finally { section.exit(); }
+  expect((await result).message).toBe("host activation failed");
+  expect(stops).toBe(1);
+  expect(events.at(-1)).toBe("filesystem:stop");
+  expect(create().disposed).toBe(false);
+});
+
+test.each(["filesystem", "revoke", "stop"] as const)("an adapter retention %s getter cannot admit a consumer behind reentrant disposal", async field => {
+  const runtime = create();
+  const identity = runtime.filesystem.createIdentity();
+  let disposal: Promise<void> | undefined;
+  const consumer: RuntimeConsumer = {
+    filesystem: identity,
+    revoke() { throw new Error("unadmitted revoke"); },
+    stop() { throw new Error("unadmitted stop"); },
+  };
+  const value = consumer[field];
+  Object.defineProperty(consumer, field, { get() { disposal = runtime.dispose(); return value; } });
+  expect(() => runtime.retainConsumer(consumer)).toThrow(/disposed/i);
+  expect(disposal).toBe(runtime.dispose());
+  await disposal;
+  expect(events.at(-1)).toBe("filesystem:stop");
+});
+
+test("a rejected retained-consumer fence fails closed even without process activation", async () => {
+  const script = `
+    import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
+    let filesystemStops = 0, consumerStops = 0, cancels = 0;
+    const ports = [];
+    globalThis.Worker = class { addEventListener() {} postMessage(message) { ports.push(message.connect.port); } terminate() { filesystemStops++; } };
+    const runtime = createRuntime({ filesystem: { persistence: false, workerURL: "https://example.test/fs.js" } });
+    const release = runtime.retainConsumer({ filesystem: { ...runtime.filesystem.createIdentity(), sections: new SharedArrayBuffer(0) },
+      revoke() { cancels++; }, stop() { consumerStops++; } });
+    const disposal = runtime.dispose();
+    let fenceFailed = false;
+    try { await disposal; } catch { fenceFailed = true; }
+    release();
+    let guardHeld = false;
+    try { createRuntime(); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
+    console.log(JSON.stringify({ fenceFailed, filesystemStops, consumerStops, cancels, guardHeld, sameDisposal: runtime.dispose() === disposal }));
+    for (const port of ports) port.close();
+    process.exit(0);
+  `;
+  const page = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([page.exited, new Response(page.stdout).text(), new Response(page.stderr).text()]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(stdout)).toEqual({ fenceFailed: true, filesystemStops: 0, consumerStops: 0, cancels: 1, guardHeld: true, sameDisposal: true });
   } finally { page.kill(); await page.exited; }
 });
 

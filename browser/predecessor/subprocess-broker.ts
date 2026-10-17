@@ -152,32 +152,68 @@ export class SubprocessBroker {
   }
 
   spawn(spawn: SpawnRequest): void {
-    if (this.disposed) { this.cancel(spawn); return; }
+    if (this.disposed || this.runtime.disposed) { this.cancel(spawn); return; }
     spawn = { ...spawn, executable: this.qualifyExecutable(spawn.executable) };
     this.rootTransport();
     const child: Child = { spawn, signal: 0, acknowledged: false, confirmed: false, closed: false, stopped: false };
     this.children.set(spawn.pid, child);
+    // Legacy requests already carry filesystem authority before the lazy process service exists.
+    // Keep it in the page owner's fence until the broker accepts this controller synchronously.
+    const releaseConsumer = this.runtime.retainConsumer({
+      filesystem: spawn.filesystem, revoke: () => this.cancel(spawn), stop: () => this.physicallyStop(child),
+    });
+    let controllerAccepted = false;
     // Publish pending ancestry before lazy admission. Root exit waits only for these lease
     // acquisitions, never worker startup; the table takes over retention at reservation.
     let release!: () => void;
-    const retention = this.service && this.rootPrepared
-      ? Promise.resolve(release = this.service.retainRoot(this.root!.pid))
-      : this.prepareRoot().then(() => release = this.service!.retainRoot(this.root!.pid));
-    this.pendingAdmissions.add(retention);
-    // No import, compile, worker startup or wait is on the synchronous spawn path.
-    void this.ready().then(supervisor => {
+    let admittedSupervisor!: ProcessSupervisor;
+    const retain = () => {
+      const lease = this.service!.retainRoot(this.root!.pid);
       try {
-        if (this.disposed) return;
+        // Filesystem ownership transfers before optional supervisor initialization. The
+        // page must fence accepted requests even when no process table row exists yet.
         this.service!.registerController(spawn.pid, {
           filesystem: spawn.filesystem, acknowledged: () => child.acknowledged,
           launch: context => this.launch(context),
           quiesce: () => this.quiesceChild(child),
-          exited: event => this.exited(supervisor, event),
+          exited: event => this.exited(admittedSupervisor, event),
           startFailed: error => { childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: process start failed: ${String(error)}\n`)); },
           revoke: () => this.cancel(spawn),
           stop: () => this.physicallyStop(child),
           wake: () => this.wakeBudget(spawn.child.budget),
         });
+        controllerAccepted = true;
+        releaseConsumer();
+      } catch (error) { lease(); throw error; }
+      return release = lease;
+    };
+    const retention = this.service && this.rootPrepared
+      ? Promise.resolve(retain()) : this.prepareRoot().then(retain);
+    this.pendingAdmissions.add(retention);
+    let failure: Promise<void> | undefined;
+    const failAdmission = (error: unknown): Promise<void> => failure ??= (async () => {
+      // The owner synchronously cancelled retained consumers and now owns every cleanup fence.
+      if (this.runtime.disposed) return;
+      childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: process start failed: ${String(error)}\n`));
+      childTransport(spawn.child).finish(126);
+      this.filesystem.revoke(spawn.filesystem);
+      if (!controllerAccepted) {
+        // Failed service/controller admission never transferred ownership. Retire that lease
+        // only after its filesystem section is actually safe, never merely because ready failed.
+        await this.quiesceChild(child);
+        this.physicallyStop(child);
+        releaseConsumer();
+      }
+      this.children.delete(spawn.pid);
+    })();
+    // Root preparation can reject before ready reaches pendingAdmissions. Both chains own the
+    // same once-only failure cleanup; neither leaves a detached acquisition rejection behind.
+    void retention.catch(failAdmission).catch(error => this.report(error));
+    // No import, compile, worker startup or wait is on the synchronous spawn path.
+    void this.ready().then(supervisor => {
+      try {
+        if (this.disposed) return;
+        admittedSupervisor = supervisor;
         // This request was admitted while its sender still held filesystem authority. A root
         // exit during lazy activation must not erase an already accepted independent job.
         supervisor.reserveAdmittedSpawn(spawn.parentPid, {
@@ -188,12 +224,7 @@ export class SubprocessBroker {
         if (signal) { child.signal = signal; supervisor.observeSignal(spawn.pid, signal); }
         return supervisor.start(spawn.pid);
       } finally { release(); }
-    }).catch(error => {
-      childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: process start failed: ${String(error)}\n`));
-      childTransport(spawn.child).finish(126);
-      this.filesystem.revoke(spawn.filesystem);
-      this.children.delete(spawn.pid);
-    }).finally(() => { release?.(); this.pendingAdmissions.delete(retention); });
+    }).catch(failAdmission).catch(error => this.report(error)).finally(() => { release?.(); this.pendingAdmissions.delete(retention); });
     this.watch();
   }
 
@@ -368,6 +399,9 @@ export class SubprocessBroker {
     if (child) child.closed = true;
     if (!this.activation) return;
     void this.activation.then(supervisor => {
+      // Page disposal takes over all cleanup and revokes borrowed capabilities immediately.
+      // A queued close may still arrive here after that ownership transfer.
+      if (this.runtime.disposed) return;
       const record = supervisor.get(pid);
       if (!record || record.parentPid !== parentPid) return;
       if (!record.result) {
@@ -377,8 +411,13 @@ export class SubprocessBroker {
         const killed = child && Atomics.load(new Int32Array(child.spawn.child.requestedSignal), 0) === 9;
         if (completed && !killed) return;
         supervisor.kill(pid, 9);
+        // Revocation hooks can synchronously dispose the page owner too.
+        if (this.runtime.disposed) return;
       }
-      if (supervisor.get(pid)?.result) { supervisor.reap(parentPid, pid); this.service?.releaseLegacyJob(record.job); }
+      if (supervisor.get(pid)?.result) {
+        supervisor.reap(parentPid, pid);
+        if (!this.runtime.disposed) this.service?.releaseLegacyJob(record.job);
+      }
     }).catch(error => this.report(error));
   }
   /** A run exits only its root; it never owns shared service teardown. */
@@ -427,11 +466,14 @@ export class SubprocessBroker {
     childTransport(spawn.child).finish(result.status, result.kind === "signaled" ? result.code : undefined);
   }
   private watch(): void {
-    if (this.timer !== null || this.disposed) return;
+    if (this.timer !== null || this.disposed || this.runtime.disposed) return;
     this.timer = setTimeout(() => {
       this.timer = null;
+      if (this.runtime.disposed) return;
       void this.ready().then(supervisor => {
         for (const [pid, child] of this.children) {
+          // A preceding process callback can synchronously transfer cleanup to the owner.
+          if (this.runtime.disposed) return;
           const record = supervisor.get(pid);
           if (!record || record.result) continue;
           // A publisher can stop after the atomic decision but before writing the wake header.

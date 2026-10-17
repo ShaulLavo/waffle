@@ -32,6 +32,14 @@ compiled module instead requires `{ adapter, module, cooperative: true }`. Regis
 added after activation, duplicate names reject, and unknown adapter names never select Bun.
 Generic preview1 worker bootstrap is exported separately from Bun's executor.
 
+`retainConsumer({ filesystem, revoke, stop })` is **adapter plumbing only**, not an application
+or shell API. An adapter synchronously retains an accepted external consumer before any lazy
+process activation. The runtime snapshots its identity and callbacks, cancels it synchronously
+on disposal and fences its filesystem before awaiting physical `stop()`. Release the returned
+idempotent lease only after the process broker has synchronously accepted ownership, or after
+proven physical cleanup; a failed handoff must retain the lease. Release after page disposal
+begins is a no-op. This also owns consumers when process activation never starts or fails.
+
 Only one runtime may be live per page, including across duplicate bundles. Construction and
 ordered idempotent disposal retain that ownership guard until all owned cleanup completes.
 Disposal stops admission and reaches filesystem quiescence before stopping consumers and closing
