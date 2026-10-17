@@ -7,12 +7,12 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `core/`, `fs/`, `proc/`, `interrupt/` | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked. |
 | `browser/net/` | Original adapter | Generic ring, HTTP framing, fetch and host transport. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle. |
 | `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
-| `fs/opfs.ts` | Adaptation | Adapts SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0) for browser access-handle retries and quota mapping while retaining Waffle's checksummed snapshots, lazy index and bounded cache. The applicable Apache-2.0 notice is retained here. |
+| `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload and quota implementation is original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `core/memory-views.js` | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity. |
 
 ## SLICC-kernel Apache-2.0 notice
 
-The OPFS access-handle adaptation is based on SLICC-kernel, revision `88c5bb3`, licensed under the Apache License, Version 2.0. The adaptation is distributed under that license's notice and attribution requirements. No SLICC source is generated at build time.
+The sync-access retry fragment in `fs/opfs.ts` is adapted from SLICC-kernel `src/fs/opfs.ts`, revision `88c5bb3`, licensed under the Apache License, Version 2.0. The complete license text is shipped at `LICENSES/Apache-2.0.txt`; the source header identifies the adapted fragment. No SLICC source is generated at build time.
 
 ## Extraction provenance
 

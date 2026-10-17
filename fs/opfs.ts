@@ -1,3 +1,9 @@
+/*
+ * The sync-access retry constants and retry loop are adapted from
+ * SLICC-kernel, src/fs/opfs.ts at revision 88c5bb3, Apache-2.0. The
+ * surrounding snapshot and storage implementation is original Waffle code.
+ * See LICENSES/Apache-2.0.txt and docs/bun-patches.md.
+ */
 import {
   decodeSnapshot, encodeSnapshot, validatePersistedIndex, validatePersistedNode, validInteger,
   type PersistenceBatch, type PersistedIndex, type PersistedNode, type StorageBackend,

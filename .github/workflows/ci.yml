@@ -15,7 +15,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run prepare
       - run: bun run check
-      - run: bun test ./tests
+      - run: bun test
       - run: bun run size
       - run: test -z "$(git ls-files dist)"
   browser:
@@ -27,4 +27,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run prepare
-      - run: bun tests/storage-browser-runner.ts
+      - run: bunx playwright install --with-deps
+      - run: bun tests/storage-browser-runner.ts chromium firefox webkit
+        env:
+          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}

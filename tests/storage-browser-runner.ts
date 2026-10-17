@@ -1,6 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
 
 type Backend = "indexeddb" | "opfs";
@@ -127,8 +127,9 @@ async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent 
 }
 
 try {
-  const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "darwin" ? resolve(homedir(), "tmp") : "/work/tmp");
-  scratchCreation = mkdtemp(resolve(scratchRoot, "bun-wasm-storage-"));
+  const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "darwin" ? resolve(homedir(), "tmp") : tmpdir());
+  await mkdir(scratchRoot, { recursive: true });
+  scratchCreation = mkdtemp(resolve(scratchRoot, "waffle-storage-"));
   scratch = await scratchCreation;
   if (cleaning) throw new Error("Storage runner stopped during scratch creation");
   process.env.TMPDIR = scratch;

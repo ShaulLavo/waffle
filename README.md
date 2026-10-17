@@ -17,7 +17,7 @@ wasi.descriptors.dispose();
 ```
 
 `FilesystemClient` from `./fs` implements `FileSystem`; the direct memory backend lives in
-`runtime/fs/memory.ts` and is also exported as `./fs/memory`. Its handles
+`fs/memory.ts` and is also exported as `./fs/memory`. Its handles
 are filesystem-owned identities, not paths, reported inode numbers, or concrete tree nodes. A handle
 used by an open description must remain valid after rename or unlink. The host calls `retain`/`release` once per
 open description, not per duplicate; a filesystem worker can use those calls to reclaim detached
@@ -311,10 +311,9 @@ Plain Node consumers that only need the JavaScript memory helper use
 unbundled headless hosts import that JavaScript source relatively, so native CLI tests do not require
 installing playground dependencies.
 
-Run `bun install`, `bun test`, and `bun run check` in this directory. The web/sandbox builds
-consume the public entry, so their split output also exercises the package boundary.
-
-The repository's web and sandbox applications select hoisted installs locally.
-Native Bun 1.4.2 rejects `onResolve` paths containing `..`, including its own
-isolated `file:../runtime` cache directory names. Hoisting keeps those paths out
-of the build-plugin result while preserving the consumer's package exports.
+Run `bun install`, `bun run prepare`, `bun test`, and `bun run check` in this directory.
+The package is intentionally `private` and is consumed through an exact trusted Git commit while
+its public API is still settling; `prepare` generates ignored Node modules under `dist/` for hosts
+that select the `node` export condition. Do not rely on an npm tarball or a sibling checkout.
+The generic browser acceptance runner requires Playwright browsers and uses `STORAGE_SCRATCH_ROOT`
+when supplied (otherwise the host temporary directory).
