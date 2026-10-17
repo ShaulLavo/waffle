@@ -235,10 +235,10 @@ function signalModule(): WebAssembly.Module {
   const imported = (name: string, type: number) => text("runtime_proc").concat(text(name), [0, type]);
   const exported = (name: string, kind: number, index: number) => text(name).concat([kind, index]);
   return new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0].concat(
-    section(1, [3,96,2,127,127,1,127,96,0,1,127,96,0,0]),
-    section(2, [2].concat(imported("signal", 0), imported("interrupted", 1))),
+    section(1, [4,96,2,127,127,1,127,96,0,1,127,96,0,0,96,1,127,1,127]),
+    section(2, [3].concat(imported("signal", 0), imported("interrupted", 1), imported("default_signal", 3))),
     section(3, [1,2]), section(5, [1,0,1]),
-    section(7, [4].concat(exported("signal", 0, 0), exported("interrupted", 0, 1), exported("memory", 2, 0), exported("_start", 0, 2))),
+    section(7, [5].concat(exported("signal", 0, 0), exported("interrupted", 0, 1), exported("default_signal", 0, 2), exported("memory", 2, 0), exported("_start", 0, 3))),
     section(10, [1,2,0,11]),
   )));
 }
@@ -608,4 +608,50 @@ test("WASI diagnostics follow configured live stderr without recursing through a
   expect(captured).toHaveLength(1);
   expect(captured[0]).toContain("[wasi] fd_fdstat_get failed: RangeError");
   expect(result.messages.some(message => message.type === "stderr")).toBe(false);
+});
+
+for (const signal of [17, 18, 23, 28]) test(`generic bootstrap default signal ${signal} ignores without revoking the worker`, async () => {
+  const result = await fixture({ run(context) {
+    context.defaultSignal(signal);
+    context.checkActive();
+    return 23;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ type: "exit", code: 23 });
+  expect(result.messages.some(message => message.type === "default-signal" || message.type === "error")).toBe(false);
+});
+
+for (const signal of [19, 20, 21, 22, 32, 33]) test(`generic bootstrap rejects unsupported default signal ${signal} without selecting death`, async () => {
+  const result = await fixture({ run(context) {
+    expect(() => context.defaultSignal(signal)).toThrow(/signal/);
+    context.checkActive();
+    return 0;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ type: "exit", code: 0 });
+});
+
+
+test("generic runtime_proc default_signal validates with WASI errno and returns zero for ignored defaults", async () => {
+  const result = await fixture({ run({ instance }) {
+    const applyDefault = instance.exports.default_signal as (signal: number) => number;
+    for (const signal of [17, 18, 23, 28]) expect(applyDefault(signal)).toBe(0);
+    for (const signal of [19, 20, 21, 22]) expect(applyDefault(signal)).toBe(-58);
+    for (const signal of [0, 32, 33, 65]) expect(applyDefault(signal)).toBe(-28);
+    const signal = instance.exports.signal as (signal: number, mode: number) => number;
+    expect(signal(15, 2)).toBe(-52); // No signal adapter installed: WASI ENOSYS.
+    return 23;
+  } }, { module: signalModule() });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: 23 });
+});
+
+test("generic default-ignore action cannot discard an already selected KILL", async () => {
+  const outcome = outcomeWord();
+  const result = await fixture({ outcome, run(context) {
+    claimOutcome(outcome, { kind: "signaled", code: 9 });
+    let thrown: unknown;
+    try { context.defaultSignal(18); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(RuntimeWorkerSignal);
+    expect((thrown as RuntimeWorkerSignal).signal).toBe(9);
+    return 0;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: 137, signal: 9 });
 });

@@ -1,5 +1,5 @@
-import { claimOutcome, readOutcome } from "./outcome.ts";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit } from "./types.ts";
+import { claimOutcome, readOutcome } from "./outcome.js";
+import { ProcessErrno, ProcessError, Signal, checkedSignal, type ProcessExit } from "./types.js";
 
 /** Shared ABI: cell zero is reserved; signal numbers 1..64 index their own cell. */
 export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });
@@ -12,8 +12,12 @@ export function createSignalState(source?: Int32Array | SharedArrayBuffer): Int3
   return state;
 }
 export function checkedSignalNumber(signal: number): number {
-  if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);
-  return signal;
+  return checkedSignal(signal);
+}
+/** SIGCONT is a no-op for a running process; stopped processes are not supported. */
+export function defaultSignalTerminates(signal: number): boolean {
+  checkedSignalNumber(signal);
+  return signal !== Signal.SIGCHLD && signal !== Signal.SIGCONT && signal !== Signal.SIGURG && signal !== Signal.SIGWINCH;
 }
 export function signalDisposition(state: Int32Array, signal: number): number {
   checkedSignalNumber(signal);
@@ -29,7 +33,7 @@ export function setSignalDisposition(state: Int32Array, signal: number, disposit
     const previous = Atomics.load(state, signal);
     const next = disposition | (disposition === SignalDisposition.HANDLE ? previous & SIGNAL_PENDING : 0);
     if (Atomics.compareExchange(state, signal, previous, next) === previous) {
-      return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0;
+      return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0 && defaultSignalTerminates(signal);
     }
   }
 }
@@ -40,7 +44,7 @@ export function publishSignal(state: Int32Array, signal: number): "default" | "i
   for (;;) {
     const previous = Atomics.load(state, signal);
     const disposition = previous & DISPOSITION_MASK;
-    if (disposition === SignalDisposition.DEFAULT) return "default";
+    if (disposition === SignalDisposition.DEFAULT) return defaultSignalTerminates(signal) ? "default" : "ignore";
     if (disposition === SignalDisposition.IGNORE) return "ignore";
     if (disposition !== SignalDisposition.HANDLE) throw new ProcessError(ProcessErrno.INVAL, "invalid shared signal disposition");
     if (Atomics.compareExchange(state, signal, previous, previous | SIGNAL_PENDING) === previous) return "handled";

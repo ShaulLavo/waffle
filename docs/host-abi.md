@@ -63,6 +63,40 @@ The instantiate phase and executor ready hook run only after validating the
 callable `_start` export and the exported WebAssembly memory. A later exit notice
 or numeric completion cannot replace the atomic typed startup outcome.
 
+## Jobs and signals
+
+`runtime_proc.job_of(0)` returns the calling process's current job, using the
+host-bound caller pid rather than a guest-provided identity. A positive pid queries
+that process's job. Spawn selectors are unchanged: `0` creates a new foreground
+job, `-1` creates a new background job, and a positive id joins that job. A Bun-like
+guest obtains `job_of(0)` and explicitly joins it for ordinary children; a detached
+child can select `0` to create an independently controlled job.
+
+The owner and its controlling ancestors can wait for a whole job. The leader's
+outcome survives individual child reap, and `wait_job` waits for every accepted
+member's filesystem/descriptor safety fence before collecting the job, including
+inherited descendants whose parent already exited. `wait` remains repeatable and
+non-consuming. The shared process directory currently has a fixed lifetime slot
+limit, even for completed children; consuming collection and safe slot reuse are
+owned by the separate lifecycle work, not hidden behind retries.
+
+Signal numbers use Linux numbering: `1..31` and `34..64`; `32` and `33` are invalid.
+Stop signals `19..22` are not supported because Waffle has no stopped-process state.
+All `runtime_proc` errors, including `signal` registration, use negative WASI errno:
+`-28` (`EINVAL`) for invalid numbers/dispositions and `-58` (`ENOTSUP`) for stop signals.
+`signal(0,0)` dequeues a handled signal; `signal(0,4)` checks fatal state without
+consuming a delivery. Modes `0`, `1`, `2`, `3` select default, ignore, handler and
+self-raise respectively. `SIGKILL` cannot be ignored or handled.
+
+Default actions terminate with a typed signal outcome except `SIGCHLD` (17),
+`SIGCONT` (18), `SIGURG` (23) and `SIGWINCH` (28), which leave a running process alive.
+Explicit handlers still receive these signals through the same pending-signal table.
+Restoring default disposition discards pending delivery for a default-ignored
+signal, but selects terminal default action for a pending terminating signal.
+`default_signal` applies the same default actions independently of registered
+handlers; ignored defaults return zero without revocation or terminal unwind.
+An already-selected `SIGKILL` remains authoritative across all these paths.
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.

@@ -222,7 +222,7 @@ test("wait emits little-endian exit/signal records and remains level-triggered",
   expect(Array.from(f.bytes().subarray(64, 72))).toEqual([1, 0, 0, 0, 15, 0, 0, 0]);
   expect(f.abi.imports.wait!(99999, 64)).toBe(-12);
   expect(f.abi.imports.kill!(99999, 2)).toBe(-71);
-  expect(f.abi.imports.kill!(normal, 3)).toBe(-28);
+  expect(f.abi.imports.kill!(normal, 32)).toBe(-28);
   expect(f.abi.imports.job_of!(99999)).toBe(-71);
 });
 
@@ -307,9 +307,9 @@ test("poll timeout, invalid subscriptions and filesystem completion do not corru
 
 test("signal registration, shared dequeue, ignored delivery and explicit default unwind", () => {
   const f = fixture();
-  expect(f.abi.imports.signal!(9, 2)).toBe(-22);
-  expect(f.abi.imports.signal!(0, 2)).toBe(-22);
-  expect(f.abi.imports.signal!(2, 4)).toBe(-22);
+  expect(f.abi.imports.signal!(9, 2)).toBe(-28);
+  expect(f.abi.imports.signal!(0, 2)).toBe(-28);
+  expect(f.abi.imports.signal!(2, 4)).toBe(-28);
   expect(f.abi.imports.signal!(2, 2)).toBe(0);
   expect(f.abi.imports.signal!(15, 2)).toBe(0);
   f.supervisor.kill(f.pid, 2); f.supervisor.kill(f.pid, 15);

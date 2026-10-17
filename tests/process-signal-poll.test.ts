@@ -27,9 +27,9 @@ test("runtime_proc.signal(0,4) preserves handled deliveries, dispositions and wa
     expect(Array.from(f.signals.signalState)).toEqual(state);
     expect(Atomics.load(f.signals.interrupt, 0)).toBe(interrupt);
     expect(Atomics.load(f.signals.requestedSignal, 0)).toBe(requested);
-    expect(f.abi.imports.signal!(2, 4)).toBe(-22);
-    expect(f.abi.imports.signal!(-1, 4)).toBe(-22);
-    expect(f.abi.imports.signal!(65, 4)).toBe(-22);
+    expect(f.abi.imports.signal!(2, 4)).toBe(-28);
+    expect(f.abi.imports.signal!(-1, 4)).toBe(-28);
+    expect(f.abi.imports.signal!(65, 4)).toBe(-28);
     expect(f.abi.imports.signal!(0, 0)).toBe(2);
     expect(f.abi.imports.interrupted!()).toBe(15);
     expect(f.abi.imports.interrupted!()).toBe(0);

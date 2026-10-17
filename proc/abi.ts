@@ -4,7 +4,7 @@ import { withFileOffset } from "../core/open-file.js";
 import { PipeController } from "./pipes.js";
 import { readOutcome } from "./outcome.js";
 import { waitStatus } from "./wait-status.js";
-import { checkedSignalNumber, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals.js";
+import { checkedSignalNumber, defaultSignalTerminates, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals.js";
 import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
 
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
@@ -95,7 +95,7 @@ export class ProcessABI {
       access_take: request => this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
       access_cancel: request => this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
       spawn: (ptr, length) => this.result(() => options.service.spawn(options.pid, this.spawnRequest(ptr!, length!))),
-      job_of: pid => this.result(() => options.service.jobOf(pid!)),
+      job_of: pid => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: ptr => this.result(() => this.pipe(ptr!)),
       dup: fd => options.descriptors.dup(fd! >>> 0),
       read: (fd, ptr, length) => this.result(() => this.io(false, fd!, ptr!, length!)),
@@ -113,7 +113,7 @@ export class ProcessABI {
       poll: (ptr, count, timeout, out) => this.result(() => this.poll(ptr!, count!, timeout!, out!)),
       interrupted: () => this.interrupted(),
       signal: (signal, mode) => this.signal(signal!, mode!),
-      default_signal: signal => this.defaultSignal(signal!),
+      default_signal: signal => this.result(() => this.defaultSignal(signal!)),
     };
   }
   private result(operation: () => number): number {
@@ -296,21 +296,28 @@ export class ProcessABI {
     }
     try {
       checkedSignalNumber(signal);
-      if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -22;
+      if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -ProcessErrno.INVAL;
       if (mode === 3) {
         const result = requestSignal(this.options.signals, signal);
         if (result.action === "default" && result.outcome?.kind === "signaled") this.defaultSignal(result.outcome.code);
       } else if (setSignalDisposition(this.options.signals.signalState, signal, mode)) this.defaultSignal(signal);
       return 0;
     } catch (error) {
-      if (error instanceof ProcessError) return -22;
+      if (error instanceof ProcessError) return -error.errno;
       throw error;
     }
   }
-  private defaultSignal(signal: number): never {
+  private defaultSignal(signal: number): number {
     checkedSignalNumber(signal);
+    const winner = readOutcome(this.options.signals.outcome);
+    if (winner?.kind === "signaled") {
+      this.options.service.defaultSignal(this.options.pid, winner.code);
+      throw new ProcessSignalExit(winner.code);
+    }
+    if (!defaultSignalTerminates(signal)) return 0;
     this.options.service.defaultSignal(this.options.pid, signal);
-    throw new ProcessSignalExit(signal);
+    const selected = readOutcome(this.options.signals.outcome);
+    throw new ProcessSignalExit(selected?.kind === "signaled" ? selected.code : signal);
   }
   private readiness(sub: Subscription): Readiness | null {
     if (sub.kind === 5) {

@@ -1,5 +1,5 @@
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
-import { checkedSignalNumber, createSignalState, requestSignal } from "./signals.js";
+import { checkedSignalNumber, defaultSignalTerminates, createSignalState, requestSignal } from "./signals.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors.js";
 import { ExecutableNotFound, ExecutableRegistry } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
@@ -19,8 +19,6 @@ export interface SupervisorOptions {
    * Fatal outcomes and explicit disposal never wait for this acknowledgement.
    */
   canConfirmExit?(pid: number): boolean;
-  /** Legacy hosts without job waits can release outcomes after their last individual reap. */
-  retainJobResults?: boolean;
   /** Fence admitted filesystem and adapter work after revocation. Every exit confirmation
    * waits for this hook, but never for physical worker termination.
    */
@@ -178,10 +176,6 @@ export class ProcessSupervisor {
   onJobReap(listener: (job: number) => void): () => void {
     this.jobReapListeners.add(listener);
     return () => { this.jobReapListeners.delete(listener); };
-  }
-  private forgetUnusedJob(jobId: number): void {
-    const job = this.table.job(jobId);
-    if (this.options.retainJobResults === false && job?.members.size === 0 && this.jobIsEmpty(job, true)) this.table.removeJob(jobId);
   }
   jobEmpty(callerPid: number, jobId: number): boolean {
     const job = this.requireWaitJob(callerPid, jobId);
@@ -376,7 +370,9 @@ export class ProcessSupervisor {
     const settled = readOutcome(record.outcome);
     if (settled) { this.finish(pid, settled); return; }
     const sig = checkedSignalNumber(signal ?? (record.signal || Atomics.load(record.requestedSignal, 0)));
-    const winner = claimOutcome(record.outcome, { kind: "signaled", code: Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL ? Signal.SIGKILL : sig });
+    const killed = Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL;
+    if (!killed && !defaultSignalTerminates(sig)) return;
+    const winner = claimOutcome(record.outcome, { kind: "signaled", code: killed ? Signal.SIGKILL : sig });
     this.finish(pid, winner);
   }
   killJob(jobId: number, signal: number): void {
@@ -424,7 +420,6 @@ export class ProcessSupervisor {
     const record = this.child(parentPid, pid);
     if (!record.result) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited");
     this.table.remove(pid);
-    this.forgetUnusedJob(record.job);
     return record.result;
   }
   private child(parentPid: number, pid: number): ProcessRecord {
@@ -513,7 +508,6 @@ export class ProcessSupervisor {
       for (const listener of Array.from(this.listeners)) this.safely(() => listener(event));
       for (const listener of Array.from(this.quiescentListeners)) this.safely(() => listener(event));
       const job = this.table.job(record.job);
-      this.forgetUnusedJob(record.job);
       if (job && this.jobIsEmpty(job, true)) {
         const listeners = this.jobListeners.get(record.job);
         if (listeners) for (const listener of Array.from(listeners)) this.safely(listener);

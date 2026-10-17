@@ -1021,3 +1021,74 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
     expect(errors).toEqual([failure]);
   } finally { release(); await broker.dispose(); }
 });
+
+for (const activation of ["lazy", "eager"] as const) for (const signalAt of ["reserved", "admitted"] as const) test(`Bun inherited job reservations survive ${activation} activation and ${signalAt} kill/reap`, async () => {
+  const { ProcessABI } = await import("../proc/abi");
+  const { MemFS } = await import("../fs/memory");
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+  registry.register("bun-like", { module, adapter: "fixture", interruptible: true });
+  const broker = new BrowserProcessBroker({ identities, table, registry,
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { return { terminate() {} }; },
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const messages: WorkerProcessMessage[] = [], tables: DescriptorTable[] = [];
+  const makeClient = (transport: typeof root) => {
+    const descriptors = new DescriptorTable(); tables.push(descriptors);
+    const host = new WorkerPipeHost({ transport, postMessage: message => messages.push(message) });
+    const client = new WorkerProcessClient({ transport, descriptors, codec: host.codec(),
+      postMessage: message => messages.push(message),
+      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }) });
+    const abi = new ProcessABI({ memory: new WebAssembly.Memory({ initial: 1 }), descriptors, fs: new MemFS(),
+      pid: client.pid, service: client, signals: client.signals });
+    return { client, abi };
+  };
+  const request = (job: number) => ({ executable: "bun-like", argv: [], env: {}, cwd: "/", job, fds: [] });
+  try {
+    await broker.adoptRuntimeRoot(root);
+    if (activation === "eager") await broker.ready();
+    const shell = makeClient(root);
+    const bunPid = shell.client.spawn(shell.client.pid, request(0));
+    const bunNotice = messages.shift()!;
+    const bun = makeClient(bunNotice.transport), job = bun.abi.imports.job_of!(0);
+    const childPid = bun.client.spawn(bunPid, request(job)), childNotice = messages.shift()!;
+    const child = makeClient(childNotice.transport);
+    expect(child.abi.imports.job_of!(0)).toBe(job);
+    expect(Atomics.load(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(2);
+    expect(child.client.job).toBe(job);
+    expect(table.get(childPid)).toBeUndefined();
+    if (signalAt === "admitted") {
+      await broker.runtimeMessage(bunNotice, shell.client.pid);
+      await broker.runtimeMessage(childNotice, bunPid);
+    }
+    // Reserved descendants are targeted synchronously even before the page admits them.
+    expect(shell.abi.imports.kill_job!(job, 9)).toBe(0);
+    expect(readOutcome(child.client.signals.outcome)?.status).toBe(137);
+    if (signalAt === "reserved") {
+      await broker.runtimeMessage(bunNotice, shell.client.pid);
+      await broker.runtimeMessage(childNotice, bunPid);
+    }
+    while (messages.length) await broker.runtimeMessage(messages.shift()!, shell.client.pid);
+    const supervisor = await broker.ready();
+    await supervisor.waitForExit(shell.client.pid, bunPid);
+    if (signalAt === "admitted") {
+      await supervisor.waitForExit(bunPid, childPid);
+      expect(supervisor.jobOf(childPid)).toBe(job);
+    } else {
+      // Admission rejects a killed sender's queued child, but confirms that shared
+      // reservation after cleanup instead of leaking its pending membership.
+      expect(supervisor.get(childPid)).toBeUndefined();
+      expect(Atomics.load(workerProcessState(childNotice.transport).confirmed, 0)).toBe(1);
+    }
+    expect(supervisor.jobOf(bunPid)).toBe(job);
+    expect(supervisor.jobEmpty(shell.client.pid, job)).toBe(true);
+    expect(Atomics.load(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(0);
+    expect(shell.abi.imports.wait_job!(job, 1, 64)).toBe(0);
+    while (messages.length) await broker.runtimeMessage(messages.shift()!, shell.client.pid);
+    expect(table.get(bunPid)).toBeUndefined();
+    expect(table.get(childPid)).toBeUndefined();
+    expect(table.job(job)).toBeUndefined();
+  } finally { for (const descriptors of tables) descriptors.dispose(); await broker.dispose(); }
+});
