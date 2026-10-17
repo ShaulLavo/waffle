@@ -140,9 +140,9 @@ spawn. Small identity, typed-outcome and signal-state leaves are available earli
 root control; importing them must not pull in the service barrel. The bundle gate checks both this
 boundary and the approximately 1 KiB compressed first-spawn stub. Bun's existing pipe/slot transport
 is measured separately and remains available alongside the lazy generic process adapters.
-CPU-bound QuickJS/JSC interrupt checkpoints are step 7a. Handled signals already dispatch during
-cooperative event-loop turns, while unhandled default actions are immediate and do not depend
-on those future engine hooks.
+CPU-bound QuickJS/JSC interrupt checkpoints remain in Bun's engine adapters. Handled signals
+dispatch during ordinary event-loop turns, while unhandled default actions publish immediately;
+the generic supervisor does not depend on a particular engine's interruption hook.
 
 ## Process-owned pipes
 

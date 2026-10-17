@@ -36,16 +36,16 @@ export class SharedFilesystem {
     try {
       this.worker = worker = new Worker(options.workerURL ?? new URL("./fs-worker.js", location.href), { type: "module" });
       this.client = client = new FilesystemClient(connection.client);
-    worker.addEventListener("message", event => {
-      if (event.data?.type === "filesystem-ownership-lost") {
-        this.ownershipLost = true;
-        this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
-        this.onOwnershipLost?.();
-        return;
-      }
-      const error = workerError(event.data);
-      if (error) this.fail(error);
-    });
+      worker.addEventListener("message", event => {
+        if (event.data?.type === "filesystem-ownership-lost") {
+          this.ownershipLost = true;
+          this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
+          this.onOwnershipLost?.();
+          return;
+        }
+        const error = workerError(event.data);
+        if (error) this.fail(error);
+      });
       worker.addEventListener("error", event => {
         event.preventDefault();
         this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
