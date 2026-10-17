@@ -2,10 +2,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const root = import.meta.dir;
-const dependency = join(root, "node_modules", "acorn", "package.json");
-if (!existsSync(dependency)) {
-  throw new Error("Waffle prepare requires its installed build dependencies (acorn). Run `bun install` in the Waffle package before installing it from Git.");
-}
 if (typeof Bun.Transpiler !== "function") {
   throw new Error("Waffle prepare requires Bun's TypeScript build tools; install with Bun rather than a package manager that skips prepare scripts.");
 }

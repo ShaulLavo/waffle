@@ -1,21 +1,190 @@
 // Source-first package: emit one Node module per source, preserving shared state.
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { parse } from "acorn";
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel);
 }
 
-/** Rewrite syntax nodes only: an ordinary string/comment/regex is never an import. */
+type StringLiteral = { start: number; end: number; value: string };
+
+function decodeString(source: string, start: number, quote: string): StringLiteral {
+  let value = "";
+  for (let index = start + 1; index < source.length; index++) {
+    const character = source[index]!;
+    if (character === quote) return { start, end: index + 1, value };
+    if (character !== "\\") {
+      value += character;
+      continue;
+    }
+    const escaped = source[++index];
+    if (escaped === undefined) break;
+    const simple: Record<string, string> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "0": "\0" };
+    if (simple[escaped] !== undefined) {
+      value += simple[escaped];
+      continue;
+    }
+    if (escaped === "x") {
+      const hex = source.slice(index + 1, index + 3);
+      if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+        value += String.fromCharCode(Number.parseInt(hex, 16));
+        index += 2;
+        continue;
+      }
+    }
+    if (escaped === "u") {
+      const hex = source[index + 1] === "{" ? source.slice(index + 2, source.indexOf("}", index + 2)) : source.slice(index + 1, index + 5);
+      if (/^[0-9a-fA-F]+$/.test(hex)) {
+        value += String.fromCodePoint(Number.parseInt(hex, 16));
+        index += source[index + 1] === "{" ? hex.length + 2 : 4;
+        continue;
+      }
+    }
+    value += escaped;
+  }
+  throw new SyntaxError(`Unterminated string literal at ${start}`);
+}
+
+function skipComment(code: string, index: number): number {
+  if (code[index] !== "/") return index;
+  if (code[index + 1] === "/") {
+    const end = code.indexOf("\n", index + 2);
+    return end < 0 ? code.length : end;
+  }
+  if (code[index + 1] === "*") {
+    const end = code.indexOf("*/", index + 2);
+    if (end < 0) throw new SyntaxError(`Unterminated comment at ${index}`);
+    return end + 2;
+  }
+  return index;
+}
+
+function skipTemplate(code: string, index: number): number {
+  for (let at = index + 1; at < code.length; at++) {
+    if (code[at] === "\\") {
+      at++;
+      continue;
+    }
+    if (code[at] === "`") return at + 1;
+  }
+  throw new SyntaxError(`Unterminated template literal at ${index}`);
+}
+
+function skipRegex(code: string, index: number): number {
+  for (let at = index + 1; at < code.length; at++) {
+    if (code[at] === "\\") {
+      at++;
+      continue;
+    }
+    if (code[at] === "[") {
+      for (at++; at < code.length && code[at] !== "]"; at++) if (code[at] === "\\") at++;
+      continue;
+    }
+    if (code[at] === "/") {
+      at++;
+      while (/[A-Za-z]/.test(code[at] ?? "")) at++;
+      return at;
+    }
+    if (code[at] === "\n") return index;
+  }
+  return code.length;
+}
+
+function trivia(code: string, index: number): number {
+  for (;;) {
+    while (/\s/.test(code[index] ?? "")) index++;
+    const next = skipComment(code, index);
+    if (next === index) return index;
+    index = next;
+  }
+}
+
+function identifier(code: string, index: number): { value: string; end: number } | undefined {
+  if (!/[A-Za-z_$]/.test(code[index] ?? "")) return undefined;
+  let end = index + 1;
+  while (/[A-Za-z0-9_$]/.test(code[end] ?? "")) end++;
+  return { value: code.slice(index, end), end };
+}
+
+function nextString(code: string, index: number): StringLiteral | undefined {
+  index = trivia(code, index);
+  const quote = code[index];
+  return quote === "\"" || quote === "'" ? decodeString(code, index, quote) : undefined;
+}
+
+/** Rewrite relative module specifiers without treating strings, comments or regexes as imports. */
 export function rewriteNodeImports(code: string, source: string, root: string): string {
-  const parsed = parse(code, { ecmaVersion: "latest", sourceType: "module" });
-  const edits: { start: number; end: number; text: string }[] = [];
-  type Node = { type: string; start: number; end: number; value?: unknown; source?: Node; [key: string]: unknown };
-  function imported(node: Node): void {
-    if (typeof node.value !== "string" || !node.value.startsWith(".")) return;
-    const specifier = node.value;
+  const edits: StringLiteral[] = [];
+  let index = 0;
+  let canStartRegex = true;
+  while (index < code.length) {
+    const character = code[index]!;
+    if (/\s/.test(character)) {
+      index++;
+      continue;
+    }
+    const commentEnd = skipComment(code, index);
+    if (commentEnd !== index) {
+      index = commentEnd;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      index = decodeString(code, index, character).end;
+      canStartRegex = false;
+      continue;
+    }
+    if (character === "`") {
+      index = skipTemplate(code, index);
+      canStartRegex = false;
+      continue;
+    }
+    if (character === "/" && canStartRegex && code[index + 1] !== "/" && code[index + 1] !== "*") {
+      const regexEnd = skipRegex(code, index);
+      if (regexEnd !== index) {
+        index = regexEnd;
+        canStartRegex = false;
+        continue;
+      }
+    }
+    const token = identifier(code, index);
+    if (token) {
+      if (token.value === "import") {
+        const after = trivia(code, token.end);
+        const literal = code[after] === "(" ? nextString(code, after + 1) : nextString(code, after) ?? (() => {
+          let at = after;
+          while (at < code.length && code[at] !== ";") {
+            const word = identifier(code, at);
+            if (word?.value === "from") return nextString(code, word.end);
+            at = word ? word.end : at + 1;
+          }
+          return undefined;
+        })();
+        if (literal?.value.startsWith(".")) edits.push(literal);
+      } else if (token.value === "export") {
+        const after = trivia(code, token.end);
+        if (code[after] === "{" || code[after] === "*") {
+          let at = after + 1;
+          while (at < code.length && code[at] !== ";") {
+            const word = identifier(code, at);
+            if (word?.value === "from") {
+              const literal = nextString(code, word.end);
+              if (literal?.value.startsWith(".")) edits.push(literal);
+              break;
+            }
+            at = word ? word.end : at + 1;
+          }
+        }
+      }
+      canStartRegex = ["return", "throw", "case", "delete", "void", "typeof", "new", "in", "of", "instanceof", "yield", "await"].includes(token.value);
+      index = token.end;
+      continue;
+    }
+    canStartRegex = "([{,:;!?=+*%&|^~<>-".includes(character);
+    index++;
+  }
+  const resolved = edits.map(literal => {
+    const specifier = literal.value;
     const base = resolve(dirname(source), specifier);
     if (!inside(root, base)) throw new Error(`Import outside package: ${specifier} in ${source}`);
     const candidates = /\.(?:ts|js)$/.test(base)
@@ -25,18 +194,10 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     if (!target) throw new Error(`Cannot resolve ${specifier} in ${source}`);
     let output = relative(dirname(source), target).replace(/\.ts$/, ".js").replaceAll("\\", "/");
     if (!output.startsWith(".")) output = "./" + output;
-    edits.push({ start: node.start, end: node.end, text: JSON.stringify(output) });
-  }
-  function visit(value: unknown): void {
-    if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) { for (const child of value) visit(child); return; }
-    const node = value as Node;
-    if (["ImportDeclaration", "ExportNamedDeclaration", "ExportAllDeclaration", "ImportExpression"].includes(node.type) && node.source) imported(node.source);
-    for (const child of Object.values(node)) visit(child);
-  }
-  visit(parsed);
-  edits.sort((a, b) => b.start - a.start);
-  for (const edit of edits) code = code.slice(0, edit.start) + edit.text + code.slice(edit.end);
+    return { start: literal.start, end: literal.end, text: JSON.stringify(output) };
+  });
+  resolved.sort((a, b) => b.start - a.start);
+  for (const edit of resolved) code = code.slice(0, edit.start) + edit.text + code.slice(edit.end);
   return code;
 }
 
