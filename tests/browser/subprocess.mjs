@@ -1,12 +1,14 @@
 // Real fresh bun-browser.wasm workers, including synchronous transport while this thread blocks.
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Worker } from "node:worker_threads";
 import { SubprocessHost, MAX_CHILDREN } from "../src/subprocess.ts";
 import { launchNodeExecutable } from "../scripts/node-spawn.ts";
 
 const module = await WebAssembly.compile(readFileSync(process.env.BUN_WASM_TEST_BROWSER_WASM || new URL("../../dist/bun-browser.wasm", import.meta.url)));
-const scratch = mkdtempSync("/work/tmp/bun-wasm-self-spawn-browser-");
+const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? tmpdir(), "bun-wasm-self-spawn-browser-"));
 const inherited = [];
 const host = new SubprocessHost({
   output: (fd, bytes) => inherited.push([fd, new TextDecoder().decode(bytes)]),

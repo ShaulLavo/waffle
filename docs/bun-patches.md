@@ -81,6 +81,8 @@ Each row has one class. A file with independent changes has separate rows.
 | [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions, immutable final-kind query and byte-sized exit statuses. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
+| [`web/src/native-stream-state.ts`](#native-browser-stream-completion) | Host feature | Original native completion bridge preserves host hooks on instances as well as prototypes. |
+| [Cross-platform web test adapters](#cross-platform-web-tests) | Host feature | Original scratch, child-process cleanup, command-deadline and existing-browser-cache adapters run the same assertions on Linux and macOS. |
 | [Wasmi memory identity and growth](#wasmi-memory-identity-and-growth) | Port | Expose stable memory identity and successful growth, including zero-page growth. |
 | [esbuild distribution, worker capability, and subprocess adapters](#esbuild-webassembly-distribution) | Host feature | Select the unchanged official wasm distribution, detect unavailable workers, and support asynchronous stdin with live shared filesystem changes and large files. |
 | [Rollup distribution and WebAssembly adapters](#rollup-webassembly-distribution) | Host feature | Select an unchanged official wasm distribution and execute it through original interpreter adapters. |
@@ -1399,13 +1401,37 @@ The caller-supplied connection path retains caller ownership of TLS setup.
 
 Class **Host feature**, original bridge refinement. `web/src/native-stream-state.ts` now rewrites each wrapped native stream prototype's `constructor` descriptor to the wrapper, preserving `instance.constructor === GlobalConstructor` and subclassing while retaining native prototypes and brands. Guest abort signals passed to native `pipeTo` are mirrored through a native controller. The guest listener is detached when the native pipe fulfills or rejects and when the native call throws synchronously. The browser fixture counts add/remove operations across repeated successful pipes.
 
+### Cross-platform web tests
+
+Class **Host feature**, **original adapters**; no upstream implementation is copied
+or adapted. `web/tests/{subprocess,playground,browser-net}.mjs` and
+`tests/install/run.mjs` use the host temporary directory or `BUN_WASM_TEST_TMP`.
+`scripts/test-web.sh` honors that override or `TMPDIR`, installs scratch teardown
+before allocation, and waits for its fixture server to exit. Its original
+`scripts/run-with-timeout.mts` adapter owns a POSIX process group and kills command
+descendants on normal exit, deadline and interruption rather than requiring GNU
+timeout on macOS. Browser network teardown uses owned
+ChildProcess handles, not Linux-only `/proc` paths. Test assertions are unchanged.
+The original `env.sh` host-cache adapter exports `PLAYWRIGHT_BROWSERS_PATH` only
+when it is unset and `/work/cache/ms-playwright` exists. It never downloads
+browsers; hosts without that directory retain Playwright's native cache lookup,
+and explicit overrides (including `0` and empty) are preserved. The isolated
+`web/tests/toolchain-env.test.ts` probes cover the default and those overrides.
+
 ### Native browser stream completion
 
 Class **Host feature**, original bun-wasm implementation. No upstream source was
 copied or adapted for `web/src/native-stream-state.ts`. Chromium and WebKit lack
 Node's private closed-promise and controller-error symbols. The host installs
 those hooks before the runtime bootstrap; Node-host execution retains Node's
-existing hooks and embedded engines retain the reference ponyfill hooks.
+existing hooks and embedded engines retain the reference ponyfill hooks. Detection
+checks both the prototype and a closed native stream instance: Node 24/25 assign
+own symbol properties in their constructors, while Node 26 exposes prototype
+getters. Native instance hooks receive writable prototype capability slots for
+the guest bindings' startup check; constructor assignments still create the real
+own properties. Installing a getter-only bridge over the former would break
+subsequent native construction. The isolated native-stream probes cover both representations
+and a host without hooks, even when the test runner itself uses Node 26.
 
 Construction proxies delegate to the browser's native ReadableStream,
 WritableStream and TransformStream constructors and capture their controllers.
