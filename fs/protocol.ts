@@ -197,5 +197,6 @@ export type RequestMessage = { id: number; buffer: SharedArrayBuffer } | { conne
 export function errno(error: unknown): number {
   if (error instanceof FilesystemError) return error.errno;
   if (error instanceof RangeError) return 22; // EFBIG
+  if ((error as { code?: unknown })?.code === "ENOSPC" || (error as { name?: unknown })?.name === "QuotaExceededError") return 51;
   return 29; // EIO, never invent ENOENT for an internal failure.
 }

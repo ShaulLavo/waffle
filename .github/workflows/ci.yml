@@ -75,6 +75,12 @@ jobs:
           PERSIST_SMOKE: "1"
           PERSISTENCE_PORT: "4182"
         run: bun tests/browser-persistence.ts chromium
+      - name: OPFS persistence, file fsync and crash recovery (no WASM)
+        env:
+          PERSIST_SMOKE: "1"
+          PERSIST_STORAGE: "opfs"
+          PERSISTENCE_PORT: "4182"
+        run: bun tests/browser-persistence.ts chromium
       - name: Editor durable saves and template reset (no WASM)
         env:
           EDITOR_SCRATCH_ROOT: ${{ runner.temp }}

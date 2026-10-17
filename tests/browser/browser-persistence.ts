@@ -20,13 +20,14 @@ function cleanup(): Promise<void> {
 }
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
 const smoke = process.env.PERSIST_SMOKE === "1";
+const storage = process.env.PERSIST_STORAGE === "opfs" ? "opfs" as const : "indexeddb" as const;
 const deadline = setTimeout(() => { console.error("persistence gate timed out"); void cleanup().finally(() => process.exit(1)); }, smoke ? 90_000 : 900_000);
 const pageOnly = process.argv.includes("--page-only");
 const storageOnly = process.argv.includes("--storage-only");
 const engines = process.argv.slice(2).filter(value => !value.startsWith("--"));
-const report: { method: string; platform: string; arch: string; browsers: any[]; error?: string } = {
-  method: "Headless real-browser IndexedDB durability, page termination, exclusive-writer and lazy-data gates. Original spike 3 corpus geometry: 10,000 package-sized files plus three 8 MiB files; synthetic deterministic contents, no upstream code/content. One corpus sample per engine, timings diagnostic not performance thresholds. Browser profiles, workers, server and build scratch owned by this process.",
-  platform: process.platform, arch: process.arch, browsers: [],
+const report: { method: string; platform: string; arch: string; storage: string; browsers: any[]; error?: string } = {
+  method: "Headless real-browser selected-storage durability, page termination, exclusive-writer and lazy-data gates. Original spike 3 corpus geometry: 10,000 package-sized files plus three 8 MiB files; synthetic deterministic contents, no upstream code/content. One corpus sample per engine, timings diagnostic not performance thresholds. Browser profiles, workers, server and build scratch owned by this process.",
+  platform: process.platform, arch: process.arch, storage, browsers: [],
 };
 async function ready(context: BrowserContext): Promise<Page> {
   const page = await context.newPage();
@@ -63,19 +64,20 @@ try {
     const errors: string[] = [];
     context.on("page", page => page.on("pageerror", error => errors.push(error.message)));
     const page = await ready(context);
-    const prefix = `bunwasm-step3b-${name}-${crypto.randomUUID()}`;
+    const prefix = `bunwasm-step3c-${storage}-${name}-${crypto.randomUUID()}`;
     const databases = [prefix];
     const row: any = { browser: name, version: browser.version(), reload: false, checks: [] };
     report.browsers.push(row);
     try {
       if (!pageOnly) {
-        row.storageTests = await direct(page, "storageTests", process.env.PERSIST_STORAGE_FILTER);
-        assert.equal(row.storageTests.length, process.env.PERSIST_STORAGE_FILTER ? 1 : 12);
+        row.storageTests = await direct(page, "storageTests", { storage, filter: process.env.PERSIST_STORAGE_FILTER });
+        assert.ok(row.storageTests.length > 0, "selected storage contract suite must execute cases");
+        if (storage === "indexeddb" && !process.env.PERSIST_STORAGE_FILTER) assert.equal(row.storageTests.length, 13);
       }
       if (!storageOnly) {
       // This test is deliberately available before backend integration: the old memory-only
       // worker completes flush but loses every byte and inode as soon as this page reloads.
-      await call(page, "open", prefix);
+      await call(page, "open", prefix, true, storage);
       await call(page, "mkdir", "/tree");
       await call(page, "write", "/tree/original.bin", [0, 255, 1, 0, 128]);
       await call(page, "write", "/deleted.bin", [9, 8, 7]);
@@ -86,50 +88,58 @@ try {
       assert.equal(before.length, 1);
       await page.reload();
       await page.waitForFunction(() => (globalThis as any).persistenceHarness);
-      await call(page, "open", prefix);
+      await call(page, "open", prefix, true, storage);
       assert.deepEqual(await call(page, "snapshot"), before, "immediate reload after durable flush must preserve bytes, inode, mtime, rename and unlink");
       row.reload = true; row.checks.push("durable-page-reload-bytes-inode-mtime-rename-unlink");
       if (!pageOnly) {
       const contender = await ready(context);
-      await assert.rejects(call(contender, "open", prefix), /writer|lock|occupied|already|in use/i, "second page must refuse an occupied writer");
+      await assert.rejects(call(contender, "open", prefix, true, storage), /writer|lock|occupied|already|in use/i, "second page must refuse an occupied writer");
       await call(page, "destroy");
-      await call(contender, "open", prefix);
+      await call(contender, "open", prefix, true, storage);
       assert.deepEqual(await call(contender, "snapshot"), before, "writer may reopen after the first page releases ownership");
       await call(contender, "destroy"); await contender.close();
       row.checks.push("second-tab-writer-refused-then-open-after-owner-close");
 
-      // Close a page at the storage transaction boundary, not between filesystem operations.
+      // Close after a real partial OPFS write, or at the IndexedDB transaction boundary.
       // A committed new generation and an aborted old generation are both correct; partial
       // namespace/data or an empty recovered tree are never accepted.
       row.interrupted = [];
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const db = `${prefix}-interrupt-${attempt}`; databases.push(db);
+      for (const boundary of storage === "opfs" ? ["payload", "snapshot"] : ["transaction", "transaction", "transaction"]) {
+        const db = `${prefix}-interrupt-${row.interrupted.length}`; databases.push(db);
         const victim = await ready(context);
-        await direct(victim, "open", { name: db });
+        await direct(victim, "open", { name: db, storage });
         const old = await direct(victim, "seedInterrupted");
-        await victim.evaluate(() => { void (globalThis as any).persistenceHarness.direct("interruptCommit").catch(() => {}); });
+        await victim.evaluate(boundary => { void (globalThis as any).persistenceHarness.direct("interruptCommit", boundary).catch(() => {}); }, boundary);
         await victim.waitForFunction(() => (globalThis as any).persistenceHarness.state.commitStarted);
+        if (storage === "opfs") assert.deepEqual(await victim.evaluate(() => {
+          const state = (globalThis as any).persistenceHarness.state;
+          return { boundary: state.boundary, partialWrite: state.partialWrite };
+        }), { boundary, partialWrite: true });
         await victim.close();
         const reader = await ready(context);
-        await direct(reader, "open", { name: db });
+        await direct(reader, "open", { name: db, storage });
         const recovered = await direct(reader, "inspectInterrupted");
         assert.ok(recovered.state === "old" || recovered.state === "new", `interrupted commit recovered partial/empty data: ${JSON.stringify(recovered)}`);
         if (recovered.state === "old") assert.deepEqual(recovered.metadata, old.metadata);
-        row.interrupted.push(recovered);
+        row.interrupted.push({ boundary, ...recovered });
         await call(reader, "destroy"); await reader.close();
       }
-      row.checks.push("page-close-midcommit-old-or-new-never-empty");
+      row.checks.push(storage === "opfs" ? "page-close-partial-native-payload-and-snapshot-writes-old-or-new" : "page-close-midcommit-old-or-new-never-empty");
 
       if (!smoke) {
       const db = `${prefix}-corpus`; databases.push(db);
       const bench = await ready(context);
-      await direct(bench, "open", { name: db });
+      await direct(bench, "open", { name: db, storage });
       row.corpus = await direct(bench, "createCorpus");
       assert.equal(row.corpus.files, 10_003);
+      if (storage === "opfs") {
+        assert.equal(row.corpus.persistPayloadFlushes, 0, "background checkpoints must not fsync payloads");
+        assert.equal(row.corpus.durableFile.nativePayloadFlushes, 1, "explicit file flush must fsync exactly that payload");
+      }
       await call(bench, "destroy");
       // A new document/worker eliminates any memory cache and measures index-only startup.
       await bench.reload(); await bench.waitForFunction(() => (globalThis as any).persistenceHarness);
-      row.indexReload = await direct(bench, "open", { name: db });
+      row.indexReload = await direct(bench, "open", { name: db, storage });
       assert.equal(row.indexReload.reads, 0, "opening the durable index must not read payloads");
       assert.equal(row.indexReload.nativePayloadRequests, 0, "index open must not issue native payload get/getAll/cursor requests");
       row.metadataOnly = await direct(bench, "metadataCorpus");
@@ -139,13 +149,26 @@ try {
       row.firstData = await direct(bench, "firstData");
       assert.equal(row.firstData.reads, 1, "the first file access must load exactly its payload");
       assert.equal(row.firstData.nativePayloadRequests, 1);
+      if (storage === "opfs") {
+        row.cacheChurn = await direct(bench, "cacheChurn");
+        assert.ok(row.cacheChurn.distinctFiles > 253);
+        assert.ok(row.cacheChurn.additionalOpenedHandles > 253, "cache churn must reach native storage, not only the runtime byte cache");
+        assert.ok(row.cacheChurn.peakHandles <= 65, "native handles must stay bounded including metadata writes");
+      }
       row.fullRead = await direct(bench, "readCorpus");
       assert.equal(row.fullRead.files, 10_003);
       assert.equal(row.fullRead.bytes, row.corpus.bytes);
       assert.equal(row.fullRead.bad, 0, "every corpus byte must survive persistence and lazy reload");
+      if (storage === "opfs") assert.ok(row.fullRead.peakHandles <= 65);
       row.checks.push("10003-files-persist-index-only-reload-first-payload-full-read");
+      if (storage === "opfs" && process.env.PERSIST_RAW_CORPUS === "1") {
+        row.rawCorpus = await direct(bench, "rawCorpus");
+        assert.equal(row.rawCorpus.files, row.corpus.files); assert.equal(row.rawCorpus.bytes, row.corpus.bytes);
+        assert.equal(row.rawCorpus.payloadFlushes, 0); assert.equal(row.rawCorpus.snapshotFlushes, 1);
+        assert.equal(row.rawCorpus.cleanup.activeHandles, 0);
+      }
       await call(bench, "destroy"); await bench.close();
-      console.log(`${name} ${browser.version()}: corpus persist=${row.corpus.persistMs.toFixed(1)}ms index=${row.indexReload.ms.toFixed(1)}ms first=${row.firstData.ms.toFixed(1)}ms full=${row.fullRead.ms.toFixed(1)}ms`);
+      console.log(`${name} ${browser.version()}: corpus background-checkpoint=${row.corpus.persistMs.toFixed(1)}ms durable-one-file=${row.corpus.durableFile.flushMs.toFixed(1)}ms index=${row.indexReload.ms.toFixed(1)}ms first=${row.firstData.ms.toFixed(1)}ms full=${row.fullRead.ms.toFixed(1)}ms`);
       }
       assert.deepEqual(errors, []);
       console.log(`${name} ${browser.version()}: storage and persistence gates passed`);

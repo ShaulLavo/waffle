@@ -83,6 +83,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
 | [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions, immutable final-kind query and byte-sized exit statuses. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
+| [`runtime/fs/opfs.ts`, OPFS access-handle and quota adapters](#opfs-storage-adapter) | Host feature | Original one-file-per-payload storage adapter; adapts SLICC-kernel's Apache-2.0 `src/fs/opfs.ts` at 88c5bb3 for NotReadableError retries and QuotaExceededError mapping while retaining bun-wasm's checksummed snapshots, lazy index and bounded cache. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [`web/src/native-stream-state.ts`](#native-browser-stream-completion) | Host feature | Original native completion bridge preserves host hooks on instances as well as prototypes. |
 | [Cross-platform web test adapters](#cross-platform-web-tests) | Host feature | Original scratch, child-process cleanup, command-deadline and existing-browser-cache adapters run the same assertions on Linux and macOS. |
@@ -183,6 +184,15 @@ reaping and physical termination; an ordinary guest exit acknowledgement also pr
 Children use independent process revocation identities while
 sharing the filesystem service's root revocation word. New browser fixtures and timing
 harnesses are original test programs, not copies of the spike implementations.
+
+## OPFS storage adapter
+
+Class **Host feature**, original adapter in `runtime/fs/opfs.ts`, informed by SLICC-kernel
+`src/fs/opfs.ts` at commit `88c5bb3` (Apache-2.0). The SLICC implementation's bounded sync-access
+handle retry loop for `NotReadableError`/`InvalidStateError` and its `QuotaExceededError` to
+`ENOSPC` mapping are adapted here. The layout, snapshot recovery, Web Lock lifetime, lazy payload
+reads, browser-specific create concurrency and 64-handle cache are original bun-wasm behavior;
+no SLICC code is copied verbatim.
 
 ## Filesystem quiescence
 

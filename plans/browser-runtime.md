@@ -44,12 +44,16 @@ than it is today. The process layer loads on the first spawn.
 - **Storage backends are swappable.** The filesystem service talks to storage through a small
   backend interface (load the tree, read data that isn't in memory, persist a batch, flush). We
   ship two from day one: IndexedDB, the default (fastest writes on Chromium and Safari, consistent
-  reads), and OPFS. The OPFS backend is simple: one OPFS file per file, no per-file flush, create
-  concurrency tuned per browser, and lazy loading (the index loads in about 20 ms; files are read
+  reads), and OPFS. The OPFS backend is simple: one OPFS file per immutable file revision, no
+  per-file flush in background checkpoints, create concurrency tuned per browser, and lazy loading
+  (the spike's index loads in about 20 ms; files are read
   on first use, since reading every file takes 16-33 s in Firefox). A packed OPFS backend, 15x
-  faster to write in Firefox, can come later (spike 3). Later backends can include IndexedDB
-  without our own memory cache (lower memory, the browser caches for us) and memory-only for
-  throwaway sandboxes (owner, 2026-10-16).
+  faster to write in Firefox, can come later (spike 3). Memory-only throwaway sandboxes already
+  use `persistence: false`. A later backend can use IndexedDB without our own memory cache
+  (lower memory, the browser caches for us; owner, 2026-10-16). Explicit `fsync(fd)` and the editor's persisted save
+  flush that file's payload and the snapshot naming it before resolving; they do not promise
+  durability for unrelated unsynced payloads. IndexedDB requests strict atomic transaction
+  durability, while OPFS background checkpoints remain close-only with a flushed naming snapshot.
 - **Killing is not instant, so kills interrupt, revoke and confirm.** Chromium waits 2 s before
   forcibly stopping a busy worker after `terminate()` (`kForcibleTerminationDelay` in Blink's
   `worker_thread.cc`; spike 2 saw CPU-bound WASM and JS keep running and writing shared memory).
@@ -265,7 +269,7 @@ the CI gate.
 | 2 | **Package skeleton and core.** Create `runtime/`; move `wasi.ts`, `memory-views.js` and path helpers; one descriptor namespace with file, directory, pipe and terminal kinds and reference-counted open descriptions, so the host no longer holds MemFS nodes; explicit import namespaces instead of ENOSYS stubs; `poll_oneoff` with per-descriptor readiness. Enable code splitting in `web/build.ts` and `sandbox/build.ts`, including chunks under the scoped worker. `web/` consumes it with no behaviour change. CI checks bundle sizes against the budgets and initial downloads. | 1,500-2,200 |
 | 3a | **Filesystem worker and protocol.** In-memory tree owned by one worker; non-blocking submit and completion handles over shared memory; blocking preview1 adapter; open-file identity across rename and unlink. Memory-only backend. Replaces copy-at-spawn and merge-at-exit. | 1,500-2,200 |
 | 3b | **Persistence.** Backend interface; IndexedDB backend (default); background batched persistence; `fsync`; checksummed metadata written beside the old copy then swapped; Web Locks for one writer tab; the editor's persisted save. Reload test immediately after a save resolves. | 1,200-1,800 |
-| 3c | **OPFS backend.** One file per file, lazy loading, bounded handle cache under Safari's 253, per-browser create concurrency. | 600-1,000 |
+| 3c | **OPFS backend.** One file per immutable revision, lazy loading, bounded total native handles under Safari's 253, per-browser create concurrency, and file-scoped durability. Explicit `storage: "opfs"`; IndexedDB stays default. [Implementation and measured corpus evidence](../runtime/README.md#opfs-corpus-measurements). | 600-1,000 |
 | 4a | **Processes.** Supervisor, process table, generic registry (module plus guest adapter), shared compiled modules, first-spawn stub, spawn/wait/kill/kill_job, jobs, per-signal dispositions and registration, immutable outcomes and revocation. Unhandled signals apply their default action immediately; handled signals retain the guest's own exit. Optional per-browser pool. Tests: delayed first activation while another shell task runs; one Ctrl+C stops an unhandled program with 130; a SIGINT handler exits 0 and keeps 0; removing it restores default; handled EPIPE retains its status. | 1,200-1,800 |
 | 4b | **Pipes.** Per-writer rings built from `SharedPipe`, reader merging, relay mode for multiple reading processes, reference counts, readiness, the `runtime_proc` imports. Tests: inherited concurrent writers, inherited readers, kill between a writer's check and publish, output queued before a kill still drained, a delayed publish after a kill never read, zero-length and partial I/O. | 1,000-1,500 |
 | 4c | **Process gate for the shell.** The own-shell spike's section 8 gate on real workers: external producer and consumer with a builtin filter, bounded flow and early reader close across workers, interrupt while WASM runs, descendant kill with reaping, an inherited nonstandard fd closed by the parent right after spawn, a background job surviving one command and controlled by the next. Runs against a preview1 fixture until the shell lands. | 500-800 |

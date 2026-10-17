@@ -4,12 +4,12 @@ let fs: SharedFilesystem | undefined;
 let worker: Worker | undefined;
 let next = 0;
 const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
-const state = { commitStarted: false, progress: "idle" };
+const state = { commitStarted: false, boundary: undefined as string | undefined, partialWrite: false, progress: "idle" };
 function direct(command: string, args?: unknown): Promise<any> {
   if (!worker) {
     worker = new Worker("./persistence-browser-worker.js", { type: "module" });
     worker.onmessage = ({ data }) => {
-      if (data.event === "persist-started") { state.commitStarted = true; return; }
+      if (data.event === "persist-started") { state.commitStarted = true; state.boundary = data.boundary; state.partialWrite = data.partialWrite === true; return; }
       if (data.event === "progress") { state.progress = data.value; return; }
       const request = pending.get(data.id);
       if (!request) return;
@@ -27,9 +27,9 @@ function direct(command: string, args?: unknown): Promise<any> {
 Object.assign(globalThis, {
   persistenceHarness: {
     state,
-    async open(name: string, persistence = true) {
+    async open(name: string, persistence = true, storage: "indexeddb" | "opfs" = "indexeddb") {
       fs?.dispose();
-      fs = new SharedFilesystem({ name, persistence });
+      fs = new SharedFilesystem({ name, persistence, storage });
       await fs.flush();
     },
     async write(path: string, bytes: number[]) { await fs!.writeFile(path, Uint8Array.from(bytes)); },
@@ -46,13 +46,8 @@ Object.assign(globalThis, {
       fs?.dispose(); fs = undefined;
       if (worker) { await direct("close"); worker.terminate(); worker = undefined; }
     },
-    async deleteDatabase(name: string) {
-      await new Promise<void>((resolve, reject) => {
-        const request = indexedDB.deleteDatabase(name);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-        request.onblocked = () => reject(new Error(`Cleanup blocked for ${name}`));
-      });
+    async deleteDatabase(name: string, storage: "indexeddb" | "opfs" = "indexeddb") {
+      await direct("deleteDatabase", { name, storage });
     },
   },
 });
