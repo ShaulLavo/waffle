@@ -17,6 +17,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-jsc/cpp/helpers.cpp`, finalizer dispatch](#jsc-finalizer-dispatch) | Host feature | Original adapter for full collection and deferred cleanup in the wasm event loop. |
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
+| [`crates/bunwasm-runtime/src/js/worker_threads.ts`](#worker-threads-adapter) | Host feature | Original adapter for main-thread worker metadata, endpoint-local closure, and same-guest message channels. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -1109,6 +1110,28 @@ constructor calls, class fields and source coordinates. The loader still
 looks up the same extension-free names. Existing `.js` sources remain raw. No TypeScript parser
 or typecheck is added to the wasm runtime.
 
+## Worker threads adapter
+
+`crates/bunwasm-runtime/src/js/worker_threads.ts` is an original implementation of
+the Node worker-thread main-thread contract and same-guest messaging. It uses the
+existing event loop, EventTarget, EventEmitter and structured clone on every engine.
+It replaces the web-only message channel stub. No upstream source was copied.
+
+The inspected upstream implementation is `src/js/node/worker_threads.ts` at Bun
+revision `9510e74152073d850a18758ca41114d8f214ffa6`. Its module initialization needs
+`Worker.cpp` native bindings and the native web-worker constructor, so it cannot
+run through the builtin loader with the hooks currently available.
+[Worker threads](worker-threads.md) records the supported operations and remaining
+guest-worker work. No vendor patch is needed for this adapter.
+
+The PR #31 review correction cancels future delivery tasks when a receiver closes,
+drops its pending messages, and asynchronously disentangles the pair and notifies its
+peer. Already-sent messages stay queued for an unstarted peer until synchronous
+receive or later delivery drains them, or the peer closes itself. The null peer
+link records a pending remote close. Queue consumers complete it without polling.
+`receiveMessageOnPort` accepts BroadcastChannel and returns `undefined` without
+consuming its messages, matching native Bun 1.4.2. Node 26.7.0 accepts the same
+argument but returns a queued message. No upstream implementation was copied.
 
 ### Round-5 native stream reflection and abort cleanup
 
