@@ -159,7 +159,8 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
         expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
         f.worker.emit(terminal);
       }
-      expect(rawExits).toEqual(order === "exit-first" ? [13] : []);
+      const expectedExits = (order === "exit-first" ? [13] : []).concat(origin === "after-binding" ? [126] : []);
+      expect(rawExits).toEqual(expectedExits);
       f.supervisor.exit(f.pid, 13);
       expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
       expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
