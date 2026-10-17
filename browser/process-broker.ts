@@ -262,10 +262,11 @@ export class BrowserProcessBroker {
       pid = parent;
     }
   }
-  revokeRuntimeProcess(pid: number): void {
-    // A root directory owns its publication registry. Revocation must never allocate an
-    // unrelated pid in every other directory (whose independent capacities are bounded).
+  revokeRuntimeProcess(pid: number, directoryId?: string): void {
+    // A root directory owns its publication registry. Rejected foreign identities cannot
+    // revoke an admitted or still-pending process that happens to use the same numeric PID.
     for (const [rootPid, transport] of this.roots) {
+      if (directoryId !== undefined && workerProcessDirectoryId(transport) !== directoryId) continue;
       if (workerProcessSlots(transport).some(slot => workerProcessState(transport, slot).pid === pid)) {
         this.registries.get(rootPid)?.revoke(pid);
         return;
@@ -292,7 +293,7 @@ export class BrowserProcessBroker {
     const existing = this.transport.getIdentity(state.pid);
     if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) return;
     requestSignal(state.signals, 9);
-    this.revokeRuntimeProcess(state.pid);
+    this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
     const identity = this.filesystem(transport);
     this.options.filesystem.revoke(identity);
     const codec = this.descriptorCodec(transport);
