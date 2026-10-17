@@ -26,3 +26,19 @@ and `browser/{process-broker,worker}.ts` port the generic part of
 `bed7084763154adc8bd33ee6d06eb48873eab559`, to the extracted runtime. Waffle retains
 its diagnostic hooks, quiescence fences and lazy adapters. The port adds a typed
 startup outcome and shell-facing wait translation without copying Bun or Node code.
+
+## Waffle landing page
+
+| Source | Class | Revision and local change |
+| --- | --- | --- |
+| `site/src/components/Landing.astro`, `site/src/scripts/landing.ts` | Adaptation | Owner-supplied `waffle-website.html`, SHA-256 `f845e81ca6cf60d3f832f88b48f4ceaf0a646c0237fe0f0dedfa31c680774383` (2026-10-18). The real landing page is extracted from the first nested bundle; its markup, copy, links and rendering formulas are ported to static Astro and vanilla TypeScript. The design-canvas wrapper, preview boards, decompression loader, React and custom component runtime are omitted. |
+| `site/src/scripts/waffle-scene.ts` | Adaptation | The same owner-supplied page's embedded `Waffle scene v2` implementation, asset UUID `10822c92-f196-44df-9869-57b07f16162b`. Scene geometry, shader math and interactions are retained; the global three.js r158 reference becomes named imports from the pinned `three@0.158.0` package and the source is a TypeScript module. Scene loading is deferred until after the first page paint. |
+| `site/scripts/*.ts`, optional bundle-analysis hook in `site/astro.config.ts` | Original adapter | Reference extraction, deterministic visual/native-visibility checks, performance diagnostics and bundle inspection written for this conversion. They do not ship the original bundler or React/DC runtime. |
+| `site/public/assets/THREE-LICENSE.txt` | Unchanged copy | `three@0.158.0` npm package `LICENSE`, upstream `mrdoob/three.js` tag `r158`. Full MIT copyright and permission notice retained separately from the minified runtime bundle; no text changes. |
+| `site/src/assets/*.woff2` | Unchanged copy | The owner's embedded Google Fonts latin subsets: Bricolage Grotesque v9, Fredoka v17 and Martian Mono v6. Bytes are unchanged, emitted through Astro with content hashes, and the full font notices from the supplied document are preserved in `site/public/assets/FONTS-LICENSE.txt`. Unused remote unicode subsets are omitted. |
+
+## Three.js license notice
+
+`site/public/assets/THREE-LICENSE.txt` is an unchanged copy of `LICENSE` from the pinned `three@0.158.0` npm package (upstream `mrdoob/three.js`, tag `r158`). It accompanies the bundled Three.js implementation because minification removes the module's short license header. The notice is published as a separate text asset without adding a runtime request.
+
+The supplied page has no bitmap images or video: its visuals are inline SVG, CSS and procedural WebGL. There are therefore no image transcoding changes. The original placeholder links and `© [YEAR]` text remain intentionally unchanged for exact reference parity.

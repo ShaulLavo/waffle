@@ -1,0 +1,21 @@
+---
+import Landing from '../components/Landing.astro';
+import bricolageUrl from '../assets/bricolage-grotesque.woff2?url';
+import fredokaUrl from '../assets/fredoka.woff2?url';
+import martianMonoUrl from '../assets/martian-mono.woff2?url';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Waffle is a WebAssembly runtime for programs that run and work together in the browser." />
+    <title>Waffle — a WebAssembly runtime for the browser</title>
+    <link rel="preload" href={bricolageUrl} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={fredokaUrl} as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href={martianMonoUrl} as="font" type="font/woff2" crossorigin />
+  </head>
+  <body>
+    <Landing />
+  </body>
+</html>
