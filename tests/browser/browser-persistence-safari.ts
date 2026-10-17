@@ -95,7 +95,7 @@ try {
   const owner = await request(`/session/${session}/window`);
   report.storageTests = await call("storageTests", { storage, filter: process.env.PERSIST_STORAGE_FILTER });
   assert.ok(report.storageTests.length > 0);
-  if (storage === "indexeddb" && !process.env.PERSIST_STORAGE_FILTER) assert.equal(report.storageTests.length, 13);
+  assert.deepEqual(report.storageTests, await call("storageTestNames", { storage, filter: process.env.PERSIST_STORAGE_FILTER }), "execute every registered storage case");
   const database = `bunwasm-step3c-${storage}-safari-${crypto.randomUUID()}`; databases.push(database);
   await harness("open", database, true, storage);
   await harness("mkdir", "/tree");
@@ -109,9 +109,20 @@ try {
   await harness("open", database, true, storage);
   assert.deepEqual(await harness("snapshot"), before); report.reload = true;
   const contender = await newWindow();
-  await assert.rejects(harness("open", database, true, storage), /writer|lock|occupied|already|in use/i);
-  await switchWindow(owner); await harness("destroy");
-  await switchWindow(contender); await harness("open", database, true, storage);
+  if (storage === "opfs") {
+    await assert.rejects(harness("open", database, true, storage), /writer|lock|occupied|already|in use/i);
+    await switchWindow(owner); await harness("destroy");
+    await switchWindow(contender); await harness("open", database, true, storage);
+  } else {
+    await harness("open", database, true, storage);
+    await switchWindow(owner);
+    const message = await evaluate("const end=Date.now()+15000;while(!persistenceHarness.state.ownershipLost){if(Date.now()>end)throw Error('ownership loss was not reported');await new Promise(r=>setTimeout(r,25));}return persistenceHarness.state.ownershipMessage;");
+    assert.match(message, /This workspace was opened in another tab. Reload to continue here./);
+    assert.match(message, /Unsaved changes in this tab weren't kept./);
+    await assert.rejects(harness("write", "/stale.bin", [1]), /opened in another tab/);
+    await assert.rejects(harness("flush"), /opened in another tab/);
+    await switchWindow(contender);
+  }
   assert.deepEqual(await harness("snapshot"), before);
   await harness("destroy"); await request(`/session/${session}/window`, "DELETE"); await switchWindow(owner);
   report.writerGate = true;

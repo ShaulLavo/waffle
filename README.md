@@ -357,10 +357,18 @@ and one metadata handle: a 97-handle total budget, below Safari's observed 253 l
 before opening a replacement. Custom cache/create limits must fit a conservative 192-handle ceiling.
 Transient exclusive-handle failures get bounded retries; quota errors report ENOSPC.
 
-One Web Lock is held for the storage connection's lifetime. Both backends use the same workspace
-lock name, so a second tab is refused even if it selects the other backend. It is not made a competing
-writer or stale read-only copy. Closing the first tab releases its lock. `name` selects a workspace;
-IndexedDB and OPFS have separate stored contents, so choosing OPFS does not migrate existing data.
+IndexedDB requests its workspace Web Lock with `steal: true`. The newest page increments a
+persisted epoch before loading the latest committed tree. Every commit checks that epoch in the
+same strict transaction as payloads, journals, snapshots and compaction. A stale writer aborts,
+drops queued persistence and reports ownership loss. The demo keeps its editor text visible for
+copying and explains that unsaved changes in that tab weren't kept. Previously acknowledged saves
+remain durable. This also recovers from Safari retaining an old worker in the back-forward cache.
+
+OPFS keeps a no-steal lifetime Web Lock because its native sync handles write outside IndexedDB
+transactions. Another OPFS page gets a complete diagnostic asking it to close the owning tabs,
+including pages kept in browser history. IndexedDB and OPFS have separate lock namespaces and
+stored contents; selecting another backend does not migrate data or revoke an OPFS writer.
+`name` selects a workspace.
 The explicit runtime option keeps IndexedDB the default and permits host policy without adding a
 second filesystem implementation. The demo query parameter is a reproducible, bookmarkable opt-in
 without a browser-wide setting or automatic migration. `SharedFilesystem({ persistence: false })`

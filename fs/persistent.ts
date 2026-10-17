@@ -293,6 +293,6 @@ export class PersistentBackend extends MemoryBackend {
     });
     return durable ? commit.then(() => this.storage.flush(flushKeys)) : commit;
   }
-  dispose(): void { this.stopped = true; if (this.timer !== undefined) clearInterval(this.timer); }
+  dispose(): void { this.stopped = true; this.checkpointEpoch++; if (this.timer !== undefined) clearInterval(this.timer); }
   async close(): Promise<void> { try { await this.flush(); } finally { this.dispose(); await this.storage.close(); } }
 }

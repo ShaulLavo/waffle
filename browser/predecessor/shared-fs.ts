@@ -1,4 +1,5 @@
 import { SharedFilesystem as RuntimeFilesystem, type SharedFilesystemOptions } from "@bun-wasm/runtime/browser/shared-fs";
+export { WORKSPACE_TAKEN_OVER, UNSAVED_CHANGES_LOST } from "@bun-wasm/runtime/browser/shared-fs";
 export type { Entry, SharedFilesystemOptions } from "@bun-wasm/runtime/browser/shared-fs";
 
 /** Bun owns its existing persistence namespace; the runtime supplies the filesystem service. */

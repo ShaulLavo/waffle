@@ -88,11 +88,11 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/net.js`, HTTP socket state](#http-socket-state) | Host feature | Original HTTP socket writability getter over the host connection state. |
 | [`crates/bunwasm-runtime/src/directory.rs`, `src/js/node_fs.js`, `web/src/engine-host.js`, directory cursors](#directory-cursors) | Host feature | Original directory handles, bounded reads, recursive traversal and Node Dir adapters. |
 | [Page-owned runtime and generic browser services](#waffle-preparation) | Host feature | Original runtime ownership, worker/executor, filesystem, terminal, network and preview adapters separated from Bun policy for Waffle extraction. |
-| [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
+| [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency, startup diagnostics and descriptor adapters. |
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
 | [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions including Node/Bun's ignored SIGPIPE default, immutable final-kind query and byte-sized exit statuses. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
-| [`runtime/fs/opfs.ts`, OPFS access-handle and quota adapters](#opfs-storage-adapter) | Host feature | Original one-file-per-payload storage adapter; adapts SLICC-kernel's Apache-2.0 `src/fs/opfs.ts` at 88c5bb3 for NotReadableError retries and QuotaExceededError mapping while retaining bun-wasm's checksummed snapshots, lazy index and bounded cache. |
+| [`runtime/fs/opfs.ts`, OPFS access-handle and quota adapters](#opfs-storage-adapter) | Host feature | Original one-file-per-payload storage adapter with guidance for occupied workspaces; adapts SLICC-kernel's Apache-2.0 `src/fs/opfs.ts` at 88c5bb3 for NotReadableError retries and QuotaExceededError mapping while retaining bun-wasm's checksummed snapshots, lazy index and bounded cache. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
 | [`web/src/native-stream-state.ts`](#native-browser-stream-completion) | Host feature | Original native completion bridge preserves host hooks on instances as well as prototypes. |
 | [Cross-platform web test adapters](#cross-platform-web-tests) | Host feature | Original scratch, child-process cleanup, command-deadline and existing-browser-cache adapters run the same assertions on Linux and macOS. |
@@ -332,6 +332,8 @@ handle retry loop for `NotReadableError`/`InvalidStateError` and its `QuotaExcee
 `ENOSPC` mapping are adapted here. The layout, snapshot recovery, Web Lock lifetime, lazy payload
 reads, browser-specific create concurrency and 64-handle cache are original bun-wasm behavior;
 no SLICC code is copied verbatim.
+The original Web Lock refusal now tells the user to close the owning tab and reload;
+lock acquisition and the adapted SLICC retry and quota behavior stay unchanged.
 
 ## Filesystem quiescence
 
@@ -523,6 +525,15 @@ Web Locks and lazy data hydration. Shared revision counters capture direct guest
 persisted data can leave the pool without changing inode identity. The editor adapters wait for
 a durable checkpoint before marking a save complete, seed workspaces once, and explicitly reset
 sandbox templates. `runtime/core/wasi.ts` routes both preview1 sync calls through this boundary.
+The original worker/controller adapters in `runtime/fs/service.ts` and `web/src/shared-fs.ts`
+now send startup failures as plain message and stack fields before revoking pending requests.
+Unprintable rejection reasons and throwing stack getters still produce a diagnostic, and a
+failed diagnostic transfer still dispatches the worker error fallback.
+The playground catches startup rejection, displays the complete diagnostic, and offers Reload.
+OPFS refuses an occupied Web Lock and explains how to release it. IndexedDB uses an original
+takeover adapter. A new holder steals the lock, allocates a persisted epoch, and checks that epoch
+inside every write transaction. A displaced page stops persistence and preserves visible editor text.
+These changes extend bun-wasm's own adapters at `b14f536f`; no upstream implementation is copied.
 The original persistence browser fixtures in `web/tests/persistence-browser-{main,worker}.ts`
 and their Playwright/Safari runners exercise these adapters without a wasm build. The corpus
 fixture retains only generated package-file sizes from the original local storage spike's

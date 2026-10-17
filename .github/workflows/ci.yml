@@ -28,69 +28,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: bun install --frozen-lockfile
-      - name: Runtime type check
-        run: node_modules/.bin/tsc -p ../crates/bunwasm-runtime/tsconfig.json
-      - name: Runtime emission and native type regressions
-        run: bun test ../scripts/runtime-emission.test.ts ../scripts/runtime-types.test.ts ../scripts/runtime-signal-dispatch.test.ts ../scripts/worker-codec.test.ts ../scripts/worker-selectors.test.ts ../scripts/worker-outcome.test.ts
-      - name: Install runtime and sandbox dependencies
-        run: |
-          bun install --cwd ../runtime --frozen-lockfile
-          bun install --cwd ../sandbox --frozen-lockfile
-      - name: Generate runtime Node modules and verify trusted Git packaging
-        run: |
-          bun run --cwd ../runtime build
-          bun test ../scripts/browser-build.test.ts ../scripts/runtime-installed.test.ts
-      - name: Unit tests (web, runtime and download accounting)
-        run: |
-          bun run test
-          bun test ../runtime/tests ../scripts/runtime-size.test.ts
-          PYTHONDONTWRITEBYTECODE=1 python3 ../scripts/test-bun-suite.py ProvenanceTests
-      - name: Type check
-        run: |
-          bun run check
-          bun x tsc -p tests/engine-interruption.tsconfig.json
-          bun run --cwd ../runtime check
-          bun run --cwd ../sandbox check
-      - name: Runtime bundle budgets and Bun light initial downloads (no WASM)
-        run: bun ../scripts/runtime-size.ts
+      - name: Web host unit, type and bundle gates
+        run: bash ../scripts/test-web-host.sh --unit
       - name: Install Chromium and WebKit
         run: bunx playwright install --with-deps chromium webkit
-      - name: Browser host smoke (no Rust or dist artifacts)
-        env:
-          SMOKE_PORT: "4179"
-        run: |
-          listeners=$(ss -H -ltn "sport = :$SMOKE_PORT")
-          test -z "$listeners"
-          bun run test:browser
-      - name: Scoped split-worker and classic service-worker smoke (no WASM)
-        env:
-          SPLIT_SMOKE_PORT: "4180"
-        run: bun tests/browser-splitting.mjs
-      - name: Native browser stream completion and abort
-        env:
-          PLAYWRIGHT: ${{ github.workspace }}/web/node_modules/playwright/index.mjs
-        run: node ../scripts/test-native-stream-interop.mjs
-      - name: Shared filesystem service and blocking worker adapter (no WASM)
-        env:
-          FS_SMOKE_PORT: "4181"
-        run: bun tests/browser-filesystem.ts
-      - name: IndexedDB persistence, durable saves and crash recovery (no WASM)
-        env:
-          PERSIST_SMOKE: "1"
-          PERSISTENCE_PORT: "4182"
-        run: bun tests/browser-persistence.ts chromium
-      - name: OPFS persistence, file fsync and crash recovery (no WASM)
-        env:
-          PERSIST_SMOKE: "1"
-          PERSIST_STORAGE: "opfs"
-          PERSISTENCE_PORT: "4182"
-        run: bun tests/browser-persistence.ts chromium
-      - name: Editor durable saves and template reset (no WASM)
+      - name: Web host browser gates
         env:
           EDITOR_SCRATCH_ROOT: ${{ runner.temp }}
-          EDITOR_PORT: "4183"
-        run: bun tests/browser-editor.ts chromium
+        run: bash ../scripts/test-web-host.sh --browser
 
   browser-process:
     name: Processes (${{ matrix.browser }})

@@ -85,18 +85,7 @@ describe("journal recovery", () => {
 });
 
 describe("single-writer acquisition", () => {
-  test("refuses an occupied lock before opening IndexedDB", async () => {
-    let opened = false;
-    const factory = { open() { opened = true; throw new Error("should not open"); } } as unknown as IDBFactory;
-    const locks: StorageLockManager = { async request(_name, options, callback) {
-      expect(options).toEqual({ mode: "exclusive", ifAvailable: true });
-      return callback(null);
-    } };
-    await expect(IndexedDBStorage.open("occupied", { indexedDB: factory, locks })).rejects.toThrow("writer");
-    expect(opened).toBe(false);
-  });
-
-  test("releases its writer lock when opening the database fails", async () => {
+  test("does not request a writer lock when opening the database fails", async () => {
     let held = false;
     const locks: StorageLockManager = { async request(_name, _options, callback) {
       held = true;

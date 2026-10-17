@@ -494,3 +494,35 @@ test("shared filesystem flush reports failed writes and permits later writes", a
   await fs.writeFile("/file", "second");
   await fs.flush();
 });
+
+test("sandbox Restart is available while the initial dev server is still running", async () => {
+  const source = await Bun.file(new URL("../../sandbox/src/main.ts", import.meta.url)).text();
+  const state = source.match(/^let startup:.*$/m)![0];
+  const listener = source.slice(source.indexOf('restartButton.addEventListener("click"'), source.indexOf("async function resetTemplate("));
+  const boot = source.slice(source.indexOf("async function boot("), source.indexOf("Object.assign(globalThis, { sandbox:"));
+  const initialization = deferred<void>(), launched = deferred<void>(), guest = deferred<void>();
+  let click = () => {}, starts = 0;
+  const failures: unknown[] = [];
+  const env = {
+    fs: { mkdirp: () => initialization.promise, lookup: async () => ({ kind: "file" }), listFiles: async () => [] },
+    restartButton: { addEventListener(_event: string, listener: () => void) { click = listener; } },
+    location: { reload() { throw new Error("A running server should restart without reloading the workspace"); } },
+    term: { write() {} }, setServerState() {}, setStatus() {},
+    loadTemplate: async () => {}, loadWasm: async () => ({}),
+    tree: { render: async () => {} }, editor: { open: async () => {} },
+    abs: (path: string) => path, rel: (path: string) => path, START_FILE: "src/App.tsx",
+    wasmUrl: "fixture.wasm", engine: "browser", ENGINES: { browser: { name: "browser" } }, WasmMissing: Error,
+    startDevServer() { starts++; launched.resolve(); return guest.promise; },
+    showStartupFailure: (error: unknown) => failures.push(error), reportError: (error: unknown) => failures.push(error),
+  };
+  new Function(...Object.keys(env), transpiler.transformSync(`${state}\nlet wasm = null;\n${listener}\n${boot}`))(...Object.values(env));
+  try {
+    click();
+    expect(starts).toBe(0);
+    initialization.resolve();
+    await launched.promise;
+    click();
+    expect(starts).toBe(2);
+    expect(failures).toEqual([]);
+  } finally { initialization.resolve(); guest.resolve(); }
+});

@@ -357,3 +357,69 @@ Pause the compatibility wave while the runtime PRs land in order, then resume it
   audit of `web/src`.
 - brush-web `plans/001-brush-dev-shell.md`, `plans/004-own-shell.md` and `docs/external-commands.md`.
 - Spike reports: `/work/reports/browser-runtime/spikes/`.
+
+## Safari workspace ownership
+
+Status: Approved. Implemented in PR #62, awaiting independent review.
+
+Safari can freeze a cached document's filesystem worker before pagehide or freeze cleanup can
+flush and release its Web Lock. A fresh page in the same tab then fails to open the workspace.
+The regression reproduced on desktop Safari 26.4 and iOS simulator Safari 26.5.
+
+IndexedDB now requests the workspace lock with `steal: true`. On acquisition, a strict IndexedDB
+transaction increments `metadata["epoch"]`. The new backend loads the current persisted tree;
+it never inherits the previous page's memory. Each commit reads its captured epoch in the same
+strict transaction that writes payloads, appends journals, swaps snapshots and deletes obsolete
+journal records or payloads during compaction. A stale epoch aborts the whole transaction.
+A transaction that committed before takeover remains part of the new owner's saved state.
+
+Loss of the Web Lock rejects its lifetime promise. The displaced storage owner aborts active
+transactions and rejects queued operations. Its worker disposes background checkpoints, reports
+ownership loss and closes; the page revokes the service and terminates the worker. Epoch fencing
+also rejects a stale writer that resumes before receiving the lock-loss notification. Editor text
+stays visible. The complete message says "This workspace was opened in another tab. Reload to
+continue here." It also explains that unsaved changes in that tab weren't kept and can be copied
+before reloading. Saves acknowledged before takeover remain durable.
+
+OPFS keeps `ifAvailable: true`, without stealing. Its writes use native sync access handles and
+cannot be fenced atomically by an IndexedDB transaction. An occupied OPFS workspace explains that
+a tab or browser-history page owns it and asks the user to close those tabs before reopening.
+IndexedDB uses a separate lock namespace so opening that backend cannot steal an OPFS lock.
+The runtime track, bun-wasm-a8, owns review of this persistence boundary.
+
+A cheap cache-header probe found `Cache-Control: no-store` ineffective on isolated localhost
+HTTP in both Safari versions. Over private HTTPS, responses with no-store returned a new
+document on Back on both platforms. The HTTPS proxy also injected no-store on the requested
+control response, so that probe has no cacheable HTTPS control. Static site document headers and
+`web/serve.ts` use no-store as a complement. Correctness still comes from fencing, verified while
+real Safari restores cached documents on localhost HTTP.
+
+`scripts/test-web.sh` runs the storage fencing and Chromium/WebKit lifecycle regressions.
+For real Safari, build the small fixture on the PC through the heavy queue:
+
+```sh
+export PATH=$HOME/.local/share/mise/shims:$PATH
+source env.sh
+bash /work/tmp/wave-heavy/run.sh --class light safari-lifecycle-assets -- env PATH="$PATH" \
+  bun web/tests/browser-filesystem-lifecycle.ts --build /work/tmp/bun-wasm-safari-assets
+```
+
+Copy the assets and `web/tests/browser-filesystem-lifecycle.ts` into an owned directory under
+Mac `~/tmp`. Reserve `~/tmp/.agent-mac-lock`, record the simulator's boot state and serve the
+assets on an explicit free localhost port with COOP same-origin and COEP require-corp. Run:
+
+```sh
+export PATH=$HOME/.local/share/mise/shims:$HOME/.bun/bin:$PATH
+SAFARI_DRIVER_PORT=43462 SAFARI_OUTPUT=desktop.json \
+  bun browser-filesystem-lifecycle.ts safari http://127.0.0.1:43463/
+SAFARI_IOS=1 SAFARI_DRIVER_PORT=43462 SAFARI_OUTPUT=ios.json \
+  bun browser-filesystem-lifecycle.ts safari http://127.0.0.1:43463/
+```
+
+The iOS check uses the booted iPhone 17 Pro simulator. Both platforms cover same-tab reopen,
+Reload, restoration of a displaced cached page, Reload after Back with no other tab, newest-wins
+two-tab ownership, preserved visible edits, durable saved files and OPFS no-steal recovery.
+Stop the server and driver, shut down only a simulator booted by the run, and remove transfers
+and the owned lock. Evidence remains under `/work/reports/bun-wasm-safari-fencing-2026-10-17/`
+until the coordinator resolves PR #62. Earlier rejected lifecycle approaches remain in
+`/work/reports/bun-wasm-safari-lifecycle-2026-10-17/` under the same cleanup owner.
