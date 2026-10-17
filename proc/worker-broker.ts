@@ -65,12 +65,14 @@ export class WorkerProcessBroker {
       this.supervisor = supervisor;
       if (!this.disposed) {
         const stopExit = supervisor.onChildExit(event => {
+          if (this.disposed) return;
           const transport = this.transports.get(event.pid);
           // The supervisor publishes exit only after revocation, descriptor cleanup and
           // its asynchronous host-work fence; process and job waits share that boundary.
           if (transport && !this.failedCleanup.has(event.pid)) { Atomics.store(workerProcessState(transport).confirmed, 0, 1); wakeWorkerProcess(transport); }
         });
         const stopQuiescent = supervisor.onProcessQuiescent(event => {
+          if (this.disposed) return;
           const transport = this.transports.get(event.pid);
           if (transport && !this.failedCleanup.has(event.pid)) confirmWorkerProcessJob(transport);
         });
@@ -205,13 +207,33 @@ export class WorkerProcessBroker {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    const cleanup = new Map<number, { complete: boolean }>();
+    for (const [pid, transport] of this.transports) {
+      const record = this.supervisor?.get(pid);
+      if (!record) continue;
+      const gate = { complete: !this.failedCleanup.has(pid) };
+      cleanup.set(pid, gate);
+      // Exit waiters resolve at the host-work fence even if the embedding immediately
+      // disposes the supervisor and clears its event listeners. Retain shared identity
+      // only, never descriptor tokens, adapter payloads, or the broker itself.
+      const identity: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot: transport.slot, bindings: [], resources: [] };
+      void this.supervisor!.waitForExit(record.parentPid, pid).then(() => {
+        if (!gate.complete) return;
+        Atomics.store(workerProcessState(identity).confirmed, 0, 1);
+        confirmWorkerProcessJob(identity);
+      });
+    }
     for (const transport of this.transports.values()) requestSignal(workerProcessState(transport).signals, 9);
     this.pump();
-    for (const transport of this.transports.values()) {
+    for (const [pid, transport] of this.transports) {
       if (transport.resources.length === 0) { wakeWorkerProcess(transport); continue; }
       const codec = this.codec(transport);
       for (const token of transport.resources) {
-        try { codec.discard(token); } catch (error) { this.report(error); }
+        try { codec.discard(token); } catch (error) {
+          const gate = cleanup.get(pid);
+          if (gate) gate.complete = false;
+          this.report(error);
+        }
       }
       wakeWorkerProcess(transport);
     }

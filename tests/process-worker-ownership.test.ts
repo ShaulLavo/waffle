@@ -57,12 +57,12 @@ function fakeCodec() {
     return { fd, counts: new Int32Array(state) };
   } };
 }
-function fixture(options: { capacity?: number; activate?: (supervisor: ProcessSupervisor) => Promise<ProcessSupervisor>; beforeActivation?(supervisor: ProcessSupervisor): void; quiesce?(pid: number): void | Promise<void>; rejectedQuiesce?(pid: number): void | Promise<void> } = {}) {
+function fixture(options: { capacity?: number; activate?: (supervisor: ProcessSupervisor) => Promise<ProcessSupervisor>; beforeActivation?(supervisor: ProcessSupervisor): void; terminate?(): void | Promise<void>; quiesce?(pid: number): void | Promise<void>; rejectedQuiesce?(pid: number): void | Promise<void> } = {}) {
   const transport = createWorkerProcessTransport({ capacity: options.capacity });
   const state = workerProcessState(transport);
   const registry = new ExecutableRegistry(); registry.register("fixture", { module: emptyModule, adapter: "preview1" });
   const contexts = new Map<number, ProcessContext>();
-  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, launch(context) { contexts.set(context.pid, context); return { terminate() {} }; } });
+  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, launch(context) { contexts.set(context.pid, context); return { terminate() { return options.terminate?.(); } }; } });
   supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
   options.beforeActivation?.(supervisor);
   const { codec, source } = fakeCodec();
@@ -628,4 +628,53 @@ test("worker transfer release follows published commit or failed cancellation co
   });
   expect(() => failed.spawn(1, request())).toThrow("publication failed");
   expect(order).toEqual(["commit", "release", "cancel", "failed-release"]);
+});
+
+test("broker disposal preserves safe confirmation after listener cleanup without awaiting physical termination", async () => {
+  let finishFence!: () => void, finishTermination!: () => void;
+  const fence = new Promise<void>(resolve => { finishFence = resolve; });
+  const termination = new Promise<void>(resolve => { finishTermination = resolve; });
+  let terminationStarted = false, physicallyTerminated = false;
+  const f = fixture({ quiesce: () => fence, terminate() {
+    terminationStarted = true;
+    return termination.then(() => { physicallyTerminated = true; });
+  } });
+  const pid = f.root.spawn(1, request()); await f.flush(); await f.supervisor.start(pid);
+  const transport = f.broker.get(pid)!;
+  const state = workerProcessState(transport);
+  try {
+    f.broker.dispose();
+    // Embeddings may immediately dispose their supervisor and remove every listener too.
+    f.supervisor.dispose();
+    expect(terminationStarted).toBe(true);
+    expect(physicallyTerminated).toBe(false);
+    expect(f.broker.get(pid)).toBeUndefined();
+    expect(f.broker.getIdentity(pid)).toBeUndefined();
+    expect(Atomics.load(state.confirmed, 0)).toBe(0);
+    expect(Atomics.load(state.jobConfirmed, 0)).toBe(0);
+    expect(f.root.wait(1, pid)).toBeNull();
+    const before = Atomics.load(state.wake, 0);
+    finishFence(); await fence; await Promise.resolve();
+    expect(physicallyTerminated).toBe(false);
+    expect(Atomics.load(state.confirmed, 0)).toBe(1);
+    expect(Atomics.load(state.jobConfirmed, 0)).toBe(1);
+    expect(Atomics.load(state.jobPending, 0)).toBe(0);
+    expect(Atomics.load(state.wake, 0)).toBeGreaterThan(before);
+    expect(f.root.wait(1, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+  } finally { finishFence(); finishTermination(); await termination; }
+});
+
+test("broker disposal remains unconfirmed when the host-work fence fails", async () => {
+  let failFence!: (error: unknown) => void;
+  const fence = new Promise<void>((_resolve, reject) => { failFence = reject; });
+  const f = fixture({ quiesce: () => fence });
+  const pid = f.root.spawn(1, request()); await f.flush();
+  const state = workerProcessState(f.broker.get(pid)!);
+  f.broker.dispose(); f.supervisor.dispose();
+  failFence(new Error("fence failed"));
+  await fence.catch(() => {}); await Promise.resolve();
+  expect(Atomics.load(state.confirmed, 0)).toBe(0);
+  expect(Atomics.load(state.jobConfirmed, 0)).toBe(0);
+  expect(f.root.wait(1, pid)).toBeNull();
+  expect(f.broker.getIdentity(pid)).toBeUndefined();
 });

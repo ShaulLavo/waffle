@@ -39,6 +39,7 @@ interface Child {
   request?: RunRequest;
   signal: number;
   acknowledged: boolean;
+  confirmed: boolean;
   closed: boolean;
   stopped: boolean;
   stopping?: Promise<void>;
@@ -266,13 +267,14 @@ export class SubprocessBroker {
     if (runtime && !this.runtimeChildren.get(event.pid)?.acknowledged) this.filesystem.revoke(this.runtimeFilesystem(runtime));
     const child = this.children.get(event.pid);
     if (child) {
+      child.confirmed = true;
       const refused = this.loaderErrors.get(child.spawn.executable);
       if (refused && !child.worker && event.result.kind === "exited" && event.result.code === 126) {
         childTransport(child.spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: ${child.spawn.executable}: ${refused}\n`));
       }
       childTransport(child.spawn.child).finish(event.result.status, event.result.kind === "signaled" ? event.result.code : undefined);
       if (!child.acknowledged) this.filesystem.revoke(child.spawn.filesystem);
-      if (!child.worker) this.children.delete(event.pid);
+      if (!child.worker || child.stopped) this.children.delete(event.pid);
     }
     const parent = supervisor.get(event.parentPid);
     // A live parent owns its waitable result until it closes the handle. Orphans have no
@@ -287,7 +289,7 @@ export class SubprocessBroker {
   spawn(spawn: SpawnRequest): void {
     if (this.disposed) { this.cancel(spawn); return; }
     this.rootTransport();
-    const child: Child = { spawn, signal: 0, acknowledged: false, closed: false, stopped: false };
+    const child: Child = { spawn, signal: 0, acknowledged: false, confirmed: false, closed: false, stopped: false };
     this.children.set(spawn.pid, child);
     // No import, compile, worker startup or wait is on the synchronous spawn path.
     void this.ready().then(supervisor => {
@@ -589,7 +591,9 @@ export class SubprocessBroker {
     child.stopped = true;
     child.worker?.terminate();
     this.cleanupCache(child);
-    this.children.delete(child.spawn.pid);
+    // Physical stop can precede supervisor confirmation on the same filesystem fence.
+    // Preserve handle-close ownership until exited() has used it to reap the safe result.
+    if (child.confirmed) this.children.delete(child.spawn.pid);
   }
   private stop(child: Child): void | Promise<void> {
     if (child.stopped) return;

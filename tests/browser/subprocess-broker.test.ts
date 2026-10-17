@@ -775,7 +775,7 @@ test("job readiness follows the real filesystem admitted-operation fence, not ju
   } finally { if (admitted) section!.exit(); state.dispose(); }
 });
 
-for (const acknowledged of [false, true]) test(`legacy closed background jobs release completion metadata after their fence (acknowledged ${acknowledged})`, async () => {
+for (const completion of ["acknowledged", "physical-first", "confirmation-first"] as const) test(`legacy closed background jobs release completion metadata (${completion})`, async () => {
   const barrier = quiescenceBarrier();
   const state = liveFixture({ quiesce: () => barrier.promise });
   try {
@@ -783,18 +783,31 @@ for (const acknowledged of [false, true]) test(`legacy closed background jobs re
     const pid = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
     await state.started(pid);
     const job = state.transports.get(pid)!.jobId;
-    if (acknowledged) state.workers.get(pid)!.exit(23);
-    else await state.broker.kill(pid, 9);
-    state.host.close(pid);
-    state.broker.close(1, pid);
-    await Promise.resolve();
-    if (!acknowledged) {
-      expect(supervisor.get(pid)!.result).toBeNull();
-      expect(supervisor.job(job)).toBeDefined();
-      barrier.release();
-      await timerTurn();
-    }
-    expect(supervisor.get(pid)).toBeUndefined();
-    expect(supervisor.job(job)).toBeUndefined();
+    const events: string[] = [];
+    const worker = state.workers.get(pid)!;
+    const terminate = worker.terminate.bind(worker);
+    worker.terminate = () => { events.push("physical"); terminate(); };
+    const unlisten = supervisor.onChildExit(event => { if (event.pid === pid) events.push("confirmed"); });
+    // Subscribe before close can reap the result, without tying confirmation to physical stop.
+    const confirmed = supervisor.waitForExit(1, pid);
+    try {
+      if (completion === "acknowledged") worker.exit(23);
+      else if (completion === "physical-first") await state.broker.kill(pid, 9);
+      else supervisor.kill(pid, 9);
+      state.host.close(pid);
+      state.broker.close(1, pid);
+      await Promise.resolve();
+      if (completion !== "acknowledged") {
+        expect(supervisor.get(pid)!.result).toBeNull();
+        expect(supervisor.job(job)).toBeDefined();
+        expect(events).toEqual([]);
+        barrier.release();
+      }
+      expect((await confirmed).status).toBe(completion === "acknowledged" ? 23 : 137);
+      await Promise.resolve();
+      expect(events).toEqual(completion === "physical-first" ? ["physical", "confirmed"] : ["confirmed", "physical"]);
+      expect(supervisor.get(pid)).toBeUndefined();
+      expect(supervisor.job(job)).toBeUndefined();
+    } finally { unlisten(); }
   } finally { barrier.release(); state.dispose(); }
 });
