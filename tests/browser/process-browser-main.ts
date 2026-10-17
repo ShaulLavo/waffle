@@ -17,6 +17,8 @@ globalThis.Worker = class extends NativeWorker {
   override terminate() { activeWorkers.delete(this); super.terminate(); }
 };
 const fs = new SharedFilesystem();
+// These own preview1 fixtures implement runtime_proc signal checkpoints directly and exercise
+// handled delivery. Third-party byte registrations are covered by browser-interrupt.ts.
 const modules = new Map<ProcessFixture, WebAssembly.Module>();
 function module(mode: ProcessFixture) { let result = modules.get(mode); if (!result) { result = new WebAssembly.Module(processFixture(mode)); modules.set(mode, result); } return result; }
 interface Child { host: SubprocessHost; handle: number; transport: ChildTransport; filesystem: FilesystemIdentity; stdout: string; stderr: string; }
@@ -73,13 +75,13 @@ try {
   await fs.mkdirp("/home/user"); await fs.flush();
   await test("generic-preview1-without-bun-slots", async () => {
     truth(WebAssembly.Module.imports(module("exit")).every(entry => entry.module === "runtime_proc" || entry.module === "wasi_snapshot_preview1"), "fixture must not import Bun slots");
-    const s = scope({ tiny: { module: module("exit"), adapter: "preview1" } });
+    const s = scope({ tiny: { module: module("exit"), adapter: "preview1", cooperative: true } });
     try { const child = s.spawn("tiny"); await exit(child, 0); equal(child.stdout, "ready\n", "preview1 stdout"); equal(child.stderr, "", "preview1 stderr"); }
     finally { s.dispose(); }
   });
   for (const [signal, status] of [[2, 130], [15, 143], [13, 141], [9, 137]]) {
     await test(`cpu-default-signal-${signal}-status-${status}`, async () => {
-      const s = scope({ spin: { module: module("default"), adapter: "preview1" } });
+      const s = scope({ spin: { module: module("default"), adapter: "preview1", cooperative: true } });
       try {
         const child = s.spawn("spin"); await ready(child);
         const recorded = s.broker.wait(child.transport.pid);
@@ -93,7 +95,7 @@ try {
     });
   }
   for (const mode of ["epipe", "epipe-ignored"] as const) await test(`${mode}-keeps-own-exit-42-not-SIGPIPE-141`, async () => {
-    const s = scope({ epipe: { module: module(mode), adapter: "preview1" } });
+    const s = scope({ epipe: { module: module(mode), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("epipe");
       // Close before async activation, guaranteeing the guest's ordinary fd_write sees EPIPE.
@@ -104,7 +106,7 @@ try {
   });
   for (const [mode, signal, status] of [["handled", 2, 0], ["handled-term", 15, 0], ["handled-term-23", 15, 23], ["handled-term-143", 15, 143], ["handled-pipe", 13, 42]] as const) {
     await test(`${mode}-signal-${signal}-keeps-own-exit-${status}`, async () => {
-      const s = scope({ handled: { module: module(mode), adapter: "preview1" } });
+      const s = scope({ handled: { module: module(mode), adapter: "preview1", cooperative: true } });
       try {
         const child = s.spawn("handled"); await ready(child); const recorded = s.broker.wait(child.transport.pid);
         equal(Atomics.load(new Int32Array(child.transport.signalState), signal), 2, "handler registered before readiness");
@@ -115,7 +117,7 @@ try {
     });
   }
   await test("ignored-PIPE-never-pends-or-revokes-and-guest-keeps-own-zero", async () => {
-    const s = scope({ ignored: { module: module("ignored-pipe"), adapter: "preview1" } });
+    const s = scope({ ignored: { module: module("ignored-pipe"), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("ignored"); await ready(child);
       const interruptBefore = Atomics.load(new Int32Array(child.transport.interrupt), 0);
@@ -130,7 +132,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("last-handler-removal-restores-default-for-next-INT", async () => {
-    const s = scope({ once: { module: module("removed"), adapter: "preview1" } });
+    const s = scope({ once: { module: module("removed"), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("once"); await ready(child);
       await s.broker.kill(child.transport.pid, 2);
@@ -143,7 +145,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("explicit-default-signal-remains-typed-signal-outcome", async () => {
-    const s = scope({ explicit: { module: module("explicit-default"), adapter: "preview1" } });
+    const s = scope({ explicit: { module: module("explicit-default"), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("explicit"); await ready(child); const recorded = s.broker.wait(child.transport.pid);
       await s.broker.kill(child.transport.pid, 2); await exit(child, 130);
@@ -151,7 +153,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("handled-INT-then-unrelated-trap-not-signal-default", async () => {
-    const s = scope({ trap: { module: module("handled-trap"), adapter: "preview1" } });
+    const s = scope({ trap: { module: module("handled-trap"), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("trap"); await ready(child); const recorded = s.broker.wait(child.transport.pid);
       await s.broker.kill(child.transport.pid, 2); await exit(child, 1);
@@ -159,7 +161,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("KILL-during-active-INT-handler-status-137", async () => {
-    const s = scope({ handler: { module: module("handling"), adapter: "preview1" } });
+    const s = scope({ handler: { module: module("handling"), adapter: "preview1", cooperative: true } });
     try {
       const child = s.spawn("handler"); await ready(child);
       equal(child.host.kill(child.handle, 2), 0, "guest SubprocessHost.kill publishes the shared request");
@@ -174,7 +176,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("mixed-job-members-apply-their-own-default-handled-ignored-dispositions", async () => {
-    const s = scope({ active: { module: module("handling"), adapter: "preview1" }, unhandled: { module: module("default"), adapter: "preview1" }, ignored: { module: module("ignored-int"), adapter: "preview1" } });
+    const s = scope({ active: { module: module("handling"), adapter: "preview1", cooperative: true }, unhandled: { module: module("default"), adapter: "preview1", cooperative: true }, ignored: { module: module("ignored-int"), adapter: "preview1", cooperative: true } });
     try {
       const parent = s.spawn("active", { job: 0 }); await ready(parent);
       const unhandled = s.spawn("unhandled", {}, parent), ignored = s.spawn("ignored", {}, parent);
@@ -200,7 +202,7 @@ try {
   await test("delayed-first-activation-does-not-block-other-shell-task", async () => {
     let release!: () => void; let activationCalls = 0;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const s = scope({ tiny: { module: module("exit"), adapter: "preview1" } }, { activate: async () => { activationCalls++; await gate; return import("../../runtime/proc"); } });
+    const s = scope({ tiny: { module: module("exit"), adapter: "preview1", cooperative: true } }, { activate: async () => { activationCalls++; await gate; return import("../../runtime/proc"); } });
     try {
       const child = s.spawn("tiny");
       equal(child.host.wait(child.handle), -2, "delayed spawn returns before activation");
@@ -212,12 +214,12 @@ try {
   });
   await test("shared-module-loader-compiles-once-for-concurrent-children", async () => {
     let loads = 0;
-    const s = scope({ tiny: { module: async () => { loads++; await pause(); return module("exit"); }, adapter: "preview1" } });
+    const s = scope({ tiny: { module: async () => { loads++; await pause(); return module("exit"); }, adapter: "preview1", cooperative: true } });
     try { const children = [s.spawn("tiny"), s.spawn("tiny")]; await Promise.all(children.map(child => exit(child, 0))); equal(loads, 1, "registry caches compiled module promise"); }
     finally { s.dispose(); }
   });
   await test("start-failures-are-asynchronous-127-and-126", async () => {
-    const s = scope({ broken: { module: async () => { throw new Error("deliberate executable load failure"); }, adapter: "preview1" }, unrunnable: { module: module("unrunnable"), adapter: "preview1" } });
+    const s = scope({ broken: { module: async () => { throw new Error("deliberate executable load failure"); }, adapter: "preview1", cooperative: true }, unrunnable: { module: module("unrunnable"), adapter: "preview1", cooperative: true } });
     try {
       const missing = s.spawn("missing"); const broken = s.spawn("broken"); const unrunnable = s.spawn("unrunnable");
       await Promise.all([exit(missing, 127), exit(broken, 126), exit(unrunnable, 126)]);
@@ -227,7 +229,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("foreground-descendants-reaped-background-survives-next-command", async () => {
-    const s = scope({ spin: { module: module("default"), adapter: "preview1" }, tiny: { module: module("exit"), adapter: "preview1" } });
+    const s = scope({ spin: { module: module("default"), adapter: "preview1", cooperative: true }, tiny: { module: module("exit"), adapter: "preview1", cooperative: true } });
     try {
       const foreground = s.spawn("spin", { job: 0 }); await ready(foreground);
       const descendant = s.spawn("spin", {}, foreground);
@@ -258,7 +260,7 @@ try {
     } finally { s.dispose(); }
   });
   await test("pids-never-reuse-when-budget-slot-recycles", async () => {
-    const s = scope({ tiny: { module: module("exit"), adapter: "preview1" } });
+    const s = scope({ tiny: { module: module("exit"), adapter: "preview1", cooperative: true } });
     try {
       let previous = 1; let initialSlot: number | undefined;
       for (let index = 0; index < 8; index++) {

@@ -10,6 +10,7 @@ import { HOST_CALL_FD, installHostSlots, installHostSlotsViaImport } from "./net
 import { Wasi, WasiExit, type Stream } from "@bun-wasm/runtime/core";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome.ts";
 import type { ProcessExit } from "../../runtime/proc/types.ts";
+import { fatalInterrupt } from "../../runtime/interrupt/check";
 import { SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "./subprocess.ts";
 
 export type Engine = "quickjs" | "jsc" | "browser";
@@ -17,6 +18,8 @@ export type Engine = "quickjs" | "jsc" | "browser";
 export interface RunRequest {
   engine: Engine;
   adapter?: "bun" | "preview1";
+  /** Loader-injected third-party checks trap only on a recorded fatal outcome. */
+  interruptible?: boolean;
   pid?: number;
   jobId?: number;
   identity?: SharedArrayBuffer;
@@ -241,7 +244,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     namespaces: {
       runtime_proc: {
         signal: (signal: number, mode: number) => subprocess?.signal(signal, mode) ?? -38,
-        interrupted: () => subprocess?.signal(0, 0) ?? 0,
+        interrupted: () => req.interruptible ? fatalInterrupt(outcome) : subprocess?.signal(0, 0) ?? 0,
         default_signal: defaultSignal,
       },
     },

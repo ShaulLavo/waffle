@@ -14,6 +14,7 @@ Each row has one class. A file with independent changes has separate rows.
 
 | Patch or source | Class | Change |
 | --- | --- | --- |
+| [Third-party interrupt instrumentation](#third-party-interrupt-instrumentation) | Host feature | Original TypeScript binary rewriter, content-addressed loader and rescued browser fixtures; module-internal countdowns avoid per-entry host calls. |
 | [`crates/bunwasm-jsc/cpp/helpers.cpp`, finalizer dispatch](#jsc-finalizer-dispatch) | Host feature | Original adapter for full collection and deferred cleanup in the wasm event loop. |
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
@@ -105,6 +106,36 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-imports) | Host feature | Original generated-function adapter with module-relative dynamic imports. |
 | [`src/js/bun_console_constructor.js`](#bun-console-constructor) | Port | Generate Bun's Console constructor with lexical engine-independent hooks. |
 | [`scripts/generate-bun-console.mjs`, `src/js/console_constructor.js`, global Console wiring](#bun-console-constructor) | Host feature | Original generation and runtime adapters expose the shared constructor and its streams. |
+
+## Third-party interrupt instrumentation
+
+**Class: Host feature (original adapter).** `runtime/interrupt/rewriter.ts`, `loader.ts` and
+`check.ts` are original TypeScript source, following the binary-format exploration in our
+2026-10-16 spike-5 prototype (`/work/reports/browser-runtime/spikes/5-interrupt-injection/rewriter.js`).
+The production implementation replaces the spike's unconditional function-entry host calls
+and per-activation loop sampling with one private module-global countdown shared by function
+entries and loop headers. It adds native pre/post validation, an explicit supported-feature
+allowlist, metadata refusal, a SHA-256 compiled-module cache and fatal-outcome-only host checks.
+Bun and the own shell remain cooperative programs and are not rewritten.
+
+Conceptual prior art (no implementation copied): DFINITY's
+[New WebAssembly instrumentation](https://medium.com/dfinity/new-webassembly-instrumentation-2c93631e5718)
+checks its internal instruction counter at reentrant function/loop entries; paritytech's
+[`wasm-instrument` gas metering](https://github.com/paritytech/wasm-instrument/tree/master/src/gas_metering)
+and Filecoin's `fvm-wasm-instrument` use internal mutable globals to avoid expensive per-block
+host calls. Our countdown counts cancellation checkpoints rather than instruction gas, does
+not meter blocks, and traps only after the supervisor has selected signal death.
+
+`runtime/tests/fixtures/interrupt-browser-loops.ts` adapts our own spike-5 `loops.wat` into a
+readable TypeScript binary generator, preserving its independent teardown-only rescue word.
+`interrupt-browser-workload.ts` freezes our own spike-5 `workload.c`/`workload.wasm` (2026-10-16),
+not third-party source. Source SHA-256:
+`d3eebbef9920faf0d12f3d2220e0425b80a9fc71f1919206103b3277724ec74c`; binary SHA-256:
+`08c117f62e1323401b32ad116c85eab45765a6cffedd68970547bbad462406c8`. It was compiled with wasi-sdk
+clang 23.1.0 / LLVM `895aa2c896ada719451be2e3673c83da8ddf1141`, `-O2 -nostdlib`, a WASI
+wasm32 target, exported memory and a 16 MiB maximum memory. Source comments preserve exact
+flags. The benchmark optionally takes the retained spike rewriter as an external input; it is
+bundled only into the disposable measurement app, never into the shipped runtime.
 
 ## Browser process service
 

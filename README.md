@@ -86,6 +86,45 @@ is measured separately and remains in the initial adapter closure until step 4b.
 are step 7a. Handled signals already dispatch during cooperative event-loop turns, while unhandled
 default actions are immediate and do not depend on those future engine hooks.
 
+## Interrupting third-party programs
+
+`./interrupt` exposes `rewriteInterrupts(bytes)` and `compileInterruptible(bytes)`. The latter
+validates, rewrites and compiles a preview1 module once per SHA-256 content hash; concurrent
+loads share the work and an LRU retains at most 16 compiled modules. Each process instantiates
+its own module-global countdown. No process state is cached with compiled modules.
+
+The rewriter inserts a private mutable i32 countdown at every defined function entry and loop
+header, including tail-call cycles. Every 4,096 checkpoints it resets the counter and calls
+`runtime_proc.interrupted()`. A nonzero result executes `unreachable`. The host supplies only
+an already recorded fatal signal to these injected checks; the supervisor's immutable outcome
+sets 130 for Ctrl+C or 143 for SIGTERM. A random trap is not reclassified as signal death.
+Cooperative programs keep their existing handled-signal delivery path.
+
+The page-side `SubprocessBroker` registers third-party preview1 executables with
+`{ adapter: "preview1", bytes }`, where `bytes` is a `Uint8Array` or an asynchronous loader.
+Compiled-only third-party registrations fail closed with a source-bytes diagnostic and status
+126. Our own Bun engines use `adapter: "bun"`; the own shell may explicitly assert
+`{ adapter: "preview1", cooperative: true, module }`. These are trusted host assertions, not
+filename exemptions: an arbitrary guest named `bun.wasm` is still rewritten when registered
+with source bytes. The compiler is dynamically loaded only when a third-party executable is
+resolved, so loading Bun light does not download the rewriter.
+
+Supported modules use the explicitly decoded core instruction/type/section set, including
+multi-value blocks, reference tables, bulk-memory operations and direct/indirect tail calls.
+Native validation runs before and after rewriting. Unsupported instructions or proposals,
+including SIMD, GC/typed references, exception handling, memory64, multiple memories and
+blocking atomic waits, are refused rather than passed through. The `runtime_proc` import
+namespace is reserved for the injected check; third-party programs requiring those process
+extensions must be cooperative programs reviewed by the host. Linking, relocation and dynamic
+linking metadata are refused. Other custom sections (including names and debugging offsets)
+are deliberately stripped because injection invalidates their offsets and function indices.
+
+This is a cancellation checkpoint policy, not instruction metering or a hard wall-clock
+execution limit. Large straight-line regions, memory growth, bulk operations or long host
+calls can delay a check. Hosts must expose only their trusted implementations of guest imports;
+imported uninstrumented Wasm functions or external table entries could otherwise escape the
+policy. `Worker.terminate()` remains a backstop; revocation is the shared-state safety boundary.
+
 ## Shared filesystem service
 
 One filesystem worker runs `installFilesystemWorker(self, backendFactory)` and owns the tree.

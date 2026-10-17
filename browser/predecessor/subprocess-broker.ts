@@ -10,10 +10,25 @@ import { childTransport } from "./subprocess.ts";
 import type { Engine, RunRequest, SpawnRequest, WorkerMessage } from "./worker";
 
 type Proc = typeof import("../../runtime/proc");
-export interface ExecutableRegistration {
-  module: WebAssembly.Module | (() => Promise<WebAssembly.Module>);
-  adapter: "bun" | "preview1";
-  engine?: Engine;
+type CompiledExecutable = WebAssembly.Module | (() => Promise<WebAssembly.Module>);
+export type ExecutableRegistration =
+  | { module: CompiledExecutable; adapter: "bun"; engine?: Engine }
+  // This is an assertion by the trusted host, never a filename-based exemption. Our own shell
+  // has engine/checkpoint support; renaming arbitrary third-party bytes to "bun" grants nothing.
+  | { module: CompiledExecutable; adapter: "preview1"; cooperative: true }
+  | { bytes: Uint8Array | (() => Uint8Array | Promise<Uint8Array>); adapter: "preview1"; cooperative?: false };
+
+function executableModule(entry: ExecutableRegistration, refused: (error: unknown) => void): CompiledExecutable {
+  if (entry.adapter === "bun" || entry.cooperative === true) return entry.module;
+  return async () => {
+    try {
+      if (!("bytes" in entry)) throw new TypeError("third-party preview1 executables require source bytes for interrupt instrumentation");
+      const bytes = typeof entry.bytes === "function" ? await entry.bytes() : entry.bytes;
+      if (!(bytes instanceof Uint8Array)) throw new TypeError("preview1 executable loader must return source bytes as Uint8Array");
+      const { compileInterruptible } = await import("../../runtime/interrupt/loader");
+      return await compileInterruptible(bytes);
+    } catch (error) { refused(error); throw error; }
+  };
 }
 interface Child {
   spawn: SpawnRequest;
@@ -31,6 +46,7 @@ export class SubprocessBroker {
   private disposed = false;
   private children = new Map<number, Child>();
   private registrations = new Map<string, ExecutableRegistration>();
+  private loaderErrors = new Map<string, string>();
   private activation?: Promise<ProcessSupervisor>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private root?: SignalTransport & { pid: number; job: number };
@@ -60,7 +76,8 @@ export class SubprocessBroker {
     return this.activation ??= (this.options.activate?.() ?? import("../../runtime/proc")).then(proc => {
       const registry = new proc.ExecutableRegistry();
       for (const [name, entry] of this.registrations) registry.register(name, {
-        module: entry.module, adapter: entry.adapter === "preview1" ? "preview1" : `bun:${entry.engine ?? "browser"}`,
+        module: executableModule(entry, error => this.loaderErrors.set(name, String(error))),
+        adapter: entry.adapter === "preview1" ? "preview1" : `bun:${entry.engine ?? "browser"}`,
       });
       const supervisor = new proc.ProcessSupervisor({ registry, launch: context => this.launch(context), onError: error => this.report(error) });
       supervisor.createRoot({ ...this.options.root, ...this.rootTransport() });
@@ -72,6 +89,10 @@ export class SubprocessBroker {
   private exited(supervisor: ProcessSupervisor, event: ChildExitEvent): void {
     const child = this.children.get(event.pid);
     if (child) {
+      const refused = this.loaderErrors.get(child.spawn.executable);
+      if (refused && !child.worker && event.result.kind === "exited" && event.result.code === 126) {
+        childTransport(child.spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: ${child.spawn.executable}: ${refused}\n`));
+      }
       childTransport(child.spawn.child).finish(event.result.status, event.result.kind === "signaled" ? event.result.code : undefined);
       if (!child.acknowledged) this.filesystem.revoke(child.spawn.filesystem);
       if (!child.worker) this.children.delete(event.pid);
@@ -116,9 +137,11 @@ export class SubprocessBroker {
     const spawn = child.spawn;
     child.context = context;
     const preview1 = context.adapter === "preview1";
+    const registration = this.registrations.get(spawn.executable);
+    const interruptible = registration?.adapter === "preview1" && registration.cooperative !== true;
     const engine = preview1 ? "browser" : context.adapter.slice(4) as Engine;
     const request: RunRequest = {
-      module: context.module, engine, adapter: preview1 ? "preview1" : "bun",
+      module: context.module, engine, adapter: preview1 ? "preview1" : "bun", interruptible,
       args: spawn.argv, env: { ...spawn.env, PWD: spawn.cwd },
       filesystem: this.filesystem.connect(spawn.filesystem), child: spawn.child,
       pid: spawn.pid, jobId: spawn.jobId, identity: spawn.child.identity, interrupt: spawn.child.interrupt,
