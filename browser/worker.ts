@@ -13,6 +13,8 @@ export interface RuntimeWorkerRequest {
   env: Record<string, string>;
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
+  /** Authoritative terminal word available before loading process adapters. */
+  outcome?: SharedArrayBuffer | BigInt64Array;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -60,7 +62,7 @@ export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = Runtime
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
-  outcome?: SharedArrayBuffer;
+  outcome?: SharedArrayBuffer | BigInt64Array;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
@@ -104,7 +106,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
-  let outcome = executor.outcome || isolated ? outcomeWord(executor.outcome) : null;
+  const sharedOutcome = req.outcome ?? executor.outcome;
+  let outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
   let requestedSignal: Int32Array | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -137,7 +140,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const settled = outcome ? readOutcome(outcome) : localOutcome;
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
-    const ownResult = ownSignal === undefined ? { kind: "exited" as const, code: ownCode } : { kind: "signaled" as const, code: ownSignal };
+    const startupFailure = "error" in result && !started;
+    const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? { kind: "start-failed", code: 13 }
+      : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
     // Generic commands select their winner before any reentrant cleanup callback. Legacy
     // transports still publish completion only after their buffered diagnostics and release.
     let winner = executor.complete ? settled : claim(ownResult);
@@ -154,6 +159,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (executor.complete && "error" in result && !settled) {
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
+    if (executor.complete && startupFailure) winner = claim(ownResult);
     const descriptorsReleased = attempt(() => wasi?.descriptors.dispose());
     const filesystemReleased = attempt(() => fs.dispose());
     if (!descriptorsReleased || !filesystemReleased) {

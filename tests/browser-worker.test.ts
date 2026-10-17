@@ -271,3 +271,16 @@ test("synchronous executor completion selects its outcome before queued guest mi
   } });
   expect(observed!).toMatchObject({ kind: "exited", code: 23 });
 });
+
+for (const complete of [false, true]) test(`startup failure selects typed EACCES before completion (legacy=${complete})`, async () => {
+  const outcome = new SharedArrayBuffer(8);
+  const missingStart = new WebAssembly.Module(new Uint8Array([
+    0,97,115,109,1,0,0,0,5,3,1,0,1,7,10,1,6,109,101,109,111,114,121,2,0,
+  ]));
+  const result = await fixture({ outcome,
+    complete: complete ? (code, signal) => claimOutcome(outcomeWord(outcome), signal === undefined ? { kind: "exited", code } : { kind: "signaled", code: signal }) : undefined,
+    run() { throw new Error("must not run"); },
+  }, { module: missingStart });
+  expect(readOutcome(outcomeWord(outcome))).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ code: 126 }]);
+});

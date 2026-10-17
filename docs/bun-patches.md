@@ -17,3 +17,12 @@ The sync-access retry fragment in `fs/opfs.ts` is adapted from SLICC-kernel `src
 ## Extraction provenance
 
 The history-preserving filter-repo commit map is kept outside the published tree with the cutover evidence. The extracted repository retains the rewritten commit history, including predecessor paths for the WASI shim, filesystem scaffold and memory views.
+
+## Typed process startup failures
+
+The original adapters in `proc/{types,outcome,wait-status,supervisor,abi,worker-client,worker-broker}.ts`
+and `browser/{process-broker,worker}.ts` port the generic part of
+[bun-wasm PR #65](https://github.com/ShaulLavo/bun-wasm/pull/65), reviewed at
+`bed7084763154adc8bd33ee6d06eb48873eab559`, to the extracted runtime. Waffle retains
+its diagnostic hooks, quiescence fences and lazy adapters. The port adds a typed
+startup outcome and shell-facing wait translation without copying Bun or Node code.

@@ -72,6 +72,7 @@ interface RuntimeChild {
   worker: Worker;
   acknowledged: boolean;
   failed: boolean;
+  started: boolean;
   stopped: boolean;
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
@@ -317,15 +318,16 @@ export class BrowserProcessBroker {
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
     const filesystem = this.filesystem(transport);
-    const request = { ...options.request, filesystem: this.options.filesystem.connect(filesystem), runtimeProcess: transport };
+    const request = { ...options.request, filesystem: this.options.filesystem.connect(filesystem), runtimeProcess: transport, outcome: context.outcome };
     let worker: Worker;
     try { worker = new Worker(options.workerUrl, { type: "module" }); }
     catch (error) { request.filesystem.port.close(); throw error; }
-    const child: RuntimeChild = { filesystem, context, worker, acknowledged: false, failed: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
+    const child: RuntimeChild = { filesystem, context, worker, acknowledged: false, failed: false, started: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
     this.children.set(context.pid, child);
     this.watch();
     context.registerRevocation(() => { this.revokeRuntimeProcess(context.pid); this.options.filesystem.revoke(filesystem); });
     worker.onmessage = ({ data }: MessageEvent<any>) => {
+      if (data.type === "phase" && data.name === "instantiate") child.started = true;
       const selected = readOutcome(context.outcome);
       if (data.type === "runtime-proc") {
         if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data, context.pid);
@@ -352,10 +354,16 @@ export class BrowserProcessBroker {
       if (data.cleanupErrors?.length) this.report(new Error(`Worker cleanup: ${data.cleanupErrors.join("; ")}`));
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal);
       else if (data.type === "exit") context.exit(data.code);
+      else if (!child.started) context.startFailed(new Error(data.message));
       else context.fail(new Error(data.message));
       this.stopSafely(child);
     };
-    worker.onerror = event => { event.preventDefault(); child.failed = true; context.fail(new Error(event.message)); this.stopSafely(child); };
+    worker.onerror = event => {
+      event.preventDefault(); child.failed = true;
+      if (!child.started) context.startFailed(new Error(event.message));
+      else context.fail(new Error(event.message));
+      this.stopSafely(child);
+    };
     try { worker.postMessage(request, [request.filesystem.port]); }
     catch (error) { child.failed = true; request.filesystem.port.close(); this.stopSafely(child); throw error; }
     return { terminate: () => this.stop(child) };

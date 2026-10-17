@@ -41,7 +41,7 @@ for (const failure of ["missing", "compile", "launch"] as const) test(`${failure
   } finally { supervisor.dispose(); }
 });
 
-test("a throwing startup diagnostic reports its error without replacing exit 126", async () => {
+test("a throwing startup diagnostic reports its error without replacing typed EACCES", async () => {
   const registry = new ExecutableRegistry();
   registry.register("custom", { module, adapter: "custom" });
   const startupError = new Error("launcher failed"), diagnosticError = new Error("diagnostic sink failed");

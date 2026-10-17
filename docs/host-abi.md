@@ -18,6 +18,9 @@ Process startup failures use a third atomic outcome tag. `ENOENT` carries code 2
 `EACCES` carries code 13, and both have `status: null`; ordinary exits 126 and 127
 remain ordinary exits. `runtime_proc.wait` and `wait_job` map the typed outcomes to
 127 and 126 while preserving the typed result for browser and host adapters.
+The initial worker request carries the authoritative outcome view before any
+dynamic process import. Startup errors select typed EACCES; failures after the
+worker's instantiate phase retain an ordinary execution exit.
 
 ## Network and preview
 

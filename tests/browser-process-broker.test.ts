@@ -528,3 +528,53 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
     expect(events).toEqual([diagnostic === "controller" ? "controller-diagnostic" : "diagnostic", "closed"]);
   } finally { source.dispose(); await broker.dispose(); }
 });
+
+for (const failure of ["first-import", "error-event", "running-error"] as const) test(`generic child ${failure} preserves startup versus execution failure`, async () => {
+  const { failFirstWorkerImport } = await import("./first-worker-import");
+  const previousWorker = globalThis.Worker;
+  const workers: FakeWorker[] = [], ports: MessagePort[] = [];
+  class FakeWorker {
+    request?: import("../browser/worker").RuntimeWorkerRequest;
+    onmessage: ((event: MessageEvent) => void) | null = null;
+    onerror: ((event: ErrorEvent) => void) | null = null;
+    constructor() { workers.push(this); }
+    postMessage(request: import("../browser/worker").RuntimeWorkerRequest) { this.request = request; }
+    terminate() {}
+    emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+  }
+  globalThis.Worker = FakeWorker as unknown as typeof Worker;
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("fixture", { adapter: "fixture", module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])) });
+  const broker = new BrowserProcessBroker({ identities, table, registry,
+    filesystem: { connect(identity) { const pair = connectFilesystemIdentity(identity); ports.push(pair.client.port, pair.server.port); return pair.client; },
+      revoke() {}, reap() {}, async quiesce() {} },
+    launch: context => broker.launchWorker(context, { workerUrl: "http://localhost/worker.js",
+      request: { module: context.module, args: [], env: {} } }),
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const messages: WorkerProcessMessage[] = [], descriptors = new DescriptorTable();
+  const host = new WorkerPipeHost({ transport: root, postMessage: message => messages.push(message) });
+  const client = new WorkerProcessClient({ transport: root, descriptors, codec: host.codec(),
+    postMessage: message => messages.push(message), prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }) });
+  try {
+    await broker.adoptRuntimeRoot(root);
+    const pid = client.spawn(client.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    for (const message of messages) await broker.runtimeMessage(message, client.pid);
+    const supervisor = await broker.ready();
+    await supervisor.start(pid);
+    const worker = workers[0]!;
+    if (failure === "first-import") await failFirstWorkerImport(worker.request!, data => worker.emit(data));
+    else {
+      if (failure === "running-error") worker.emit({ type: "phase", name: "instantiate", duration: 0 });
+      worker.onerror!({ preventDefault() {}, message: "worker rejected" } as ErrorEvent);
+    }
+    const result = await supervisor.waitForExit(client.pid, pid);
+    expect(result).toEqual(failure === "running-error" ? { kind: "exited", code: 126, status: 126 }
+      : { kind: "start-failed", code: 13, error: "EACCES", status: null });
+    expect(client.wait(client.pid, pid)).toEqual(result);
+  } finally {
+    descriptors.dispose();
+    try { await broker.dispose(); } finally { for (const port of ports) port.close(); globalThis.Worker = previousWorker; }
+  }
+});

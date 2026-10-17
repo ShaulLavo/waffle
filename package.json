@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.21",
+  "version": "0.0.22",
   "private": true,
   "type": "module",
   "exports": {
@@ -199,6 +199,13 @@
       "bun": "./proc/outcome.ts",
       "browser": "./proc/outcome.ts",
       "default": "./proc/outcome.ts"
+    },
+    "./proc/wait-status": {
+      "types": "./proc/wait-status.ts",
+      "node": "./dist/proc/wait-status.js",
+      "bun": "./proc/wait-status.ts",
+      "browser": "./proc/wait-status.ts",
+      "default": "./proc/wait-status.ts"
     },
     "./proc/pipes": {
       "types": "./proc/pipes.ts",
