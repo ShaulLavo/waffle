@@ -44,7 +44,7 @@ const filesystemCapabilities = {
   ownershipLost: "readonly", onOwnershipLost: "callback",
 } satisfies Record<keyof RuntimeFilesystem, CapabilityKind>;
 const processCapabilities = {
-  ready: "async", registerController: "method", reserveRoot: "method", adoptRoot: "async", adoptRuntimeRoot: "async",
+  ready: "async", registerController: "method", reserveRoot: "method", retainRoot: "method", adoptRoot: "async", adoptRuntimeRoot: "async",
   revokeRuntimeProcess: "method", runtimeMessage: "async", rejectRuntimeMessage: "method", transportFor: "method",
   releaseLegacyJob: "method", launchWorker: "method", kill: "async", killJob: "async", rootExit: "async",
 } satisfies Record<keyof ProcessService, CapabilityKind>;
@@ -119,6 +119,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
   let activation: Promise<ProcessService> | undefined;
   let disposal: Promise<void> | undefined;
+  let terminationFence: Promise<void> | undefined;
   let service: ProcessService | undefined;
   const assertLive = () => { if (disposed) throw new Error("Runtime is disposed"); };
   const borrowedFilesystem = borrow<RuntimeFilesystem>(filesystem, filesystemCapabilities, assertLive);
@@ -149,7 +150,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (program.cooperative !== undefined) throw new TypeError("Source bytes use interrupt admission, not cooperative module trust");
         if (!(source instanceof Uint8Array) && typeof source !== "function") throw new TypeError("Program source must provide Wasm bytes");
         const ownedSource = source instanceof Uint8Array ? new Uint8Array(source) : source;
-        executable = { adapter: program.adapter, module: async () => {
+        executable = { adapter: program.adapter, interruptible: true, module: async () => {
           assertLive();
           const bytes = typeof ownedSource === "function" ? await ownedSource() : ownedSource;
           if (!(bytes instanceof Uint8Array)) throw new TypeError("Program source loader must return Wasm bytes");
@@ -163,7 +164,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       } else {
         if (program.cooperative !== true) throw new TypeError("Compiled modules require cooperative: true");
         if (!(module instanceof WebAssembly.Module) && typeof module !== "function") throw new TypeError("Program module must provide a compiled WebAssembly.Module");
-        executable = { adapter: program.adapter, module };
+        executable = { adapter: program.adapter, interruptible: false, module };
       }
       programs.set(name, executable);
       registry?.register(name, executable);
@@ -194,7 +195,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
               let stopping: Promise<void> | undefined;
               const owned: ProcessHandle = { terminate() {
                 if (!stopping) {
-                  stopping = Promise.resolve().then(() => handle.terminate());
+                  stopping = Promise.resolve().then(async () => {
+                    // Suspension can ask the supervisor to stop a handle immediately. Its raw
+                    // consumer must stay alive until this page's admitted filesystem work fences.
+                    if (terminationFence) await terminationFence;
+                    return handle.terminate();
+                  });
                   void stopping.then(() => handles.delete(owned), () => {});
                 }
                 return stopping;
@@ -233,8 +239,13 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     dispose() {
       if (disposal) return disposal;
       disposed = true;
+      let releaseTermination!: () => void;
+      terminationFence = new Promise<void>(resolve => { releaseTermination = resolve; });
       const failures: unknown[] = [];
-      suspend(failures);
+      const throwFailures = () => {
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
+      };
       disposal = Promise.resolve().then(async () => {
         const attempt = async (operation: () => unknown) => {
           try { await operation(); } catch (error) { failures.push(error); }
@@ -249,10 +260,15 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         while (launching.size) await Promise.allSettled(Array.from(launching));
         await attempt(() => filesystem.drain());
         // Keep the backend and relays alive while every admitted filesystem request fences.
+        const failuresBeforeFences = failures.length;
         await Promise.all([
           attempt(() => host?.quiesce()),
           attempt(() => filesystem.quiesce(filesystem.client.connection)),
         ]);
+        // Rejection is not a proof of quiescence. Retain consumers, filesystem and the page
+        // guard until this page is destroyed rather than allowing a new owner to overlap them.
+        if (failures.length !== failuresBeforeFences) throwFailures();
+        releaseTermination();
         await Promise.all(Array.from(handles, handle => attempt(() => handle.terminate())));
         handles.clear();
         await attempt(() => host?.dispose());
@@ -261,9 +277,11 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         for (const name of programs.keys()) registry?.unregister(name);
         programs.clear();
         if (owners[ownerKey] === token) delete owners[ownerKey];
-        if (failures.length === 1) throw failures[0];
-        if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
+        throwFailures();
       });
+      // Publish the memoized promise before suspension invokes external revocation callbacks.
+      // Suspension itself remains synchronous so no new work can race teardown admission.
+      suspend(failures);
       return disposal;
     },
   };

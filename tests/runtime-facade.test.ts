@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { posix } from "node:path";
 import { createRuntime, type Runtime, type RuntimeOptions } from "../index";
 import { ProcessSupervisor } from "../proc/supervisor";
+import { FilesystemSection } from "../fs/protocol";
 import type { ProcessContext } from "../proc/types";
 
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
@@ -194,6 +195,12 @@ test("positive projections keep bound public methods, stable identity, and dispo
   const supervisor = await ready.call(null);
   expect(await service.ready()).toBe(supervisor);
   expect(service.ready).toBe(ready);
+  const reserved = service.reserveRoot({});
+  const retainRoot = Object.getOwnPropertyDescriptor(service, "retainRoot")!.value as typeof service.retainRoot;
+  const releaseRoot = retainRoot.call(null, reserved);
+  expect(typeof releaseRoot).toBe("function");
+  releaseRoot();
+  releaseRoot();
   const createRoot = Object.getOwnPropertyDescriptor(supervisor, "createRoot")!.value as typeof supervisor.createRoot;
   const pid = createRoot.call(null);
   expect(supervisor.get(pid)?.pid).toBe(pid);
@@ -205,6 +212,7 @@ test("positive projections keep bound public methods, stable identity, and dispo
   await runtime.dispose();
   expect(() => createIdentity()).toThrow(/disposed/i);
   expect(() => createRoot()).toThrow(/disposed/i);
+  expect(() => retainRoot(reserved)).toThrow(/disposed/i);
   await expect(ready()).rejects.toThrow(/disposed/i);
   await expect(filesystem.drain()).rejects.toThrow(/disposed/i);
 });
@@ -227,6 +235,22 @@ test("program registration stays lazy and accepts new programs after activation"
   await supervisor.start(sourced);
   expect(loads).toBe(1);
   expect(contexts[1]?.module).toBeInstanceOf(WebAssembly.Module);
+});
+
+test.each(["source", "cooperative"] as const)("program admission preserves %s interruption metadata in adapter context", async admission => {
+  const contexts: ProcessContext[] = [];
+  const runtime = create({ processHost: processHost() });
+  runtime.registerAdapter("test", context => { contexts.push(context); return { terminate() {} }; });
+  // The same executable name in successive runtimes must not carry another admission's policy.
+  runtime.registerProgram("app", admission === "source"
+    ? { adapter: "test", source: bytes }
+    : { adapter: "test", module: emptyModule, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(child);
+  expect(contexts).toHaveLength(1);
+  expect(contexts[0]!.interruptible).toBe(admission === "source");
 });
 
 test("duplicate program and adapter names and unknown adapters reject", () => {
@@ -311,6 +335,8 @@ test("disposal owns late adapter launch completion and asynchronous handle termi
   let releaseLaunch!: () => void;
   let releaseStop!: () => void;
   let entered!: () => void;
+  let enteredStop!: () => void;
+  const stopStarted = new Promise<void>(resolve => { enteredStop = resolve; });
   const launching = new Promise<void>(resolve => { entered = resolve; });
   const launchGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
   const stopGate = new Promise<void>(resolve => { releaseStop = resolve; });
@@ -319,7 +345,7 @@ test("disposal owns late adapter launch completion and asynchronous handle termi
   runtime.registerAdapter("delayed", async () => {
     entered();
     await launchGate;
-    return { terminate: async () => { stops++; await stopGate; } };
+    return { terminate: async () => { stops++; enteredStop(); await stopGate; } };
   });
   runtime.registerProgram("app", { adapter: "delayed", module: emptyModule, cooperative: true });
   const service = await runtime.processes();
@@ -337,12 +363,117 @@ test("disposal owns late adapter launch completion and asynchronous handle termi
     expect(() => create()).toThrow(/live|owner|runtime/i);
     releaseLaunch();
     await starting;
+    await stopStarted;
     expect(stops).toBe(1);
     expect(finished).toBe(false);
   } finally { releaseLaunch(); releaseStop(); }
   await disposal;
   expect(stops).toBe(1);
   expect(events.at(-1)).toBe("filesystem:stop");
+});
+
+test.each(["running", "late"] as const)("disposal fences default-host filesystem sections before stopping a %s custom adapter", async timing => {
+  const runtime = create();
+  const identity = runtime.filesystem.createIdentity();
+  let entered!: () => void;
+  let releaseLaunch!: () => void;
+  const admitted = new Promise<void>(resolve => { entered = resolve; });
+  const launchGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+  let stops = 0;
+  let active = false;
+  let stoppedDuringSection = false;
+  runtime.registerAdapter("test", async (context, service) => {
+    service.registerController(context.pid, { filesystem: identity });
+    entered();
+    if (timing === "late") await launchGate;
+    return { terminate() { stops++; stoppedDuringSection ||= active; } };
+  });
+  runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const starting = supervisor.start(child);
+  await admitted;
+  if (timing === "running") await starting;
+  // Simulate another worker still inside an admitted storage critical section.
+  const section = new FilesystemSection(identity);
+  section.enter();
+  active = true;
+  const disposal = runtime.dispose();
+  try {
+    releaseLaunch();
+    await starting;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(stops).toBe(0);
+    expect(events).not.toContain("filesystem:stop");
+    expect(() => create()).toThrow(/live|owner|runtime/i);
+  } finally { releaseLaunch(); active = false; section.exit(); }
+  await disposal;
+  expect(stops).toBe(1);
+  expect(stoppedDuringSection).toBe(false);
+  expect(events.at(-1)).toBe("filesystem:stop");
+});
+
+test("a custom adapter can stop normally before page disposal without a disposal fence", async () => {
+  let stops = 0;
+  const runtime = create({ processHost: processHost() });
+  runtime.registerAdapter("test", () => ({ terminate() { stops++; } }));
+  runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(child);
+  supervisor.exit(child, 0);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(stops).toBe(1);
+  await runtime.dispose();
+  expect(stops).toBe(1);
+});
+
+test("synchronous suspension callbacks observe the same already-published disposal promise", async () => {
+  let nested: Promise<void> | undefined;
+  const runtime = create();
+  const service = await runtime.processes();
+  service.reserveRoot({}, { revoke() { nested = runtime.dispose(); } });
+  const disposal = runtime.dispose();
+  expect(nested).toBe(disposal);
+  await disposal;
+  expect(events.filter(event => event === "filesystem:stop")).toHaveLength(1);
+});
+
+test("a rejected disposal fence retains consumers, relays, filesystem ownership, and the page guard", async () => {
+  // Fence failure intentionally retains ownership until the page is destroyed. Use an isolated
+  // process as that page, then destroy it in finally rather than deleting a live owner's guard.
+  const script = `
+    import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
+    import { ProcessSupervisor } from ${JSON.stringify(new URL("../proc/supervisor.ts", import.meta.url).href)};
+    let filesystemStops = 0, consumerStops = 0, relayStops = 0;
+    globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() { filesystemStops++; } };
+    const runtime = createRuntime({ filesystem: { persistence: false, workerURL: "https://example.test/fs.js" }, processHost: options => {
+      const supervisor = new ProcessSupervisor({ registry: options.registry, table: options.table, launch: options.launch });
+      return { ready: async () => supervisor, suspend: () => supervisor.dispose(),
+        quiesce: async () => { throw new Error("fence failed"); }, dispose: async () => { relayStops++; } };
+    } });
+    runtime.registerAdapter("test", () => ({ terminate() { consumerStops++; } }));
+    runtime.registerProgram("app", { adapter: "test", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), cooperative: true });
+    const supervisor = await (await runtime.processes()).ready();
+    const root = supervisor.createRoot();
+    const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    await supervisor.start(child);
+    const disposal = runtime.dispose();
+    let error;
+    try { await disposal; } catch (failure) { error = failure.message; }
+    let guardHeld = false;
+    try { createRuntime(); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
+    console.log(JSON.stringify({ error, filesystemStops, consumerStops, relayStops, guardHeld, sameDisposal: runtime.dispose() === disposal }));
+    process.exit(0);
+  `;
+  const page = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([page.exited, new Response(page.stdout).text(), new Response(page.stderr).text()]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(JSON.parse(stdout)).toEqual({ error: "fence failed", filesystemStops: 0, consumerStops: 0, relayStops: 0, guardHeld: true, sameDisposal: true });
+  } finally { page.kill(); await page.exited; }
 });
 
 test("facade initial browser graph keeps process services and interrupt compilation lazy", async () => {

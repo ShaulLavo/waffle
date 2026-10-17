@@ -34,7 +34,12 @@ Generic preview1 worker bootstrap is exported separately from Bun's executor.
 
 Only one runtime may be live per page, including across duplicate bundles. Construction and
 ordered idempotent disposal retain that ownership guard until all owned cleanup completes.
-Disposal stops admission and reaches filesystem quiescence before closing the filesystem worker.
+Disposal stops admission and reaches filesystem quiescence before stopping consumers and closing
+the filesystem worker. If a quiescence fence rejects, disposal fails closed: unsafe consumers,
+relays, filesystem ownership and the page ownership guard remain held. Repeated `dispose()` calls
+return the same rejected promise. Recover by destroying the page, not by creating a replacement
+runtime while the old services may still be active. Cleanup errors after successful fences still
+allow the remaining owned cleanup to finish.
 Do not call `dispose()` when merely closing a run or a shell.
 
 `./browser/shared-fs`, `./browser/runtime-terminals`, `./browser/net/*`, and the explicit preview,
