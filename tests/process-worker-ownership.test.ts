@@ -103,6 +103,29 @@ test("worker spawn synchronously retains arbitrary bindings across lazy activati
   expect(counts[1]).toBe(2);
 });
 
+test("worker spawn validates both fd bindings within the signed WASM success range before exporting", async () => {
+  const f = fixture();
+  const table = f.root.options.descriptors;
+  const { fd, counts } = f.source(table);
+  for (const invalid of [0x80000000, 0xffffffff, -1, 1.5, NaN]) {
+    for (const binding of [{ child: invalid, parent: fd }, { child: 3, parent: invalid }]) {
+      let error: unknown;
+      try { f.root.spawn(1, request({ fds: [binding] })); } catch (caught) { error = caught; }
+      expect(error).toMatchObject({ name: "ProcessError", errno: 28 });
+      expect(counts[0]).toBe(1);
+      expect(f.messages.length).toBe(0);
+    }
+  }
+  table.inherit(0x7fffffff, table.get(fd)!);
+  const pid = f.root.spawn(1, request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }));
+  await f.flush();
+  const child = f.client(f.broker.get(pid)!); child.installBindings();
+  const duplicate = child.options.descriptors.dup(0x7fffffff);
+  expect(duplicate).toBeGreaterThanOrEqual(0);
+  expect(duplicate).toBeLessThanOrEqual(0x7fffffff);
+  expect(child.options.descriptors.get(duplicate)!.description).toBe(child.options.descriptors.get(0x7fffffff)!.description);
+});
+
 test("duplicate inherited bindings share one exported lifetime and one child description", async () => {
   const f = fixture();
   const { fd, counts } = f.source(f.root.options.descriptors);

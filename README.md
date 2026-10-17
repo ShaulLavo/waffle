@@ -96,10 +96,10 @@ The generic service's registry, process table and supervisor are dynamically imp
 spawn. Small identity, typed-outcome and signal-state leaves are available earlier for synchronous
 root control; importing them must not pull in the service barrel. The bundle gate checks both this
 boundary and the approximately 1 KiB compressed first-spawn stub. Bun's existing pipe/slot transport
-is measured separately and remains in the initial adapter closure until step 4b. The unified
-`runtime_proc` descriptor/pipe imports are also step 4b; CPU-bound QuickJS/JSC interrupt checkpoints
-are step 7a. Handled signals already dispatch during cooperative event-loop turns, while unhandled
-default actions are immediate and do not depend on those future engine hooks.
+is measured separately and remains available alongside the lazy generic process adapters.
+CPU-bound QuickJS/JSC interrupt checkpoints are step 7a. Handled signals already dispatch during
+cooperative event-loop turns, while unhandled default actions are immediate and do not depend
+on those future engine hooks.
 
 ## Process-owned pipes
 
@@ -136,6 +136,40 @@ between bounded batches so kill and exit messages cannot be starved by continuou
 only after every endpoint lifetime is closed or revoked, including pending transfers. Readers
 may still drain data after writer EOF. Worker-created controllers use manual relay mode; only
 a responsive controller starts the automatic relay.
+
+## Guest process ABI
+
+`ProcessABI` is exported from `@bun-wasm/runtime/proc`. Install its `imports` as the
+`runtime_proc` namespace alongside preview1, using the same `wasi.descriptors` table and memory.
+The browser loads this adapter lazily for modules importing the extended process interface;
+`adapter: "preview1"` runs a generic WASI executable without Bun's slot adapter. Existing Bun
+slots and the signal-only preview1 path remain available.
+
+Every call is nonblocking except `poll`. Descriptor I/O returns a byte count, zero for EOF or
+zero-length I/O, or a negative WASI errno; a partial write is permitted. EAGAIN is -6 and EPIPE
+is -64. Spawn reserves inherited capabilities before returning the child PID.
+
+| Import | Contract |
+| --- | --- |
+| `spawn(ptr, len)` | UTF-8 JSON `{ executable, argv, env, cwd, job, fds: [{ child, parent }] }`; job 0 creates a foreground job, -1 creates a background job, and a positive value joins an existing job. Returns PID or negative errno. |
+| `pipe(out)` | Writes two little-endian u32 fds, reader then writer; returns 0. |
+| `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
+| `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
+| `wait(pid, out)` | Returns 0 and writes u32 kind (0 exited, 1 signaled), then i32 code; returns EAGAIN before confirmed cleanup. |
+| `kill(pid, sig)`, `kill_job(job, sig)` | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner. |
+| `job_of(pid)` | Returns the job ID or negative errno. |
+| `poll(subs, count, timeout_ms, out)` | Returns event count; 0 on timeout or a pending signal. Timeout -1 has no deadline. |
+| `interrupted()`, `signal(sig, mode)`, `default_signal(sig)` | Share the existing signal queue and dispositions; default actions unwind with `ProcessSignalExit`, distinct from an unrelated WASM trap. |
+
+Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
+u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),
+writable fd (1), child exit (2), and filesystem completion (3); flag bit 0 means hangup.
+Signals wake poll without being consumed. Pipe publication notifies a shared readiness sequence;
+independent signal, local child and filesystem sources are also rescanned within 10 ms until
+all publishers guarantee the same wake address. The wait hook receives the sequence observed
+before scanning, preserving publications that race the scan. Terminal adapters must expose
+`tryRead`/`tryWrite` for directions that are safe to call without blocking; the ABI never calls
+a preview1 blocking stdin callback accidentally.
 
 ## Shared filesystem service
 
@@ -260,10 +294,11 @@ the run finishes or traps.
 Pipe and terminal services implement `Stream`. I/O returns bytes or negative WASI errno; readiness
 is level-triggered readable/writable/hang-up state. `poll_oneoff` rechecks blocked descriptors,
 reports expired clocks alongside ready fds, and reports per-event capability/descriptor errors.
-The synchronous host uses bounded sleeps while waiting; process services can later add shared
-wakeups. Inject bound endpoints through `stdio` to replace the default terminal descriptions.
-The existing Bun child transport still owns cross-process pipe closure until the process layer
-supplies inherited endpoint reference counts.
+The synchronous host waits directly on a single shared stream notification, preserving the
+sequence observed before scanning. Distinct notification sources use bounded rescans; signal
+interrupts return EINTR without consuming the queued signal. Inject bound endpoints through
+`stdio` to replace the default terminal descriptions. Generic process endpoints supply inherited
+reference counts; Bun's existing child transport remains available through its slot adapter.
 
 Imports are limited to implemented `wasi_snapshot_preview1` names and explicit `namespaces`.
 An unknown namespace/name fails at linking, rather than receiving a fabricated ENOSYS stub.

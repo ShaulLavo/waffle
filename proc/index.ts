@@ -22,3 +22,5 @@ export { PipeController, PipeEndpoint, PipePublicationRegistry, PipeErrno, attac
 export type { PipeMode, PipeOptions, PipeEndpointHandle, PipePublicationRegistryHandle } from "./pipes";
 export { WorkerPipeHost, WorkerPipeBroker, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "./worker-pipes";
 export type { WorkerPipeDescriptorToken, WorkerPipeCodecOptions, WorkerPipeHostOptions, WorkerPipeBrokerOptions } from "./worker-pipes";
+export { ProcessABI, ProcessSignalExit } from "./abi";
+export type { ProcessService, ProcessABIOptions } from "./abi";

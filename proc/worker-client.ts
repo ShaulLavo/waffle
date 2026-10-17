@@ -1,4 +1,4 @@
-import { DescriptorTable, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
+import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
 import { ProcessIdentityAllocator } from "./identity";
 import { claimOutcome, readOutcome } from "./outcome";
 import { requestSignal, type SignalTransport } from "./signals";
@@ -145,7 +145,7 @@ export class WorkerProcessClient {
     if (parentPid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const fds = new Set<number>();
     const sources = request.fds.map(binding => {
-      if (!Number.isInteger(binding.child) || binding.child < 0 || binding.child > 0xffffffff || fds.has(binding.child)) throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
+      if (!Number.isInteger(binding.child) || binding.child < 0 || binding.child > MAX_DESCRIPTOR || !Number.isInteger(binding.parent) || binding.parent < 0 || binding.parent > MAX_DESCRIPTOR || fds.has(binding.child)) throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
       fds.add(binding.child);
       const source = this.options.descriptors.get(binding.parent);
       if (!source) throw new ProcessError(ProcessErrno.BADF, "missing inherited descriptor");

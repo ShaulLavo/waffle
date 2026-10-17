@@ -35,6 +35,13 @@ export class FilesystemCompletion {
     this.client.completions.delete(this.id);
     if (!this.client.completions.size) wake(this.client.connection);
   }
+  /** Release a ready result that the caller does not need, while still delivering failures.
+   * This never waits, decodes bytes or requests an overflow transfer. */
+  releaseReady(): void {
+    if (!this.ready) throw new FilesystemError(6);
+    try { this.check(); this.consumed = true; }
+    finally { this.release(); }
+  }
   private check(): void {
     if (isRevoked(this.client.connection) || this.cells[6] || this.cells[0] === State.Cancelled) throw new FilesystemError(11);
     if (this.cells[0] === State.Failed) throw new FilesystemError(this.cells[3]!);
@@ -109,6 +116,9 @@ export class FilesystemClient implements FileSystem {
   // Shared slots of open regular files: a live handle never changes slot, and direct I/O
   // rechecks the slot's handle under its file lock.
   private fileSlots = new Map<number, number>();
+  // Preparation owns no guest buffers and never writes file bytes. Only a successful try* retry
+  // commits I/O; the pending grow request merely loads data and reserves capacity.
+  private ioPreparations = new Map<number, FilesystemCompletion>();
   private capabilityEntries = new Map<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
@@ -196,7 +206,7 @@ export class FilesystemClient implements FileSystem {
     if (!wasClosed) {
       const count = this.openHandles.get(reservation.handle) ?? 0;
       if (count > 1) this.openHandles.set(reservation.handle, count - 1);
-      else { this.openHandles.delete(reservation.handle); this.fileSlots.delete(reservation.handle); }
+      else { this.openHandles.delete(reservation.handle); this.fileSlots.delete(reservation.handle); this.cancelIO(reservation.handle); }
     }
     this.connection.port.postMessage({ trim: true });
     this.sweep();
@@ -230,7 +240,7 @@ export class FilesystemClient implements FileSystem {
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
     for (const completion of this.completions.values()) completion.cancel();
-    this.completions.clear(); this.reads.clear(); this.stats.clear(); this.paths.clear(); this.readdirs.clear(); this.openHandles.clear(); this.fileSlots.clear(); this.capabilityEntries.clear();
+    this.completions.clear(); this.ioPreparations.clear(); this.reads.clear(); this.stats.clear(); this.paths.clear(); this.readdirs.clear(); this.openHandles.clear(); this.fileSlots.clear(); this.capabilityEntries.clear();
     this.sweep(); this.connection.port.close();
   }
   private version(): number {
@@ -285,13 +295,13 @@ export class FilesystemClient implements FileSystem {
     try { this.section.enter(); }
     catch (error) {
       if (!(error instanceof FilesystemError) || error.errno !== 11) throw error;
-      this.openHandles.delete(handle); this.fileSlots.delete(handle); return;
+      this.openHandles.delete(handle); this.fileSlots.delete(handle); this.cancelIO(handle); return;
     }
     try {
       const count = this.openHandles.get(handle) ?? 0;
       if (!count) throw new FilesystemError(8);
       const key = this.capabilityEntries.get(handle)!;
-      if (count > 1) this.openHandles.set(handle, count - 1); else { this.openHandles.delete(handle); this.fileSlots.delete(handle); }
+      if (count > 1) this.openHandles.set(handle, count - 1); else { this.openHandles.delete(handle); this.fileSlots.delete(handle); this.cancelIO(handle); }
       // Keep linked zero-reference capabilities as a bounded cache. dropReference queues any
       // needed detached-file/budget trim without waiting for a worker acknowledgment.
       this.dropReference(key);
@@ -309,6 +319,85 @@ export class FilesystemClient implements FileSystem {
   private directFailure(handle: FileHandle, error: unknown): number {
     if (error instanceof FilesystemError && error.errno === 8) this.fileSlots.delete(handle);
     return errno(error);
+  }
+  private cancelIO(handle: FileHandle): void {
+    const completion = this.ioPreparations.get(handle);
+    if (!completion) return;
+    this.ioPreparations.delete(handle);
+    completion.release();
+  }
+  private preparedIO(handle: FileHandle): boolean {
+    const completion = this.ioPreparations.get(handle);
+    if (!completion) return true;
+    if (!completion.ready) return false;
+    this.ioPreparations.delete(handle);
+    // Inspect shared completion state even while poll owns the worker, before the port callback
+    // can run. No wait(), async continuation or overflow transfer is needed for preparation.
+    completion.releaseReady();
+    return true;
+  }
+  private prepareIO(handle: FileHandle, size: number): void {
+    if (!this.ioPreparations.has(handle)) this.ioPreparations.set(handle, this.submit("grow", [handle, size]));
+  }
+  /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
+  tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (!(offset >= 0)) return -28;
+    try {
+      if (!this.preparedIO(handle)) return -6;
+      const slot = this.directSlot(handle);
+      if (!slot) return -8;
+      return this.shared.directRead(slot, handle, chunks, offset, this.revoked, this.connection.owner, true);
+    } catch (error) {
+      if (error instanceof MissingDataError || error instanceof MissingSegmentError) {
+        try { this.prepareIO(handle, 0); return -6; } catch (failure) { return -errno(failure); }
+      }
+      return -this.directFailure(handle, error);
+    }
+  }
+  tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (!(offset >= 0)) return -28;
+    try {
+      if (!this.preparedIO(handle)) return -6;
+      const slot = this.directSlot(handle);
+      if (!slot) return -8;
+      chunks = fixedWriteSources(chunks);
+      const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
+      const written = this.shared.directWrite(slot, handle, chunks, offset, total, this.epoch, this.revoked, this.connection.owner, true);
+      if (written !== undefined) return written;
+      this.prepareIO(handle, offset + total);
+      return -6;
+    } catch (error) { return -this.directFailure(handle, error); }
+  }
+  tryAppend(handle: FileHandle, chunks: readonly Uint8Array[]): { written: number; offset: number } | number {
+    try {
+      if (!this.preparedIO(handle)) return -6;
+      const slot = this.directSlot(handle);
+      if (!slot) return -8;
+      chunks = fixedWriteSources(chunks);
+      const total = chunks.reduce((size, chunk) => size + chunk.length, 0);
+      const result = this.shared.directAppend(slot, handle, chunks, total, this.epoch, this.revoked, this.connection.owner, true);
+      if (typeof result !== "number") return result;
+      this.prepareIO(handle, result);
+      return -6;
+    } catch (error) { return -this.directFailure(handle, error); }
+  }
+  ioReadiness(handle: FileHandle, writing: boolean): { readable: boolean; writable: boolean; hangup: boolean } {
+    const pending = this.ioPreparations.get(handle);
+    // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
+    // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
+    if (this.revoked()) return { readable: true, writable: true, hangup: true };
+    if (pending && !pending.ready) return { readable: false, writable: false, hangup: false };
+    if (pending && (pending.cells[0] === State.Failed || pending.cells[0] === State.Cancelled)) return { readable: true, writable: true, hangup: false };
+    try {
+      if (!this.preparedIO(handle)) return { readable: false, writable: false, hangup: false };
+      const slot = this.directSlot(handle);
+      if (!slot) return { readable: true, writable: true, hangup: false };
+      const ready = this.shared.directReadiness(slot, handle, writing, this.revoked, this.connection.owner);
+      // A cold file can be polled before its first read. Start hydration, but do not enqueue
+      // RPCs on ordinary hot-file lock contention.
+      if (ready === undefined) this.prepareIO(handle, 0);
+      return { readable: !writing && ready === true, writable: writing && ready === true, hangup: false };
+    } catch { return { readable: true, writable: true, hangup: false }; }
   }
   resolve(directory: FileHandle, path: string): ResolvedPath | number {
     try {

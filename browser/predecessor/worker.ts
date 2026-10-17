@@ -153,6 +153,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   const req = event.data;
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
+  let processSignalExit: typeof import("../../runtime/proc/abi").ProcessSignalExit | undefined;
   const child = req.child ? childTransport(req.child) : null;
   const isolated = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sharedOutcome = req.child?.outcome ?? req.outcome;
@@ -280,6 +281,12 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
         };
       },
     }) : null;
+    let instance: WebAssembly.Instance;
+    const processImports: Record<string, (...args: number[]) => number | void> = {
+      signal: (signal, mode) => subprocess?.signal(signal!, mode!) ?? -38,
+      interrupted: () => subprocess?.signal(0, 0) ?? 0,
+      default_signal: defaultSignal,
+    };
     wasi = new Wasi({
       hostCallFd: HOST_CALL_FD,
       args: req.args,
@@ -289,37 +296,56 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
       stdio,
       stdout: (data) => post("stdout", data),
       stderr: (data) => post("stderr", data),
-      sleep,
-      namespaces: {
-        runtime_proc: {
-          signal: (signal: number, mode: number) => subprocess?.signal(signal, mode) ?? -38,
-          interrupted: () => subprocess?.signal(0, 0) ?? 0,
-          default_signal: defaultSignal,
-        },
-      },
+      sleep: ms => { checkActive(); sleep(ms); checkActive(); },
+      interrupt: runtimeState?.signals.interrupt,
+      wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+      namespaces: { runtime_proc: processImports },
       trace: req.trace ? (line) => console.debug(`[wasi] ${line}`) : undefined,
     });
     if (req.runtimeProcess) {
       const { createFilesystemDescriptorCodec } = await import("../../runtime/proc/filesystem-codec");
       const { createProcessFilesystemIdentity } = await import("../../runtime/fs/protocol");
+      const { WorkerPipeHost } = await import("../../runtime/proc/worker-pipes");
+      const { ProcessABI, ProcessSignalExit } = await import("../../runtime/proc/abi");
+      const { createRuntimeTerminalCodec } = await import("./runtime-terminals");
+      processSignalExit = ProcessSignalExit;
+      const postMessage = (message: WorkerProcessMessage) => ctx.postMessage(message);
+      const pipes = new WorkerPipeHost({
+        transport: req.runtimeProcess, postMessage,
+        fallback: createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs),
+          descriptors: wasi.descriptors, output: (fd, data) => { post(fd === 2 ? "stderr" : "stdout", data); }, checkActive }),
+        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../../runtime/proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
+      });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess, descriptors: wasi.descriptors,
-        codec: createFilesystemDescriptorCodec(fs),
-        postMessage: message => ctx.postMessage(message),
+        codec: pipes.codec(), postMessage,
+        createPipe: () => { checkActive(); return pipes.createPipe(); },
+        revokeProcess: pid => pipes.revokeProcess(pid),
         prepareSpawn: () => {
           checkActive();
           const end = fs.beginTransfer();
           try {
             const filesystem = createProcessFilesystemIdentity(fs.connection);
-            return { data: { filesystem }, codec: createFilesystemDescriptorCodec(fs, filesystem), commit: end, cancel: end };
+            return { data: { filesystem, pipeRegistry: pipes.registry.handle() },
+              codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), commit: end, cancel: end };
           } catch (error) { end(); throw error; }
         },
       });
       // Bound numbers and duplicate open descriptions survive without reopening pathnames.
       runtimeProcess.installBindings();
+      const abi = new ProcessABI({
+        memory: () => instance.exports.memory as WebAssembly.Memory,
+        descriptors: wasi.descriptors, fs, pid: runtimeProcess.pid, service: runtimeProcess,
+        signals: runtimeProcess.signals, wake: runtimeProcess.wake,
+        createPipe: () => runtimeProcess!.createPipe(),
+        wait: (ms, word, expected) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+      });
+      for (const [name, call] of Object.entries(abi.imports)) {
+        processImports[name] = (...args) => { checkActive(); return call(...args); };
+      }
     }
     const instantiating = perfNow();
-    const instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
     ctx.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating } satisfies WorkerMessage);
     const slots = req.adapter === "preview1" ? "off" : req.slots ?? "imports";
     const netHost = req.net ? new NetHost(req.net, sendNet, (path, bytes) => fs.writeFile(path, bytes)) : null;
@@ -344,7 +370,8 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     // Terminal unwinds from timer callbacks and promise jobs have the same typed outcome as
     // synchronous guest execution; suppress the secondary uncaught-error reporting in both paths.
     const terminalResult = (error: unknown) => error instanceof WasiExit ? { code: error.code }
-      : error instanceof DefaultSignal ? { code: 128 + error.signal, signal: error.signal } : null;
+      : error instanceof DefaultSignal || (processSignalExit && error instanceof processSignalExit)
+        ? { code: 128 + error.signal, signal: error.signal } : null;
     const onError = (e: ErrorEvent) => {
       const result = terminalResult(e.error);
       if (!result) return;
@@ -375,7 +402,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
     finish({ code });
   } catch (err) {
     if (err instanceof WasiExit) finish({ code: err.code });
-    else if (err instanceof DefaultSignal) finish({ code: 128 + err.signal, signal: err.signal });
+    else if (err instanceof DefaultSignal || (processSignalExit && err instanceof processSignalExit)) finish({ code: 128 + err.signal, signal: err.signal });
     else finish({ error: err });
   }
 };

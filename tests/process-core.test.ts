@@ -25,6 +25,32 @@ function fixture() {
   return { registry, supervisor, root, contexts, terminated };
 }
 
+for (const recovery of ["retry", "dispose"] as const) test(`throwing completion gate stays pending and permits ${recovery} cleanup`, async () => {
+  const registry = new ExecutableRegistry();
+  registry.register("fixture", { module, adapter: "preview1" });
+  let throwGate = true, closed = 0, revoked = 0, terminated = 0;
+  const supervisor = new ProcessSupervisor({ registry,
+    launch: () => ({ terminate() { terminated++; } }),
+    canConfirmExit() { if (throwGate) throw new Error("completion gate failed"); return true; },
+  });
+  try {
+    const root = supervisor.createRoot(), pid = supervisor.reserveSpawn(root, request());
+    await supervisor.start(pid);
+    supervisor.get(pid)!.descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
+    supervisor.registerRevocation(pid, () => revoked++);
+    expect(() => supervisor.exit(pid, 23)).toThrow("completion gate failed");
+    expect(supervisor.get(pid)!.result).toBeNull();
+    expect(supervisor.get(pid)!.revoked).toBe(false);
+    expect([closed, revoked, terminated]).toEqual([0, 0, 0]);
+    if (recovery === "retry") {
+      throwGate = false;
+      supervisor.exit(pid, 23);
+      expect(supervisor.wait(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
+    } else supervisor.dispose();
+    expect([closed, revoked, terminated]).toEqual([1, 1, 1]);
+  } finally { supervisor.dispose(); }
+});
+
 test("shared allocators reserve independent pid and job number spaces without reuse", () => {
   const first = new ProcessIdentityAllocator();
   const second = new ProcessIdentityAllocator(first.buffer);
@@ -129,6 +155,31 @@ test("spawn snapshots request data and atomically rejects bad descriptor binding
   expect(contexts.get(pid)!.request.env).toEqual({ A: "original" });
   contexts.get(pid)!.exit(0);
   descriptors.dispose();
+});
+
+test("supervisor validates both fd bindings within the signed WASM success range before retaining", () => {
+  const { supervisor, root } = fixture();
+  const descriptors = supervisor.get(root)!.descriptors;
+  const fd = descriptors.open({ kind: "directory", handle: 1 }, 7n, 3n);
+  const source = descriptors.get(fd)!;
+  try {
+    for (const invalid of [0x80000000, 0xffffffff, -1, 1.5, NaN]) {
+      for (const binding of [{ child: invalid, parent: fd }, { child: 3, parent: invalid }]) {
+        let error: unknown;
+        try { supervisor.reserveSpawn(root, request({ fds: [binding] })); } catch (caught) { error = caught; }
+        expect(error).toMatchObject({ name: "ProcessError", errno: 28 });
+        expect(source.description.references).toBe(1);
+      }
+    }
+    descriptors.inherit(0x7fffffff, source);
+    const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }));
+    const child = supervisor.get(pid)!.descriptors;
+    expect(child.get(0x7fffffff)!.description).toBe(source.description);
+    const duplicate = child.dup(0x7fffffff);
+    expect(duplicate).toBeGreaterThanOrEqual(0);
+    expect(duplicate).toBeLessThanOrEqual(0x7fffffff);
+    expect(child.get(duplicate)!.description).toBe(source.description);
+  } finally { supervisor.dispose(); }
 });
 
 test("kill records signal, interrupts, revokes and publishes logical exit before teardown", async () => {

@@ -20,6 +20,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
 | [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
 | [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, reader relay and descriptor-transfer adapters. |
+| [Guest process ABI](#guest-process-abi) | Host feature | Original runtime_proc imports, nonblocking filesystem preparation, preview1 notification waits and lazy browser process integration. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -1521,3 +1522,32 @@ filesystem-codec composition and supervisor relay ownership. Spawn retains a pro
 synchronously; worker and controller imports release that same lifetime idempotently. Stable pipe
 identities survive structured cloning without using SharedArrayBuffer wrapper identity. No Bun,
 Node, WebKit or third-party pipe implementation is copied or patched by these modules.
+
+## Guest process ABI
+
+`runtime/proc/abi.ts` is an original adapter implementing the process ABI specified in
+`plans/browser-runtime.md`, over this project's process, descriptor and filesystem services.
+It is not copied from Bun, Node, WebKit, SLICC or another WASI host. Its packed subscription,
+event and wait records are the project's own interface; the errno values follow WASI.
+Spawn metadata copies the checked guest span into fixed-owned bytes before native UTF-8
+decoding: TextDecoder's WebIDL input permits shared buffers, not resizable backing. This is
+representation normalization, with no engine/version detection or retry.
+`runtime/core/{descriptors,wasi}.ts` adds signed-success descriptor bounds, explicit immediate
+terminal methods and notification-aware preview1 polling without replacing the existing
+blocking preview1 I/O contract.
+
+`runtime/fs/{client,shared}.ts` extends the original bun-wasm shared filesystem at revision
+`9d072068` with nonblocking lock admission and asynchronous preparation for cold reads and
+file growth. Preparing an operation never consumes input or commits a write behind EAGAIN.
+The browser runner, worker and subprocess broker compose these original adapters lazily,
+share one fd table with preview1 and preserve the existing Bun host slots.
+`web/src/runtime-terminals.ts` is an original callback-destination codec: it preserves stdout
+versus stderr across dup and remapped inherited fds, forwards generic child output to the run's
+hooks, and represents this runner's default EOF stdin explicitly. After selecting the immutable
+winning outcome, the process supervisor waits for the final ordered host acknowledgment before
+confirming an ordinary exit and terminating its worker, so queued terminal output drains first;
+fatal outcomes and explicit disposal still
+complete without waiting for that acknowledgment. A late kill cannot bypass the drain after an
+ordinary outcome has already won. Unknown callback terminals are rejected rather than pretending
+their input can be shared. No new upstream patch, copied
+implementation or compatibility branch is introduced.

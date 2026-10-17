@@ -1,5 +1,5 @@
 import { checkedSignalNumber, createSignalState, requestSignal } from "./signals";
-import { DescriptorTable, OpenDescription, type Descriptor } from "../core/descriptors";
+import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors";
 import { ExecutableNotFound, ExecutableRegistry } from "./registry";
 import { ProcessTable, type ProcessRecord } from "./table";
 import { claimOutcome, outcomeWord, readOutcome } from "./outcome";
@@ -9,6 +9,10 @@ export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   table?: ProcessTable;
+  /** Message-bearing hosts defer ordinary completion until ordered output/exit messages drain.
+   * Fatal outcomes and explicit disposal never wait for this acknowledgement.
+   */
+  canConfirmExit?(pid: number): boolean;
   /** Cleanup failures are diagnostics, never a reason to leave peers blocked or skip teardown. */
   onError?(error: unknown): void;
 }
@@ -21,7 +25,7 @@ function signalWord(source?: Int32Array | SharedArrayBuffer): Int32Array {
   if (!(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) throw new TypeError("signal word must be one shared int32");
   return word;
 }
-function validFd(fd: number): boolean { return Number.isInteger(fd) && fd >= 0 && fd <= 0xffffffff; }
+function validFd(fd: number): boolean { return Number.isInteger(fd) && fd >= 0 && fd <= MAX_DESCRIPTOR; }
 function snapshot(spec: SpawnRequest): Readonly<SpawnRequest> {
   // Own all mutable request data before returning to the guest's synchronous spawn call.
   return {
@@ -287,6 +291,17 @@ export class ProcessSupervisor {
     // A signal published after our last read still competes at this atomic decision, rather
     // than overriding one observer's already-final result after the fact.
     const winner = claimOutcome(record.outcome, result);
+    // Check the immutable winner, not an earlier read: a worker may ordinary-exit while a
+    // signal observer is entering this function. Its queued output must still drain first.
+    if (winner.kind === "exited" && !this.disposed) {
+      let canConfirm: boolean;
+      try { canConfirm = this.options.canConfirmExit?.(pid) !== false; }
+      catch (error) { this.finishing.delete(pid); throw error; }
+      if (!canConfirm) {
+        this.finishing.delete(pid);
+        return;
+      }
+    }
     if (winner.kind === "signaled" && winner.code === Signal.SIGKILL) this.publishKill(record);
     record.revoked = true;
     const hooks = Array.from(record.revocations);

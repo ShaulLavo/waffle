@@ -128,8 +128,13 @@ Reports in `/work/reports/browser-runtime/spikes/`: `1-size-startup.md`, `2-proc
 
 - **Size and startup.** Runtime JS for bun light is about 30-37 KiB gzipped and adds 10-30 ms at
   startup; the 3.85 MB WASM and the demo UI (89% of the JS) dominate. Proc is imported and
-  constructed on every run today. Per-layer budgets: core 6 KiB, fs 6 KiB, net 14 KiB, proc
-  8 KiB gzipped, zero proc bytes before the first spawn.
+  constructed on every run today. Per-layer budgets: core 7 KiB, fs 6 KiB, net 14 KiB, proc
+  8 KiB gzipped, zero proc bytes before the first spawn. Step 4b measures core at 6,327 B
+  gzip, up from 5,987 B after descriptor ownership (+340 B): shared fd bounds, preview1
+  readiness notifications and immediate terminal capabilities belong in core, not the lazy
+  process service. Its round guide/gate is now 7 KiB; the process-service lazy boundary remains
+  enforced. A bounded vectored-I/O factoring trial reduced minified bytes but increased gzip
+  (6,353 B), so it was reverted rather than complicating the host to meet the old 6 KiB guide.
 - **Processes and pipes.** Sharing one compiled module cuts bun.wasm spawn from 57-76 ms to
   23-32 ms. A 1-2 worker idle pool saves 4-8 ms per spawn in Chromium and Firefox at 2-3 MiB per
   worker, but regressed WebKit's single spawn (51 ms against 28 ms), so pooling is optional and

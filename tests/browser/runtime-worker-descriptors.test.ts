@@ -11,6 +11,9 @@ import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemId
 import * as protocol from "../../runtime/fs/protocol";
 import * as codec from "../../runtime/proc/filesystem-codec";
 import * as client from "../../runtime/proc/worker-client";
+import * as pipes from "../../runtime/proc/worker-pipes";
+import * as abi from "../../runtime/proc/abi";
+import * as terminals from "../src/runtime-terminals";
 import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome";
 import { SubprocessHost } from "../src/subprocess";
 import type { RunRequest, WorkerMessage } from "../src/worker";
@@ -21,7 +24,10 @@ const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transform
     .replace(/^export /gm, "")
     .replace(/import\("\.\.\/\.\.\/runtime\/proc\/worker-client"\)/g, 'loadRuntime("client")')
     .replace(/import\("\.\.\/\.\.\/runtime\/proc\/filesystem-codec"\)/g, 'loadRuntime("codec")')
-    .replace(/import\("\.\.\/\.\.\/runtime\/fs\/protocol"\)/g, 'loadRuntime("protocol")'),
+    .replace(/import\("\.\.\/\.\.\/runtime\/fs\/protocol"\)/g, 'loadRuntime("protocol")')
+    .replace(/import\("\.\.\/\.\.\/runtime\/proc\/worker-pipes"\)/g, 'loadRuntime("pipes")')
+    .replace(/(?<!typeof )import\("\.\.\/\.\.\/runtime\/proc\/abi"\)/g, 'loadRuntime("abi")')
+    .replace(/import\("\.\/runtime-terminals"\)/g, 'loadRuntime("terminals")'),
 );
 
 test("worker installs arbitrary file, dup and directory bindings before launch without reopening paths", async () => {
@@ -75,7 +81,7 @@ test("worker installs arbitrary file, dup and directory bindings before launch w
       self: context, performance, Response, TextEncoder, URL, console, Error,
       SharedArrayBuffer, Atomics, Int32Array, BigInt64Array,
       FilesystemClient, revokeFilesystem, sharedRevoked, SubprocessHost, claimOutcome, outcomeWord, readOutcome,
-      loadRuntime: async (name: string) => ({ client, codec, protocol })[name as "client"],
+      loadRuntime: async (name: string) => ({ client, codec, protocol, pipes, abi, terminals })[name as "client"],
       HOST_CALL_FD: 3,
       WebAssembly: { Memory: WebAssembly.Memory, Instance: class { exports = { memory, _start() {} }; } },
       WasiExit: class extends Error {},
@@ -126,11 +132,12 @@ test("ordinary Bun worker and page startup do not eagerly load generic ownership
     for (const name of ["worker-client", "worker-broker", "filesystem-codec", "pipes", "abi"]) {
       expect(inputs.some(path => path.endsWith(`/runtime/proc/${name}.ts`))).toBe(false);
     }
+    expect(inputs.some(path => path.endsWith("/web/src/runtime-terminals.ts"))).toBe(false);
     expect(Object.keys(build.metafile!.inputs).some(path => path.endsWith("/runtime/proc/worker-client.ts"))).toBe(true);
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 
-for (const failure of ["client", "codec", "protocol", "binding"] as const) test(`generic worker startup catches ${failure} failures and releases initialized resources`, async () => {
+for (const failure of ["client", "codec", "protocol", "pipes", "abi", "terminals", "binding"] as const) test(`generic worker startup catches ${failure} failures and releases initialized resources`, async () => {
   const transport = client.createWorkerProcessTransport();
   const connection = createFilesystemConnection();
   const filesystem = connection.client;
@@ -172,7 +179,7 @@ for (const failure of ["client", "codec", "protocol", "binding"] as const) test(
             export() { throw new Error("unexpected export"); }, discard() {},
           }),
         };
-        return ({ client, codec, protocol })[name as "client"];
+        return ({ client, codec, protocol, pipes, abi, terminals })[name as "client"];
       },
       HOST_CALL_FD: 3,
       WebAssembly: { Memory: WebAssembly.Memory, Instance: class { constructor() { throw new Error("must not instantiate"); } } },
@@ -201,4 +208,136 @@ for (const failure of ["client", "codec", "protocol", "binding"] as const) test(
       expect(readOutcome(client.workerProcessState(transport).signals.outcome)).toMatchObject({ kind: "exited", code: 126 });
     }
   } finally { descriptors?.dispose(); filesystem.port.close(); connection.server.port.close(); }
+});
+
+for (const mode of ["sync", "caught", "error", "rejection"] as const) test(`generic worker recognizes ${mode} ABI signal unwind and blocks later host actions`, async () => {
+  const transport = client.createWorkerProcessTransport();
+  const connection = createFilesystemConnection();
+  const sent: WorkerMessage[] = [];
+  const listeners = new Map<string, (event: { error?: unknown; reason?: unknown; preventDefault(): void }) => void>();
+  let disposed = false, prevented = false;
+  let imports!: { runtime_proc: Record<string, (...args: number[]) => unknown> };
+  const invokeSignal = () => {
+    try { imports.runtime_proc.default_signal!(15); }
+    catch (error) { expect(error).toBeInstanceOf(abi.ProcessSignalExit); return error; }
+    throw new Error("default signal unexpectedly returned");
+  };
+  const context = {
+    crossOriginIsolated: true, location: { href: "http://localhost/worker.js" },
+    fetch: async () => new Response(),
+    postMessage(message: WorkerMessage) { sent.push(message); },
+    addEventListener(name: string, listener: (event: { error?: unknown; reason?: unknown; preventDefault(): void }) => void) { listeners.set(name, listener); },
+    onmessage: undefined as unknown as (event: { data: RunRequest }) => Promise<void>,
+  };
+  try {
+    runInNewContext(source, {
+      self: context, performance, Response, TextEncoder, URL, console, Error,
+      SharedArrayBuffer, Atomics, Int32Array, BigInt64Array,
+      FilesystemClient: class {
+        connection = connection.client;
+        dispose() { disposed = true; }
+      },
+      revokeFilesystem, sharedRevoked, SubprocessHost, claimOutcome, outcomeWord, readOutcome,
+      loadRuntime: async (name: string) => ({ client, codec, protocol, pipes, abi, terminals })[name as "client"],
+      HOST_CALL_FD: 3,
+      WebAssembly: { Memory: WebAssembly.Memory, Instance: class {
+        exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {}, bunwasm_ready: () => 1 };
+      } },
+      WasiExit: class extends Error {},
+      Wasi: class {
+        descriptors = new DescriptorTable();
+        constructor(options: { namespaces: typeof imports }) { imports = options.namespaces; }
+        imports() { return {}; }
+        launch() {
+          if (mode === "sync") imports.runtime_proc.default_signal!(15);
+          if (mode === "caught") {
+            invokeSignal();
+            // No memory access, pipe creation or postMessage can follow a caught terminal unwind.
+            expect(() => imports.runtime_proc.pipe!(0)).toThrow();
+            expect(() => imports.runtime_proc.write!(1, 0, 1)).toThrow();
+            return 42;
+          }
+          return null;
+        }
+      },
+      startEngineHost: async () => {
+        const error = invokeSignal();
+        const event = { error, reason: error, preventDefault() { prevented = true; } };
+        listeners.get(mode === "error" ? "error" : "unhandledrejection")!(event);
+        return 0;
+      },
+    });
+    await context.onmessage({ data: {
+      engine: "browser", adapter: "bun", slots: "off", module: {} as WebAssembly.Module,
+      args: [], env: {}, filesystem: connection.client, runtimeProcess: transport,
+      trace: false, net: null, moduleCache: null,
+    } });
+    expect(disposed).toBe(true);
+    expect(sent.filter(message => message.type === "exit" || message.type === "error")).toEqual([
+      { type: "exit", code: 143, signal: 15, sleep: "atomics" },
+    ]);
+    expect(sent.some(message => message.type === "runtime-proc" && message.operation === "pipe")).toBe(false);
+    if (mode === "error" || mode === "rejection") expect(prevented).toBe(true);
+  } finally { connection.client.port.close(); connection.server.port.close(); }
+});
+
+for (const kind of ["wasi", "abi"] as const) for (const phase of ["before", "after"] as const) test(`worker ${kind} waits check liveness ${phase} blocking without resnapshotting readiness`, async () => {
+  const transport = client.createWorkerProcessTransport();
+  const state = client.workerProcessState(transport);
+  const connection = createFilesystemConnection();
+  const notification = new Int32Array(new SharedArrayBuffer(4));
+  const sent: WorkerMessage[] = [];
+  const waits: unknown[][] = [];
+  let wasiOptions!: { wait(word: Int32Array, expected: number, ms: number): void; interrupt: Int32Array };
+  let abiOptions!: abi.ProcessABIOptions;
+  const atomics = Object.create(Atomics);
+  atomics.wait = (...args: unknown[]) => {
+    waits.push(args);
+    claimOutcome(state.signals.outcome, { kind: "signaled", code: 9 });
+    return "not-equal";
+  };
+  const context = {
+    crossOriginIsolated: true, location: { href: "http://localhost/worker.js" },
+    postMessage(message: WorkerMessage) { sent.push(message); },
+    onmessage: undefined as unknown as (event: { data: RunRequest }) => Promise<void>,
+  };
+  try {
+    runInNewContext(source, {
+      self: context, performance, Response, TextEncoder, URL, console, Error,
+      SharedArrayBuffer, Atomics: atomics, Int32Array, BigInt64Array,
+      FilesystemClient: class { connection = connection.client; dispose() {} },
+      revokeFilesystem, sharedRevoked, SubprocessHost, claimOutcome, outcomeWord, readOutcome,
+      loadRuntime: async (name: string) => name === "abi" ? {
+        ...abi, ProcessABI: class extends abi.ProcessABI {
+          constructor(options: abi.ProcessABIOptions) { super(options); abiOptions = options; }
+        },
+      } : ({ client, codec, protocol, pipes, terminals })[name as "client"],
+      HOST_CALL_FD: 3,
+      WebAssembly: { Memory: WebAssembly.Memory, Instance: class { exports = { memory: new WebAssembly.Memory({ initial: 1 }), _start() {} }; } },
+      WasiExit: class extends Error {},
+      Wasi: class {
+        descriptors = new DescriptorTable();
+        constructor(options: typeof wasiOptions) { wasiOptions = options; }
+        imports() { return {}; }
+        launch() {
+          expect(wasiOptions.interrupt.buffer).toBe(state.signals.interrupt.buffer);
+          expect(wasiOptions.interrupt.byteOffset).toBe(state.signals.interrupt.byteOffset);
+          // The supplied sequence predates a racing publisher, which has already incremented it.
+          Atomics.store(notification, 0, 20);
+          if (phase === "before") claimOutcome(state.signals.outcome, { kind: "signaled", code: 9 });
+          if (kind === "wasi") wasiOptions.wait(notification, 19, 7);
+          else abiOptions.wait!(7, notification, 19);
+          throw new Error("terminal wait returned to guest");
+        }
+      },
+    });
+    await context.onmessage({ data: {
+      engine: "browser", adapter: "preview1", module: {} as WebAssembly.Module, args: [], env: {},
+      filesystem: connection.client, runtimeProcess: transport, trace: false, net: null, moduleCache: null,
+    } });
+    expect(waits).toEqual(phase === "before" ? [] : [[notification, 0, 19, 7]]);
+    expect(sent.filter(message => message.type === "exit" || message.type === "error")).toEqual([
+      { type: "exit", code: 137, signal: 9, sleep: "atomics" },
+    ]);
+  } finally { connection.client.port.close(); connection.server.port.close(); }
 });
