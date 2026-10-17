@@ -1,3 +1,4 @@
+import { CAPABILITY_HEADER, CAPABILITY_WORDS } from "../fs/protocol";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection, reapFilesystem, revokeFilesystem, type FilesystemConnection } from "../fs";
 
@@ -50,7 +51,7 @@ function table(connection: FilesystemConnection): Int32Array {
   return new Int32Array(buffer);
 }
 function refIndex(cells: Int32Array, handle: number): number {
-  for (let key = 1; key < cells.length; key += 2) if (Atomics.load(cells, key) === handle && Atomics.load(cells, key + 1) >= 0) return key + 1;
+  for (let key = CAPABILITY_HEADER; key < cells.length; key += CAPABILITY_WORDS) if (Atomics.load(cells, key) === handle && Atomics.load(cells, key + 1) >= 0) return key + 1;
   throw new Error(`missing capability ${handle}`);
 }
 

@@ -1,4 +1,4 @@
-import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
+import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
 
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
@@ -28,8 +28,9 @@ export class SharedFilesystem {
   }
   private fail(error: Error): void {
     this.fatal ??= error;
-    // Revoking the root wakes blocking and asynchronous descendants even when the worker
-    // cannot deliver a completion message. No request waits for a dead service to reply.
+    // A process does not inherit its parent's lifetime. Publish the separate service-wide
+    // revocation so even unpublished independent identities wake when this worker dies.
+    revokeFilesystemService(this.client.connection);
     this.client.dispose();
     this.worker.terminate();
   }
@@ -80,5 +81,5 @@ export class SharedFilesystem {
     const error = await this.mutate("move", [from, to]);
     if (error) throw new Error(`rename failed: errno ${error}`);
   }
-  dispose(): void { this.client.dispose(); this.worker.terminate(); }
+  dispose(): void { revokeFilesystemService(this.client.connection); this.client.dispose(); this.worker.terminate(); }
 }

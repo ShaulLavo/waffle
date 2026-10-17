@@ -49,9 +49,9 @@ export interface SubprocessOptions {
   stdin?: SharedArrayBuffer;
   workerTransport?: ChildTransport;
   /** Current process dispositions and pending signals; never inherited by a new child. */
-  signalState?: SharedArrayBuffer;
+  signalState?: Int32Array | SharedArrayBuffer;
   /** Adopt the current process's existing terminal decision for signal-entry checkpoints. */
-  outcome?: SharedArrayBuffer;
+  outcome?: BigInt64Array | SharedArrayBuffer;
   /** Synchronously apply a raised, selected, or newly unhandled fatal signal. */
   defaultSignal?(signal: number): void;
   /** Shared process capability revocation, including roots without a budget slot. */

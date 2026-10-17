@@ -49,6 +49,21 @@ shared memory so a blocked guest can reserve its pid before the page imports the
 `wait` is nonblocking; `waitForExit` and `onChildExit` provide asynchronous completion.
 Missing executables exit 127, and loader/adapter startup failures exit 126.
 
+`WorkerProcessClient` and `WorkerProcessBroker` connect a worker's descriptor table to that same
+supervisor. `createWorkerProcessTransport` reserves shared process identities; spawn retains
+serialized capabilities before posting its admission message. `WorkerDescriptorCodec` keeps the
+transport independent of each resource implementation. `createFilesystemDescriptorCodec` transfers
+file and directory capabilities with independent child pins and one shared open-file cursor, so
+closing, unlinking or terminating the parent cannot invalidate an admitted child's descriptions.
+Duplicate bindings retain their individual rights while sharing their original description.
+Process-specific streams use `forProcess(pid)` once per description; their `revoke()` hook runs
+before descriptor release and before `wait` or child-exit notification becomes observable.
+
+The browser accepts an optional `runtimeProcess` transport in its run request. This path installs
+all inherited bindings, including arbitrary fd numbers, before guest launch and shares the existing
+supervisor with Bun subprocesses. Its codec and broker chunks remain lazy; ordinary Bun startup
+does not load the generic ownership adapters. Startup failure releases the transferred capabilities.
+
 Each process has per-signal default, ignored or handled dispositions. `kill` immediately selects
 SIGINT/SIGTERM/SIGPIPE's default signaled outcome (`128 + signal`) and revokes descriptors when
 no handler is registered. Ignored signals do nothing; handled signals set their own pending bit

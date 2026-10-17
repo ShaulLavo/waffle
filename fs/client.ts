@@ -1,5 +1,5 @@
 import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, type FilesystemConnection } from "./protocol";
+import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, releaseFilesystemReservation, type FilesystemIdentity, type FilesystemReservation, type FilesystemConnection } from "./protocol";
 import { MissingDataError, MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared";
 
 const asyncAtomics = Atomics as typeof Atomics & {
@@ -154,6 +154,52 @@ export class FilesystemClient implements FileSystem {
       this.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
       return connection.client;
     } finally { this.section.exit(); }
+  }
+  /** Keep source admission held until the spawn notification has been published. */
+  beginTransfer(): () => void {
+    this.section.enter();
+    let active = true;
+    return () => { if (active) { active = false; this.section.exit(); } };
+  }
+  reserve(handle: FileHandle, target: FilesystemIdentity): FilesystemReservation {
+    this.section.enter();
+    try {
+      if (isRevoked(target)) throw new FilesystemError(11);
+      this.retain(handle);
+      try {
+        const sourceKey = this.capabilityEntry(handle)!;
+        const entries = new Int32Array(target.capabilities);
+        let targetKey = CAPABILITY_HEADER;
+        while (targetKey < entries.length && Atomics.load(entries, targetKey + 1) >= 0 && Atomics.load(entries, targetKey) !== handle) targetKey += CAPABILITY_WORDS;
+        if (targetKey >= entries.length) throw new FilesystemError(51);
+        const reservation: FilesystemReservation = { handle, source: this.connection.capabilities, sourceKey, target: target.capabilities, targetKey, targetOwner: target.owner, state: new SharedArrayBuffer(8) };
+        Atomics.add(this.capabilities, sourceKey + 2, 1);
+        Atomics.store(entries, targetKey, handle);
+        Atomics.store(entries, targetKey + 2, 0);
+        const previous = Atomics.load(entries, targetKey + 1);
+        Atomics.store(entries, targetKey + 1, previous < 0 ? 1 : previous + 1);
+        target.reservations.push(reservation);
+        return reservation;
+      } finally { this.release(handle); }
+    } finally { this.section.exit(); }
+  }
+  /** Import the already-owned reference, not another retain. */
+  adopt(reservation: FilesystemReservation): void {
+    if (Atomics.load(new Int32Array(reservation.state), 0)) return;
+    this.openHandles.set(reservation.handle, (this.openHandles.get(reservation.handle) ?? 0) + 1);
+    this.capabilityEntries.set(reservation.handle, reservation.targetKey);
+  }
+  releaseReservation(reservation: FilesystemReservation): void {
+    const state = new Int32Array(reservation.state);
+    const wasClosed = Atomics.load(state, 0);
+    releaseFilesystemReservation(reservation);
+    if (!wasClosed) {
+      const count = this.openHandles.get(reservation.handle) ?? 0;
+      if (count > 1) this.openHandles.set(reservation.handle, count - 1);
+      else { this.openHandles.delete(reservation.handle); this.fileSlots.delete(reservation.handle); }
+    }
+    this.connection.port.postMessage({ trim: true });
+    this.sweep();
   }
   sweep(): void { this.connection.port.postMessage({ sweep: true }); }
   submit(operation: string, args: unknown[] = [], data: Uint8Array = new Uint8Array(), capacity = operation === "read" || operation === "take" || operation === "readdir" ? PAGE : 1024): FilesystemCompletion {

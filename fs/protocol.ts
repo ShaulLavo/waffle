@@ -23,10 +23,11 @@ export const HEADER = 32;
 export const PAGE = 64 * 1024;
 export const TRANSIENT_HANDLES = 256;
 export const CAPABILITY_SLOTS = 4096;
-// One candidate-count word, then reusable [handle, open-reference count] pairs. A negative
+// One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
 // reference count revokes an entry. Handles never recycle, but these per-session entries do.
 export const CAPABILITY_HEADER = 1;
-export const CAPABILITY_WORDS = 2;
+export const CAPABILITY_WORDS = 3;
+const MAX_CONNECTION_OWNERS = 65536;
 export const enum State { Pending, Complete, Cancelled, Failed, Overflow }
 export class FilesystemError extends Error {
   constructor(public errno: number, message = `filesystem errno ${errno}`) { super(message); }
@@ -47,6 +48,20 @@ export interface FilesystemConnection {
   /** Nonzero lock owner token; service clears it when this identity is reaped. */
   owner: number;
   maxBytes: number;
+  /** Service revocation in word 0, then per-owner liveness for independent process identities. */
+  ownerStates: SharedArrayBuffer;
+  /** Synchronous reservations adopted when this identity reaches the service. */
+  reservations: FilesystemReservation[];
+}
+export interface FilesystemReservation {
+  handle: number;
+  source: SharedArrayBuffer;
+  sourceKey: number;
+  target: SharedArrayBuffer;
+  targetKey: number;
+  targetOwner: number;
+  /** Closed once; transfer state: 0 pending, 1 adopted, 2 cancelled. */
+  state: SharedArrayBuffer;
 }
 export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
@@ -57,6 +72,8 @@ export function createFilesystemIdentity(parent?: FilesystemIdentity, maxBytes =
   const shared = parent?.shared ?? new SharedArrayBuffer(24 * 1024 * 1024);
   const segments = parent?.segments ?? Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () => createSharedSegment());
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
+  if (owner >= MAX_CONNECTION_OWNERS) throw new FilesystemError(33, "filesystem identity table exhausted");
+  const ownerStates = parent?.ownerStates ?? new SharedArrayBuffer(MAX_CONNECTION_OWNERS * 4);
   const capabilities = new SharedArrayBuffer((CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS) * 4);
   const entries = new Int32Array(capabilities);
   entries.fill(-1);
@@ -72,7 +89,27 @@ export function createFilesystemIdentity(parent?: FilesystemIdentity, maxBytes =
     sections: new SharedArrayBuffer(4),
     owner,
     maxBytes,
+    ownerStates,
+    reservations: [],
   };
+}
+/** Processes share storage, not the lifetime of the process that spawned them. */
+export function createProcessFilesystemIdentity(parent: FilesystemIdentity): FilesystemIdentity {
+  const identity = createFilesystemIdentity(parent);
+  identity.revocations = identity.revocations.slice(0, 1);
+  return identity;
+}
+/** Idempotent across the controller and guest copies of a transferred description. */
+export function releaseFilesystemReservation(reservation: FilesystemReservation): void {
+  const state = new Int32Array(reservation.state);
+  if (Atomics.exchange(state, 0, 1)) return;
+  const target = new Int32Array(reservation.target);
+  for (;;) {
+    const count = Atomics.load(target, reservation.targetKey + 1);
+    if (count <= 0 || Atomics.compareExchange(target, reservation.targetKey + 1, count, count - 1) === count) break;
+  }
+  if (Atomics.compareExchange(state, 1, 0, 2) === 0)
+    Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
 }
 export function connectFilesystemIdentity(identity: FilesystemIdentity) {
   const channel = new NativeMessageChannel();
@@ -82,10 +119,17 @@ export function createFilesystemConnection(parent?: FilesystemIdentity) {
   return connectFilesystemIdentity(createFilesystemIdentity(parent));
 }
 export function isRevoked(connection: FilesystemIdentity): boolean {
+  if (Atomics.load(new Int32Array(connection.ownerStates), 0)) return true;
   return connection.revocations.some(buffer => Atomics.load(new Int32Array(buffer), 0) !== 0);
+}
+/** The service lifetime is shared even by processes with independent parent lifetimes. */
+export function revokeFilesystemService(connection: FilesystemIdentity): void {
+  Atomics.store(new Int32Array(connection.ownerStates), 0, 1);
+  wake(connection);
 }
 export function revokeFilesystem(connection: FilesystemIdentity): void {
   Atomics.compareExchange(new Int32Array(connection.revocations[0]!), 0, 0, 1);
+  Atomics.compareExchange(new Int32Array(connection.ownerStates), connection.owner, 0, 1);
   wake(connection);
 }
 /** Admission must precede every client lock, pin change or page write. The shared count handles
@@ -131,6 +175,7 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
  * quiescent dispose path. A stopped worker can leave an unfinished section and abandoned locks. */
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
+  Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
   Atomics.notify(new Int32Array(connection.sections), 0);
   wake(connection);
 }

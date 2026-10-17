@@ -8,6 +8,8 @@ import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outco
 import type { SharedFilesystem } from "./shared-fs";
 import { childTransport } from "./subprocess.ts";
 import type { Engine, RunRequest, SpawnRequest, WorkerMessage } from "./worker";
+import type { WorkerProcessBroker } from "../../runtime/proc/worker-broker";
+import type { WorkerProcessMessage, WorkerProcessTransport } from "../../runtime/proc/worker-client";
 
 type Proc = typeof import("../../runtime/proc");
 export interface ExecutableRegistration {
@@ -27,8 +29,25 @@ interface Child {
   stopping?: Promise<void>;
 }
 
+interface RuntimeChild {
+  filesystem: import("../../runtime/fs").FilesystemIdentity;
+  transport: WorkerProcessTransport;
+  context: ProcessContext;
+  request: RunRequest;
+  worker: Worker;
+  acknowledged: boolean;
+  stopped: boolean;
+  stopping?: Promise<void>;
+}
+
 export class SubprocessBroker {
   private disposed = false;
+  private runtime?: WorkerProcessBroker;
+  private runtimeActivation?: Promise<WorkerProcessBroker>;
+  private runtimeApi?: typeof import("../../runtime/proc/worker-client");
+  private runtimeCodec?: typeof import("../../runtime/proc/filesystem-codec");
+  private runtimeRoot?: WorkerProcessTransport;
+  private runtimeChildren = new Map<number, RuntimeChild>();
   private children = new Map<number, Child>();
   private registrations = new Map<string, ExecutableRegistration>();
   private activation?: Promise<ProcessSupervisor>;
@@ -63,13 +82,74 @@ export class SubprocessBroker {
         module: entry.module, adapter: entry.adapter === "preview1" ? "preview1" : `bun:${entry.engine ?? "browser"}`,
       });
       const supervisor = new proc.ProcessSupervisor({ registry, launch: context => this.launch(context), onError: error => this.report(error) });
-      supervisor.createRoot({ ...this.options.root, ...this.rootTransport() });
+      const pid = supervisor.createRoot({ ...this.options.root, ...this.rootTransport() });
+      if (this.runtimeRoot) this.runtimeApi!.installWorkerBindings(this.runtimeRoot, supervisor.get(pid)!.descriptors, this.runtimeCodec!.createFilesystemDescriptorCodec(this.runtimeFilesystem(this.runtimeRoot), undefined, () => this.filesystem.client.sweep()));
       supervisor.onChildExit(event => this.exited(supervisor, event));
       return supervisor;
     });
   }
 
+  /** Loading these adapters is opt-in; ordinary Bun runs retain their existing startup graph. */
+  private runtimeReady(): Promise<WorkerProcessBroker> {
+    return this.runtimeActivation ??= Promise.all([
+      import("../../runtime/proc/worker-broker"), import("../../runtime/proc/worker-client"),
+      import("../../runtime/proc/filesystem-codec"),
+    ]).then(([{ WorkerProcessBroker }, client, codec]) => {
+      this.runtimeApi = client;
+      this.runtimeCodec = codec;
+      const broker = this.runtime = new WorkerProcessBroker({
+        supervisor: () => this.ready(),
+        codec: transport => codec.createFilesystemDescriptorCodec(this.runtimeFilesystem(transport), undefined, () => this.filesystem.client.sweep()),
+        onError: error => this.report(error),
+      });
+      if (this.disposed) broker.dispose();
+      return broker;
+    });
+  }
+  private runtimeFilesystem(transport: WorkerProcessTransport): import("../../runtime/fs").FilesystemIdentity {
+    const data = transport.data as { filesystem?: import("../../runtime/fs").FilesystemIdentity } | undefined;
+    if (!data?.filesystem) throw new TypeError("runtime process has no filesystem identity");
+    return data.filesystem;
+  }
+  async adoptRuntimeRoot(transport: WorkerProcessTransport): Promise<void> {
+    if (this.activation) throw new Error("Adopt the runtime root before activating processes");
+    const broker = await this.runtimeReady();
+    if (this.disposed) throw new Error("Process broker is disposed");
+    this.runtimeFilesystem(transport);
+    broker.adoptRoot(transport);
+    this.runtimeRoot = transport;
+    const state = this.runtimeApi!.workerProcessState(transport);
+    this.root = { pid: state.pid, job: state.job, ...state.signals };
+  }
+  async runtimeMessage(message: WorkerProcessMessage, senderPid: number): Promise<void> {
+    const broker = await this.runtimeReady();
+    const sender = broker.get(senderPid);
+    const result = sender && readOutcome(this.runtimeApi!.workerProcessState(sender).signals.outcome);
+    // A reserved notification may arrive after ordinary parent teardown. Its independent
+    // filesystem references were retained before publication; fatal senders have no authority.
+    if (!sender || this.disposed || result?.kind === "signaled" || (!result && isRevoked(this.runtimeFilesystem(sender)))) {
+      this.rejectRuntimeMessage(message);
+      return;
+    }
+    await broker.handle(message, senderPid);
+    this.watch();
+  }
+  rejectRuntimeMessage(message: WorkerProcessMessage): void {
+    if (message.operation !== "spawn") return;
+    // A generic sender is adopted before it can run, so this path never activates Bun runs.
+    if (!this.runtimeApi || !this.runtimeCodec) return;
+    const transport = message.transport;
+    requestSignal(this.runtimeApi.workerProcessState(transport).signals, 9);
+    const identity = this.runtimeFilesystem(transport);
+    this.filesystem.revoke(identity);
+    const codec = this.runtimeCodec.createFilesystemDescriptorCodec(identity, undefined, () => this.filesystem.client.sweep());
+    for (const token of transport.resources) codec.discard(token);
+    this.runtimeApi.wakeWorkerProcess(transport);
+  }
+
   private exited(supervisor: ProcessSupervisor, event: ChildExitEvent): void {
+    const runtime = this.runtime?.get(event.pid);
+    if (runtime && !this.runtimeChildren.get(event.pid)?.acknowledged) this.filesystem.revoke(this.runtimeFilesystem(runtime));
     const child = this.children.get(event.pid);
     if (child) {
       childTransport(child.spawn.child).finish(event.result.status, event.result.kind === "signaled" ? event.result.code : undefined);
@@ -111,6 +191,8 @@ export class SubprocessBroker {
   }
 
   private launch(context: ProcessContext) {
+    const runtime = this.runtime?.get(context.pid);
+    if (runtime) return this.launchRuntime(context, runtime);
     const child = this.children.get(context.pid);
     if (!child || this.disposed) throw new Error("Process no longer has a live controller");
     const spawn = child.spawn;
@@ -139,6 +221,11 @@ export class SubprocessBroker {
     });
     worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
       const selected = readOutcome(outcomeWord(spawn.child.outcome));
+      if (data.type === "runtime-proc") {
+        if (selected?.kind === "signaled" || isRevoked(spawn.filesystem)) this.rejectRuntimeMessage(data);
+        else void this.runtimeMessage(data, context.pid).catch(error => this.report(error));
+        return;
+      }
       if (selected?.kind === "signaled" && data.type !== "exit" && data.type !== "error") {
         // Reject queued capabilities even when fatal publication preceded filesystem revocation.
         if (data.type === "spawn") this.cancel(data.request);
@@ -178,6 +265,75 @@ export class SubprocessBroker {
     return { terminate: () => this.stop(child) };
   }
 
+  private launchRuntime(context: ProcessContext, transport: WorkerProcessTransport) {
+    if (this.disposed) throw new Error("Process no longer has a live controller");
+    const filesystem = this.runtimeFilesystem(transport);
+    const preview1 = context.adapter === "preview1";
+    const request: RunRequest = {
+      module: context.module, engine: preview1 ? "browser" : context.adapter.slice(4) as Engine,
+      adapter: preview1 ? "preview1" : "bun", args: context.request.argv,
+      env: { ...context.request.env, PWD: context.request.cwd },
+      filesystem: this.filesystem.connect(filesystem), runtimeProcess: transport,
+      pid: context.pid, jobId: context.job, trace: false, spawnBroker: true, net: null, moduleCache: null,
+    };
+    if (!preview1 && request.engine === "browser" && new URL(this.workerUrl).pathname.endsWith("/__bunwasm/worker.js")) request.moduleCache = `bunwasm-m-${crypto.randomUUID()}`;
+    let worker: Worker;
+    try { worker = new Worker(this.workerUrl, { type: "module" }); }
+    catch (error) { request.filesystem.port.close(); throw error; }
+    const child: RuntimeChild = { filesystem, transport, context, request, worker, acknowledged: false, stopped: false };
+    this.runtimeChildren.set(context.pid, child);
+    context.registerRevocation(() => this.filesystem.revoke(filesystem));
+    worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
+      const selected = readOutcome(context.outcome);
+      if (data.type === "runtime-proc") {
+        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data);
+        else void this.runtimeMessage(data, context.pid).catch(error => this.report(error));
+        return;
+      }
+      if (selected?.kind === "signaled" && data.type !== "exit" && data.type !== "error") {
+        if (data.type === "spawn") this.cancel(data.request);
+        return;
+      }
+      if (data.type === "spawn") {
+        if (isRevoked(filesystem) || data.request.parentPid !== context.pid) this.cancel(data.request);
+        else this.spawn(data.request);
+        return;
+      }
+      if (data.type === "child-close") { if (!isRevoked(filesystem) && data.parentPid === context.pid) this.close(data.parentPid, data.pid); return; }
+      if (data.type !== "exit" && data.type !== "error") return;
+      child.acknowledged = true;
+      this.filesystem.reap(filesystem);
+      if (data.type === "exit" && data.signal) context.defaultSignal(data.signal as Signal);
+      else if (data.type === "exit") context.exit(data.code);
+      else context.fail(new Error(data.message));
+      this.stopRuntimeSafely(child);
+    };
+    worker.onerror = event => {
+      event.preventDefault();
+      context.fail(new Error(event.message));
+      this.stopRuntimeSafely(child);
+    };
+    try { worker.postMessage(request, [request.filesystem.port]); }
+    catch (error) { request.filesystem.port.close(); this.stopRuntimeSafely(child); throw error; }
+    return { terminate: () => this.stopRuntime(child) };
+  }
+  private stopRuntime(child: RuntimeChild): void | Promise<void> {
+    if (child.stopped) return;
+    const stop = () => {
+      if (child.stopped) return;
+      child.stopped = true;
+      child.worker.terminate();
+      if (child.request.moduleCache) void caches.delete(child.request.moduleCache);
+      this.runtimeChildren.delete(child.context.pid);
+    };
+    if (child.acknowledged) { stop(); return; }
+    return child.stopping ??= this.filesystem.quiesce(child.filesystem).then(stop);
+  }
+  private stopRuntimeSafely(child: RuntimeChild): void {
+    try { const pending = this.stopRuntime(child); if (pending) void pending.catch(error => this.report(error)); }
+    catch (error) { this.report(error); }
+  }
+
   async wait(pid: number): Promise<ProcessExit> {
     const child = this.children.get(pid);
     const supervisor = await this.ready();
@@ -212,6 +368,11 @@ export class SubprocessBroker {
     const sig = checkedSignal(signal), child = this.children.get(pid);
     if (child) return this.deliver([{ pid, child, transport: this.childSignalTransport(child) }], sig);
     if (this.root?.pid === pid) return this.deliver([{ pid, transport: this.root }], sig);
+    if (this.runtimeRoot) {
+      const state = this.runtimeApi!.workerProcessSlots(this.runtimeRoot)
+        .map(slot => this.runtimeApi!.workerProcessState(this.runtimeRoot!, slot)).find(state => state.pid === pid);
+      if (state) return this.deliver([{ pid, transport: state.signals }], sig);
+    }
     return this.ready().then(supervisor => supervisor.kill(pid, sig));
   }
   killJob(job: number, signal: number): Promise<void> {
@@ -222,7 +383,12 @@ export class SubprocessBroker {
     // Never publish locally and then call supervisor.killJob: that could replay a consumed bit.
     const root: { pid: number; transport: SignalTransport; child?: Child }[] = this.root?.job === job
       ? [{ pid: this.root.pid, transport: this.root }] : [];
-    return this.deliver(root.concat(targets), sig);
+    // Include reserved generic identities before their lazy module or admission reaches us.
+    const runtimeTargets = this.runtimeRoot ? this.runtimeApi!.workerProcessSlots(this.runtimeRoot)
+      .map(slot => this.runtimeApi!.workerProcessState(this.runtimeRoot!, slot))
+      .filter(state => state.pid !== this.root?.pid && state.job === job)
+      .map(state => ({ pid: state.pid, transport: state.signals })) : [];
+    return this.deliver(root.concat(targets, runtimeTargets), sig);
   }
   /** Guest handle ownership, not process ancestry. Close makes an existing wait resolve before
    * reaping; closing a completed child simply releases its retained argv/env/job metadata.
@@ -248,7 +414,7 @@ export class SubprocessBroker {
   }
   /** Parent exit is not job teardown: independently running/background children stay alive. */
   rootExit(code: number): void {
-    if (this.activation) void this.activation.then(supervisor => supervisor.exit(this.options.root?.pid ?? 1, code)).catch(error => this.report(error));
+    if (this.activation) void this.activation.then(supervisor => supervisor.exit(this.root?.pid ?? this.options.root?.pid ?? 1, code)).catch(error => this.report(error));
   }
 
   private cleanupCache(child: Child): void { if (child.request?.moduleCache) void caches.delete(child.request.moduleCache); }
@@ -285,6 +451,7 @@ export class SubprocessBroker {
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.ready().then(supervisor => {
+        this.runtime?.pump();
         for (const [pid, child] of this.children) {
           const record = supervisor.get(pid);
           if (!record || record.result) continue;
@@ -302,7 +469,7 @@ export class SubprocessBroker {
           supervisor.observeSignal(pid, signal);
         }
       }).catch(error => this.report(error));
-      if (this.children.size) this.watch();
+      if (this.children.size || this.runtimeChildren.size) this.watch();
     }, 4);
   }
   dispose(): void {
@@ -314,6 +481,11 @@ export class SubprocessBroker {
       this.cancel(child.spawn);
       if (child.worker) this.stopSafely(child);
       else this.children.delete(child.spawn.pid);
+    }
+    this.runtime?.dispose();
+    for (const child of this.runtimeChildren.values()) {
+      this.filesystem.revoke(child.filesystem);
+      this.stopRuntimeSafely(child);
     }
     if (this.activation) void this.activation.then(supervisor => supervisor.dispose()).catch(error => this.report(error));
   }

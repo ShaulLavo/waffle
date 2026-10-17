@@ -746,8 +746,8 @@ export class SharedFilesystemState {
 }
 /** This connection's revocation word or any ancestor's. An indexed scan: Array#some with a
  * callback costs several times more in WebKit, and every direct I/O call checks it. */
-export function sharedRevoked(connection: { revocations: SharedArrayBuffer[] }): () => boolean {
-  const words = connection.revocations.map(buffer => new Int32Array(buffer));
+export function sharedRevoked(connection: { revocations: SharedArrayBuffer[]; ownerStates: SharedArrayBuffer }): () => boolean {
+  const words = [new Int32Array(connection.ownerStates, 0, 1)].concat(connection.revocations.map(buffer => new Int32Array(buffer)));
   return () => {
     for (let i = 0; i < words.length; i++) if (Atomics.load(words[i]!, 0) !== 0) return true;
     return false;

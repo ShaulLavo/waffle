@@ -18,6 +18,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
 | [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
+| [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -1489,3 +1490,18 @@ count. Checking the queue only before accepting an entire large write allowed
 the first write to bypass the limit. The bounded host test fails with that
 implementation and passes with capacity-aware writes, including full-queue,
 zero-length and owned-copy cases. No upstream implementation is copied.
+
+## Cross-worker descriptor ownership
+
+`runtime/proc/{worker-client,worker-broker,filesystem-codec}.ts` and
+`runtime/core/open-file.ts` are original bun-wasm adapters, not copied Bun, Node or WASI host
+implementations. They extend the descriptor and filesystem services present at bun-wasm
+`52576274` with cloneable process bindings and shared file-description state. The browser
+worker installs those bindings into the same table used by preview1 calls.
+
+A spawn reserves independent filesystem capabilities before returning; closing or killing the
+parent cannot invalidate an admitted child's open file. Duplicate child bindings share one
+open description, including a shared file cursor. Cursor operations participate in filesystem
+host sections so revocation and reaping cannot strand a lock. Stream descriptions may create
+a fresh process-owned endpoint during inheritance, and termination freezes all capabilities
+before making the child waitable. No upstream patch is added by these adapters.

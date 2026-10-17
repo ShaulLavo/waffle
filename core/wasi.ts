@@ -1,3 +1,4 @@
+import { withFileOffset } from "./open-file";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
@@ -283,23 +284,29 @@ export class Wasi {
     if (count === 0) return 0;
     const chunks = this.iovecs(iovs, count);
     if (chunks.every(chunk => chunk.length === 0)) return 0;
-    if (at === null && file.append) {
-      const result = this.opts.fs.append(file.handle, chunks);
-      if (typeof result === "number") return result;
-      file.offset = result.offset;
-      return result.written;
-    }
-    const pos = at ?? file.offset;
-    const written = this.opts.fs.write(file.handle, chunks, pos);
-    if (written >= 0 && at === null) file.offset = pos + written;
-    return written;
+    const write = () => {
+      if (at === null && file.append) {
+        const result = this.opts.fs.append(file.handle, chunks);
+        if (typeof result === "number") return result;
+        file.offset = result.offset;
+        return result.written;
+      }
+      const pos = at ?? file.offset;
+      const written = this.opts.fs.write(file.handle, chunks, pos);
+      if (written >= 0 && at === null) file.offset = pos + written;
+      return written;
+    };
+    return at === null ? withFileOffset(file, write) : write();
   }
 
   private readIn(file: Extract<Resource, { kind: "file" }>, chunks: Uint8Array[], at: number | null): number {
-    const pos = at ?? file.offset;
-    const read = this.opts.fs.read(file.handle, chunks, pos);
-    if (read >= 0 && at === null) file.offset = pos + read;
-    return read;
+    const read = () => {
+      const pos = at ?? file.offset;
+      const count = this.opts.fs.read(file.handle, chunks, pos);
+      if (count >= 0 && at === null) file.offset = pos + count;
+      return count;
+    };
+    return at === null ? withFileOffset(file, read) : read();
   }
 
   private functions(): Record<string, (...args: never[]) => number | void> {
@@ -494,12 +501,16 @@ export class Wasi {
         if (!(entry.rightsBase & right)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
-        const base = whence === 0 ? 0 : whence === 1 ? entry.resource.offset : whence === 2 ? this.opts.fs.stat(entry.resource.handle).size : NaN;
-        const pos = base + Number(offset);
-        if (!(pos >= 0)) return EINVAL;
-        entry.resource.offset = pos;
-        this.view().setBigUint64(newOffsetPtr, BigInt(pos), true);
-        return SUCCESS;
+        const file = entry.resource;
+        const result = withFileOffset(file, () => {
+          const base = whence === 0 ? 0 : whence === 1 ? file.offset : whence === 2 ? this.opts.fs.stat(file.handle).size : NaN;
+          const pos = base + Number(offset);
+          if (!(pos >= 0)) return -EINVAL;
+          file.offset = pos;
+          this.view().setBigUint64(newOffsetPtr, BigInt(pos), true);
+          return SUCCESS;
+        });
+        return result < 0 ? -result : result;
       },
       fd_tell: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);

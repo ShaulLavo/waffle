@@ -15,6 +15,10 @@ export interface Stream {
   write(chunks: readonly Uint8Array[]): number;
   readiness(): Readiness;
   close?(): void;
+  /** A process gets independent capabilities; dup within one process keeps its description. */
+  forProcess?(pid: number): Stream;
+  /** Freeze shared I/O before releasing references or requesting physical termination. */
+  revoke?(): void;
 }
 export type Resource =
   | { kind: "file"; handle: FileHandle; offset: number; append: boolean }
