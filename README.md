@@ -67,12 +67,14 @@ does not load the generic ownership adapters. Startup failure releases the trans
 Each process has per-signal default, ignored or handled dispositions. `kill` immediately selects
 SIGINT/SIGTERM/SIGPIPE's default signaled outcome (`128 + signal`) and revokes descriptors when
 no handler is registered. Ignored signals do nothing; handled signals set their own pending bit
-without revoking the guest, whose ordinary `exit` retains its code. Registration and removal are
-synchronous, including restoring the default when the last listener is removed. Distinct pending
-signals cannot overwrite one another; repeated instances of one signal may coalesce. Removing a
-pending handler to default applies that default immediately; ignoring it clears the pending bit.
-The shared interrupt word is a wake hint, not the authoritative queue. `observeSignal` adopts a
-request already published by a guest without publishing it again.
+without revoking the guest, whose ordinary `exit` retains its code. The preview1 adapter starts
+all signals at default; the Node/Bun JS runtime starts SIGPIPE ignored to match Node and Bun,
+changes it to handled while a JS listener exists, and restores default on final listener removal.
+Registration and removal are synchronous. Distinct pending signals cannot overwrite one another;
+repeated instances of one signal may coalesce. Removing a pending handler to default applies that
+default immediately; ignoring it clears the pending bit. The shared interrupt word is a wake hint,
+not the authoritative queue. `observeSignal` adopts a request already published by a guest without
+publishing it again.
 
 The preview1 adapter exposes `runtime_proc.signal(sig, mode)` for registration and self-signals,
 `runtime_proc.interrupted()` for dequeue, and `runtime_proc.default_signal(sig)` for an explicit

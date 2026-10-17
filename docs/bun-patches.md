@@ -81,7 +81,7 @@ Each row has one class. A file with independent changes has separate rows.
 
 | [`runtime/core/`, `runtime/fs/`, MemFS and pipe adapters](#browser-runtime-core) | Host feature | Original WASI, shared filesystem, IndexedDB persistence, lazy residency and descriptor adapters. |
 | [`web/tests/persistence-browser-worker.ts`, persistence corpus](#browser-runtime-core) | Host feature | Original browser test adapter reproduces the local storage spike's generated sizes and synthetic bytes; no package contents or upstream implementation. |
-| [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions, immutable final-kind query and byte-sized exit statuses. |
+| [`runtime/proc/`, browser and Bun process adapters](#browser-process-service) | Host feature | Original process supervisor, executable registry, jobs, registered signal dispositions including Node/Bun's ignored SIGPIPE default, immutable final-kind query and byte-sized exit statuses. |
 | [`runtime/fs/`, filesystem quiescence](#filesystem-quiescence) | Host feature | Original shared admission and revocation fence lets controllers stop workers only after direct filesystem operations finish. |
 | [`runtime/fs/opfs.ts`, OPFS access-handle and quota adapters](#opfs-storage-adapter) | Host feature | Original one-file-per-payload storage adapter; adapts SLICC-kernel's Apache-2.0 `src/fs/opfs.ts` at 88c5bb3 for NotReadableError retries and QuotaExceededError mapping while retaining bun-wasm's checksummed snapshots, lazy index and bounded cache. |
 | [`scripts/browser-build.ts`](#browser-package-resolution) | Host feature | Resolve the consumer's exported runtime files through an absolute package path that works with Bun's isolated linker. |
@@ -141,10 +141,17 @@ publish synchronously, and removing a pending handler to default takes that acti
 A 65-cell signal table couples disposition with a per-signal pending bit, preserving distinct
 signals and clearing pending before once-listener removal. Slot 18 supplies registration,
 dequeue and self-signals without mandatory Wasm imports. Cooperative guest event-loop turns
-pump handlers without keeping an otherwise idle program alive. EPIPE remains catchable by the
-guest; only an escaping EPIPE raises SIGPIPE through the same disposition logic.
-That decision precedes worker error hooks, which must not relabel default signal death
-as an ordinary worker error. The Node import dispatcher composes process, worker,
+pump handlers without keeping an otherwise idle program alive. The original JS process adapter
+initializes SIGPIPE as ignored to match observed Node 26.7.0 and Bun 1.4.2 behavior, with no upstream
+implementation copied. Registering a SIGPIPE listener selects handled delivery and removing the
+last listener restores default (including once listeners), matching both native runtimes.
+Removing unrelated listeners preserves the initial ignored disposition. Generic host signal
+controllers retain the preview1 default.
+EPIPE remains catchable by the guest; an escaping EPIPE follows the ordinary uncaught-error path,
+prints the error and exits 1. It does not synthesize SIGPIPE or consume pending signals, even when
+a SIGPIPE listener exists. Physical host signals are forwarded separately. Plain preview1 guests retain default
+SIGPIPE and its status 141. Typed signal decisions precede worker error hooks, which must not
+relabel default signal death as an ordinary worker error. The Node import dispatcher composes process, worker,
 network and optional signal slots through the same guarded subprocess adapter.
 SIGKILL immediately records 137 and revokes before physical termination; it cannot be caught
 or ignored. A shared atomic terminal-result primitive arbitrates guest completion, startup

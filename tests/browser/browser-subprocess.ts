@@ -72,23 +72,33 @@ const timed = Bun.spawnSync(cmd("setInterval(() => {}, 1000)"), { timeout: 1, ki
 console.log("api term timeout default", timed.exitCode, JSON.stringify(timed.signalCode), timed.exitedDueToTimeout, timed.success, JSON.stringify(timed.error ?? null));
 for (const [signal, number] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGPIPE", 13]]) {
   for (const mode of ["default", "handled", "removed"]) {
+    const ignored = signal === "SIGPIPE" && mode === "default";
     const code = 'const handler = () => process.exit(0); ' +
       (mode === "default" ? '' : 'process.on(' + JSON.stringify(signal) + ', handler); ') +
       (mode === "removed" ? 'process.removeListener(' + JSON.stringify(signal) + ', handler); ' : '') +
-      'console.log("signal-ready"); setInterval(() => {}, 1000);';
-    const child = Bun.spawn(cmd(code), { stdout: "pipe", stderr: "pipe" });
+      'console.log("signal-ready"); ' +
+      (ignored ? 'await Bun.stdin.text(); process.exit(17);' : 'setInterval(() => {}, 1000);');
+    const child = Bun.spawn(cmd(code), { stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: 5000, killSignal: "SIGKILL" });
     const reader = child.stdout.getReader();
     try {
       const first = await reader.read();
       if (first.done || new TextDecoder().decode(first.value).trim() !== "signal-ready") throw new Error("signal child was not ready");
       child.kill(signal);
+      // Parent-side signal classification is synchronous. Only release the ignored child
+      // after delivery, so an early ordinary exit cannot make this check pass accidentally.
+      if (ignored) child.stdin.end();
       const exited = await child.exited;
       while (!(await reader.read()).done) { /* Drain the readiness reader through EOF. */ }
       const stderr = await new Response(child.stderr).text();
       if (stderr) throw new Error(stderr);
       console.log("api signal", mode, signal, exited, child.exitCode, JSON.stringify(child.signalCode));
-      if (exited !== (mode === "handled" ? 0 : 128 + number)) throw new Error("incorrect signal status");
-    } finally { reader.releaseLock(); }
+      if (exited !== (ignored ? 17 : mode === "handled" ? 0 : 128 + number)) throw new Error("incorrect signal status");
+      if (child.exitedDueToTimeout) throw new Error("signal child timed out");
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      reader.releaseLock();
+    }
   }
 }
 console.log("api cwd", Bun.spawnSync(cmd("0"), { cwd: "/missing-child-cwd" }).error.code);
@@ -100,7 +110,7 @@ const apiExpected = [
   "api term 23 23 23 null true", "api term 143 143 143 null true",
   'api term timeout default null "SIGTERM" true false null',
 ].concat(executableAliases.map(alias => `api alias ${alias} 0 null null alias-ready`), [["SIGINT", 130], ["SIGTERM", 143], ["SIGPIPE", 141]].flatMap(([signal, status]) => [
-  `api signal default ${signal} ${status} null "${signal}"`,
+  signal === "SIGPIPE" ? "api signal default SIGPIPE 17 17 null" : `api signal default ${signal} ${status} null "${signal}"`,
   `api signal handled ${signal} 0 0 null`,
   `api signal removed ${signal} ${status} null "${signal}"`,
 ]));

@@ -64,10 +64,12 @@ than it is today. The process layer loads on the first spawn.
   (QuickJS's interrupt handler, a JSC trap hook); third-party WASM gets checks injected at loop
   headers and function entries (covering tail-call cycles) when loaded, or is refused.
   `terminate()` stays as the backstop. Each process has a per-signal disposition: default,
-  ignored or handled. Unless the guest registered a handler, the supervisor applies SIGINT,
-  SIGTERM or SIGPIPE's default action immediately, recording `128 + sig` and revoking; it does
-  not wait for an engine checkpoint. Only handled signals are queued for guest delivery, and
-  that guest keeps its own exit code. Removing the last handler restores the default action.
+  ignored or handled. When the guest retains the default disposition, the supervisor applies
+  SIGINT, SIGTERM or SIGPIPE's default action immediately, recording `128 + sig` and revoking;
+  it does not wait for an engine checkpoint. Only handled signals are queued for guest delivery,
+  and that guest keeps its own exit code. Removing the last handler restores the runtime's
+  default action, including SIGPIPE. Node/Bun JS guests initially ignore SIGPIPE until its first
+  handler is installed; unrelated listener removal preserves that initial disposition.
   SIGKILL is always immediate and cannot be caught or ignored. Revocation
   wakes blocked peers at once (EOF in about 0.06 ms, EPIPE in about 0.3 ms), so pipelines never
   wait on a dying worker. There is no automatic escalation timer.
@@ -223,17 +225,19 @@ non-blocking except `poll`.
 | `interrupted` | `() -> sig` | Dequeues one pending handled signal for this process (0 if none); the guest dispatches its handler at a checkpoint. Unhandled default actions have already been selected by the supervisor. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
 | `default_signal` | `(sig) -> never` | Takes the default action for the signal returned by a checkpoint. The adapter reports it explicitly before unwinding; the supervisor records `128 + sig`, revokes descriptors and requests physical termination. An unrelated later trap is not inferred to be a signal exit. |
 
-Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. Each process starts with the default
-per-signal disposition, rather than assuming every program handles a signal. For SIGINT, SIGTERM
-and SIGPIPE, `kill` examines that disposition synchronously: default selects signal death,
-records `128 + sig` and revokes immediately; ignored does nothing; handled queues delivery
-without revoking the guest. Node/Bun listener mutations publish registration and removal before
-user callbacks; preview1 guests register through `runtime_proc.signal`. A handled guest's own
-exit code stands, including 0 or ordinary 143. Removing the final handler restores default;
-removing a pending handler to default applies that action immediately, while ignoring a signal
-clears its pending state. Standard signals may coalesce per signal, but distinct pending signals
-must not overwrite one another. Dequeue clears pending before a once-listener removes itself.
-The per-signal state is authoritative; the shared interrupt word only wakes checkpoints.
+Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. Plain preview1 processes start with the
+default per-signal disposition, rather than assuming every program handles a signal. The Node/Bun
+JS runtime starts SIGPIPE ignored, matching Node and Bun; an explicit JS listener changes it to
+handled and removing the final SIGPIPE listener restores default, matching native Node/Bun. For SIGINT, SIGTERM and SIGPIPE, `kill`
+examines the current disposition synchronously: default selects signal death, records `128 + sig`
+and revokes immediately; ignored does nothing; handled queues delivery without revoking the guest.
+Node/Bun listener mutations publish registration and removal before user callbacks; preview1 guests
+register through `runtime_proc.signal`. A handled guest's own exit code stands, including 0 or
+ordinary 143. Removing a pending handler to default immediately applies that action, while
+ignoring a signal clears its pending state. Standard signals may coalesce per signal, but distinct
+pending signals must not overwrite one another. Dequeue clears pending before a once-listener
+removes itself. The per-signal state is authoritative; the shared interrupt word only wakes
+checkpoints.
 
 An explicit `runtime_proc.default_signal(sig)` still reports a typed default action. SIGKILL
 always selects 137 and revokes immediately; it cannot be caught or ignored. Guest completion
@@ -244,8 +248,10 @@ acquisition, and cleared on exit. After revoking, the supervisor waits asynchron
 then reaps filesystem locks and terminates. A guest entering after revocation must abort before
 acquiring any lock. This proves quiescence without claiming `terminate()` proves death.
 Default-action statuses are 130, 143, 137 and 141. A JS EPIPE error remains catchable through
-normal stream callbacks/listeners or try/catch; an EPIPE escaping guest error handling raises
-SIGPIPE through the same disposition logic. An EPIPE-handling guest keeps its own status.
+normal stream callbacks/listeners or try/catch. An escaping EPIPE follows the ordinary uncaught-error
+path and exits 1, even with a SIGPIPE listener; an EPIPE-handling guest keeps its own status. The
+error policy never synthesizes SIGPIPE; physical signals are delivered separately. Plain preview1
+guests retain the default SIGPIPE disposition and status 141 for signal delivery.
 
 One Ctrl+C stops an ordinary foreground program with 130 without waiting for step 7a. A
 registered SIGINT handler may clean up and keep its own status. Ctrl+C signals the foreground
