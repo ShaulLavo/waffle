@@ -54,7 +54,7 @@ test("Bun light initial downloads allow the tiny fatal check but never the binar
 });
 
 test("lookalike proc and interrupt paths outside the installed package are not attributed", () => {
-  const paths = ["runtime/proc/supervisor.ts", "/cache/other.runtime.git/proc/supervisor.ts", "/cache/other.runtime.git/interrupt/rewriter.ts"];
+  const paths = ["/outside-the-package/runtime/proc/supervisor.ts", "/cache/other.runtime.git/proc/supervisor.ts", "/cache/other.runtime.git/interrupt/rewriter.ts"];
   expect(processServiceInputs(paths, runtime)).toEqual([]);
   expect(() => checkLazyInterruptRewriter(paths, runtime)).not.toThrow();
 });

@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rewriteNodeImports } from "../build";
 
 test("Node emission rewrites import syntax, never matching strings, comments or regexes", async () => {
-  const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "bun-wasm-emission-"));
+  const root = await mkdtemp(join(process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()), "bun-wasm-emission-"));
   try {
     await mkdir(join(root, "nested"));
     await writeFile(join(root, "nested", "thing.with.dots.ts"), "export const value = 1;");

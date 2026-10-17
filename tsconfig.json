@@ -23,6 +23,7 @@
     "fs",
     "proc",
     "interrupt",
-    "browser"
+    "browser",
+    "tests/storage-browser-runner.ts"
   ]
 }

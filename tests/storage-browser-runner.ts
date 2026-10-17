@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { chromium, firefox, webkit, type Browser, type BrowserContext } from "../../web/node_modules/playwright";
+import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
 
 type Backend = "indexeddb" | "opfs";
 type WorkerRequest = { kind: "list" } | { kind: "run"; backend: Backend; label: string };

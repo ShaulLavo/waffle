@@ -1,10 +1,10 @@
 import type { Stream } from "@bun-wasm/runtime/core";
 import type { EngineNet } from "./net/host";
 import type { SlotImpls } from "./net/trampoline";
-import { ProcessIdentityAllocator } from "../../runtime/proc/identity.ts";
-import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome.ts";
-import { createSignalState, publishSignal, requestSignal, setSignalDisposition, takeSignal } from "../../runtime/proc/signals.ts";
-import { memoryViews } from "../../runtime/core/memory-views.js";
+import { ProcessIdentityAllocator } from "@bun-wasm/runtime/proc/identity";
+import { claimOutcome, outcomeWord, readOutcome } from "@bun-wasm/runtime/proc/outcome";
+import { createSignalState, publishSignal, requestSignal, setSignalDisposition, takeSignal } from "@bun-wasm/runtime/proc/signals";
+import { memoryViews } from "@bun-wasm/runtime/core/memory-views";
 import { InheritedWorkerPipes, workerBuffers } from "./worker-pipes.ts";
 
 export interface SpawnMeta {

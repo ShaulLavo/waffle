@@ -99,6 +99,7 @@ export async function buildBrowserEntries(entrypoints: string[], outdir: string,
 }
 
 /** Keep service workers standalone classic scripts for Safari. Never split this build. */
-export function buildClassicWorker(entrypoint: string, outdir: string, define?: Record<string, string>) {
-  return checked({ entrypoints: [entrypoint], outdir, define, target: "browser", format: "iife", minify: true, naming: "[name].[ext]" });
+export function buildClassicWorker(entrypoint: string, outdir: string, define?: Record<string, string>, consumerEntry = entrypoint) {
+  const { plugins } = browserBuildConfig([consumerEntry], outdir);
+  return checked({ entrypoints: [entrypoint], outdir, define, plugins, target: "browser", format: "iife", minify: true, metafile: true, naming: "[name].[ext]" });
 }

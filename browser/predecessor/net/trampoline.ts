@@ -1,4 +1,4 @@
-import { memoryViews } from "../../../runtime/core/memory-views.js";
+import { memoryViews } from "@bun-wasm/runtime/core/memory-views";
 
 // Installs JS functions into bun.wasm's `bun_wasm` host slots (docs/host-abi.md).
 //

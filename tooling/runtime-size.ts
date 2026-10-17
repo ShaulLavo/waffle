@@ -144,14 +144,17 @@ export async function runtimeSizeReport() {
   const net = layers.find((layer) => layer.name === "net")!;
   net.files.push({ path: "preview-websocket-client.js", ...await bytes(new Blob([previewSocketScript])) });
   Object.assign(net, totals(net.files));
-  const sw = await build({
-    entrypoints: [resolve(root, "web/src/sw.ts")], outdir: resolve(root, ".runtime-size/sw"),
-    target: "browser", format: "iife", minify: true,
-    define: { __PREVIEW_SOCKET_SCRIPT__: JSON.stringify(previewSocketScript) },
-  });
-  const serviceWorker = await bytes(sw.outputs[0]!);
   const applications: Record<string, unknown> = {};
   for (const name of ["web", "sandbox"] as const) {
+    // Shared service-worker source still belongs to this application's install.
+    const outdir = resolve(root, ".runtime-size", `${name}-sw`);
+    const { plugins } = browserBuildConfig([resolve(root, name, "src/main.ts")], outdir);
+    const sw = await build({
+      entrypoints: [resolve(root, "web/src/sw.ts")], outdir, plugins,
+      target: "browser", format: "iife", minify: true,
+      define: { __PREVIEW_SOCKET_SCRIPT__: JSON.stringify(previewSocketScript) },
+    });
+    const serviceWorker = await bytes(sw.outputs[0]!);
     applications[name] = { beforeUnsplit: await application(name, false, serviceWorker), afterSplit: await application(name, true, serviceWorker) };
   }
   return { method: "Same-source before/after splitting. gzip level 9; maps excluded. Layer closures export all public symbols, include transitive dependencies and overlap (not additive). Initial graph lists statically reachable request URLs with a scoped worker, counting root/scoped chunk copies separately regardless of SW proxy/cache reuse. The two-registration cold estimate adds a second classic SW fetch; neither estimate is a network capture. No WASM or app dist is read/built. Budgets for fs/net/proc are guides; only core is gated.", layers, applications };
