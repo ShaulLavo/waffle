@@ -149,13 +149,26 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     }
     const token = identifier(code, index);
     if (token) {
-      if (token.value === "import") {
+      if (token.value === "import" && !/[.?]$/.test(code.slice(0, index).trimEnd())) {
         const after = trivia(code, token.end);
         const literal = code[after] === "(" ? nextString(code, after + 1) : nextString(code, after) ?? (() => {
           let at = after;
           while (at < code.length && code[at] !== ";") {
+            const quote = code[at];
+            if (quote === "\"" || quote === "'") {
+              at = decodeString(code, at, quote).end;
+              continue;
+            }
+            const commentEnd = skipComment(code, at);
+            if (commentEnd !== at) {
+              at = commentEnd;
+              continue;
+            }
             const word = identifier(code, at);
-            if (word?.value === "from") return nextString(code, word.end);
+            if (word?.value === "from") {
+              const literal = nextString(code, word.end);
+              if (literal) return literal;
+            }
             at = word ? word.end : at + 1;
           }
           return undefined;
@@ -166,11 +179,21 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
         if (code[after] === "{" || code[after] === "*") {
           let at = after + 1;
           while (at < code.length && code[at] !== ";") {
+            const quote = code[at];
+            if (quote === "\"" || quote === "'") {
+              at = decodeString(code, at, quote).end;
+              continue;
+            }
+            const commentEnd = skipComment(code, at);
+            if (commentEnd !== at) {
+              at = commentEnd;
+              continue;
+            }
             const word = identifier(code, at);
             if (word?.value === "from") {
               const literal = nextString(code, word.end);
               if (literal?.value.startsWith(".")) edits.push(literal);
-              break;
+              if (literal) break;
             }
             at = word ? word.end : at + 1;
           }
@@ -182,6 +205,13 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     }
     canStartRegex = "([{,:;!?=+*%&|^~<>-".includes(character);
     index++;
+  }
+  const expected = new Bun.Transpiler({ loader: "ts" }).scanImports(code)
+    .map(entry => entry.path)
+    .filter(path => path.startsWith("."));
+  const actual = edits.map(literal => literal.value);
+  if (expected.length !== actual.length || expected.some((path, index) => path !== actual[index])) {
+    throw new Error(`Bun import scanner disagrees with Waffle's syntax scanner in ${source}`);
   }
   const resolved = edits.map(literal => {
     const specifier = literal.value;
