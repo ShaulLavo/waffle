@@ -4,8 +4,9 @@
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
 // PLAYWRIGHT=<path to playwright/index.mjs> overrides the project's installed package.
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { stopForeground } from "./foreground.ts";
 
 const here = new URL(".", import.meta.url).pathname;
@@ -15,7 +16,7 @@ const playwrightPath =
   "playwright";
 const { chromium, webkit, devices } = await import(playwrightPath);
 
-const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? "/work/tmp", "bun-wasm-web-net-"));
+const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? tmpdir(), "bun-wasm-web-net-"));
 const children = [];
 const browsers = [];
 let cleaned = false;
@@ -25,9 +26,7 @@ async function cleanup() {
   for (const b of browsers) await b.close().catch(() => {});
   for (const child of children) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
-    let cwd;
-    try { cwd = readlinkSync(`/proc/${child.pid}/cwd`); } catch { continue; }
-    if (cwd !== web) throw new Error(`Refusing to kill ${child.pid}: cwd ${cwd} differs from ${web}`);
+    // ChildProcess handles identify only servers started by this session on every OS.
     const closed = new Promise((resolve) => child.once("close", resolve));
     child.kill("SIGKILL");
     await closed;

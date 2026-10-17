@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { runForeground } from "./foreground.ts";
 
 export const web = join(new URL(".", import.meta.url).pathname, "..");
@@ -15,7 +16,7 @@ export const playwright = await import(playwrightPath);
 
 /** Children, browsers and a scratch directory, all removed by `cleanup` (also on SIGINT/SIGTERM). */
 export function session(prefix) {
-  const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? "/work/tmp", prefix));
+  const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? tmpdir(), prefix));
   const children = [];
   const browsers = [];
   let cleaned = false;
