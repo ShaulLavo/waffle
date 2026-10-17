@@ -688,7 +688,7 @@ test("broker disposal preserves safe confirmation after listener cleanup without
     f.broker.dispose();
     // Embeddings may immediately dispose their supervisor and remove every listener too.
     f.supervisor.dispose();
-    expect(terminationStarted).toBe(true);
+    expect(terminationStarted).toBe(false);
     expect(physicallyTerminated).toBe(false);
     expect(f.broker.get(pid)).toBeUndefined();
     expect(f.broker.getIdentity(pid)).toBeUndefined();
@@ -697,6 +697,7 @@ test("broker disposal preserves safe confirmation after listener cleanup without
     expect(f.root.wait(1, pid)).toBeNull();
     const before = Atomics.load(state.wake, 0);
     finishFence(); await fence; await Promise.resolve();
+    expect(terminationStarted).toBe(true);
     expect(physicallyTerminated).toBe(false);
     expect(Atomics.load(state.confirmed, 0)).toBe(1);
     expect(Atomics.load(state.jobConfirmed, 0)).toBe(1);

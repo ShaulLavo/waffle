@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { playwright, ready, run, session, writeFile } from "./playground.mjs";
 
 const s = session("bun-wasm-browser-memory-");
-const source = readFileSync(new URL("../../runtime/core/memory-views.js", import.meta.url), "utf8");
+const source = readFileSync(new URL(import.meta.resolve("@bun-wasm/runtime/core/memory-views")), "utf8");
 const guest = readFileSync(new URL("../../tests/fixtures/memory-grow/index.js", import.meta.url), "utf8");
 const expected = readFileSync(new URL("../../tests/fixtures/memory-grow/expected.txt", import.meta.url), "utf8").trim();
 

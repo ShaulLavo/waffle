@@ -1,23 +1,332 @@
 {
   "name": "@bun-wasm/runtime",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "private": true,
   "type": "module",
   "exports": {
-    "./core": "./core/index.ts",
-    "./core/memory-views": "./core/memory-views.js",
-    "./fs": "./fs/index.ts",
-    "./fs/memory": "./fs/memory.ts",
-    "./proc": "./proc/index.ts",
-    "./proc/stub": "./proc/stub.ts",
-    "./interrupt": "./interrupt/index.ts"
+    ".": {
+      "types": "./index.ts",
+      "bun": "./index.ts",
+      "browser": "./index.ts",
+      "node": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./core/index.ts",
+      "bun": "./core/index.ts",
+      "browser": "./core/index.ts",
+      "node": "./dist/core/index.js"
+    },
+    "./core/memory-views": {
+      "types": "./core/memory-views.js",
+      "bun": "./core/memory-views.js",
+      "browser": "./core/memory-views.js",
+      "node": "./dist/core/memory-views.js"
+    },
+    "./fs": {
+      "types": "./fs/index.ts",
+      "bun": "./fs/index.ts",
+      "browser": "./fs/index.ts",
+      "node": "./dist/fs/index.js"
+    },
+    "./fs/memory": {
+      "types": "./fs/memory.ts",
+      "bun": "./fs/memory.ts",
+      "browser": "./fs/memory.ts",
+      "node": "./dist/fs/memory.js"
+    },
+    "./proc": {
+      "types": "./proc/index.ts",
+      "bun": "./proc/index.ts",
+      "browser": "./proc/index.ts",
+      "node": "./dist/proc/index.js"
+    },
+    "./proc/stub": {
+      "types": "./proc/stub.ts",
+      "bun": "./proc/stub.ts",
+      "browser": "./proc/stub.ts",
+      "node": "./dist/proc/stub.js"
+    },
+    "./interrupt": {
+      "types": "./interrupt/index.ts",
+      "bun": "./interrupt/index.ts",
+      "browser": "./interrupt/index.ts",
+      "node": "./dist/interrupt/index.js"
+    },
+    "./core/descriptors": {
+      "types": "./core/descriptors.ts",
+      "bun": "./core/descriptors.ts",
+      "browser": "./core/descriptors.ts",
+      "node": "./dist/core/descriptors.js"
+    },
+    "./core/filesystem": {
+      "types": "./core/filesystem.ts",
+      "bun": "./core/filesystem.ts",
+      "browser": "./core/filesystem.ts",
+      "node": "./dist/core/filesystem.js"
+    },
+    "./core/open-file": {
+      "types": "./core/open-file.ts",
+      "bun": "./core/open-file.ts",
+      "browser": "./core/open-file.ts",
+      "node": "./dist/core/open-file.js"
+    },
+    "./core/path": {
+      "types": "./core/path.ts",
+      "bun": "./core/path.ts",
+      "browser": "./core/path.ts",
+      "node": "./dist/core/path.js"
+    },
+    "./core/wasi": {
+      "types": "./core/wasi.ts",
+      "bun": "./core/wasi.ts",
+      "browser": "./core/wasi.ts",
+      "node": "./dist/core/wasi.js"
+    },
+    "./fs/backend": {
+      "types": "./fs/backend.ts",
+      "bun": "./fs/backend.ts",
+      "browser": "./fs/backend.ts",
+      "node": "./dist/fs/backend.js"
+    },
+    "./fs/client": {
+      "types": "./fs/client.ts",
+      "bun": "./fs/client.ts",
+      "browser": "./fs/client.ts",
+      "node": "./dist/fs/client.js"
+    },
+    "./fs/indexeddb": {
+      "types": "./fs/indexeddb.ts",
+      "bun": "./fs/indexeddb.ts",
+      "browser": "./fs/indexeddb.ts",
+      "node": "./dist/fs/indexeddb.js"
+    },
+    "./fs/opfs": {
+      "types": "./fs/opfs.ts",
+      "bun": "./fs/opfs.ts",
+      "browser": "./fs/opfs.ts",
+      "node": "./dist/fs/opfs.js"
+    },
+    "./fs/persistent": {
+      "types": "./fs/persistent.ts",
+      "bun": "./fs/persistent.ts",
+      "browser": "./fs/persistent.ts",
+      "node": "./dist/fs/persistent.js"
+    },
+    "./fs/protocol": {
+      "types": "./fs/protocol.ts",
+      "bun": "./fs/protocol.ts",
+      "browser": "./fs/protocol.ts",
+      "node": "./dist/fs/protocol.js"
+    },
+    "./fs/service": {
+      "types": "./fs/service.ts",
+      "bun": "./fs/service.ts",
+      "browser": "./fs/service.ts",
+      "node": "./dist/fs/service.js"
+    },
+    "./fs/shared": {
+      "types": "./fs/shared.ts",
+      "bun": "./fs/shared.ts",
+      "browser": "./fs/shared.ts",
+      "node": "./dist/fs/shared.js"
+    },
+    "./fs/storage": {
+      "types": "./fs/storage.ts",
+      "bun": "./fs/storage.ts",
+      "browser": "./fs/storage.ts",
+      "node": "./dist/fs/storage.js"
+    },
+    "./proc/abi": {
+      "types": "./proc/abi.ts",
+      "bun": "./proc/abi.ts",
+      "browser": "./proc/abi.ts",
+      "node": "./dist/proc/abi.js"
+    },
+    "./proc/filesystem-codec": {
+      "types": "./proc/filesystem-codec.ts",
+      "bun": "./proc/filesystem-codec.ts",
+      "browser": "./proc/filesystem-codec.ts",
+      "node": "./dist/proc/filesystem-codec.js"
+    },
+    "./proc/identity": {
+      "types": "./proc/identity.ts",
+      "bun": "./proc/identity.ts",
+      "browser": "./proc/identity.ts",
+      "node": "./dist/proc/identity.js"
+    },
+    "./proc/outcome": {
+      "types": "./proc/outcome.ts",
+      "bun": "./proc/outcome.ts",
+      "browser": "./proc/outcome.ts",
+      "node": "./dist/proc/outcome.js"
+    },
+    "./proc/pipes": {
+      "types": "./proc/pipes.ts",
+      "bun": "./proc/pipes.ts",
+      "browser": "./proc/pipes.ts",
+      "node": "./dist/proc/pipes.js"
+    },
+    "./proc/registry": {
+      "types": "./proc/registry.ts",
+      "bun": "./proc/registry.ts",
+      "browser": "./proc/registry.ts",
+      "node": "./dist/proc/registry.js"
+    },
+    "./proc/signals": {
+      "types": "./proc/signals.ts",
+      "bun": "./proc/signals.ts",
+      "browser": "./proc/signals.ts",
+      "node": "./dist/proc/signals.js"
+    },
+    "./proc/supervisor": {
+      "types": "./proc/supervisor.ts",
+      "bun": "./proc/supervisor.ts",
+      "browser": "./proc/supervisor.ts",
+      "node": "./dist/proc/supervisor.js"
+    },
+    "./proc/table": {
+      "types": "./proc/table.ts",
+      "bun": "./proc/table.ts",
+      "browser": "./proc/table.ts",
+      "node": "./dist/proc/table.js"
+    },
+    "./proc/types": {
+      "types": "./proc/types.ts",
+      "bun": "./proc/types.ts",
+      "browser": "./proc/types.ts",
+      "node": "./dist/proc/types.js"
+    },
+    "./proc/worker-broker": {
+      "types": "./proc/worker-broker.ts",
+      "bun": "./proc/worker-broker.ts",
+      "browser": "./proc/worker-broker.ts",
+      "node": "./dist/proc/worker-broker.js"
+    },
+    "./proc/worker-client": {
+      "types": "./proc/worker-client.ts",
+      "bun": "./proc/worker-client.ts",
+      "browser": "./proc/worker-client.ts",
+      "node": "./dist/proc/worker-client.js"
+    },
+    "./proc/worker-pipes": {
+      "types": "./proc/worker-pipes.ts",
+      "bun": "./proc/worker-pipes.ts",
+      "browser": "./proc/worker-pipes.ts",
+      "node": "./dist/proc/worker-pipes.js"
+    },
+    "./interrupt/check": {
+      "types": "./interrupt/check.ts",
+      "bun": "./interrupt/check.ts",
+      "browser": "./interrupt/check.ts",
+      "node": "./dist/interrupt/check.js"
+    },
+    "./interrupt/loader": {
+      "types": "./interrupt/loader.ts",
+      "bun": "./interrupt/loader.ts",
+      "browser": "./interrupt/loader.ts",
+      "node": "./dist/interrupt/loader.js"
+    },
+    "./interrupt/rewriter": {
+      "types": "./interrupt/rewriter.ts",
+      "bun": "./interrupt/rewriter.ts",
+      "browser": "./interrupt/rewriter.ts",
+      "node": "./dist/interrupt/rewriter.js"
+    },
+    "./browser/shared-fs": {
+      "types": "./browser/shared-fs.ts",
+      "bun": "./browser/shared-fs.ts",
+      "browser": "./browser/shared-fs.ts",
+      "node": "./dist/browser/shared-fs.js"
+    },
+    "./browser/fs-worker": {
+      "types": "./browser/fs-worker.ts",
+      "bun": "./browser/fs-worker.ts",
+      "browser": "./browser/fs-worker.ts"
+    },
+    "./browser/runtime-terminals": {
+      "types": "./browser/runtime-terminals.ts",
+      "bun": "./browser/runtime-terminals.ts",
+      "browser": "./browser/runtime-terminals.ts",
+      "node": "./dist/browser/runtime-terminals.js"
+    },
+    "./browser/net/ring": {
+      "types": "./browser/net/ring.ts",
+      "bun": "./browser/net/ring.ts",
+      "browser": "./browser/net/ring.ts",
+      "node": "./dist/browser/net/ring.js"
+    },
+    "./browser/net/protocol": {
+      "types": "./browser/net/protocol.ts",
+      "bun": "./browser/net/protocol.ts",
+      "browser": "./browser/net/protocol.ts",
+      "node": "./dist/browser/net/protocol.js"
+    },
+    "./browser/net/http1": {
+      "types": "./browser/net/http1.ts",
+      "bun": "./browser/net/http1.ts",
+      "browser": "./browser/net/http1.ts",
+      "node": "./dist/browser/net/http1.js"
+    },
+    "./browser/net/helper": {
+      "types": "./browser/net/helper.ts",
+      "bun": "./browser/net/helper.ts",
+      "browser": "./browser/net/helper.ts",
+      "node": "./dist/browser/net/helper.js"
+    },
+    "./browser/net/host": {
+      "types": "./browser/net/host.ts",
+      "bun": "./browser/net/host.ts",
+      "browser": "./browser/net/host.ts",
+      "node": "./dist/browser/net/host.js"
+    },
+    "./browser/preview": {
+      "types": "./browser/preview.ts",
+      "bun": "./browser/preview.ts",
+      "browser": "./browser/preview.ts",
+      "node": "./dist/browser/preview.js"
+    },
+    "./browser/preview-protocol": {
+      "types": "./browser/preview-protocol.ts",
+      "bun": "./browser/preview-protocol.ts",
+      "browser": "./browser/preview-protocol.ts",
+      "node": "./dist/browser/preview-protocol.js"
+    },
+    "./browser/service-worker": {
+      "types": "./browser/service-worker.ts",
+      "bun": "./browser/service-worker.ts",
+      "browser": "./browser/service-worker.ts",
+      "node": "./dist/browser/service-worker.js"
+    },
+    "./browser/worker": {
+      "types": "./browser/worker.ts",
+      "bun": "./browser/worker.ts",
+      "browser": "./browser/worker.ts",
+      "node": "./dist/browser/worker.js"
+    },
+    "./browser/process-broker": {
+      "types": "./browser/process-broker.ts",
+      "bun": "./browser/process-broker.ts",
+      "browser": "./browser/process-broker.ts",
+      "node": "./dist/browser/process-broker.js"
+    },
+    "./browser/preview1-worker": {
+      "types": "./browser/preview1-worker.ts",
+      "bun": "./browser/preview1-worker.ts",
+      "browser": "./browser/preview1-worker.ts"
+    }
   },
   "scripts": {
+    "build": "bun build.ts",
+    "prepare": "bun run build",
     "test": "bun test ./tests",
     "check": "tsc -p ."
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
+    "playwright": "^1.64.1",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "acorn": "^8.17.0"
   }
 }

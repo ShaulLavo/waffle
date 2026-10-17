@@ -103,5 +103,11 @@ export class DescriptorTable {
     this.entries.delete(from);
     return true;
   }
-  dispose(): void { for (const fd of this.entries.keys()) this.close(fd); }
+  dispose(): void {
+    const errors: unknown[] = [];
+    for (const fd of this.entries.keys()) {
+      try { this.close(fd); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, "descriptor release failed");
+  }
 }

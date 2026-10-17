@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { bufferKinds, callerSpan, withStrictDecoder } from "../../runtime/tests/fixtures/buffer-boundaries";
-import { ResponseParser, type ResponseHead } from "../src/net/http1";
+import { ResponseParser, type ResponseHead } from "../browser/net/http1";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 function fixture() {

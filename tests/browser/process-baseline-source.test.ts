@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { prepareBaselineSource } from "./process-baseline-source";
 
 const directories = new Set<string>();
@@ -12,25 +13,37 @@ afterEach(async () => {
   }
 });
 
-for (const full of [false, true]) {
-  test(`baseline setup accepts ${full ? "a full archive with existing tests" : "a narrow source archive"}`, async () => {
-    const snapshot = await mkdtemp(join(process.env.BUN_WASM_TEST_TMP ?? tmpdir(), "bun-wasm-baseline-source-"));
-    directories.add(snapshot);
-    await mkdir(join(snapshot, "runtime"));
-    await mkdir(join(snapshot, "web/src"), { recursive: true });
-    const sentinel = join(snapshot, "web/tests/existing-test.ts");
-    if (full) {
-      await mkdir(join(snapshot, "web/tests"));
-      await writeFile(sentinel, "// Frozen archive test remains unchanged.\n");
-      await writeFile(join(snapshot, "web/tests/process-benchmark.ts"), "// Replaced by the current measurement harness.\n");
-    }
+async function snapshot() {
+  const directory = await mkdtemp(join(process.env.BUN_WASM_TEST_TMP ?? process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()), "bun-wasm-baseline-source-"));
+  directories.add(directory);
+  await mkdir(join(directory, "runtime"));
+  await mkdir(join(directory, "web/src"), { recursive: true });
+  return directory;
+}
 
-    await prepareBaselineSource(snapshot, import.meta.dir);
+const fixtures = ["process-bench-baseline.ts", "process-benchmark.ts"];
+test("baseline setup preserves the selected revision's own measurement harness", async () => {
+  const directory = await snapshot();
+  await mkdir(join(directory, "web/tests"));
+  const sentinel = join(directory, "web/tests/existing-test.ts");
+  await writeFile(sentinel, "// Frozen archive test remains unchanged.\n");
+  for (const name of fixtures) await writeFile(join(directory, "web/tests", name), `// Frozen ${name}; do not inject the current harness.\n`);
 
-    expect(await readlink(join(snapshot, "web/node_modules/@bun-wasm/runtime"))).toBe(join(snapshot, "runtime"));
-    for (const name of ["process-bench-baseline.ts", "process-benchmark.ts"]) {
-      expect(await readFile(join(snapshot, "web/tests", name), "utf8")).toBe(await readFile(join(import.meta.dir, name), "utf8"));
-    }
-    if (full) expect(await readFile(sentinel, "utf8")).toBe("// Frozen archive test remains unchanged.\n");
+  await prepareBaselineSource(directory);
+
+  expect(await readlink(join(directory, "web/node_modules/@bun-wasm/runtime"))).toBe(join(directory, "runtime"));
+  for (const name of fixtures) {
+    expect(await readFile(join(directory, "web/tests", name), "utf8")).toBe(`// Frozen ${name}; do not inject the current harness.\n`);
+  }
+  expect(await readFile(sentinel, "utf8")).toBe("// Frozen archive test remains unchanged.\n");
+});
+
+for (const missing of fixtures) {
+  test(`baseline archive without ${missing} is rejected with an archive command`, async () => {
+    const directory = await snapshot();
+    await mkdir(join(directory, "web/tests"));
+    for (const name of fixtures) if (name !== missing) await writeFile(join(directory, "web/tests", name), "// Frozen harness.\n");
+    await expect(prepareBaselineSource(directory)).rejects.toThrow(`Baseline archive is missing web/tests/${missing}`);
+    await expect(prepareBaselineSource(directory)).rejects.toThrow("git archive REV web/src runtime web/tests/process-bench-baseline.ts web/tests/process-benchmark.ts");
   });
 }

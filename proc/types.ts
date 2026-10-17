@@ -40,6 +40,8 @@ export interface ProcessContext {
   readonly request: Readonly<SpawnRequest>;
   readonly module: WebAssembly.Module;
   readonly adapter: string;
+  /** This admitted module has injected interruption imports, rather than cooperative guest checkpoints. */
+  readonly interruptible: boolean;
   readonly descriptors: DescriptorTable;
   /** Wake hint only; signal identity and pending delivery live in signalState. */
   readonly interrupt: Int32Array;

@@ -265,7 +265,7 @@ test("playground storage selection defaults to IndexedDB and requires an explici
 
 test("playground only seeds examples in a new home, preserving changes and deletions on reload", async () => {
   const source = await Bun.file(new URL("../src/main.ts", import.meta.url)).text();
-  const code = source.slice(source.indexOf("const fs = new SharedFilesystem"), source.indexOf("// ---------- bun.wasm ----------"));
+  const code = source.slice(source.indexOf("const runtime = createRuntime"), source.indexOf("// ---------- bun.wasm ----------"));
   const files = new Map<string, string>();
   const directories = new Set<string>();
   let checkpoints = 0;
@@ -279,8 +279,8 @@ test("playground only seeds examples in a new home, preserving changes and delet
     },
     async flush() { checkpoints++; },
   };
-  const startup = new Function("SharedFilesystem", "HOME", "examples", "storage", `return (async () => { ${transpiler.transformSync(code)} })();`);
-  const start = () => startup(function () { return fs; }, "/home/user", { "index.ts": "example", "deleted.ts": "delete me" }, "indexeddb");
+  const startup = new Function("createRuntime", "HOME", "examples", "storage", `return (async () => { ${transpiler.transformSync(code)} })();`);
+  const start = () => startup(() => ({ filesystem: fs }), "/home/user", { "index.ts": "example", "deleted.ts": "delete me" }, "indexeddb");
   await start();
   expect(files.get("/home/user/index.ts")).toBe("example");
   expect(checkpoints).toBe(1);
@@ -349,13 +349,13 @@ for (const app of ["web", "sandbox"] as const) {
   test(`${app} reload retries a seed interrupted after its directory and first file persisted`, async () => {
     const source = await Bun.file(new URL(app === "web" ? "../src/main.ts" : "../../sandbox/src/main.ts", import.meta.url)).text();
     const code = app === "web"
-      ? source.slice(source.indexOf("const fs = new SharedFilesystem"), source.indexOf("// ---------- bun.wasm ----------"))
+      ? source.slice(source.indexOf("const runtime = createRuntime"), source.indexOf("// ---------- bun.wasm ----------"))
       : source.slice(source.indexOf("function templateFiles("), source.indexOf("// ---------- terminal ----------"));
     const { fs, files } = seedTreeFixture();
     const workspace = app === "web" ? "/home/user" : "/home/user/app";
     const sources = { "index.html": "page", "first.ts": "first file", "second.ts": "second file" };
     const env = {
-      SharedFilesystem: function () { return fs; }, fs, HOME: workspace, APP: workspace, examples: sources, storage: "indexeddb",
+      createRuntime: () => ({ filesystem: fs }), fs, HOME: workspace, APP: workspace, examples: sources, storage: "indexeddb",
       setStatus() {}, templateFile: "template.json", measureStartup() {},
       abs: (path: string) => `${workspace}/${path}`,
       fetch: async () => ({ ok: true, text: async () => JSON.stringify({ files: sources }) }),
@@ -440,7 +440,7 @@ test("shell discards filesystem completion after the line was submitted", async 
 });
 
 async function filesystemFixture() {
-  const source = await Bun.file(new URL("../src/shared-fs.ts", import.meta.url)).text();
+  const source = await Bun.file(new URL(import.meta.resolve("@bun-wasm/runtime/browser/shared-fs"))).text();
   const code = source.slice(source.indexOf("export class SharedFilesystem")).replace("export class", "class");
   const Filesystem = new Function(`${transpiler.transformSync(code)}; return SharedFilesystem;`)();
   const fs = Object.create(Filesystem.prototype);

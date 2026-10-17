@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { Wasi } from "../core";
 import { MemFS } from "../fs/memory";
-import { CHILD_FINAL_SIGNAL, SubprocessHost, childTransport, type ChildTransport } from "../../web/src/subprocess";
 
 function signedLeb(value: number): number[] {
   const bytes: number[] = [];
@@ -47,16 +46,6 @@ for (const [input, expected] of [
     for (const fd of [0, 1, 2]) expect(wasi.descriptors.get(fd)).toBeUndefined();
     expect(errors).toEqual([]);
 
-    let transport: ChildTransport | undefined;
-    const host = new SubprocessHost({
-      output() {}, launch(_metadata, reserved) { transport = reserved; return { terminate() {} }; },
-    });
-    try {
-      const pid = host.spawn(JSON.stringify({ executable: "fixture", argv: ["fixture"] }));
-      childTransport(transport!).finish(status);
-      expect(host.wait(pid)).toBe(expected);
-      expect(status).toBe(expected);
-      expect(host.pipe(pid, CHILD_FINAL_SIGNAL)).toBe(0);
-    } finally { host.dispose(); }
+    expect(status).toBe(expected);
   });
 }

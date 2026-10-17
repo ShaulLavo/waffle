@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { FilesystemClient, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity, sharedRevoked } from "../../runtime/fs";
-import { SharedFilesystem } from "../src/shared-fs";
+import { FilesystemClient, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity, sharedRevoked } from "../fs";
+import { SharedFilesystem } from "../browser/shared-fs";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });

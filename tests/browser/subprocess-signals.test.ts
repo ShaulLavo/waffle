@@ -72,7 +72,7 @@ test("engine polls preserve the authoritative handled pending set", () => {
     const pending = Array.from(new Int32Array(f.transport.signalState));
     for (let i = 0; i < 3; i++) expect(f.current.signal(0, 4)).toBe(0);
     expect(Array.from(new Int32Array(f.transport.signalState))).toEqual(pending);
-    expect(f.current.engineNet().natives.hostSignal!(0, 4)).toBe(0);
+    expect(Reflect.apply(f.current.engineNet().natives.hostSignal!, undefined, [0, 4])).toBe(0);
     expect(f.current.slots().signal!(0, 4)).toBe(0);
     expect(f.current.signal(0, 0)).toBe(2);
     expect(f.current.signal(0, 0)).toBe(15);
@@ -138,8 +138,8 @@ test("ignored SIGPIPE neither interrupts nor replaces an EPIPE caller's own exit
     const input = f.current.pipe(sink, 0);
     childTransport(f.current.children.get(sink)!.transport).stdin.close();
     const natives = f.current.engineNet().natives;
-    expect(natives.hostWrite!(input, new Uint8Array([1]))).toBe(-1);
-    expect(JSON.parse(natives.hostError!(input) as string)).toMatchObject({ code: "EPIPE", errno: -32, syscall: "write" });
+    expect(Reflect.apply(natives.hostWrite!, natives, [input, new Uint8Array([1])])).toBe(-1);
+    expect(JSON.parse(Reflect.apply(natives.hostError!, natives, [input]) as string)).toMatchObject({ code: "EPIPE", errno: -32, syscall: "write" });
     expect(f.host.kill(f.pid, 13)).toBe(0);
     expect(Atomics.load(new Int32Array(f.transport.interrupt), 0)).toBe(0);
     expect(readOutcome(outcomeWord(f.transport.outcome))).toBeNull();
@@ -228,7 +228,7 @@ test("engine and numeric slot bridges expose the same current-process signal API
   try {
     const engine = f.current.engineNet();
     expect(engine.caps.signal).toBe(true);
-    expect(engine.natives.hostSignal!(15, 2)).toBe(0);
+    expect(Reflect.apply(engine.natives.hostSignal!, engine.natives, [15, 2])).toBe(0);
     f.host.kill(f.pid, 15);
     expect(f.current.slots().signal!(0, 0)).toBe(15);
     expect(f.current.slots().signal!(15, 0)).toBe(0);
@@ -352,11 +352,11 @@ test("RAISE works through both native and numeric bridges", () => {
   const f = fixture();
   try {
     const native = f.current.engineNet().natives;
-    expect(native.hostSignal!(10, 2)).toBe(0);
-    expect(native.hostSignal!(10, 3)).toBe(0);
+    expect(Reflect.apply(native.hostSignal!, native, [10, 2])).toBe(0);
+    expect(Reflect.apply(native.hostSignal!, native, [10, 3])).toBe(0);
     expect(f.current.slots().signal!(0, 0)).toBe(10);
     expect(f.current.slots().signal!(10, 3)).toBe(0);
-    expect(native.hostSignal!(0, 0)).toBe(10);
+    expect(Reflect.apply(native.hostSignal!, native, [0, 0])).toBe(10);
     expect(f.defaults).toEqual([]);
   } finally { f.dispose(); }
 });
@@ -411,7 +411,7 @@ for (const bridge of ["native", "slots"]) test(`the ${bridge} signal bridge obse
     claimOutcome(outcomeWord(f.transport.outcome), { kind: "signaled", code: 2 });
     f.current.options.defaultSignal = winner => { f.defaults.push(winner); throw stopped; };
     const checkpoint = bridge === "native" ? f.current.engineNet().natives.hostSignal! : f.current.slots().signal!;
-    expect(() => checkpoint(0, 0)).toThrow(stopped);
+    expect(() => Reflect.apply(checkpoint, undefined, [0, 0])).toThrow(stopped);
     expect(f.defaults).toEqual([2]);
   } finally { f.dispose(); }
 });
@@ -440,8 +440,8 @@ test("caught backend EPIPE never automatically raises SIGPIPE even with its defa
     pipe.close();
     const natives = f.current.engineNet().natives;
     const input = f.current.pipe(sink, 0);
-    expect(natives.hostWrite!(input, new Uint8Array([1]))).toBe(-1);
-    expect(JSON.parse(natives.hostError!(input) as string)).toMatchObject({ code: "EPIPE", errno: -32 });
+    expect(Reflect.apply(natives.hostWrite!, natives, [input, new Uint8Array([1])])).toBe(-1);
+    expect(JSON.parse(Reflect.apply(natives.hostError!, natives, [input]) as string)).toMatchObject({ code: "EPIPE", errno: -32 });
     expect(wasiPipe(pipe, "write").write([new Uint8Array([1])])).toBe(-64);
     expect(f.defaults).toEqual([]);
     expect(f.current.signal(0, 0)).toBe(0);

@@ -22,7 +22,7 @@ try {
   const out = join(scratch, "dist");
   const main = join(scratch, "main.ts");
   await Bun.write(main, `import ${JSON.stringify(resolve(import.meta.dir, "filesystem-browser-main.ts"))};`);
-  await buildBrowserEntries([main, resolve(import.meta.dir, "../src/worker.ts"), resolve(import.meta.dir, "../src/fs-worker.ts"), resolve(import.meta.dir, "filesystem-browser-guest.ts"), resolve(import.meta.dir, "filesystem-browser-failure.ts")], out);
+  await buildBrowserEntries([main, resolve(import.meta.dir, "../src/worker.ts"), resolve(import.meta.dir, "../src/fs-worker.ts"), resolve(import.meta.dir, "filesystem-browser-guest.ts"), resolve(import.meta.dir, "filesystem-browser-failure.ts")], out, { runtimeWorker: true });
   await Bun.write(join(out, "index.html"), '<!doctype html><script type="module" src="./main.js"></script>');
   server = Bun.serve({
     hostname: "127.0.0.1", port: Number(process.env.FS_SMOKE_PORT ?? 4181),

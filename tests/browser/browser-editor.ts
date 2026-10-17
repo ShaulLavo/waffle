@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { chromium, firefox, webkit } from "playwright";
 
@@ -70,11 +71,12 @@ async function startupSteal(base: string, app: string, rejectPending: boolean) {
 }
 
 try {
-  scratch = await mkdtemp(join(process.env.EDITOR_SCRATCH_ROOT ?? "/work/tmp", "bun-wasm-browser-editor-"));
+  scratch = await mkdtemp(join(process.env.EDITOR_SCRATCH_ROOT ?? tmpdir(), "bun-wasm-browser-editor-"));
   process.env.TMPDIR = scratch;
   for (const app of ["sandbox", "web"]) {
     const prefix = app === "web" ? "/playground" : "/sandbox";
     const outdir = join(scratch, app);
+    let filesystemOwners = 0;
     const build = await Bun.build({
       outdir,
       entrypoints: [join(root, app, "src/main.ts"), join(root, "web/src/fs-worker.ts")],
@@ -83,9 +85,13 @@ try {
       plugins: [{
         name: "artifact-free-editor-host",
         setup(build) {
-          // Only the engine and preview host are replaced. All editor, startup, save and
-          // persistence code runs as shipped, including the real filesystem worker.
-          build.onResolve({ filter: /(?:\.\/|\.\.\/web\/src\/)shared-fs$/ }, () => ({ path: join(root, "web/tests/fixtures/startup-filesystem.ts") }));
+          // Keep the page runtime and real filesystem worker. Pause the filesystem it
+          // actually owns, not the old web re-export used only for message constants.
+          build.onResolve({ filter: /^\.\/browser\/shared-fs$/ }, () => {
+            filesystemOwners++;
+            return { path: join(root, "web/tests/fixtures/startup-filesystem.ts") };
+          });
+          // Only the engine and preview host are replaced; editor/startup/save code ships unchanged.
           build.onLoad({ filter: /\/web\/src\/runner\.ts$/ }, () => ({ loader: "ts", contents: `
             export const ENGINES = Object.fromEntries(["browser", "quickjs", "jsc"].map(key => [key, { name: key, wasm: "not-built.wasm" }]));
             export class WasmMissing extends Error {}
@@ -102,6 +108,7 @@ try {
       }],
     });
     assert.equal(build.success, true, build.logs.map(String).join("\n"));
+    assert.equal(filesystemOwners, 1, `${app}: startup gate must instrument the runtime-owned filesystem`);
     for (const output of build.outputs) assets.set(`${prefix}/${output.path.slice(outdir.length + 1)}`, output);
     assets.set(`${prefix}/`, Bun.file(join(root, app, "index.html")));
   }
@@ -157,15 +164,7 @@ try {
   }), { text: "export default 'saved edit';", deleted: undefined, custom: "custom file" });
   // Fail an actual reset after the first seed write, persist that prefix, then discard
   // the page. The next startup must finish the reset, not accept APP as a complete seed.
-  await page.evaluate(() => {
-    const { fs } = (globalThis as any).sandbox;
-    const write = fs.writeFile.bind(fs);
-    let writes = 0;
-    fs.writeFile = (...args: unknown[]) => {
-      if (++writes === 2) throw new Error("interrupted reset");
-      return write(...args);
-    };
-  });
+  await page.evaluate(() => (globalThis as any).startupFilesystem.failWriteAfter(2));
   page.once("dialog", dialog => { void dialog.accept(); });
   await page.locator("#reset").click();
   await page.waitForFunction(() => document.querySelector("#status")?.textContent?.includes("interrupted reset"));

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { DescriptorTable, OpenDescription, type Descriptor, type Stream } from "../../runtime/core/descriptors";
-import { ProcessError } from "../../runtime/proc/types";
-import type { WorkerDescriptorCodec } from "../../runtime/proc/worker-client";
-import { createRuntimeTerminalCodec } from "../src/runtime-terminals";
+import { DescriptorTable, OpenDescription, type Descriptor, type Stream } from "../core/descriptors";
+import { ProcessError } from "../proc/types";
+import type { WorkerDescriptorCodec } from "../proc/worker-client";
+import { createRuntimeTerminalCodec } from "../browser/runtime-terminals";
 
 const text = (value: string) => new TextEncoder().encode(value);
 function terminal(): Stream {

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Wasi } from "../core/index";
-import { MemFS } from '../../web/src/fs';
+import { MemFS } from '../fs/memory';
 
 const enc = new TextEncoder();
 const name = (text) => [text.length].concat(Array.from(enc.encode(text)));

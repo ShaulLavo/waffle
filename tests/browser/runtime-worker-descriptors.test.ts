@@ -3,33 +3,34 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildBrowserEntries } from "../../scripts/browser-build";
+import { buildBrowserEntries, resolveRuntimePackage } from "../../scripts/browser-build";
 import { initialJavaScript } from "../../scripts/runtime-size";
 import { runInNewContext } from "node:vm";
-import { DescriptorTable, OpenDescription } from "../../runtime/core/descriptors";
-import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity, revokeFilesystem, sharedRevoked } from "../../runtime/fs";
-import * as protocol from "../../runtime/fs/protocol";
-import * as codec from "../../runtime/proc/filesystem-codec";
-import * as client from "../../runtime/proc/worker-client";
-import * as pipes from "../../runtime/proc/worker-pipes";
-import * as abi from "../../runtime/proc/abi";
-import * as terminals from "../src/runtime-terminals";
-import { claimOutcome, outcomeWord, readOutcome } from "../../runtime/proc/outcome";
+import { DescriptorTable, OpenDescription } from "@bun-wasm/runtime/core/descriptors";
+import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity, revokeFilesystem, sharedRevoked } from "@bun-wasm/runtime/fs";
+import * as protocol from "@bun-wasm/runtime/fs/protocol";
+import * as codec from "@bun-wasm/runtime/proc/filesystem-codec";
+import * as client from "@bun-wasm/runtime/proc/worker-client";
+import * as pipes from "@bun-wasm/runtime/proc/worker-pipes";
+import * as abi from "@bun-wasm/runtime/proc/abi";
+import * as terminals from "@bun-wasm/runtime/browser/runtime-terminals";
+import { claimOutcome, outcomeWord, readOutcome } from "@bun-wasm/runtime/proc/outcome";
 import { SubprocessHost } from "../src/subprocess";
-import { fatalInterrupt } from "../../runtime/interrupt/check";
-import { requestSignal, setSignalDisposition, SIGNAL_PENDING } from "../../runtime/proc/signals";
+import { fatalInterrupt } from "@bun-wasm/runtime/interrupt/check";
+import { requestSignal, setSignalDisposition, SIGNAL_PENDING } from "@bun-wasm/runtime/proc/signals";
 import { DefaultSignal } from "../src/default-signal";
 import type { RunRequest, WorkerMessage } from "../src/worker";
 
 const source = new Bun.Transpiler({ loader: "ts", target: "browser" }).transformSync(
-  readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8")
+  (readFileSync(new URL(import.meta.resolve("@bun-wasm/runtime/browser/worker")), "utf8") + "\n" +
+    readFileSync(new URL("../src/worker.ts", import.meta.url), "utf8"))
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, "")
-    .replace(/import\("\.\.\/\.\.\/runtime\/proc\/worker-client"\)/g, 'loadRuntime("client")')
-    .replace(/import\("\.\.\/\.\.\/runtime\/proc\/filesystem-codec"\)/g, 'loadRuntime("codec")')
-    .replace(/import\("\.\.\/\.\.\/runtime\/fs\/protocol"\)/g, 'loadRuntime("protocol")')
-    .replace(/import\("\.\.\/\.\.\/runtime\/proc\/worker-pipes"\)/g, 'loadRuntime("pipes")')
-    .replace(/(?<!typeof )import\("\.\.\/\.\.\/runtime\/proc\/abi"\)/g, 'loadRuntime("abi")')
+    .replace(/import\("\.\.\/proc\/worker-client"\)/g, 'loadRuntime("client")')
+    .replace(/import\("\.\.\/proc\/filesystem-codec"\)/g, 'loadRuntime("codec")')
+    .replace(/import\("\.\.\/fs\/protocol"\)/g, 'loadRuntime("protocol")')
+    .replace(/import\("\.\.\/proc\/worker-pipes"\)/g, 'loadRuntime("pipes")')
+    .replace(/(?<!typeof )import\("\.\.\/proc\/abi"\)/g, 'loadRuntime("abi")')
     .replace(/import\("\.\/runtime-terminals"\)/g, 'loadRuntime("terminals")'),
 );
 
@@ -127,17 +128,25 @@ test("ordinary Bun worker and page startup do not eagerly load generic ownership
   const scratch = await mkdtemp(join(base, "bun-wasm-runtime-ownership-"));
   try {
     const entry = new URL("../src/runner.ts", import.meta.url).pathname;
-    const build = await buildBrowserEntries([entry, new URL("../src/worker.ts", import.meta.url).pathname], join(scratch, "dist"));
+    const build = await buildBrowserEntries([entry, new URL("../src/worker.ts", import.meta.url).pathname], join(scratch, "dist"), { runtimeWorker: true });
     const outputs = build.metafile!.outputs;
     const roots = Object.keys(outputs).filter(path => path.endsWith("/runner.js") || path.endsWith("/worker.js"));
     expect(roots).toHaveLength(2);
     const initial = initialJavaScript(outputs, roots);
+    const runtime = resolveRuntimePackage(entry);
     const inputs = initial.flatMap(path => Object.keys(outputs[path]!.inputs));
     for (const name of ["worker-client", "worker-broker", "filesystem-codec", "pipes", "abi"]) {
-      expect(inputs.some(path => path === `runtime/proc/${name}.ts` || path.endsWith(`/runtime/proc/${name}.ts`))).toBe(false);
+      expect(inputs.some(path => runtime.relativeInput(path) === `proc/${name}.ts`)).toBe(false);
     }
-    expect(inputs.some(path => /(?:^|\/)web\/src\/runtime-terminals\.ts$/.test(path))).toBe(false);
-    expect(Object.keys(build.metafile!.inputs).some(path => /(?:^|\/)runtime\/proc\/worker-client\.ts$/.test(path))).toBe(true);
+    expect(inputs.some(path => runtime.relativeInput(path) === "browser/runtime-terminals.ts")).toBe(false);
+    expect(Object.keys(build.metafile!.inputs).some(path => runtime.relativeInput(path) === "proc/worker-client.ts")).toBe(true);
+    const generic = Object.keys(outputs).find(path => path.endsWith("/preview1-worker.js"));
+    expect(generic).toBeDefined();
+    const genericInputs = initialJavaScript(outputs, [generic!]).flatMap(path => Object.keys(outputs[path]!.inputs));
+    expect(genericInputs.every(path => runtime.relativeInput(path) !== undefined)).toBe(true);
+    for (const path of ["preview1-worker.js", "preview1-worker.js.map"]) {
+      expect(await Bun.file(join(scratch, "dist", "__bunwasm", path)).text()).toBe(await Bun.file(join(scratch, "dist", path)).text());
+    }
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 

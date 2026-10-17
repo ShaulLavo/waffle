@@ -1,13 +1,14 @@
-import { SharedFilesystem } from "../src/shared-fs";
+import { createRuntime, type RuntimeFilesystem, type Runtime } from "@bun-wasm/runtime";
 import { startRun } from "../src/runner";
 
-const fs = new SharedFilesystem();
+const runtime = createRuntime({ filesystem: { workerURL: new URL("./fs-worker.js", location.href) } });
+const fs = runtime.filesystem;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function equal(actual: unknown, expected: unknown, label: string) {
   if (actual !== expected) throw new Error(`${label}: ${actual} !== ${expected}`);
 }
-async function guest(connection: ReturnType<SharedFilesystem["fork"]>, action: string) {
+async function guest(connection: ReturnType<RuntimeFilesystem["fork"]>, action: string) {
   const worker = new Worker("./filesystem-browser-guest.js", { type: "module" });
   try {
     return await new Promise<any>((resolve, reject) => {
@@ -33,27 +34,33 @@ try {
   equal(read?.every(byte => byte === 37), true, "large response bytes");
   // Production run bootstrap, including the transferred connection and descriptor disposal.
   const module = new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0,1,4,1,96,0,0,3,2,1,0,5,3,1,0,1,7,19,2,6,109,101,109,111,114,121,2,0,6,95,115,116,97,114,116,0,0,10,4,1,2,0,11]));
-  const run = startRun({ engine: "quickjs", module, args: [], env: {}, filesystem: fs, moduleScope: false }, { stdout() {}, stderr() {} });
+  const run = startRun({ engine: "quickjs", module, args: [], env: {}, runtime, moduleScope: false }, { stdout() {}, stderr() {} });
   const result = await run.done;
   if (result.error) throw new Error(result.error);
   equal(result.code, 0, "real run worker exit");
   // Use a genuinely failing worker module, not a synthetic error event. Only worker creation
   // is routed; the production controller's error handling and SAB cancellation run unchanged.
   const NativeWorker = globalThis.Worker;
-  let failed: SharedFilesystem | undefined;
+  await runtime.dispose();
+  let failed: Runtime | undefined;
   try {
     globalThis.Worker = class extends NativeWorker {
       constructor(_url: string | URL, options?: WorkerOptions) { super("./filesystem-browser-failure.js", options); }
     };
-    failed = new SharedFilesystem();
+    failed = createRuntime({ filesystem: { workerURL: new URL("./fs-worker.js", location.href) } });
   } finally { globalThis.Worker = NativeWorker; }
   try {
-    const error = await failed!.mkdirp("/startup").then(() => undefined, error => error);
+    const error = await failed!.filesystem.mkdirp("/startup").then(() => undefined, error => error);
     if (!(error instanceof Error)) throw new Error("worker load failure did not reject startup");
-    const flushed = await failed!.flush().then(() => undefined, error => error);
+    const flushed = await failed!.filesystem.flush().then(() => undefined, error => error);
     if (!(flushed instanceof Error) || !flushed.message.includes("Filesystem worker failed")) throw new Error("worker load failure not surfaced");
-  } finally { failed?.dispose(); }
+  } finally {
+    const disposal = await failed!.dispose().then(() => undefined, error => error);
+    if (!(disposal instanceof Error) || !disposal.message.includes("Filesystem worker failed")) {
+      throw new Error("failed filesystem teardown did not retain the worker startup error", { cause: disposal });
+    }
+  }
   Object.assign(globalThis, { filesystemResult: { ok: true, checks: 9 } });
 } catch (error) {
   Object.assign(globalThis, { filesystemResult: { error: error instanceof Error ? error.stack : String(error) } });
-} finally { fs.dispose(); }
+} finally { await runtime.dispose(); }

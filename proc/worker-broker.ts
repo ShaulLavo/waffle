@@ -3,7 +3,7 @@ import { claimOutcome, readOutcome } from "./outcome";
 import { requestSignal } from "./signals";
 import type { ProcessSupervisor } from "./supervisor";
 import { ProcessErrno, ProcessError } from "./types";
-import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client";
+import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client";
 
 export interface WorkerProcessBrokerOptions {
   /** Reuse the host's supervisor and executable registry, including its legacy Bun children. */
@@ -39,6 +39,23 @@ export class WorkerProcessBroker {
     const existing = this.getIdentity(state.pid);
     if (existing && workerProcessDirectoryId(existing) !== workerProcessDirectoryId(transport)) throw new TypeError("process identity is already registered");
     this.transports.set(state.pid, transport);
+  }
+  /** Drop one completed root directory only after all descendant consumers and jobs retire. */
+  releaseRoot(pid: number): void {
+    const root = this.getIdentity(pid);
+    if (!root) return;
+    const state = workerProcessState(root);
+    if (state.parentPid !== 0 || Atomics.load(state.confirmed, 0) === 0 || workerProcessSlots(root).some(slot => {
+      const child = workerProcessState(root, slot);
+      return child.pid !== pid && (Atomics.load(child.confirmed, 0) === 0 || this.supervisor?.get(child.pid) ||
+        (child.job !== state.job && Atomics.load(child.jobPending, 0) >= 0));
+    })) throw new Error("Root directory still has unconfirmed or unreaped processes");
+    const directory = workerProcessDirectoryId(root);
+    for (const entries of [this.transports, this.identities]) for (const [member, transport] of entries) {
+      if (workerProcessDirectoryId(transport) !== directory) continue;
+      entries.delete(member);
+      this.failedCleanup.delete(member);
+    }
   }
   get(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid); }
   getIdentity(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid) ?? this.identities.get(pid); }

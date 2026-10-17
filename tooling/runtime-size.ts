@@ -2,7 +2,7 @@
 // Standalone layer closures overlap: they are actionable import costs, not additive attribution.
 import { posix, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
-import { browserBuildConfig } from "./browser-build";
+import { browserBuildConfig, resolveRuntimePackage, type RuntimePackage } from "./browser-build";
 import { previewWebsocketScript } from "../web/preview-build";
 
 type OutputGraph = Record<string, { imports: { path: string; kind: string; external?: boolean }[] }>;
@@ -34,20 +34,20 @@ export function checkCoreBudget(gzipBytes: number): void {
 }
 
 /** Reservation and synchronous signal-control primitives are eager, not the process service. */
-export function processServiceInputs(inputs: readonly string[]): string[] {
+export function processServiceInputs(inputs: readonly string[], runtime: RuntimePackage): string[] {
   return inputs.filter(path => {
-    const match = /(?:^|\/)runtime\/proc\/(.+)\.ts$/.exec(path);
+    const match = /^(?:dist\/)?proc\/(.+)\.(?:ts|js)$/.exec(runtime.relativeInput(path) ?? "");
     return match !== null && !["identity", "stub", "outcome", "signals", "types"].includes(match[1]!);
   });
 }
-export function checkLazyProcessService(inputs: readonly string[]): void {
-  const eager = processServiceInputs(inputs);
+export function checkLazyProcessService(inputs: readonly string[], runtime: RuntimePackage): void {
+  const eager = processServiceInputs(inputs, runtime);
   if (eager.length) throw new Error(`process service is eager before first spawn: ${eager.join(", ")}`);
 }
 /** Own Bun programs need only the tiny fatal-outcome check, never the load-time compiler. */
-export function checkLazyInterruptRewriter(inputs: readonly string[]): void {
+export function checkLazyInterruptRewriter(inputs: readonly string[], runtime: RuntimePackage): void {
   const eager = inputs.filter(path => {
-    const match = /(?:^|\/)runtime\/interrupt\/(.+)\.ts$/.exec(path);
+    const match = /^(?:dist\/)?interrupt\/(.+)\.(?:ts|js)$/.exec(runtime.relativeInput(path) ?? "");
     return match !== null && match[1] !== "check";
   });
   if (eager.length) throw new Error(`interrupt rewriter is eager before third-party load: ${eager.join(", ")}`);
@@ -70,7 +70,8 @@ async function build(config: Parameters<typeof Bun.build>[0]) {
 
 async function layer(name: string, entries: readonly string[], guideKiB: number) {
   const outdir = resolve(root, ".runtime-size", name);
-  const result = await build({ entrypoints: entries.map((path) => resolve(root, path)), outdir, target: "browser", format: "esm", minify: true, splitting: true });
+  const runtime = resolveRuntimePackage(resolve(root, "web/src/main.ts"));
+  const result = await build(browserBuildConfig(entries.map(path => path.startsWith("@bun-wasm/runtime") ? runtime.source(path) : resolve(root, path)), outdir));
   const files = await Promise.all(result.outputs.filter((output) => output.path.endsWith(".js")).map(async (output) => ({ path: posix.normalize(output.path), ...await bytes(output) })));
   const sizes = totals(files);
   return { name, entries, ...sizes, guideGzip: guideKiB * 1024, files };
@@ -78,7 +79,7 @@ async function layer(name: string, entries: readonly string[], guideKiB: number)
 
 async function application(name: "web" | "sandbox", splitting: boolean, serviceWorker: { minified: number; gzip: number }) {
   const outdir = resolve(root, ".runtime-size", `${name}-${splitting ? "split" : "unsplit"}`);
-  const result = await build(browserBuildConfig([resolve(root, name, "src/main.ts"), resolve(root, "web/src/worker.ts"), resolve(root, "web/src/fs-worker.ts")], outdir, { splitting }));
+  const result = await build(browserBuildConfig([resolve(root, name, "src/main.ts"), resolve(root, "web/src/worker.ts"), resolve(root, "web/src/fs-worker.ts")], outdir, { splitting, runtimeWorker: true }));
   const outputs = result.metafile!.outputs;
   const keyFor = (name: string) => {
     const key = Object.keys(outputs).find((path) => posix.normalize(path) === name);
@@ -108,11 +109,12 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
   // Page and filesystem worker share root URLs; a cold URL downloads once, not once per importer.
   const initialDownloads = Array.from(new Map(downloadRows.map(row => [row.path, row])).values());
   const inputs = Array.from(new Set(initialKeys.flatMap((key) => Object.keys(outputs[key]!.inputs)))).sort();
-  const procInputs = processServiceInputs(inputs);
+  const runtime = resolveRuntimePackage(resolve(root, name, "src/main.ts"));
+  const procInputs = processServiceInputs(inputs, runtime);
   const bunAdapterInputs = inputs.filter(path => /(?:\/|^)subprocess(?:[-.]|\/)/.test(path));
   if (splitting) {
-    checkLazyProcessService(inputs);
-    checkLazyInterruptRewriter(inputs);
+    checkLazyProcessService(inputs, runtime);
+    checkLazyInterruptRewriter(inputs, runtime);
   }
   return {
     splitting, logicalEntries: logicalEntries.concat([{ entry: "sw.js", ...serviceWorker, files: [{ path: "sw.js", ...serviceWorker }] }]),
@@ -131,25 +133,28 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
 export async function runtimeSizeReport() {
   const previewSocketScript = await previewWebsocketScript();
   const layers = await Promise.all([
-    layer("core", ["runtime/core/index.ts"], CORE_BUDGET_KIB),
-    layer("fs", ["runtime/fs/index.ts"], 6),
-    layer("net", ["web/src/net/host.ts", "web/src/net/helper.ts", "web/src/preview.ts"], 14),
-    layer("proc", ["runtime/proc/index.ts"], 8),
-    layer("proc-stub", ["runtime/proc/stub.ts", "runtime/proc/outcome.ts"], 1),
+    layer("core", ["@bun-wasm/runtime/core"], CORE_BUDGET_KIB),
+    layer("fs", ["@bun-wasm/runtime/fs"], 6),
+    layer("net", ["@bun-wasm/runtime/browser/net/host", "@bun-wasm/runtime/browser/net/helper", "@bun-wasm/runtime/browser/preview"], 14),
+    layer("proc", ["@bun-wasm/runtime/proc"], 8),
+    layer("proc-stub", ["@bun-wasm/runtime/proc/stub", "@bun-wasm/runtime/proc/outcome"], 1),
     layer("bun-process-adapter", ["web/src/subprocess.ts", "web/src/subprocess-broker.ts"], 8),
   ]);
   // This separately linked preview client uses a source-wrapper plugin; measure its real build.
   const net = layers.find((layer) => layer.name === "net")!;
   net.files.push({ path: "preview-websocket-client.js", ...await bytes(new Blob([previewSocketScript])) });
   Object.assign(net, totals(net.files));
-  const sw = await build({
-    entrypoints: [resolve(root, "web/src/sw.ts")], outdir: resolve(root, ".runtime-size/sw"),
-    target: "browser", format: "iife", minify: true,
-    define: { __PREVIEW_SOCKET_SCRIPT__: JSON.stringify(previewSocketScript) },
-  });
-  const serviceWorker = await bytes(sw.outputs[0]!);
   const applications: Record<string, unknown> = {};
   for (const name of ["web", "sandbox"] as const) {
+    // Shared service-worker source still belongs to this application's install.
+    const outdir = resolve(root, ".runtime-size", `${name}-sw`);
+    const { plugins } = browserBuildConfig([resolve(root, name, "src/main.ts")], outdir);
+    const sw = await build({
+      entrypoints: [resolve(root, "web/src/sw.ts")], outdir, plugins,
+      target: "browser", format: "iife", minify: true,
+      define: { __PREVIEW_SOCKET_SCRIPT__: JSON.stringify(previewSocketScript) },
+    });
+    const serviceWorker = await bytes(sw.outputs[0]!);
     applications[name] = { beforeUnsplit: await application(name, false, serviceWorker), afterSplit: await application(name, true, serviceWorker) };
   }
   return { method: "Same-source before/after splitting. gzip level 9; maps excluded. Layer closures export all public symbols, include transitive dependencies and overlap (not additive). Initial graph lists statically reachable request URLs with a scoped worker, counting root/scoped chunk copies separately regardless of SW proxy/cache reuse. The two-registration cold estimate adds a second classic SW fetch; neither estimate is a network capture. No WASM or app dist is read/built. Budgets for fs/net/proc are guides; only core is gated.", layers, applications };

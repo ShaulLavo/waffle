@@ -176,9 +176,15 @@ sections 7 and 8) maps its `ProcessHost` trait onto this layer. The process laye
 
 ### Where it lives
 
-A new `runtime/` directory in bun-wasm: a TypeScript package (`@bun-wasm/runtime`) with one entry
-per layer (`core`, `fs`, `net`, `proc`, `term`) so a bundler includes only what a page imports,
-and `proc` loaded on the first spawn. A guest's `spawn` import can't await an `import()`, so the
+The generic implementation currently lives in bun-wasm's `runtime/` package while the
+[approved Waffle split](waffle-split.md) is prepared. After the split it lives in the public
+MIT-licensed `ShaulLavo/waffle` repository, package `waffle`, with curated layer and browser
+entry points so a bundler includes only what a page imports. Generic filesystem, process,
+interruption, worker/bootstrap, network and preview services, tests and follow-on plan steps
+move there. Bun's guest engines, executor, native-slot/legacy-pipe adapters and application
+policy remain in `web/` here. The application creates one page-owned runtime and explicitly
+passes it to Bun and `createShell({ runtime })`; runs borrow its filesystem, identities and
+lazy process service. `proc` loads on the first spawn. A guest's `spawn` import can't await an `import()`, so the
 guest worker keeps a stub of about 1 KiB gzipped, including identity and atomic terminal-result
 primitives: it reserves a pid, takes the inherited descriptor references and returns at once,
 and the supervisor loads proc and starts the process
@@ -186,11 +192,11 @@ asynchronously. A start failure shows up through `wait` (127 for a missing progr
 that can't run) and as a child-exit event in `poll`. A synchronous caller such as Bun's
 `spawnSync` polls afterwards; the shell never blocks on a first spawn. The builds (`web/build.ts`,
 `sandbox/build.ts`) enable code splitting and serve the split chunks under every worker scope.
-Bun's adapter and executor stay in
-`web/`. brush-web and the own shell consume the package as a pinned copy, the way brush-web
-vendors `third-party/bun-wasm/` today, until the product repository exists. Every new file that
-adapts upstream code (brush-web's terminal discipline, SQLite's OPFS bridge pattern) gets its row
-in `docs/bun-patches.md`.
+bun-wasm consumes an explicitly trusted Waffle Git dependency pinned to an exact commit;
+bash-web declares a Waffle peer dependency and uses an exact development pin for its own
+tests. Follow the split plan's ownership, installed-package and cross-repository gates before
+removing the in-tree package. Every new file that adapts upstream code gets its classified row
+in the owning repository's provenance ledger, including applicable notices.
 
 ### Process ABI (for the shell lane)
 
@@ -317,6 +323,70 @@ Total for this track: about 13,000-19,000 lines across fifteen PRs, plus the she
 work. Order: 1, then 2 and 3a in parallel; 3b after 3a, 3c after 3b; 4a after 2; 4b after 4a;
 4c and 4d after 4b; 5, 6 and 7b after 4b; 7a any time after 1; 9 any time after 2. The shell
 track can start its `ProcessHost` against the ABI as soon as 4b lands.
+
+### Step 4c follow-up: reclaim empty nonroot bookkeeping
+
+**Status: Approved; scheduled with step 4c after the Waffle extraction.** The preparation fixes
+completed-root retention now: 100 finished runs release their reservations, controller callbacks
+and root transport directories. This separate follow-up concerns compact bookkeeping beneath a
+root that deliberately stays alive, not retained workers or 100 shared directories.
+
+A bounded preparation reproduction exited and job-reaped 100 leaf children under one live root.
+It left one process record, one job and one live transport, but retained 100 compact child
+identities and 101 parent edges. All children shared the root's single directory. The 101-entry
+used-PID and used-job ledgers intentionally enforce never-reuse and are **not** this finding.
+Suspect `runtime/proc/worker-broker.ts` (`retainIdentity` / `reapTransports`) and
+`runtime/proc/table.ts` (`parents` / `remove`). No worker, channel or filesystem backend is needed.
+
+Reproduce from an exclusive checkout, through the PC light queue (use the matching canonical
+queue on another host). The command creates only in-memory transports and releases them in
+`finally`.
+
+```sh
+source env.sh
+bun /work/platform-production/heavy/current/run.js --class light waffle-empty-subtrees -- timeout 7200 bun -e "$(cat <<'TS'
+import { DescriptorTable } from './runtime/core/descriptors.ts';
+import { ProcessIdentityAllocator } from './runtime/proc/identity.ts';
+import { ProcessTable } from './runtime/proc/table.ts';
+import { ExecutableRegistry } from './runtime/proc/registry.ts';
+import { ProcessSupervisor } from './runtime/proc/supervisor.ts';
+import { WorkerProcessBroker } from './runtime/proc/worker-broker.ts';
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState } from './runtime/proc/worker-client.ts';
+const ids = new ProcessIdentityAllocator(), table = new ProcessTable(ids), registry = new ExecutableRegistry();
+registry.register('fixture', { module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), adapter: 'fixture' });
+const supervisor = new ProcessSupervisor({ table, registry, retainJobResults: true, launch: () => ({ terminate() {} }) });
+const codec = { export() { throw Error('unused'); }, import() { throw Error('unused'); }, discard() {} };
+const broker = new WorkerProcessBroker({ supervisor: async () => supervisor, codec });
+const root = createWorkerProcessTransport({ pid: ids.pid(), job: ids.job(), identity: ids.buffer });
+const state = workerProcessState(root);
+supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+broker.adoptRoot(root);
+const messages = [], descriptors = new DescriptorTable();
+const client = new WorkerProcessClient({ transport: root, descriptors, codec, postMessage: message => messages.push(message) });
+try {
+  for (let index = 0; index < 100; index++) {
+    const pid = client.spawn(client.pid, { executable: 'fixture', argv: ['fixture'], env: {}, cwd: '/', job: -1, fds: [] });
+    while (messages.length) await broker.handle(messages.shift(), client.pid);
+    await supervisor.start(pid);
+    const job = supervisor.get(pid).job;
+    supervisor.exit(pid, 0);
+    await supervisor.waitForExit(client.pid, pid);
+    client.waitJob(client.pid, job);
+    while (messages.length) await broker.handle(messages.shift(), client.pid);
+  }
+  console.log({ records: Array.from(table.values()).length, jobs: Reflect.get(table, 'jobs').size,
+    transports: Reflect.get(broker, 'transports').size, identities: Reflect.get(broker, 'identities').size,
+    parents: Reflect.get(table, 'parents').size, usedPids: Reflect.get(table, 'usedPids').size,
+    usedJobs: Reflect.get(table, 'usedJobs').size });
+} finally { descriptors.dispose(); broker.dispose(); supervisor.dispose(); }
+TS
+)"
+```
+
+Reclaim only empty, safely reaped nonroot identity/ancestry entries. Preserve live descendants,
+unreaped independent jobs, pending admission leases and monotonic no-reuse ledgers. Add a bounded
+long-lived-root regression alongside the completed-root and live-background-job controls before
+changing these maps. After extraction, use Waffle's normalized paths for this same reproduction.
 
 ### Before merging runtime PRs
 

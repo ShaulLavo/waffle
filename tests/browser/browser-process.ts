@@ -61,21 +61,21 @@ try {
   process.env.TMPDIR = scratch;
   console.log(JSON.stringify({ resources: { port, scratch, browsers: names, wasm: artifact ? join(dist!, "bun.wasm") : null }, host: { platform: process.platform, arch: process.arch, logicalCpus: availableParallelism(), loadAverage: loadavg(), bun: Bun.version }, pool: "disabled; no pool implementation is shipped" }));
   const out = join(scratch, "current");
-  await buildBrowserEntries([join(import.meta.dir, "process-browser-main.ts"), join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out);
+  await buildBrowserEntries([join(import.meta.dir, "process-browser-main.ts"), join(root, "web/src/worker.ts"), join(root, "web/src/fs-worker.ts")], out, { runtimeWorker: true });
   await Bun.write(join(out, "index.html"), '<!doctype html><script type="module" src="./process-browser-main.js"></script>');
   let baselineRevision: string | undefined;
   if (benchmark) {
-    // A remote runner may receive this exact `git archive REV web/src runtime` tarball instead
+    // A remote runner may receive the exact source-and-harness archive below instead
     // of an entire repository/history. Both routes unpack only into this run's owned scratch.
     const archivePath = process.env.PROCESS_BASELINE_ARCHIVE;
     baselineRevision = archivePath ? process.env.PROCESS_BASELINE_REVISION : (await new Response(track(Bun.spawn(["git", "-C", root, "rev-parse", process.env.PROCESS_BASELINE_REF ?? "origin/main"], { stdout: "pipe", stderr: "inherit" })).stdout).text()).trim();
     if (!baselineRevision || !/^[0-9a-f]{40}$/.test(baselineRevision)) throw new Error("cannot resolve baseline revision (archive input requires PROCESS_BASELINE_REVISION)");
     const snapshot = join(scratch, "baseline-source");
     await mkdir(snapshot);
-    const archive = archivePath ? undefined : track(Bun.spawn(["git", "-C", root, "archive", baselineRevision, "web/src", "runtime"], { stdout: "pipe", stderr: "inherit" }));
+    const archive = archivePath ? undefined : track(Bun.spawn(["git", "-C", root, "archive", baselineRevision, "web/src", "runtime", "web/tests/process-bench-baseline.ts", "web/tests/process-benchmark.ts"], { stdout: "pipe", stderr: "inherit" }));
     const unpack = track(Bun.spawn(["tar", "-x", "-C", snapshot], { stdin: archivePath ? Bun.file(archivePath).stream() : archive!.stdout, stdout: "inherit", stderr: "inherit" }));
     assert.equal(await unpack.exited, 0, "unpack baseline"); if (archive) assert.equal(await archive.exited, 0, "archive baseline");
-    await prepareBaselineSource(snapshot, import.meta.dir);
+    await prepareBaselineSource(snapshot);
     const baseline = join(scratch, "baseline");
     await buildBrowserEntries([join(snapshot, "web/tests/process-bench-baseline.ts"), join(snapshot, "web/src/worker.ts"), join(snapshot, "web/src/fs-worker.ts")], baseline);
     await Bun.write(join(baseline, "index.html"), '<!doctype html><script type="module" src="./process-bench-baseline.js"></script>');

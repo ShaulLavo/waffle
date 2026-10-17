@@ -8,6 +8,8 @@ import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent,
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  /** Emit a startup diagnostic while this process still owns its inherited output descriptors. */
+  startFailed?(pid: number, error: unknown): void;
   table?: ProcessTable;
   /** Message-bearing hosts defer ordinary completion until ordered output/exit messages drain.
    * Fatal outcomes and explicit disposal never wait for this acknowledgement.
@@ -51,7 +53,9 @@ export class ProcessSupervisor {
   private readonly quiescentListeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobListeners = new Map<number, Set<() => void>>();
   private disposed = false;
-  private readonly finishing = new Set<number>();
+  /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
+  private readonly finishing = new Map<number, ProcessRecord>();
+  private readonly startFailures = new WeakSet<ProcessRecord>();
   constructor(options: SupervisorOptions) { this.options = options; this.table = options.table ?? new ProcessTable(); }
   get(pid: number): ProcessRecord | undefined { return this.table.get(pid); }
   job(id: number) { return this.table.job(id); }
@@ -251,19 +255,29 @@ export class ProcessSupervisor {
       if (settled) { this.finish(record.pid, settled); return; }
       const context: ProcessContext = {
         pid: record.pid, parentPid: record.parentPid, job: record.job, request: record.request!,
-        module: executable.module, adapter: executable.adapter,
+        module: executable.module, adapter: executable.adapter, interruptible: executable.interruptible,
         descriptors: record.descriptors, interrupt: record.interrupt, requestedSignal: record.requestedSignal, signalState: record.signalState, outcome: record.outcome,
         exit: code => this.exit(record.pid, code), fail: error => this.failStart(record.pid, error),
         defaultSignal: signal => this.defaultSignal(record.pid, signal),
         registerRevocation: hook => this.registerRevocation(record.pid, hook),
       };
       const handle = await this.options.launch(context);
-      if (record.result || record.revoked) this.terminate(handle);
-      else { record.handle = handle; record.state = "running"; }
+      record.handle = handle;
+      // Revocation alone does not prove storage safety. A late handle belongs to
+      // the pending fence too; only a confirmed result permits physical stop.
+      if (record.result) this.stopHandle(record);
+      else if (!record.revoked) record.state = "running";
     } catch (error) { this.failStart(record.pid, error); }
   }
   failStart(pid: number, error: unknown): void {
-    this.finish(pid, { kind: "exited", code: error instanceof ExecutableNotFound ? 127 : 126 });
+    const code = error instanceof ExecutableNotFound ? 127 : 126;
+    const record = this.table.get(pid);
+    if (record && !record.result && !record.revoked && !readOutcome(record.outcome) && !this.startFailures.has(record)) {
+      // Mark before notification: a diagnostic sink may reenter failure handling.
+      this.startFailures.add(record);
+      this.safely(() => this.options.startFailed?.(pid, error));
+    }
+    this.finish(pid, { kind: "exited", code });
   }
   exit(pid: number, code: number): void {
     if (!Number.isInteger(code)) throw new ProcessError(ProcessErrno.INVAL, "exit code must be an integer");
@@ -398,7 +412,7 @@ export class ProcessSupervisor {
   private finish(pid: number, result: Omit<ProcessExit, "status">): void {
     const record = this.table.get(pid);
     if (!record || record.result || this.finishing.has(pid)) return;
-    this.finishing.add(pid);
+    this.finishing.set(pid, record);
     // A synchronous guest-side kill publishes its word before the asynchronous broker message.
     if (Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
     if (record.signal === Signal.SIGKILL) result = { kind: "signaled", code: Signal.SIGKILL };
@@ -447,12 +461,18 @@ export class ProcessSupervisor {
         const listeners = this.jobListeners.get(record.job);
         if (listeners) for (const listener of Array.from(listeners)) this.safely(listener);
       }
+      this.stopHandle(record);
     };
     if (!fenceFailed) {
       if (quiescence) void quiescence.then(safe, error => this.report(error));
       else safe();
     }
-    if (record.handle) { const handle = record.handle; record.handle = undefined; this.terminate(handle); }
+  }
+  private stopHandle(record: ProcessRecord): void {
+    if (!record.handle) return;
+    const handle = record.handle;
+    record.handle = undefined;
+    this.terminate(handle);
   }
   private disposeDescriptors(descriptors: DescriptorTable): void {
     // close removes its entry before invoking a release callback; retrying drains any remaining
