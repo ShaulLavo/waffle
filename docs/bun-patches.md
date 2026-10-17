@@ -17,7 +17,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [`crates/bunwasm-jsc/cpp/helpers.cpp`, finalizer dispatch](#jsc-finalizer-dispatch) | Host feature | Original adapter for full collection and deferred cleanup in the wasm event loop. |
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
-| [`crates/bunwasm-runtime/src/js/worker_threads.ts`](#worker-threads-adapter) | Host feature | Original adapter for main-thread worker metadata, endpoint-local closure, and same-guest message channels. |
+| [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -407,6 +407,9 @@ The original helper added to `third_party/rquickjs-sys/quickjs/quickjs.c` checks
 both ArrayBuffer and SharedArrayBuffer class tags without invoking a getter.
 QuickJS's existing `JS_IsArrayBuffer` recognizes only the first class, so using it
 alone would lose the shared-buffer conversion that the getter already supports.
+`JS_bunwasm_IsDetachableArrayBuffer` is another original inspection helper. It
+checks the ordinary-buffer class and detached flag before a transfer mutates any
+buffer. It copies no upstream implementation.
 
 ## Generated function imports
 
@@ -1132,12 +1135,9 @@ files `lib/main.js`, `bin/esbuild`, `wasm_exec_node.js`, `wasm_exec.js`, and
 The package owns that Go runtime revision. Our test fixtures and subprocess
 changes are original adapters, separate from those upstream files.
 
-The original builtin registry in `crates/bunwasm-runtime/src/js/builtins.js`
-rejects loading `worker_threads` because the guest engines cannot create Node
-workers. Packages can detect its absence with their ordinary `require` guard.
-The official esbuild package then uses its synchronous subprocess backend for
-`buildSync`, `transformSync`, `formatMessagesSync`, and `analyzeMetafileSync`.
-No package-specific environment override is installed.
+The worker-thread adapter now loads and starts separate guests. SharedArrayBuffer
+cannot cross those guest boundaries yet, so esbuild's synchronous worker backend
+still needs that follow-up. No package-specific environment override is installed.
 
 Filesystem visibility does not depend on timestamp comparisons or host I/O
 polling: the shared service owns namespace changes and the allocator, and shared
@@ -1212,26 +1212,49 @@ invocation from `scripts/build.sh` remain unchanged.
 
 ## Worker threads adapter
 
-`crates/bunwasm-runtime/src/js/worker_threads.ts` is an original implementation of
-the Node worker-thread main-thread contract and same-guest messaging. It uses the
-existing event loop, EventTarget, EventEmitter and structured clone on every engine.
-It replaces the web-only message channel stub. No upstream source was copied.
+`crates/bunwasm-runtime/src/js/worker_threads.ts` implements worker metadata,
+guest lifecycle and routed port ownership. `worker_codec.ts` serializes cyclic
+object graphs and transferable buffers and ports. `worker_channel.ts` frames
+control messages over two private host pipes. `worker_stdio.ts` adapts the existing
+subprocess streams to Node streams. These are original TypeScript implementations.
+
+The original Rust adapters in `crates/bunwasm-host/src/process/` give each worker
+its own Wasmtime instance and control pipes. The original Node host adapter in
+`web/scripts/node-host.mjs` starts another physical Node worker. The browser host
+adapters in `web/src/{worker.ts,worker-pipes.ts,subprocess.js}` use Web Workers and
+shared pipe buffers. Nested guests share a root port broker and the existing child
+budget. Bootstrap, process, spawn and structured-clone hooks connect those
+adapters to the guest event loop. No upstream source was copied.
 
 The inspected upstream implementation is `src/js/node/worker_threads.ts` at Bun
 revision `9510e74152073d850a18758ca41114d8f214ffa6`. Its module initialization needs
 `Worker.cpp` native bindings and the native web-worker constructor, so it cannot
 run through the builtin loader with the hooks currently available.
-[Worker threads](worker-threads.md) records the supported operations and remaining
-guest-worker work. No vendor patch is needed for this adapter.
+[Worker threads](worker-threads.md) records supported operations and host limits.
 
-The PR #31 review correction cancels future delivery tasks when a receiver closes,
-drops its pending messages, and asynchronously disentangles the pair and notifies its
-peer. Already-sent messages stay queued for an unstarted peer until synchronous
-receive or later delivery drains them, or the peer closes itself. The null peer
-link records a pending remote close. Queue consumers complete it without polling.
-`receiveMessageOnPort` accepts BroadcastChannel and returns `undefined` without
-consuming its messages, matching native Bun 1.4.2. Node 26.7.0 accepts the same
-argument but returns a queued message. No upstream implementation was copied.
+`web/scripts/node-process.ts` is an original adapter that installs the same
+subprocess slots through Node WASI for embedded QuickJS and JSC guests. It
+composes them with the existing CLI fetch slots and shares their wake signal.
+The host slot installer uses the runtime memory helper by a relative source
+path so unbundled Node hosts still load without installed packages.
+
+The original atomic-transfer native checks the complete buffer list before
+detachment. QuickJS uses its public detach operation plus the inspection helper
+above. The JSC adapter adds original `JSArrayBuffer` inspection and detach hooks
+in `crates/bunwasm-jsc/cpp/helpers.cpp`, against the same pinned WebKit headers as
+the existing helpers. The browser adapter in `web/src/buffer-transfer.ts` captures the host's structured
+clone operation and tracks native WebAssembly memory buffers through their
+buffer getter. It rejects the whole list before Chromium can partially detach
+it. WebKit and Node already preserve earlier buffers in this case. Copied
+WebAssembly memory buffers are tracked by the original runtime adapter and
+rejected as transfers.
+No Bun vendor patch is needed for these adapters.
+
+The PR #31 close fixes are retained in the routed adapter. A pending peer-close
+sequence preserves an unstarted peer's queue until it drains, without polling.
+Local closure suppresses future delivery while selected messages finish, with
+promise continuations between messages. BroadcastChannel receive returns
+`undefined` without consuming its messages, matching native Bun 1.4.2.
 
 ## HTTP framing
 

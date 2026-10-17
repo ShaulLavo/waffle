@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { playwright, session, ready, writeFile, run } from "./playground.mjs";
+import { checkWorkers } from "./browser-workers.ts";
 const closedOutput = readFileSync(new URL("../../tests/fixtures/pipe-closed-child/index.ts", import.meta.url), "utf8");
 const orderedOutput = readFileSync(new URL("../../tests/fixtures/pipe-write-order/index.ts", import.meta.url), "utf8");
 const orderedChild = readFileSync(new URL("../../tests/fixtures/pipe-write-order/child.ts", import.meta.url), "utf8");
@@ -42,7 +43,7 @@ console.log("api cwd", Bun.spawnSync(cmd("0"), { cwd: "/missing-child-cwd" }).er
 const apiExpected = ["api nodefsstdin 0 stdin", "api sync 0 fresh err", "api input 0 1200000", "api files 0 child shared", "api nested 0 0 99", "api exec 42", "api cycle 0 ab", "api timeout SIGTERM ETIMEDOUT", "api cwd ENOENT", "api live child", "api ack 0"];
 process.env.BUN_WASM_TEST_PORT ??= "4183";
 const s = session("bun-wasm-self-spawn-browser-");
-const deadline = setTimeout(() => { console.error("subprocess browser gate timed out"); void s.cleanup().finally(() => process.exit(1)); }, 240_000);
+const deadline = setTimeout(() => { console.error("subprocess browser gate timed out"); void s.cleanup().finally(() => process.exit(1)); }, 900_000);
 try {
   const url = await s.serve();
   for (const browserName of process.argv.slice(2).length ? process.argv.slice(2) : ["chromium", "webkit"]) {
@@ -76,6 +77,7 @@ try {
         assert.equal(checked.code, 0, checked.output);
         console.log(`ok ${browserName} ${engine}: ${name}`);
       }
+      await checkWorkers(page, `${browserName} ${engine}`);
     }
     await browser.close();
   }

@@ -123,6 +123,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
   };
   const subprocess = ctx.crossOriginIsolated && typeof SharedArrayBuffer === "function" ? new SubprocessHost({
     budget: req.child?.budget,
+    workerTransport: req.child,
     slot: req.child?.slot,
     token: req.child?.token,
     stdin: req.child?.pipes[0],
