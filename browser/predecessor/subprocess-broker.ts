@@ -447,15 +447,25 @@ function controllersFor(runtime: Runtime): Map<number, SubprocessBroker> {
 export function installBunAdapters(runtime: Runtime, workerUrl: string): void {
   if (installedAdapters.has(runtime)) return;
   installedAdapters.add(runtime);
-  runtime.registerAdapter("preview1", (context, service) => service.launchWorker(context, {
-    workerUrl: new URL("./preview1-worker.js", workerUrl).href,
-    request: { module: context.module, args: context.request.argv, env: { ...context.request.env, PWD: context.request.cwd }, interruptible: true },
-  }));
-  for (const engine of ["quickjs", "jsc", "browser"] as const) runtime.registerAdapter(`bun:${engine}`, async (context, service) => {
+  const originController = async (context: ProcessContext, service: ProcessService) => {
     const supervisor = await service.ready();
     let parent = context.parentPid;
     let controller: SubprocessBroker | undefined;
     while (parent && !controller) { controller = controllersFor(runtime).get(parent); parent = supervisor.table.parentOf(parent) ?? 0; }
+    return controller;
+  };
+  runtime.registerAdapter("preview1", async (context, service) => {
+    const controller = await originController(context, service);
+    return service.launchWorker(context, {
+      workerUrl: new URL("./preview1-worker.js", workerUrl).href,
+      request: { module: context.module, args: context.request.argv, env: { ...context.request.env, PWD: context.request.cwd }, interruptible: true },
+      // Alias selection belongs to this Bun composition root, including recursive Preview1
+      // guests. The reusable worker/broker never guesses that an unknown executable is Bun.
+      executableName: name => controller?.qualifyExecutable(name) ?? name,
+    });
+  });
+  for (const engine of ["quickjs", "jsc", "browser"] as const) runtime.registerAdapter(`bun:${engine}`, async (context, service) => {
+    const controller = await originController(context, service);
     const moduleCache = engine === "browser" && new URL(workerUrl).pathname.endsWith("/__bunwasm/worker.js") ? `bunwasm-m-${crypto.randomUUID()}` : null;
     const budget = createProcessBudget();
     return service.launchWorker<RunRequest>(context, {
