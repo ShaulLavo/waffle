@@ -72,7 +72,7 @@ try {
       if (!pageOnly) {
         row.storageTests = await direct(page, "storageTests", { storage, filter: process.env.PERSIST_STORAGE_FILTER });
         assert.ok(row.storageTests.length > 0, "selected storage contract suite must execute cases");
-        if (storage === "indexeddb" && !process.env.PERSIST_STORAGE_FILTER) assert.equal(row.storageTests.length, 13);
+        assert.deepEqual(row.storageTests, await direct(page, "storageTestNames", { storage, filter: process.env.PERSIST_STORAGE_FILTER }), "execute every registered storage case");
       }
       if (!storageOnly) {
       // This test is deliberately available before backend integration: the old memory-only
@@ -93,12 +93,23 @@ try {
       row.reload = true; row.checks.push("durable-page-reload-bytes-inode-mtime-rename-unlink");
       if (!pageOnly) {
       const contender = await ready(context);
-      await assert.rejects(call(contender, "open", prefix, true, storage), /writer|lock|occupied|already|in use/i, "second page must refuse an occupied writer");
-      await call(page, "destroy");
-      await call(contender, "open", prefix, true, storage);
-      assert.deepEqual(await call(contender, "snapshot"), before, "writer may reopen after the first page releases ownership");
+      if (storage === "opfs") {
+        await assert.rejects(call(contender, "open", prefix, true, storage), /writer|lock|occupied|already|in use/i, "OPFS must refuse an occupied writer");
+        await call(page, "destroy");
+        await call(contender, "open", prefix, true, storage);
+        row.checks.push("opfs-second-tab-refused-then-open-after-owner-close");
+      } else {
+        await call(contender, "open", prefix, true, storage);
+        await page.waitForFunction(() => (globalThis as any).persistenceHarness.state.ownershipLost);
+        const message = await page.evaluate(() => (globalThis as any).persistenceHarness.state.ownershipMessage);
+        assert.match(message, /This workspace was opened in another tab. Reload to continue here./);
+        assert.match(message, /Unsaved changes in this tab weren't kept./);
+        await assert.rejects(call(page, "write", "/stale.bin", [1]), /opened in another tab/);
+        await assert.rejects(call(page, "flush"), /opened in another tab/);
+        row.checks.push("indexeddb-newest-tab-wins-old-worker-stops-and-reports-loss");
+      }
+      assert.deepEqual(await call(contender, "snapshot"), before, "takeover preserves acknowledged saves and rejects stale persistence");
       await call(contender, "destroy"); await contender.close();
-      row.checks.push("second-tab-writer-refused-then-open-after-owner-close");
 
       // Close after a real partial OPFS write, or at the IndexedDB transaction boundary.
       // A committed new generation and an aborted old generation are both correct; partial

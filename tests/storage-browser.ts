@@ -63,8 +63,8 @@ export function storageContractCases(): StorageContractCase[] {
     await rejects(reopened.read("missing"), /Missing|ENOENT|NotFound/);
   });
 
-  test("single writer lifetime and close", async (_name, open) => {
-    const storage = await open(); await rejects(open(), "writer");
+  test("storage close is idempotent", async (_name, open) => {
+    const storage = await open();
     await storage.close(); await storage.close();
     await rejects(storage.load(), "closed"); await rejects(storage.persist(batch(1)), "closed");
     await rejects(storage.read("file:1"), "closed"); await rejects(storage.flush(), "closed");
@@ -117,6 +117,86 @@ export function storageContractCases(): StorageContractCase[] {
 function indexedDBCases(): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
+  test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
+    // No loss notification simulates a frozen tab waking while its hash was pending.
+    const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };
+    for (const compactEvery of [1, 128]) {
+      const database = `${name}-${compactEvery}`;
+      const stale = await IndexedDBStorage.open(database, { locks, compactEvery });
+      await stale.persist(batch(1));
+      const original = crypto.subtle.digest.bind(crypto.subtle);
+      let entered!: () => void, resume!: () => void;
+      const hashing = new Promise<void>(resolve => { entered = resolve; });
+      const held = new Promise<void>(resolve => { resume = resolve; });
+      crypto.subtle.digest = async (...args) => { entered(); await held; return original(...args); };
+      const obsolete = batch(2, "stale");
+      obsolete.upserts[1]!.data = "stale-only";
+      obsolete.data = new Map([["stale-only", bytes("stale")]]);
+      const pending = stale.persist(obsolete);
+      const rejected = rejects(pending, "opened in another tab");
+      let newest: IndexedDBStorage | undefined;
+      try {
+        await hashing;
+        crypto.subtle.digest = original;
+        newest = await IndexedDBStorage.open(database, { locks, compactEvery });
+        assert((await newest.load())?.generation === 1, "takeover reloads acknowledged state");
+        await newest.persist(batch(2, "newest"));
+        resume(); await rejected;
+        await raw(database, async db => {
+          const tx = db.transaction(["data", "metadata", "journal"], "readonly");
+          const payload = await request(tx.objectStore("data").get("file:2"));
+          assert(new TextDecoder().decode(payload) === "newest", "latest payload remains durable");
+          assert(await request(tx.objectStore("data").get("stale-only")) === undefined, "stale payload never commits");
+        });
+        assert((await newest.load())?.generation === 2, "stale compaction cannot replace latest snapshot");
+        await rejects(stale.persist(batch(3)), "opened in another tab");
+      } finally { crypto.subtle.digest = original; resume(); await stale.close(); await newest?.close(); await request(indexedDB.deleteDatabase(database)); }
+    }
+  });
+
+  test("epoch fencing stops queued persistence when the lock is stolen", async (name) => {
+    let losses = 0;
+    const stale = await IndexedDBStorage.open(name, { onOwnershipLost() { losses++; } });
+    await stale.persist(batch(1));
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    let entered!: () => void, resume!: () => void;
+    const hashing = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { resume = resolve; });
+    crypto.subtle.digest = async (...args) => { entered(); await held; return original(...args); };
+    const pending = rejects(stale.persist(batch(2)), "opened in another tab");
+    const queued = rejects(stale.persist(batch(3)), "opened in another tab");
+    let newest: IndexedDBStorage | undefined;
+    try {
+      await hashing;
+      crypto.subtle.digest = original;
+      newest = await IndexedDBStorage.open(name);
+      assert(losses === 1, "lock loss is reported without waiting for queued writes");
+      assert((await newest.load())?.generation === 1, "new holder loads only acknowledged state");
+      await newest.persist(batch(2, "new owner"));
+      resume(); await Promise.all([pending, queued]);
+      assert(new TextDecoder().decode(await newest.read("file:2")) === "new owner", "queued old writes never replace new data");
+    } finally { crypto.subtle.digest = original; resume(); await stale.close(); await newest?.close(); }
+  });
+
+  test("epoch fencing serializes concurrent takeovers and stops displaced queues", async (name) => {
+    const first = await IndexedDBStorage.open(name);
+    await first.persist(batch(1));
+    const opened = await Promise.allSettled(Array.from({ length: 4 }, () => IndexedDBStorage.open(name)));
+    const owners = opened.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+    let writers = 0;
+    try {
+      for (const result of opened) if (result.status === "rejected") {
+        assert(String(result.reason).includes("This workspace was opened in another tab. Reload to continue here."), "startup takeover reports the complete ownership message");
+      }
+      await rejects(first.persist(batch(2)), "opened in another tab");
+      for (const owner of owners) {
+        try { await owner.persist(batch(2)); writers++; }
+        catch (error) { assert(String(error).includes("opened in another tab"), String(error)); }
+      }
+      assert(writers === 1, `exactly one concurrent contender writes, got ${writers}`);
+    } finally { await first.close(); await Promise.all(owners.map(owner => owner.close())); }
+  });
+
   test("incremental journal without full metadata rewrites", async (name, open) => {
     const storage = await open(); await storage.persist(batch(1));
     await storage.persist({ ...batch(2), upserts: [batch(2).upserts[1]!] });

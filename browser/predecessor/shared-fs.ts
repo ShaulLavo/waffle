@@ -1,6 +1,15 @@
 import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "@bun-wasm/runtime/fs";
 
+export const WORKSPACE_TAKEN_OVER = "This workspace was opened in another tab. Reload to continue here.";
+export const UNSAVED_CHANGES_LOST = "Unsaved changes in this tab weren't kept. Copy them before reloading.";
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
+function workerError(data: unknown): Error | undefined {
+  if (!data || typeof data !== "object" || !("type" in data) || data.type !== "filesystem-error"
+    || !("message" in data) || typeof data.message !== "string") return;
+  const error = new Error(`Filesystem worker failed: ${data.message}`);
+  if ("stack" in data && typeof data.stack === "string") error.stack = `${error.message}\n${data.stack}`;
+  return error;
+}
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
  * drain orders service requests, while flush checkpoints their data and metadata to storage.
  */
@@ -10,10 +19,22 @@ export class SharedFilesystem {
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
   private fatal: Error | undefined;
+  ownershipLost = false;
+  onOwnershipLost?: () => void;
   constructor(options: { persistence?: boolean; name?: string; storage?: "indexeddb" | "opfs" } = {}) {
     this.worker = new Worker(new URL("./fs-worker.js", location.href), { type: "module" });
     const connection = createFilesystemConnection();
     this.client = new FilesystemClient(connection.client);
+    this.worker.addEventListener("message", event => {
+      if (event.data?.type === "filesystem-ownership-lost") {
+        this.ownershipLost = true;
+        this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
+        this.onOwnershipLost?.();
+        return;
+      }
+      const error = workerError(event.data);
+      if (error) this.fail(error);
+    });
     this.worker.addEventListener("error", event => {
       event.preventDefault();
       this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));

@@ -4,9 +4,11 @@ import {
   type PersistenceBatch, type PersistedIndex, type PersistedNode, type StorageBackend,
 } from "./storage";
 
+const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload to continue here.";
+
 /** The subset of Web Locks needed by this backend; injectable without an unsafe fallback. */
 export interface StorageLockManager {
-  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true },
+  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true } | { mode: "exclusive"; steal: true },
     callback: (lock: unknown | null) => Promise<T>): Promise<T>;
 }
 export interface IndexedDBStorageOptions {
@@ -14,6 +16,7 @@ export interface IndexedDBStorageOptions {
   locks?: StorageLockManager;
   /** Number of incremental saves between full snapshots. */
   compactEvery?: number;
+  onOwnershipLost?: () => void;
 }
 interface Journal {
   version: 1;
@@ -181,9 +184,12 @@ export class IndexedDBStorage implements StorageBackend {
   private state?: State;
   private closed = false;
   private closing?: Promise<void>;
+  private ownershipError?: Error;
+  private transactions = new Set<IDBTransaction>();
 
   private constructor(private readonly db: IDBDatabase, private readonly unlock: () => Promise<void>,
-    private readonly compactEvery: number) {
+    private readonly compactEvery: number, private readonly epoch: number,
+    private readonly onOwnershipLost?: () => void) {
     db.onversionchange = () => { void this.close(); };
   }
 
@@ -193,35 +199,71 @@ export class IndexedDBStorage implements StorageBackend {
     const compactEvery = options.compactEvery ?? 128;
     if (!factory || !locks) throw new Error("IndexedDB storage requires IndexedDB and Web Locks");
     if (!Number.isSafeInteger(compactEvery) || compactEvery < 1) throw new Error("Invalid compaction interval");
+    // Open before requesting the lock so its callback starts epoch allocation without
+    // awaiting another task. Losing a grant aborts allocation as well as later commits.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const opening = factory.open(name, 1);
+      let blocked = false;
+      opening.onupgradeneeded = () => {
+        for (const store of ["metadata", "journal", "data"]) opening.result.createObjectStore(store);
+      };
+      opening.onsuccess = () => { if (blocked) opening.result.close(); else resolve(opening.result); };
+      opening.onerror = () => reject(opening.error ?? new Error("Cannot open filesystem storage"));
+      opening.onblocked = () => { blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
+    });
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    let acquired!: () => void, refused!: (error: unknown) => void;
-    const ready = new Promise<void>((resolve, reject) => { acquired = resolve; refused = reject; });
-    const lifetime = locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive", ifAvailable: true }, async lock => {
-      if (lock === null) { refused(new Error("Filesystem already has a writer in another tab")); return; }
-      acquired(); await held;
+    let acquired!: (storage: IndexedDBStorage) => void, refused!: (error: unknown) => void;
+    const ready = new Promise<IndexedDBStorage>((resolve, reject) => { acquired = resolve; refused = reject; });
+    let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
+    let lost = false;
+    const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, { mode: "exclusive", steal: true }, async () => {
+      if (lost) return;
+      allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
+      const done = completed(allocation);
+      let epoch = 0;
+      const get = allocation.objectStore("metadata").get("epoch");
+      get.onsuccess = () => {
+        const previous: unknown = get.result;
+        if (previous !== undefined && (!validInteger(previous) || previous >= Number.MAX_SAFE_INTEGER)) { allocation!.abort(); return; }
+        epoch = (typeof previous === "number" ? previous : 0) + 1;
+        allocation!.objectStore("metadata").put(epoch, "epoch");
+      };
+      await done;
+      allocation = undefined;
+      if (lost) return;
+      owner = new IndexedDBStorage(db, async () => { release(); await lifetime.catch(() => {}); }, compactEvery, epoch, options.onOwnershipLost);
+      acquired(owner);
+      await held;
     });
-    void lifetime.catch(refused);
-    await ready;
-    const unlock = async () => { release(); await lifetime; };
-    try {
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const opening = factory.open(name, 1);
-        let blocked = false;
-        opening.onupgradeneeded = () => {
-          for (const store of ["metadata", "journal", "data"]) opening.result.createObjectStore(store);
-        };
-        opening.onsuccess = () => { if (blocked) opening.result.close(); else resolve(opening.result); };
-        opening.onerror = () => reject(opening.error ?? new Error("Cannot open filesystem storage"));
-        opening.onblocked = () => { blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
-      });
-      return new IndexedDBStorage(db, unlock, compactEvery);
-    } catch (error) { await unlock(); throw error; }
+    void lifetime.catch(error => {
+      lost = true;
+      try { allocation?.abort(); } catch { /* A completed allocation is already durable. */ }
+      owner?.loseOwnership();
+      const stolen = error instanceof DOMException && error.name === "AbortError";
+      refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
+      if (stolen && !owner) options.onOwnershipLost?.();
+    });
+    try { return await ready; }
+    catch (error) { release(); db.close(); throw error; }
+  }
+
+  private loseOwnership(): Error {
+    if (this.ownershipError) return this.ownershipError;
+    const error = new Error(OWNERSHIP_LOST_MESSAGE);
+    this.ownershipError = error;
+    for (const tx of this.transactions) { try { tx.abort(); } catch {} }
+    this.db.close();
+    this.onOwnershipLost?.();
+    return error;
+  }
+  private assertOwner(): void {
+    if (this.ownershipError) throw this.ownershipError;
   }
 
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
-    const result = this.tail.then(action);
+    const result = this.tail.then(() => { this.assertOwner(); return action(); });
     this.tail = result.then(() => {}, () => {});
     return result;
   }
@@ -259,6 +301,7 @@ export class IndexedDBStorage implements StorageBackend {
   async flush(): Promise<void> {
     if (this.closed) throw new Error("Filesystem storage is closed");
     await this.tail;
+    this.assertOwner();
     if (this.persistenceError !== undefined) throw this.persistenceError;
   }
 
@@ -292,7 +335,7 @@ export class IndexedDBStorage implements StorageBackend {
       if (validateJournal(entry) && entry.generation === journalKeys[i]) journals.set(entry.generation, entry);
     }));
     const newest = recoverIndex(bases, journals, payloadKeys);
-    if (!newest && (metadataCount > 0 || journalKeys.length > 0 || dataKeys.length > 0)) {
+    if (!newest && (metadataCount > 1 || journalKeys.length > 0 || dataKeys.length > 0)) {
       throw new Error("Existing filesystem storage is corrupt; no valid snapshot can be recovered");
     }
     if (newest) {
@@ -346,13 +389,15 @@ export class IndexedDBStorage implements StorageBackend {
       if (entry && entry.generation > cutoff) payloads(entry.upserts, retained);
     }
     // No await inside this transaction: all hashes and compaction preparation are complete.
+    this.assertOwner();
     const tx = this.db.transaction(["metadata", "journal", "data"], "readwrite", { durability: "strict" });
+    this.transactions.add(tx);
     const data = tx.objectStore("data");
     await new Promise<void>((resolve, reject) => {
       let failure: unknown;
       const abort = (error: unknown) => { failure = error; try { tx.abort(); } catch {} };
-      tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(failure ?? tx.error ?? new Error("Filesystem transaction aborted"));
+      tx.oncomplete = () => { this.transactions.delete(tx); resolve(); };
+      tx.onabort = () => { this.transactions.delete(tx); reject(this.ownershipError ?? failure ?? tx.error ?? new Error("Filesystem transaction aborted")); };
       const finish = () => {
         try {
           for (const key of discarded) tx.objectStore("journal").delete(key);
@@ -367,6 +412,10 @@ export class IndexedDBStorage implements StorageBackend {
         } catch (error) { abort(error); }
       };
       let remaining = checking.size + pinChecks.size;
+      const checkEpoch = tx.objectStore("metadata").get("epoch");
+      checkEpoch.onsuccess = () => {
+        if (checkEpoch.result !== this.epoch) { abort(this.loseOwnership()); return; }
+      };
       try {
         if (!remaining) finish();
         for (const key of checking) {

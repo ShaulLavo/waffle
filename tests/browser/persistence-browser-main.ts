@@ -1,10 +1,10 @@
-import { SharedFilesystem } from "../src/shared-fs";
+import { SharedFilesystem, WORKSPACE_TAKEN_OVER, UNSAVED_CHANGES_LOST } from "../src/shared-fs";
 
 let fs: SharedFilesystem | undefined;
 let worker: Worker | undefined;
 let next = 0;
 const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
-const state = { commitStarted: false, boundary: undefined as string | undefined, partialWrite: false, progress: "idle" };
+const state = { commitStarted: false, boundary: undefined as string | undefined, partialWrite: false, progress: "idle", ownershipLost: false, ownershipMessage: "" };
 function direct(command: string, args?: unknown): Promise<any> {
   if (!worker) {
     worker = new Worker("./persistence-browser-worker.js", { type: "module" });
@@ -29,7 +29,12 @@ Object.assign(globalThis, {
     state,
     async open(name: string, persistence = true, storage: "indexeddb" | "opfs" = "indexeddb") {
       fs?.dispose();
+      state.ownershipLost = false; state.ownershipMessage = "";
       fs = new SharedFilesystem({ name, persistence, storage });
+      fs.onOwnershipLost = () => {
+        state.ownershipLost = true;
+        state.ownershipMessage = `${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`;
+      };
       await fs.flush();
     },
     async write(path: string, bytes: number[]) { await fs!.writeFile(path, Uint8Array.from(bytes)); },

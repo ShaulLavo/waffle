@@ -61,6 +61,42 @@ function nextMessage(worker: Worker): Promise<any> {
   });
 }
 
+test("backend startup failures report their complete message and original worker stack", async () => {
+  const worker = new Worker(new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href);
+  cleanups.push(() => worker.terminate());
+  const message = nextMessage(worker);
+  worker.postMessage({});
+  const error = await message;
+  expect(error).toMatchObject({ type: "filesystem-error", message: "Error: Filesystem fixture cannot open storage" });
+  expect(error.stack).toContain("filesystem-startup-failure.ts");
+  worker.terminate();
+});
+
+const rejectedReasons: [string, string][] = [
+  ["hostile", "Unknown filesystem worker error"],
+  ["null-prototype", "Unknown filesystem worker error"],
+  ["hostile-stack", "Error: Filesystem fixture stack is unavailable"],
+];
+for (const [reason, message] of rejectedReasons) test(`backend startup reports an unprintable ${reason} rejection`, async () => {
+  const worker = new Worker(new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href);
+  cleanups.push(() => worker.terminate());
+  const received = nextMessage(worker);
+  worker.postMessage({ reason });
+  expect(await received).toMatchObject({ type: "filesystem-error", message });
+  worker.terminate();
+});
+
+test("a refused diagnostic transfer still dispatches the original worker error", async () => {
+  const worker = new Worker(new URL("./fixtures/filesystem-diagnostic-transfer-failure.ts", import.meta.url).href);
+  cleanups.push(() => worker.terminate());
+  const error = new Promise<string>(resolve => {
+    worker.onerror = event => { event.preventDefault(); resolve(event.message); };
+  });
+  worker.postMessage({});
+  expect(await error).toContain("Original filesystem startup failure");
+  worker.terminate();
+});
+
 test("completed writes are visible to siblings before either process exits", async () => {
   const { client } = fixture();
   const sibling = new FilesystemClient(client.fork());

@@ -374,22 +374,38 @@ export class FilesystemService {
   }
   dispose(): void { for (const session of this.sessions) this.close(session); }
 }
+function failureDiagnostic(error: unknown) {
+  let message = "Unknown filesystem worker error";
+  let stack: string | undefined;
+  try { message = String(error); } catch { /* Rejection reasons need not be printable. */ }
+  try {
+    const value = error && typeof error === "object" && "stack" in error ? error.stack : undefined;
+    if (typeof value === "string") stack = value;
+  } catch { /* A stack getter can throw too. */ }
+  return { type: "filesystem-error", message, stack };
+}
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
-  scope: { onmessage: ((event: MessageEvent<any>) => void) | null; },
+  scope: { onmessage: ((event: MessageEvent<any>) => void) | null; postMessage: (message: unknown) => void; },
   backendFactory: (options: any) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
+  let errorReported = false;
   scope.onmessage = ({ data }) => {
     service ??= Promise.resolve().then(() => backendFactory(data)).then(backend => new FilesystemService(backend));
     void service.then(owner => {
       if (data.connect) owner.connect(data.connect);
       else if (data.sweep) owner.sweep();
     }).catch(error => {
-      // A worker load/storage-open error must reach the controller's error event, which
-      // revokes shared waiters. A rejected async message handler alone does not do that.
-      setTimeout(() => { throw error; }, 0);
+      if (errorReported) return;
+      errorReported = true;
+      try { scope.postMessage(failureDiagnostic(error)); }
+      catch { /* The worker error below also covers a failed diagnostic transfer. */ }
+      finally {
+        // A rejected async message handler alone does not dispatch a worker error event.
+        setTimeout(() => { throw error; }, 0);
+      }
     });
   };
 }

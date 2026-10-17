@@ -3,8 +3,8 @@ import { IndexedDBStorage } from "../../runtime/fs/indexeddb";
 import { OpfsStorage } from "../../runtime/fs/opfs";
 import type { StorageBackend, PersistenceBatch } from "../../runtime/fs/storage";
 import corpus from "./fixtures/persistence-corpus.json";
-import { runStorageTests } from "../../runtime/tests/storage-browser";
-import { runOpfsStorageTests } from "../../runtime/tests/opfs-storage-browser";
+import { runStorageTests, storageTests } from "../../runtime/tests/storage-browser";
+import { runOpfsStorageTests, opfsStorageTests } from "../../runtime/tests/opfs-storage-browser";
 
 let backend: PersistentBackend | undefined;
 let reads = 0, readBytes = 0, commits = 0, nativePayloadRequests = 0;
@@ -153,6 +153,10 @@ async function snapshotInterrupted() {
   return { state: bytes.length === size && bytes.every(byte => byte === wanted) && sentinel.length === 3 && sentinel.every(byte => byte === wanted) ? oldShape ? "old" : "new" : "partial", files, size: bytes.length, metadata };
 }
 const commands: Record<string, (args: any) => Promise<unknown>> = {
+  async storageTestNames({ storage = "indexeddb", filter }: { storage?: "indexeddb" | "opfs"; filter?: string } = {}) {
+    const registered = storage === "opfs" ? opfsStorageTests() : storageTests();
+    return registered.filter(test => !filter || test.label.includes(filter)).map(test => test.label);
+  },
   async storageTests({ storage = "indexeddb", filter }: { storage?: "indexeddb" | "opfs"; filter?: string } = {}) {
     return storage === "opfs" ? runOpfsStorageTests(filter) : runStorageTests(filter);
   },
