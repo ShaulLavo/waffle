@@ -332,7 +332,7 @@ ctx.onmessage = async (event: MessageEvent<RunRequest>) => {
           try {
             const filesystem = createProcessFilesystemIdentity(fs.connection);
             return { data: { filesystem, pipeRegistry: pipes.registry.handle() },
-              codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), commit: end, cancel: end };
+              codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), release: end };
           } catch (error) { end(); throw error; }
         },
       });

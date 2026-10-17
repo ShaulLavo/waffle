@@ -147,7 +147,7 @@ The browser loads this adapter lazily for modules importing the extended process
 `adapter: "preview1"` runs a generic WASI executable without Bun's slot adapter. Existing Bun
 slots and the signal-only preview1 path remain available.
 
-Every call is nonblocking except `poll`. Descriptor I/O returns a byte count, zero for EOF or
+Every call is nonblocking except `poll` and `wait_job` without NOHANG. Descriptor I/O returns a byte count, zero for EOF or
 zero-length I/O, or a negative WASI errno; a partial write is permitted. EAGAIN is -6 and EPIPE
 is -64. Spawn reserves inherited capabilities before returning the child PID.
 
@@ -158,6 +158,7 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
 | `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
 | `wait(pid, out)` | Returns 0 and writes u32 kind (0 exited, 1 signaled), then i32 code; returns EAGAIN before confirmed cleanup. |
+| `wait_job(job, flags, status_ptr)` | Flag 1 is NOHANG: returns -6 until the entire job is safely complete; flag 0 blocks. Success writes one little-endian i32 leader status (ordinary exit code or 128 + signal) and reaps the job and all remaining process records. |
 | `kill(pid, sig)`, `kill_job(job, sig)` | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner. |
 | `job_of(pid)` | Returns the job ID or negative errno. |
 | `poll(subs, count, timeout_ms, out)` | Returns event count; 0 on timeout or a pending signal. Timeout -1 has no deadline. |
@@ -165,13 +166,30 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 
 Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
 u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),
-writable fd (1), child exit (2), and filesystem completion (3); flag bit 0 means hangup.
+writable fd (1), child exit (2), filesystem completion (3), and job-empty (4, id = job ID); flag bit 0 means hangup.
 Signals wake poll without being consumed. Pipe publication notifies a shared readiness sequence;
 independent signal, local child and filesystem sources are also rescanned within 10 ms until
 all publishers guarantee the same wake address. The wait hook receives the sequence observed
 before scanning, preserving publications that race the scan. Terminal adapters must expose
 `tryRead`/`tryWrite` for directions that are safe to call without blocking; the ABI never calls
 a preview1 blocking stdin callback accidentally.
+
+Job wait authority belongs to the job owner and ancestors of that owner, including retained
+ancestry through individually reaped processes. Other callers receive -63 (EPERM), unknown job
+IDs -71 (ESRCH), and already-reaped jobs -12 (ECHILD). Only flags 0 and 1 are valid (-28 EINVAL
+otherwise); an invalid output pointer returns -21 without consuming the job. A handled signal
+interrupts blocking wait with -27 (EINTR) without consuming the delivery or reaping the job.
+
+The first member is the leader; its immutable outcome survives ordinary child reap, and later
+descendant signal deaths never replace it. Membership cannot move: a spawn either joins an open
+job or creates another job, whose lifetime is independent. A safely completed job cannot be
+reopened. Job-empty is level readiness until successful `wait_job`; observation does not reap.
+It follows outcome selection, revocation, descriptor release and filesystem admission fences
+for every member, including accepted spawns still queued for page-side admission. Individual
+`wait(pid)` and child-exit readiness also wait for that process's `quiesce` hook, which fences
+admitted filesystem and adapter work such as terminal critical sections. Neither process nor
+job confirmation waits for physical worker termination. Registration followed by a sequence
+capture and readiness scan prevents missed completion wakeups.
 
 ## Interrupting third-party programs
 

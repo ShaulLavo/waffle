@@ -14,7 +14,7 @@ async function until(condition: () => boolean, label: string, milliseconds = 500
   while (!condition()) { if (performance.now() >= end) throw new Error(`${label} timed out`); await pause(); }
 }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
-function fixture(options?: ConstructorParameters<typeof SubprocessBroker>[2], failPostMessage = false) {
+function fixture(options?: ConstructorParameters<typeof SubprocessBroker>[2], failPostMessage = false, quiesce?: () => Promise<void>) {
   const NativeWorker = globalThis.Worker;
   const workers: FakeWorker[] = [];
   class FakeWorker {
@@ -35,7 +35,7 @@ function fixture(options?: ConstructorParameters<typeof SubprocessBroker>[2], fa
   const filesystem = {
     connect(identity: object) { const channel = new MessageChannel(); channel.port2.close(); return { ...identity, port: channel.port1 }; },
     revoke: revokeFilesystem, reap() {}, client: { sweep() {} },
-    async quiesce(identity: Parameters<typeof revokeFilesystem>[0]) { revokeFilesystem(identity); },
+    async quiesce(identity: Parameters<typeof revokeFilesystem>[0]) { revokeFilesystem(identity); await quiesce?.(); },
   } as unknown as SharedFilesystem;
   const broker = new SubprocessBroker("http://localhost/worker.js", filesystem, options);
   const descriptors = new DescriptorTable();
@@ -135,8 +135,9 @@ for (const failure of ["error-event", "initial-post-message"] as const) test(`ge
   } finally { await state.dispose(); }
 });
 
-test("explicit disposal releases a selected ordinary child exit without a final acknowledgement", async () => {
-  const state = fixture();
+test("explicit disposal confirms a selected ordinary child exit only after its filesystem fence", async () => {
+  const fence = deferred();
+  const state = fixture(undefined, false, () => fence.promise);
   try {
     state.broker.register("child", { adapter: "preview1", cooperative: true, module: emptyModule() });
     await state.broker.adoptRuntimeRoot(state.root);
@@ -146,10 +147,16 @@ test("explicit disposal releases a selected ordinary child exit without a final 
     const worker = state.workers[0]!, shared = workerProcessState(worker.request!.runtimeProcess!);
     claimOutcome(shared.signals.outcome, { kind: "exited", code: 23 });
     state.broker.dispose();
-    await until(() => worker.terminated, "unacknowledged child stopped during disposal");
-    expect(Atomics.load(shared.confirmed, 0)).toBe(1);
+    await pause();
+    expect(Atomics.load(shared.confirmed, 0)).toBe(0);
+    expect(state.parent.wait(1, pid)).toBeNull();
+    expect(worker.terminated).toBe(false);
+    fence.resolve();
+    // Physical stop and safe confirmation are independent consumers of the fence.
+    await until(() => Atomics.load(shared.confirmed, 0) === 1, "disposed child safely confirmed");
     expect(state.parent.wait(1, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
-  } finally { await state.dispose(); }
+    await until(() => worker.terminated, "unacknowledged child stopped during disposal");
+  } finally { fence.resolve(); await state.dispose(); }
 });
 
 test("generic worker loaded after first watcher tick still confirms a caught default-signal outcome", async () => {

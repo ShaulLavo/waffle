@@ -207,7 +207,7 @@ reference closes; EPIPE reaches writers after the last reader reference closes.
 
 Calls return 0 or a non-negative result on success and a negative error on failure (WASI errno
 for descriptor operations; `signal` uses the Bun slot's -22 invalid-argument result). All are
-non-blocking except `poll`.
+non-blocking except `poll` and `wait_job` without NOHANG.
 
 | Import | Signature | Meaning |
 |---|---|---|
@@ -218,12 +218,27 @@ non-blocking except `poll`.
 | `read` | `(fd, buf, len) -> n` | `n > 0` bytes, `0` at EOF or when `len == 0`, `-EAGAIN` when empty. |
 | `write` | `(fd, buf, len) -> n` | Bytes accepted (partial writes allowed), `-EAGAIN` when full, `-EPIPE` when no reader remains. |
 | `wait` | `(pid, out_ptr) -> 0` | `-EAGAIN` while running; otherwise writes `u32 kind` (0 exited, 1 signaled) and `i32 code` (exit code or signal number). |
+| `wait_job` | `(job, flags, status_ptr) -> errno` | Flag 1 (NOHANG) returns -6 while any member is unsafe; flag 0 blocks. Success writes one little-endian i32 leader status (exit code or 128 + signal) and reaps the whole job. Unknown job -71, reaped job -12, outside owner ancestry -63. |
 | `kill` | `(pid, sig) -> 0` | Signals one process. |
 | `kill_job` | `(job, sig) -> 0` | Signals every process in a job, including descendants spawned into it. |
-| `poll` | `(subs_ptr, n, timeout_ms, out_ptr) -> n_ready` | Each subscription is 16 bytes: `u32 kind` (0 readable, 1 writable, 2 child exit, 3 filesystem completion), `u32 id` (fd, pid or request), `u64 userdata`. Each event written is 16 bytes: `u64 userdata`, `u32 kind`, `u32 flags` (bit 0 hang-up). Also returns when this process's interrupt word is set (`n_ready` may be 0). The only call that blocks. |
+| `poll` | `(subs_ptr, n, timeout_ms, out_ptr) -> n_ready` | Each subscription is 16 bytes: `u32 kind` (0 readable, 1 writable, 2 child exit, 3 filesystem completion, 4 job-empty), `u32 id` (fd, pid, request or job), `u64 userdata`. Each event written is 16 bytes: `u64 userdata`, `u32 kind`, `u32 flags` (bit 0 hang-up). Also returns when this process's interrupt word is set (`n_ready` may be 0). Blocks unless timeout is zero. |
 | `signal` | `(sig, mode) -> result` | Synchronously sets this process's disposition: 0 default, 1 ignored, 2 handled; mode 3 raises a signal against the current disposition. `(0, 0)` dequeues the next pending handled signal (0 if none), sharing the queue with `interrupted`. Set/raise returns 0, invalid arguments -22. SIGKILL cannot be registered or ignored. Bun reaches the same adapter through optional host slot 18. |
 | `interrupted` | `() -> sig` | Dequeues one pending handled signal for this process (0 if none); the guest dispatches its handler at a checkpoint. Unhandled default actions have already been selected by the supervisor. Don't rely on the host call itself to make `terminate()` work: in real Safari, `terminate()` alone stopped only 13 of 50 runs with tiny injected host checks, while stopping on the returned signal worked 50 of 50 (spike 5). |
 | `default_signal` | `(sig) -> never` | Takes the default action for the signal returned by a checkpoint. The adapter reports it explicitly before unwinding; the supervisor records `128 + sig`, revokes descriptors and requests physical termination. An unrelated later trap is not inferred to be a signal exit. |
+
+Job completion preserves the leader outcome across individual reaping and later descendant
+signal deaths. Member job IDs cannot move; spawns selecting separate jobs are independent.
+Kind 4 is non-consuming level readiness until successful `wait_job`; repeated waits and polls
+after reaping return ECHILD. Completion counts accepted reservations before host admission and
+requires every member's revocation, descriptor release and filesystem/adapter quiescence, not
+merely an outcome word or `Worker.terminate()`. Individual process confirmation and root
+`run.done` likewise follow their own quiesce hook, never physical worker termination. Legacy
+`SubprocessHost.wait` remains on the old transport until step 7b replaces it with the process
+directory. A safely completed job cannot be reopened. The shared
+wake is registered before capturing its sequence and scanning, preventing lost completion races.
+Invalid flags return EINVAL; bad status memory does not consume the job; pending handled signals
+interrupt blocking wait with EINTR without consuming delivery. See `docs/host-abi.md` for layout.
+
 
 Signals are `SIGINT`, `SIGTERM`, `SIGKILL` and `SIGPIPE`. Plain preview1 processes start with the
 default per-signal disposition, rather than assuming every program handles a signal. The Node/Bun
