@@ -149,7 +149,7 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     }
     const token = identifier(code, index);
     if (token) {
-      if (token.value === "import" && !/[.?]$/.test(code.slice(0, index).trimEnd())) {
+      if (token.value === "import" && !/\.$/.test(code.slice(0, index).trimEnd())) {
         const after = trivia(code, token.end);
         const literal = code[after] === "(" ? nextString(code, after + 1) : nextString(code, after) ?? (() => {
           let at = after;
