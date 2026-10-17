@@ -2,9 +2,9 @@
 // twice, never over itself (its COOP/COEP headers stay untouched):
 //
 // Scope `<app>/__bunwasm/` controls the bun workers started from `<app>/__bunwasm/worker.js`. The
-// worker puts each program module into Cache Storage under `<app>/__bunwasm/m/<run>/<key>` before
-// importing it, and this worker serves those URLs, so modules have named URLs and import cycles
-// link natively (engine-host.js). Other paths under the scope are the app's own files.
+// worker puts modules needing a named URL into Cache Storage under
+// `<app>/__bunwasm/m/<run>/<key>`, so import cycles link natively (engine-host.js).
+// Acyclic modules use blob URLs. Other paths under the scope are the app's own files.
 //
 // Scope `<app>/__preview/` controls only preview tabs:
 // A request for `<app>/__preview/<port>/<path>` is forwarded to the playground window running a
