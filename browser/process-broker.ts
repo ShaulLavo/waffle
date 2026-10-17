@@ -9,6 +9,7 @@ import { checkedSignal } from "../proc/types";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 import { WorkerProcessBroker } from "../proc/worker-broker";
+import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission";
 import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
 import { WorkerPipeBroker } from "../proc/worker-pipes";
@@ -48,6 +49,8 @@ export interface BrowserProcessBrokerOptions {
   table: ProcessTable;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   onError?(error: unknown): void;
+  /** Opt-in metadata only; observers must not reenter process control. Exceptions are ignored. */
+  onProcessAdmission?: ProcessAdmissionObserver;
 }
 export interface RuntimeRootOptions {
   filesystem?: FilesystemIdentity;
@@ -102,6 +105,7 @@ export class BrowserProcessBroker {
       supervisor: () => this.ready(), codec: transport => this.descriptorCodec(transport),
       onPipe: handle => this.pipes.attach(handle as import("../proc/pipes").PipeEndpointHandle),
       pumpPipes: () => this.pipes.pump(), onError: error => this.report(error),
+      onAdmission: options.onProcessAdmission,
       quiesce: (_pid, transport) => options.filesystem.quiesce(this.filesystem(transport)),
     });
   }
@@ -111,7 +115,13 @@ export class BrowserProcessBroker {
         registry: this.options.registry, table: this.options.table,
         launch: context => {
           if (this.suspended) throw new Error("Process broker is disposed");
-          return this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context);
+          this.traceProcess(context, "launching");
+          const launched = this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context);
+          if (!this.options.onProcessAdmission) return launched;
+          return Promise.resolve(launched).then(handle => {
+            this.traceProcess(context, "launched");
+            return handle;
+          });
         },
         canConfirmExit: pid => {
           const child = this.children.get(pid);
@@ -119,6 +129,9 @@ export class BrowserProcessBroker {
         },
         quiesce: pid => this.quiesceProcess(pid), retainJobResults: true,
         startFailed: (pid, error) => {
+          const record = this.options.table.get(pid);
+          // Descriptor admission and errors from an already-running worker are not startup failures.
+          if (record?.state === "starting") this.traceProcess(record, "rejected", "start-failed");
           const controller = this.controllers.get(pid);
           if (controller?.startFailed) { controller.startFailed(error); return; }
           const stderr = this.options.table.get(pid)?.descriptors.get(2)?.resource;
@@ -274,16 +287,29 @@ export class BrowserProcessBroker {
     }
   }
   async runtimeMessage(message: WorkerProcessMessage, senderPid: number): Promise<void> {
+    this.traceSpawn(message, "received");
     const sender = this.transport.getIdentity(senderPid);
     const result = sender && readOutcome(workerProcessState(sender).signals.outcome);
     if (!sender || this.suspended || (message.operation !== "reap-job" && (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)))))) {
-      this.rejectRuntimeMessage(message, senderPid); return;
+      this.rejectMessage(message, senderPid, this.suspended ? "broker-disposed" : !sender ? "unknown-sender" : result?.kind === "signaled" ? "sender-signaled" : "sender-revoked"); return;
     }
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
   }
-  rejectRuntimeMessage(message: WorkerProcessMessage, senderPid?: number): void {
+  rejectRuntimeMessage(message: WorkerProcessMessage, senderPid?: number, reason: ProcessAdmissionEvent["reason"] = "external-rejection"): void {
+    this.traceSpawn(message, "received");
+    this.rejectMessage(message, senderPid, reason);
+  }
+  private traceProcess(identity: Pick<ProcessAdmissionEvent, "pid" | "parentPid" | "job">, stage: ProcessAdmissionEvent["stage"], reason?: ProcessAdmissionEvent["reason"]): void {
+    if (!this.options.onProcessAdmission) return;
+    const transport = this.transport.getIdentity(identity.pid);
+    reportProcessAdmission(this.options.onProcessAdmission, identity, stage, reason, transport ? workerProcessDirectoryId(transport) : undefined);
+  }
+  private traceSpawn(message: WorkerProcessMessage, stage: ProcessAdmissionEvent["stage"], reason?: ProcessAdmissionEvent["reason"]): void {
+    if (message.operation === "spawn" && this.options.onProcessAdmission) reportProcessAdmission(this.options.onProcessAdmission, workerProcessState(message.transport), stage, reason, workerProcessDirectoryId(message.transport));
+  }
+  private rejectMessage(message: WorkerProcessMessage, senderPid: number | undefined, reason: ProcessAdmissionEvent["reason"]): void {
     if (message.operation === "reap-job") {
       if (!this.suspended && senderPid !== undefined && this.transport.getIdentity(senderPid)) void this.transport.handle(message, senderPid).catch(error => this.report(error));
       return;
@@ -291,7 +317,10 @@ export class BrowserProcessBroker {
     if (message.operation !== "spawn") return;
     const transport = message.transport, state = workerProcessState(transport);
     const existing = this.transport.getIdentity(state.pid);
-    if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) return;
+    if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) {
+      this.traceSpawn(message, "dropped", "already-registered"); return;
+    }
+    this.traceSpawn(message, "rejected", reason);
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
     const identity = this.filesystem(transport);
@@ -329,7 +358,7 @@ export class BrowserProcessBroker {
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       const selected = readOutcome(context.outcome);
       if (data.type === "runtime-proc") {
-        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data, context.pid);
+        if (selected?.kind === "signaled" || (!selected && isRevoked(filesystem))) this.rejectRuntimeMessage(data, context.pid, selected?.kind === "signaled" ? "sender-signaled" : "sender-revoked");
         else {
           const message = data.operation === "spawn" && options.executableName
             ? { ...data, request: { ...data.request, executable: options.executableName(data.request.executable) } } : data;
