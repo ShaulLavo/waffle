@@ -109,3 +109,7 @@ jobs:
         env:
           INTERRUPT_SCRATCH_ROOT: ${{ runner.temp }}
         run: bun tests/browser-interrupt.ts ${{ matrix.browser }}
+      - name: Process pipes and runtime_proc guest ABI (no Rust or dist artifacts)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bun tests/browser-runtime-proc.ts ${{ matrix.browser }}

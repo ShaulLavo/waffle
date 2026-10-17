@@ -36,9 +36,12 @@ export class ProcessTable {
   private readonly records = new Map<number, ProcessRecord>();
   private readonly jobs = new Map<number, MutableProcessJob>();
   private readonly usedPids = new Set<number>();
+  /** Keep ancestry after wait/reap so a live descendant never loses its controlling ancestors. */
+  private readonly parents = new Map<number, number>();
   private readonly usedJobs = new Set<number>();
   constructor(identities = new ProcessIdentityAllocator()) { this.identities = identities; }
   get(pid: number): ProcessRecord | undefined { return this.records.get(pid); }
+  parentOf(pid: number): number | undefined { return this.parents.get(pid); }
   job(id: number): ProcessJob | undefined { return this.jobs.get(id); }
   values(): IterableIterator<ProcessRecord> { return this.records.values(); }
   require(pid: number): ProcessRecord {
@@ -54,6 +57,10 @@ export class ProcessTable {
     this.jobs.set(id, job);
     return job;
   }
+  /** Roll back a reservation without deleting a job that a reentrant hook populated. */
+  removeEmptyJob(id: number): void {
+    if (this.jobs.get(id)?.members.size === 0) this.jobs.delete(id);
+  }
   checkPid(pid: number): void {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff || this.usedPids.has(pid)) {
       throw new ProcessError(ProcessErrno.INVAL, `pid ${pid} is invalid or was already reserved`);
@@ -65,6 +72,7 @@ export class ProcessTable {
     if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${record.job}`);
     this.identities.observePid(record.pid);
     this.usedPids.add(record.pid);
+    this.parents.set(record.pid, record.parentPid);
     this.records.set(record.pid, record);
     job.members.add(record.pid);
   }

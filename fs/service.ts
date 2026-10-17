@@ -14,6 +14,7 @@ interface Session {
   pending: Map<number, SharedArrayBuffer>;
   preparingHandles: Map<number, number>;
   quiescing?: Promise<void>;
+  closed?: boolean;
 }
 interface PreparedRequest {
   handles: number[];
@@ -32,13 +33,42 @@ export class FilesystemService {
     }
     const session: Session = { connection, handles: new Map(), capabilities: new Int32Array(connection.capabilities), freeEntries: Array.from({ length: CAPABILITY_SLOTS }, (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS), preopens: new Set(), transient: new Map(), references: new Map(), responses: new Map(), pending: new Map(), preparingHandles: new Map() };
     this.sessions.add(session);
+    for (const reservation of connection.reservations) {
+      const state = new Int32Array(reservation.state);
+      if (Atomics.compareExchange(state, 1, 0, 1) !== 0) continue;
+      try {
+        if (!isRevoked(connection) && !session.handles.has(reservation.handle)) {
+          this.backend.retain(reservation.handle);
+          if (isRevoked(connection) || !this.sessions.has(session)) {
+            this.backend.release(reservation.handle);
+            Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
+            continue;
+          }
+          session.handles.set(reservation.handle, reservation.targetKey);
+          session.transient.set(reservation.handle, true);
+          const index = session.freeEntries.indexOf(reservation.targetKey);
+          if (index >= 0) session.freeEntries.splice(index, 1);
+        } else if (isRevoked(connection)) Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
+      } finally { Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1); }
+    }
+    Atomics.store(session.capabilities, 0, session.transient.size);
+    this.sweep();
+    // Adopting a child pin can make the live parent's final detached pin collectible.
+    for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
     for (const segment of this.backend.sharedSegments?.() ?? []) connection.port.postMessage({ segment: segment.buffer, index: segment.index });
     connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
       if ("connect" in data) {
         if (!isRevoked(connection)) this.connect(data.connect);
         else data.connect.port.close();
-      } else if ("sweep" in data) this.sweep();
-      else if ("discard" in data) session.responses.delete(data.discard);
+      } else if ("sweep" in data) {
+        this.sweep();
+        // A controller can release a transfer for another live identity. Its notifier need
+        // not own that identity's port, so sweep notifications also trim live peers in queue
+        // order. Internal contention sweeps stay lock-free until an owner has quiesced.
+        this.queue = this.queue.then(() => {
+          for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
+        });
+      } else if ("discard" in data) session.responses.delete(data.discard);
       else if ("trim" in data) this.queue = this.queue.then(() => {
         if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
       });
@@ -79,6 +109,7 @@ export class FilesystemService {
       } catch (error) { session.freeEntries.push(key); throw error; }
       session.handles.set(handle, key);
       Atomics.store(session.capabilities, key, handle);
+      Atomics.store(session.capabilities, key + 2, 0);
       // Publish only after the backend pin and identity are ready.
       Atomics.store(session.capabilities, key + 1, 0);
     }
@@ -117,6 +148,7 @@ export class FilesystemService {
         const key = session.handles.get(handle)!;
         // A local retain racing this CAS either owns a live pin or sees a revoked entry.
         if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) continue;
+        if (Atomics.load(session.capabilities, key + 2) > 0) { Atomics.store(session.capabilities, key + 1, 0); continue; }
         this.forget(session, handle, key);
         idle--;
       }
@@ -174,9 +206,13 @@ export class FilesystemService {
       for (;;) {
         const count = Atomics.load(session.capabilities, key + 1);
         if (count <= 0) throw new FilesystemError(8);
-        if (Atomics.compareExchange(session.capabilities, key + 1, count, count === 1 ? -1 : count - 1) !== count) continue;
+        const forget = count === 1 && Atomics.load(session.capabilities, key + 2) === 0;
+        if (Atomics.compareExchange(session.capabilities, key + 1, count, forget ? -1 : count - 1) !== count) continue;
+        // A synchronous reservation publishes while holding a temporary ordinary reference.
+        // Recheck after revocation before dropping the backend's last pin.
+        if (forget && Atomics.load(session.capabilities, key + 2) > 0) Atomics.store(session.capabilities, key + 1, 0);
         if (owned > 1) session.references.set(a, owned - 1); else session.references.delete(a);
-        if (count === 1) this.forget(session, a, key);
+        if (forget && Atomics.load(session.capabilities, key + 1) === -1) this.forget(session, a, key);
         break;
       }
       return;
@@ -310,13 +346,15 @@ export class FilesystemService {
     wake(session.connection);
     for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
     for (const handle of Array.from(session.handles.keys())) {
+      if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
       session.handles.delete(handle);
       this.backend.release(handle);
     }
     Atomics.store(session.capabilities, 0, 0);
-    session.handles.clear(); session.preopens.clear(); session.transient.clear(); session.references.clear(); session.responses.clear(); session.preparingHandles.clear();
+    session.preopens.clear(); session.transient.clear(); session.references.clear(); session.responses.clear(); session.preparingHandles.clear();
     session.connection.port.close();
-    this.sessions.delete(session);
+    session.closed = true;
+    if (!session.handles.size) this.sessions.delete(session);
   }
   resources() {
     const backend = this.backend.resources?.() ?? {};
@@ -327,10 +365,11 @@ export class FilesystemService {
       capabilityBytes += session.connection.capabilities.byteLength;
       for (const handle of session.transient.keys()) if (Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0) transient++;
     }
+    const ownerStateBytes = this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
     return {
-      ...backend, clients: this.sessions.size, retained, transient, responses, capabilityBytes,
-      metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes,
-      bytes: (backend.bytes ?? 0) + capabilityBytes,
+      ...backend, ownerStateBytes, clients: this.sessions.size, retained, transient, responses, capabilityBytes,
+      metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
+      bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
     };
   }
   dispose(): void { for (const session of this.sessions) this.close(session); }

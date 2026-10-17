@@ -13,8 +13,17 @@ export interface Stream {
   kind: "pipe" | "terminal";
   read(chunks: readonly Uint8Array[]): number;
   write(chunks: readonly Uint8Array[]): number;
+  /** Explicit immediate operations for async guests; never fall back to blocking preview1 I/O. */
+  tryRead?(chunks: readonly Uint8Array[]): number;
+  tryWrite?(chunks: readonly Uint8Array[]): number;
   readiness(): Readiness;
+  /** Shared sequence incremented and notified after readiness changes. */
+  readonly notification?: Int32Array;
   close?(): void;
+  /** A process gets independent capabilities; dup within one process keeps its description. */
+  forProcess?(pid: number): Stream;
+  /** Freeze shared I/O before releasing references or requesting physical termination. */
+  revoke?(): void;
 }
 export type Resource =
   | { kind: "file"; handle: FileHandle; offset: number; append: boolean }
@@ -46,14 +55,19 @@ export interface Descriptor {
   rightsInheriting: bigint;
   preopen?: string;
 }
+/** Successful runtime_proc fd results must also be nonnegative WASM i32 values. */
+export const MAX_DESCRIPTOR = 0x7fffffff;
 export class DescriptorTable {
   private entries = new Map<number, Descriptor>();
   private next = 0;
   get(fd: number): Descriptor | undefined { return this.entries.get(fd); }
   add(description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
-    const fd = this.next++;
+    if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
+    let fd = this.next;
+    while (this.entries.has(fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     description.retain();
     this.entries.set(fd, { ...rights, description, resource: description.resource });
+    this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     return fd;
   }
   open(resource: Resource, rightsBase: bigint, rightsInheriting: bigint, release?: () => void, preopen?: string): number {
@@ -67,10 +81,11 @@ export class DescriptorTable {
   }
   /** Retain before replacing, including when both bindings already share the description. */
   inherit(fd: number, source: Descriptor): void {
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
     source.description.retain();
     this.close(fd);
     this.entries.set(fd, { description: source.description, resource: source.resource, rightsBase: source.rightsBase, rightsInheriting: source.rightsInheriting });
-    this.next = Math.max(this.next, fd + 1);
+    if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
   }
   close(fd: number): boolean {
     const entry = this.entries.get(fd);

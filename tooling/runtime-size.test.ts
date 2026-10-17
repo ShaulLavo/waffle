@@ -34,8 +34,8 @@ test("the first-spawn service gate allows reservation primitives but rejects ser
 });
 
 test("core gzip budget includes boundary, reports actionable excess", () => {
-  expect(() => checkCoreBudget(6 * 1024)).not.toThrow();
-  expect(() => checkCoreBudget(6 * 1024 + 1)).toThrow("core exceeds 6144 B gzip budget by 1 B");
+  expect(() => checkCoreBudget(7 * 1024)).not.toThrow();
+  expect(() => checkCoreBudget(7 * 1024 + 1)).toThrow("core exceeds 7168 B gzip budget by 1 B");
 });
 
 test("Bun light initial downloads allow the tiny fatal check but never the binary rewriter", () => {

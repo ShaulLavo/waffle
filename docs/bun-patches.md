@@ -19,6 +19,9 @@ Each row has one class. A file with independent changes has separate rows.
 | [`scripts/transpile-runtime.ts`, runtime TypeScript](#runtime-typescript) | Host feature | Original build adapter and guest types; preserve runtime factory loading. |
 | [Standard output error adapters](#standard-output-errors) | Host feature | Original Rust and worker adapters preserve EPIPE and block on temporary output backpressure. |
 | [Worker threads adapters](#worker-threads-adapter) | Host feature | Original TypeScript worker, clone, port-routing and stream adapters over separate host guest instances, with distinct control-pipe and final-signal selectors. |
+| [Cross-worker descriptor ownership](#cross-worker-descriptor-ownership) | Host feature | Original process and filesystem adapters transfer open descriptions, preserve shared file offsets and revoke process-owned endpoints before publishing exit. |
+| [Process-owned pipe adapters](#process-owned-pipe-adapters) | Host feature | SharedPipe-derived ring copying with original per-process publication, reader relay and descriptor-transfer adapters. |
+| [Guest process ABI](#guest-process-abi) | Host feature | Original runtime_proc imports, nonblocking filesystem preparation, preview1 notification waits and lazy browser process integration. |
 | [0001](#0001-platform-selection-and-pointer-layout) | Port | Select WASI implementations and support 32-bit layouts and pointer tags. |
 | [0002](#0002-filesystem-threading-and-layout) | Port | Add WASI directory iteration, stat, watcher, and single-thread primitives. |
 | [0003](#0003-transpiler-dependencies) | Port | Supply WASI wakers, CPU features, crash, and resolver implementations. |
@@ -1520,3 +1523,62 @@ count. Checking the queue only before accepting an entire large write allowed
 the first write to bypass the limit. The bounded host test fails with that
 implementation and passes with capacity-aware writes, including full-queue,
 zero-length and owned-copy cases. No upstream implementation is copied.
+
+## Cross-worker descriptor ownership
+
+`runtime/proc/{worker-client,worker-broker,filesystem-codec}.ts` and
+`runtime/core/open-file.ts` are original bun-wasm adapters, not copied Bun, Node or WASI host
+implementations. They extend the descriptor and filesystem services present at bun-wasm
+`52576274` with cloneable process bindings and shared file-description state. The browser
+worker installs those bindings into the same table used by preview1 calls.
+
+A spawn reserves independent filesystem capabilities before returning; closing or killing the
+parent cannot invalidate an admitted child's open file. Duplicate child bindings share one
+open description, including a shared file cursor. Cursor operations participate in filesystem
+host sections so revocation and reaping cannot strand a lock. Stream descriptions may create
+a fresh process-owned endpoint during inheritance, and termination freezes all capabilities
+before making the child waitable. No upstream patch is added by these adapters.
+
+## Process-owned pipe adapters
+
+`runtime/proc/pipes.ts` adapts the bounded ring wrap/copy and notification scheme from this
+project's `web/src/subprocess.ts` (`SharedPipe`, bun-wasm revision `52576274`). That source is an
+original bun-wasm host adapter, not a copied upstream implementation. The process-owned layer
+adds independent producer rings, atomic committed-position/revocation cursors, a host-only
+process publication registry, reference-counted endpoints, reader merging and supervisor relay.
+These changes prevent a terminated worker's delayed publication from altering the live stream.
+
+`runtime/proc/worker-pipes.ts` is a separate original adapter for cloneable endpoint capabilities,
+filesystem-codec composition and supervisor relay ownership. Spawn retains a process endpoint
+synchronously; worker and controller imports release that same lifetime idempotently. Stable pipe
+identities survive structured cloning without using SharedArrayBuffer wrapper identity. No Bun,
+Node, WebKit or third-party pipe implementation is copied or patched by these modules.
+
+## Guest process ABI
+
+`runtime/proc/abi.ts` is an original adapter implementing the process ABI specified in
+`plans/browser-runtime.md`, over this project's process, descriptor and filesystem services.
+It is not copied from Bun, Node, WebKit, SLICC or another WASI host. Its packed subscription,
+event and wait records are the project's own interface; the errno values follow WASI.
+Spawn metadata copies the checked guest span into fixed-owned bytes before native UTF-8
+decoding: TextDecoder's WebIDL input permits shared buffers, not resizable backing. This is
+representation normalization, with no engine/version detection or retry.
+`runtime/core/{descriptors,wasi}.ts` adds signed-success descriptor bounds, explicit immediate
+terminal methods and notification-aware preview1 polling without replacing the existing
+blocking preview1 I/O contract.
+
+`runtime/fs/{client,shared}.ts` extends the original bun-wasm shared filesystem at revision
+`9d072068` with nonblocking lock admission and asynchronous preparation for cold reads and
+file growth. Preparing an operation never consumes input or commits a write behind EAGAIN.
+The browser runner, worker and subprocess broker compose these original adapters lazily,
+share one fd table with preview1 and preserve the existing Bun host slots.
+`web/src/runtime-terminals.ts` is an original callback-destination codec: it preserves stdout
+versus stderr across dup and remapped inherited fds, forwards generic child output to the run's
+hooks, and represents this runner's default EOF stdin explicitly. After selecting the immutable
+winning outcome, the process supervisor waits for the final ordered host acknowledgment before
+confirming an ordinary exit and terminating its worker, so queued terminal output drains first;
+fatal outcomes and explicit disposal still
+complete without waiting for that acknowledgment. A late kill cannot bypass the drain after an
+ordinary outcome has already won. Unknown callback terminals are rejected rather than pretending
+their input can be shared. No new upstream patch, copied
+implementation or compatibility branch is introduced.

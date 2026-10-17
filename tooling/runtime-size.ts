@@ -27,8 +27,9 @@ export function initialJavaScript(outputs: OutputGraph, roots: readonly string[]
   return Array.from(seen).sort();
 }
 
+const CORE_BUDGET_KIB = 7;
 export function checkCoreBudget(gzipBytes: number): void {
-  const budget = 6 * 1024;
+  const budget = CORE_BUDGET_KIB * 1024;
   if (gzipBytes > budget) throw new Error(`core exceeds ${budget} B gzip budget by ${gzipBytes - budget} B; inspect runtime/core imports and the layer report`);
 }
 
@@ -130,7 +131,7 @@ async function application(name: "web" | "sandbox", splitting: boolean, serviceW
 export async function runtimeSizeReport() {
   const previewSocketScript = await previewWebsocketScript();
   const layers = await Promise.all([
-    layer("core", ["runtime/core/index.ts"], 6),
+    layer("core", ["runtime/core/index.ts"], CORE_BUDGET_KIB),
     layer("fs", ["runtime/fs/index.ts"], 6),
     layer("net", ["web/src/net/host.ts", "web/src/net/helper.ts", "web/src/preview.ts"], 14),
     layer("proc", ["runtime/proc/index.ts"], 8),

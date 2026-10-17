@@ -1,3 +1,4 @@
+import { withFileOffset } from "./open-file";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
@@ -9,6 +10,7 @@ import { memoryViews, type MemoryViews } from "./memory-views.js";
 const SUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
+const EINTR = 27;
 const EINVAL = 28;
 const EIO = 29;
 const EISDIR = 31;
@@ -92,8 +94,13 @@ export interface WasiOptions {
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   stdout(data: Uint8Array): void;
   stderr(data: Uint8Array): void;
-  /** Blocks the calling thread for `ms` milliseconds. */
+  /** Blocks the calling thread for `ms` milliseconds when no shared notification exists. */
   sleep(ms: number): void;
+  /** Signal wake hint: poll returns EINTR without consuming the pending signal or this word. */
+  interrupt?: Int32Array;
+  /** Shared readiness wait. Preserve expected, observed before the readiness scan, to avoid
+   * losing a publication. Embedders may check process liveness before and after this wait. */
+  wait?(word: Int32Array, expected: number, milliseconds: number): void;
   trace?: (line: string) => void;
 }
 
@@ -145,6 +152,15 @@ export class Wasi {
     return at;
   }
 
+  private writeTerminal(which: 0 | 1 | 2, chunks: readonly Uint8Array[]): number {
+    const total = chunks.reduce((n, chunk) => n + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) { out.set(chunk, at); at += chunk.length; }
+    if (total > 0) (which === 2 ? this.opts.stderr : this.opts.stdout)(out);
+    return total;
+  }
+
   constructor(private opts: WasiOptions) {
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
@@ -152,14 +168,11 @@ export class Wasi {
       this.descriptors.open(opts.stdio?.[which] ?? {
         kind: "terminal",
         read: (chunks) => which === 0 ? this.readStdin(chunks) : 0,
-        write: (chunks) => {
-          const total = chunks.reduce((n, chunk) => n + chunk.length, 0);
-          const out = new Uint8Array(total);
-          let at = 0;
-          for (const chunk of chunks) { out.set(chunk, at); at += chunk.length; }
-          if (total > 0) (which === 2 ? this.opts.stderr : this.opts.stdout)(out);
-          return total;
-        },
+        // stdin's preview1 callback may block. Async guests need an explicit nonblocking
+        // endpoint supplied through stdio; they must not enter that callback accidentally.
+        tryRead: which === 0 && opts.stdin ? undefined : () => 0,
+        write: (chunks) => this.writeTerminal(which, chunks),
+        tryWrite: (chunks) => this.writeTerminal(which, chunks),
         readiness: () => ({ readable: true, writable: true, hangup: which === 0 && !this.opts.stdin }),
       }, RIGHTS_TTY, RIGHTS_TTY);
     }
@@ -283,23 +296,29 @@ export class Wasi {
     if (count === 0) return 0;
     const chunks = this.iovecs(iovs, count);
     if (chunks.every(chunk => chunk.length === 0)) return 0;
-    if (at === null && file.append) {
-      const result = this.opts.fs.append(file.handle, chunks);
-      if (typeof result === "number") return result;
-      file.offset = result.offset;
-      return result.written;
-    }
-    const pos = at ?? file.offset;
-    const written = this.opts.fs.write(file.handle, chunks, pos);
-    if (written >= 0 && at === null) file.offset = pos + written;
-    return written;
+    const write = () => {
+      if (at === null && file.append) {
+        const result = this.opts.fs.append(file.handle, chunks);
+        if (typeof result === "number") return result;
+        file.offset = result.offset;
+        return result.written;
+      }
+      const pos = at ?? file.offset;
+      const written = this.opts.fs.write(file.handle, chunks, pos);
+      if (written >= 0 && at === null) file.offset = pos + written;
+      return written;
+    };
+    return at === null ? withFileOffset(file, write) : write();
   }
 
   private readIn(file: Extract<Resource, { kind: "file" }>, chunks: Uint8Array[], at: number | null): number {
-    const pos = at ?? file.offset;
-    const read = this.opts.fs.read(file.handle, chunks, pos);
-    if (read >= 0 && at === null) file.offset = pos + read;
-    return read;
+    const read = () => {
+      const pos = at ?? file.offset;
+      const count = this.opts.fs.read(file.handle, chunks, pos);
+      if (count >= 0 && at === null) file.offset = pos + count;
+      return count;
+    };
+    return at === null ? withFileOffset(file, read) : read();
   }
 
   private functions(): Record<string, (...args: never[]) => number | void> {
@@ -494,12 +513,16 @@ export class Wasi {
         if (!(entry.rightsBase & right)) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
-        const base = whence === 0 ? 0 : whence === 1 ? entry.resource.offset : whence === 2 ? this.opts.fs.stat(entry.resource.handle).size : NaN;
-        const pos = base + Number(offset);
-        if (!(pos >= 0)) return EINVAL;
-        entry.resource.offset = pos;
-        this.view().setBigUint64(newOffsetPtr, BigInt(pos), true);
-        return SUCCESS;
+        const file = entry.resource;
+        const result = withFileOffset(file, () => {
+          const base = whence === 0 ? 0 : whence === 1 ? file.offset : whence === 2 ? this.opts.fs.stat(file.handle).size : NaN;
+          const pos = base + Number(offset);
+          if (!(pos >= 0)) return -EINVAL;
+          file.offset = pos;
+          this.view().setBigUint64(newOffsetPtr, BigInt(pos), true);
+          return SUCCESS;
+        });
+        return result < 0 ? -result : result;
       },
       fd_tell: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
@@ -638,6 +661,25 @@ export class Wasi {
           } else ready.push({ userdata, type, error: EINVAL, nbytes: 0n, flags: 0 });
         }
         for (;;) {
+          let notification: Int32Array | undefined;
+          let observed = 0;
+          let mixedSources = false;
+          const observe = (word?: Int32Array) => {
+            if (!word || typeof SharedArrayBuffer === "undefined" || !(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) {
+              mixedSources = true;
+            } else if (!notification) {
+              notification = word;
+              observed = Atomics.load(word, 0);
+            } else if (notification.buffer !== word.buffer || notification.byteOffset !== word.byteOffset) mixedSources = true;
+          };
+          // Snapshot before checking readiness. A publisher racing the scan makes wait return
+          // not-equal instead of sleeping after its only notification has already happened.
+          for (const sub of subscriptions) {
+            const resource = this.descriptors.get(sub.fd)?.resource;
+            observe(resource && resource.kind !== "file" && resource.kind !== "directory" ? resource.notification : undefined);
+          }
+          if (this.opts.interrupt) observe(this.opts.interrupt);
+          if (this.opts.interrupt && Atomics.load(this.opts.interrupt, 0) !== 0) return EINTR;
           let waitMs = Infinity;
           for (const c of clocks) {
             const remaining = c.deadline - nowNs(c.clock);
@@ -657,9 +699,14 @@ export class Wasi {
             }
           }
           if (ready.length > 0) break;
-          // Services can change while this worker blocks. Bound descriptor waits so readiness is
-          // rechecked even without a wake primitive; later pipe services supply shared wakeups.
-          this.opts.sleep(subscriptions.length > 0 ? Math.min(waitMs, 10) : waitMs);
+          if (this.opts.interrupt && Atomics.load(this.opts.interrupt, 0) !== 0) return EINTR;
+          // One shared source wakes directly; distinct sources or legacy streams need a bounded
+          // rescan because Atomics.wait cannot wait on several addresses at once.
+          if (mixedSources) waitMs = Math.min(waitMs, 10);
+          if (notification) {
+            if (this.opts.wait) this.opts.wait(notification, observed, waitMs);
+            else Atomics.wait(notification, 0, observed, waitMs);
+          } else this.opts.sleep(subscriptions.length > 0 ? Math.min(waitMs, 10) : waitMs);
         }
         // A service may have reentered or grown memory while waiting.
         const output = this.view();

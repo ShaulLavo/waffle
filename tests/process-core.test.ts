@@ -25,6 +25,32 @@ function fixture() {
   return { registry, supervisor, root, contexts, terminated };
 }
 
+for (const recovery of ["retry", "dispose"] as const) test(`throwing completion gate stays pending and permits ${recovery} cleanup`, async () => {
+  const registry = new ExecutableRegistry();
+  registry.register("fixture", { module, adapter: "preview1" });
+  let throwGate = true, closed = 0, revoked = 0, terminated = 0;
+  const supervisor = new ProcessSupervisor({ registry,
+    launch: () => ({ terminate() { terminated++; } }),
+    canConfirmExit() { if (throwGate) throw new Error("completion gate failed"); return true; },
+  });
+  try {
+    const root = supervisor.createRoot(), pid = supervisor.reserveSpawn(root, request());
+    await supervisor.start(pid);
+    supervisor.get(pid)!.descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
+    supervisor.registerRevocation(pid, () => revoked++);
+    expect(() => supervisor.exit(pid, 23)).toThrow("completion gate failed");
+    expect(supervisor.get(pid)!.result).toBeNull();
+    expect(supervisor.get(pid)!.revoked).toBe(false);
+    expect([closed, revoked, terminated]).toEqual([0, 0, 0]);
+    if (recovery === "retry") {
+      throwGate = false;
+      supervisor.exit(pid, 23);
+      expect(supervisor.wait(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
+    } else supervisor.dispose();
+    expect([closed, revoked, terminated]).toEqual([1, 1, 1]);
+  } finally { supervisor.dispose(); }
+});
+
 test("shared allocators reserve independent pid and job number spaces without reuse", () => {
   const first = new ProcessIdentityAllocator();
   const second = new ProcessIdentityAllocator(first.buffer);
@@ -129,6 +155,31 @@ test("spawn snapshots request data and atomically rejects bad descriptor binding
   expect(contexts.get(pid)!.request.env).toEqual({ A: "original" });
   contexts.get(pid)!.exit(0);
   descriptors.dispose();
+});
+
+test("supervisor validates both fd bindings within the signed WASM success range before retaining", () => {
+  const { supervisor, root } = fixture();
+  const descriptors = supervisor.get(root)!.descriptors;
+  const fd = descriptors.open({ kind: "directory", handle: 1 }, 7n, 3n);
+  const source = descriptors.get(fd)!;
+  try {
+    for (const invalid of [0x80000000, 0xffffffff, -1, 1.5, NaN]) {
+      for (const binding of [{ child: invalid, parent: fd }, { child: 3, parent: invalid }]) {
+        let error: unknown;
+        try { supervisor.reserveSpawn(root, request({ fds: [binding] })); } catch (caught) { error = caught; }
+        expect(error).toMatchObject({ name: "ProcessError", errno: 28 });
+        expect(source.description.references).toBe(1);
+      }
+    }
+    descriptors.inherit(0x7fffffff, source);
+    const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }));
+    const child = supervisor.get(pid)!.descriptors;
+    expect(child.get(0x7fffffff)!.description).toBe(source.description);
+    const duplicate = child.dup(0x7fffffff);
+    expect(duplicate).toBeGreaterThanOrEqual(0);
+    expect(duplicate).toBeLessThanOrEqual(0x7fffffff);
+    expect(child.get(duplicate)!.description).toBe(source.description);
+  } finally { supervisor.dispose(); }
 });
 
 test("kill records signal, interrupts, revokes and publishes logical exit before teardown", async () => {
@@ -916,4 +967,116 @@ test("admitted registration still validates identities, descriptors and supervis
   expect(() => supervisor.reserveAdmittedSpawn(999999, request(), {})).toThrow();
   supervisor.dispose();
   expect(() => supervisor.reserveAdmittedSpawn(root, request(), {})).toThrow();
+});
+
+test("spawn forks process-owned streams once and revokes before releasing inherited dups", () => {
+  const { supervisor, root } = fixture();
+  const events: string[] = [];
+  const resources = new Map<number, import("../core/descriptors").Stream>();
+  const parent = {
+    kind: "pipe" as const,
+    read: () => -6, write: () => 0,
+    readiness: () => ({ readable: false, writable: true, hangup: false }),
+    forProcess(pid: number) {
+      events.push(`fork ${pid}`);
+      const stream = { kind: "pipe" as const, read: () => -6, write: () => 0,
+        readiness: this.readiness,
+        revoke: () => events.push(`revoke ${pid}`),
+        close: () => events.push(`close ${pid}`) };
+      resources.set(pid, stream);
+      return stream;
+    },
+    close: () => events.push("close parent"),
+  };
+  const descriptors = supervisor.get(root)!.descriptors;
+  const fd = descriptors.open(parent, 7n, 3n);
+  const duplicate = descriptors.dup(fd);
+  const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 1, parent: fd }, { child: 2, parent: duplicate }] }));
+  expect(events).toEqual([`fork ${pid}`]);
+  const child = supervisor.get(pid)!.descriptors;
+  expect(child.get(1)!.resource).toBe(resources.get(pid));
+  expect(child.get(1)!.description).toBe(child.get(2)!.description);
+  descriptors.close(fd); descriptors.close(duplicate);
+  expect(events).toEqual([`fork ${pid}`, "close parent"]);
+  supervisor.kill(pid, 9);
+  expect(events).toEqual([`fork ${pid}`, "close parent", `revoke ${pid}`, `close ${pid}`]);
+  supervisor.dispose();
+});
+
+test("guest signalling authority stays with self, ancestors and the job owner", () => {
+  const { supervisor, root } = fixture();
+  const first = supervisor.reserveSpawn(root, request());
+  const sibling = supervisor.reserveSpawn(root, request());
+  const grandchild = supervisor.reserveSpawn(first, request({ job: supervisor.jobOf(first) }));
+  expect(supervisor.canSignal(root, grandchild)).toBe(true);
+  expect(supervisor.canSignal(first, grandchild)).toBe(true);
+  expect(supervisor.canSignal(first, first)).toBe(true);
+  expect(supervisor.canSignal(first, sibling)).toBe(false);
+  expect(supervisor.canSignal(first, root)).toBe(false);
+  expect(supervisor.canSignalJob(root, supervisor.jobOf(first))).toBe(true);
+  expect(supervisor.canSignalJob(first, supervisor.jobOf(first))).toBe(false);
+  supervisor.exit(first, 0);
+  supervisor.reap(root, first);
+  expect(supervisor.canSignal(root, grandchild)).toBe(true);
+  expect(() => supervisor.canSignal(root, 123456)).toThrow("unknown process");
+  expect(() => supervisor.canSignalJob(root, 123456)).toThrow("unknown job");
+  supervisor.dispose();
+});
+
+test("child exit stays hidden from wait until every revocation hook and fd release finishes", () => {
+  const { supervisor, root } = fixture();
+  const pid = supervisor.reserveSpawn(root, request());
+  const visible: unknown[] = [];
+  supervisor.registerRevocation(pid, () => {
+    visible.push(supervisor.wait(root, pid));
+    supervisor.exit(pid, 99); // Reentrant cleanup cannot replace the chosen winner.
+  });
+  supervisor.get(pid)!.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
+    readiness: () => ({ readable: true, writable: false, hangup: true }),
+    close: () => visible.push(supervisor.wait(root, pid)) }, 0n, 0n);
+  supervisor.kill(pid, 9);
+  expect(visible).toEqual([null, null]);
+  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+  supervisor.dispose();
+});
+
+test.each([false, true])("inheritance shares descriptions without widening per-fd rights (fork=%s)", fork => {
+  const { supervisor, root } = fixture();
+  const stream = { kind: "pipe" as const, read: () => -6, write: () => 0,
+    readiness: () => ({ readable: false, writable: true, hangup: false }),
+    ...(fork ? { forProcess: () => ({ kind: "pipe" as const, read: () => -6, write: () => 0,
+      readiness: () => ({ readable: false, writable: true, hangup: false }) }) } : {}) };
+  const parent = supervisor.get(root)!.descriptors;
+  const fd = parent.open(stream, 7n, 3n), dup = parent.dup(fd);
+  parent.get(dup)!.rightsBase = 1n;
+  parent.get(dup)!.rightsInheriting = 0n;
+  const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 1, parent: fd }, { child: 2, parent: dup }] }));
+  const child = supervisor.get(pid)!.descriptors;
+  expect(child.get(1)!.description).toBe(child.get(2)!.description);
+  expect([child.get(1)!.rightsBase, child.get(1)!.rightsInheriting]).toEqual([7n, 3n]);
+  expect([child.get(2)!.rightsBase, child.get(2)!.rightsInheriting]).toEqual([1n, 0n]);
+  supervisor.dispose();
+});
+
+test("failed endpoint inheritance removes only the reservation's new empty job", () => {
+  const { supervisor, root } = fixture();
+  const descriptors = supervisor.get(root)!.descriptors;
+  let released = 0;
+  const ready = descriptors.open({ kind: "pipe", read: () => 0, write: () => 0,
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+    forProcess: () => ({ kind: "pipe", read: () => 0, write: () => 0,
+      readiness: () => ({ readable: true, writable: true, hangup: false }), close: () => released++ }) }, 0n, 0n);
+  const failing = descriptors.open({ kind: "pipe", read: () => 0, write: () => 0,
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+    forProcess: () => { throw new Error("writer slots exhausted"); } }, 0n, 0n);
+  const bindings = [{ child: 1, parent: ready }, { child: 2, parent: failing }];
+  expect(() => supervisor.reserveSpawn(root, request({ fds: bindings }), { job: 200 })).toThrow("writer slots exhausted");
+  expect(released).toBe(1);
+  expect(supervisor.job(200)).toBeUndefined();
+  const child = supervisor.reserveSpawn(root, request());
+  const job = supervisor.jobOf(child);
+  expect(() => supervisor.reserveSpawn(root, request({ job, fds: bindings }))).toThrow("writer slots exhausted");
+  expect(released).toBe(2);
+  expect(supervisor.job(job)!.members.has(child)).toBe(true);
+  supervisor.dispose();
 });
