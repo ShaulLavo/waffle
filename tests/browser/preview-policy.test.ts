@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { buildClassicWorker } from "../../scripts/browser-build";
@@ -7,7 +9,7 @@ import { buildClassicWorker } from "../../scripts/browser-build";
 let directory: string;
 let source: string;
 beforeAll(async () => {
-  directory = await mkdtemp("/work/tmp/bun-wasm-preview-policy-");
+  directory = await mkdtemp(join(process.env.BUN_WASM_TEST_TMP ?? process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()), "bun-wasm-preview-policy-"));
   const result = await buildClassicWorker(join(import.meta.dir, "../src/sw.ts"), directory, { __PREVIEW_SOCKET_SCRIPT__: JSON.stringify("socket adapter") });
   expect(result.outputs).toHaveLength(1);
   source = await result.outputs[0]!.text();

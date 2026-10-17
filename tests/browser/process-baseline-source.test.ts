@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareBaselineSource } from "./process-baseline-source";
 
@@ -12,7 +14,7 @@ afterEach(async () => {
 });
 
 async function snapshot() {
-  const directory = await mkdtemp(join(process.env.BUN_WASM_TEST_TMP ?? "/work/tmp", "bun-wasm-baseline-source-"));
+  const directory = await mkdtemp(join(process.env.BUN_WASM_TEST_TMP ?? process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()), "bun-wasm-baseline-source-"));
   directories.add(directory);
   await mkdir(join(directory, "runtime"));
   await mkdir(join(directory, "web/src"), { recursive: true });

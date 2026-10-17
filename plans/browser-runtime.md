@@ -344,7 +344,7 @@ queue on another host). The command creates only in-memory transports and releas
 
 ```sh
 source env.sh
-bun /work/platform-production/heavy/current/run.js --class light waffle-empty-subtrees -- bun -e "$(cat <<'TS'
+bun /work/platform-production/heavy/current/run.js --class light waffle-empty-subtrees -- timeout 7200 bun -e "$(cat <<'TS'
 import { DescriptorTable } from './runtime/core/descriptors.ts';
 import { ProcessIdentityAllocator } from './runtime/proc/identity.ts';
 import { ProcessTable } from './runtime/proc/table.ts';
