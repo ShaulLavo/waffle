@@ -28,6 +28,7 @@ export interface ProcessController {
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
   launch?(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
+  startFailed?(error: unknown): void;
   canConfirmExit?(): boolean;
   quiesce?(): void | Promise<void>;
   exited?(event: ChildExitEvent): void;
@@ -35,6 +36,8 @@ export interface ProcessController {
   /** Physical consumer cleanup, after its filesystem admission fence. */
   stop?(): void | Promise<void>;
   wake?(): void;
+  /** Release adapter ancestry after this root and its descendants no longer need it. */
+  retired?(): void;
 }
 export interface BrowserProcessBrokerOptions {
   filesystem: ProcessFilesystem;
@@ -53,6 +56,7 @@ export interface RuntimeRootOptions {
   quiesce?(): void | Promise<void>;
   stop?(): void | Promise<void>;
   wake?(): void;
+  retired?(): void;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   workerUrl: string;
@@ -84,6 +88,8 @@ export class BrowserProcessBroker {
   private readonly pipes = new WorkerPipeBroker();
   private readonly roots = new Map<number, WorkerProcessTransport>();
   private readonly reservedRoots = new Map<number, RootProcessOptions & SignalTransport & { pid: number; job: number }>();
+  private readonly completedRoots = new Set<number>();
+  private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
   private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
@@ -112,6 +118,15 @@ export class BrowserProcessBroker {
           return this.suspended || (child ? child.acknowledged || child.failed : this.controllers.get(pid)?.canConfirmExit?.() ?? true);
         },
         quiesce: pid => this.quiesceProcess(pid), retainJobResults: true,
+        startFailed: (pid, error) => {
+          const controller = this.controllers.get(pid);
+          if (controller?.startFailed) { controller.startFailed(error); return; }
+          const stderr = this.options.table.get(pid)?.descriptors.get(2)?.resource;
+          if (stderr?.kind === "pipe" || stderr?.kind === "terminal") {
+            const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
+            (stderr.tryWrite ?? stderr.write).call(stderr, [bytes]);
+          }
+        },
         onError: error => this.report(error),
       });
       supervisor.onChildExit(event => {
@@ -119,7 +134,9 @@ export class BrowserProcessBroker {
         const transport = this.transport.get(event.pid);
         if (transport && !this.children.get(event.pid)?.acknowledged) this.options.filesystem.revoke(this.filesystem(transport));
         this.controllers.get(event.pid)?.exited?.(event);
+        this.retireRoots();
       });
+      supervisor.onJobReap(() => this.retireRoots());
       for (const root of this.reservedRoots.values()) if (!supervisor.get(root.pid)) supervisor.createRoot(root);
       for (const transport of this.roots.values()) this.activateRuntimeRoot(supervisor, transport);
       if (this.suspended) supervisor.dispose();
@@ -136,12 +153,58 @@ export class BrowserProcessBroker {
   reserveRoot(root: RootProcessOptions, controller: ProcessController = {}): number {
     if (this.suspended) throw new Error("Process broker is disposed");
     const pid = root.pid ?? this.options.identities.pid(), job = root.job ?? this.options.identities.job();
+    this.options.identities.observePid(pid);
+    this.options.identities.observeJob(job);
     const word = (value?: Int32Array | SharedArrayBuffer) => value instanceof Int32Array ? value : new Int32Array(value ?? new SharedArrayBuffer(4));
     const reserved = { ...root, pid, job, signalState: createSignalState(root.signalState), outcome: outcomeWord(root.outcome), interrupt: word(root.interrupt), requestedSignal: word(root.requestedSignal) };
     this.registerController(pid, controller);
     this.reservedRoots.set(pid, reserved);
     if (this.supervisor) this.supervisor.createRoot(reserved);
     return pid;
+  }
+  /** Keep an accepted external spawn's ancestry until its asynchronous admission finishes. */
+  retainRoot(pid: number): () => void {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    if (!this.reservedRoots.has(pid)) throw new Error(`Unknown root process ${pid}`);
+    this.rootLeases.set(pid, (this.rootLeases.get(pid) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.rootLeases.get(pid) ?? 1) - 1;
+      if (remaining) this.rootLeases.set(pid, remaining);
+      else this.rootLeases.delete(pid);
+      this.retireRoots();
+    };
+  }
+  private retireRoots(): void {
+    if (this.suspended) return;
+    for (const pid of this.completedRoots) {
+      if (this.rootLeases.has(pid)) continue;
+      const descendant = (child: number): boolean => {
+        for (let parent = this.options.table.parentOf(child); parent; parent = this.options.table.parentOf(parent)) if (parent === pid) return true;
+        return false;
+      };
+      if (Array.from(this.options.table.values()).some(record => descendant(record.pid))) continue;
+      const transport = this.roots.get(pid);
+      if (transport && workerProcessSlots(transport).some(slot => {
+        const state = workerProcessState(transport, slot);
+        return state.pid !== pid && (Atomics.load(state.confirmed, 0) === 0 ||
+          (state.job !== workerProcessState(transport).job && Atomics.load(state.jobPending, 0) >= 0));
+      })) continue;
+      const root = this.reservedRoots.get(pid), controller = this.controllers.get(pid);
+      this.transport.releaseRoot(pid);
+      this.options.table.remove(pid);
+      if (root && !this.options.table.job(root.job)?.members.size) this.options.table.removeJob(root.job);
+      this.completedRoots.delete(pid);
+      this.reservedRoots.delete(pid);
+      this.controllers.delete(pid);
+      this.roots.delete(pid);
+      this.outputs.delete(pid);
+      this.registries.delete(pid);
+      this.fences.delete(pid);
+      try { controller?.retired?.(); } catch (error) { this.report(error); }
+    }
   }
   async adoptRoot(root: RootProcessOptions, controller: ProcessController = {}): Promise<number> {
     const pid = this.reserveRoot(root, controller);
@@ -216,6 +279,7 @@ export class BrowserProcessBroker {
       this.rejectRuntimeMessage(message, senderPid); return;
     }
     await this.transport.handle(message, senderPid);
+    this.retireRoots();
     if (message.operation !== "pipe") this.watch();
   }
   rejectRuntimeMessage(message: WorkerProcessMessage, senderPid?: number): void {
@@ -243,6 +307,7 @@ export class BrowserProcessBroker {
   transportFor(pid: number): WorkerProcessTransport | undefined { return this.transport.get(pid); }
   /** Legacy handle ABIs have no job waiter; release their empty, unshared completion metadata. */
   releaseLegacyJob(job: number): void {
+    this.retireRoots();
     const record = this.options.table.job(job);
     if (!record || record.members.size || record.pendingMembers || this.states().some(state => state.job === job)) return;
     this.supervisor?.reapJob(record.ownerPid, job);
@@ -271,11 +336,20 @@ export class BrowserProcessBroker {
         }
         return;
       }
+      if (data.type === "cleanup-error") {
+        child.failed = true;
+        this.report(new Error(`${data.message}: ${data.cleanupErrors.join("; ")}`));
+        if (data.signal) context.defaultSignal(data.signal);
+        else context.exit(data.code);
+        this.stopSafely(child);
+        return;
+      }
       if (selected?.kind === "signaled" && data.type !== "exit" && data.type !== "error") { options.onMessage?.(data, context); return; }
       if (data.type === "stdout" || data.type === "stderr") { if (!this.suspended) this.outputFor(context.pid)?.(data.type === "stderr" ? 2 : 1, data.data); return; }
       if (data.type !== "exit" && data.type !== "error") { options.onMessage?.(data, context); return; }
       child.acknowledged = true;
       this.options.filesystem.reap(filesystem);
+      if (data.cleanupErrors?.length) this.report(new Error(`Worker cleanup: ${data.cleanupErrors.join("; ")}`));
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal);
       else if (data.type === "exit") context.exit(data.code);
       else context.fail(new Error(data.message));
@@ -325,8 +399,9 @@ export class BrowserProcessBroker {
       this.wake();
     }
     const supervisor = await this.ready();
+    if (this.suspended) return;
     if (supervisor.get(pid)) supervisor.observeSignal(pid, sig);
-    else if (!state) supervisor.kill(pid, sig);
+    else if (!state && !target) supervisor.kill(pid, sig);
   }
   async killJob(job: number, signal: number, reserved: readonly { pid: number; signals: SignalTransport }[] = []): Promise<void> {
     const sig = checkedSignal(signal), states = this.states().filter(state => state.job === job);
@@ -337,14 +412,16 @@ export class BrowserProcessBroker {
     for (const state of states) requestSignal(state.signals, sig);
     for (const record of records) requestSignal(record, sig);
     const published = new Set(states.map(state => state.pid).concat(records.map(record => record.pid)));
-    for (const target of reserved) if (!published.has(target.pid)) { requestSignal(target.signals, sig); published.add(target.pid); }
+    const roots = Array.from(this.reservedRoots.values()).filter(root => root.job === job && !published.has(root.pid));
+    const reservations = roots.map<{ pid: number; signals: SignalTransport }>(root => ({ pid: root.pid, signals: root })).concat(reserved);
+    for (const target of reservations) if (!published.has(target.pid)) { requestSignal(target.signals, sig); published.add(target.pid); }
     // Directory reservations can own pipe endpoints before a spawn message reaches the
     // supervisor. Freeze those rows too, after every member has selected its outcome.
     for (const state of states) if (readOutcome(state.signals.outcome)?.kind === "signaled") this.revokeRuntimeProcess(state.pid);
     this.wake();
     const supervisor = await this.ready();
-    for (const state of states) if (supervisor.get(state.pid)) supervisor.observeSignal(state.pid, sig);
-    for (const record of records) supervisor.observeSignal(record.pid, sig);
+    if (this.suspended) return;
+    for (const pid of published) if (supervisor.get(pid)) supervisor.observeSignal(pid, sig);
   }
   private wake(): void {
     for (const root of this.roots.values()) wakeWorkerProcess(root);
@@ -359,6 +436,8 @@ export class BrowserProcessBroker {
       await this.quiesceProcess(pid);
       const transport = this.roots.get(pid);
       if (transport) { Atomics.store(workerProcessState(transport).confirmed, 0, 1); confirmWorkerProcessJob(transport); }
+      if (root) this.completedRoots.add(pid);
+      this.retireRoots();
       return;
     }
     let supervisor: ProcessSupervisor | undefined;
@@ -366,6 +445,10 @@ export class BrowserProcessBroker {
     catch (error) { this.report(error); supervisor = this.supervisor; }
     if (supervisor?.get(pid)) { supervisor.exit(pid, code); await supervisor.waitForExit(0, pid); }
     else await this.quiesceProcess(pid);
+    const transport = this.roots.get(pid);
+    if (transport) { Atomics.store(workerProcessState(transport).confirmed, 0, 1); confirmWorkerProcessJob(transport); }
+    if (this.reservedRoots.has(pid)) this.completedRoots.add(pid);
+    this.retireRoots();
   }
   private watch(): void {
     if (this.timer !== null || this.suspended) return;
@@ -399,17 +482,34 @@ export class BrowserProcessBroker {
   }
   dispose(): Promise<void> {
     if (this.disposing) return this.disposing;
-    this.suspend();
-    return this.disposing = (async () => {
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const disposal = this.disposing = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
+    // Revocation callbacks may synchronously dispose their owner again.
+    try { this.suspend(); } catch (error) { reject(error); return disposal; }
+    void (async () => {
       if (this.activation) {
         try { await this.activation; } catch (error) { this.report(error); }
         this.supervisor?.dispose();
       }
       await this.quiesce();
-      await Promise.all(Array.from(this.children.values(), child => Promise.resolve(this.stop(child))));
-      await Promise.all(Array.from(this.controllers.values(), controller => Promise.resolve().then(() => controller.stop?.())));
-      this.pipes.dispose();
-    })();
+      // Suspension freezes every owned pipe cursor; the filesystem fence above is still
+      // mandatory. Attempt and settle every physical stop even if another consumer fails.
+      const stops = Array.from(this.children.values(), child => Promise.resolve().then(() => this.stop(child)))
+        .concat(Array.from(this.controllers.values(), controller => Promise.resolve().then(() => controller.stop?.())));
+      const errors: unknown[] = [];
+      for (const result of await Promise.allSettled(stops)) if (result.status === "rejected") errors.push(result.reason);
+      try { this.pipes.dispose(); } catch (error) { errors.push(error); }
+      for (const pid of this.reservedRoots.keys()) {
+        try { this.controllers.get(pid)?.retired?.(); } catch (error) { errors.push(error); }
+      }
+      this.reservedRoots.clear(); this.completedRoots.clear(); this.rootLeases.clear();
+      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.fences.clear();
+      if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
+    })().then(resolve, reject);
+    return disposal;
   }
-  private report(error: unknown): void { if (this.options.onError) this.options.onError(error); else console.error("runtime: process controller failed", error); }
+  private report(error: unknown): void {
+    try { if (this.options.onError) this.options.onError(error); else console.error("runtime: process controller failed", error); }
+    catch { /* Diagnostics must not interrupt consumer fencing or cleanup. */ }
+  }
 }

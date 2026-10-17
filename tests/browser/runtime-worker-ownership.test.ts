@@ -22,8 +22,10 @@ function fixture() {
     onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null = null;
     onerror: ((event: ErrorEvent) => void) | null = null;
     terminated = false;
+    private terminatedCallback!: () => void;
+    readonly terminationStarted = new Promise<void>(resolve => { this.terminatedCallback = resolve; });
     postMessage(request: RunRequest) { this.request = request; workers.set(workerProcessState(request.runtimeProcess!).pid, this); }
-    terminate() { this.terminated = true; }
+    terminate() { this.terminated = true; this.terminatedCallback(); }
     message(data: WorkerMessage) { this.onmessage?.({ data } as MessageEvent<WorkerMessage>); }
   }
   globalThis.Worker = FakeWorker as unknown as typeof Worker;
@@ -93,7 +95,7 @@ test("generic worker kills quiesce the filesystem before physical termination", 
     expect(worker.terminated).toBe(false);
     state.release();
     await state.fence;
-    await Promise.resolve();
+    await worker.terminationStarted;
     expect(worker.terminated).toBe(true);
   } finally { await state.dispose(); }
 });

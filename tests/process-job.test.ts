@@ -213,15 +213,16 @@ test("safe exit confirmation does not wait for physical worker termination", asy
   try {
     await supervisor.start(leader);
     supervisor.kill(leader, 9);
-    expect(terminateCalls).toBe(1);
+    expect(terminateCalls).toBe(0);
     expect(supervisor.wait(shell, leader)).toBeNull();
     releaseFence(); await fence; await Promise.resolve();
+    expect(terminateCalls).toBe(1);
     expect(supervisor.wait(shell, leader)?.status).toBe(137);
     expect(supervisor.waitJob(shell, job)?.status).toBe(137);
   } finally { releaseFence(); releaseTermination(); supervisor.dispose(); await terminated; }
 });
 
-test("a launch resolving during quiescence cannot restore the revoked worker handle", async () => {
+test("a launch resolving during quiescence retains its revoked handle until the fence passes", async () => {
   const registry = new ExecutableRegistry();
   registry.register("controlled", { module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])), adapter: "preview1" });
   let releaseFence!: () => void, finishLaunch!: (handle: { terminate(): void }) => void;
@@ -236,11 +237,15 @@ test("a launch resolving during quiescence cannot restore the revoked worker han
     const starting = supervisor.start(leader);
     await entered;
     supervisor.kill(leader, 9);
-    finishLaunch({ terminate() { terminated++; } }); await starting;
-    expect(terminated).toBe(1);
-    expect(supervisor.get(leader)!.handle).toBeUndefined();
+    const handle = { terminate() { terminated++; } };
+    finishLaunch(handle); await starting;
+    expect(terminated).toBe(0);
+    expect(supervisor.get(leader)!.revoked).toBe(true);
+    expect(supervisor.get(leader)!.handle).toBe(handle);
     expect(supervisor.wait(shell, leader)).toBeNull();
     releaseFence(); await fence; await Promise.resolve();
+    expect(terminated).toBe(1);
+    expect(supervisor.get(leader)!.handle).toBeUndefined();
     expect(supervisor.wait(shell, leader)?.status).toBe(137);
   } finally { releaseFence(); supervisor.dispose(); }
 });
