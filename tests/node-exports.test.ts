@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 test("Node resolves every documented Node package entry to prepared JavaScript", () => {
@@ -18,6 +18,11 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
     "./testing/storage-browser",
     "./testing/opfs-storage-browser",
   ]);
+  for (const key of browserOnly) {
+    for (const target of Object.values(metadata.exports[key]!)) {
+      if (target.startsWith("./")) expect(existsSync(resolve(root, target))).toBe(true);
+    }
+  }
   const specifiers = nodeEntries.map(([key]) => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`);
   const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
   expect(() => execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" })).not.toThrow();
