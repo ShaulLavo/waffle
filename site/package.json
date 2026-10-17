@@ -1,0 +1,27 @@
+{
+  "name": "@shaulavo/waffle-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check",
+    "deploy": "bun run build && wrangler deploy"
+  },
+  "dependencies": {
+    "astro": "7.3.5",
+    "three": "0.158.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.7",
+    "@types/bun": "1.4.2",
+    "@types/pngjs": "6.0.5",
+    "@types/three": "0.158.3",
+    "pixelmatch": "7.1.0",
+    "playwright": "1.64.1",
+    "pngjs": "7.0.0",
+    "typescript": "5.9.3",
+    "wrangler": "4.149.0"
+  }
+}
