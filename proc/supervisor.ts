@@ -251,7 +251,7 @@ export class ProcessSupervisor {
       if (settled) { this.finish(record.pid, settled); return; }
       const context: ProcessContext = {
         pid: record.pid, parentPid: record.parentPid, job: record.job, request: record.request!,
-        module: executable.module, adapter: executable.adapter,
+        module: executable.module, adapter: executable.adapter, interruptible: executable.interruptible,
         descriptors: record.descriptors, interrupt: record.interrupt, requestedSignal: record.requestedSignal, signalState: record.signalState, outcome: record.outcome,
         exit: code => this.exit(record.pid, code), fail: error => this.failStart(record.pid, error),
         defaultSignal: signal => this.defaultSignal(record.pid, signal),

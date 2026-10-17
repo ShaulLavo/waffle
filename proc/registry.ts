@@ -3,8 +3,10 @@ export interface Executable {
   module: WebAssembly.Module | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
   /** Opaque guest adapter key, interpreted by the host's worker launcher, not the registry. */
   adapter: string;
+  /** True only when admission injected interruption imports. Trusted cooperative modules omit it. */
+  readonly interruptible?: boolean;
 }
-export interface ResolvedExecutable { readonly module: WebAssembly.Module; readonly adapter: string }
+export interface ResolvedExecutable { readonly module: WebAssembly.Module; readonly adapter: string; readonly interruptible: boolean }
 export class ExecutableNotFound extends Error {
   constructor(name: string) { super(`executable not found: ${name}`); this.name = "ExecutableNotFound"; }
 }
@@ -12,11 +14,11 @@ export class ExecutableNotFound extends Error {
  * Instances and used workers are deliberately not cached.
  */
 export class ExecutableRegistry {
-  private readonly entries = new Map<string, Readonly<Executable>>();
+  private readonly entries = new Map<string, Readonly<Required<Executable>>>();
   private readonly modules = new WeakMap<Executable["module"], Promise<WebAssembly.Module>>();
   register(name: string, executable: Executable): void {
     if (!name || !executable.adapter) throw new TypeError("executable and adapter names are required");
-    this.entries.set(name, Object.freeze({ ...executable }));
+    this.entries.set(name, Object.freeze({ ...executable, interruptible: executable.interruptible ?? false }));
   }
   unregister(name: string): boolean { return this.entries.delete(name); }
   has(name: string): boolean { return this.entries.has(name); }
@@ -31,6 +33,6 @@ export class ExecutableRegistry {
       });
       this.modules.set(entry.module, pending);
     }
-    return { module: await pending, adapter: entry.adapter };
+    return { module: await pending, adapter: entry.adapter, interruptible: entry.interruptible };
   }
 }
