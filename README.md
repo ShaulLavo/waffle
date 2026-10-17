@@ -129,8 +129,14 @@ outside Waffle. Its optional hooks run in this order:
 4. `imports(imports, { wasi, ...context })` runs after descriptor binding and linking, before
    instantiation. Mutate the object and return nothing, or return a replacement import object.
    Supply extra namespaces in `namespaces`, since linking rejects unknown imports first.
+   Imported memory must remain the same object: replacing it throws before instantiation,
+   because WASI already binds its memory views for the module's Wasm start section.
 5. `instantiated({ wasi, instance, ...context })` sees the bound descriptors and instantiated
    module. `run` receives the same context after preview1 `_start` returns or exits.
+
+A hook that calls `context.finish` ends bootstrap immediately after that hook returns;
+no subsequent hook or guest entry point runs. Supplied stdio is owned from bootstrap entry,
+including setup/link failures, and is closed before any cleanup acknowledgement.
 
 **Preopen discovery:** the default root remains at fd3. Waffle does not relocate it or remove
 stdio implicitly. An adapter relocating preopens must preserve wasi-libc's discovery scan:

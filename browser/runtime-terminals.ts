@@ -1,5 +1,6 @@
 // Original browser adapter: terminal destinations are host callbacks, not shared pipe rings.
 import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors";
+import { guardedStream } from "./guarded-stream";
 import { ProcessError } from "../proc/types";
 import type { WorkerDescriptorCodec } from "../proc/worker-client";
 
@@ -44,8 +45,12 @@ export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions)
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
       if (options.resolveTerminal) {
-        const stream = options.resolveTerminal(token.target);
-        targets.set(stream, token.target);
+        options.checkActive?.();
+        const resolved = options.resolveTerminal(token.target);
+        try { options.checkActive?.(); } catch (error) { resolved.close?.(); throw error; }
+        const remember = (stream: Stream) => { targets.set(stream, token.target); };
+        const stream = options.checkActive ? guardedStream(resolved, options.checkActive, remember) : resolved;
+        remember(stream);
         return new OpenDescription(stream, () => stream.close?.());
       }
       const read = () => { options.checkActive?.(); return 0; };

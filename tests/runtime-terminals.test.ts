@@ -122,3 +122,37 @@ for (const kind of ["terminal", "pipe"] as const) test(`terminal resolver suppli
     expect(resolved).toEqual([0]);
   } finally { imported.dispose(); state.table.dispose(); }
 });
+
+for (const cause of ["fatal outcome", "filesystem revocation"] as const) test(`resolved endpoint stops every admission operation after ${cause}, preserving cleanup and provenance`, () => {
+  let active = true, calls = 0, closed = 0;
+  class Endpoint implements Stream {
+    readonly kind = "pipe";
+    #value = 7;
+    read() { calls++; return this.#value; }
+    write() { calls++; return this.#value; }
+    tryRead() { calls++; return this.#value; }
+    tryWrite() { calls++; return this.#value; }
+    readiness() { calls++; return { readable: true, writable: true, hangup: false }; }
+    forProcess() { calls++; return new Endpoint(); }
+    close() { closed++; }
+  }
+  const codec = createRuntimeTerminalCodec({ fallback: { export() { throw new Error("unexpected fallback"); },
+    import() { throw new Error("unexpected fallback"); }, discard() { throw new Error("unexpected fallback"); } }, resolveTerminal: () => new Endpoint(),
+    checkActive() { if (!active) throw new Error(cause); } });
+  const description = codec.import({ kind: "web-terminal", target: 0 }, 2);
+  const table = new DescriptorTable();
+  const fd = table.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+  try {
+    const stream = description.resource as Stream;
+    expect(stream.read([])).toBe(7);
+    const child = stream.forProcess!(3);
+    expect(codec.export(borrowed(new OpenDescription(child)), 4)).toEqual({ kind: "web-terminal", target: 0 });
+    child.close!();
+    calls = 0; active = false;
+    for (const operation of [() => stream.read([]), () => stream.write([]), () => stream.tryRead!([]),
+      () => stream.tryWrite!([]), () => stream.readiness(), () => stream.forProcess!(3)]) expect(operation).toThrow(cause);
+    expect(calls).toBe(0);
+    table.close(fd);
+    expect(closed).toBe(2);
+  } finally { table.dispose(); }
+});
