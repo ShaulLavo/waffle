@@ -2,7 +2,7 @@
 //   cd web && bun run build && [ENGINES=browser,quickjs] [SLOTS=imports] node tests/browser-net.mjs [chromium|webkit …]
 // Starts web/serve.ts and a local fixture server on another origin (no public internet), drives
 // the terminal through `playground` (main.ts), and kills everything it started on exit.
-// PLAYWRIGHT=<path to playwright/index.mjs> overrides the default mise install.
+// PLAYWRIGHT=<path to playwright/index.mjs> overrides the project's installed package.
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ const here = new URL(".", import.meta.url).pathname;
 const web = join(here, "..");
 const playwrightPath =
   process.env.PLAYWRIGHT ??
-  `${process.env.HOME}/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/.mise/playwright@1.63.0/node_modules/playwright/index.mjs`;
+  "playwright";
 const { chromium, webkit, devices } = await import(playwrightPath);
 
 const scratch = mkdtempSync(join(process.env.BUN_WASM_TEST_TMP ?? "/work/tmp", "bun-wasm-web-net-"));
