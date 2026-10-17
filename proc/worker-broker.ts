@@ -1,5 +1,6 @@
 import { DescriptorTable, type Resource } from "../core/descriptors";
 import { claimOutcome, readOutcome } from "./outcome";
+import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "./admission";
 import { requestSignal } from "./signals";
 import type { ProcessSupervisor } from "./supervisor";
 import { ProcessErrno, ProcessError } from "./types";
@@ -15,6 +16,8 @@ export interface WorkerProcessBrokerOptions {
   /** Fence host work for an identity whose spawn failed before supervisor admission. */
   quiesce?(pid: number, transport: WorkerProcessTransport): void | Promise<void>;
   onError?(error: unknown): void;
+  /** Transport admission only; the host owns adapter launch and startup-failure diagnostics. */
+  onAdmission?: ProcessAdmissionObserver;
 }
 
 /** Page-side admission over an existing supervisor. The worker has already retained every
@@ -116,8 +119,12 @@ export class WorkerProcessBroker {
   }
   handle(message: WorkerProcessMessage, senderPid?: number): Promise<void> {
     const state = workerProcessState(message.transport);
-    if (senderPid !== undefined && (message.operation === "spawn" ? state.parentPid : state.pid) !== senderPid) return Promise.reject(new ProcessError(ProcessErrno.SRCH, "process message has the wrong sender"));
+    if (senderPid !== undefined && (message.operation === "spawn" ? state.parentPid : state.pid) !== senderPid) {
+      if (message.operation === "spawn") this.trace(message.transport, "rejected", "wrong-sender");
+      return Promise.reject(new ProcessError(ProcessErrno.SRCH, "process message has the wrong sender"));
+    }
     if (message.operation === "spawn") {
+      this.trace(message.transport, "queued");
       const pending = this.admission.then(() => this.spawn(message.transport, message.request));
       this.admission = pending.catch(error => { this.report(error); });
       return pending;
@@ -150,24 +157,37 @@ export class WorkerProcessBroker {
     const state = workerProcessState(transport);
     // A repeated message owns no new references. Reject without discarding the retained
     // lifetimes already held by the first accepted process.
-    if (this.getIdentity(state.pid)) throw new ProcessError(ProcessErrno.INVAL, "process identity is already registered");
-    const codec = this.codec(transport);
+    if (this.getIdentity(state.pid)) {
+      this.trace(transport, "dropped", "duplicate-process");
+      throw new ProcessError(ProcessErrno.INVAL, "process identity is already registered");
+    }
+    let codec: WorkerDescriptorCodec;
+    try { codec = this.codec(transport); }
+    catch (error) { this.trace(transport, "rejected", "admission-failed"); throw error; }
     let admitted = false;
+    let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
-      if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed");
+      if (this.disposed) { reason = "broker-disposed"; throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed"); }
       const parentTransport = this.getIdentity(state.parentPid);
-      if (!parentTransport || workerProcessDirectoryId(parentTransport) !== workerProcessDirectoryId(transport)) throw new ProcessError(ProcessErrno.SRCH, "unknown process parent");
+      if (!parentTransport || workerProcessDirectoryId(parentTransport) !== workerProcessDirectoryId(transport)) {
+        reason = parentTransport ? "directory-mismatch" : "unknown-parent"; throw new ProcessError(ProcessErrno.SRCH, "unknown process parent");
+      }
+      reason = "activation-failed";
       const supervisor = await this.ready();
-      if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed");
+      if (this.disposed) { reason = "broker-disposed"; throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed"); }
       // Reserve the authoritative leader/owner before a codec can fail. Transferred
       // endpoints belong to this child, not the parent's mutable or already-reaped table.
       this.transports.set(state.pid, transport);
+      reason = "reservation-failed";
       supervisor.reserveAdmittedSpawn(state.parentPid, { ...request, fds: [] }, {
         pid: state.pid, job: state.job, ...state.signals,
       }, new DescriptorTable(), { ownerPid: state.jobOwner, leaderPid: state.jobLeaderPid, outcome: state.jobOutcome, foreground: state.jobForeground });
       admitted = true;
+      this.trace(transport, "reserved");
       const descriptors = supervisor.get(state.pid)!.descriptors;
+      reason = "binding-failed";
       installWorkerBindings(transport, descriptors, codec);
+      this.trace(transport, "bound");
       const resources = new Set<Resource>();
       for (const binding of transport.bindings) {
         const resource = descriptors.get(binding.fd)!.resource;
@@ -177,9 +197,14 @@ export class WorkerProcessBroker {
       }
       // A kill may have won before lazy admission, including after the sender already exited.
       // start() adopts the shared decision and never launches an already-dead worker.
+      if (this.options.onAdmission) {
+        const selected = readOutcome(state.signals.outcome);
+        this.trace(transport, selected ? "skipped" : "starting", selected ? selected.kind === "signaled" ? "preselected-signal" : "preselected-exit" : undefined);
+      }
       void supervisor.start(state.pid).catch(error => this.report(error));
       this.pump();
     } catch (error) {
+      this.trace(transport, "rejected", reason);
       if (admitted) {
         // Imported descriptions release through the supervisor; discard also releases
         // tokens that failed before import, using the codec's idempotent lifetime.
@@ -258,6 +283,9 @@ export class WorkerProcessBroker {
     this.identities.clear();
     this.failedCleanup.clear();
     this.stopListening?.(); this.stopListening = undefined;
+  }
+  private trace(transport: WorkerProcessTransport, stage: ProcessAdmissionEvent["stage"], reason?: ProcessAdmissionEvent["reason"]): void {
+    if (this.options.onAdmission) reportProcessAdmission(this.options.onAdmission, workerProcessState(transport), stage, reason, workerProcessDirectoryId(transport));
   }
   private report(error: unknown): void { try { this.options.onError?.(error); } catch { /* Diagnostics never own cleanup. */ } }
 }
