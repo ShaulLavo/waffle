@@ -115,7 +115,7 @@ Each row has one class. A file with independent changes has separate rows.
 | [HTTP request and response framing](#http-framing) | Host feature | Original header state, validation, streaming, Agent pool and upgrade response adapters shared by all engines. |
 | [`crates/bunwasm-runtime/src/js/ws_builtin.js`](#portable-ws-builtin) | Port | Bundle the unchanged published ws implementation for the shared Node APIs. |
 | [`src/js/loop_scheduler.ts` and callback batching](#fair-loop-scheduling) | Host feature | Original portable I/O turns and bounded immediate batches. |
-| [`src/js/fs_watch.ts` and `node_fs.js` wiring](#portable-filesystem-watcher) | Host feature | Original polling watcher over the shared WASI file operations. |
+| [`src/js/fs_watch.ts` and `node_fs.js` wiring](#portable-filesystem-watcher) | Host feature | Original polling watcher over the shared WASI file operations, with Node listener identity. |
 | [`src/js/exit_provenance.ts` and lifecycle hooks](#runtime-exit-provenance) | Host feature | Original opt-in exit diagnostics over the existing event loop and error handlers. |
 | [`scripts/generate-ws.sh` and builtin resolution](#portable-ws-builtin) | Host feature | Original module wrapper supplies Bun's builtin ws import and require on every engine. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
@@ -408,6 +408,11 @@ and rename events. Recursive traversal does not follow directory symlinks.
 `close`, `ref`, `unref`, persistent options and abort signals control the actual
 timer. Closing a watcher releases its timer and signal listener. Polling can
 coalesce changes between samples and does not promise an OS event count.
+Both `watch(path, callback)` and `watch(path, options, callback)` register the
+original callback directly, matching Node v22.14.0 `lib/fs.js` `watch()` and
+`lib/internal/fs/watchers.js` EventEmitter dispatch. No Node source is copied.
+The fixture checks raw listener identity, single registration, `once`, `off`,
+removal by the original callback, and callback receiver on both overloads.
 `watchFile` and the promise-based watcher remain unsupported.
 
 ## Runtime exit provenance
