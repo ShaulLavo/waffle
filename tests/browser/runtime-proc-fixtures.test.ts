@@ -231,8 +231,8 @@ for (const [options, stage] of [[{ pending: 0 }, 110], [{ status: 143 }, 120], [
   });
 }
 
-for (const argc of [1, 3, 4, 5]) test(`job guest role argc=${argc} uses inherited job and safe-exit gates`, () => {
-  let memory: WebAssembly.Memory, deliveries = 0;
+for (const argc of [1, 3, 4, 5]) for (const lateWake of argc === 3 || argc === 4 ? [false, true] : [false]) test(`job guest role argc=${argc} uses inherited job and safe-exit gates${lateWake ? " after a late TERM wake" : ""}`, () => {
+  let memory: WebAssembly.Memory, deliveries = 0, emptyPolls = 0, readyPolls = 0;
   const spawned: SpawnRequest[] = [], writes: string[] = [], signals: number[][] = [];
   class RoleExit extends Error { constructor(readonly code: number) { super(`exit ${code}`); } }
   const job = new Uint8Array(4); new DataView(job.buffer).setUint32(0, 97, true);
@@ -243,14 +243,27 @@ for (const argc of [1, 3, 4, 5]) test(`job guest role argc=${argc} uses inherite
     runtime_proc: {
       read(fd: number, ptr: number, length: number) {
         expect(fd).toBe((argc === 3 && chunks.length < 3) || argc === 4 ? 10 : 0);
+        // TERM's pending bit can be consumed before its wake hint is published. The next
+        // final-gate read is still AGAIN, and poll legally returns zero until it is drained.
+        if (lateWake && chunks.length === 1 && readyPolls === 0) return -6;
         const bytes = chunks.shift()!; expect(length).toBe(bytes.length); new Uint8Array(memory.buffer, ptr, length).set(bytes); return length;
       },
       write(fd: number, ptr: number, length: number) { expect(fd).toBe(1); writes.push(new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length))); return length; },
       spawn(ptr: number, length: number) { spawned.push(JSON.parse(new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length)))); return 7; },
       pipe: unused, dup: unused, wait: unused, job_of: unused, kill_job: unused, wait_job: unused,
       signal(signal: number, disposition: number) { signals.push([signal, disposition]); return 0; },
-      interrupted: () => ++deliveries === 1 ? 0 : 15,
-      poll(_ptr: number, count: number, timeout: number) { expect(count).toBe(0); expect([10, 75]).toContain(timeout); return 0; },
+      interrupted: () => ++deliveries === 2 ? 15 : 0,
+      poll(ptr: number, count: number, timeout: number, out: number) {
+        if (count === 1) {
+          expect(lateWake).toBe(true); expect(timeout).toBe(5000);
+          if (emptyPolls === 0) { expect(deliveries).toBe(2); emptyPolls++; return 0; }
+          expect(deliveries).toBe(3); expect(++readyPolls).toBe(1);
+          const view = new DataView(memory.buffer);
+          view.setBigUint64(out, view.getBigUint64(ptr + 8, true), true);
+          view.setUint32(out + 8, view.getUint32(ptr, true), true); view.setUint32(out + 12, 0, true); return 1;
+        }
+        expect(count).toBe(0); expect([10, 75]).toContain(timeout); return 0;
+      },
     },
     wasi_snapshot_preview1: {
       args_sizes_get(ptr: number) { new DataView(memory.buffer).setUint32(ptr, argc, true); return 0; },
@@ -262,6 +275,8 @@ for (const argc of [1, 3, 4, 5]) test(`job guest role argc=${argc} uses inherite
   try { (instance.exports._start as () => void)(); }
   catch (error) { if (!(error instanceof RoleExit)) throw error; exit = error.code; }
   expect(exit).toBe(argc === 3 ? 31 : argc === 4 ? 32 : undefined);
+  expect(emptyPolls).toBe(lateWake ? 1 : 0); expect(readyPolls).toBe(lateWake ? 1 : 0);
+  if (argc === 3 || argc === 4) expect(deliveries).toBe(lateWake ? 3 : 2);
   expect(chunks).toEqual([]);
   expect(writes).toEqual(argc === 3 ? ["D", "L", "X"] : argc === 4 ? ["G", "L", "X"] : []);
   expect(signals).toEqual(argc === 3 || argc === 4 ? [[15, 2]] : []);

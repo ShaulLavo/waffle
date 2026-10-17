@@ -45,20 +45,22 @@ const write = (fd: number[], pointer: number, length: number) => call(1, fd, c(p
 
 // Locals: 0=input reader, 1=input writer, 2=output reader, 3=output writer,
 // 4=duplicated input writer, 5=duplicated output reader, 6=child pid, 7/8=JSON number scratch.
-function poll(fd: number[], kind: number, stage: number, hangup = false): number[] {
-  return store(256, c(kind)).concat(store(260, fd), store(264, c(12345)), store(268, c(0)),
-    check(call(7, c(256), c(1), c(5000), c(512)), 1, stage),
-    check(load(512), 12345, 68), check(load(516), 0, 68), check(load(520), kind, 69),
+function poll(fd: number[], kind: number, stage: number, hangup = false, onEmpty?: number[]): number[] {
+  const wait = call(7, c(256), c(1), c(5000), c(512));
+  const event = check(load(512), 12345, 68).concat(check(load(516), 0, 68), check(load(520), kind, 69),
     hangup ? check(load(524), 1, 70) : []);
+  return store(256, c(kind)).concat(store(260, fd), store(264, c(12345)), store(268, c(0)),
+    onEmpty ? wait.concat(set(8), get(8), [0x45, 0x04, 0x40], onEmpty,
+      [0x05], check(get(8), 1, stage), event, [0x0b]) : check(wait, 1, stage).concat(event));
 }
 // Nonblocking readiness is not a read reservation. A relay may have queued source bytes but
 // still need this reader's demand publication, and successful stream reads can be short.
 // Keep every byte assertion: only AGAIN and positive short reads are retried; early EOF and any
 // other errno retain the original failing stage. The browser driver bounds the full sequence.
-function readExact(fd: number[], length: number, stage: number): number[] {
+function readExact(fd: number[], length: number, stage: number, onEmpty?: number[]): number[] {
   return c(0).concat(set(7), [0x03, 0x40],
     call(0, fd, c(4096).concat(get(7), [0x6a]), c(length).concat(get(7), [0x6b])), set(8),
-    get(8), c(-6), [0x46, 0x04, 0x40], poll(fd, 0, stage), [0x0c, 1, 0x0b],
+    get(8), c(-6), [0x46, 0x04, 0x40], poll(fd, 0, stage, false, onEmpty), [0x0c, 1, 0x0b],
     check(get(8).concat(c(0), [0x4c]), 0, stage),
     check(get(8).concat(c(length), get(7), [0x6b, 0x4b]), 0, stage),
     get(7), get(8), [0x6a, 0x22, 7], c(length), [0x49, 0x0d, 0, 0x0b]);
@@ -214,7 +216,9 @@ export function runtimeProcJobWaitFixture(): Uint8Array<ArrayBuffer> {
     // Take TERM before reading the final gate; poll is allowed to return early on pending signals.
     [0x03, 0x40], call(14), set(6), get(6), [0x45, 0x04, 0x40],
     call(7, c(256), c(0), c(10), c(512)), [0x1a, 0x0c, 1, 0x0b, 0x0b], check(get(6), 15, 130),
-    readExact(c(10), 1, 131), check(c(4096).concat([0x2d, 0, 0]), 120, 131),
+    // A TERM wake can be published after interrupted() consumes its pending bit. A zero-ready
+    // poll is legal: drain that hint (no second TERM) and retry, without inspecting stale events.
+    readExact(c(10), 1, 131, check(call(14), 0, 130)), check(c(4096).concat([0x2d, 0, 0]), 120, 131),
     // The browser's test bootstrap gates this final poll until the shell's real wait_job reaches
     // its pending-job Atomics.wait branch. The poll itself and all ABI calls remain unchanged.
     // Exit snapshots at the synchronous reap also prevent later reads hiding an early return.
