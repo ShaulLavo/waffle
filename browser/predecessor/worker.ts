@@ -4,9 +4,8 @@ import { createFilesystemIdentity, revokeFilesystem, sharedRevoked, type Filesys
 import { NetHost } from "./net/host";
 import type { NetRequest } from "./net/protocol";
 import { HOST_CALL_FD, installHostSlots, installHostSlotsViaImport } from "./net/trampoline";
-import type { WorkerProcessMessage } from "@bun-wasm/runtime/proc/worker-client";
 import { readOutcome, outcomeWord } from "@bun-wasm/runtime/proc/outcome";
-import { bootstrap, type RuntimeWorkerRequest, type WorkerExecutor } from "@bun-wasm/runtime/browser/worker";
+import { bootstrap, type RuntimeWorkerRequest, type RuntimeWorkerMessage, type WorkerExecutor } from "@bun-wasm/runtime/browser/worker";
 import { SubprocessHost, childTransport, wasiPipe, type ChildTransport } from "./subprocess.ts";
 import { DefaultSignal } from "./default-signal";
 
@@ -81,16 +80,10 @@ export interface SpawnRequest {
 }
 
 export type WorkerMessage =
-  | WorkerProcessMessage
+  | RuntimeWorkerMessage
   | { type: "spawn"; request: SpawnRequest }
   | { type: "child-close"; pid: number; parentPid: number }
-  | { type: "phase"; name: string; duration: number }
-  | { type: "stdout"; data: Uint8Array }
-  | { type: "stderr"; data: Uint8Array }
-  | { type: "net"; req: NetRequest }
-  | { type: "exit"; code: number; signal?: number; sleep: SleepMode }
-  | { type: "default-signal"; signal: number }
-  | { type: "error"; code: number; message: string; sleep: SleepMode };
+  | { type: "net"; req: NetRequest };
 
 export type SleepMode = "atomics" | "busy-wait";
 

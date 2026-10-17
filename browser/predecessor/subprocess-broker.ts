@@ -32,10 +32,10 @@ interface Child {
 export class SubprocessBroker {
   private disposed = false;
   private children = new Map<number, Child>();
-  private registrations = new Map<string, ExecutableRegistration>();
   private activation?: Promise<ProcessSupervisor>;
   private service?: ProcessService;
   private rootPrepared = false;
+  private pendingAdmissions = new Set<Promise<() => void>>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private root?: SignalTransport & { pid: number; job: number };
   private rootIdentity: { pid: number; job: number };
@@ -74,7 +74,6 @@ export class SubprocessBroker {
     const adapter = entry.adapter === "bun" ? `bun:${entry.engine ?? "browser"}` : "preview1";
     this.runtime.registerProgram(name, "bytes" in entry ? { adapter, source: entry.bytes }
       : { adapter, module: entry.module, cooperative: true });
-    this.registrations.set(name, entry);
   }
   qualifyExecutable(name: string): string {
     return this.options.engine && ["bun", "/bun", "node", "/node", "/usr/local/bin/bun", "/usr/local/bin/node"].includes(name)
@@ -89,13 +88,17 @@ export class SubprocessBroker {
     service.reserveRoot({ ...this.options.root, ...root }, {
       filesystem: this.options.rootFilesystem, acknowledged: this.options.rootAcknowledged,
       quiesce: this.options.quiesceRoot, stop: this.options.stopRoot,
+      retired: () => controllersFor(this.runtime).delete(root.pid),
       wake: () => this.wakeBudget(this.options.budget),
     });
     controllersFor(this.runtime).set(root.pid, this);
     this.rootPrepared = true;
   }
   ready(): Promise<ProcessSupervisor> {
-    return this.activation ??= this.prepareRoot().then(async () => await this.service!.ready() as ProcessSupervisor);
+    return this.activation ??= this.prepareRoot().then(async () => {
+      await Promise.all(this.pendingAdmissions);
+      return await this.service!.ready() as ProcessSupervisor;
+    });
   }
   async adoptRuntimeRoot(transport: WorkerProcessTransport): Promise<void> {
     if (this.disposed) throw new Error("Process broker is disposed");
@@ -109,6 +112,7 @@ export class SubprocessBroker {
     await service.adoptRuntimeRoot(transport, {
       filesystem: this.options.rootFilesystem, acknowledged: this.options.rootAcknowledged,
       output: this.options.output, quiesce: this.options.quiesceRoot, stop: this.options.stopRoot,
+      retired: () => controllersFor(this.runtime).delete(state.pid),
       wake: () => this.wakeBudget(this.options.budget),
     });
     this.rootPrepared = true;
@@ -153,33 +157,43 @@ export class SubprocessBroker {
     this.rootTransport();
     const child: Child = { spawn, signal: 0, acknowledged: false, confirmed: false, closed: false, stopped: false };
     this.children.set(spawn.pid, child);
+    // Publish pending ancestry before lazy admission. Root exit waits only for these lease
+    // acquisitions, never worker startup; the table takes over retention at reservation.
+    let release!: () => void;
+    const retention = this.service && this.rootPrepared
+      ? Promise.resolve(release = this.service.retainRoot(this.root!.pid))
+      : this.prepareRoot().then(() => release = this.service!.retainRoot(this.root!.pid));
+    this.pendingAdmissions.add(retention);
     // No import, compile, worker startup or wait is on the synchronous spawn path.
     void this.ready().then(supervisor => {
-      if (this.disposed) return;
-      this.service!.registerController(spawn.pid, {
-        filesystem: spawn.filesystem, acknowledged: () => child.acknowledged,
-        launch: context => this.launch(context),
-        quiesce: () => this.quiesceChild(child),
-        exited: event => this.exited(supervisor, event),
-        revoke: () => this.cancel(spawn),
-        stop: () => this.physicallyStop(child),
-        wake: () => this.wakeBudget(spawn.child.budget),
-      });
-      // This request was admitted while its sender still held filesystem authority. A root
-      // exit during lazy activation must not erase an already accepted independent job.
-      supervisor.reserveAdmittedSpawn(spawn.parentPid, {
-        executable: spawn.executable, argv: spawn.argv, env: spawn.env, cwd: spawn.cwd,
-        job: spawn.job ?? spawn.jobId, fds: [],
-      }, { pid: spawn.pid, job: spawn.jobId, interrupt: spawn.child.interrupt, requestedSignal: spawn.child.requestedSignal, signalState: spawn.child.signalState, outcome: spawn.child.outcome });
-      const signal = Atomics.load(new Int32Array(spawn.child.requestedSignal), 0);
-      if (signal) { child.signal = signal; supervisor.observeSignal(spawn.pid, signal); }
-      return supervisor.start(spawn.pid);
+      try {
+        if (this.disposed) return;
+        this.service!.registerController(spawn.pid, {
+          filesystem: spawn.filesystem, acknowledged: () => child.acknowledged,
+          launch: context => this.launch(context),
+          quiesce: () => this.quiesceChild(child),
+          exited: event => this.exited(supervisor, event),
+          startFailed: error => { childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: process start failed: ${String(error)}\n`)); },
+          revoke: () => this.cancel(spawn),
+          stop: () => this.physicallyStop(child),
+          wake: () => this.wakeBudget(spawn.child.budget),
+        });
+        // This request was admitted while its sender still held filesystem authority. A root
+        // exit during lazy activation must not erase an already accepted independent job.
+        supervisor.reserveAdmittedSpawn(spawn.parentPid, {
+          executable: spawn.executable, argv: spawn.argv, env: spawn.env, cwd: spawn.cwd,
+          job: spawn.job ?? spawn.jobId, fds: [],
+        }, { pid: spawn.pid, job: spawn.jobId, interrupt: spawn.child.interrupt, requestedSignal: spawn.child.requestedSignal, signalState: spawn.child.signalState, outcome: spawn.child.outcome });
+        const signal = Atomics.load(new Int32Array(spawn.child.requestedSignal), 0);
+        if (signal) { child.signal = signal; supervisor.observeSignal(spawn.pid, signal); }
+        return supervisor.start(spawn.pid);
+      } finally { release(); }
     }).catch(error => {
       childTransport(spawn.child).stderr.write(new TextEncoder().encode(`bun-wasm: process start failed: ${String(error)}\n`));
       childTransport(spawn.child).finish(126);
       this.filesystem.revoke(spawn.filesystem);
       this.children.delete(spawn.pid);
-    });
+    }).finally(() => { release?.(); this.pendingAdmissions.delete(retention); });
     this.watch();
   }
 
@@ -189,8 +203,7 @@ export class SubprocessBroker {
     const spawn = child.spawn;
     child.context = context;
     const preview1 = context.adapter === "preview1";
-    const registration = this.registrations.get(spawn.executable);
-    const interruptible = registration?.adapter === "preview1" && registration.cooperative !== true;
+    const interruptible = context.interruptible;
     if (!preview1 && !/^bun:(browser|quickjs|jsc)$/.test(context.adapter)) throw new Error(`Unknown Bun adapter: ${context.adapter}`);
     const engine = preview1 ? "browser" : context.adapter.slice(4) as Engine;
     const request: RunRequest = {
@@ -215,6 +228,15 @@ export class SubprocessBroker {
     });
     worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
       const selected = readOutcome(outcomeWord(spawn.child.outcome));
+      if (data.type === "cleanup-error") {
+        console.error("bun-wasm: child cleanup failed", data.message);
+        // Cleanup faults are not ordered release acknowledgements. Preserve the chosen
+        // terminal status, but require the host's admission fence before confirmation.
+        if (data.signal) context.defaultSignal(data.signal);
+        else context.exit(data.code);
+        this.stopSafely(child);
+        return;
+      }
       if (data.type === "runtime-proc") {
         if (selected?.kind === "signaled" || isRevoked(spawn.filesystem)) this.rejectRuntimeMessage(data, context.pid);
         else void this.runtimeMessage(data, context.pid).catch(error => this.report(error));
@@ -235,6 +257,7 @@ export class SubprocessBroker {
         return;
       }
       if (data.type !== "exit" && data.type !== "error") return;
+      if (data.cleanupErrors?.length) console.error("bun-wasm: child cleanup failed", data.cleanupErrors);
       child.acknowledged = true;
       this.filesystem.reap(spawn.filesystem);
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal as Signal);
@@ -361,8 +384,11 @@ export class SubprocessBroker {
     if (!this.root) return;
     const pid = this.root.pid;
     this.revokeRuntimeProcess(pid);
-    if (!this.activation && !this.service) return;
-    return this.prepareRoot().then(() => this.service!.rootExit(pid, code));
+    if (!this.activation && !this.service && !this.pendingAdmissions.size) return;
+    return this.prepareRoot().then(async () => {
+      await Promise.all(this.pendingAdmissions);
+      return this.service!.rootExit(pid, code);
+    });
   }
 
   private cleanupCache(child: Child): void { if (child.request?.moduleCache) void caches.delete(child.request.moduleCache); }
@@ -458,7 +484,7 @@ export function installBunAdapters(runtime: Runtime, workerUrl: string): void {
     const controller = await originController(context, service);
     return service.launchWorker(context, {
       workerUrl: new URL("./preview1-worker.js", workerUrl).href,
-      request: { module: context.module, args: context.request.argv, env: { ...context.request.env, PWD: context.request.cwd }, interruptible: true },
+      request: { module: context.module, args: context.request.argv, env: { ...context.request.env, PWD: context.request.cwd }, interruptible: context.interruptible },
       // Alias selection belongs to this Bun composition root, including recursive Preview1
       // guests. The reusable worker/broker never guesses that an unknown executable is Bun.
       executableName: name => controller?.qualifyExecutable(name) ?? name,

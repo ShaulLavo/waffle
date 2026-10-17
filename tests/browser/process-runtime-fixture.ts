@@ -30,7 +30,7 @@ export function processRuntimeFixture(filesystem: RuntimeFilesystem, options: {
     registerProgram(name, program) {
       if (registry.has(name)) throw new Error(`Program already registered: ${name}`);
       if (!adapters.has(program.adapter)) throw new Error(`Unknown adapter: ${program.adapter}`);
-      registry.register(name, { adapter: program.adapter, module: program.source !== undefined ? async () => {
+      registry.register(name, { adapter: program.adapter, interruptible: program.source !== undefined, module: program.source !== undefined ? async () => {
         const source = typeof program.source === "function" ? await program.source() : program.source!;
         return compileInterruptible(source);
       } : program.cooperative === true ? program.module : async () => { throw new TypeError("Third-party programs require source bytes"); } });

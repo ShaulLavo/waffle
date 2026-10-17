@@ -1,5 +1,5 @@
 import { processRuntimeFixture } from "./process-runtime-fixture";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { SubprocessBroker, type ExecutableRegistration } from "../src/subprocess-broker";
 import { SubprocessHost, childTransport, type ChildTransport } from "../src/subprocess.ts";
 import { createFilesystemIdentity, revokeFilesystem, type FilesystemIdentity } from "../../runtime/fs";
@@ -117,7 +117,7 @@ function liveFixture(options: { executable?: ExecutableRegistration; quiesce?: (
   const host = hostFor();
   const pid = host.spawn(JSON.stringify({ argv: ["fixture"] }));
   return {
-    broker, host, pid, transports, workers, hostFor, quiescences: () => quiescences,
+    broker, runtime, host, pid, transports, workers, hostFor, quiescences: () => quiescences,
     async started(pid: number) { const supervisor = await broker.ready(); await supervisor.start(pid); return supervisor; },
     async dispose() {
       let failure: unknown;
@@ -809,4 +809,63 @@ for (const completion of ["acknowledged", "physical-first", "confirmation-first"
       expect(supervisor.job(job)).toBeUndefined();
     } finally { unlisten(); }
   } finally { barrier.release(); await state.dispose(); }
+});
+
+for (const terminal of [{ code: 7 }, { code: 143, signal: 15 }]) test(`legacy cleanup fault preserves status ${terminal.code} without bypassing its admission fence`, async () => {
+  const report = spyOn(console, "error").mockImplementation(() => {});
+  const barrier = quiescenceBarrier();
+  const state = liveFixture({ quiesce: () => barrier.promise });
+  try {
+    await state.started(state.pid);
+    const worker = state.workers.get(state.pid)!;
+    const waiting = exitConfirmation(state.broker, state.pid);
+    worker.onmessage?.({ data: { type: "cleanup-error", ...terminal, message: "filesystem release failed", cleanupErrors: ["filesystem release failed"] } } as MessageEvent);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
+    expect(worker.terminated).toBe(0);
+    expect(state.quiescences()).toBe(1);
+    barrier.release();
+    expect((await waiting.result).status).toBe(terminal.code);
+    await timerTurn();
+    expect(worker.terminated).toBe(1);
+    expect(report).toHaveBeenCalledWith("bun-wasm: child cleanup failed", "filesystem release failed");
+  } finally {
+    barrier.release();
+    try { await state.dispose(); } finally { report.mockRestore(); }
+  }
+});
+
+test("accepted legacy admission leases root ancestry before delayed supervisor activation", async () => {
+  const state = liveFixture();
+  const originalReady = state.broker.ready.bind(state.broker);
+  const admission = quiescenceBarrier();
+  try {
+    await state.started(state.pid);
+    state.workers.get(state.pid)!.exit(0);
+    await state.broker.wait(state.pid);
+    state.host.close(state.pid);
+    await Promise.resolve();
+    state.broker.ready = async () => { await admission.promise; return originalReady(); };
+    const background = state.host.spawn(JSON.stringify({ argv: ["fixture"], job: -1 }));
+    await state.broker.rootExit(0);
+    admission.release();
+    await timerTurn();
+    expect(state.workers.has(background)).toBe(true);
+    state.workers.get(background)!.exit(23);
+    expect(state.host.wait(background)).toBe(23);
+  } finally { admission.release(); state.broker.ready = originalReady; await state.dispose(); }
+});
+
+test("failed activation releases the accepted legacy admission lease before root retirement", async () => {
+  const report = spyOn(console, "error").mockImplementation(() => {});
+  const state = liveFixture({ activate: async () => { throw new Error("activation refused"); } });
+  try {
+    await expect(state.broker.ready()).rejects.toThrow("activation refused");
+    await timerTurn();
+    expect(state.host.wait(state.pid)).toBe(126);
+    await state.broker.rootExit(0);
+    const service = await state.runtime.processes();
+    expect(() => service.retainRoot(1)).toThrow("Unknown root process 1");
+    expect(state.workers.size).toBe(0);
+  } finally { try { await state.dispose(); } finally { report.mockRestore(); } }
 });

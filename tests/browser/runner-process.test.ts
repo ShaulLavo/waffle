@@ -604,7 +604,9 @@ test("run.done waits for deferred root activation and descriptor release", async
     const active = await supervisor;
     expect(await waiting.result).toEqual({ code: 137 });
     expect(released).toBe(true);
-    expect(active.get(1)!.result?.status).toBe(137);
+    // A completed root with no descendants retires after its descriptor fence; run.done
+    // above retains the terminal winner without retaining page-owned controller metadata.
+    expect(active.get(1)).toBeUndefined();
     expect(state.revoked()).toBe(1);
     expect(state.worker.terminated).toBe(1);
   } finally {
@@ -688,4 +690,25 @@ test("run.done confirms after the filesystem fence without awaiting physical wor
     expect(terminate).toHaveBeenCalledTimes(1);
     // The returned physical-termination promise is deliberately still unresolved.
   } finally { release(); terminate.mockRestore(); await state.dispose(); }
+});
+
+for (const terminal of [{ code: 0 }, { code: 143, signal: 15 }]) test(`worker cleanup fault preserves status ${terminal.code} but requires a root admission fence`, async () => {
+  const report = spyOn(console, "error").mockImplementation(() => {});
+  const state = isolatedRoot();
+  try {
+    await state.ready;
+    const waiting = runConfirmation(state.run);
+    state.worker.onmessage?.({ data: { type: "cleanup-error", ...terminal, message: "filesystem release failed", cleanupErrors: ["filesystem release failed"] } } as MessageEvent);
+    await Promise.resolve();
+    expect(waiting.confirmed()).toBe(false);
+    expect(state.reaped()).toBe(0);
+    expect(state.worker.terminated).toBe(0);
+    expect(state.revoked()).toBe(1);
+    state.release();
+    expect(await waiting.result).toEqual({ code: terminal.code });
+    expect(state.worker.terminated).toBe(1);
+    expect(report).toHaveBeenCalledWith("bun-wasm: root cleanup failed", "filesystem release failed");
+  } finally {
+    try { await state.dispose(); } finally { report.mockRestore(); }
+  }
 });

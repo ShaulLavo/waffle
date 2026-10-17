@@ -1,6 +1,6 @@
 import { createRuntime, type Runtime } from "@bun-wasm/runtime";
 import { startRun, type Run } from "../src/runner";
-import { createWorkerProcessTransport } from "../../runtime/proc/worker-client";
+import { createWorkerProcessTransport, workerProcessState } from "@bun-wasm/runtime/proc/worker-client";
 import { runtimeProcChecks, runtimeProcFixture, runtimeProcStages, runtimeProcJobWaitChecks, runtimeProcJobWaitFixture, runtimeProcJobWaitStages } from "./runtime-proc-fixtures";
 
 // Diagnostic only: identify the exact BufferSource representation rejected by an engine.
@@ -30,7 +30,25 @@ async function instrumentJobWaitWorker(sourceURL: string) {
   let gate: Int32Array | undefined, waitingJob: number | undefined, loaded = false;
   const pending: MessageEvent[] = [];
   const nativeWait = Atomics.wait, NativeInstance = WebAssembly.Instance;
+  let ioTotal = 0, nextReport = 64, launchReported = false;
+  const ioCounts: Record<string, number> = {};
+  const reportIO = (call: { operation: "read" | "poll" | "interrupted"; result: number; fd?: number; length?: number; count?: number; timeout?: number }) => {
+    ioTotal++;
+    const key = `${call.operation}:${call.result}`;
+    ioCounts[key] = (ioCounts[key] ?? 0) + 1;
+    // Diagnose a busy loop without causing one: at most 32 initial posts, then one per
+    // doubling of the call count. Never enqueue one message for every hot ABI import.
+    if (ioTotal <= 32 || ioTotal >= nextReport || ioCounts[key] === 1) {
+      scope.postMessage({ type: "job-wait-test-io", ...call, total: ioTotal, counts: { ...ioCounts } });
+      if (ioTotal >= nextReport) nextReport *= 2;
+    }
+  };
   scope.addEventListener("message", event => {
+    if (!launchReported && event.data?.module instanceof WebAssembly.Module) {
+      launchReported = true;
+      scope.postMessage({ type: "job-wait-test-launch", args: event.data.args, interruptible: event.data.interruptible,
+        slot: event.data.runtimeProcess?.slot });
+    }
     if (event.data?.type === "job-wait-test-gate") {
       gate = new Int32Array(event.data.gate as SharedArrayBuffer);
       event.stopImmediatePropagation();
@@ -49,12 +67,17 @@ async function instrumentJobWaitWorker(sourceURL: string) {
     constructor(module: WebAssembly.Module, imports: WebAssembly.Imports = {}) {
       const runtime = imports.runtime_proc;
       if (runtime) {
-        const waitJob = runtime.wait_job, poll = runtime.poll, read = runtime.read;
+        const waitJob = runtime.wait_job, poll = runtime.poll, read = runtime.read, interrupted = runtime.interrupted;
         // Preserve each return value rather than guessing whether a failed readExact saw EOF,
         // an errno, or a legal zero-ready wake. These messages never change the ABI result.
         if (typeof read === "function") runtime.read = (fd: number, ptr: number, length: number) => {
           const result = Reflect.apply(read, runtime, [fd, ptr, length]);
-          scope.postMessage({ type: "job-wait-test-io", operation: "read", fd, length, result });
+          reportIO({ operation: "read", fd, length, result });
+          return result;
+        };
+        if (typeof interrupted === "function") runtime.interrupted = () => {
+          const result = Reflect.apply(interrupted, runtime, []);
+          reportIO({ operation: "interrupted", result });
           return result;
         };
         if (typeof waitJob === "function") runtime.wait_job = (job: number, flags: number, ptr: number) => {
@@ -73,7 +96,7 @@ async function instrumentJobWaitWorker(sourceURL: string) {
             }
           }
           const result = Reflect.apply(poll, runtime, [ptr, count, timeout, out]);
-          scope.postMessage({ type: "job-wait-test-io", operation: "poll", count, timeout, result });
+          reportIO({ operation: "poll", count, timeout, result });
           return result;
         };
       }
@@ -91,7 +114,10 @@ const jobWaitScenario = new URLSearchParams(location.search).has("job-wait");
 const jobWaitGate = jobWaitScenario ? new SharedArrayBuffer(4) : undefined;
 const bootstrapURLs = new Set<string>();
 const blockingWaitEntries: number[] = [];
-const ioCalls: { worker: number; operation: "read" | "poll"; result: number; fd?: number; length?: number; count?: number; timeout?: number }[] = [];
+const ioCalls: { worker: number; operation: "read" | "poll" | "interrupted"; result: number; fd?: number; length?: number; count?: number; timeout?: number; total: number; counts: Record<string, number> }[] = [];
+const launches: { worker: number; args: string[]; interruptible?: boolean; slot?: number }[] = [];
+const spawns: { worker: number; pid: number; parentPid: number; job: number; executable: string; argv: string[] }[] = [];
+let ioReports = 0;
 const NativeWorker = globalThis.Worker;
 const activeWorkers = new Set<Worker>();
 const messages: string[] = [];
@@ -116,12 +142,22 @@ globalThis.Worker = class extends NativeWorker {
       if (data.type === "job-wait-test-blocking-entry") {
         blockingWaitEntries.push(data.job); event.stopImmediatePropagation(); return;
       }
+      if (data.type === "job-wait-test-launch") {
+        if (launches.length < 32) launches.push({ worker, args: data.args, interruptible: data.interruptible, slot: data.slot });
+        event.stopImmediatePropagation(); return;
+      }
       if (data.type === "job-wait-test-io") {
-        const { operation, result, fd, length, count, timeout } = data;
-        ioCalls.push({ worker, operation, result, fd, length, count, timeout });
+        const { operation, result, fd, length, count, timeout, total, counts } = data;
+        ioReports++;
+        if (ioCalls.length === 256) ioCalls.shift();
+        ioCalls.push({ worker, operation, result, fd, length, count, timeout, total, counts });
         event.stopImmediatePropagation(); return;
       }
       if (data.type === "runtime-proc") {
+        if (data.operation === "spawn" && spawns.length < 32) {
+          const { pid, parentPid, job } = workerProcessState(data.transport);
+          spawns.push({ worker, pid, parentPid, job, executable: data.request.executable, argv: data.request.argv.slice() });
+        }
         messages.push(data.operation);
         // A wait_job reaps synchronously in the guest before its notification reaches this page.
         // Capture prior exit messages here: later stream reads must not hide an early wait return.
@@ -196,9 +232,9 @@ try {
   await runtime.dispose(); runtime = undefined;
   await until(() => activeWorkers.size === 0, "all task-created workers terminated");
   result = { ok: true, mode: explicit ? "explicit" : "automatic", scenario: jobWait ? "job-wait" : "pipes", checks, stdout,
-    messages, exits, reaps, blockingWaitEntries, ioCalls, workerErrors, bufferDecode, cleanup: { activeWorkers: activeWorkers.size, workersCreated } };
+    messages, exits, reaps, blockingWaitEntries, ioCalls, ioReports, launches, spawns, workerErrors, bufferDecode, cleanup: { activeWorkers: activeWorkers.size, workersCreated } };
 } catch (error) {
-  result = { ok: false, stdout, stderr, messages, exits, reaps, blockingWaitEntries, ioCalls, workerErrors, bufferDecode,
+  result = { ok: false, stdout, stderr, messages, exits, reaps, blockingWaitEntries, ioCalls, ioReports, launches, spawns, workerErrors, bufferDecode,
     error: error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error) };
 } finally {
   if (run && !settled) {

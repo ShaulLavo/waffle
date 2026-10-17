@@ -64,6 +64,7 @@ test("recursive Preview1 aliases retain inherited writers across ordinary parent
     for (const message of pending.splice(0)) await broker.runtimeMessage(message, parent.client.pid);
     await until(() => workers.has(leaderPid));
     const leaderWorker = workers.get(leaderPid)!;
+    expect(leaderWorker.request.interruptible).toBe(false);
     const leader = makeClient(leaderWorker.request.runtimeProcess!);
     const descendantPid = leader.client.spawn(leaderPid, { executable: "bun", argv: ["descendant"], env: {}, cwd: "/", job: workerProcessState(leaderWorker.request.runtimeProcess!).job, fds: [{ child: 1, parent: 1 }] });
     // The guest retains its child's writer synchronously, before either the spawn notification

@@ -11,7 +11,7 @@ async function until(check: () => boolean): Promise<void> {
   throw new Error("worker startup did not complete");
 }
 
-test("page disposal fences active legacy and generic roots plus an independent legacy child before stopping consumers", async () => {
+for (const alreadyFinishing of [false, true]) test(`page disposal fences legacy and generic roots plus an independent legacy child (root already finishing: ${alreadyFinishing})`, async () => {
   const previousWorker = globalThis.Worker;
   const previousLocation = Object.getOwnPropertyDescriptor(globalThis, "location");
   const previousIsolation = Object.getOwnPropertyDescriptor(globalThis, "crossOriginIsolated");
@@ -56,6 +56,7 @@ test("page disposal fences active legacy and generic roots plus an independent l
     await until(() => workers.some(worker => worker.request?.pid === childPid));
     section = new FilesystemSection(root.request!.filesystem);
     section.enter(); entered = true;
+    if (alreadyFinishing) legacy.kill(15);
     const disposal = runtime.dispose();
     expect(runtime.disposed).toBe(true);
     await Promise.resolve();
@@ -63,7 +64,7 @@ test("page disposal fences active legacy and generic roots plus an independent l
     expect(events).not.toContain("filesystem:stop");
     section.exit(); entered = false;
     await disposal;
-    expect(await legacy.done).toEqual({ code: 137 });
+    expect(await legacy.done).toEqual({ code: alreadyFinishing ? 143 : 137 });
     expect(await generic.done).toEqual({ code: 137 });
     expect(workers.every(worker => worker.terminated === 1)).toBe(true);
     expect(events.at(-1)).toBe("filesystem:stop");
