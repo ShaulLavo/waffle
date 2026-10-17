@@ -12,8 +12,15 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
   const entries = Object.entries(metadata.exports);
   const nodeEntries = entries.filter(([, target]) => typeof target.node === "string");
   const browserOnly = entries.filter(([, target]) => target.node === undefined).map(([key]) => key);
-  expect(browserOnly).toEqual(["./browser/fs-worker"]);
+  expect(browserOnly).toEqual([
+    "./browser/fs-worker",
+    "./testing/interrupt-browser-runner-control",
+    "./testing/storage-browser",
+    "./testing/opfs-storage-browser",
+  ]);
   const specifiers = nodeEntries.map(([key]) => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`);
   const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
   expect(() => execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" })).not.toThrow();
+  const browserScript = `for (const specifier of ${JSON.stringify(browserOnly.map(key => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`))}) { try { await import(specifier); throw new Error(\`Node unexpectedly resolved ${"$"}{specifier}\`); } catch (error) { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } }`;
+  expect(() => execFileSync("node", ["--input-type=module", "--eval", browserScript], { cwd: root, stdio: "pipe" })).not.toThrow();
 });
