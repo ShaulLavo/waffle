@@ -415,7 +415,5 @@
     "typescript": "^7.0.2",
     "playwright": "^1.64.1"
   },
-  "dependencies": {
-    "acorn": "^8.17.0"
-  }
+  "dependencies": {}
 }
