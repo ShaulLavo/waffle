@@ -104,7 +104,10 @@ Each row has one class. A file with independent changes has separate rows.
 | [TCP adapters and HTTP upgrade sockets](#tcp-and-ip-helpers) | Host feature | Original adapters add duplex sockets, write-side shutdown and bounded native handle allocation over the existing host ABI. |
 | [HTTP request and response framing](#http-framing) | Host feature | Original header state, validation, streaming, Agent pool and upgrade response adapters shared by all engines. |
 | [`crates/bunwasm-runtime/src/js/ws_builtin.js`](#portable-ws-builtin) | Port | Bundle the unchanged published ws implementation for the shared Node APIs. |
-| [`scripts/generate-ws.sh` and builtin resolution](#portable-ws-builtin) | Host feature | Original module wrapper supplies Bun's builtin ws import on every engine. |
+| [`src/js/loop_scheduler.ts` and callback batching](#fair-loop-scheduling) | Host feature | Original portable I/O turns and bounded immediate batches. |
+| [`src/js/fs_watch.ts` and `node_fs.js` wiring](#portable-filesystem-watcher) | Host feature | Original polling watcher over the shared WASI file operations. |
+| [`src/js/exit_provenance.ts` and lifecycle hooks](#runtime-exit-provenance) | Host feature | Original opt-in exit diagnostics over the existing event loop and error handlers. |
+| [`scripts/generate-ws.sh` and builtin resolution](#portable-ws-builtin) | Host feature | Original module wrapper supplies Bun's builtin ws import and require on every engine. |
 | [`crates/bunwasm-runtime/src/js/function.js`](#generated-function-parser-locations) | Host feature | Original generated-function import adapter using parser positions and an intrinsic helper. |
 | [`patches/bun/0010-wasm-expose-semantic-dynamic-import-locations-to-the.patch`](#generated-function-parser-locations) | Port | Bun parser and printer import metadata, reused unchanged from the semantic-import lane. |
 | [`crates/bunwasm-runtime/src/engine_quickjs.rs`, data conversion; `host.rs`, native-test import gate](#quickjs-data-conversion) | Host feature | Original adapter checks buffer tags before calling a throwing getter. |
@@ -292,6 +295,46 @@ the real-browser subprocess check cancels those readers on all three engines.
 The regression fixtures and Python OS-pipe driver are original test code.
 The driver checks QuickJS and JSC under both the native launcher and Node's
 worker host, plus the host engine under Node.
+## Fair loop scheduling
+
+Class **Host feature**, **original adapter** in `src/js/loop_scheduler.ts` and
+`bootstrap.js`. No upstream implementation is copied, so there is no upstream
+path or revision.
+
+The scheduler gives I/O a turn between callback turns, even when callbacks keep
+queuing immediates or timers remain due. Immediate callbacks queued during an
+existing batch wait for the next batch, so due timers can run. Microtasks still
+drain between callback turns. This uses the existing I/O waiter interface and adds
+no host ABI slot.
+
+## Portable filesystem watcher
+
+Class **Host feature**, **original adapter** in `src/js/fs_watch.ts`, wired by
+`src/js/node_fs.js`. No upstream implementation is copied. Bun's
+`src/js/internal/fs/watch.ts` at `cd95fa7a13b3f13be73e512b38ec111c1c228084`
+wraps a private native filesystem watcher that these engines cannot call.
+
+The adapter snapshots file identity, size and modification time through the
+existing Rust filesystem operations. A referenced 100 ms timer polls for change
+and rename events. Recursive traversal does not follow directory symlinks.
+`close`, `ref`, `unref`, persistent options and abort signals control the actual
+timer. Closing a watcher releases its timer and signal listener. Polling can
+coalesce changes between samples and does not promise an OS event count.
+`watchFile` and the promise-based watcher remain unsupported.
+
+## Runtime exit provenance
+
+Class **Host feature**, **original adapter** in `src/js/exit_provenance.ts`, with
+lifecycle hooks in `bootstrap.js` and `process.js`. No upstream implementation is
+copied, so there is no upstream source path or revision.
+
+`BUN_WASM_TRACE_EXIT=1` emits JSON to stderr at explicit exits, fatal errors and
+loop completion. Each record contains the guest code, exit reason, JS stack,
+refed timers, immediates, ticks, pending I/O, message-port references and network
+handle count. The app matrix records the host code and signal separately, along
+with timeouts and harness termination. Normal runtime output is unchanged when
+the flag is absent.
+
 ## Portable ws builtin
 
 `crates/bunwasm-runtime/src/js/ws_builtin.js` is generated from `index.js` and
@@ -306,7 +349,9 @@ changing their implementation. Its original wrapper preserves strict mode,
 maps Node imports to the runtime builtin registry, and returns module.exports.
 Optional native addons remain external and unavailable. The library's existing
 JavaScript implementations handle their absence. The Rust resolver recognizes
-`ws` as a Bun builtin; no project dependency is injected.
+`ws` as a Bun builtin; no project dependency is injected. The CommonJS dispatcher
+uses the builtin factory registry as well as reserved prefixes, so `require("ws")`,
+`createRequire` and `import.meta.require` use the same module as an ESM import.
 
 Bun's own `src/js/thirdparty/ws.js` at
 `ddab8382bdf6b02f22653758d901fb83ceb85aa8` requires the private C++ WebSocket
