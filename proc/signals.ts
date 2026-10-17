@@ -133,5 +133,25 @@ export function requestSignal(transport: SignalTransport, signal: number): Signa
     if (outcome.kind !== "signaled" || outcome.code !== signal) return { action: "settled", outcome };
   }
   publishWake(transport, signal);
+  if (action === "handled") {
+    const cell = Atomics.load(transport.signalState, signal);
+    if ((cell & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) {
+      // Registration can discard the pending bit before this publisher reaches its wake.
+      // Clear only our hint, then preserve re-registration and any terminal publication.
+      Atomics.compareExchange(transport.interrupt, 0, signal, 0);
+      rearmPendingSignal(transport.signalState, transport.interrupt);
+      const winner = readOutcome(transport.outcome);
+      if (winner?.kind === "signaled") publishWake(transport, winner.code);
+    }
+  }
   return { action, outcome: readOutcome(transport.outcome) };
+}
+
+/** Nonconsuming readiness: interrupt is only a wake hint and may outlive a delivery. */
+export function signalPending(transport: SignalTransport): boolean {
+  if (Atomics.load(transport.requestedSignal, 0) === Signal.SIGKILL || readOutcome(transport.outcome)?.kind === "signaled") return true;
+  for (let signal = 1; signal <= 64; signal++) {
+    if ((Atomics.load(transport.signalState, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) === (SignalDisposition.HANDLE | SIGNAL_PENDING)) return true;
+  }
+  return false;
 }

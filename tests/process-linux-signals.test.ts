@@ -12,9 +12,10 @@ import { confirmWorkerProcessJob, createWorkerProcessTransport, workerProcessSta
 function fixture(wait?: (milliseconds: number, word: Int32Array, expected: number) => void) {
   const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); } });
   const pid = supervisor.createRoot(), record = supervisor.get(pid)!;
-  const abi = new ProcessABI({ memory: new WebAssembly.Memory({ initial: 1 }), descriptors: record.descriptors,
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const abi = new ProcessABI({ memory, descriptors: record.descriptors,
     fs: new MemFS(), pid, service: supervisor, signals: record, wait });
-  return { supervisor, pid, record, abi };
+  return { supervisor, pid, record, abi, memory };
 }
 const ignored = [17, 18, 23, 28];
 const fatal = Array.from({ length: 64 }, (_, index) => index + 1).filter(signal => !ignored.includes(signal) && ![19, 20, 21, 22, 32, 33].includes(signal));
@@ -224,5 +225,104 @@ test("discarding a pending ignored default cannot clear a racing KILL wake", () 
     expect(raced).toBe(true);
     expect(Atomics.load(f.record.interrupt, 0)).toBe(9);
     expect(readOutcome(f.record.outcome)).toMatchObject({ kind: "signaled", code: 9 });
+  } finally { hook.mockRestore(); f.supervisor.dispose(); }
+});
+
+for (const reset of ["default", "reregister", "consume"] as const) test(`disposition ${reset} before a delayed publisher wake cannot interrupt a blocking wait`, () => {
+  let child = 0, waits = 0;
+  const f = fixture(() => { waits++; f.supervisor.exit(child, 0); }), compareExchange = Atomics.compareExchange;
+  let changed = false;
+  const hook = spyOn(Atomics, "compareExchange").mockImplementation(((word: Int32Array, index: number, expected: number, replacement: number) => {
+    const previous = compareExchange(word, index, expected, replacement);
+    if (!changed && word === f.record.signalState && index === 17 && replacement === (2 | SIGNAL_PENDING) && previous === expected) {
+      changed = true;
+      if (reset === "consume") expect(f.abi.imports.interrupted!()).toBe(17);
+      else {
+        expect(f.abi.imports.signal!(17, 0)).toBe(0);
+        if (reset === "reregister") expect(f.abi.imports.signal!(17, 2)).toBe(0);
+      }
+    }
+    return previous;
+  }) as typeof Atomics.compareExchange);
+  try {
+    f.abi.imports.signal!(17, 2);
+    requestSignal(f.record, 17);
+    expect(changed).toBe(true);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(0);
+    child = f.supervisor.reserveSpawn(f.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    expect(f.abi.imports.wait_job!(f.supervisor.jobOf(child), 0, 64)).toBe(0);
+    expect(waits).toBe(1);
+    expect(f.abi.imports.interrupted!()).toBe(0);
+  } finally { hook.mockRestore(); f.supervisor.dispose(); }
+});
+
+for (const race of ["reregister", "kill", "terminal"] as const) test(`delayed discarded wake preserves racing ${race} publication`, () => {
+  const f = fixture(), compareExchange = Atomics.compareExchange;
+  const signal = race === "terminal" ? 1 : 17;
+  let reset = false, ready = false, raced = false;
+  const hook = spyOn(Atomics, "compareExchange").mockImplementation(((word: Int32Array, index: number, expected: number, replacement: number) => {
+    if (ready && !raced && word === f.record.interrupt && expected === signal && replacement === 0) {
+      raced = true;
+      if (race === "reregister") {
+        f.abi.imports.signal!(signal, 2);
+        requestSignal(f.record, signal);
+      } else if (race === "kill") requestSignal(f.record, 9);
+      else {
+        f.abi.imports.signal!(signal, 0);
+        requestSignal(f.record, signal);
+      }
+    }
+    const previous = compareExchange(word, index, expected, replacement);
+    if (!reset && word === f.record.signalState && index === signal && replacement === (2 | SIGNAL_PENDING) && previous === expected) {
+      reset = true;
+      f.abi.imports.signal!(signal, race === "terminal" ? 1 : 0);
+      ready = true;
+    }
+    return previous;
+  }) as typeof Atomics.compareExchange);
+  try {
+    f.abi.imports.signal!(signal, 2);
+    requestSignal(f.record, signal);
+    expect(raced).toBe(true);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(race === "kill" ? 9 : signal);
+    if (race === "reregister") {
+      expect(f.abi.imports.interrupted!()).toBe(signal);
+      expect(readOutcome(f.record.outcome)).toBeNull();
+    } else expect(readOutcome(f.record.outcome)).toMatchObject({ kind: "signaled", code: race === "kill" ? 9 : signal });
+  } finally { hook.mockRestore(); f.supervisor.dispose(); }
+});
+
+test("a delayed rearm scan can leave an advisory hint but cannot interrupt job wait or poll", () => {
+  let child = 0, waits = 0;
+  const f = fixture((_milliseconds, word, expected) => {
+    expect(word).toBe(f.record.interrupt);
+    expect(expected).toBe(10); // Waiting on zero would spin forever on this stale hint.
+    waits++; f.supervisor.exit(child, 0);
+  }), compareExchange = Atomics.compareExchange;
+  let raced = false, armed = false;
+  const hook = spyOn(Atomics, "compareExchange").mockImplementation(((word: Int32Array, index: number, expected: number, replacement: number) => {
+    if (armed && !raced && word === f.record.interrupt && expected === 0 && replacement === 10) {
+      raced = true;
+      f.abi.imports.signal!(10, 1);
+    }
+    return compareExchange(word, index, expected, replacement);
+  }) as typeof Atomics.compareExchange);
+  try {
+    f.abi.imports.signal!(10, 2); f.abi.imports.signal!(17, 2);
+    requestSignal(f.record, 10); requestSignal(f.record, 17);
+    armed = true;
+    f.abi.imports.signal!(17, 0);
+    expect(raced).toBe(true);
+    expect(Atomics.load(f.record.interrupt, 0)).toBe(10);
+    child = f.supervisor.reserveSpawn(f.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    expect(f.abi.imports.wait_job!(f.supervisor.jobOf(child), 0, 64)).toBe(0);
+    expect(waits).toBe(1);
+    child = f.supervisor.reserveSpawn(f.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    const subscription = new DataView(f.memory.buffer);
+    subscription.setUint32(0, 4, true);
+    subscription.setUint32(4, f.supervisor.jobOf(child), true);
+    expect(f.abi.imports.poll!(0, 1, -1, 64)).toBe(1);
+    expect(waits).toBe(2);
+    expect(f.abi.imports.interrupted!()).toBe(0);
   } finally { hook.mockRestore(); f.supervisor.dispose(); }
 });

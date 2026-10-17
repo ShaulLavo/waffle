@@ -97,6 +97,12 @@ signal, but selects terminal default action for a pending terminating signal.
 handlers; ignored defaults return zero without revocation or terminal unwind.
 An already-selected `SIGKILL` remains authoritative across all these paths.
 
+The interrupt cell is an advisory wake hint, not signal readiness. Process poll and
+job wait consult the authoritative handled-pending table and fatal outcome without
+consuming either. Preview1 polling uses the same readiness through the worker
+bootstrap. A delayed publisher or rearm scan may leave a discarded hint behind;
+it must not cause `EINTR` or an early process-poll return.
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.

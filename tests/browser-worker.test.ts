@@ -676,3 +676,22 @@ for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 },
     expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: winner.kind === "start-failed" ? 126 : winner.code, signal: undefined });
   });
 }
+
+test("generic bootstrap preview1 polling treats stale process wake hints as advisory", async () => {
+  const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
+  Atomics.store(state.signals.interrupt, 0, 17);
+  let polled = false;
+  const result = await fixture({ run({ wasi, instance }) {
+    const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
+    view.setUint8(8, 0); // An expired clock is ready even though the discarded wake remains.
+    view.setUint32(16, 1, true);
+    view.setBigUint64(24, 0n, true);
+    const poll = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions().poll_oneoff!;
+    expect(poll(0, 1024, 1, 2048)).toBe(0);
+    expect(view.getUint32(2048, true)).toBe(1);
+    polled = true;
+    return 0;
+  } }, { runtimeProcess });
+  expect(polled).toBe(true);
+  expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ type: "exit", code: 0 }]);
+});

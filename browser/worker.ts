@@ -1,6 +1,6 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { checkedSignal, ProcessError } from "../proc/types.js";
-import { defaultSignalTerminates } from "../proc/signals.js";
+import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
@@ -304,6 +304,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         checkActive();
       },
       interrupt,
+      interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : undefined,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
