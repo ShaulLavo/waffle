@@ -216,7 +216,7 @@ export class WorkerProcessClient {
       this.options.postMessage({ type: "runtime-proc", operation: "spawn", transport: child, request: snapshot });
     } catch (error) {
       try {
-        if (child) claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 126 });
+        if (child) claimOutcome(workerProcessState(child).signals.outcome, { kind: "start-failed", code: 13 });
         let cleaned = true;
         for (const token of child?.resources ?? []) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }

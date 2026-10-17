@@ -286,14 +286,14 @@ test("transfer transaction commits only after publishing its independently-owned
   expect(f.messages[0]!.transport.data).toEqual({ filesystem: "child" });
 });
 
-test("lazy activation failure releases transferred lifetimes before confirming exit 126", async () => {
+test("lazy activation failure releases transferred lifetimes before confirming EACCES", async () => {
   const f = fixture({ activate: async () => { throw new Error("chunk failed"); } });
   const { fd, counts } = f.source(f.root.options.descriptors);
   const pid = f.root.spawn(1, request({ fds: [{ child: 17, parent: fd }] }));
   f.root.options.descriptors.close(fd);
   await expect(f.flush()).rejects.toThrow("chunk failed");
   expect(counts[0]).toBe(0);
-  expect(f.root.wait(1, pid)).toEqual({ kind: "exited", code: 126, status: 126 });
+  expect(f.root.wait(1, pid)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
 });
 
 test("an admitted independent child survives its parent's exit before lazy activation", async () => {
@@ -394,7 +394,7 @@ test("rejected worker admissions fence host work before publishing safe job comp
   const job = f.root.jobOf(pid);
   expect(f.root.jobEmpty(1, job)).toBe(false);
   finish(); await expect(pending).rejects.toThrow("chunk failed");
-  expect(f.root.wait(1, pid)?.status).toBe(126);
+  expect(f.root.wait(1, pid)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
   expect(f.root.jobEmpty(1, job)).toBe(true);
 });
 
@@ -502,12 +502,12 @@ test("failed leader imports retain host leader identity and outcome for queued j
   let imports = 0;
   f.codec.import = (token, pid) => { if (++imports === 1) throw new Error("import failed"); return original(token, pid); };
   await expect(f.flush()).rejects.toThrow("import failed");
-  expect(f.supervisor.get(leaderPid)?.result?.status).toBe(126);
+  expect(f.supervisor.get(leaderPid)?.result).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
   expect(f.root.jobEmpty(1, job)).toBe(false);
   await f.flush();
   const joined = f.client(f.broker.get(joinedPid)!);
   joined.exit(7); await f.flush();
-  expect(f.root.waitJob(1, job)?.status).toBe(126); await f.flush();
+  expect(f.root.waitJob(1, job)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null }); await f.flush();
   expect(f.supervisor.get(joinedPid)).toBeUndefined();
 });
 
@@ -572,7 +572,7 @@ test("failed synchronous worker transfers confirm cleanup and allow one atomic j
   const job = workerProcessState(childTransport).job;
   const otherRoot = f.client(structuredClone(f.transport));
   expect(f.root.jobEmpty(1, job)).toBe(true);
-  expect(f.root.waitJob(1, job)?.status).toBe(126);
+  expect(f.root.waitJob(1, job)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
   expectErrno(() => otherRoot.waitJob(1, job), 12);
   await f.flush();
 });
@@ -643,7 +643,7 @@ test("a locally failed unposted leader remains authoritative for its admitted sh
   expect(f.supervisor.canWaitJob(ownerPid, state.job)).toBe(true);
   const member = f.client(f.broker.get(memberPid)!);
   member.exit(7); await f.flush();
-  expect(f.supervisor.waitJob(ownerPid, state.job)).toEqual({ kind: "exited", code: 126, status: 126 });
+  expect(f.supervisor.waitJob(ownerPid, state.job)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
 });
 
 test("worker transfer release follows published commit or failed cancellation confirmation", () => {

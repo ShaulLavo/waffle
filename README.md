@@ -47,7 +47,9 @@ combines them without waiting. `FirstSpawnStub` from `./proc/stub` reserves befo
 shares a single delayed activation promise. `ProcessIdentityAllocator` supplies monotonic ids in
 shared memory so a blocked guest can reserve its pid before the page imports the service.
 `wait` is nonblocking; `waitForExit` and `onChildExit` provide asynchronous completion.
-Missing executables exit 127, and loader/adapter startup failures exit 126.
+Missing and non-runnable executables publish a typed `start-failed` outcome with
+`ENOENT` or `EACCES`, separate from ordinary exits. The runtime_proc wait adapters
+map those outcomes to 127 and 126 for guest compatibility.
 
 `WorkerProcessClient` and `WorkerProcessBroker` connect a worker's descriptor table to that same
 supervisor. `createWorkerProcessTransport` reserves shared process identities; spawn retains

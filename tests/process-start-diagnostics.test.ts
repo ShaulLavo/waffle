@@ -35,7 +35,7 @@ for (const failure of ["missing", "compile", "launch"] as const) test(`${failure
     await supervisor.start(child);
     expect(events).toEqual(["stderr", "diagnostic", "closed"]);
     expect(failure === "missing" ? (reported as Error).name : reported).toBe(failure === "missing" ? "ExecutableNotFound" : error);
-    expect(supervisor.wait(root, child)?.status).toBe(failure === "missing" ? 127 : 126);
+    expect(supervisor.wait(root, child)).toEqual(failure === "missing" ? { kind: "start-failed", code: 2, error: "ENOENT", status: null } : { kind: "start-failed", code: 13, error: "EACCES", status: null });
     supervisor.failStart(child, new Error("duplicate startup failure"));
     expect(events).toEqual(["stderr", "diagnostic", "closed"]);
   } finally { supervisor.dispose(); }
@@ -54,7 +54,7 @@ test("a throwing startup diagnostic reports its error without replacing exit 126
     await supervisor.start(child);
     expect(reports).toBe(1);
     expect(errors).toEqual([diagnosticError]);
-    expect(supervisor.wait(root, child)).toEqual({ kind: "exited", code: 126, status: 126 });
+    expect(supervisor.wait(root, child)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   } finally { supervisor.dispose(); }
 });
 
@@ -67,7 +67,7 @@ test("a reentrant startup diagnostic cannot report the same process twice", () =
   try {
     supervisor.failStart(child, error);
     expect(reports).toBe(1);
-    expect(supervisor.wait(root, child)?.status).toBe(126);
+    expect(supervisor.wait(root, child)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
   } finally { supervisor.dispose(); }
 });
 

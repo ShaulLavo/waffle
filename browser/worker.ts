@@ -1,7 +1,8 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
 import { Wasi, WasiExit, type Stream } from "../core";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
+import { waitStatus } from "../proc/wait-status";
 import type { ProcessExit } from "../proc/types";
 import { fatalInterrupt } from "../interrupt/check";
 import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client";
@@ -109,7 +110,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let localOutcome: ProcessExit | null = null;
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
     ? claimOutcome(outcome, result)
-    : localOutcome ??= { ...result, status: result.kind === "signaled" ? 128 + result.code : result.code };
+    : localOutcome ??= processOutcome(result);
   const defaultSignal = (signal: number): never => {
     if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
     const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
@@ -124,7 +125,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const checkActive = () => {
     const winner = outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
-    if (winner) throw new WasiExit(winner.status);
+    if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked()) throw new WasiExit(1);
   };
   let wasi: Wasi | null = null;
@@ -159,14 +160,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
       winner ??= claim(ownResult);
-      host.postMessage({ type: "cleanup-error", code: winner.status,
+      host.postMessage({ type: "cleanup-error", code: waitStatus(winner),
         signal: winner.kind === "signaled" ? winner.code : undefined,
         message: cleanupErrors.join("\n"), cleanupErrors, sleep: sleepMode });
       return;
     }
     if (executor.complete) attempt(() => { winner = executor.complete!(ownCode, ownSignal); });
     winner ??= claim(ownResult);
-    const code = winner.status;
+    const code = waitStatus(winner);
     const signal = winner.kind === "signaled" ? winner.code : undefined;
     if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};

@@ -14,6 +14,11 @@ Waffle exposes browser-side capabilities to WebAssembly guests without requiring
 
 Filesystem and process transports use shared-memory completion and readiness words plus message-port control. Descriptor bindings retain independent capability pins while duplicate bindings may share an open-file cursor. Termination selects one atomic outcome; cleanup acknowledgement and filesystem quiescence are separate facts.
 
+Process startup failures use a third atomic outcome tag. `ENOENT` carries code 2,
+`EACCES` carries code 13, and both have `status: null`; ordinary exits 126 and 127
+remain ordinary exits. `runtime_proc.wait` and `wait_job` map the typed outcomes to
+127 and 126 while preserving the typed result for browser and host adapters.
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.

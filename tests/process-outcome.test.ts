@@ -1,12 +1,22 @@
 import { expect, test } from "bun:test";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 
-for (const code of [0, 23, 143, -1, -2147483648, 2147483647, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER]) {
+for (const code of [0, 23, 126, 127, 143, -1, -2147483648, 2147483647, Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER]) {
   test(`terminal exit ${code} round-trips without truncation and wins against later kill`, () => {
     const word = outcomeWord();
     expect(readOutcome(word)).toBeNull();
     expect(claimOutcome(word, { kind: "exited", code })).toEqual({ kind: "exited", code, status: code });
     expect(claimOutcome(outcomeWord(word.buffer as SharedArrayBuffer), { kind: "signaled", code: 9 })).toEqual({ kind: "exited", code, status: code });
+  });
+}
+
+for (const [code, error] of [[2, "ENOENT"], [13, "EACCES"]] as const) {
+  test(`start failure ${error} has no exit status and wins against exit and kill`, () => {
+    const word = outcomeWord();
+    const expected = { kind: "start-failed", code, error, status: null };
+    expect(claimOutcome(word, { kind: "start-failed", code })).toEqual(expected);
+    expect(claimOutcome(word, { kind: "exited", code: 127 })).toEqual(expected);
+    expect(claimOutcome(word, { kind: "signaled", code: 9 })).toEqual(expected);
   });
 }
 

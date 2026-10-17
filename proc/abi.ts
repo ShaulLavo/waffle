@@ -3,6 +3,7 @@ import type { FileSystem } from "../core/filesystem";
 import { withFileOffset } from "../core/open-file";
 import { PipeController } from "./pipes";
 import { readOutcome } from "./outcome";
+import { waitStatus } from "./wait-status";
 import { checkedSignalNumber, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals";
 import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types";
 
@@ -220,8 +221,8 @@ export class ProcessABI {
     const result = this.options.service.wait(this.options.pid, pid);
     if (!result) return -ProcessErrno.AGAIN;
     const output = this.view(ptr, 8);
-    output.setUint32(0, result.kind === "exited" ? 0 : 1, true);
-    output.setInt32(4, result.code, true);
+    output.setUint32(0, result.kind === "signaled" ? 1 : 0, true);
+    output.setInt32(4, result.kind === "start-failed" ? waitStatus(result) : result.code, true);
     return 0;
   }
   private waitJob(job: number, flags: number, ptr: number): number {
@@ -237,7 +238,7 @@ export class ProcessABI {
         if (this.options.service.jobEmpty(this.options.pid, job)) {
           this.span(ptr, 4);
           const result = this.options.service.waitJob(this.options.pid, job);
-          if (result) { this.view(ptr, 4).setInt32(0, result.status, true); return 0; }
+          if (result) { this.view(ptr, 4).setInt32(0, waitStatus(result), true); return 0; }
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
         if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return -27; // EINTR; no signal consumed.

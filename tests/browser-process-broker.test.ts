@@ -522,7 +522,7 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
       broker.registerController(pid, controller);
     }
     await supervisor.start(pid);
-    expect(supervisor.get(pid)?.result?.status).toBe(126);
+    expect(supervisor.get(pid)?.result).toMatchObject({ kind: "start-failed", code: 13, error: "EACCES", status: null });
     expect(output).toHaveLength(1);
     expect(output[0]).toContain(failure.message);
     expect(events).toEqual([diagnostic === "controller" ? "controller-diagnostic" : "diagnostic", "closed"]);

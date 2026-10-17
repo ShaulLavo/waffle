@@ -189,7 +189,7 @@ export class WorkerProcessBroker {
         this.supervisor!.failStart(state.pid, error);
       } else {
         this.transports.delete(state.pid);
-        claimOutcome(state.signals.outcome, { kind: "exited", code: 126 });
+        claimOutcome(state.signals.outcome, { kind: "start-failed", code: 13 });
         let cleaned = true;
         for (const token of transport.resources) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
