@@ -15,5 +15,5 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
   expect(browserOnly).toEqual(["./browser/fs-worker"]);
   const specifiers = nodeEntries.map(([key]) => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`);
   const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
-  expect(() => execFileSync(process.execPath, ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" })).not.toThrow();
+  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" })).not.toThrow();
 });
