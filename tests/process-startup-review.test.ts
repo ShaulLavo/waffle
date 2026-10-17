@@ -145,6 +145,10 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       expect(terminal).toMatchObject({ type: "error", code: 126 });
       f.child.exit(126);
       expect(readOutcome(f.state.signals.outcome)).toEqual(expectedFailure);
+      expect(f.supervisor.wait(f.parent.pid, f.pid)).toBeNull();
+      const rawExits: number[] = [];
+      const exit = f.supervisor.exit.bind(f.supervisor);
+      f.supervisor.exit = (pid, code) => { if (pid === f.pid) rawExits.push(code); exit(pid, code); };
       const exitNotice = exits[0] ?? f.childNotices[0]!;
       if (order === "error-first") {
         f.worker.emit(terminal);
@@ -155,6 +159,7 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
         expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
         f.worker.emit(terminal);
       }
+      expect(rawExits).toEqual(order === "exit-first" ? [13] : []);
       f.supervisor.exit(f.pid, 13);
       expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
       expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);

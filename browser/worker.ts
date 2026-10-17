@@ -293,10 +293,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const instantiating = perfNow();
     instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
-    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
-    executor.instantiated?.({ ...context, wasi, instance });
     if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
+    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
+    executor.instantiated?.({ ...context, wasi, instance });
     started = true;
     const exited = wasi.launch(instance);
     host.addEventListener?.("error", onError);
