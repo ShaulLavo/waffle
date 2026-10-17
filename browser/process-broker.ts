@@ -138,7 +138,7 @@ export class BrowserProcessBroker {
               this.retireChildController(context.pid);
             } };
           };
-          return launched instanceof Promise ? launched.then(track) : track(launched);
+          return "then" in launched ? Promise.resolve(launched).then(track) : track(launched);
         },
         canConfirmExit: pid => {
           const child = this.children.get(pid);
