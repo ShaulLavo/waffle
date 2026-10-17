@@ -284,3 +284,163 @@ for (const complete of [false, true]) test(`startup failure selects typed EACCES
   expect(readOutcome(outcomeWord(outcome))).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ code: 126 }]);
 });
+
+// Original tiny module: expose one adapter import and runtime_proc.spawn to the executor.
+function extensionModule(): WebAssembly.Module {
+  const text = (value: string) => [value.length].concat(Array.from(new TextEncoder().encode(value)));
+  const section = (id: number, bytes: number[]) => [id, bytes.length].concat(bytes);
+  const imported = (namespace: string, name: string, type: number) => text(namespace).concat(text(name), [0, type]);
+  const exported = (name: string, kind: number, index: number) => text(name).concat([kind, index]);
+  return new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0].concat(
+    section(1, [3,96,0,1,127,96,2,127,127,1,127,96,0,0]),
+    section(2, [2].concat(imported("guest_extension", "value", 0), imported("runtime_proc", "spawn", 1))),
+    section(3, [1,2]), section(5, [1,0,1]),
+    section(7, [4].concat(exported("value", 0, 0), exported("spawn", 0, 1), exported("memory", 2, 0), exported("_start", 0, 2))),
+    section(10, [1,2,0,11]),
+  )));
+}
+
+test("executor hooks link extra namespaces after setup and before instantiation, preserving reserved spawn authority", async () => {
+  const runtimeProcess = createWorkerProcessTransport();
+  const order: string[] = [];
+  const metadata = new SharedArrayBuffer(8);
+  const result = await fixture({
+    setup() { order.push("setup"); },
+    namespaces({ request }) {
+      expect(request.runtimeProcess).toBe(runtimeProcess);
+      order.push("namespaces");
+      return { guest_extension: { value: () => 7 }, runtime_proc: { spawn: () => -99 } };
+    },
+    beforeBindings({ wasi }) {
+      order.push("beforeBindings");
+      expect(wasi.descriptors.get(3)?.preopen).toBe("/");
+    },
+    imports(imports, { wasi }) {
+      order.push("imports");
+      expect(wasi.descriptors.get(3)?.preopen).toBe("/");
+      expect((imports.guest_extension!.value as () => number)()).toBe(7);
+      return { ...imports, guest_extension: { value: () => 23 } };
+    },
+    spawnData() {
+      order.push("spawnData");
+      return { metadata, filesystem: "forbidden", pipeRegistry: "forbidden" };
+    },
+    instantiated({ wasi, instance }) {
+      order.push("instantiated");
+      expect(wasi.descriptors.get(3)?.preopen).toBe("/");
+      expect((instance.exports.value as () => number)()).toBe(23);
+    },
+    run({ instance }) {
+      order.push("run");
+      const request = new TextEncoder().encode(JSON.stringify({ executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] }));
+      new Uint8Array((instance.exports.memory as WebAssembly.Memory).buffer).set(request);
+      expect((instance.exports.spawn as (ptr: number, size: number) => number)(0, request.length)).toBeGreaterThan(0);
+      return 0;
+    },
+  }, { runtimeProcess, module: extensionModule() });
+  expect(order).toEqual(["setup", "namespaces", "beforeBindings", "imports", "instantiated", "run", "spawnData"]);
+  const spawn = result.messages.find(message => message.type === "runtime-proc" && message.operation === "spawn");
+  expect(spawn).toBeDefined();
+  if (spawn?.type !== "runtime-proc" || spawn.operation !== "spawn") throw new Error("no spawn");
+  expect(spawn.transport.data).toMatchObject({ metadata });
+  expect((spawn.transport.data as Record<string, unknown>).filesystem).toBeObject();
+  expect((spawn.transport.data as Record<string, unknown>).pipeRegistry).toBeObject();
+});
+
+test("beforeBindings can release default stdio and preserve a preopen before fd3 inheritance", async () => {
+  const runtimeProcess = createWorkerProcessTransport();
+  runtimeProcess.resources.push({ kind: "web-terminal", target: 0 });
+  runtimeProcess.bindings.push({ fd: 3, reference: 0, rightsBase: 0n, rightsInheriting: 0n });
+  let closed = 0;
+  const result = await fixture({
+    stdio: { 0: { kind: "terminal", read: () => 0, write: () => 0,
+      readiness: () => ({ readable: true, writable: true, hangup: true }), close() { closed++; } } },
+    beforeBindings({ wasi }) {
+      for (const fd of [0, 1, 2]) wasi.descriptors.close(fd);
+      // A real adapter also adjusts preview1 discovery in its imports hook: wasi-libc scans
+      // from fd3 upward and stops at the first non-preopen. This test checks lifetime only.
+      const root = wasi.descriptors.get(3)!;
+      wasi.descriptors.add(root.description, { rightsBase: root.rightsBase, rightsInheriting: root.rightsInheriting, preopen: "/" });
+    },
+    resolveTerminal(target) {
+      expect(target).toBe(0);
+      return { kind: "terminal", read: chunks => { chunks[0]![0] = 65; return 1; }, write: () => 0,
+        readiness: () => ({ readable: true, writable: false, hangup: false }), close() { closed++; } };
+    },
+    instantiated({ wasi }) {
+      expect(closed).toBe(1);
+      expect(wasi.descriptors.get(4)?.preopen).toBe("/");
+      const terminal = wasi.descriptors.get(3)!.resource;
+      if (terminal.kind !== "terminal") throw new Error("not terminal");
+      const data = new Uint8Array(1);
+      expect(terminal.read([data])).toBe(1);
+      expect(data[0]).toBe(65);
+    },
+    run: () => 0,
+  }, { runtimeProcess });
+  expect(closed).toBe(2);
+  expect(result.messages.filter(message => message.type === "exit")).toMatchObject([{ code: 0 }]);
+});
+
+for (const append of [false, true]) test(`executor post follows live files and shared offsets (append=${append})`, async () => {
+  const { shareFileResource } = await import("../core/open-file");
+  const writes: [number, string][] = [];
+  const result = await fixture({
+    instantiated({ wasi, fs, post }) {
+      const resource = { kind: "file" as const, handle: 17, offset: 4, append };
+      const alias = wasi.descriptors.open(resource, 0n, 0n);
+      shareFileResource(resource, fs.connection);
+      fs.write = (_handle, chunks, offset) => { writes.push([offset, new TextDecoder().decode(chunks[0])]); return chunks[0]!.length; };
+      fs.append = (_handle, chunks) => { writes.push([99, new TextDecoder().decode(chunks[0])]); return { written: chunks[0]!.length, offset: 100 }; };
+      wasi.descriptors.inherit(1, wasi.descriptors.get(alias)!);
+      wasi.descriptors.inherit(2, wasi.descriptors.get(alias)!);
+      expect(post("stdout", new Uint8Array([65]))).toBe(true);
+      expect(resource.offset).toBe(append ? 100 : 5);
+      expect(post("stderr", new Uint8Array([66]))).toBe(true);
+      expect(resource.offset).toBe(append ? 100 : 6);
+      wasi.descriptors.close(1);
+      expect(post("stdout", new Uint8Array([67]))).toBe(false);
+    },
+    run: () => 0,
+  });
+  expect(writes).toEqual(append ? [[99, "A"], [99, "B"]] : [[4, "A"], [5, "B"]]);
+  expect(result.messages.some(message => message.type === "stdout" || message.type === "stderr")).toBe(false);
+});
+
+test("executor post uses blocking live pipe writes and reports partial-write backpressure", async () => {
+  let staleWrites = 0, writes = 0;
+  const result = await fixture({
+    stdio: { 1: { kind: "terminal", read: () => 0, write: () => { staleWrites++; return 1; },
+      readiness: () => ({ readable: false, writable: true, hangup: false }) } },
+    instantiated({ wasi, post }) {
+      const fd = wasi.descriptors.open({ kind: "pipe", read: () => 0,
+        write(chunks) { writes++; return chunks[0]!.length - 1; },
+        tryWrite() { throw new Error("post must use blocking stream I/O"); },
+        readiness: () => ({ readable: false, writable: true, hangup: false }) }, 0n, 0n);
+      wasi.descriptors.inherit(1, wasi.descriptors.get(fd)!);
+      expect(post("stdout", new Uint8Array([65, 66]))).toBe(false);
+    },
+    run: () => 0,
+  });
+  expect(writes).toBe(1);
+  expect(staleWrites).toBe(0);
+  expect(result.messages.some(message => message.type === "stdout")).toBe(false);
+});
+
+test("an inherited terminal alias keeps its destination when that target fd is redirected", async () => {
+  const runtimeProcess = createWorkerProcessTransport();
+  runtimeProcess.resources.push({ kind: "web-terminal", target: 1 });
+  runtimeProcess.bindings.push({ fd: 2, reference: 0, rightsBase: 0n, rightsInheriting: 0n });
+  const result = await fixture({
+    instantiated({ wasi, fs, post }) {
+      fs.write = () => { throw new Error("terminal provenance must not follow fd1's file redirect"); };
+      const file = wasi.descriptors.open({ kind: "file", handle: 17, offset: 0, append: false }, 0n, 0n);
+      wasi.descriptors.inherit(1, wasi.descriptors.get(file)!);
+      expect(post("stderr", new Uint8Array([65]))).toBe(true);
+    },
+    run: () => 0,
+  }, { runtimeProcess });
+  expect(result.messages.filter(message => message.type === "stdout" || message.type === "stderr")).toEqual([
+    { type: "stdout", data: new Uint8Array([65]) },
+  ]);
+});

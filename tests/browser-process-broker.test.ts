@@ -715,3 +715,81 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
     } finally { await cleanup(); }
   });
 }
+
+for (const completion of ["exit", "error", "cleanup-error", "worker-error", "post-failure", "constructor-failure", "kill", "dispose"] as const) {
+  test(`generic child ${completion} waits for adapter quiescence before confirmation and physical termination`, async () => {
+    const previousWorker = globalThis.Worker;
+    const workers: FakeWorker[] = [], channels: MessagePort[] = [];
+    const events: string[] = [];
+    let releaseAdapter!: () => void, releaseFilesystem!: () => void;
+    const adapterFence = new Promise<void>(resolve => { releaseAdapter = resolve; });
+    const filesystemFence = new Promise<void>(resolve => { releaseFilesystem = resolve; });
+    class FakeWorker {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: ErrorEvent) => void) | null = null;
+      constructor() { if (completion === "constructor-failure") throw new Error("worker constructor failed"); workers.push(this); }
+      postMessage() { if (completion === "post-failure") throw new Error("post failed"); }
+      terminate() { events.push("terminate"); }
+      emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
+    }
+    globalThis.Worker = FakeWorker as unknown as typeof Worker;
+    const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+    registry.register("fixture", { adapter: "fixture", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
+    const broker = new BrowserProcessBroker({ identities, table, registry, onError() {},
+      filesystem: {
+        connect(identity) { const { client, server } = connectFilesystemIdentity(identity); channels.push(client.port, server.port); return client; },
+        revoke() {}, reap() {}, quiesce: () => filesystemFence,
+      },
+      launch(context) {
+        broker.registerController(context.pid, {
+          revoke() { events.push("revoke"); }, quiesce() { events.push("quiesce"); return adapterFence; },
+          retired() { events.push("retired"); },
+        });
+        return broker.launchWorker(context, { workerUrl: "http://localhost/fixture-worker.js",
+          request: { module: context.module, args: context.request.argv, env: context.request.env } });
+      },
+    });
+    const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer });
+    root.data = { filesystem: createFilesystemIdentity() };
+    const messages: WorkerProcessMessage[] = [], descriptors = new DescriptorTable();
+    const host = new WorkerPipeHost({ transport: root, postMessage: message => messages.push(message) });
+    const client = new WorkerProcessClient({ transport: root, descriptors, codec: host.codec(),
+      postMessage: message => messages.push(message), prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }) });
+    let disposing: Promise<void> | undefined;
+    try {
+      await broker.adoptRuntimeRoot(root);
+      const pid = client.spawn(client.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+      for (const message of messages) await broker.runtimeMessage(message, client.pid);
+      const supervisor = await broker.ready();
+      await supervisor.start(pid);
+      const transport = broker.transportFor(pid)!;
+      const record = supervisor.get(pid)!;
+      if (completion === "worker-error") workers[0]!.onerror?.({ preventDefault() {}, message: "worker failed" } as ErrorEvent);
+      else if (completion === "kill") await broker.kill(pid, 9);
+      else if (completion === "dispose") disposing = broker.dispose();
+      else if (completion !== "post-failure" && completion !== "constructor-failure") workers[0]!.emit({ type: completion, code: 7, message: "guest failed", cleanupErrors: [] });
+      expect(events).toContain("revoke");
+      expect(events).toContain("quiesce");
+      releaseFilesystem();
+      // Draining just the filesystem (or receiving an exit acknowledgement) does not
+      // certify the adapter's critical section. Terminate-first would hang this fence.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(events).not.toContain("terminate");
+      expect(record.result).toBeNull();
+      expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+      releaseAdapter();
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(events.filter(event => event === "terminate")).toHaveLength(completion === "constructor-failure" ? 0 : 1);
+      if (completion !== "dispose") {
+        expect(record.result).not.toBeNull();
+        expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(1);
+        expect(events).toContain("retired");
+        expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(false);
+      }
+    } finally {
+      releaseAdapter(); releaseFilesystem();
+      try { descriptors.dispose(); await (disposing ?? broker.dispose()); }
+      finally { for (const port of channels) port.close(); globalThis.Worker = previousWorker; }
+    }
+  });
+}

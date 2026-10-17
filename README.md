@@ -103,6 +103,79 @@ CPU-bound QuickJS/JSC interrupt checkpoints are step 7a. Handled signals already
 cooperative event-loop turns, while unhandled default actions are immediate and do not depend
 on those future engine hooks.
 
+## Registration leases
+
+`Runtime.registerAdapter(name, launcher)` and `Runtime.registerProgram(name, definition)`
+return unregister functions. Call the function to remove that exact registration; repeated
+calls and calls after `Runtime.dispose()` do nothing. Active duplicate names still reject:
+release a registration before replacing it. An old lease never removes its replacement,
+even when the same launcher function is registered again. Removing a program prevents future
+lookups; removing an adapter prevents future launches through that name. Neither operation
+stops running processes or changes a launcher already accepted for an in-flight process.
+Registration and removal do not activate the process service or load program sources.
+
+## Guest executor extensions
+
+`bootstrap(request, executor, host?)` from `waffle/browser/worker` creates a worker-local
+`Wasi`; it never creates another page runtime. `WorkerExecutor` keeps guest-specific policy
+outside Waffle. Its optional hooks run in this order:
+
+1. `setup(context)` receives the request, filesystem client, signal state and helpers.
+2. `namespaces(context)` returns extra `WebAssembly.Imports` namespaces for the linker.
+   `runtime_proc` remains Waffle-owned; an extension cannot replace it here.
+3. `beforeBindings({ wasi, ...context })` runs after default stdio and the root preopen are
+   created, but before inherited descriptors are installed. It can release unused default
+   stdio or preserve a preopen whose fd an inherited binding will replace.
+4. `imports(imports, { wasi, ...context })` runs after descriptor binding and linking, before
+   instantiation. Mutate the object and return nothing, or return a replacement import object.
+   Supply extra namespaces in `namespaces`, since linking rejects unknown imports first.
+5. `instantiated({ wasi, instance, ...context })` sees the bound descriptors and instantiated
+   module. `run` receives the same context after preview1 `_start` returns or exits.
+
+**Preopen discovery:** the default root remains at fd3. Waffle does not relocate it or remove
+stdio implicitly. An adapter relocating preopens must preserve wasi-libc's discovery scan:
+**it scans from fd3 upward and stops at the first non-preopen**. Merely retaining the root at
+a higher fd behind an inherited non-preopen fd3 is insufficient. Coordinate any relocation
+with preview1 preopen-discovery imports in the `imports` hook, without changing inherited fd
+numbers or their resources.
+
+`spawnData()` runs for each actual spawn under filesystem transfer admission. It returns
+structured-cloneable, guest-specific metadata; `filesystem` and `pipeRegistry` are reserved
+and overwritten with the runtime's authoritative capabilities. Metadata is not implicitly
+copied from the parent: allocate any per-process admission state afresh in this hook.
+Pipes retain their bounded defaults: 64 KiB capacity, 16 writers and 16 readers.
+
+`resolveTerminal(target: 0 | 1 | 2): Stream` maps inherited terminal provenance to a
+process-local endpoint, including interactive input. Capture request metadata during `setup`
+if the endpoint needs it. The terminal codec owns provenance: duplication, redirection and
+later generations preserve the original target, not the destination fd number. Bindings
+sharing a transferred reference also share one open description; the resolver stream's
+`close` runs on that description's last release. Without a resolver, stdin remains EOF and
+output uses the host callbacks. The same resolver option is available directly on
+`createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
+
+`context.post("stdout" | "stderr", bytes)` writes through the **current** fd1 or fd2 after
+Wasi creation, not a startup snapshot. File writes preserve append and shared offsets;
+pipe and terminal writes use blocking stream I/O and return `true` only for a complete
+write. A closed or directory fd returns `false`. Default terminal destinations still post
+to the host directly, so aliases of those destinations do not follow unrelated redirects.
+During `setup`, before Wasi exists, `post` uses the supplied stdio or host callback.
+
+Adapter cleanup uses the existing lifecycle, not an extra worker-stop hook. Register a
+`ProcessController` with the browser process service's `registerController(pid, controller)`:
+`revoke` freezes adapter work, and `quiesce` fences its admitted critical sections. The broker
+joins that fence with its own filesystem fence; the callback need not use borrowed runtime
+filesystem methods (which are unavailable during disposal). A worker exit acknowledgement
+can skip the filesystem-release wait, **never the adapter fence**. Normal exit, startup
+failure, worker errors, kill and disposal all fence before physical worker termination or
+exit confirmation. Rejected fences retain resources rather than claiming safe completion.
+Non-root child controllers retire after physical stop, or after confirmed construction
+failure when no worker exists. `Runtime.retainConsumer({ filesystem, revoke, stop })` owns
+page-disposal cleanup for external consumers; release that lease from the worker launcher's
+`cleanup` callback on normal completion. Neither physical termination alone nor a logical
+exit proves quiescence. These extensions do not load process-service chunks or allocate
+extension state before a worker is actually spawned.
+
 ## Process-owned pipes
 
 `PipeController` owns a bounded pipe with one single-producer ring per writing process.

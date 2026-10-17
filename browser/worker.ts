@@ -1,6 +1,7 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
 import { Wasi, WasiExit, type Stream } from "../core";
+import { withFileOffset } from "../core/open-file";
 import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
 import { waitStatus } from "../proc/wait-status";
 import type { ProcessExit } from "../proc/types";
@@ -52,13 +53,15 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
   finish(result: WorkerResult): void;
 }
-export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerSetupContext<R> {
+export interface WorkerBindingsContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerSetupContext<R> {
   wasi: Wasi;
+}
+export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerBindingsContext<R> {
   instance: WebAssembly.Instance;
 }
 
-/** Guest policy stays with the executor. Hooks explicitly adapt older transports without
- * making their pipe protocol, engine bindings or module cache part of this bootstrap. */
+/** Guest policy stays with the executor, without making its engine bindings, transports or
+ * module cache part of the bootstrap. Optional hooks run only in the spawned worker. */
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
@@ -67,6 +70,18 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   interrupt?: SharedArrayBuffer;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   setup?(context: WorkerSetupContext<R>): void;
+  /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
+  namespaces?(context: WorkerSetupContext<R>): WebAssembly.Imports;
+  /** Runs after default stdio/root preopen creation, before inherited descriptor binding.
+   * If relocating preopens, preserve wasi-libc's contiguous discovery scan from fd3 upward:
+   * it stops at the first non-preopen. No relocation happens by default. */
+  beforeBindings?(context: WorkerBindingsContext<R>): void;
+  /** Mutate or replace the linked import object, after bindings and before instantiation. */
+  imports?(imports: WebAssembly.Imports, context: WorkerBindingsContext<R>): WebAssembly.Imports | void;
+  /** Structured-cloneable child metadata; filesystem and pipeRegistry are reserved. */
+  spawnData?(): Record<string, unknown>;
+  /** Resolve inherited terminal provenance to a process-local stream. */
+  resolveTerminal?(target: 0 | 1 | 2): Stream;
   signal?(signal: number, mode: number): number;
   signalError?(signal: number): never;
   terminalSignal?(error: unknown): number | undefined;
@@ -216,12 +231,36 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       ...(executor.stdio[1] ? { 1: guardStream(executor.stdio[1]) } : {}),
       ...(executor.stdio[2] ? { 2: guardStream(executor.stdio[2]) } : {}),
     } : undefined;
-    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
-      const stream = stdio?.[type === "stderr" ? 2 : 1];
-      if (stream) return stream.write([data]) === data.length;
+    // Default terminal descriptions must post directly: routing their callbacks back through
+    // the live fd would recurse, or send an inherited terminal into a redirected file.
+    const output = (type: "stdout" | "stderr", data: Uint8Array) => {
       checkActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
-      return true;
+    };
+    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
+      checkActive();
+      const fd = type === "stderr" ? 2 : 1;
+      if (!wasi) {
+        const stream = stdio?.[fd];
+        if (stream) return stream.write([data]) === data.length;
+        output(type, data);
+        return true;
+      }
+      const resource = wasi.descriptors.get(fd)?.resource;
+      if (!resource || resource.kind === "directory") return false;
+      if (resource.kind !== "file") return resource.write([data]) === data.length;
+      const written = withFileOffset(resource, () => {
+        if (resource.append) {
+          const result = fs.append(resource.handle, [data]);
+          if (typeof result === "number") return result;
+          resource.offset = result.offset;
+          return result.written;
+        }
+        const written = fs.write(resource.handle, [data], resource.offset);
+        if (written >= 0) resource.offset += written;
+        return written;
+      });
+      return written === data.length;
     };
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
@@ -234,7 +273,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
       args: req.args, env: executor.env?.(req) ?? req.env, fs, preopens: { "/": "/" }, stdio,
-      stdout: data => { post("stdout", data); }, stderr: data => { post("stderr", data); },
+      stdout: data => { output("stdout", data); }, stderr: data => { output("stderr", data); },
       sleep: ms => {
         checkActive();
         if (ms > 0) {
@@ -245,9 +284,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       },
       interrupt,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
-      namespaces: { runtime_proc: processImports },
+      namespaces: { ...executor.namespaces?.(context), runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
     });
+    const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
+    executor.beforeBindings?.(bindingsContext);
     if (req.runtimeProcess) {
       const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec");
       const { createProcessFilesystemIdentity } = await import("../fs/protocol");
@@ -259,7 +300,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess, postMessage,
         fallback: createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs),
-          descriptors: wasi.descriptors, output: (fd, data) => { post(fd === 2 ? "stderr" : "stdout", data); }, checkActive }),
+          descriptors: wasi.descriptors, resolveTerminal: executor.resolveTerminal?.bind(executor),
+          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive }),
         registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
@@ -272,7 +314,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           const end = fs.beginTransfer();
           try {
             const filesystem = createProcessFilesystemIdentity(fs.connection);
-            return { data: { filesystem, pipeRegistry: pipes.registry.handle() },
+            return { data: { ...executor.spawnData?.(), filesystem, pipeRegistry: pipes.registry.handle() },
               codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), release: end };
           } catch (error) { end(); throw error; }
         },
@@ -292,7 +334,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       }
     }
     const instantiating = perfNow();
-    instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    const imports = wasi.imports(req.module);
+    instance = new WebAssembly.Instance(req.module, executor.imports?.(imports, bindingsContext) ?? imports);
     if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
     host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });

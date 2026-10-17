@@ -14,6 +14,9 @@ export interface RuntimeTerminalCodecOptions {
   /** Initial default stdio only. Existing imported provenance wins over the current fd number. */
   descriptors?: DescriptorTable;
   output?(fd: 1 | 2, data: Uint8Array): void;
+  /** Resolve inherited provenance to a process-local endpoint, including interactive stdin.
+   * The returned stream is owned by the imported description and closed at its last release. */
+  resolveTerminal?(target: TerminalTarget): Stream;
   checkActive?(): void;
 }
 function terminalToken(value: unknown): TerminalToken | undefined {
@@ -28,16 +31,23 @@ export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions)
   }
   return {
     export(descriptor, pid) {
-      if (descriptor.resource.kind !== "terminal") return options.fallback.export(descriptor, pid);
-      const target = targets.get(descriptor.resource);
-      // This runner currently has EOF stdin, not a shared interactive input service. Arbitrary
-      // callback terminals cannot be cloned: reject them explicitly instead of faking shared input.
+      const resource = descriptor.resource;
+      if (resource.kind !== "terminal" && resource.kind !== "pipe") return options.fallback.export(descriptor, pid);
+      const target = targets.get(resource);
+      if (target === undefined && resource.kind === "pipe") return options.fallback.export(descriptor, pid);
+      // Arbitrary callback terminals cannot be cloned: only known destination provenance
+      // transfers. A receiving executor may resolve that destination to an interactive stream.
       if (target === undefined) throw new ProcessError(NOSYS, "terminal has no transferable browser destination");
       return { kind: "web-terminal", target } satisfies TerminalToken;
     },
     import(value, pid) {
       const token = terminalToken(value);
       if (!token) return options.fallback.import(value, pid);
+      if (options.resolveTerminal) {
+        const stream = options.resolveTerminal(token.target);
+        targets.set(stream, token.target);
+        return new OpenDescription(stream, () => stream.close?.());
+      }
       const read = () => { options.checkActive?.(); return 0; };
       const write = (chunks: readonly Uint8Array[]) => {
         options.checkActive?.();

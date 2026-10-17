@@ -93,3 +93,32 @@ test("nonterminal descriptor tokens delegate export/import/discard to the compos
   codec.discard(token);
   expect(calls).toEqual(["export", "import", "discard"]);
 });
+
+for (const kind of ["terminal", "pipe"] as const) test(`terminal resolver supplies an interactive ${kind} stream, preserving provenance and one close per description`, () => {
+  const state = fixture();
+  const imported = new DescriptorTable();
+  let closed = 0;
+  const resolved: number[] = [];
+  const codec = createRuntimeTerminalCodec({ fallback: state.fallback, resolveTerminal(target) {
+    resolved.push(target);
+    return { kind, read(chunks) { chunks[0]!.set(text("in")); return 2; },
+      write: chunks => chunks.reduce((size, chunk) => size + chunk.length, 0),
+      readiness: () => ({ readable: true, writable: true, hangup: false }), close() { closed++; } };
+  } });
+  try {
+    const token = state.codec.export(state.table.get(0)!, 2);
+    const description = codec.import(token, 2);
+    const fd = imported.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+    const alias = imported.dup(fd);
+    const data = new Uint8Array(2);
+    expect((description.resource as Stream).read([data])).toBe(2);
+    expect(new TextDecoder().decode(data)).toBe("in");
+    expect((description.resource as Stream).readiness().hangup).toBe(false);
+    expect(codec.export(imported.get(alias)!, 3)).toEqual({ kind: "web-terminal", target: 0 });
+    imported.close(fd);
+    expect(closed).toBe(0);
+    imported.close(alias);
+    expect(closed).toBe(1);
+    expect(resolved).toEqual([0]);
+  } finally { imported.dispose(); state.table.dispose(); }
+});
