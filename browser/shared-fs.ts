@@ -1,4 +1,4 @@
-import { FilesystemClient, createFilesystemConnection, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index";
+import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index";
 
 export interface SharedFilesystemOptions {
   workerURL?: string | URL;
@@ -18,21 +18,33 @@ export class SharedFilesystem {
   private failure: unknown;
   private fatal: Error | undefined;
   constructor(options: SharedFilesystemOptions = {}) {
-    this.worker = new Worker(options.workerURL ?? new URL("./fs-worker.js", location.href), { type: "module" });
+    // Allocate transport before starting a consumer, and own both endpoints until transfer.
     const connection = createFilesystemConnection();
-    this.client = new FilesystemClient(connection.client);
-    this.worker.addEventListener("error", event => {
-      event.preventDefault();
-      this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
-    });
-    this.worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
-    try { this.worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb" }, [connection.server.port]); }
-    catch (error) {
-      connection.server.port.close();
-      this.fail(error instanceof Error ? error : new Error(String(error)));
+    let worker: Worker | undefined;
+    let client: FilesystemClient | undefined;
+    try {
+      this.worker = worker = new Worker(options.workerURL ?? new URL("./fs-worker.js", location.href), { type: "module" });
+      this.client = client = new FilesystemClient(connection.client);
+      worker.addEventListener("error", event => {
+        event.preventDefault();
+        this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
+      });
+      worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
+      worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb" }, [connection.server.port]);
+    } catch (error) {
+      // Constructor failure must not escape an ownerless worker or untransferred channel.
+      // Cleanup failures cannot replace the startup error or prevent subsequent cleanup.
+      for (const cleanup of [
+        () => revokeFilesystemService(connection.client),
+        () => client?.dispose(),
+        () => connection.client.port.close(),
+        () => connection.server.port.close(),
+        () => worker?.terminate(),
+      ]) { try { cleanup(); } catch {} }
       throw error;
     }
   }
+
   private fail(error: Error): void {
     this.fatal ??= error;
     // A process does not inherit its parent's lifetime. Publish the separate service-wide
@@ -42,6 +54,7 @@ export class SharedFilesystem {
     this.worker.terminate();
   }
   private assertLive(): void { if (this.fatal) throw this.fatal; }
+  createIdentity(): FilesystemIdentity { this.assertLive(); return createFilesystemIdentity(this.client.connection); }
   fork(): FilesystemConnection { this.assertLive(); return this.client.fork(); }
   connect(identity: FilesystemIdentity): FilesystemConnection {
     this.assertLive();
