@@ -114,7 +114,6 @@ const apiExpected = [
   `api signal handled ${signal} 0 0 null`,
   `api signal removed ${signal} ${status} null "${signal}"`,
 ]));
-process.env.BUN_WASM_TEST_PORT ??= "4183";
 const s = session("bun-wasm-self-spawn-browser-");
 const deadline = setTimeout(() => { console.error("subprocess browser gate timed out"); void s.cleanup().finally(() => process.exit(1)); }, 900_000);
 try {
