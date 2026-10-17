@@ -198,7 +198,8 @@ export class ResponseParser {
 }
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a.length === 0) return b;
+  // Pending bytes must be fixed and unshared, including while waiting for a partial line.
+  if (a.length === 0) return Reflect.get(b.buffer, "resizable") || Object.prototype.toString.call(b.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(b) : b;
   const out = new Uint8Array(a.length + b.length);
   out.set(a);
   out.set(b, a.length);
