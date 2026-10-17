@@ -37,11 +37,15 @@ jobs:
         run: |
           bun install --cwd ../runtime --frozen-lockfile
           bun install --cwd ../sandbox --frozen-lockfile
+      - name: Generate runtime Node modules and verify trusted Git packaging
+        run: |
+          bun run --cwd ../runtime build
+          bun test ../scripts/browser-build.test.ts ../scripts/runtime-installed.test.ts
       - name: Unit tests (web, runtime and download accounting)
         run: |
           bun run test
           bun test ../runtime/tests ../scripts/runtime-size.test.ts
-          PYTHONDONTWRITEBYTECODE=1 python3 ../scripts/test-bun-suite.py ReportTests.test_browser_provenance_hashes_runtime_core
+          PYTHONDONTWRITEBYTECODE=1 python3 ../scripts/test-bun-suite.py ProvenanceTests
       - name: Type check
         run: |
           bun run check
