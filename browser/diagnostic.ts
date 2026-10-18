@@ -25,7 +25,7 @@ export function drainDiagnostic(
         throw new ProcessError(errno, `${reason}; ${remaining} of ${bytes.length} diagnostic bytes unwritten`);
       };
       if (!active()) fail(ProcessErrno.CANCELED, "diagnostic delivery cancelled");
-      let written: number;
+      let written = 0;
       try {
         written = write(bytes.subarray(offset));
       } catch (error) {

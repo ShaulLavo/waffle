@@ -201,7 +201,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
-    let winner: ProcessExit;
+    let winner: ProcessExit | null;
     if (runtimeDiagnostic) {
       outcomeReserved = true;
       winner = localOutcome ??= processOutcome(ownResult);
