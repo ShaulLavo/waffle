@@ -125,6 +125,7 @@ export class ProcessSignalExit extends ExecutionUnwind {
 
 const READ = 1n << 1n,
   WRITE = 1n << 6n,
+  FILESTAT_GET = 1n << 21n,
   POLL = 1n << 27n;
 const FAULT = 21,
   ISDIR = 31,
@@ -290,8 +291,8 @@ export class ProcessABI {
     const endpoints = this.options.createPipe?.() ?? this.localPipe();
     let read: number | undefined, write: number | undefined;
     try {
-      read = this.options.descriptors.open(endpoints[0], READ | POLL, 0n);
-      write = this.options.descriptors.open(endpoints[1], WRITE | POLL, 0n);
+      read = this.options.descriptors.open(endpoints[0], READ | FILESTAT_GET | POLL, 0n);
+      write = this.options.descriptors.open(endpoints[1], WRITE | FILESTAT_GET | POLL, 0n);
       const output = this.view(ptr, 8);
       dataViewSetUint32(output, 0, read, true);
       dataViewSetUint32(output, 4, write, true);

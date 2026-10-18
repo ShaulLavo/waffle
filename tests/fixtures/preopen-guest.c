@@ -1,6 +1,7 @@
 // Original Waffle fixture. Link with the SDK's stock libc and with our patched libc.
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <wasi/api.h>
 
 static int initialized;
@@ -17,6 +18,8 @@ void early_preopens(void) {
   if (close(fd)) early_result = 43;
   __wasi_prestat_t prestat;
   if (__wasi_fd_prestat_get(3, &prestat) == __WASI_ERRNO_BADF) {
+    struct stat status;
+    if (fstat(3, &status) || status.st_size != 0) { early_result = 49; return; }
     // In the inherited layout fd 3 must remain the requested writable resource.
     if (write(3, "early\n", 6) != 6) early_result = 44;
   }
@@ -32,6 +35,10 @@ int main(void) {
   if (read(fd, &first, 1) != 1 || first != 'f') return 46;
   if (close(fd)) return 47;
   __wasi_prestat_t prestat;
-  if (__wasi_fd_prestat_get(3, &prestat) == __WASI_ERRNO_BADF && write(3, "main\n", 5) != 5) return 48;
+  if (__wasi_fd_prestat_get(3, &prestat) == __WASI_ERRNO_BADF) {
+    struct stat status;
+    if (fstat(3, &status) || status.st_size != 0) return 50;
+    if (write(3, "main\n", 5) != 5) return 48;
+  }
   return 0;
 }
