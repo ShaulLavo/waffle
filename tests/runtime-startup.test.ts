@@ -194,6 +194,9 @@ function indexedDBFixture() {
   let grant!: () => void;
   let closed = false;
   const db = {
+    objectStoreNames: {
+      contains: (name: string) => ["metadata", "journal", "data"].includes(name),
+    },
     close() {
       closed = true;
     },

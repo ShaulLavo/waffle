@@ -234,6 +234,9 @@ for (const whenBusy of ["takeover", "wait"] as const)
         put() {},
       })) as unknown as IDBTransaction["objectStore"];
       const database = {
+        objectStoreNames: {
+          contains: (name: string) => ["metadata", "journal", "data"].includes(name),
+        },
         close() {
           closeCount++;
         },
