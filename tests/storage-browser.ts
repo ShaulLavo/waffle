@@ -1,5 +1,6 @@
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
 import { createRuntime, type RuntimeStartupStage } from "../index.js";
+import { FilesystemClient, FilesystemService, PersistentBackend, createFilesystemConnection } from "../fs/index.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
 export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser.js";
@@ -41,10 +42,67 @@ export interface StorageContractCase {
 }
 type Register = (label: string, run: StorageContractCase["run"], compactEvery?: number) => void;
 
+async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Promise<void> {
+  const storage = await open();
+  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
+  const client = new FilesystemClient(connection.client);
+  const sibling = new FilesystemClient(client.fork());
+  try {
+    await client.asyncCall("writeFile", ["/created", false, true], bytes("winner"));
+    await rejects(client.asyncCall("writeFile", ["/created", false, true], bytes("clobber")), "20");
+    await client.asyncCall("mkdirp", ["/directory"]);
+    await rejects(client.asyncCall("writeFile", ["/directory", false, true], bytes("not a directory")), "20");
+    await rejects(client.asyncCall("writeFile", ["/new/", false, true], bytes("not a file")), "54");
+    await rejects(client.asyncCall("writeFile", ["/fresh/file/", false, true], bytes("not a file")), "54");
+    assert(await client.asyncCall("lookup", ["/fresh"]) === undefined, "failed trailing slash does not create parents");
+    await rejects(client.asyncCall("writeFile", ["/directory/.", false, true], bytes("not a directory")), "20");
+    await rejects(client.asyncCall("writeFile", ["/", false, true], bytes("not root")), "20");
+    await rejects(client.asyncCall("writeFile", ["/created/child", false, true], bytes("not nested")), "54");
+    await rejects(client.asyncCall("writeFile", ["/created", true, true], bytes("invalid modes")), "28");
+    await client.asyncCall("mkdirp", ["/a"]);
+    await client.asyncCall("writeFile", ["/a/../canonical", false, true], bytes("canonical"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/canonical"])) === "canonical", "canonical target receives bytes");
+    assert(await client.asyncCall("lookup", ["/a/../canonical"]) === undefined, "raw dot path is not a duplicate entry");
+    await client.asyncCall("writeFile", ["/a/./nested/file", false, true], bytes("nested"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/nested/file"])) === "nested", "dot path writes its canonical target");
+    await client.asyncCall("writeFile", ["/a/./nested/file", false, false], bytes("ordinary"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/nested/file"])) === "ordinary", "ordinary write uses the canonical target");
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/./nested/file"])) === "ordinary", "canonical target is readable through dot path");
+    await client.asyncCall("writeFile", ["/a/../other/file", false, true], bytes("other"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/other/file"])) === "other", "parent traversal writes its canonical target");
+    await rejects(client.asyncCall("writeFile", ["/new/.", false, true], bytes("not a file")), "44");
+    assert(await client.asyncCall("lookup", ["/new"]) === undefined, "failed dot path does not create parents");
+    await rejects(client.asyncCall("writeFile", ["/missing/../x", false, true], bytes("not a file")), "44");
+    assert(await client.asyncCall("lookup", ["/missing"]) === undefined, "failed parent traversal does not create parents");
+
+    const outcomes = await Promise.allSettled([
+      client.asyncCall("writeFile", ["/race", false, true], bytes("first")),
+      sibling.asyncCall("writeFile", ["/race", false, true], bytes("second")),
+    ]);
+    assert(outcomes.filter(result => result.status === "fulfilled").length === 1, "one exclusive writer must win");
+    assert(outcomes.filter(result => result.status === "rejected").length === 1, "one exclusive writer must lose");
+    const rejected = outcomes.find(result => result.status === "rejected");
+    assert(rejected && String(rejected.reason).includes("20"), "losing writer must receive EEXIST");
+    assert(/^(first|second)$/.test(new TextDecoder().decode(await client.asyncCall("readFile", ["/race"]))), "winner bytes survive");
+
+    await client.asyncCall("writeFile", ["/created", false, false], bytes("updated"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/created"])) === "updated", "ordinary writes still replace");
+  } finally {
+    sibling.dispose(); client.dispose(); service.dispose();
+    await backend.close();
+  }
+}
+
 /** Backend-independent behavior, with no assumptions about the physical persistence layout. */
 export function storageContractCases(): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
+  test("host writeFile exclusive creation is atomic", async (_name, open) => {
+    await exclusiveFilesystemCase(open);
+  });
   test("empty, atomic save, reload, payload copies", async (_name, open) => {
     const storage = await open();
     assert(await storage.load() === undefined, "fresh storage must be empty");

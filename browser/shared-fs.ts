@@ -1,5 +1,7 @@
 import { reportRuntimeStartup, isWorkerStartupMessage, type RuntimeStartupObserver } from "../fs/startup.js";
-import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index.js";
+import { FilesystemClient, resolveWriteFileMode, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection, type WriteFileMode } from "../fs/index.js";
+
+export type { WriteFileOptions, WriteFileMode } from "../fs/index.js";
 
 export type SharedFilesystemStorage = "indexeddb" | "opfs";
 export type SharedFilesystemBusyOptions =
@@ -200,7 +202,10 @@ export class SharedFilesystem {
   async readFile(path: string): Promise<Uint8Array | undefined> { await this.drain(); return this.request("readFile", [path]); }
   async listFiles(path = "/"): Promise<string[]> { await this.drain(); return this.request("listFiles", [path]); }
   mkdirp(path: string): Promise<void> { return this.mutate("mkdirp", [path]); }
-  writeFile(path: string, text: string | Uint8Array, append = false): Promise<void> { return this.mutate("writeFile", [path, append], typeof text === "string" ? new TextEncoder().encode(text) : text); }
+  writeFile(path: string, text: string | Uint8Array, mode: WriteFileMode = false): Promise<void> {
+    const { append, exclusive } = resolveWriteFileMode(mode);
+    return this.mutate("writeFile", [path, append, exclusive], typeof text === "string" ? new TextEncoder().encode(text) : text);
+  }
   remove(path: string): Promise<boolean> { return this.mutate("remove", [path]); }
   async move(from: string, to: string): Promise<void> {
     const error = await this.mutate("move", [from, to]);

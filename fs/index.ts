@@ -1,4 +1,4 @@
-export { FilesystemClient, FilesystemCompletion } from "./client.js";
+export { FilesystemClient, FilesystemCompletion, resolveWriteFileMode, type WriteFileOptions, type WriteFileMode } from "./client.js";
 export { FilesystemService, installFilesystemWorker } from "./service.js";
 export { MemoryBackend, type FilesystemBackend } from "./backend.js";
 export { createFilesystemConnection, createFilesystemIdentity, createProcessFilesystemIdentity, releaseFilesystemReservation, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemReservation, type FilesystemConnection, FilesystemError } from "./protocol.js";
