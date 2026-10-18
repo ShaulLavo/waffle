@@ -42,3 +42,5 @@ int main(void) {
   }
   return 0;
 }
+
+/* Native-input timing probe after package-cache removal. */
