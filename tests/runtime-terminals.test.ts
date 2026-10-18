@@ -93,3 +93,93 @@ test("nonterminal descriptor tokens delegate export/import/discard to the compos
   codec.discard(token);
   expect(calls).toEqual(["export", "import", "discard"]);
 });
+
+for (const kind of ["terminal", "pipe"] as const) test(`terminal resolver supplies an interactive ${kind} stream, preserving provenance and one close per description`, () => {
+  const state = fixture();
+  const imported = new DescriptorTable();
+  let closed = 0;
+  const resolved: number[] = [];
+  const codec = createRuntimeTerminalCodec({ fallback: state.fallback, resolveTerminal(target) {
+    resolved.push(target);
+    return { kind, read(chunks) { chunks[0]!.set(text("in")); return 2; },
+      write: chunks => chunks.reduce((size, chunk) => size + chunk.length, 0),
+      readiness: () => ({ readable: true, writable: true, hangup: false }), close() { closed++; } };
+  } });
+  try {
+    const token = state.codec.export(state.table.get(0)!, 2);
+    const description = codec.import(token, 2);
+    const fd = imported.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+    const alias = imported.dup(fd);
+    const data = new Uint8Array(2);
+    expect((description.resource as Stream).read([data])).toBe(2);
+    expect(new TextDecoder().decode(data)).toBe("in");
+    expect((description.resource as Stream).readiness().hangup).toBe(false);
+    expect(codec.export(imported.get(alias)!, 3)).toEqual({ kind: "web-terminal", target: 0 });
+    imported.close(fd);
+    expect(closed).toBe(0);
+    imported.close(alias);
+    expect(closed).toBe(1);
+    expect(resolved).toEqual([0]);
+  } finally { imported.dispose(); state.table.dispose(); }
+});
+
+for (const cause of ["fatal outcome", "filesystem revocation"] as const) test(`resolved endpoint stops every admission operation after ${cause}, preserving cleanup and provenance`, () => {
+  let active = true, calls = 0, closed = 0;
+  class Endpoint implements Stream {
+    readonly kind = "pipe";
+    #value = 7;
+    read() { calls++; return this.#value; }
+    write() { calls++; return this.#value; }
+    tryRead() { calls++; return this.#value; }
+    tryWrite() { calls++; return this.#value; }
+    readiness() { calls++; return { readable: true, writable: true, hangup: false }; }
+    forProcess() { calls++; return new Endpoint(); }
+    close() { closed++; }
+  }
+  const codec = createRuntimeTerminalCodec({ fallback: { export() { throw new Error("unexpected fallback"); },
+    import() { throw new Error("unexpected fallback"); }, discard() { throw new Error("unexpected fallback"); } }, resolveTerminal: () => new Endpoint(),
+    checkActive() { if (!active) throw new Error(cause); } });
+  const description = codec.import({ kind: "web-terminal", target: 0 }, 2);
+  const table = new DescriptorTable();
+  const fd = table.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+  try {
+    const stream = description.resource as Stream;
+    expect(stream.read([])).toBe(7);
+    const child = stream.forProcess!(3);
+    expect(codec.export(borrowed(new OpenDescription(child)), 4)).toEqual({ kind: "web-terminal", target: 0 });
+    child.close!();
+    calls = 0; active = false;
+    for (const operation of [() => stream.read([]), () => stream.write([]), () => stream.tryRead!([]),
+      () => stream.tryWrite!([]), () => stream.readiness(), () => stream.forProcess!(3)]) expect(operation).toThrow(cause);
+    expect(calls).toBe(0);
+    table.close(fd);
+    expect(closed).toBe(2);
+  } finally { table.dispose(); }
+});
+
+for (const operation of ["read", "close"] as const) test(`frozen resolved streams preserve own ${operation} methods without proxy invariant errors`, () => {
+  let active = true, closed = 0;
+  const endpoint = Object.freeze({ kind: "pipe" as const,
+    read() { expect(this).toBe(endpoint); return 7; },
+    write() { expect(this).toBe(endpoint); return 7; },
+    readiness() { return { readable: true, writable: true, hangup: false }; },
+    close() { expect(this).toBe(endpoint); closed++; } });
+  const codec = createRuntimeTerminalCodec({ fallback: { export() { throw new Error("unexpected fallback"); },
+    import() { throw new Error("unexpected fallback"); }, discard() { throw new Error("unexpected fallback"); } },
+    resolveTerminal: () => endpoint, checkActive() { if (!active) throw new Error("revoked"); } });
+  const table = new DescriptorTable();
+  const description = codec.import({ kind: "web-terminal", target: 0 }, 2);
+  const fd = table.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+  try {
+    const stream = description.resource as Stream;
+    if (operation === "read") {
+      expect(stream.read([])).toBe(7);
+      active = false;
+      expect(() => stream.read([])).toThrow("revoked");
+    } else active = false;
+    table.close(fd);
+    expect(closed).toBe(1);
+  } finally {
+    try { table.dispose(); } finally { if (!closed) endpoint.close(); }
+  }
+});

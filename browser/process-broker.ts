@@ -72,7 +72,7 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
 interface RuntimeChild {
   filesystem: FilesystemIdentity;
   context: ProcessContext;
-  worker: Worker;
+  worker?: Worker;
   acknowledged: boolean;
   failed: boolean;
   started: boolean;
@@ -95,6 +95,10 @@ export class BrowserProcessBroker {
   private readonly completedRoots = new Set<number>();
   private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
+  private revokedControllers?: Set<number>;
+  private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
+  private launches?: Set<number>;
+  private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
   private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
@@ -117,11 +121,54 @@ export class BrowserProcessBroker {
         launch: context => {
           if (this.suspended) throw new Error("Process broker is disposed");
           this.traceProcess(context, "launching");
-          const launched = this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context);
-          if (!this.options.onProcessAdmission) return launched;
-          return Promise.resolve(launched).then(handle => {
+          (this.launches ??= new Set()).add(context.pid);
+          let acquireLaunch!: () => void, settleLaunch!: () => void;
+          // A launcher may select an outcome synchronously before returning its handle.
+          // Retain its cleanup authority before invoking any adapter code.
+          (this.pendingLaunches ??= new Map()).set(context.pid, {
+            acquired: new Promise<void>(resolve => { acquireLaunch = resolve; }),
+            settled: new Promise<void>(resolve => { settleLaunch = resolve; }),
+          });
+          const settled = () => { this.pendingLaunches?.delete(context.pid); acquireLaunch(); settleLaunch(); };
+          let launched: ProcessHandle | Promise<ProcessHandle>;
+          try { launched = this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context); }
+          catch (error) { this.launches.delete(context.pid); settled(); throw error; }
+          const track = (handle: ProcessHandle): ProcessHandle => {
             this.traceProcess(context, "launched");
-            return handle;
+            if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
+              this.launches?.delete(context.pid);
+              settled();
+              return handle;
+            }
+            acquireLaunch();
+            // External launchers own their physical handle. Keep controller authority until
+            // that handle's asynchronous cleanup settles, not merely its child-exit event.
+            return { terminate: () => {
+              let pending: void | Promise<void>;
+              try { pending = handle.terminate(); } catch (error) { settled(); throw error; }
+              if (pending) {
+                const stopping = pending.then(() => {
+                  this.controllerStops?.delete(context.pid);
+                  this.launches?.delete(context.pid);
+                  this.retireChildController(context.pid);
+                }).finally(settled);
+                (this.controllerStops ??= new Map()).set(context.pid, { pending: stopping, controllerStop: false });
+                return stopping;
+              }
+              this.launches?.delete(context.pid);
+              this.retireChildController(context.pid);
+              settled();
+            } };
+          };
+          if (!("then" in launched)) return track(launched);
+          // Disposal owns late external handles too. Settlement follows physical cleanup,
+          // not just promise resolution, so retirement cannot outrun a pending launcher.
+          return Promise.resolve(launched).then(track, error => {
+            this.launches?.delete(context.pid);
+            settled();
+            // A terminal outcome can win while this external launcher is still pending.
+            if (readOutcome(context.outcome)) void this.stopController(context.pid)?.catch(error => this.report(error));
+            throw error;
           });
         },
         canConfirmExit: pid => {
@@ -147,11 +194,26 @@ export class BrowserProcessBroker {
         this.revokeRuntimeProcess(event.pid);
         const transport = this.transport.get(event.pid);
         if (transport && !this.children.get(event.pid)?.acknowledged) this.options.filesystem.revoke(this.filesystem(transport));
-        this.controllers.get(event.pid)?.exited?.(event);
-        this.retireRoots();
+        void (async () => {
+          try { this.controllers.get(event.pid)?.exited?.(event); }
+          finally {
+            // Notification failures cannot skip failed-start cleanup. Report them only
+            // after the same fenced physical stop used by successful notifications.
+            const child = this.children.get(event.pid);
+            if (child) await this.stop(child);
+            else {
+              await this.pendingLaunches?.get(event.pid)?.settled;
+              if (!this.launches?.has(event.pid)) await this.stopController(event.pid);
+            }
+            this.retireRoots();
+          }
+        })().catch(error => this.report(error));
       });
       supervisor.onJobReap(() => this.retireRoots());
-      for (const root of this.reservedRoots.values()) if (!supervisor.get(root.pid)) supervisor.createRoot(root);
+      for (const root of this.reservedRoots.values()) if (!supervisor.get(root.pid)) {
+        supervisor.createRoot(root);
+        supervisor.registerRevocation(root.pid, () => this.revokeController(root.pid));
+      }
       for (const transport of this.roots.values()) this.activateRuntimeRoot(supervisor, transport);
       if (this.suspended) supervisor.dispose();
       return supervisor;
@@ -162,6 +224,7 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     if (this.controllers.has(pid)) throw new Error(`Process ${pid} already has a controller`);
     this.controllers.set(pid, controller);
+    if (this.supervisor?.get(pid)) this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
   }
   /** Reserve an externally executed root without activating the optional supervisor. */
   reserveRoot(root: RootProcessOptions, controller: ProcessController = {}): number {
@@ -173,7 +236,10 @@ export class BrowserProcessBroker {
     const reserved = { ...root, pid, job, signalState: createSignalState(root.signalState), outcome: outcomeWord(root.outcome), interrupt: word(root.interrupt), requestedSignal: word(root.requestedSignal) };
     this.registerController(pid, controller);
     this.reservedRoots.set(pid, reserved);
-    if (this.supervisor) this.supervisor.createRoot(reserved);
+    if (this.supervisor) {
+      this.supervisor.createRoot(reserved);
+      this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
+    }
     return pid;
   }
   /** Keep an accepted external spawn's ancestry until its asynchronous admission finishes. */
@@ -213,6 +279,7 @@ export class BrowserProcessBroker {
       this.completedRoots.delete(pid);
       this.reservedRoots.delete(pid);
       this.controllers.delete(pid);
+      this.revokedControllers?.delete(pid);
       this.roots.delete(pid);
       this.outputs.delete(pid);
       this.registries.delete(pid);
@@ -348,14 +415,21 @@ export class BrowserProcessBroker {
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
     const filesystem = this.filesystem(transport);
-    const request = { ...options.request, filesystem: this.options.filesystem.connect(filesystem), runtimeProcess: transport, outcome: context.outcome };
-    let worker: Worker;
-    try { worker = new Worker(options.workerUrl, { type: "module" }); }
-    catch (error) { request.filesystem.port.close(); throw error; }
-    const child: RuntimeChild = { filesystem, context, worker, acknowledged: false, failed: false, started: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
+    context.registerRevocation(() => {
+      this.revokeRuntimeProcess(context.pid);
+      this.options.filesystem.revoke(filesystem);
+    });
+    // Record cleanup ownership before either connection or Worker construction can throw.
+    const child: RuntimeChild = { filesystem, context, acknowledged: false, failed: false, started: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
     this.children.set(context.pid, child);
+    let connection: FilesystemConnection | undefined;
+    let worker: Worker;
+    try {
+      connection = this.options.filesystem.connect(filesystem);
+      worker = child.worker = new Worker(options.workerUrl, { type: "module" });
+    } catch (error) { child.failed = true; connection?.port.close(); throw error; }
+    const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: context.outcome };
     this.watch();
-    context.registerRevocation(() => { this.revokeRuntimeProcess(context.pid); this.options.filesystem.revoke(filesystem); });
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "phase" && data.name === "instantiate") child.started = true;
       const selected = readOutcome(context.outcome);
@@ -395,26 +469,47 @@ export class BrowserProcessBroker {
       this.stopSafely(child);
     };
     try { worker.postMessage(request, [request.filesystem.port]); }
-    catch (error) { child.failed = true; request.filesystem.port.close(); this.stopSafely(child); throw error; }
+    catch (error) { child.failed = true; request.filesystem.port.close(); throw error; }
     return { terminate: () => this.stop(child) };
   }
   private quiesceProcess(pid: number): void | Promise<void> {
     const pending = this.fences.get(pid);
     if (pending) return pending;
-    const fence = this.processFence(pid);
+    let fence: void | Promise<void>;
+    try { fence = this.processFence(pid); } catch (error) { fence = Promise.reject(error); }
     if (fence) this.fences.set(pid, fence);
     return fence;
   }
-  private processFence(pid: number): void | Promise<void> {
+  private revokeController(pid: number): void {
     const controller = this.controllers.get(pid);
-    if (controller?.acknowledged?.()) return;
-    if (controller?.quiesce && !this.suspended) return controller.quiesce();
-    if (controller?.filesystem) return this.options.filesystem.quiesce(controller.filesystem);
-    if (controller?.quiesce) return controller.quiesce();
+    if (!controller || this.revokedControllers?.has(pid)) return;
+    (this.revokedControllers ??= new Set()).add(pid);
+    if (controller.filesystem) this.options.filesystem.revoke(controller.filesystem);
+    controller.revoke?.();
+  }
+  private processFence(pid: number): void | Promise<void> {
+    // Lazy/external roots may have no supervisor record to invoke their revocation hook.
+    this.revokeController(pid);
+    const controller = this.controllers.get(pid);
+    const pending: Promise<void>[] = [];
+    const adapter = controller?.quiesce?.();
+    if (adapter) pending.push(adapter);
+    if (controller?.filesystem && !controller.acknowledged?.()) pending.push(this.options.filesystem.quiesce(controller.filesystem));
     const child = this.children.get(pid);
-    if (child) return this.quiesceChild(child);
-    const transport = this.transport.get(pid);
-    if (transport) return this.options.filesystem.quiesce(this.filesystem(transport));
+    if (child) {
+      const filesystem = this.quiesceChild(child);
+      if (filesystem) pending.push(filesystem);
+    } else {
+      const transport = this.transport.get(pid);
+      if (transport) {
+        const filesystem = this.filesystem(transport);
+        // An adapter acknowledgement covers only its own identity, not another transport.
+        if (!controller?.filesystem || filesystem.sections !== controller.filesystem.sections) {
+          pending.push(this.options.filesystem.quiesce(filesystem));
+        }
+      }
+    }
+    if (pending.length) return Promise.all(pending).then(() => {});
   }
   private quiesceChild(child: RuntimeChild): void | Promise<void> {
     if (child.acknowledged) return;
@@ -422,9 +517,43 @@ export class BrowserProcessBroker {
   }
   private stop(child: RuntimeChild): void | Promise<void> {
     if (child.stopped) return;
-    const stop = () => { if (child.stopped) return; child.stopped = true; child.worker.terminate(); child.cleanup?.(); this.children.delete(child.context.pid); };
-    if (child.acknowledged) { stop(); return; }
-    return child.stopping ??= Promise.resolve(this.quiesceChild(child)).then(stop);
+    const stop = () => {
+      if (child.stopped) return;
+      child.stopped = true;
+      child.worker?.terminate();
+      try { child.cleanup?.(); }
+      finally {
+        this.children.delete(child.context.pid);
+        this.retireChildController(child.context.pid);
+      }
+    };
+    if (child.stopping) return child.stopping;
+    const fence = this.quiesceProcess(child.context.pid);
+    if (!fence) { stop(); return; }
+    return child.stopping = fence.then(stop);
+  }
+  private retireChildController(pid: number): void {
+    // Generic child controllers have no external root ancestry to retain. During disposal,
+    // keep them until every controller's physical stop and retirement have been attempted.
+    if (this.suspended || this.reservedRoots.has(pid)) return;
+    const controller = this.controllers.get(pid);
+    this.controllers.delete(pid);
+    this.revokedControllers?.delete(pid);
+    this.fences.delete(pid);
+    try { controller?.retired?.(); } catch (error) { this.report(error); }
+  }
+  private stopController(pid: number): Promise<void> | undefined {
+    if (this.suspended || this.reservedRoots.has(pid)) return;
+    const pending = this.controllerStops?.get(pid);
+    if (pending) return pending.pending;
+    const controller = this.controllers.get(pid);
+    if (!controller) return;
+    const stopping = Promise.resolve(this.quiesceProcess(pid)).then(() => controller.stop?.()).then(() => {
+      this.controllerStops?.delete(pid);
+      this.retireChildController(pid);
+    });
+    (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
+    return stopping;
   }
   private stopSafely(child: RuntimeChild): void { try { const pending = this.stop(child); if (pending) void pending.catch(error => this.report(error)); } catch (error) { this.report(error); } }
   private states() { return Array.from(this.roots.values()).flatMap(root => workerProcessSlots(root).map(slot => workerProcessState(root, slot))); }
@@ -502,9 +631,8 @@ export class BrowserProcessBroker {
     for (const root of this.reservedRoots.values()) requestSignal(root, 9);
     for (const record of this.options.table.values()) requestSignal(record, 9);
     for (const state of this.states()) { this.revokeRuntimeProcess(state.pid); const transport = this.transport.get(state.pid); if (transport) this.options.filesystem.revoke(this.filesystem(transport)); }
-    for (const controller of this.controllers.values()) {
-      if (controller.filesystem) this.options.filesystem.revoke(controller.filesystem);
-      try { controller.revoke?.(); } catch (error) { this.report(error); }
+    for (const pid of this.controllers.keys()) {
+      try { this.revokeController(pid); } catch (error) { this.report(error); }
     }
     // Retain every fence before transport disposal drops reservations and supervisor disposal
     // removes table records. Neither logical death nor terminate() proves admission quiescence.
@@ -530,18 +658,25 @@ export class BrowserProcessBroker {
         this.supervisor?.dispose();
       }
       await this.quiesce();
+      // A controller stop may release a physical handle, but cannot consume authority
+      // before a pending launcher acquires it. Then settle both stops before retirement.
+      await Promise.all(Array.from(this.pendingLaunches?.values() ?? [], launch => launch.acquired));
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
       const stops = Array.from(this.children.values(), child => Promise.resolve().then(() => this.stop(child)))
-        .concat(Array.from(this.controllers.values(), controller => Promise.resolve().then(() => controller.stop?.())));
+        .concat(Array.from(this.controllers, ([pid, controller]) => {
+          const stopping = this.controllerStops?.get(pid);
+          return stopping?.controllerStop ? stopping.pending : Promise.resolve().then(() => controller.stop?.());
+        }), Array.from(this.controllerStops?.values() ?? [], stopping => stopping.pending),
+          Array.from(this.pendingLaunches?.values() ?? [], launch => launch.settled));
       const errors: unknown[] = [];
       for (const result of await Promise.allSettled(stops)) if (result.status === "rejected") errors.push(result.reason);
       try { this.pipes.dispose(); } catch (error) { errors.push(error); }
-      for (const pid of this.reservedRoots.keys()) {
-        try { this.controllers.get(pid)?.retired?.(); } catch (error) { errors.push(error); }
+      for (const controller of this.controllers.values()) {
+        try { controller.retired?.(); } catch (error) { errors.push(error); }
       }
       this.reservedRoots.clear(); this.completedRoots.clear(); this.rootLeases.clear();
-      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.fences.clear();
+      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.revokedControllers?.clear(); this.controllerStops?.clear(); this.launches?.clear(); this.pendingLaunches?.clear(); this.fences.clear();
       if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
     })().then(resolve, reject);
     return disposal;

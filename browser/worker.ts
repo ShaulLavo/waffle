@@ -1,6 +1,8 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
 import { Wasi, WasiExit, type Stream } from "../core";
+import { guardedStream } from "./guarded-stream";
+import { withFileOffset } from "../core/open-file";
 import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
 import { waitStatus } from "../proc/wait-status";
 import type { ProcessExit } from "../proc/types";
@@ -52,13 +54,15 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
   finish(result: WorkerResult): void;
 }
-export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerSetupContext<R> {
+export interface WorkerBindingsContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerSetupContext<R> {
   wasi: Wasi;
+}
+export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> extends WorkerBindingsContext<R> {
   instance: WebAssembly.Instance;
 }
 
-/** Guest policy stays with the executor. Hooks explicitly adapt older transports without
- * making their pipe protocol, engine bindings or module cache part of this bootstrap. */
+/** Guest policy stays with the executor, without making its engine bindings, transports or
+ * module cache part of the bootstrap. Optional hooks run only in the spawned worker. */
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
@@ -67,6 +71,18 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   interrupt?: SharedArrayBuffer;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   setup?(context: WorkerSetupContext<R>): void;
+  /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
+  namespaces?(context: WorkerSetupContext<R>): WebAssembly.Imports;
+  /** Runs after default stdio/root preopen creation, before inherited descriptor binding.
+   * If relocating preopens, preserve wasi-libc's contiguous discovery scan from fd3 upward:
+   * it stops at the first non-preopen. No relocation happens by default. */
+  beforeBindings?(context: WorkerBindingsContext<R>): void;
+  /** Mutate or replace the linked import object, after bindings and before instantiation. */
+  imports?(imports: WebAssembly.Imports, context: WorkerBindingsContext<R>): WebAssembly.Imports | void;
+  /** Structured-cloneable child metadata; filesystem and pipeRegistry are reserved. */
+  spawnData?(): Record<string, unknown>;
+  /** Resolve inherited terminal provenance to a process-local stream. */
+  resolveTerminal?(target: 0 | 1 | 2): Stream;
   signal?(signal: number, mode: number): number;
   signalError?(signal: number): never;
   terminalSignal?(error: unknown): number | undefined;
@@ -131,6 +147,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked()) throw new WasiExit(1);
   };
+  // Ownership begins before setup/namespaces can fail or finish the process.
+  const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
   let done = false;
   let started = false;
@@ -160,7 +178,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
     if (executor.complete && startupFailure) winner = claim(ownResult);
-    const descriptorsReleased = attempt(() => wasi?.descriptors.dispose());
+    const descriptorsReleased = attempt(() => {
+      if (wasi) { wasi.descriptors.dispose(); return; }
+      const errors: unknown[] = [];
+      for (const fd of [0, 1, 2] as const) {
+        try { ownedStdio?.[fd]?.close?.(); } catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw new AggregateError(errors, "stdio release failed");
+    });
     const filesystemReleased = attempt(() => fs.dispose());
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
@@ -205,26 +230,53 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
-    const guardStream = (stream: Stream): Stream => ({
-      ...stream,
-      read(chunks) { checkActive(); return stream.read(chunks); },
-      write(chunks) { checkActive(); return stream.write(chunks); },
-      readiness() { checkActive(); return stream.readiness(); },
-    });
-    const stdio = executor.stdio ? {
-      ...(executor.stdio[0] ? { 0: guardStream(executor.stdio[0]) } : {}),
-      ...(executor.stdio[1] ? { 1: guardStream(executor.stdio[1]) } : {}),
-      ...(executor.stdio[2] ? { 2: guardStream(executor.stdio[2]) } : {}),
+    const stdio = ownedStdio ? {
+      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkActive) } : {}),
+      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkActive) } : {}),
+      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkActive) } : {}),
     } : undefined;
-    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
-      const stream = stdio?.[type === "stderr" ? 2 : 1];
-      if (stream) return stream.write([data]) === data.length;
+    // Default terminal descriptions must post directly: routing their callbacks back through
+    // the live fd would recurse, or send an inherited terminal into a redirected file.
+    const output = (type: "stdout" | "stderr", data: Uint8Array) => {
       checkActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
-      return true;
+    };
+    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
+      checkActive();
+      const fd = type === "stderr" ? 2 : 1;
+      if (!wasi) {
+        const stream = stdio?.[fd];
+        if (stream) return stream.write([data]) === data.length;
+        output(type, data);
+        return true;
+      }
+      const descriptor = wasi.descriptors.get(fd);
+      if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return false;
+      const resource = descriptor.resource;
+      if (resource.kind === "directory") return false;
+      // Like preview1, an empty write neither appends nor moves the shared file cursor.
+      if (!data.length) return true;
+      if (resource.kind !== "file") return resource.write([data]) === data.length;
+      const written = withFileOffset(resource, () => {
+        if (resource.append) {
+          const result = fs.append(resource.handle, [data]);
+          if (typeof result === "number") return result;
+          resource.offset = result.offset;
+          return result.written;
+        }
+        const written = fs.write(resource.handle, [data], resource.offset);
+        if (written >= 0) resource.offset += written;
+        return written;
+      });
+      return written === data.length;
     };
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
+    if (done) return;
+    const env = executor.env?.(req) ?? req.env;
+    if (done) return;
+    const namespaces = executor.namespaces?.(context);
+    if (done) return;
     let instance: WebAssembly.Instance;
     const processImports: Record<string, (...args: number[]) => number | void> = {
       signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -38,
@@ -233,8 +285,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     };
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
-      args: req.args, env: executor.env?.(req) ?? req.env, fs, preopens: { "/": "/" }, stdio,
-      stdout: data => { post("stdout", data); }, stderr: data => { post("stderr", data); },
+      args: req.args, env, fs, preopens: { "/": "/" }, stdio,
+      stdout: data => { output("stdout", data); }, stderr: data => { output("stderr", data); },
+      diagnostic: data => { post("stderr", data); },
       sleep: ms => {
         checkActive();
         if (ms > 0) {
@@ -245,9 +298,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       },
       interrupt,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
-      namespaces: { runtime_proc: processImports },
+      namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
     });
+    const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
       const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec");
       const { createProcessFilesystemIdentity } = await import("../fs/protocol");
@@ -258,25 +312,32 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess, postMessage,
-        fallback: createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs),
-          descriptors: wasi.descriptors, output: (fd, data) => { post(fd === 2 ? "stderr" : "stdout", data); }, checkActive }),
+        fallback: createFilesystemDescriptorCodec(fs),
         registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess, descriptors: wasi.descriptors,
-        codec: pipes.codec(), postMessage,
+        // Terminal provenance takes priority even when its resolved stream is a PipeEndpoint.
+        codec: createRuntimeTerminalCodec({ fallback: pipes.codec(), descriptors: wasi.descriptors,
+          resolveTerminal: executor.resolveTerminal?.bind(executor),
+          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive }), postMessage,
         createPipe: () => { checkActive(); return pipes.createPipe(); },
         revokeProcess: pid => pipes.revokeProcess(pid),
         prepareSpawn: () => {
           checkActive();
           const end = fs.beginTransfer();
           try {
+            const data = executor.spawnData?.();
+            checkActive();
             const filesystem = createProcessFilesystemIdentity(fs.connection);
-            return { data: { filesystem, pipeRegistry: pipes.registry.handle() },
-              codec: pipes.codec(createRuntimeTerminalCodec({ fallback: createFilesystemDescriptorCodec(fs, filesystem) })), release: end };
+            return { data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() },
+              codec: createRuntimeTerminalCodec({ fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)) }), release: end };
           } catch (error) { end(); throw error; }
         },
       });
+      // Record original default-terminal destinations before the hook moves/closes any fd.
+      executor.beforeBindings?.(bindingsContext);
+      if (done) return;
       runtimeProcess.installBindings();
       const abi = new ProcessABI({
         memory: () => instance.exports.memory as WebAssembly.Memory,
@@ -290,13 +351,27 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => { checkActive(); return call(...args); };
       }
+    } else {
+      executor.beforeBindings?.(bindingsContext);
+      if (done) return;
     }
     const instantiating = perfNow();
-    instance = new WebAssembly.Instance(req.module, wasi.imports(req.module));
+    const imports = wasi.imports(req.module);
+    // Linking binds WASI views for a real Wasm start section, which runs inside instantiation.
+    // Snapshot before a hook can mutate in place; memory replacement cannot preserve those views.
+    const memories = executor.imports ? WebAssembly.Module.imports(req.module).filter(entry => entry.kind === "memory")
+      .map(entry => ({ ...entry, memory: imports[entry.module]?.[entry.name] })) : undefined;
+    const linked = executor.imports?.(imports, bindingsContext) ?? imports;
+    if (done) return;
+    if (memories?.some(entry => linked[entry.module]?.[entry.name] !== entry.memory)) {
+      throw new TypeError("executor imports hook cannot replace imported memory");
+    }
+    instance = new WebAssembly.Instance(req.module, linked);
     if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
     host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     executor.instantiated?.({ ...context, wasi, instance });
+    if (done) return;
     started = true;
     const exited = wasi.launch(instance);
     host.addEventListener?.("error", onError);

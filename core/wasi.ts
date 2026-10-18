@@ -94,6 +94,8 @@ export interface WasiOptions {
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   stdout(data: Uint8Array): void;
   stderr(data: Uint8Array): void;
+  /** Host diagnostics may follow live stderr independently of a terminal destination callback. */
+  diagnostic?(data: Uint8Array): void;
   /** Blocks the calling thread for `ms` milliseconds when no shared notification exists. */
   sleep(ms: number): void;
   /** Signal wake hint: poll returns EINTR without consuming the pending signal or this word. */
@@ -242,7 +244,7 @@ export class Wasi {
         return result;
       } catch (err) {
         if (err instanceof WasiExit) throw err;
-        this.opts.stderr(encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`));
+        (this.opts.diagnostic ?? this.opts.stderr)(encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`));
         return EIO;
       }
     };

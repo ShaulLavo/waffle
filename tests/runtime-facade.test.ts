@@ -693,3 +693,100 @@ test("cleanup errors still close the filesystem and release page ownership", asy
   expect(events.at(-1)).toBe("filesystem:stop");
   expect(create().disposed).toBe(false);
 });
+
+test("registration leases remove unused programs and adapters without activating process services or loaders", async () => {
+  let activations = 0, loads = 0;
+  const factory = processHost();
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const runtime = create({ processHost: options => { activations++; registry = options.registry; return factory(options); } });
+  const unregisterAdapter = runtime.registerAdapter("test", () => ({ terminate() {} }));
+  const unregisterProgram = runtime.registerProgram("app", { adapter: "test", source: () => { loads++; return bytes; } });
+  expect(typeof unregisterAdapter).toBe("function");
+  expect(typeof unregisterProgram).toBe("function");
+  unregisterProgram(); unregisterProgram();
+  unregisterAdapter(); unregisterAdapter();
+  expect(activations).toBe(0);
+  expect(loads).toBe(0);
+  expect(events).toEqual(["filesystem:start"]);
+  expect(() => runtime.registerProgram("unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
+  await runtime.processes();
+  expect(registry!.has("app")).toBe(false);
+  expect(loads).toBe(0);
+});
+
+for (const reuseDefinition of [false, true]) test(`old leases never remove replacements using the same launcher (same program object=${reuseDefinition})`, async () => {
+  let launches = 0;
+  const launcher = () => { launches++; return { terminate() {} }; };
+  let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
+  const factory = processHost();
+  const runtime = create({ processHost: options => { registry = options.registry; return factory(options); } });
+  const removeAdapter = runtime.registerAdapter("test", launcher);
+  const definition = { adapter: "test", module: emptyModule, cooperative: true } as const;
+  const removeProgram = runtime.registerProgram("app", definition);
+  const service = await runtime.processes();
+  removeProgram(); removeAdapter();
+  expect(registry!.has("app")).toBe(false);
+  const replacement = reuseDefinition ? emptyModule : new WebAssembly.Module(bytes);
+  const removeNewAdapter = runtime.registerAdapter("test", launcher);
+  const removeNewProgram = runtime.registerProgram("app", reuseDefinition ? definition : { ...definition, module: replacement });
+  removeAdapter(); removeProgram();
+  expect((await registry!.resolve("app")).module).toBe(replacement);
+  const supervisor = await service.ready();
+  const root = supervisor.createRoot();
+  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(child);
+  expect(launches).toBe(1);
+  removeNewProgram(); removeNewAdapter();
+  expect(registry!.has("app")).toBe(false);
+  expect(() => runtime.registerProgram("unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
+});
+
+test("unregistering programs and adapters leaves running and accepted launch handles with their original launcher", async () => {
+  let entered!: () => void, release!: () => void;
+  const launched = new Promise<void>(resolve => { entered = resolve; });
+  const admission = new Promise<void>(resolve => { release = resolve; });
+  const contexts: ProcessContext[] = [];
+  const stops: string[] = [];
+  const runtime = create({ processHost: processHost() });
+  const removeAdapter = runtime.registerAdapter("test", async context => {
+    contexts.push(context); entered(); await admission;
+    return { terminate() { stops.push("original"); } };
+  });
+  const removeProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const request = { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] };
+  const original = supervisor.reserveSpawn(root, request);
+  const starting = supervisor.start(original);
+  try {
+    await launched;
+    removeProgram(); removeAdapter();
+    const removeReplacementAdapter = runtime.registerAdapter("test", context => { contexts.push(context); return { terminate() { stops.push("replacement"); } }; });
+    const removeReplacementProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+    const replacement = supervisor.reserveSpawn(root, request);
+    await supervisor.start(replacement);
+    removeProgram(); removeAdapter();
+    removeReplacementProgram(); removeReplacementAdapter();
+    expect(stops).toEqual([]);
+    release();
+    await starting;
+    expect(supervisor.get(original)?.result).toBeNull();
+    expect(supervisor.get(replacement)?.result).toBeNull();
+    contexts[0]!.exit(7);
+    contexts[1]!.exit(8);
+    expect((await supervisor.waitForExit(root, original)).status).toBe(7);
+    expect((await supervisor.waitForExit(root, replacement)).status).toBe(8);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(stops).toEqual(["original", "replacement"]);
+  } finally { release(); await starting; }
+});
+
+test("registration lease release is harmless after disposal, including leases not released earlier", async () => {
+  const runtime = create();
+  const unregisterAdapter = runtime.registerAdapter("test", () => ({ terminate() {} }));
+  const unregisterProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  await runtime.dispose();
+  const before = events.slice();
+  expect(() => { unregisterProgram(); unregisterAdapter(); unregisterProgram(); unregisterAdapter(); }).not.toThrow();
+  expect(events).toEqual(before);
+});

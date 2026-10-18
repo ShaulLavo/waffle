@@ -41,8 +41,10 @@ export interface Runtime {
   /** Shared before process activation so synchronous worker stubs can reserve identities. */
   readonly identities: ProcessIdentityAllocator;
   readonly disposed: boolean;
-  registerProgram(name: string, program: ProgramDefinition): void;
-  registerAdapter(name: string, launch: GuestLauncher): void;
+  /** Releasing the lease removes only this registration, never running processes. */
+  registerProgram(name: string, program: ProgramDefinition): () => void;
+  /** Releasing the lease removes only this registration, never running processes. */
+  registerAdapter(name: string, launch: GuestLauncher): () => void;
   /** Adapter plumbing, not an application/shell API. Release only after another owner accepts
    * the consumer synchronously, or its physical cleanup is proven complete. */
   retainConsumer(consumer: RuntimeConsumer): () => void;
@@ -155,6 +157,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (!name || typeof launch !== "function") throw new TypeError("Adapter name and launcher are required");
       if (adapters.has(name)) throw new Error(`Adapter already registered: ${name}`);
       adapters.set(name, launch);
+      let registered = true;
+      return () => {
+        if (!registered) return;
+        registered = false;
+        if (!disposed && adapters.get(name) === launch) adapters.delete(name);
+      };
     },
     registerProgram(name, program) {
       assertLive();
@@ -187,6 +195,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       }
       programs.set(name, executable);
       registry?.register(name, executable);
+      let registered = true;
+      return () => {
+        if (!registered) return;
+        registered = false;
+        if (disposed || programs.get(name) !== executable) return;
+        programs.delete(name);
+        registry?.unregister(name);
+      };
     },
     retainConsumer(consumer) {
       assertLive();
