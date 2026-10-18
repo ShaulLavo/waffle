@@ -756,6 +756,25 @@ Execution does not wait for these unless the owner changes the stated defaults.
 - [OPFS storage introduction](https://github.com/ShaulLavo/waffle/commit/c841b91abe86a0213a3cf1beff46d45ad58bdc48)
 - [Ownership and Safari reload changes](https://github.com/ShaulLavo/waffle/commit/538796963d3751911611330475c37a84d5067970)
 
+## 14. Guest symlink support (added 2026-10-18)
+
+Waffle's filesystem has no symlinks today: MemFS nodes are only files or directories, WASI `path_symlink` returns ENOTSUP, `path_readlink` assumes there are none, `path_filestat_get` ignores follow flags, and docs/host-abi.md says the filesystem has no symlinks. POSIX programs and shells expect them. A concrete case: running a symlink to a registered executable (`ln -s /bin/bun ~/mybun; ~/mybun`), and symlinked PATH directories. Today every host rejects such executable aliases with EACCES for parity; bun-wasm PR #79 tests that.
+
+Every VFS in this plan supports symlinks; it isn't a separate VFS. Required work:
+
+- **Nodes and traversal (fs/memory.ts).** Add a symlink node with its stored target. Resolve absolute and relative targets one component at a time, keeping the missing-component and file-as-directory errors. Limit link depth, and keep resolution inside directory capabilities.
+- **Filesystem interface (core/filesystem.ts, core/index.ts).** Add symlink metadata, resolution that follows the final link and resolution that doesn't, plus symlink creation and readlink.
+- **WASI (core/wasi.ts).** Implement `path_symlink` and `path_readlink`. Provide lstat through `path_filestat_get` without `SYMLINK_FOLLOW` (preview1 has no separate lstat import). Honour follow flags on the other path calls, and report the symlink file type.
+- **Transport and shared metadata.** Carry the new operations and node kind through fs/backend.ts, fs/client.ts, fs/shared.ts, fs/protocol.ts, browser/shared-fs.ts and runtime.ts.
+- **Persistence (fs/storage.ts, fs/persistent.ts, fs/indexeddb.ts, fs/opfs.ts).** Store the symlink kind and target in persisted inode metadata, and validate the target as stored text rather than as a directory edge. Serialise and restore links without following them. Update validation, recovery and checkpoint tests for both stores: IndexedDB's snapshot and journal, and OPFS's snapshots.
+- **Executable admission.** proc/registry.ts, proc/supervisor.ts, proc/types.ts and the browser launch plumbing pick the registration by the filesystem's final canonical path, keeping exact-registration ownership across asynchronous lookup. They return the admitted canonical identity (ResolvedExecutable carries no path today) and pass it to the launched child as its execPath, without changing argv[0]. Access queries and spawn must agree.
+- **ELOOP.** Add it to START_FAILED as host/Linux 40 and WASI 32. Today, access queries report -32 but spawn would map it to EIO.
+- **Tests and docs.** Cover the real filesystem, persistence, WASI, admission and access parity, capability confinement, and the browser. Update docs/host-abi.md.
+
+Consumers:
+- **bun-wasm:** switch the alias tests from rejection to success in every host.
+- **bash-web:** add tests for a file alias, a symlinked PATH directory, a loop, a dangling link and an unregistered target. Keep its existing admission regressions: tests/external-commands.spec.ts:155, 167, 189, 225, 254, 305, 319 and 366, and shell/engine/src/process.rs:626 and 666. No current bash-web test depends on rejecting aliases.
+
 ## Step 1 harness execution
 
 Status: **Approved**. The TypeScript harness implements the fixed v1 traces; it
