@@ -14,6 +14,8 @@ import type { StorageLockManager } from "./indexeddb.js";
 /** OPFS is owned by the filesystem worker, never a document or guest. */
 export interface OpfsStorageOptions {
   onStartupStage?: RuntimeStartupObserver;
+  signal?: AbortSignal;
+  onWaiting?: () => void;
   root?: FileSystemDirectoryHandle;
   storage?: StorageManager;
   locks?: StorageLockManager;
@@ -103,26 +105,50 @@ export class OpfsStorage implements StorageBackend {
     const cacheSize = options.handleCacheSize ?? 64;
     if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 64) throw new Error("Invalid OPFS create concurrency");
     if (!Number.isSafeInteger(cacheSize) || cacheSize < 1 || cacheSize + concurrency + 1 > 192) throw new Error("Invalid OPFS handle cache size");
-    let release!: () => void, acquired!: () => void, refused!: (error: unknown) => void;
+    let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    const ready = new Promise<void>((resolve, reject) => { acquired = resolve; refused = reject; });
+    let lifetime!: Promise<unknown>;
+    let acquired = false;
+    let released = false;
+    let resolveOpened!: (storage: OpfsStorage) => void;
+    let rejectOpened!: (error: unknown) => void;
+    const opened = new Promise<OpfsStorage>((resolve, reject) => { resolveOpened = resolve; rejectOpened = reject; });
     reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
-    const lifetime = locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive", ifAvailable: true }, async lock => {
-      if (lock === null) { refused(new Error("OPFS filesystem already has a writer in another tab or a page kept in browser history. Close all playground tabs, including this one, then reopen the playground. Saved files are kept.")); return; }
+    lifetime = locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive", signal: options.signal }, async lock => {
+      if (lock === null) throw new Error("OPFS storage lock request returned no lock");
+      acquired = true;
       reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
-      acquired(); await held;
+      try {
+        if (options.signal?.aborted) throw options.signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+        const root = options.root ?? await (options.storage ?? globalThis.navigator?.storage)?.getDirectory();
+        if (!root) throw new Error("OPFS storage requires navigator.storage.getDirectory()");
+        const workspace = await root.getDirectoryHandle(`bun-wasm-${encodeName(name)}`, { create: true });
+        const data = await workspace.getDirectoryHandle("data", { create: true });
+        const metadata = await workspace.getDirectoryHandle("metadata", { create: true });
+        const storage = new OpfsStorage(data as Directory, metadata as Directory, async () => {
+          if (!released) { released = true; release(); }
+          await lifetime;
+        }, concurrency, cacheSize);
+        resolveOpened(storage);
+        await held;
+      } catch (error) {
+        rejectOpened(error);
+        throw error;
+      }
     });
-    void lifetime.catch(refused);
-    await ready;
-    const unlock = async () => { release(); await lifetime; };
+    void lifetime.catch(rejectOpened);
+    queueMicrotask(() => {
+      if (!acquired && !released && !options.signal?.aborted) {
+        try { options.onWaiting?.(); } catch { /* Observation cannot change ownership. */ }
+      }
+    });
     try {
-      const root = options.root ?? await (options.storage ?? globalThis.navigator?.storage)?.getDirectory();
-      if (!root) throw new Error("OPFS storage requires navigator.storage.getDirectory()");
-      const workspace = await root.getDirectoryHandle(`bun-wasm-${encodeName(name)}`, { create: true });
-      const data = await workspace.getDirectoryHandle("data", { create: true });
-      const metadata = await workspace.getDirectoryHandle("metadata", { create: true });
-      return new OpfsStorage(data as Directory, metadata as Directory, unlock, concurrency, cacheSize);
-    } catch (error) { await unlock(); throw translate(error, "open"); }
+      return await opened;
+    } catch (error) {
+      try { await lifetime; } catch (lifetimeError) { error = lifetimeError; }
+      if (options.signal?.aborted || (error as { name?: unknown })?.name === "AbortError") throw error;
+      throw translate(error, "open");
+    }
   }
   resources(): Record<string, number> {
     return { opfsHandles: this.liveHandles, opfsPeakHandles: this.peakHandles, opfsCachedHandles: this.handles.size,

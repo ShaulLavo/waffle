@@ -26,4 +26,4 @@ try {
 } finally { await runtime.dispose(); }
 ```
 
-[Site](https://waffle.shaulavo.dev/) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Host ABI](docs/host-abi.md) · [Startup](docs/runtime-startup.md) · [Development](docs/development.md)
+[Site](https://waffle.shaulavo.dev/) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Host ABI](docs/host-abi.md) · [Startup](docs/runtime-startup.md) · [Storage](docs/storage.md) · [Development](docs/development.md)

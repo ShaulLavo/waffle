@@ -60,7 +60,7 @@ test("runtime observation is opt-in, with no diagnostic clocks or messages by de
   runtimes.push(runtime);
   expect(await runtime.filesystem.listFiles()).toEqual([]);
   expect(workers[0]!.messages[0]).not.toHaveProperty("observeStartup");
-  expect(workers[0]!.diagnostics).toEqual([]);
+  expect(workers[0]!.diagnostics).toEqual([{ type: "filesystem-state", status: "ready" }]);
   expect(clock).not.toHaveBeenCalled();
   await runtime.dispose();
   expect(workers[0]!.stopped).toBe(true);

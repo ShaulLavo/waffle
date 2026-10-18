@@ -374,6 +374,11 @@ export class FilesystemService {
     };
   }
   dispose(): void { for (const session of this.sessions) this.close(session); }
+  async shutdown(): Promise<void> {
+    await this.queue;
+    this.dispose();
+    await this.backend.close?.();
+  }
 }
 function failureDiagnostic(error: unknown) {
   let message = "Unknown filesystem worker error";
@@ -388,28 +393,46 @@ function failureDiagnostic(error: unknown) {
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
   scope: { onmessage: ((event: MessageEvent<any>) => void) | null; postMessage: (message: unknown) => void; },
-  backendFactory: (options: any, onStartupStage?: RuntimeStartupObserver) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
+  backendFactory: (options: any, onStartupStage?: RuntimeStartupObserver, signal?: AbortSignal, onWaiting?: () => void) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
   let errorReported = false;
   let onStartupStage: RuntimeStartupObserver | undefined;
+  const startupAbort = new AbortController();
+  let disposing = false;
   scope.onmessage = ({ data }) => {
+    if (data?.dispose === true) {
+      if (disposing) return;
+      disposing = true;
+      startupAbort.abort();
+      void (service ?? Promise.resolve(undefined)).then(owner => owner?.shutdown(), () => {}).then(
+        () => scope.postMessage({ type: "filesystem-disposed" }),
+        error => scope.postMessage({ type: "filesystem-disposed", error: failureDiagnostic(error).message }),
+      );
+      return;
+    }
+    if (disposing) { data.connect?.port.close(); return; }
     service ??= Promise.resolve().then(() => {
       if (data.connect && data.observeStartup === true) {
         onStartupStage = (stage, timestamp) => scope.postMessage({ type: "filesystem-startup", stage, timestamp });
         reportRuntimeStartup(onStartupStage, "filesystem-connected");
       }
-      return backendFactory(data, onStartupStage);
+      return backendFactory(data, onStartupStage, startupAbort.signal, () => {
+        if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
+      });
     }).then(backend => new FilesystemService(backend));
     void service.then(owner => {
+      if (disposing) { data.connect?.port.close(); return; }
       if (data.connect) {
         owner.connect(data.connect);
+        scope.postMessage({ type: "filesystem-state", status: "ready" });
         reportRuntimeStartup(onStartupStage, "filesystem-ready");
         onStartupStage = undefined;
       }
       else if (data.sweep) owner.sweep();
     }).catch(error => {
+      if (disposing) { data.connect?.port.close(); return; }
       if (errorReported) return;
       errorReported = true;
       try { scope.postMessage(failureDiagnostic(error)); }
