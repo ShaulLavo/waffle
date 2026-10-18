@@ -426,14 +426,16 @@ test("a long-running direct root does not retain settled child filesystem fences
     launch() { throw new Error("unused"); },
   });
   const fences = Reflect.get(broker, "fences") as Map<number, Promise<void>>;
+  let fence: Promise<void>;
+  const controller = { quiesce: () => fence };
   let release: (() => void) | undefined;
   try {
     const root = await broker.adoptRoot({}), supervisor = await broker.ready();
     for (let iteration = 0; iteration < 64; iteration++) {
       const child = supervisor.reserveSpawn(root, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
       const job = table.get(child)!.job;
-      const fence = new Promise<void>(resolve => { release = resolve; });
-      broker.registerController(child, { quiesce: () => fence });
+      fence = new Promise<void>(resolve => { release = resolve; });
+      broker.registerController(child, controller);
       const completion = supervisor.waitForExit(root, child);
       supervisor.exit(child, 0);
       expect(fences.has(child)).toBe(true);
