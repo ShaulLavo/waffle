@@ -1,3 +1,4 @@
+import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
   decodeRecord, decodeSnapshot, encodeRecord, encodeSnapshot, validatePersistedIndex,
   validatePersistedNode, validInteger,
@@ -17,6 +18,7 @@ export interface IndexedDBStorageOptions {
   /** Number of incremental saves between full snapshots. */
   compactEvery?: number;
   onOwnershipLost?: () => void;
+  onStartupStage?: RuntimeStartupObserver;
 }
 interface Journal {
   version: 1;
@@ -201,6 +203,7 @@ export class IndexedDBStorage implements StorageBackend {
     if (!Number.isSafeInteger(compactEvery) || compactEvery < 1) throw new Error("Invalid compaction interval");
     // Open before requesting the lock so its callback starts epoch allocation without
     // awaiting another task. Losing a grant aborts allocation as well as later commits.
+    reportRuntimeStartup(options.onStartupStage, "indexeddb-open-requested");
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const opening = factory.open(name, 1);
       let blocked = false;
@@ -211,14 +214,18 @@ export class IndexedDBStorage implements StorageBackend {
       opening.onerror = () => reject(opening.error ?? new Error("Cannot open filesystem storage"));
       opening.onblocked = () => { blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
     });
+    reportRuntimeStartup(options.onStartupStage, "indexeddb-open-resolved");
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     let acquired!: (storage: IndexedDBStorage) => void, refused!: (error: unknown) => void;
     const ready = new Promise<IndexedDBStorage>((resolve, reject) => { acquired = resolve; refused = reject; });
     let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
     let lost = false;
+    reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
     const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, { mode: "exclusive", steal: true }, async () => {
       if (lost) return;
+      reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
+      reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
       allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
       const done = completed(allocation);
       let epoch = 0;
@@ -230,6 +237,7 @@ export class IndexedDBStorage implements StorageBackend {
         allocation!.objectStore("metadata").put(epoch, "epoch");
       };
       await done;
+      reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
       allocation = undefined;
       if (lost) return;
       owner = new IndexedDBStorage(db, async () => { release(); await lifetime.catch(() => {}); }, compactEvery, epoch, options.onOwnershipLost);

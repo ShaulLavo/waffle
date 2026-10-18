@@ -7,7 +7,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `core/`, `fs/`, `proc/`, `interrupt/` | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked. |
 | `browser/net/` | Original adapter | Generic ring, HTTP framing, fetch and host transport. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle. |
 | `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
-| `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload and quota implementation is original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
+| `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `core/memory-views.js` | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity. |
 
 ## SLICC-kernel Apache-2.0 notice
@@ -42,3 +42,12 @@ startup outcome and shell-facing wait translation without copying Bun or Node co
 `site/public/assets/THREE-LICENSE.txt` is an unchanged copy of `LICENSE` from the pinned `three@0.158.0` npm package (upstream `mrdoob/three.js`, tag `r158`). It accompanies the bundled Three.js implementation because minification removes the module's short license header. The notice is published as a separate text asset without adding a runtime request.
 
 The supplied page has no bitmap images or video: its visuals are inline SVG, CSS and procedural WebGL. There are therefore no image transcoding changes. The original placeholder links and `© [YEAR]` text remain intentionally unchanged for exact reference parity.
+
+## Filesystem startup observation
+
+`fs/startup.ts` and the hooks in `runtime.ts`, `browser/{shared-fs,fs-worker}.ts`,
+`fs/{service,indexeddb,opfs}.ts` are original Waffle adapters. They report fixed
+startup stages around existing operations without copying upstream implementation
+or changing storage policy. The SLICC-kernel retry fragment in `fs/opfs.ts` remains
+unchanged; the new lock milestones are outside that adapted fragment. See
+[runtime-startup.md](runtime-startup.md) for the clock and stage boundaries.

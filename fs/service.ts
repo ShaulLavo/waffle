@@ -1,3 +1,4 @@
+import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
 import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, waitForFilesystemQuiescence, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol.js";
 
@@ -387,15 +388,26 @@ function failureDiagnostic(error: unknown) {
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
   scope: { onmessage: ((event: MessageEvent<any>) => void) | null; postMessage: (message: unknown) => void; },
-  backendFactory: (options: any) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
+  backendFactory: (options: any, onStartupStage?: RuntimeStartupObserver) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
   let errorReported = false;
+  let onStartupStage: RuntimeStartupObserver | undefined;
   scope.onmessage = ({ data }) => {
-    service ??= Promise.resolve().then(() => backendFactory(data)).then(backend => new FilesystemService(backend));
+    service ??= Promise.resolve().then(() => {
+      if (data.connect && data.observeStartup === true) {
+        onStartupStage = (stage, timestamp) => scope.postMessage({ type: "filesystem-startup", stage, timestamp });
+        reportRuntimeStartup(onStartupStage, "filesystem-connected");
+      }
+      return backendFactory(data, onStartupStage);
+    }).then(backend => new FilesystemService(backend));
     void service.then(owner => {
-      if (data.connect) owner.connect(data.connect);
+      if (data.connect) {
+        owner.connect(data.connect);
+        reportRuntimeStartup(onStartupStage, "filesystem-ready");
+        onStartupStage = undefined;
+      }
       else if (data.sweep) owner.sweep();
     }).catch(error => {
       if (errorReported) return;
