@@ -103,8 +103,11 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
     );
     new Uint8Array(guest.memory.buffer).set(request, 1024);
     if (guest.spawn(1024, request.length) <= 0 || !child) throw new Error("guest spawn failed");
-    wasi.descriptors.close(reader);
-    wasi.descriptors.close(writer);
+    // Stdio assertions installed aliases too; release every parent endpoint binding.
+    for (const fd of [reader, writer, 0, 1, 2]) {
+      wasi.descriptors.close(fd);
+      if (guest.fd_kind(fd) !== -8) throw new Error(`parent pipe fd ${fd} remained open`);
+    }
     worker = new Worker(workerUrl, { type: "module" });
     const done = Promise.withResolvers<void>();
     timer = setTimeout(
