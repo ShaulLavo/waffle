@@ -785,9 +785,11 @@ assertions remain mandatory even though their cells have no performance weight.
 
 Run screening on the reserved `upcloud-4` host, never a different host substituted
 into the same baseline. A campaign has two warmups and five measured repetitions
-per selected cell. Split its three browser selections into separately admitted
-exclusive bench jobs if needed to respect the one-hour execution fence; use the
-same campaign ID and immutable revision, retaining each browser's manifest.
+per selected cell. Admit one cell per exclusive bench job: the measured OPFS W2
+cell alone takes close to ten minutes, and a whole browser exceeded the one-hour
+controller fence. Use the same campaign ID and immutable revision, retaining each
+cell's manifest. `--cells chromium/indexeddb/W1/host` selects one exact cell and
+must also fall within the requested browser, workload and lane selections.
 
 The harness derives its revision from a clean Git HEAD. For dispatcher archives,
 stage a Git bundle of that same commit, reconstruct its Git index as documented in
@@ -859,3 +861,31 @@ campaign ledger, with its original log retained; a terminal marker alone is not 
 successful measurement. Verify the dispatcher's status, required samples and actual
 host cleanup before extraction. Stop and remove only task-created controller units,
 bundles and scripts once their consumers finish; keep the immutable result ledger.
+
+A controller-fence interruption is `invalid environment`, never a storage
+correctness failure. For older raw logs, retain the original row unchanged and
+record any derived classification separately, with the deadline and affected
+sample's log line numbers. A closed-page error is insufficient by itself: the
+controller deadline must precede the row, the terminal duration must reach that
+fence, and the dispatcher must exit nonzero. Genuine correctness failures and
+other environment invalidations remain blockers.
+
+If a frozen campaign needs continuation, keep the original commit identity and
+partial history. `tooling/vfs-continuation.ts` audits the entire Git diff and the
+exact controller insertion points; storage, workload, guest, browser and lifecycle
+paths must remain byte-identical. Only incomplete cells may run under the audited
+continuation identity. Each replacement cell supplies all two warmups and five
+measurements; never pool its repetitions with the original partial cell. Persist
+an exclusive dispatch intent before submission and atomically publish its terminal
+status. Unresolved intent requires evidence reconciliation, not automatic replay.
+
+```sh
+bun tooling/vfs-continuation.ts REPOSITORY ORIGINAL_SHA CONTINUATION_SHA \
+  ORIGINAL_SAMPLES_JSON CONTINUED_SAMPLES_JSON EXTERNAL_INITIAL_ARCHIVE_JSON
+bun tooling/vfs-score.ts --initial-summary EXTERNAL_INITIAL_ARCHIVE_JSON
+```
+
+The initial-summary entry point permits a source-audited initial archive composed
+of complete cells from those distinct identities. It only defines normalization;
+it cannot promote a candidate or certify paired guardrails. Candidate and paired
+accepted-reference inputs retain strict campaign/revision identity checks.
