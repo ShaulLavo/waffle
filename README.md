@@ -134,7 +134,9 @@ same path. The shell searches `$PATH`; Waffle's spawn does not. Spawn resolves i
 relative to the request's snapshotted `cwd` and walks the actual filesystem tree before
 canonicalizing the registration key, even for a cached module. A missing intermediate cannot
 be canceled by a later `..`; a regular file used as a directory or given a trailing slash
-produces `ENOTDIR` (shell status 126). A missing file produces `ENOENT` (shell status 127).
+produces `ENOTDIR` (shell status 126). Absolute page paths treat the parent of `/` as `/`,
+without weakening the separate capability-relative WASI resolver. A missing file produces
+`ENOENT` (shell status 127).
 A directory or an existing regular file without a registered program produces `EACCES`
 (shell status 126); directory diagnostics explicitly identify the directory. Deleting a registered
 file or replacing it with a directory therefore prevents future execution. Releasing a registration

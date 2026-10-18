@@ -123,7 +123,7 @@ export class MemoryBackend implements FilesystemBackend {
       }
       case "resolvePath": {
         if (!a.startsWith("/")) throw new FilesystemError(28, "path resolution requires an absolute path");
-        const resolved = this.fs.resolve(this.fs.preopen("/"), a.replace(/^\/+/, "") || ".");
+        const resolved = this.fs.resolveAbsolute(a);
         if (typeof resolved === "number") throw new FilesystemError(resolved);
         if (resolved.node === undefined) return undefined;
         // This tree has no symlinks: normalize only after the real walk has validated

@@ -19,7 +19,7 @@ function fixture() {
   return { fs, registry, supervisor, root, lookups, contexts, failures, get loads() { return loads; } };
 }
 
-for (const [executable, cwd] of [["./test-guest", "/bin"], ["test-guest", "/bin"], ["/bin/../bin/./test-guest", "/elsewhere"]] as const) {
+for (const [executable, cwd] of [["./test-guest", "/bin"], ["test-guest", "/bin"], ["/bin/../bin/./test-guest", "/elsewhere"], ["/../bin/test-guest", "/"], ["../bin/test-guest", "/"], ["/bin/../../bin/test-guest", "/"]] as const) {
   test(`spawn resolves ${executable} against cwd ${cwd}`, async () => {
     const state = fixture();
     try {
@@ -123,7 +123,7 @@ test("executable checks share live admission rules without loading modules", asy
     expect(await state.registry.check("../bin/./test-guest", "/bin")).toMatchObject({ adapter: "test", interruptible: true });
     expect(state.loads).toBe(0);
     expect(state.contexts).toHaveLength(0);
-    for (const [path, code] of [["/bin/test-guest/", "ENOTDIR"], ["/missing/../bin/test-guest", "ENOENT"], ["/bin/test-guest/../test-guest", "ENOTDIR"]]) {
+    for (const [path, code] of [["/bin/test-guest/", "ENOTDIR"], ["/missing/../bin/test-guest", "ENOENT"], ["/bin/test-guest/../test-guest", "ENOTDIR"], ["/../missing/../bin/test-guest", "ENOENT"], ["/../bin/test-guest/../test-guest", "ENOTDIR"]]) {
       await expect(state.registry.check(path!)).rejects.toMatchObject({ code });
     }
     state.registry.unregister("/bin/test-guest");
@@ -157,4 +157,17 @@ test("canceling a process does not cancel compilation shared with another proces
     expect(loads).toBe(1);
     expect(launches).toBe(1);
   } finally { compile(module); supervisor.dispose(); }
+});
+
+test("absolute executable checks clamp parent-of-root without weakening WASI capability paths", async () => {
+  const state = fixture();
+  try {
+    expect(state.fs.resolve(state.fs.preopen("/"), "../bin/test-guest")).toBe(63);
+    for (const path of ["/../bin/test-guest", "/bin/../../bin/test-guest"]) {
+      expect(await state.registry.check(path)).toMatchObject({ adapter: "test" });
+    }
+    expect(await state.registry.check("../bin/test-guest", "/")).toMatchObject({ adapter: "test" });
+    expect(state.loads).toBe(0);
+    expect(state.contexts).toHaveLength(0);
+  } finally { state.supervisor.dispose(); }
 });
