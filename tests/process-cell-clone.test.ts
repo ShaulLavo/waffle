@@ -6,6 +6,8 @@ const fixture = fileURLToPath(new URL("./fixtures/process-cell-clone.ts", import
 
 for (const [mode, description] of [
   ["instances", "directory cell instances are cloneable in real Node workerData"],
+  ["instances-after-exit", "Node worker exit does not reject an undrained MessagePort reply"],
+  ["no-reply", "a Node worker closing its reply port without replying rejects the waiter"],
   ["process", "Node Worker and MessagePort process cells reject collection before and after slot reuse"],
   ["job", "Node Worker and MessagePort job cells retain a lifecycle identity distinct from the leader pid"],
   ["broker", "the generic process broker spawns and waits for a real Node worker with serialized consumer signals"],
