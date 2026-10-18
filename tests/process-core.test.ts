@@ -1,7 +1,14 @@
-import { controlLoad, controlStore, controlExchange } from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import {
+import type { ProcessContext, SpawnRequest } from "../proc/index.js";
+type ProcessSupervisor = import("../proc/index.js").ProcessSupervisor;
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { controlLoad, controlStore, controlExchange } =
+  isolated.load<typeof import("../proc/control.js")>("control");
+const {
   ExecutableRegistry,
   FirstSpawnStub,
   ProcessIdentityAllocator,
@@ -17,9 +24,7 @@ import {
   takeSignal,
   outcomeWord,
   claimOutcome,
-  type ProcessContext,
-  type SpawnRequest,
-} from "../proc/index.js";
+} = isolated.load<typeof import("../proc/index.js")>("index");
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 function deferred<T>() {

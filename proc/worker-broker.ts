@@ -1,3 +1,11 @@
+import {
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsAdd,
+  atomicsLoad,
+  atomicsNotify,
+  atomicsWaitAsync,
+} from "./intrinsics.ts";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "./worker-access.js";
 import { startFailure } from "./start-failure.js";
 import {
@@ -69,7 +77,7 @@ export class WorkerProcessBroker {
     check: async (sender, path, cwd, active, onCancel) => {
       const supervisor = await this.ready();
       active();
-      const wake = new Int32Array(new SharedArrayBuffer(4));
+      const wake = new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
       const id = supervisor.accessStart(sender.pid, path, cwd, wake);
       if (id < 0) return id;
       let cancelled = false,
@@ -89,8 +97,8 @@ export class WorkerProcessBroker {
           )
             throw error;
         } finally {
-          Atomics.add(wake, 0, 1);
-          Atomics.notify(wake, 0);
+          atomicsAdd(wake, 0, 1);
+          atomicsNotify(wake, 0);
         }
       };
       onCancel(() => {
@@ -99,7 +107,7 @@ export class WorkerProcessBroker {
       });
       try {
         for (;;) {
-          const expected = Atomics.load(wake, 0);
+          const expected = atomicsLoad(wake, 0);
           if (cancelled) return -ProcessErrno.BADF;
           active();
           if (supervisor.accessReady(sender.pid, id)) {
@@ -108,15 +116,7 @@ export class WorkerProcessBroker {
             return result;
           }
           // No timeout: completion, cancellation and revocation all notify this word.
-          await (
-            Atomics as unknown as {
-              waitAsync(
-                array: Int32Array,
-                index: number,
-                value: number,
-              ): { value: string | Promise<string> };
-            }
-          ).waitAsync(wake, 0, expected).value;
+          await atomicsWaitAsync(wake, 0, expected).value;
         }
       } finally {
         stop();

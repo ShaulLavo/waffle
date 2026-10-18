@@ -1,13 +1,21 @@
 import { expect, test } from "bun:test";
-import {
+type PipePublicationRegistry = import("../proc/pipes.js").PipePublicationRegistry;
+
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const {
   attachPipeEndpoint,
   attachPipePublicationRegistry,
   PipeController,
   PipeErrno,
   PipePublicationRegistry,
-} from "../proc/pipes.js";
-import { createWorkerProcessTransport } from "../proc/worker-client.js";
-import { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes.js";
+} = isolated.load<typeof import("../proc/pipes.js")>("pipes");
+const { createWorkerProcessTransport } =
+  isolated.load<typeof import("../proc/worker-client.js")>("worker-client");
+const { WorkerPipeBroker, WorkerPipeHost } =
+  isolated.load<typeof import("../proc/worker-pipes.js")>("worker-pipes");
 
 const STOP = 1n << 32n;
 const REVOKED = 1n << 31n;
@@ -282,8 +290,10 @@ test("a physically running worker paused at owner CAS loses to collection withou
   });
   registry.registerProcess(1);
   const gate = new Int32Array(new SharedArrayBuffer(4));
-  const module = new URL("../proc/pipes.ts", import.meta.url).href;
-  const source = `import {attachPipePublicationRegistry} from ${JSON.stringify(module)};
+  const module = new URL("./fixtures/pipes-intrinsics.ts", import.meta.url).href;
+  const source = `import {isolatedPipes} from ${JSON.stringify(module)};
+    const isolated = isolatedPipes(), Atomics = isolated.atomics;
+    const {attachPipePublicationRegistry} = isolated.pipes;
     self.onmessage = ({data}) => {
       const registry = attachPipePublicationRegistry(data.registry), gate = data.gate;
       const cas = Atomics.compareExchange;

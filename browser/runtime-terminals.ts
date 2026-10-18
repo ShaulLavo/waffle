@@ -3,6 +3,7 @@ import { OpenDescription, type DescriptorTable, type Stream } from "../core/desc
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
+import { WeakMapConstructor, weakMapGet, weakMapHas, weakMapSet } from "../proc/intrinsics.ts";
 
 type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken {
@@ -11,7 +12,7 @@ interface TerminalToken {
 }
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
 // codec instances and later generations; WeakMap entries disappear with their local streams.
-const targets = new WeakMap<Stream, TerminalTarget>();
+const targets = new WeakMapConstructor<Stream, TerminalTarget>();
 const NOSYS = 52;
 export interface RuntimeTerminalCodecOptions {
   fallback: WorkerDescriptorCodec;
@@ -40,14 +41,15 @@ export function createRuntimeTerminalCodec(
 ): WorkerDescriptorCodec {
   for (const fd of [0, 1, 2] as const) {
     const resource = options.descriptors?.get(fd)?.resource;
-    if (resource?.kind === "terminal" && !targets.has(resource)) targets.set(resource, fd);
+    if (resource?.kind === "terminal" && !weakMapHas(targets, resource))
+      weakMapSet(targets, resource, fd);
   }
   return {
     export(descriptor, pid) {
       const resource = descriptor.resource;
       if (resource.kind !== "terminal" && resource.kind !== "pipe")
         return options.fallback.export(descriptor, pid);
-      const target = targets.get(resource);
+      const target = weakMapGet(targets, resource);
       if (target === undefined && resource.kind === "pipe")
         return options.fallback.export(descriptor, pid);
       // Arbitrary callback terminals cannot be cloned: only known destination provenance
@@ -69,7 +71,7 @@ export function createRuntimeTerminalCodec(
           throw error;
         }
         const remember = (stream: Stream) => {
-          targets.set(stream, token.target);
+          weakMapSet(targets, stream, token.target);
         };
         const stream = options.checkActive
           ? guardedStream(resolved, options.checkActive, remember)
@@ -107,7 +109,7 @@ export function createRuntimeTerminalCodec(
           return { readable: true, writable: true, hangup: token.target === 0 };
         },
       };
-      targets.set(stream, token.target);
+      weakMapSet(targets, stream, token.target);
       return new OpenDescription(stream);
     },
     discard(value) {

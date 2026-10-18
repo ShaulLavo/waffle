@@ -1,10 +1,17 @@
-import { controlLoad } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
-import { ProcessABI, ProcessSignalExit } from "../proc/abi.js";
-import { claimOutcome, outcomeWord } from "../proc/outcome.js";
-import { createSignalState, requestSignal } from "../proc/signals.js";
+type ProcessSignalExit = import("../proc/abi.js").ProcessSignalExit;
+
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { controlLoad } = isolated.load<typeof import("../proc/control.js")>("control");
+const { ProcessABI, ProcessSignalExit } = isolated.load<typeof import("../proc/abi.js")>("abi");
+const { claimOutcome, outcomeWord } = isolated.load<typeof import("../proc/outcome.js")>("outcome");
+const { createSignalState, requestSignal } =
+  isolated.load<typeof import("../proc/signals.js")>("signals");
 
 function fixture() {
   const descriptors = new DescriptorTable();

@@ -37,6 +37,13 @@ import type {
   workerProcessState,
 } from "../proc/worker-client.js";
 import type { PipeEndpointHandle } from "../proc/pipes.js";
+import {
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsWait,
+  objectEntries,
+  reflectApply,
+} from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -166,6 +173,11 @@ export class RuntimeWorkerSignal extends ExecutionUnwind {
 
 // Keep the native clock before an executor can install guest-side globals.
 const perfNow = performance.now.bind(performance);
+// The default Worker host is guest-visible. Capture its native hooks at module load;
+// explicit embedding hosts supply trusted callbacks, captured once at bootstrap entry.
+const defaultPostMessage = globalThis.postMessage;
+const defaultAddEventListener = globalThis.addEventListener;
+const defaultRemoveEventListener = globalThis.removeEventListener;
 
 /** `Name: message` plus the first stack frames. */
 export function describeWorkerError(err: unknown): string {
@@ -180,25 +192,42 @@ export function describeWorkerError(err: unknown): string {
     : head;
 }
 
+function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {
+  if (!host.crossOriginIsolated || typeof SharedArrayBufferConstructor !== "function") return null;
+  return new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+}
+
+function captureWorkerHost(host: RuntimeWorkerHost) {
+  const postMethod = host === globalThis ? defaultPostMessage : host.postMessage;
+  const addListener = host === globalThis ? defaultAddEventListener : host.addEventListener;
+  const removeListener =
+    host === globalThis ? defaultRemoveEventListener : host.removeEventListener;
+  const postToHost = (message: RuntimeWorkerMessage, transfer?: Transferable[]) => {
+    reflectApply(postMethod, host, transfer ? [message, transfer] : [message]);
+  };
+  return { postToHost, addListener, removeListener };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
   executor: WorkerExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
-  host.postMessage({ type: "phase", name: "worker-start", duration: 0 });
+  const { postToHost, addListener, removeListener } = captureWorkerHost(host);
+  postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
-  const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
-  const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  const sleepCell = createSleepCell(host);
+  const isolated = sleepCell !== null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
   let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal
-    ? new Int32Array(executor.requestedSignal)
+    ? new Int32ArrayConstructor(executor.requestedSignal)
     : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -233,7 +262,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled")
-      host.postMessage({ type: "default-signal", signal: winner.code });
+      postToHost({ type: "default-signal", signal: winner.code });
     if (executor.signalError) return executor.signalError(winner.code);
     throw new RuntimeWorkerSignal(winner.code);
   };
@@ -340,7 +369,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
       winner ??= claim(ownResult);
-      host.postMessage({
+      postToHost({
         type: "cleanup-error",
         code: waitStatus(winner),
         signal: winner.kind === "signaled" ? winner.code : undefined,
@@ -363,9 +392,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       (executor.complete || "code" in result || settled || winner.kind === "signaled") &&
       !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")
     ) {
-      host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
+      postToHost({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
-      host.postMessage({
+      postToHost({
         type: "error",
         code,
         errno: winner.kind === "start-failed" ? winner.error : undefined,
@@ -426,7 +455,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const interrupt =
       runtimeState?.signals.interrupt ??
-      (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
+      (executor.interrupt ? new Int32ArrayConstructor(executor.interrupt) : undefined);
     if (runtimeState) {
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
@@ -442,7 +471,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
       checkIoActive();
-      host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
+      postToHost({ type, data }, [data.buffer as ArrayBuffer]);
     };
     const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
       if (immediate) checkIoActive();
@@ -533,13 +562,20 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
+    let reservedFds: number[] | undefined;
+    if (req.runtimeProcess) {
+      reservedFds = [];
+      for (let index = 0; index < req.runtimeProcess.bindings.length; index++) {
+        reservedFds[index] = req.runtimeProcess.bindings[index]!.fd;
+      }
+    }
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
       args: req.args,
       env,
       fs,
       preopens: { "/": "/" },
-      reservedFds: req.runtimeProcess?.bindings.map((binding) => binding.fd),
+      reservedFds,
       stdio,
       stdout: (data) => {
         output("stdout", data);
@@ -553,7 +589,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       sleep: (ms) => {
         checkActive();
         if (ms > 0) {
-          if (sleepCell) Atomics.wait(sleepCell, 0, 0, ms);
+          if (sleepCell) atomicsWait(sleepCell, 0, 0, ms);
           else {
             const end = perfNow() + ms;
             while (perfNow() < end) {
@@ -585,7 +621,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const { ProcessABI, ProcessSignalExit } = await import("../proc/abi.js");
       const { createRuntimeTerminalCodec } = await import("./runtime-terminals.js");
       processSignalExit = ProcessSignalExit;
-      const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
+      const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess,
         postMessage,
@@ -603,7 +639,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         codec: createRuntimeTerminalCodec({
           fallback: pipes.codec(),
           descriptors: wasi.descriptors,
-          resolveTerminal: executor.resolveTerminal?.bind(executor),
+          resolveTerminal: executor.resolveTerminal
+            ? (...args) => executor.resolveTerminal!(...args)
+            : undefined,
           output: (fd, data) => {
             output(fd === 2 ? "stderr" : "stdout", data);
           },
@@ -670,7 +708,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           checkActive();
         },
       });
-      for (const [name, call] of Object.entries(abi.imports)) {
+      const entries = objectEntries(abi.imports);
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]!,
+          name = entry[0],
+          call = entry[1];
         // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.
         if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => {
@@ -701,7 +743,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       throw new ExecutableFormatError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
-    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
+    postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     executor.instantiated?.({ ...context, wasi, instance });
     if (done) return;
     const exited = wasi.launch(instance, () => {
@@ -715,8 +757,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       releaseStartupStderr?.();
       started = true;
     });
-    host.addEventListener?.("error", onError);
-    host.addEventListener?.("unhandledrejection", onRejection);
+    if (addListener) reflectApply(addListener, host, ["error", onError]);
+    if (addListener) reflectApply(addListener, host, ["unhandledrejection", onRejection]);
     const completion = executor.run({ ...context, wasi, instance }, exited);
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
@@ -726,8 +768,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     try {
       await pendingFinish;
     } finally {
-      host.removeEventListener?.("error", onError);
-      host.removeEventListener?.("unhandledrejection", onRejection);
+      if (removeListener) reflectApply(removeListener, host, ["error", onError]);
+      if (removeListener) reflectApply(removeListener, host, ["unhandledrejection", onRejection]);
     }
   }
 }

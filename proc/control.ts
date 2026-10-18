@@ -1,4 +1,18 @@
 import { ProcessErrno, ProcessError } from "./types.ts";
+import {
+  isInstance,
+  atomicsCompareExchange,
+  atomicsLoad,
+  atomicsNotify,
+  atomicsWait,
+  atomicsStore,
+  atomicsAdd,
+  atomicsExchange,
+  BigInt64ArrayConstructor,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayLength,
+} from "./intrinsics.ts";
 
 const MASK = 0xffffffffn;
 // Executors may replace the global clock with a guest polyfill. Wait deadlines
@@ -31,21 +45,22 @@ export class TaggedCells {
     this.cells = cells;
     this.id = id;
     this.validity = validity;
-    if (validity) this.identity = new BigInt64Array(validity.buffer, validity.byteOffset, 1);
+    if (validity)
+      this.identity = new BigInt64ArrayConstructor(validity.buffer, validity.byteOffset, 1);
   }
   get buffer(): SharedArrayBuffer {
-    return this.cells.buffer as SharedArrayBuffer;
+    return typedArrayBuffer(this.cells) as SharedArrayBuffer;
   }
   get byteOffset(): number {
-    return this.cells.byteOffset;
+    return typedArrayByteOffset(this.cells);
   }
   get length(): number {
-    return this.cells.length;
+    return typedArrayLength(this.cells);
   }
   valid(): boolean {
     return (
       this.identity === undefined ||
-      Atomics.load(this.identity, 0) === packedControl(this.validity!.id, 1)
+      atomicsLoad(this.identity, 0) === packedControl(this.validity!.id, 1)
     );
   }
   check(): void {
@@ -60,12 +75,12 @@ export class TaggedCells {
   }
   load(index = 0): number {
     this.check();
-    return this.checked(Atomics.load(this.cells, index));
+    return this.checked(atomicsLoad(this.cells, index));
   }
   compareExchange(index: number, expected: number, replacement: number): number {
     this.check();
     return this.checked(
-      Atomics.compareExchange(
+      atomicsCompareExchange(
         this.cells,
         index,
         packedControl(this.id, expected),
@@ -112,7 +127,7 @@ export function reviveTaggedCells(source: TaggedCellsTransfer): TaggedCells {
     throw new TypeError("invalid tagged cells transfer");
   }
   return new TaggedCells(
-    new BigInt64Array(source.buffer, source.byteOffset, source.length),
+    new BigInt64ArrayConstructor(source.buffer, source.byteOffset, source.length),
     source.id,
     source.validity,
   );
@@ -120,10 +135,12 @@ export function reviveTaggedCells(source: TaggedCellsTransfer): TaggedCells {
 /** Standalone host words are never recycled. Directory words always use TaggedCells. */
 export type ControlCells = Int32Array | TaggedCells;
 export function controlLoad(word: ControlCells, index = 0): number {
-  return word instanceof TaggedCells ? word.load(index) : Atomics.load(word, index);
+  return isInstance(word, TaggedCells) ? word.load(index) : atomicsLoad(word, index);
 }
 export function controlStore(word: ControlCells, index: number, value: number): number {
-  return word instanceof TaggedCells ? word.store(index, value) : Atomics.store(word, index, value);
+  return isInstance(word, TaggedCells)
+    ? word.store(index, value)
+    : atomicsStore(word, index, value);
 }
 export function controlCas(
   word: ControlCells,
@@ -131,24 +148,24 @@ export function controlCas(
   expected: number,
   value: number,
 ): number {
-  return word instanceof TaggedCells
+  return isInstance(word, TaggedCells)
     ? word.compareExchange(index, expected, value)
-    : Atomics.compareExchange(word, index, expected, value);
+    : atomicsCompareExchange(word, index, expected, value);
 }
 export function controlAdd(word: ControlCells, index: number, value: number): number {
-  return word instanceof TaggedCells ? word.add(index, value) : Atomics.add(word, index, value);
+  return isInstance(word, TaggedCells) ? word.add(index, value) : atomicsAdd(word, index, value);
 }
 export function controlExchange(word: ControlCells, index: number, value: number): number {
-  return word instanceof TaggedCells
+  return isInstance(word, TaggedCells)
     ? word.exchange(index, value)
-    : Atomics.exchange(word, index, value);
+    : atomicsExchange(word, index, value);
 }
 export function controlNotify(word: ControlCells, index = 0): void {
-  if (word instanceof TaggedCells) {
+  if (isInstance(word, TaggedCells)) {
     word.load(index);
-    Atomics.notify(word.cells, index);
+    atomicsNotify(word.cells, index);
     word.check();
-  } else Atomics.notify(word, index);
+  } else atomicsNotify(word, index);
 }
 export function controlWait(
   word: ControlCells,
@@ -156,7 +173,7 @@ export function controlWait(
   expected: number,
   timeout?: number,
 ): string {
-  if (!(word instanceof TaggedCells)) return Atomics.wait(word, index, expected, timeout);
+  if (!isInstance(word, TaggedCells)) return atomicsWait(word, index, expected, timeout);
   const duration = timeout === undefined || Number.isNaN(timeout) ? Infinity : Math.max(timeout, 0);
   const deadline = clock() + duration;
   // Lifecycle retirement changes a separate word. Bound sleeps so collection between
@@ -164,7 +181,7 @@ export function controlWait(
   for (;;) {
     if (word.load(index) !== expected) return "not-equal";
     const remaining = Math.max(0, deadline - clock());
-    const result = Atomics.wait(
+    const result = atomicsWait(
       word.cells,
       index,
       packedControl(word.id, expected),

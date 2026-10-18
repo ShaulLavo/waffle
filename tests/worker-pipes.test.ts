@@ -1,3 +1,4 @@
+import { fixtureSpawnRequest as request } from "./fixtures/spawn-request.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
@@ -9,35 +10,38 @@ import {
   createFilesystemConnection,
   createProcessFilesystemIdentity,
 } from "../fs/index.js";
-import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
-import {
-  PipeController,
-  PipeEndpoint,
-  PipeErrno,
-  PipePublicationRegistry,
-  attachPipeEndpoint,
-  type PipeEndpointHandle,
-  type PipePublicationRegistryHandle,
-} from "../proc/pipes.js";
-import { directoryJobs } from "../proc/directory.js";
-import { ExecutableRegistry } from "../proc/registry.js";
-import { ProcessSupervisor } from "../proc/supervisor.js";
-import { WorkerProcessBroker } from "../proc/worker-broker.js";
-import {
+
+import type { PipeEndpointHandle, PipePublicationRegistryHandle } from "../proc/pipes.js";
+type PipeController = import("../proc/pipes.js").PipeController;
+type PipeEndpoint = import("../proc/pipes.js").PipeEndpoint;
+
+import type { WorkerProcessMessage, WorkerProcessTransport } from "../proc/worker-client.js";
+type WorkerPipeBroker = import("../proc/worker-pipes.js").WorkerPipeBroker;
+type WorkerPipeHost = import("../proc/worker-pipes.js").WorkerPipeHost;
+import type { ProcessContext } from "../proc/types.js";
+type ProcessError = import("../proc/types.js").ProcessError;
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { createFilesystemDescriptorCodec } =
+  isolated.load<typeof import("../proc/filesystem-codec.js")>("filesystem-codec");
+const { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, attachPipeEndpoint } =
+  isolated.load<typeof import("../proc/pipes.js")>("pipes");
+const { directoryJobs } = isolated.load<typeof import("../proc/directory.js")>("directory");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry.js")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor.js")>("supervisor");
+const { WorkerProcessBroker } =
+  isolated.load<typeof import("../proc/worker-broker.js")>("worker-broker");
+const {
   createWorkerProcessTransport,
   WorkerProcessClient,
   workerProcessSlots,
   workerProcessState,
-  type WorkerProcessMessage,
-  type WorkerProcessTransport,
-} from "../proc/worker-client.js";
-import {
-  WorkerPipeBroker,
-  WorkerPipeHost,
-  createWorkerPipeCodec,
-  isWorkerPipeDescriptorToken,
-} from "../proc/worker-pipes.js";
-import { ProcessError, type ProcessContext, type SpawnRequest } from "../proc/types.js";
+} = isolated.load<typeof import("../proc/worker-client.js")>("worker-client");
+const { WorkerPipeBroker, WorkerPipeHost, createWorkerPipeCodec, isWorkerPipeDescriptorToken } =
+  isolated.load<typeof import("../proc/worker-pipes.js")>("worker-pipes");
+const { ProcessError } = isolated.load<typeof import("../proc/types.js")>("types");
 
 const encoder = new TextEncoder(),
   decoder = new TextDecoder();
@@ -46,15 +50,7 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-const request = (overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  executable: "fixture",
-  argv: ["fixture"],
-  env: {},
-  cwd: "/",
-  job: 0,
-  fds: [],
-  ...overrides,
-});
+
 function output(endpoint: PipeEndpoint, capacity = 64): number | string {
   const bytes = new Uint8Array(capacity);
   const size = endpoint.tryRead([bytes]);
@@ -672,12 +668,21 @@ test("authorized worker kill freezes publication before parent-visible completio
   const inherited = guest.options.descriptors.get(17)!.resource as PipeEndpoint;
   expect(inherited.tryWrite([encoder.encode("good")])).toBe(4);
   const late = encoder.encode("late"),
-    subarray = late.subarray.bind(late);
-  late.subarray = (start, end) => {
-    f.root.kill(pid, 9);
-    return subarray(start, end);
+    subarray = isolated.hooks.typedArraySubarray;
+  let intercepted = false;
+  isolated.hooks.typedArraySubarray = (view, start, end) => {
+    if (view === late) {
+      intercepted = true;
+      f.root.kill(pid, 9);
+    }
+    return subarray(view, start, end);
   };
-  expect(inherited.tryWrite([late])).toBe(-PipeErrno.BADF);
+  try {
+    expect(inherited.tryWrite([late])).toBe(-PipeErrno.BADF);
+  } finally {
+    isolated.hooks.typedArraySubarray = subarray;
+  }
+  expect(intercepted).toBe(true);
   expect(f.root.wait(1, pid)).toBeNull();
   expect(output(reader)).toBe("good");
   expect(output(reader)).toBe("");

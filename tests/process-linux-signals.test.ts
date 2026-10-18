@@ -3,19 +3,23 @@ import { controlStore, controlLoad } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
-import { ProcessABI, ProcessSignalExit } from "../proc/abi";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { claimOutcome, readOutcome } from "../proc/outcome";
-import {
-  createSignalState,
-  requestSignal,
-  setSignalDisposition,
-  SIGNAL_PENDING,
-  takeSignal,
-} from "../proc/signals";
-import { checkedSignal, ProcessError } from "../proc/types";
-import { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client";
+type ProcessSignalExit = import("../proc/abi").ProcessSignalExit;
+
+type ProcessError = import("../proc/types").ProcessError;
+
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { ProcessABI, ProcessSignalExit } = isolated.load<typeof import("../proc/abi")>("abi");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor")>("supervisor");
+const { claimOutcome, readOutcome } = isolated.load<typeof import("../proc/outcome")>("outcome");
+const { createSignalState, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal } =
+  isolated.load<typeof import("../proc/signals")>("signals");
+const { checkedSignal, ProcessError } = isolated.load<typeof import("../proc/types")>("types");
+const { createWorkerProcessTransport, WorkerProcessClient } =
+  isolated.load<typeof import("../proc/worker-client")>("worker-client");
 
 function fixture(
   wait?: (

@@ -1,3 +1,4 @@
+import { objectFreeze } from "./intrinsics.ts";
 import { ExecutableFormatError } from "./start-failure.js";
 import { normalize } from "../core/path.js";
 
@@ -58,7 +59,7 @@ export class ExecutableRegistry {
       throw new TypeError("executable and adapter names are required");
     this.entries.set(
       name,
-      Object.freeze({ ...executable, interruptible: executable.interruptible ?? false }),
+      objectFreeze({ ...executable, interruptible: executable.interruptible ?? false }),
     );
   }
   unregister(name: string): boolean {

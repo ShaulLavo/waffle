@@ -1,6 +1,31 @@
-import { ProcessABI } from "../proc/abi.js";
+import { fixtureSpawnRequest as request } from "./fixtures/spawn-request.ts";
+
 import { MemFS } from "../fs/memory.js";
+
+import { afterEach, expect, test } from "bun:test";
 import {
+  DescriptorTable,
+  OpenDescription,
+  type Descriptor,
+  type Resource,
+  type Stream,
+} from "../core/descriptors.js";
+
+type ProcessSupervisor = import("../proc/supervisor.js").ProcessSupervisor;
+
+import type {
+  WorkerDescriptorCodec,
+  WorkerProcessMessage,
+  WorkerProcessTransport,
+} from "../proc/worker-client.js";
+
+import type { ProcessContext, ProcessHandle } from "../proc/types.js";
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { ProcessABI } = isolated.load<typeof import("../proc/abi.js")>("abi");
+const {
   collectDirectoryProcess,
   collectDirectoryJob,
   directorySlots,
@@ -11,8 +36,8 @@ import {
   findDirectoryJob,
   helpDirectoryJobs,
   reserveDirectoryProcess,
-} from "../proc/directory.js";
-import {
+} = isolated.load<typeof import("../proc/directory.js")>("directory");
+const {
   packedControl,
   controlLoad,
   controlStore,
@@ -21,53 +46,31 @@ import {
   controlAdd,
   controlWait,
   controlNotify,
-} from "../proc/control.js";
-import { afterEach, expect, test } from "bun:test";
-import {
-  DescriptorTable,
-  OpenDescription,
-  type Descriptor,
-  type Resource,
-  type Stream,
-} from "../core/descriptors.js";
-import { ExecutableRegistry } from "../proc/registry.js";
-import { ProcessSupervisor } from "../proc/supervisor.js";
-import { SignalDisposition, setSignalDisposition } from "../proc/signals.js";
-import { claimOutcome, readOutcome } from "../proc/outcome.js";
-import { WorkerProcessBroker } from "../proc/worker-broker.js";
-import {
+} = isolated.load<typeof import("../proc/control.js")>("control");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry.js")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor.js")>("supervisor");
+const { SignalDisposition, setSignalDisposition } =
+  isolated.load<typeof import("../proc/signals.js")>("signals");
+const { claimOutcome, readOutcome } = isolated.load<typeof import("../proc/outcome.js")>("outcome");
+const { WorkerProcessBroker } =
+  isolated.load<typeof import("../proc/worker-broker.js")>("worker-broker");
+const {
   createWorkerProcessTransport,
   confirmWorkerProcessJob,
   installWorkerBindings,
   WorkerProcessClient,
   workerProcessState,
-  type WorkerDescriptorCodec,
-  type WorkerProcessMessage,
-  type WorkerProcessTransport,
-} from "../proc/worker-client.js";
-import { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes.js";
-import {
-  ProcessErrno,
-  ProcessError,
-  type ProcessContext,
-  type ProcessHandle,
-  type SpawnRequest,
-} from "../proc/types.js";
+} = isolated.load<typeof import("../proc/worker-client.js")>("worker-client");
+const { WorkerPipeHost, createWorkerPipeCodec } =
+  isolated.load<typeof import("../proc/worker-pipes.js")>("worker-pipes");
+const { ProcessErrno, ProcessError } = isolated.load<typeof import("../proc/types.js")>("types");
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-const request = (overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  executable: "fixture",
-  argv: ["fixture"],
-  env: {},
-  cwd: "/",
-  job: 0,
-  fds: [],
-  ...overrides,
-});
+
 function expectErrno(operation: () => unknown, errno: number): void {
   let error: unknown;
   try {

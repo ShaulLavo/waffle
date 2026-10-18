@@ -1,4 +1,4 @@
-import { controlLoad } from "../../proc/control.js";
+import { controlLoad, controlWait } from "../../proc/control.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { ProcessABI, type ProcessService } from "../../proc/abi.js";
 import { readOutcome } from "../../proc/outcome.js";
@@ -32,7 +32,21 @@ const service: ProcessService = {
   jobOf: unused,
   defaultSignal: unused,
 };
-const abi = new ProcessABI({ memory, descriptors, fs: new MemFS(), pid, service, signals, wake });
+const abi = new ProcessABI({
+  memory,
+  descriptors,
+  fs: new MemFS(),
+  pid,
+  service,
+  signals,
+  wake,
+  wait(milliseconds, word, expected) {
+    // Observe the supported parking boundary instead of replacing Atomics after
+    // Waffle has captured it. Keep the real native wait and its supplied deadline.
+    parentPort!.postMessage({ phase: "waiting" });
+    controlWait(word, 0, expected, milliseconds);
+  },
+});
 const view = new DataView(memory.buffer);
 const fd = descriptors.open(
   {
@@ -48,11 +62,6 @@ const fd = descriptors.open(
 view.setUint32(256, mode === "child" ? 2 : 0, true);
 view.setUint32(260, mode === "child" ? child : fd, true);
 view.setBigUint64(264, 77n, true);
-const wait = Atomics.wait;
-Atomics.wait = ((...args: Parameters<typeof Atomics.wait>) => {
-  parentPort!.postMessage({ phase: "waiting" });
-  return Reflect.apply(wait, Atomics, args);
-}) as typeof Atomics.wait;
 try {
   const ready = abi.imports.poll!(256, 1, -1, 512);
   parentPort!.postMessage({
@@ -62,6 +71,5 @@ try {
     code: mode === "child" ? readOutcome(childOutcome)!.code : 0,
   });
 } finally {
-  Atomics.wait = wait;
   descriptors.dispose();
 }

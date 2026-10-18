@@ -1,3 +1,23 @@
+import {
+  arrayAppend,
+  isSharedArrayBuffer,
+  DataViewConstructor,
+  Uint8ArrayConstructor,
+  dataViewGetBigUint64,
+  dataViewGetUint32,
+  dataViewSetBigUint64,
+  dataViewSetInt32,
+  dataViewSetUint32,
+  objectValues,
+  typedArrayBuffer,
+  typedArrayByteLength,
+  typedArrayByteOffset,
+  typedArrayLength,
+  reflectApply,
+  SetConstructor,
+  setHas,
+  setAdd,
+} from "./intrinsics.ts";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "./control.js";
 import {
@@ -125,7 +145,7 @@ export class ProcessABI {
   constructor(private readonly options: ProcessABIOptions) {
     if (
       options.wake &&
-      (!(options.wake.buffer instanceof SharedArrayBuffer) || options.wake.length !== 1)
+      (!isSharedArrayBuffer(typedArrayBuffer(options.wake)) || typedArrayLength(options.wake) !== 1)
     ) {
       throw new TypeError("poll wake must be one shared int32");
     }
@@ -191,14 +211,18 @@ export class ProcessABI {
     const memory = this.memory();
     if (length > memory.buffer.byteLength - ptr)
       throw new ProcessError(FAULT, "guest memory out of bounds");
-    return new Uint8Array(memory.buffer, ptr, length);
+    return new Uint8ArrayConstructor(memory.buffer, ptr, length);
   }
   private view(ptr: number, length: number): DataView {
     const bytes = this.span(ptr, length);
-    return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return new DataViewConstructor(
+      typedArrayBuffer(bytes),
+      typedArrayByteOffset(bytes),
+      typedArrayByteLength(bytes),
+    );
   }
   private accessPath(ptr: number, length: number): string {
-    const bytes = this.span(ptr, length).slice();
+    const bytes = new Uint8ArrayConstructor(this.span(ptr, length));
     let path: string;
     try {
       path = pathDecode.decode(bytes);
@@ -225,7 +249,7 @@ export class ProcessABI {
   }
   private spawnRequest(ptr: number, length: number): SpawnRequest {
     // Guest memory may be resizable; TextDecoder's WebIDL input requires a fixed buffer.
-    const bytes = this.span(ptr, length).slice();
+    const bytes = new Uint8ArrayConstructor(this.span(ptr, length));
     let request: unknown;
     try {
       request = JSON.parse(decode.decode(bytes));
@@ -245,7 +269,7 @@ export class ProcessABI {
       !object.env ||
       typeof object.env !== "object" ||
       Array.isArray(object.env) ||
-      !Object.values(object.env).every((value) => typeof value === "string") ||
+      !objectValues(object.env).every((value) => typeof value === "string") ||
       typeof object.cwd !== "string" ||
       !object.cwd ||
       !Number.isInteger(object.job) ||
@@ -269,8 +293,8 @@ export class ProcessABI {
       read = this.options.descriptors.open(endpoints[0], READ | POLL, 0n);
       write = this.options.descriptors.open(endpoints[1], WRITE | POLL, 0n);
       const output = this.view(ptr, 8);
-      output.setUint32(0, read, true);
-      output.setUint32(4, write, true);
+      dataViewSetUint32(output, 0, read, true);
+      dataViewSetUint32(output, 4, write, true);
       return 0;
     } catch (error) {
       if (read !== undefined) this.options.descriptors.close(read);
@@ -298,14 +322,16 @@ export class ProcessABI {
     );
     if (unregister) {
       let remaining = 2;
-      for (const endpoint of [read, write]) {
-        const close = endpoint.close?.bind(endpoint);
+      const endpoints = [read, write];
+      for (let index = 0; index < endpoints.length; index++) {
+        const endpoint = endpoints[index]!;
+        const close = endpoint.close;
         let closed = false;
         endpoint.close = () => {
           if (closed) return;
           closed = true;
           try {
-            close?.();
+            if (close) reflectApply(close, endpoint, []);
           } finally {
             if (--remaining === 0) unregister();
           }
@@ -326,7 +352,7 @@ export class ProcessABI {
       resource = entry.resource;
     if (resource.kind === "directory") return -ISDIR;
     const bytes = this.span(ptr, length);
-    if (bytes.length === 0) return 0;
+    if (typedArrayLength(bytes) === 0) return 0;
     if (resource.kind === "file") {
       const fs: NonblockingFileSystem = this.options.fs;
       return withFileOffset(
@@ -370,8 +396,14 @@ export class ProcessABI {
   }
   private writeWaitResult(ptr: number, result: ProcessExit): void {
     const output = this.view(ptr, 8);
-    output.setUint32(0, result.kind === "exited" ? 0 : result.kind === "signaled" ? 1 : 2, true);
-    output.setInt32(
+    dataViewSetUint32(
+      output,
+      0,
+      result.kind === "exited" ? 0 : result.kind === "signaled" ? 1 : 2,
+      true,
+    );
+    dataViewSetInt32(
+      output,
       4,
       result.kind === "start-failed" ? startFailureErrno(result.error) : result.code,
       true,
@@ -534,9 +566,9 @@ export class ProcessABI {
     for (let index = 0; index < count; index++) {
       const at = index * 16;
       const sub = {
-        kind: input.getUint32(at, true),
-        id: input.getUint32(at + 4, true),
-        userdata: input.getBigUint64(at + 8, true),
+        kind: dataViewGetUint32(input, at, true),
+        id: dataViewGetUint32(input, at + 4, true),
+        userdata: dataViewGetBigUint64(input, at + 8, true),
       };
       if (sub.kind > 6) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
@@ -546,7 +578,7 @@ export class ProcessABI {
     const wake = this.options.wake;
     try {
       if (wake) {
-        const resources = new Set<Stream>();
+        const resources = new SetConstructor<Stream>();
         for (const sub of subscriptions) {
           if (sub.kind === 6) {
             const release = this.options.service.registerChildStartWake?.(
@@ -554,20 +586,20 @@ export class ProcessABI {
               sub.id,
               wake,
             );
-            if (release) unregister.push(release);
+            if (release) arrayAppend(unregister, release);
           }
           if (sub.kind === 4) {
             const release = this.options.service.registerJobWake?.(this.options.pid, sub.id, wake);
-            if (release) unregister.push(release);
+            if (release) arrayAppend(unregister, release);
           }
           if (sub.kind > 1) continue;
           const resource = this.descriptor(sub.id, POLL).resource;
           if (resource.kind === "file" || resource.kind === "directory") continue;
-          if (!resources.has(resource)) {
-            resources.add(resource);
+          if (!setHas(resources, resource)) {
+            setAdd(resources, resource);
             const stream: NonblockingStream = resource;
             const release = stream.registerWake?.(wake);
-            if (release) unregister.push(release);
+            if (release) arrayAppend(unregister, release);
           }
         }
       }
@@ -588,9 +620,9 @@ export class ProcessABI {
           const output = this.view(out, ready.length * 16);
           ready.forEach(({ sub, flags }, index) => {
             const at = index * 16;
-            output.setBigUint64(at, sub.userdata, true);
-            output.setUint32(at + 8, sub.kind, true);
-            output.setUint32(at + 12, flags, true);
+            dataViewSetBigUint64(output, at, sub.userdata, true);
+            dataViewSetUint32(output, at + 8, sub.kind, true);
+            dataViewSetUint32(output, at + 12, flags, true);
           });
           return ready.length;
         }
@@ -606,7 +638,7 @@ export class ProcessABI {
         else controlWait(word, 0, expected, milliseconds);
       }
     } finally {
-      for (const release of unregister.reverse()) release();
+      for (let index = unregister.length - 1; index >= 0; index--) unregister[index]!();
     }
   }
 }

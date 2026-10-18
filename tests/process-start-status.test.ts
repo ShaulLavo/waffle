@@ -2,20 +2,28 @@ import { expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import { ProcessABI, type ProcessService } from "../proc/abi.js";
-import { controlLoad, controlStore } from "../proc/control.js";
-import { claimOutcome, markStarted, readOutcome, startStatus } from "../proc/outcome.js";
-import { ExecutableRegistry } from "../proc/registry.js";
-import { ProcessSupervisor } from "../proc/supervisor.js";
-import { ProcessTable } from "../proc/table.js";
-import { ProcessError, type ProcessContext } from "../proc/types.js";
-import {
+import type { ProcessService } from "../proc/abi.js";
+
+import type { ProcessContext } from "../proc/types.js";
+import type { WorkerProcessMessage } from "../proc/worker-client.js";
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { ProcessABI } = isolated.load<typeof import("../proc/abi.js")>("abi");
+const { controlLoad, controlStore } = isolated.load<typeof import("../proc/control.js")>("control");
+const { claimOutcome, markStarted, readOutcome, startStatus } =
+  isolated.load<typeof import("../proc/outcome.js")>("outcome");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry.js")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor.js")>("supervisor");
+const { ProcessTable } = isolated.load<typeof import("../proc/table.js")>("table");
+const { ProcessError } = isolated.load<typeof import("../proc/types.js")>("types");
+const {
   createWorkerProcessTransport,
   WorkerProcessClient,
   workerProcessState,
   confirmWorkerProcessJob,
-  type WorkerProcessMessage,
-} from "../proc/worker-client.js";
+} = isolated.load<typeof import("../proc/worker-client.js")>("worker-client");
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] };

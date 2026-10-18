@@ -1,18 +1,28 @@
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
+import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/process-intrinsics.ts";
+import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage } from "../browser/worker.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
-import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
+import {
+  connectFilesystemIdentity,
+  createFilesystemIdentity,
+  revokeFilesystem,
+} from "../fs/protocol.js";
 import {
   controlAdd,
   controlCas,
   controlExchange,
   controlLoad,
+  controlNotify,
   controlStore,
+  controlWait,
 } from "../proc/control.js";
+import { WorkerPipeBroker } from "../proc/worker-pipes.js";
+import { PipeController, PipePublicationRegistry, attachPipeEndpoint } from "../proc/pipes.js";
 import { directoryJobs, directorySlots } from "../proc/directory.js";
-import { claimOutcome, readOutcome } from "../proc/outcome.js";
+import { claimOutcome, markStarted, readOutcome, startStatus } from "../proc/outcome.js";
 import { ProcessTable } from "../proc/table.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
 import { ExecutableRegistry } from "../proc/registry.js";
@@ -34,7 +44,14 @@ type Command =
   | { operation: "wait-job" | "job-empty"; job: number }
   | { operation: "kill"; pid: number; signal: number }
   | { operation: "kill-job"; job: number; signal: number }
-  | { operation: "snapshot" | "mutate-captured" }
+  | { operation: "snapshot" | "mutate-captured" | "read-captured" | "exercise-controls" }
+  | {
+      operation:
+        | "poison-intrinsics"
+        | "restore-intrinsics"
+        | "bootstrap-check-active"
+        | "pipe-intrinsics";
+    }
   | { operation: "exit"; code: number };
 type Request = { id: number } & (
   | { operation: "init"; transport: WorkerProcessTransport }
@@ -115,9 +132,11 @@ export async function installClientWorker(
 /** @browserEntry Called outside the import graph by generated pages or compiler probes. */
 export function installProcessTestWorker(): void {
   const descriptors = new DescriptorTable();
+  const send = globalThis.postMessage.bind(globalThis);
   let client: WorkerProcessClient | undefined;
   let captured: ReturnType<typeof workerProcessState> | undefined;
-  globalThis.onmessage = (event: MessageEvent<Request>) => {
+  let poisoned: ReturnType<typeof poisonProcessIntrinsics> | undefined;
+  globalThis.onmessage = async (event: MessageEvent<Request>) => {
     const request = event.data;
     try {
       let result: unknown;
@@ -128,7 +147,7 @@ export function installProcessTestWorker(): void {
           descriptors,
           codec: emptyCodec,
           postMessage(message) {
-            globalThis.postMessage(message);
+            send(message);
           },
         });
         client.installBindings();
@@ -166,6 +185,29 @@ export function installProcessTestWorker(): void {
           case "mutate-captured":
             result = mutateCaptured(client, captured!);
             break;
+          case "read-captured":
+            result = readCaptured(captured!);
+            break;
+          case "exercise-controls":
+            result = exerciseControls(captured!);
+            break;
+          case "poison-intrinsics":
+            if (poisoned) throw new Error("Process fixture intrinsics already poisoned");
+            poisoned = poisonProcessIntrinsics([
+              client.options.transport.directory,
+              client.options.transport.identity,
+            ]);
+            break;
+          case "restore-intrinsics":
+            result = poisoned?.restore();
+            poisoned = undefined;
+            break;
+          case "bootstrap-check-active":
+            result = await bootstrapCheckActive(client, captured!);
+            break;
+          case "pipe-intrinsics":
+            result = exercisePrivatePipes();
+            break;
           case "exit":
             descriptors.dispose();
             client.exit(request.code);
@@ -187,6 +229,114 @@ export function installProcessTestWorker(): void {
   };
 }
 
+function assertDistinctPipeAttachments(
+  first: ReturnType<PipeController["retain"]> | undefined,
+  second: ReturnType<PipeController["retain"]> | undefined,
+): void {
+  if (!first || !second) return;
+  const broker = new WorkerPipeBroker({ relay: "manual" });
+  try {
+    const a = broker.attach(first.handle()),
+      b = broker.attach(second.handle());
+    assert(a !== b && broker.size === 2, "broker attachment never aliases independent pipes");
+  } finally {
+    broker.dispose();
+  }
+}
+
+/** A real Worker exercises private pipe/registry/descriptor state while guest hooks run. */
+function exercisePrivatePipes(): IntrinsicsReport {
+  const registry = new PipePublicationRegistry({
+    processCapacity: 2,
+    cellsPerProcess: 1,
+    maxCells: 128,
+  });
+  registry.registerProcess(1);
+  registry.registerProcess(2);
+  const pipe = new PipeController({
+    capacity: 8,
+    maxReaders: 2,
+    maxWriters: 2,
+    registry,
+    relay: "manual",
+  });
+  const reader = pipe.retain(1, "read"),
+    writer = pipe.retain(2, "write");
+  const readHandle = reader.handle(),
+    writeHandle = writer.handle(),
+    arena = registry.handle().buffer;
+  const before = arena.byteLength;
+  const table = new DescriptorTable();
+  const payload = new Uint8Array([65, 66, 67]),
+    output = new Uint8Array(3);
+  const observer = poisonProcessIntrinsics([
+    arena,
+    readHandle.buffer,
+    readHandle.lifetime,
+    writeHandle.lifetime,
+    readHandle.wake.buffer as SharedArrayBuffer,
+  ]);
+  let report: IntrinsicsReport;
+  let first: PipeController | undefined, second: PipeController | undefined;
+  let firstReader: ReturnType<PipeController["retain"]> | undefined,
+    secondReader: ReturnType<PipeController["retain"]> | undefined;
+  try {
+    // Identity must come from the pre-guest native, not the constant replacement.
+    first = new PipeController({ relay: "manual" });
+    second = new PipeController({ relay: "manual" });
+    firstReader = first.retain(1, "read");
+    secondReader = second.retain(1, "read");
+    assert(
+      firstReader.handle().id !== secondReader.handle().id,
+      "independent poisoned pipes retain distinct identity",
+    );
+    let foreignRejected = false;
+    try {
+      first.duplicate(secondReader);
+    } catch {
+      foreignRejected = true;
+    }
+    assert(foreignRejected, "pipe duplicate rejects a foreign endpoint");
+    const attached = attachPipeEndpoint(writeHandle);
+    const fd = table.open(attached, 0n, 0n),
+      duplicate = table.dup(fd);
+    equal(attached.tryWrite([payload]), 3, "captured pipe write");
+    equal(reader.tryRead([output]), 3, "captured pipe read");
+    // Force the growable canonical arena to expand under the replacements.
+    for (let index = 0; index < 12; index++) registry.allocate(2);
+    table.close(fd);
+    table.close(duplicate);
+    registry.revoke(2);
+    equal(writer.tryWrite([payload]), -8, "revoked pipe cannot publish");
+    reader.close();
+    writer.close();
+    registry.collectProcess(1);
+    registry.collectProcess(2);
+    equal(registry.processCount, 0, "pipe owner rows collected");
+    pipe.dispose();
+  } finally {
+    report = observer.restore();
+    table.dispose();
+    reader.close();
+    writer.close();
+    pipe.dispose();
+    // Broker is trusted page-owned code: run attachment after restoring the guest realm.
+    try {
+      assertDistinctPipeAttachments(firstReader, secondReader);
+    } finally {
+      firstReader?.close();
+      secondReader?.close();
+      first?.dispose();
+      second?.dispose();
+      registry.collectProcess(1);
+      registry.collectProcess(2);
+    }
+  }
+  equal(Array.from(output), [65, 66, 67], "pipe payload stays correct");
+  assert(arena.byteLength > before, "pipe arena grows under guest replacements");
+  return report;
+}
+
 function snapshot(state: ReturnType<typeof workerProcessState>) {
   return {
     pid: state.pid,
@@ -206,10 +356,7 @@ function snapshot(state: ReturnType<typeof workerProcessState>) {
   };
 }
 type MutationResult = { operation: string; errno: number | null };
-function mutateCaptured(
-  client: WorkerProcessClient,
-  state: ReturnType<typeof workerProcessState>,
-): MutationResult[] {
+function capturedAttempts() {
   const results: MutationResult[] = [];
   const attempt = (operation: string, action: () => unknown) => {
     try {
@@ -220,7 +367,14 @@ function mutateCaptured(
       results.push({ operation, errno: error.errno });
     }
   };
-  for (const [name, cells, index] of [
+  return { results, attempt };
+}
+function mutateCaptured(
+  client: WorkerProcessClient,
+  state: ReturnType<typeof workerProcessState>,
+): MutationResult[] {
+  const { results, attempt } = capturedAttempts();
+  const controls = [
     ["interrupt", state.signals.interrupt, 0],
     ["requestedSignal", state.signals.requestedSignal, 0],
     ["signalDisposition", state.signals.signalState, 15],
@@ -229,7 +383,12 @@ function mutateCaptured(
     ["jobPending", state.jobPending, 0],
     ["controlParent", state.controlParent, 0],
     ["jobControlParent", state.jobControlParent, 0],
-  ] as const) {
+  ] as const;
+  for (let at = 0; at < controls.length; at++) {
+    const entry = controls[at]!,
+      name = entry[0],
+      cells = entry[1],
+      index = entry[2];
     attempt(`${name}.store`, () => controlStore(cells, index, 9));
     attempt(`${name}.cas`, () => controlCas(cells, index, 0, 9));
     attempt(`${name}.add`, () => controlAdd(cells, index, 1));
@@ -243,6 +402,136 @@ function mutateCaptured(
   attempt("client.defaultSignal", () => client.defaultSignal(client.pid, 9));
   attempt("client.waitJob", () => client.waitJob(client.pid, client.job));
   return results;
+}
+
+function readCaptured(state: ReturnType<typeof workerProcessState>): MutationResult[] {
+  const { results, attempt } = capturedAttempts();
+  const controls = [
+    ["interrupt", state.signals.interrupt],
+    ["requestedSignal", state.signals.requestedSignal],
+    ["signalDisposition", state.signals.signalState],
+    ["confirmed", state.confirmed],
+    ["jobConfirmed", state.jobConfirmed],
+    ["jobPending", state.jobPending],
+    ["controlParent", state.controlParent],
+    ["jobControlParent", state.jobControlParent],
+  ] as const;
+  for (let at = 0; at < controls.length; at++) {
+    const entry = controls[at]!,
+      name = entry[0],
+      cells = entry[1];
+    attempt(`${name}.load`, () => controlLoad(cells));
+    attempt(`${name}.wait`, () => controlWait(cells, 0, 0, 0));
+    attempt(`${name}.notify`, () => controlNotify(cells));
+  }
+  const outcomes = [
+    ["outcome", state.signals.outcome],
+    ["jobOutcome", state.jobOutcome],
+  ] as const;
+  for (let at = 0; at < outcomes.length; at++) {
+    const entry = outcomes[at]!,
+      name = entry[0],
+      outcome = entry[1];
+    attempt(`${name}.read`, () => readOutcome(outcome));
+    attempt(`${name}.startStatus`, () => startStatus(outcome));
+    attempt(`${name}.markStarted`, () => markStarted(outcome));
+  }
+  return results;
+}
+
+function exerciseControls(state: ReturnType<typeof workerProcessState>): number {
+  let exercised = 0;
+  const controls = [
+    [state.signals.interrupt, 0],
+    [state.signals.requestedSignal, 0],
+    [state.signals.signalState, 64],
+    [state.confirmed, 0],
+    [state.jobConfirmed, 0],
+    [state.jobPending, 0],
+    [state.controlParent, 0],
+    [state.jobControlParent, 0],
+    [state.wake, 0],
+  ] as const;
+  for (let at = 0; at < controls.length; at++) {
+    const entry = controls[at]!,
+      cells = entry[0],
+      index = entry[1];
+    const value = controlLoad(cells, index);
+    equal(controlStore(cells, index, value), value, "live control store");
+    equal(controlCas(cells, index, value, value), value, "live control CAS");
+    equal(controlAdd(cells, index, 0), value, "live control add");
+    equal(controlExchange(cells, index, value), value, "live control exchange");
+    equal(controlWait(cells, index, value, 0), "timed-out", "live zero-duration control wait");
+    controlNotify(cells, index);
+    exercised++;
+  }
+  assert(markStarted(state.signals.outcome), "live process can publish entry");
+  equal(startStatus(state.signals.outcome), 0, "entry remains readable under guest replacements");
+  return exercised;
+}
+
+/** Stop in setup before WASI preopens: this tests the real bootstrap's checkActive
+ * closure without a filesystem service or an emulated Worker/Atomics implementation. */
+async function bootstrapCheckActive(
+  client: WorkerProcessClient,
+  state: ReturnType<typeof workerProcessState>,
+) {
+  const connection = connectFilesystemIdentity(
+    createFilesystemIdentity(undefined, 16 * 1024 * 1024),
+  );
+  const messages: RuntimeWorkerMessage[] = [];
+  let live = false,
+    signal = 0;
+  try {
+    await bootstrap(
+      {
+        module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: client.options.transport,
+      },
+      {
+        setup(context) {
+          context.checkActive();
+          live = true;
+          claimOutcome(state.signals.outcome, { kind: "signaled", code: 9 });
+          try {
+            context.checkActive();
+          } catch (error) {
+            if (!(error instanceof RuntimeWorkerSignal)) throw error;
+            signal = error.signal;
+          }
+          assert(signal === 9, "bootstrap checkActive must observe the terminal signal");
+          context.finish({ code: 0 });
+        },
+        run() {
+          throw new Error("bootstrap active-check fixture must stop before guest instantiation");
+        },
+      },
+      {
+        crossOriginIsolated,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    const terminal = messages.filter(
+      (message) =>
+        message.type === "exit" || message.type === "error" || message.type === "cleanup-error",
+    );
+    assert(
+      terminal.length === 1 && terminal[0]!.type === "exit" && terminal[0]!.code === 137,
+      `bootstrap must retain the signaled winner: ${JSON.stringify(terminal)}`,
+    );
+    // Setup precedes the bootstrap's WorkerProcessClient allocation. Publish through
+    // the fixture client so the untouched page broker owns normal host completion.
+    client.exit(0);
+    return { live, signal };
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
 }
 
 function spawnRequest(job: number): SpawnRequest {
@@ -558,6 +847,190 @@ const cases: BrowserCase[] = [
     label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id",
     standalone: true,
     run: () => browserStaleCellClone(true),
+  },
+  {
+    label:
+      "intrinsics: guest replacements cannot observe private process views or adopt recycled rows",
+    async run(f) {
+      const poisoned: number[] = [];
+      const poison = async (pid: number) => {
+        await f.call(pid, { operation: "poison-intrinsics" });
+        poisoned.push(pid);
+      };
+      try {
+        await poison(f.pid);
+        equal(
+          await f.call(f.pid, { operation: "exercise-controls" }),
+          9,
+          "all live control families exercised",
+        );
+        const oldPid = await f.spawn(),
+          oldJob = f.job(oldPid),
+          oldWorker = f.workers.get(oldPid)!;
+        const oldJobSlot = workerProcessState(oldWorker.transport).jobSlot;
+        await poison(oldPid);
+        equal(
+          await f.call(oldPid, { operation: "exercise-controls" }),
+          9,
+          "child live cells remain usable",
+        );
+        const sibling = await f.spawn(),
+          siblingJob = f.job(sibling);
+        await rejectsErrno(
+          () => f.call(oldPid, { operation: "kill", pid: sibling, signal: 9 }),
+          63,
+          "poisoned child cannot signal sibling",
+        );
+        await rejectsErrno(
+          () => f.call(oldPid, { operation: "kill-job", job: siblingJob, signal: 9 }),
+          63,
+          "poisoned child cannot signal sibling job",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait", pid: oldPid }),
+          null,
+          "poisoned live child wait",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: oldJob }),
+          null,
+          "poisoned live job wait",
+        );
+        await f.call(f.pid, { operation: "kill", pid: oldPid, signal: 17 }); // Ignored default; keep it running.
+        const completion = f.supervisor.waitForExit(f.pid, sibling);
+        await f.call(f.pid, { operation: "kill", pid: sibling, signal: 9 });
+        equal(
+          await completion,
+          { kind: "signaled", code: 9, status: 137 },
+          "poisoned signal publishes terminal winner",
+        );
+        await f.call(f.pid, { operation: "kill-job", job: siblingJob, signal: 9 });
+        equal(
+          await f.call(f.pid, { operation: "wait", pid: sibling }),
+          { kind: "signaled", code: 9, status: 137 },
+          "poisoned signal child collection",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: siblingJob }),
+          { kind: "signaled", code: 9, status: 137 },
+          "poisoned signal job collection",
+        );
+        await f.exit(oldPid, 5);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: oldJob }),
+          exited(5),
+          "poisoned old job collection",
+        );
+        // Check both the retired slot and its replacement, not just a still-live zombie.
+        for (const phase of ["collected", "recycled"]) {
+          let replacement: number | undefined;
+          if (phase === "recycled") {
+            replacement = await f.spawn();
+            const worker = f.workers.get(replacement)!;
+            equal(
+              worker.transport.slot,
+              oldWorker.transport.slot,
+              "poisoned replacement reuses process row",
+            );
+            equal(
+              workerProcessState(worker.transport).jobSlot,
+              oldJobSlot,
+              "poisoned replacement reuses job row",
+            );
+            assert(
+              replacement !== oldPid && f.job(replacement) !== oldJob,
+              "recycling must assign fresh identities",
+            );
+            await poison(replacement);
+          }
+          const before = Array.from(new Uint8Array(f.root.directory));
+          const reads = await f.call<MutationResult[]>(oldPid, { operation: "read-captured" });
+          const writes = await f.call<MutationResult[]>(oldPid, { operation: "mutate-captured" });
+          equal(
+            reads.length,
+            30,
+            `${phase}: all stale read, startup, wait and notify checks attempted`,
+          );
+          assert(writes.length >= 39, `${phase}: all stale mutation checks attempted`);
+          for (const result of reads.concat(writes))
+            equal(result.errno, ProcessErrno.SRCH, `${phase}: ${result.operation}`);
+          equal(
+            Array.from(new Uint8Array(f.root.directory)),
+            before,
+            `${phase}: stale checks leave the entire directory untouched`,
+          );
+          if (replacement !== undefined) {
+            equal(
+              await f.call(f.pid, { operation: "wait", pid: replacement }),
+              null,
+              "replacement remains live",
+            );
+            await f.exit(replacement, 23);
+            equal(
+              await f.call(f.pid, { operation: "wait-job", job: f.job(replacement) }),
+              exited(23),
+              "replacement completes normally",
+            );
+          }
+        }
+      } finally {
+        await restoreAndAuditIntrinsics(f, poisoned);
+      }
+    },
+  },
+  {
+    label:
+      "intrinsics: real Worker pipe registry and descriptor lifecycle keep private buffers captured",
+    async run(f) {
+      const report = await f.call<IntrinsicsReport>(f.pid, { operation: "pipe-intrinsics" });
+      equal(
+        report.leaks,
+        [],
+        "guest pipe observers never receive private backing buffers or collections",
+      );
+      for (const name of [
+        "Atomics.load",
+        "TypedArray.buffer",
+        "TypedArray.subarray",
+        "Map.set",
+        "Map.get",
+        "Reflect.get",
+        "Object.prototype.get",
+        "Object.prototype.set",
+        "crypto.randomUUID",
+      ]) {
+        assert(report.canaries.includes(name), `pipe observer ${name} positive control`);
+      }
+    },
+  },
+  {
+    label:
+      "intrinsics: real Worker bootstrap checkActive retains terminal authority under guest replacements",
+    async run(f) {
+      const pid = await f.spawn(),
+        job = f.job(pid);
+      await f.call(pid, { operation: "poison-intrinsics" });
+      try {
+        const completion = f.supervisor.waitForExit(f.pid, pid);
+        equal(
+          await f.call(pid, { operation: "bootstrap-check-active" }),
+          { live: true, signal: 9 },
+          "bootstrap active checks",
+        );
+        equal(
+          await completion,
+          { kind: "signaled", code: 9, status: 137 },
+          "bootstrap terminal signal survives attempted normal completion",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job }),
+          { kind: "signaled", code: 9, status: 137 },
+          "bootstrap job remains collectible",
+        );
+      } finally {
+        await restoreAndAuditIntrinsics(f, [pid]);
+      }
+    },
   },
   {
     label: "shared Worker waits consume one child independently of job collection",
@@ -919,6 +1392,108 @@ const cases: BrowserCase[] = [
   },
 ];
 
+async function restoreAndAuditIntrinsics(
+  fixture: ProcessFixture,
+  pids: readonly number[],
+): Promise<void> {
+  // Restore every realm before reporting a failure. Physical Worker termination in
+  // fixture.close remains the final cleanup boundary if an RPC itself fails.
+  const reports: { pid: number; report: IntrinsicsReport }[] = [];
+  for (const pid of pids)
+    reports.push({
+      pid,
+      report: await fixture.call<IntrinsicsReport>(pid, { operation: "restore-intrinsics" }),
+    });
+  for (const { pid, report } of reports) {
+    assert(report, `Worker ${pid} must have installed its guest replacements`);
+    for (const name of [
+      "Atomics.load",
+      "Atomics.compareExchange",
+      "Atomics.store",
+      "Atomics.add",
+      "Atomics.exchange",
+      "Atomics.wait",
+      "Atomics.notify",
+      "Int32Array",
+      "BigInt64Array",
+      "Uint8Array",
+      "Uint32Array",
+      "DataView",
+      "TypedArray.set",
+      "TypedArray.subarray",
+      "TypedArray.buffer",
+      "Reflect.apply",
+      "Reflect.construct",
+      "Object.freeze",
+      "Object.hasOwn",
+      "Array.from",
+      "Array.filter",
+      "Array.map",
+      "Array.Symbol(Symbol.iterator)",
+      "Map.set",
+      "Map.get",
+      "Set.add",
+      "Set.has",
+      "Generator.next",
+      "Function.call",
+      "Function.apply",
+      "Function.bind",
+      "Proxy",
+      "Object.prototype.get",
+      "Object.prototype.set",
+      "postMessage",
+      "crypto.randomUUID",
+    ]) {
+      assert(report.replacements.includes(name), `Worker ${pid}: ${name} was not replaced`);
+    }
+    for (const name of [
+      "Atomics.load",
+      "Atomics.compareExchange",
+      "Int32Array",
+      "TypedArray.set",
+      "TypedArray.subarray",
+      "TypedArray.buffer",
+      "TypedArray.byteOffset",
+      "TypedArray.byteLength",
+      "TypedArray.length",
+      "DataView",
+      "DataView.getInt32",
+      "DataView.buffer",
+      "DataView.byteOffset",
+      "DataView.byteLength",
+      "Reflect.get",
+      "Object.getOwnPropertyDescriptor",
+      "Array.from",
+      "Array.filter",
+      "Array.map",
+      "Array.Symbol(Symbol.iterator)",
+      "Map.set",
+      "Map.get",
+      "Set.add",
+      "Set.has",
+      "Generator.next",
+      "Function.call",
+      "Function.apply",
+      "Function.bind",
+      "Proxy",
+      "Object.prototype.get",
+      "Object.prototype.set",
+      "postMessage",
+      "crypto.randomUUID",
+    ]) {
+      assert(
+        report.canaries.includes(name),
+        `Worker ${pid}: ${name} exposure observer did not see its test-owned canary`,
+      );
+    }
+    equal(
+      report.leaks,
+      [],
+      `Worker ${pid}: guest replacements must never receive private process SABs or views`,
+    );
+  }
+}
+
 async function rootCleanupCase(): Promise<void> {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities);
@@ -1030,7 +1605,6 @@ async function rejectsProcess(action: () => Promise<unknown>, label: string): Pr
   throw new Error(`${label}: unexpectedly succeeded`);
 }
 
-/** @browserEntry Called outside the import graph by generated pages or compiler probes. */
 export function processBrowserCases(): string[] {
   return cases.map((test) => test.label);
 }
