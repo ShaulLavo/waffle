@@ -137,11 +137,13 @@ export class SharedFilesystem {
   private fail(error: Error): void {
     if (this.stopped) return;
     this.fatal ??= error;
-    this.setState("failed", this.fatal);
     // A process does not inherit its parent's lifetime. Publish the separate service-wide
     // revocation so even unpublished independent identities wake when this worker dies.
     revokeFilesystemService(this.client.connection);
     this.stop();
+    // A failed observer can dispose reentrantly. Stop first, so it cannot start a startup
+    // abort handshake with the worker that this failure is about to terminate.
+    this.setState("failed", this.fatal);
   }
   private stop(): void {
     if (this.stopped) return;

@@ -69,6 +69,33 @@ test("fatal startup is not revived by a late ready message", async () => {
   expect(worker.terminations).toBe(1);
 });
 
+for (const status of ["waiting", "ready", "failed", "disposed"] as const) {
+  test(`a ${status} observer can dispose without abandoning worker acknowledgement`, async () => {
+    const filesystem = setup(), worker = workers[0]!;
+    let disposal: Promise<void> | undefined;
+    let observedError: Error | undefined;
+    filesystem.onStateChange = state => {
+      if (state.status === status) { observedError = state.error; disposal = filesystem.dispose(); }
+    };
+    if (status === "failed") worker.emit("message", { data: { type: "filesystem-error", message: "storage is broken" } });
+    else if (status === "disposed") filesystem.dispose();
+    else worker.state(status);
+    expect(disposal).toBeDefined();
+    const aborts = worker.messages.filter(message => message.dispose);
+    // A terminal/ready worker must never be killed with an unacknowledged abort handshake.
+    expect(aborts).toHaveLength(status === "waiting" || status === "disposed" ? 1 : 0);
+    if (aborts.length) worker.acknowledge();
+    await disposal;
+    expect(filesystem.dispose()).toBe(disposal!);
+    expect(worker.terminations).toBe(1);
+    if (status === "failed") {
+      expect(observedError?.message).toContain("storage is broken");
+      const failure = await filesystem.listFiles().catch(error => error);
+      expect(failure.message).toContain("storage is broken");
+    }
+  });
+}
+
 test("runtime cancels pending startup before draining queued mutations", async () => {
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   const runtime = createRuntime({ filesystem: { storage: "opfs", workerURL: "https://example.test/fs.js" } });
