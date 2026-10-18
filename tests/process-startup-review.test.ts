@@ -158,8 +158,8 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       }
       f.supervisor.exit(f.pid, 13);
       expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
-      expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
       const beforeCollection = readOutcome(f.state.signals.outcome);
+      expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
       expect(f.supervisor.waitJob(f.parent.pid, f.state.job)).toEqual(expectedFailure);
       expect(beforeCollection).toEqual(expectedFailure);
       expect(Object.isFrozen(beforeCollection)).toBe(true);

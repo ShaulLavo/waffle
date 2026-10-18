@@ -154,7 +154,7 @@ export class WorkerProcessBroker {
     let state: ReturnType<typeof workerProcessState>;
     try { state = workerProcessState(message.transport); }
     catch (error) {
-      if (message.operation !== "reap-job") return Promise.resolve();
+      if (message.operation !== "reap-job" && message.operation !== "reap-process") return Promise.resolve();
       if (!this.directories.has(workerProcessDirectoryId(message.transport))) return Promise.resolve();
       state = { pid: message.transport.pid } as ReturnType<typeof workerProcessState>;
     }

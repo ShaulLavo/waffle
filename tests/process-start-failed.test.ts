@@ -24,7 +24,7 @@ for (const [executable, error, code, status] of [["missing", "ENOENT", 2, 127], 
       const view = new DataView(memory.buffer);
       expect(view.getUint32(64, true)).toBe(0);
       expect(view.getInt32(68, true)).toBe(status);
-      expect(supervisor.reap(shell, pid)).toEqual(expected);
+      expect(() => supervisor.reap(shell, pid)).toThrow("not a child");
       expect(abi.imports.wait_job!(job, 0, 72)).toBe(0);
       expect(view.getInt32(72, true)).toBe(status);
       expect(abi.imports.wait_job!(job, 1, 72)).toBe(-12);

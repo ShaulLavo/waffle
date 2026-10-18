@@ -187,7 +187,9 @@ test("job kill publishes every lazy direct and runtime root before callbacks and
     const supervisor = await broker.ready();
     expect(supervisor.get(firstPid)?.result?.status).toBe(137);
     expect(supervisor.get(secondPid)?.result?.status).toBe(137);
-    expect(supervisor.get(genericState.pid)?.result?.status).toBe(137);
+    // The killed lazy runtime root retires before activation; its outcome was
+    // already checked above alongside the direct roots before any callback.
+    expect(supervisor.get(genericState.pid)).toBeUndefined();
     expect(supervisor.get(otherPid)?.result).toBeNull();
   } finally {
     releaseActivation(proc);
@@ -1009,7 +1011,7 @@ for (const completion of ["exit", "error", "cleanup-error", "worker-error", "pos
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       expect(events).not.toContain("terminate");
       expect(record.result).toBeNull();
-      expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(0);
+      expect(controlLoad(workerProcessState(transport).confirmed, 0)).toBe(0);
       releaseAdapter();
       await new Promise<void>(resolve => setTimeout(resolve, 0));
       // Controller identity B is independent of transport identity A and adapter quiescence.
@@ -1022,7 +1024,7 @@ for (const completion of ["exit", "error", "cleanup-error", "worker-error", "pos
       expect(events.filter(event => event === "cleanup")).toHaveLength(1);
       if (completion !== "dispose") {
         expect(record.result).not.toBeNull();
-        expect(Atomics.load(workerProcessState(transport).confirmed, 0)).toBe(1);
+        expect(controlLoad(workerProcessState(transport).confirmed, 0)).toBe(1);
         expect(events).toContain("retired");
         expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(false);
       }

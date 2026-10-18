@@ -42,6 +42,7 @@ export type WorkerProcessMessage =
   | { type: "runtime-proc"; operation: "signal" | "exit"; transport: WorkerProcessTransport; targets: number[] }
   | { type: "runtime-proc"; operation: "pipe"; transport: WorkerProcessTransport; handle: unknown }
   | { type: "runtime-proc"; operation: "reap-job"; transport: WorkerProcessTransport; job: number }
+  | { type: "runtime-proc"; operation: "reap-process"; transport: WorkerProcessTransport }
   | { type: "runtime-proc"; operation: "access"; transport: WorkerProcessTransport; request: WorkerAccessRequest; path: string; cwd: string }
   | { type: "runtime-proc"; operation: "access-cancel"; transport: WorkerProcessTransport; request: WorkerAccessRequest };
 
@@ -240,11 +241,23 @@ export class WorkerProcessClient {
     }
     throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
   }
-  wait(parentPid: number, pid: number): ProcessExit | null {
+  private child(parentPid: number, pid: number) {
     let target: ReturnType<WorkerProcessClient["find"]>;
     try { target = this.find(pid, true); } catch { throw new ProcessError(ProcessErrno.CHILD, "not a retained child process"); }
     if (parentPid !== this.pid || target.parentPid !== this.pid || controlLoad(target.jobPending, 0) < 0) throw new ProcessError(ProcessErrno.CHILD, "not a child process");
-    return controlLoad(target.confirmed, 0) ? readOutcome(target.signals.outcome) : null;
+    return target;
+  }
+  /** Readiness never consumes the exit or releases a zombie's storage. */
+  childExited(parentPid: number, pid: number): boolean {
+    const target = this.child(parentPid, pid);
+    return controlLoad(target.confirmed) !== 0 && controlLoad(target.jobConfirmed) !== 0;
+  }
+  wait(parentPid: number, pid: number): ProcessExit | null {
+    const target = this.child(parentPid, pid);
+    if (!controlLoad(target.confirmed) || !controlLoad(target.jobConfirmed)) return null;
+    const result = collectDirectoryProcess({ directory: this.options.transport.directory, slot: target.slot, pid });
+    this.options.postMessage({ type: "runtime-proc", operation: "reap-process", transport: this.options.transport });
+    return result;
   }
   private requireJob(callerPid: number, job: number) {
     this.admit();

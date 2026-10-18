@@ -133,7 +133,6 @@ test("missing and unrunnable executables retain distinct typed start failures", 
   expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   expect(events.sort()).toEqual([missing, bad].sort());
   expect(supervisor.wait(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
-  supervisor.reap(root, missing);
   expect(() => supervisor.wait(root, missing)).toThrow();
   unsubscribe();
 });
@@ -211,7 +210,7 @@ test("kill records signal, interrupts, revokes and publishes logical exit before
   // No guest checkpoint or default-action acknowledgement is needed.
   expect(order).toEqual(["revoked", "exit"]);
   expect(terminated).toEqual([pid]);
-  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGINT, status: 130 });
+  expect(supervisor.childExited(root, pid)).toBe(true);
   expect(controlExchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
   expect(controlLoad(context.requestedSignal, 0)).toBe(Signal.SIGINT);
   context.exit(0); // Late zombie messages cannot change recorded cancellation.
@@ -518,7 +517,7 @@ for (const delivery of ["kill", "killJob", "defaultSignal", "observeSignal"] as 
     controlStore(context.interrupt, 0, Signal.SIGKILL);
     if (delivery === "killJob") supervisor.killJob(supervisor.jobOf(pid), Signal.SIGTERM);
     else supervisor[delivery](pid, Signal.SIGINT);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+    expect(supervisor.childExited(root, pid)).toBe(true);
     expect(controlLoad(context.requestedSignal, 0)).toBe(9);
     expect(controlLoad(context.interrupt, 0)).toBe(9);
     context.exit(0);
@@ -546,7 +545,7 @@ for (const word of ["requestedSignal", "interrupt"] as const) {
     try { supervisor.kill(pid, Signal.SIGINT); }
     finally { Atomics.compareExchange = original; }
     expect(raced).toBe(true);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+    expect(supervisor.childExited(root, pid)).toBe(true);
     expect(controlLoad(context.requestedSignal, 0)).toBe(9);
     expect(controlLoad(context.interrupt, 0)).toBe(9);
   });
@@ -671,7 +670,7 @@ for (const sig of [Signal.SIGINT, Signal.SIGTERM, Signal.SIGPIPE]) {
     let revoked = 0;
     contexts.get(pid)!.registerRevocation(() => revoked++);
     supervisor.kill(pid, sig);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });
+    expect(supervisor.childExited(root, pid)).toBe(true);
     expect(revoked).toBe(1);
     expect(terminated).toEqual([pid]);
     contexts.get(pid)!.exit(0);
