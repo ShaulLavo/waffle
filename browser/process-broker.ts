@@ -122,17 +122,17 @@ export class BrowserProcessBroker {
           if (this.suspended) throw new Error("Process broker is disposed");
           this.traceProcess(context, "launching");
           (this.launches ??= new Set()).add(context.pid);
+          let acquireLaunch!: () => void, settleLaunch!: () => void;
+          // A launcher may select an outcome synchronously before returning its handle.
+          // Retain its cleanup authority before invoking any adapter code.
+          (this.pendingLaunches ??= new Map()).set(context.pid, {
+            acquired: new Promise<void>(resolve => { acquireLaunch = resolve; }),
+            settled: new Promise<void>(resolve => { settleLaunch = resolve; }),
+          });
+          const settled = () => { this.pendingLaunches?.delete(context.pid); acquireLaunch(); settleLaunch(); };
           let launched: ProcessHandle | Promise<ProcessHandle>;
           try { launched = this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context); }
-          catch (error) { this.launches.delete(context.pid); throw error; }
-          let acquireLaunch: (() => void) | undefined, settleLaunch: (() => void) | undefined;
-          const retainLaunch = () => {
-            (this.pendingLaunches ??= new Map()).set(context.pid, {
-              acquired: new Promise<void>(resolve => { acquireLaunch = resolve; }),
-              settled: new Promise<void>(resolve => { settleLaunch = resolve; }),
-            });
-          };
-          const settled = () => { this.pendingLaunches?.delete(context.pid); acquireLaunch?.(); settleLaunch?.(); };
+          catch (error) { this.launches.delete(context.pid); settled(); throw error; }
           const track = (handle: ProcessHandle): ProcessHandle => {
             this.traceProcess(context, "launched");
             if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
@@ -140,8 +140,7 @@ export class BrowserProcessBroker {
               settled();
               return handle;
             }
-            if (!settleLaunch) retainLaunch();
-            acquireLaunch?.();
+            acquireLaunch();
             // External launchers own their physical handle. Keep controller authority until
             // that handle's asynchronous cleanup settles, not merely its child-exit event.
             return { terminate: () => {
@@ -164,7 +163,6 @@ export class BrowserProcessBroker {
           if (!("then" in launched)) return track(launched);
           // Disposal owns late external handles too. Settlement follows physical cleanup,
           // not just promise resolution, so retirement cannot outrun a pending launcher.
-          retainLaunch();
           return Promise.resolve(launched).then(track, error => {
             this.launches?.delete(context.pid);
             settled();
@@ -203,8 +201,10 @@ export class BrowserProcessBroker {
             // after the same fenced physical stop used by successful notifications.
             const child = this.children.get(event.pid);
             if (child) await this.stop(child);
-            else if (!this.launches?.has(event.pid)) await this.stopController(event.pid);
-            else await this.pendingLaunches?.get(event.pid)?.settled;
+            else {
+              await this.pendingLaunches?.get(event.pid)?.settled;
+              if (!this.launches?.has(event.pid)) await this.stopController(event.pid);
+            }
             this.retireRoots();
           }
         })().catch(error => this.report(error));

@@ -990,7 +990,7 @@ for (const settlement of ["resolve", "reject"] as const) test(`disposal retains 
   } finally { resolveLaunch(handle); releaseStop(); await starting; await (disposal ?? broker.dispose()); }
 });
 
-test("a throwing exited notification waits for an acquired external handle's physical cleanup", async () => {
+for (const exitAt of ["after launch", "during launch", "launch throws"] as const) test(`a throwing exited notification waits for external cleanup (${exitAt})`, async () => {
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("external", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
   const failure = new Error("exited notification failed"), errors: unknown[] = [], events: string[] = [];
@@ -999,17 +999,25 @@ test("a throwing exited notification waits for an acquired external handle's phy
   const broker = new BrowserProcessBroker({ identities, table, registry,
     onError(error) { errors.push(error); events.push("error"); },
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
-    launch(value) { context = value; return { terminate() { events.push("terminate"); return physical; } }; } });
+    launch(value) {
+      context = value;
+      if (exitAt !== "after launch") value.startFailed(new Error("reentrant startup failure"));
+      if (exitAt === "launch throws") throw new Error("launcher threw after selecting failure");
+      return { terminate() { events.push("terminate"); return physical; } };
+    } });
   try {
     const root = await broker.adoptRoot({}), supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(root, { executable: "external", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
-    broker.registerController(pid, { exited() { events.push("exited"); throw failure; }, retired() { events.push("retired"); } });
-    await supervisor.start(pid); context.exit(0);
+    broker.registerController(pid, { exited() { events.push("exited"); throw failure; },
+      stop: exitAt === "launch throws" ? () => { events.push("stop"); return physical; } : undefined,
+      retired() { events.push("retired"); } });
+    await supervisor.start(pid);
+    if (exitAt === "after launch") context.exit(0);
     await new Promise<void>(resolve => setTimeout(resolve, 0));
-    expect(events).toEqual(["exited", "terminate"]);
+    expect(events).toEqual(["exited", exitAt === "launch throws" ? "stop" : "terminate"]);
     expect(errors).toEqual([]);
     release(); await new Promise<void>(resolve => setTimeout(resolve, 0));
-    expect(events).toEqual(["exited", "terminate", "retired", "error"]);
+    expect(events).toEqual(["exited", exitAt === "launch throws" ? "stop" : "terminate", "retired", "error"]);
     expect(errors).toEqual([failure]);
   } finally { release(); await broker.dispose(); }
 });
