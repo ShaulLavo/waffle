@@ -1,4 +1,4 @@
-import { ProcessErrno, ProcessError } from "./types.ts";
+import { ProcessErrno, ProcessError } from "./types.js";
 
 const MASK = 0xffffffffn;
 export function packedControl(id: number, value: number): bigint { return BigInt(id) << 32n | BigInt(value >>> 0); }

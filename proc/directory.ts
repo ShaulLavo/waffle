@@ -1,7 +1,7 @@
-import { TaggedCells, packedControl, controlCas, controlLoad, controlStore } from "./control";
-import { OutcomeCell, claimOutcome, readOutcome } from "./outcome";
-import { ProcessErrno, ProcessError, type ProcessExit } from "./types";
-import type { SignalTransport } from "./signals";
+import { TaggedCells, packedControl, controlCas, controlLoad, controlStore } from "./control.js";
+import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
+import { ProcessErrno, ProcessError, type ProcessExit } from "./types.js";
+import type { SignalTransport } from "./signals.js";
 
 const HEADER_BYTES = 32;
 const PROCESS_WORDS = 76;

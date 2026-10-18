@@ -1,19 +1,19 @@
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { DescriptorTable } from "../core/descriptors";
-import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol";
-import { controlAdd, controlCas, controlExchange, controlLoad, controlStore } from "../proc/control";
-import { directoryJobs, directorySlots } from "../proc/directory";
-import { claimOutcome, readOutcome } from "../proc/outcome";
-import { ProcessTable } from "../proc/table";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { ProcessErrno, ProcessError, type ProcessExit, type SpawnRequest } from "../proc/types";
-import { WorkerProcessBroker } from "../proc/worker-broker";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
+import { controlAdd, controlCas, controlExchange, controlLoad, controlStore } from "../proc/control.js";
+import { directoryJobs, directorySlots } from "../proc/directory.js";
+import { claimOutcome, readOutcome } from "../proc/outcome.js";
+import { ProcessTable } from "../proc/table.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { ProcessErrno, ProcessError, type ProcessExit, type SpawnRequest } from "../proc/types.js";
+import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import {
   createWorkerProcessTransport, WorkerProcessClient, workerProcessState,
   type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport,
-} from "../proc/worker-client";
+} from "../proc/worker-client.js";
 
 type Command =
   | { operation: "spawn"; job?: number }

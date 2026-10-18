@@ -1,12 +1,12 @@
-import { directoryState } from "../proc/directory";
-import { controlLoad, controlWait } from "../proc/control";
+import { directoryState } from "../proc/directory.js";
+import { controlLoad, controlWait } from "../proc/control.js";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { WasiExit } from "../core/wasi";
-import { sharedRevoked, revokeFilesystem } from "../fs";
-import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
-import { waitStatus } from "../proc/wait-status";
-import type { RuntimeWorkerRequest, RuntimeWorkerMessage, WorkerExecutor } from "../browser/worker";
+import { WasiExit } from "../core/wasi.js";
+import { sharedRevoked, revokeFilesystem } from "../fs/index.js";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome.js";
+import { waitStatus } from "../proc/wait-status.js";
+import type { RuntimeWorkerRequest, RuntimeWorkerMessage, WorkerExecutor } from "../browser/worker.js";
 
 const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
   readFileSync(new URL("../browser/worker.ts", import.meta.url), "utf8")

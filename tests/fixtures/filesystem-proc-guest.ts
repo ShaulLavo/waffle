@@ -1,8 +1,8 @@
-import { DescriptorTable } from "../../core/descriptors";
-import { FilesystemClient, type FilesystemConnection } from "../../fs";
-import { ProcessABI } from "../../proc/abi";
-import { outcomeWord } from "../../proc/outcome";
-import { createSignalState } from "../../proc/signals";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
+import { ProcessABI } from "../../proc/abi.js";
+import { outcomeWord } from "../../proc/outcome.js";
+import { createSignalState } from "../../proc/signals.js";
 
 self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) => {
   const fs = new FilesystemClient(data.connection);

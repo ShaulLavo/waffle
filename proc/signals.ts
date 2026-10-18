@@ -1,7 +1,7 @@
-import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlNotify } from "./control.ts";
-import type { OutcomeWord } from "./outcome.ts";
-import { claimOutcome, readOutcome } from "./outcome.ts";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit } from "./types.ts";
+import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlNotify } from "./control.js";
+import type { OutcomeWord } from "./outcome.js";
+import { claimOutcome, readOutcome } from "./outcome.js";
+import { ProcessErrno, ProcessError, Signal, type ProcessExit } from "./types.js";
 
 /** Shared ABI: cell zero is reserved; signal numbers 1..64 index their own cell. */
 export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });

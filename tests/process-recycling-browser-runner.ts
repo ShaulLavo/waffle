@@ -1,8 +1,8 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
-import { installClientWorker } from "./process-recycling-browser";
-import { closeBrowserResources, stopBrowserResource } from "./process-recycling-browser-runner-control";
+import { installClientWorker } from "./process-recycling-browser.js";
+import { closeBrowserResources, stopBrowserResource } from "./process-recycling-browser-runner-control.js";
 
 // Run from the repository with Bun. Defaults to the full Chromium/Firefox/WebKit matrix.
 // PROCESS_SCRATCH_ROOT selects the parent of a disposable waffle-slot-recycling-* tree.
@@ -78,7 +78,7 @@ async function inPage<T>(browser: Browser, label?: string): Promise<T> {
     await page.goto(`http://127.0.0.1:${server!.port}/`); active();
     return await page.evaluate(async (label?: string) => {
       const modulePath = "/tests.js";
-      const tests = await import(modulePath) as typeof import("./process-recycling-browser");
+      const tests = await import(modulePath) as typeof import("./process-recycling-browser.js");
       return label === undefined ? tests.processBrowserCases() : tests.runProcessBrowserCase(label);
     }, label) as T;
   } finally {

@@ -1,12 +1,12 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
-import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
-import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs";
-import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory";
-import { DescriptorTable } from "../core/descriptors";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
-import { requestSignal, SIGNAL_PENDING } from "../proc/signals";
+import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker.js";
+import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs/index.js";
+import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { requestSignal, SIGNAL_PENDING } from "../proc/signals.js";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
 const module = new WebAssembly.Module(new Uint8Array([
@@ -241,7 +241,7 @@ test("descriptor release failures drain the table and filesystem but require the
   const runtimeProcess = createWorkerProcessTransport();
   const outcome = workerProcessState(runtimeProcess).signals.outcome;
   const released: string[] = [];
-  let descriptors: import("../core/descriptors").DescriptorTable;
+  let descriptors: import("../core/descriptors.js").DescriptorTable;
   const result = await fixture({
     instantiated({ wasi }) {
       descriptors = wasi.descriptors;
@@ -464,7 +464,7 @@ test("beforeBindings can release default stdio and preserve a preopen before fd3
 });
 
 for (const append of [false, true]) test(`executor post follows live files and shared offsets (append=${append})`, async () => {
-  const { shareFileResource } = await import("../core/open-file");
+  const { shareFileResource } = await import("../core/open-file.js");
   const writes: [number, string][] = [];
   const result = await fixture({
     instantiated({ wasi, fs, post }) {
@@ -552,7 +552,7 @@ for (const hook of ["setup", "namespaces", "beforeBindings", "imports", "instant
   for (const action of ["finish", "throw"] as const) test(`${hook} ${action} stops bootstrap and releases owned stdio exactly once`, async () => {
     let starts = 0, runs = 0, closed = 0;
     const seen: string[] = [];
-    const stop = (name: string, context: import("../browser/worker").WorkerSetupContext) => {
+    const stop = (name: string, context: import("../browser/worker.js").WorkerSetupContext) => {
       seen.push(name);
       if (name !== hook) return;
       if (action === "throw") throw new Error(`failed ${hook}`);
@@ -621,7 +621,7 @@ for (const moved of [false, true]) test(`default terminal provenance survives be
 });
 
 test("terminal provenance outranks a real resolved PipeEndpoint when spawning the next generation", async () => {
-  const { PipeController } = await import("../proc/pipes");
+  const { PipeController } = await import("../proc/pipes.js");
   const runtimeProcess = createWorkerProcessTransport(), pipe = new PipeController({ relay: "manual" });
   const pid = workerProcessState(runtimeProcess).pid, reader = pipe.retain(pid, "read"), writer = pipe.retain(pid, "write");
   runtimeProcess.resources.push({ kind: "web-terminal", target: 1 });
@@ -639,13 +639,13 @@ test("terminal provenance outranks a real resolved PipeEndpoint when spawning th
 });
 
 test("supplied class streams keep immediate I/O, process capabilities and prototype cleanup", async () => {
-  const { PipeController, PipeEndpoint } = await import("../proc/pipes");
+  const { PipeController, PipeEndpoint } = await import("../proc/pipes.js");
   const pipe = new PipeController({ relay: "manual" });
   const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
   try {
     const result = await fixture({ stdio: { 1: writer },
       run({ wasi }) {
-        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors").Stream;
+        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors.js").Stream;
         expect(stream).toBeInstanceOf(PipeEndpoint);
         expect(stream.notification).toBeDefined();
         expect(stream.tryWrite?.([new Uint8Array([65])])).toBe(1);

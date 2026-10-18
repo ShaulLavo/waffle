@@ -1,10 +1,10 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
-import { DescriptorTable } from "../core/descriptors";
-import { MemFS } from "../fs/memory";
-import { ProcessABI, ProcessSignalExit } from "../proc/abi";
-import { claimOutcome, outcomeWord } from "../proc/outcome";
-import { createSignalState, requestSignal } from "../proc/signals";
+import { DescriptorTable } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import { ProcessABI, ProcessSignalExit } from "../proc/abi.js";
+import { claimOutcome, outcomeWord } from "../proc/outcome.js";
+import { createSignalState, requestSignal } from "../proc/signals.js";
 
 function fixture() {
   const descriptors = new DescriptorTable();

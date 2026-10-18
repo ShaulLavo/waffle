@@ -1,16 +1,16 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import type { PipeEndpointHandle } from "../proc/pipes";
-import { DescriptorTable, type Stream } from "../core/descriptors";
-import { Wasi } from "../core/wasi";
-import { shareFileResource } from "../core/open-file";
-import { createFilesystemIdentity, reapFilesystem } from "../fs/protocol";
-import { MemFS } from "../fs/memory";
-import { ProcessABI, ProcessSignalExit, type ProcessABIOptions } from "../proc/abi";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { Signal } from "../proc/types";
+import type { PipeEndpointHandle } from "../proc/pipes.js";
+import { DescriptorTable, type Stream } from "../core/descriptors.js";
+import { Wasi } from "../core/wasi.js";
+import { shareFileResource } from "../core/open-file.js";
+import { createFilesystemIdentity, reapFilesystem } from "../fs/protocol.js";
+import { MemFS } from "../fs/memory.js";
+import { ProcessABI, ProcessSignalExit, type ProcessABIOptions } from "../proc/abi.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { Signal } from "../proc/types.js";
 
 const ALL = (1n << 29n) - 1n;
 const encoder = new TextEncoder(), decoder = new TextDecoder();

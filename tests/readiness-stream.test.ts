@@ -1,12 +1,12 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { afterEach, expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { Wasi, type WasiOptions } from "../core/wasi";
-import type { Readiness, Stream } from "../core/descriptors";
-import { MemFS } from "../fs/memory";
-import { PipeController } from "../proc/pipes";
-import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals";
-import { outcomeWord } from "../proc/outcome";
+import { Wasi, type WasiOptions } from "../core/wasi.js";
+import type { Readiness, Stream } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import { PipeController } from "../proc/pipes.js";
+import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals.js";
+import { outcomeWord } from "../proc/outcome.js";
 
 const ALL = (1n << 29n) - 1n;
 const cleanups: (() => void)[] = [];

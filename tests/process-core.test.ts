@@ -1,7 +1,7 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { ExecutableRegistry, FirstSpawnStub, ProcessIdentityAllocator, ProcessSupervisor, Signal, SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal, outcomeWord, claimOutcome, type ProcessContext, type SpawnRequest } from "../proc";
+import { ExecutableRegistry, FirstSpawnStub, ProcessIdentityAllocator, ProcessSupervisor, Signal, SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal, outcomeWord, claimOutcome, type ProcessContext, type SpawnRequest } from "../proc/index.js";
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 function deferred<T>() {
@@ -1000,7 +1000,7 @@ test("admitted registration still validates identities, descriptors and supervis
 test("spawn forks process-owned streams once and revokes before releasing inherited dups", () => {
   const { supervisor, root } = fixture();
   const events: string[] = [];
-  const resources = new Map<number, import("../core/descriptors").Stream>();
+  const resources = new Map<number, import("../core/descriptors.js").Stream>();
   const parent = {
     kind: "pipe" as const,
     read: () => -6, write: () => 0,

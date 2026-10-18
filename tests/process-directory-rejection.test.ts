@@ -1,13 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { DescriptorTable } from "../core/descriptors";
-import { createFilesystemIdentity, isRevoked, revokeFilesystem } from "../fs/protocol";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { PipeEndpoint, PipeErrno } from "../proc/pipes";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessTable } from "../proc/table";
-import { createWorkerProcessTransport, WorkerProcessClient, type WorkerProcessMessage } from "../proc/worker-client";
-import { WorkerPipeHost } from "../proc/worker-pipes";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { createFilesystemIdentity, isRevoked, revokeFilesystem } from "../fs/protocol.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { PipeEndpoint, PipeErrno } from "../proc/pipes.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessTable } from "../proc/table.js";
+import { createWorkerProcessTransport, WorkerProcessClient, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { WorkerPipeHost } from "../proc/worker-pipes.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!(); });
