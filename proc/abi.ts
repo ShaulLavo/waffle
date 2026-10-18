@@ -22,6 +22,10 @@ export interface ProcessService {
   /** Privileged local services check guest authority; broker clients are already caller-bound. */
   canSignal?(callerPid: number, targetPid: number): boolean;
   canSignalJob?(callerPid: number, job: number): boolean;
+  accessStart?(pid: number, path: string, cwd: string): number;
+  accessTake?(pid: number, request: number): number;
+  accessCancel?(pid: number, request: number): number;
+  accessReady?(pid: number, request: number): boolean;
   filesystemReady?(pid: number, request: number): boolean;
   registerRevocation?(pid: number, hook: () => void): () => void;
 }
@@ -85,6 +89,9 @@ export class ProcessABI {
     this.now = options.now ?? clock;
     this.imports = {
       getpid: () => options.pid,
+      access_start: (ptr, length, cwdPtr, cwdLength, mode) => this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
+      access_take: request => this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
+      access_cancel: request => this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
       spawn: (ptr, length) => this.result(() => options.service.spawn(options.pid, this.spawnRequest(ptr!, length!))),
       job_of: pid => this.result(() => options.service.jobOf(pid!)),
       pipe: ptr => this.result(() => this.pipe(ptr!)),
@@ -126,6 +133,20 @@ export class ProcessABI {
   private view(ptr: number, length: number): DataView {
     const bytes = this.span(ptr, length);
     return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  }
+  private accessPath(ptr: number, length: number): string {
+    const bytes = this.span(ptr, length).slice();
+    let path: string;
+    try { path = decode.decode(bytes); }
+    catch { throw new ProcessError(ProcessErrno.INVAL, "invalid path encoding"); }
+    if (!path || path.includes("\0")) throw new ProcessError(ProcessErrno.INVAL, "invalid path");
+    return path;
+  }
+  private accessStart(ptr: number, length: number, cwdPtr: number, cwdLength: number, mode: number): number {
+    if (mode !== 1) return -ProcessErrno.INVAL;
+    const path = this.accessPath(ptr, length), cwd = this.accessPath(cwdPtr, cwdLength);
+    if (!cwd.startsWith("/")) return -ProcessErrno.INVAL;
+    return this.options.service.accessStart?.(this.options.pid, path, cwd) ?? -NOSYS;
   }
   private spawnRequest(ptr: number, length: number): SpawnRequest {
     // Guest memory may be resizable; TextDecoder's WebIDL input requires a fixed buffer.
@@ -290,6 +311,11 @@ export class ProcessABI {
     throw new ProcessSignalExit(signal);
   }
   private readiness(sub: Subscription): Readiness | null {
+    if (sub.kind === 5) {
+      const ready = this.options.service.accessReady?.(this.options.pid, sub.id);
+      if (ready === undefined) throw new ProcessError(NOSYS, "executable query service is unavailable");
+      return ready ? { readable: true, writable: false, hangup: false } : null;
+    }
     if (sub.kind === 4) return this.options.service.jobEmpty(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
     if (sub.kind === 2) return this.options.service.wait(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
     const fs: NonblockingFileSystem = this.options.fs;
@@ -327,7 +353,7 @@ export class ProcessABI {
     for (let index = 0; index < count; index++) {
       const at = index * 16;
       const sub = { kind: input.getUint32(at, true), id: input.getUint32(at + 4, true), userdata: input.getBigUint64(at + 8, true) };
-      if (sub.kind > 4) return -ProcessErrno.INVAL;
+      if (sub.kind > 5) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
     if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;

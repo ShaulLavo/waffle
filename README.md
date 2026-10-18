@@ -305,6 +305,9 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | Import | Contract |
 | --- | --- |
 | `spawn(ptr, len)` | UTF-8 JSON `{ executable, argv, env, cwd, job, fds: [{ child, parent }] }`; job 0 creates a foreground job, -1 creates a background job, and a positive value joins an existing job. Returns PID or negative errno. |
+| `access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` | Copies a UTF-8 executable name and absolute cwd synchronously. `mode` must be X_OK (`1`). Returns a positive process-owned request ID, or a negative errno; it never loads a module or allocates descriptors. |
+| `access_take(request)` | Returns `-EAGAIN` (`-6`) while the query is pending, then consumes it and returns `0` when the live registered file is runnable, or `-ENOENT` (`-44`), `-EACCES` (`-2`), or `-ENOTDIR` (`-54`). A consumed or unknown request returns `-EBADF` (`-8`). |
+| `access_cancel(request)` | Retires the request and discards any late filesystem/registry completion. Returns `0`, or `-EBADF` for an already retired request. |
 | `pipe(out)` | Writes two little-endian u32 fds, reader then writer; returns 0. |
 | `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
 | `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
@@ -316,7 +319,9 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 
 Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
 u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),
-writable fd (1), child exit (2), and filesystem completion (3); flag bit 0 means hangup.
+writable fd (1), child exit (2), filesystem completion (3), job completion (4), and executable
+query completion (5); flag bit 0 means hangup. Executable query requests are bounded to 64 live
+requests per process and are retired automatically when the process exits.
 Signals wake poll without being consumed. Pipe publication notifies a shared readiness sequence;
 independent signal, local child and filesystem sources are also rescanned within 10 ms until
 all publishers guarantee the same wake address. The wait hook receives the sequence observed

@@ -863,6 +863,7 @@ test("an unrelated failed mutation cannot reject a later valid executable admiss
   runtime.registerAdapter("test", context => { context.exit(23); return { terminate() {} }; });
   await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
   runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  // Explicit catch avoids an unexplained Bun matcher hang in this full-runtime context.
   let failure: unknown;
   try { await runtime.filesystem.writeFile("/bin", "cannot replace directory"); } catch (error) { failure = error; }
   expect(failure).toBeDefined();

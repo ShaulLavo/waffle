@@ -10,6 +10,12 @@ const HEADER_WORDS = 4;
 const RECORD_WORDS = 80;
 const SIGNAL_OFFSET = 9;
 
+/** Allocated only on executable-query use; IDs never recycle within a process. */
+export const MAX_ACCESS_REQUESTS = 64;
+// Two words: pending=0, complete=1, retired=2; then the signed WASI result.
+// The broker stores the result before publishing complete and the common wake.
+export type WorkerAccessRequest = { id: number; completion: SharedArrayBuffer };
+
 export interface WorkerDescriptorBinding {
   fd: number;
   reference: number;
@@ -38,7 +44,9 @@ export type WorkerProcessMessage =
   | { type: "runtime-proc"; operation: "spawn"; transport: WorkerProcessTransport; request: SpawnRequest }
   | { type: "runtime-proc"; operation: "signal" | "exit"; transport: WorkerProcessTransport; targets: number[] }
   | { type: "runtime-proc"; operation: "pipe"; transport: WorkerProcessTransport; handle: unknown }
-  | { type: "runtime-proc"; operation: "reap-job"; transport: WorkerProcessTransport; job: number };
+  | { type: "runtime-proc"; operation: "reap-job"; transport: WorkerProcessTransport; job: number }
+  | { type: "runtime-proc"; operation: "access"; transport: WorkerProcessTransport; request: WorkerAccessRequest; path: string; cwd: string }
+  | { type: "runtime-proc"; operation: "access-cancel"; transport: WorkerProcessTransport; request: WorkerAccessRequest };
 
 function record(transport: WorkerProcessTransport, slot = transport.slot): Int32Array {
   const capacity = (transport.directory.byteLength / 4 - HEADER_WORDS) / RECORD_WORDS;
@@ -164,6 +172,8 @@ export class WorkerProcessClient {
   readonly signals: SignalTransport;
   readonly wake: Int32Array;
   private readonly identities: ProcessIdentityAllocator;
+  private accesses?: Map<number, Int32Array>;
+  private nextAccess = 1;
   constructor(readonly options: WorkerProcessClientOptions) {
     const state = workerProcessState(options.transport);
     this.pid = state.pid; this.job = state.job; this.signals = state.signals; this.wake = state.wake;
@@ -171,7 +181,54 @@ export class WorkerProcessClient {
   }
   installBindings(): void { installWorkerBindings(this.options.transport, this.options.descriptors, this.options.codec); }
   private admit(): void {
-    if (readOutcome(this.signals.outcome)) throw new ProcessError(ProcessErrno.SRCH, "process has exited");
+    if (readOutcome(this.signals.outcome)) {
+      this.retireAccesses();
+      throw new ProcessError(ProcessErrno.SRCH, "process has exited");
+    }
+  }
+  accessStart(pid: number, path: string, cwd: string): number {
+    this.admit();
+    if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
+    if (!path || path.includes("\0") || !cwd.startsWith("/") || cwd.includes("\0")) throw new ProcessError(ProcessErrno.INVAL, "invalid executable query");
+    if ((this.accesses?.size ?? 0) >= MAX_ACCESS_REQUESTS || this.nextAccess > 0x7fffffff) return -ProcessErrno.AGAIN;
+    const id = this.nextAccess++, cells = new Int32Array(new SharedArrayBuffer(8));
+    (this.accesses ??= new Map()).set(id, cells);
+    try {
+      this.options.postMessage({ type: "runtime-proc", operation: "access", transport: this.options.transport,
+        request: { id, completion: cells.buffer as SharedArrayBuffer }, path, cwd });
+    } catch (error) { Atomics.store(cells, 0, 2); this.accesses.delete(id); throw error; }
+    return id;
+  }
+  private access(pid: number, id: number): Int32Array {
+    this.admit();
+    if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
+    const cells = this.accesses?.get(id);
+    if (!cells || Atomics.load(cells, 0) === 2) {
+      this.accesses?.delete(id);
+      throw new ProcessError(ProcessErrno.BADF, "unknown executable query");
+    }
+    return cells;
+  }
+  accessReady(pid: number, id: number): boolean { return Atomics.load(this.access(pid, id), 0) === 1; }
+  accessTake(pid: number, id: number): number {
+    const cells = this.access(pid, id);
+    if (Atomics.load(cells, 0) === 0) return -ProcessErrno.AGAIN;
+    Atomics.store(cells, 0, 2);
+    this.accesses!.delete(id);
+    return Atomics.load(cells, 1);
+  }
+  accessCancel(pid: number, id: number): number {
+    const cells = this.access(pid, id);
+    Atomics.store(cells, 0, 2);
+    this.accesses!.delete(id);
+    this.options.postMessage({ type: "runtime-proc", operation: "access-cancel", transport: this.options.transport,
+      request: { id, completion: cells.buffer as SharedArrayBuffer } });
+    return 0;
+  }
+  private retireAccesses(): void {
+    if (!this.accesses?.size) return;
+    for (const cells of this.accesses.values()) Atomics.store(cells, 0, 2);
+    this.accesses.clear();
   }
   spawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
@@ -329,12 +386,14 @@ export class WorkerProcessClient {
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid default signal process");
     if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, "invalid default signal");
     const winner = claimOutcome(this.signals.outcome, { kind: "signaled", code: Atomics.load(this.signals.requestedSignal, 0) === 9 ? 9 : signal });
+    this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);
     this.options.postMessage({ type: "runtime-proc", operation: "exit", transport: this.options.transport, targets: [pid] });
   }
   exit(code: number): void {
     claimOutcome(this.signals.outcome, { kind: "exited", code });
+    this.retireAccesses();
     wakeWorkerProcess(this.options.transport);
     this.options.postMessage({ type: "runtime-proc", operation: "exit", transport: this.options.transport, targets: [this.pid] });
   }

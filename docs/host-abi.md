@@ -18,6 +18,32 @@ the call takes no arguments, reads no guest memory, never waits and sends no ser
 broker request. In-process and worker adapters expose the same import. It adds no eager
 process-service activation, helper export or RPC operation.
 
+## Executable access queries
+
+`runtime_proc.access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` copies both UTF-8
+strings before returning. `cwd` must be absolute and `mode` must be X_OK (`1`); other modes,
+invalid UTF-8, empty strings and NUL bytes return `-EINVAL` (`-28`). The returned positive
+request ID belongs to the calling process. `access_take(request)` is `-EAGAIN` (`-6`) until
+the asynchronous registry/filesystem check publishes, then consumes the request and returns
+zero or `-ENOENT` (`-44`), `-EACCES` (`-2`), or `-ENOTDIR` (`-54`). `access_cancel` retires
+ownership and causes a late completion to be discarded. Unknown or consumed IDs return
+`-EBADF` (`-8`). There are at most 64 live requests per process, and process death retires
+all of them. Queries call the same live `ExecutableRegistry.check(name, cwd)` used by spawn,
+without activating the module loader, supervisor, filesystem descriptors, or process launch.
+The result is point-in-time: spawn checks the live file and registration again, so an earlier
+success cannot authorize an unlinked or unregistered program. Other filesystem failures retain
+their WASI errno (unexpected failures are EIO, never invented ENOENT).
+
+The process broker owns these requests because the filesystem worker has no executable registry.
+Reusing filesystem request kind 3 would couple storage to the optional process/module graph.
+Request maps and completion cells are created only on first use; there is no registry snapshot.
+The imports never await, call `Atomics.wait`, compile, spawn, or allocate descriptors.
+
+Poll kind 5 subscribes to an executable query request ID. The broker stores the result before
+publishing completion and increments the process directory's common wake sequence only after
+publication, so a completion racing `poll` cannot be lost. Cancellation and process death do
+not publish a late completion.
+
 ## Transport contracts
 
 Filesystem and process transports use shared-memory completion and readiness words plus message-port control. Descriptor bindings retain independent capability pins while duplicate bindings may share an open-file cursor. Termination selects one atomic outcome; cleanup acknowledgement and filesystem quiescence are separate facts.
