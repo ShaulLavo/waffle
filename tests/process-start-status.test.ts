@@ -35,6 +35,10 @@ for (const [error, errno] of [["ENOENT",44],["EACCES",2],["ENOTDIR",54],["ENOEXE
       expect(abi.imports.start_status!(f.pid)).toBe(errno);
       expect(abi.imports.start_status!(f.pid)).toBe(errno);
       expect(f.supervisor.wait(f.root, f.pid)).toBeNull();
+      const view = new DataView(f.memory.buffer);
+      view.setUint32(0,6,true); view.setUint32(4,f.pid,true);
+      expect(abi.imports.poll!(0,1,0,96)).toBe(1);
+      expect(abi.imports.start_status!(f.pid)).toBe(errno);
       const finished = f.supervisor.waitForExit(f.root, f.pid);
       release(); await finished;
       expect(abi.imports.start_status!(f.pid)).toBe(errno);
@@ -161,11 +165,19 @@ test("Wasi entry callback runs after memory setup, directly before _start", () =
     expect(() => wasi.start(invalid,() => order.push("bad commit"))).toThrow("memory");
     const missingStart = {exports:{memory}} as unknown as WebAssembly.Instance;
     expect(() => wasi.start(missingStart,() => order.push("bad commit"))).toThrow("_start");
-    class BrokenMemory extends WebAssembly.Memory {
-      override get buffer(): ArrayBuffer { throw new RangeError("memory view setup failed"); }
-    }
-    const brokenViews = {exports:{memory:new BrokenMemory({initial:1}),_start() {}}} as unknown as WebAssembly.Instance;
-    expect(() => wasi.start(brokenViews,() => order.push("bad commit"))).toThrow("memory view setup failed");
+    const freshMemory = new WebAssembly.Memory({initial:1});
+    const allocation = WeakMap.prototype.set;
+    let failed: unknown;
+    WeakMap.prototype.set = function(key: object, value: unknown) {
+      if (key === freshMemory) throw new RangeError("memory view setup failed");
+      return allocation.call(this,key,value);
+    };
+    try {
+      wasi.start({exports:{memory:freshMemory,_start() {}}} as unknown as WebAssembly.Instance,() => order.push("bad commit"));
+    } catch (error) { failed = error; }
+    finally { WeakMap.prototype.set = allocation; }
+    expect(failed).toBeInstanceOf(RangeError);
+    expect((failed as Error).message).toBe("memory view setup failed");
     expect(order).toEqual(["commit","entry"]);
   } finally { wasi.descriptors.dispose(); }
 });
