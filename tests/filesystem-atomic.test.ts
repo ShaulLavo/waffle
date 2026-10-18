@@ -48,6 +48,24 @@ test("service creates atomically reuse an entry for O_CREAT and reject it for O_
   expect(results.filter(result => typeof result !== "number")).toEqual([{ error: 20 }]);
 });
 
+test("host writeFile exclusive creation reuses the atomic create path", async () => {
+  const { client, sibling } = fixture();
+  await client.asyncCall("writeFile", ["/created", false, true], encode("winner"));
+  try { await client.asyncCall("writeFile", ["/created", false, true], encode("clobber")); throw new Error("exclusive file create unexpectedly succeeded"); }
+  catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  await client.asyncCall("mkdirp", ["/directory"]);
+  try { await client.asyncCall("writeFile", ["/directory", false, true], encode("not a directory")); throw new Error("exclusive directory create unexpectedly succeeded"); }
+  catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  const outcomes = await Promise.allSettled([
+    client.asyncCall("writeFile", ["/race", false, true], encode("first")),
+    sibling.asyncCall("writeFile", ["/race", false, true], encode("second")),
+  ]);
+  expect(outcomes.filter(result => result.status === "fulfilled")).toHaveLength(1);
+  expect(outcomes.filter(result => result.status === "rejected")).toHaveLength(1);
+  expect(outcomes.find(result => result.status === "rejected")).toMatchObject({ reason: { errno: 20 } });
+  expect(decode(await client.asyncCall("readFile", ["/race"]))).toMatch(/^(first|second)$/);
+});
+
 test("serialized append requests choose EOF with their writes and return each writer's own end offset", async () => {
   const { client, sibling } = fixture();
   await client.asyncCall("writeFile", ["/shared"], encode("seed"));

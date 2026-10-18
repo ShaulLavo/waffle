@@ -135,6 +135,15 @@ const unregister = runtime.registerProgram("/bin/bun", {
 });
 ```
 
+Pass `{ exclusive: true }` as the third argument when a host must create a file without
+clobbering an existing file or directory. The check and creation are one filesystem operation;
+existing paths reject with Waffle's `EEXIST` filesystem error. The older boolean third argument
+remains the append mode, and ordinary writes still replace existing files.
+
+```ts
+await runtime.filesystem.writeFile("/bin/bun", bytes, { exclusive: true });
+```
+
 This makes filesystem inspection, a shell's `$PATH` search and process admission agree on the
 same path. The shell searches `$PATH`; Waffle's spawn does not. Spawn resolves its executable
 relative to the request's snapshotted `cwd` and walks the actual filesystem tree before

@@ -1,4 +1,4 @@
-import { normalize, type FileHandle, type ResolvedPath } from "../core/index.js";
+import { normalize, dirname, basename, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
@@ -149,6 +149,21 @@ export class MemoryBackend implements FilesystemBackend {
         return bytes.subarray(0, count);
       }
       case "writeFile": {
+        if (c) {
+          // The service queue is the namespace lock. Reuse MemFS.create's exclusive path so
+          // the existence check and file insertion cannot be separated by another writer.
+          const parent = this.fs.mkdirp(dirname(a));
+          const result = this.fs.create({ parent: this.fs.handleForNode(parent), name: basename(a), node: undefined, trailingSlash: false, terminalDot: false }, "file", true);
+          if (typeof result !== "number") throw new FilesystemError(result.error);
+          try {
+            this.fs.writeFile(a, data.slice(), false);
+            this.sync(result);
+          } catch (error) {
+            this.fs.remove(a);
+            throw error;
+          }
+          return;
+        }
         const existing = this.existing(a);
         if (existing) {
           if (b && !data.length) return;

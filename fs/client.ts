@@ -6,6 +6,22 @@ const asyncAtomics = Atomics as typeof Atomics & {
   waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
 };
 
+export interface WriteFileOptions {
+  /** Append bytes instead of replacing the existing file. */
+  append?: boolean;
+  /** Fail with EEXIST when the path already names a file or directory. */
+  exclusive?: boolean;
+}
+export type WriteFileMode = boolean | WriteFileOptions;
+
+export function resolveWriteFileMode(mode: WriteFileMode = false): { append: boolean; exclusive: boolean } {
+  if (typeof mode === "boolean") return { append: mode, exclusive: false };
+  const append = mode.append ?? false;
+  const exclusive = mode.exclusive ?? false;
+  if (append && exclusive) throw new TypeError("writeFile cannot append and create exclusively");
+  return { append, exclusive };
+}
+
 export class FilesystemCompletion {
   readonly cells: Int32Array;
   private changed: (() => void)[] = [];
@@ -566,5 +582,8 @@ export class FilesystemClient implements FileSystem {
   removePath(path: ResolvedPath, directory: boolean): number { try { return this.call("removePath", [path, directory]); } catch (error) { return errno(error); } }
   rename(from: ResolvedPath, to: ResolvedPath): number { try { return this.call("rename", [from, to]); } catch (error) { return errno(error); } }
   lookup(path: string): any { return this.call("lookup", [path]); }
-  writeFile(path: string, value: string | Uint8Array, append = false): void { this.call("writeFile", [path, append], typeof value === "string" ? new TextEncoder().encode(value) : value); }
+  writeFile(path: string, value: string | Uint8Array, mode: WriteFileMode = false): void {
+    const { append, exclusive } = resolveWriteFileMode(mode);
+    this.call("writeFile", [path, append, exclusive], typeof value === "string" ? new TextEncoder().encode(value) : value);
+  }
 }

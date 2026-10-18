@@ -1,5 +1,6 @@
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
 import { createRuntime, type RuntimeStartupStage } from "../index.js";
+import { FilesystemClient, FilesystemService, PersistentBackend, createFilesystemConnection } from "../fs/index.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
 export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser.js";
@@ -41,10 +42,45 @@ export interface StorageContractCase {
 }
 type Register = (label: string, run: StorageContractCase["run"], compactEvery?: number) => void;
 
+async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Promise<void> {
+  const storage = await open();
+  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
+  const client = new FilesystemClient(connection.client);
+  const sibling = new FilesystemClient(client.fork());
+  try {
+    await client.asyncCall("writeFile", ["/created", false, true], bytes("winner"));
+    await rejects(client.asyncCall("writeFile", ["/created", false, true], bytes("clobber")), "20");
+    await client.asyncCall("mkdirp", ["/directory"]);
+    await rejects(client.asyncCall("writeFile", ["/directory", false, true], bytes("not a directory")), "20");
+
+    const outcomes = await Promise.allSettled([
+      client.asyncCall("writeFile", ["/race", false, true], bytes("first")),
+      sibling.asyncCall("writeFile", ["/race", false, true], bytes("second")),
+    ]);
+    assert(outcomes.filter(result => result.status === "fulfilled").length === 1, "one exclusive writer must win");
+    assert(outcomes.filter(result => result.status === "rejected").length === 1, "one exclusive writer must lose");
+    const rejected = outcomes.find(result => result.status === "rejected");
+    assert(rejected && String(rejected.reason).includes("20"), "losing writer must receive EEXIST");
+    assert(/^(first|second)$/.test(new TextDecoder().decode(await client.asyncCall("readFile", ["/race"]))), "winner bytes survive");
+
+    await client.asyncCall("writeFile", ["/created", false, false], bytes("updated"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/created"])) === "updated", "ordinary writes still replace");
+  } finally {
+    sibling.dispose(); client.dispose(); service.dispose();
+    await backend.close();
+  }
+}
+
 /** Backend-independent behavior, with no assumptions about the physical persistence layout. */
 export function storageContractCases(): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
+  test("host writeFile exclusive creation is atomic", async (_name, open) => {
+    await exclusiveFilesystemCase(open);
+  });
   test("empty, atomic save, reload, payload copies", async (_name, open) => {
     const storage = await open();
     assert(await storage.load() === undefined, "fresh storage must be empty");
