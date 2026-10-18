@@ -15,10 +15,10 @@ export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
   /** Emit a startup diagnostic while this process still owns its inherited output descriptors. */
-  startFailed?(pid: number, error: unknown): void;
+  startFailed?(pid: number, error: unknown): void | Promise<void>;
   table?: ProcessTable;
-  /** Message-bearing hosts defer ordinary completion until ordered output/exit messages drain.
-   * Fatal outcomes and explicit disposal never wait for this acknowledgement.
+  /** Message-bearing hosts defer exits and startup failures until ordered output/error messages drain.
+   * Signals and explicit disposal never wait for this acknowledgement.
    */
   canConfirmExit?(pid: number): boolean;
   /** Fence admitted filesystem and adapter work after revocation. Every exit confirmation
@@ -548,15 +548,10 @@ export class ProcessSupervisor {
       winner = claimOutcome(record.outcome, { kind: "exited", code: 126 }, ownClaim);
       failedExecutor = claimed;
     }
-    if (claimed && winner.kind === "start-failed" && !this.startFailures.has(record)) {
-      // The immutable CAS winner decides diagnostics, before descriptors are released.
-      this.startFailures.add(record);
-      this.safely(() => this.options.startFailed?.(pid, startError));
-    }
     this.notifyStart(pid);
     // Check the immutable winner, not an earlier read: a worker may ordinary-exit while a
     // signal observer is entering this function. Its queued output must still drain first.
-    if (winner.kind === "exited" && !failedExecutor && !this.disposed) {
+    if (winner.kind !== "signaled" && !failedExecutor && !this.disposed) {
       let canConfirm: boolean;
       try { canConfirm = this.options.canConfirmExit?.(pid) !== false; }
       catch (error) { this.finishing.delete(pid); throw error; }
@@ -565,6 +560,25 @@ export class ProcessSupervisor {
         return;
       }
     }
+    if (winner.kind === "start-failed" && !this.startFailures.has(record)) {
+      // Any producer can win the terminal CAS. Ordered acknowledgement supplies the error;
+      // this supervisor alone owns its diagnostic, before revocation or descriptor release.
+      this.startFailures.add(record);
+      let pending: void | Promise<void> = undefined;
+      try { pending = this.options.startFailed?.(pid, startError ?? winner.error); }
+      catch (error) { this.report(error); }
+      if (pending) {
+        void pending.then(() => this.complete(record, winner), error => {
+          this.report(error);
+          this.complete(record, winner);
+        });
+        return;
+      }
+    }
+    this.complete(record, winner);
+  }
+  private complete(record: ProcessRecord, winner: ProcessExit): void {
+    const pid = record.pid;
     if (winner.kind === "signaled" && winner.code === Signal.SIGKILL) this.publishKill(record);
     record.revoked = true;
     const hooks = Array.from(record.revocations);

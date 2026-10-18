@@ -182,9 +182,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const startupFailure = "error" in result && !started;
     const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
-    // Generic commands select their winner before any reentrant cleanup callback. Legacy
-    // transports still publish completion only after their buffered diagnostics and release.
-    let winner = executor.complete ? settled : claim(ownResult);
+    // Startup failures select their winner before any reentrant cleanup callback. Executor-
+    // owned ordinary completion still follows its buffered diagnostics and descriptor release.
+    let winner = executor.complete && !startupFailure ? settled : claim(ownResult);
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -195,10 +195,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     };
     attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
-    if (executor.complete && "error" in result && !settled) {
+    if (executor.complete && "error" in result && (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)) {
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
-    if (executor.complete && startupFailure) winner = claim(ownResult);
     const descriptorsReleased = attempt(() => {
       if (wasi) { wasi.descriptors.dispose(); return; }
       const errors: unknown[] = [];
@@ -223,7 +222,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const signal = winner.kind === "signaled" ? winner.code : undefined;
     if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
-    if (executor.complete || "code" in result || settled || winner.kind === "signaled") {
+    if ((executor.complete || "code" in result || settled || winner.kind === "signaled") &&
+      !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")) {
       host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
       host.postMessage({ type: "error", code, errno: winner.kind === "start-failed" ? winner.error : undefined, message: describeWorkerError(result.error), sleep: sleepMode, ...diagnostics });

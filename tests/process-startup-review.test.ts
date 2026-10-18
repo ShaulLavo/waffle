@@ -153,8 +153,9 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
         await f.broker.runtimeMessage(exitNotice as WorkerProcessMessage, f.pid);
       } else {
         await f.broker.runtimeMessage(exitNotice as WorkerProcessMessage, f.pid);
-        expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
+        expect(f.supervisor.wait(f.parent.pid, f.pid)).toBeNull();
         f.worker.emit(terminal);
+        expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
       }
       f.supervisor.exit(f.pid, 13);
       expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);

@@ -86,3 +86,29 @@ for (const settled of ["exited", "signaled", "unconfirmed"] as const) test(`star
     expect(supervisor.wait(root, child)?.status).toBe(settled === "signaled" ? 137 : 23);
   } finally { supervisor.dispose(); }
 });
+
+test("a worker-selected startup error waits for acknowledgement and an asynchronous diagnostic", async () => {
+  let acknowledged = false, reports = 0, closed = 0, resolve!: () => void;
+  const pending = new Promise<void>(done => { resolve = done; });
+  const error = new Error("worker setup failed");
+  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch: () => ({ terminate() {} }),
+    canConfirmExit: () => acknowledged, startFailed(_pid, actual) { reports++; expect(actual).toBe(error); return pending; } });
+  const root = supervisor.createRoot(), child = supervisor.reserveSpawn(root, request);
+  supervisor.get(child)!.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
+    readiness: () => ({ readable: false, writable: true, hangup: false }), close() { closed++; } }, 0n, 0n);
+  try {
+    claimOutcome(supervisor.get(child)!.outcome, { kind: "start-failed", code: 5 });
+    supervisor.exit(child, 126);
+    expect(reports).toBe(0);
+    expect(supervisor.wait(root, child)).toBeNull();
+    acknowledged = true;
+    supervisor.failStart(child, error);
+    supervisor.failStart(child, new Error("duplicate"));
+    expect(reports).toBe(1);
+    expect(closed).toBe(0);
+    expect(supervisor.get(child)!.revoked).toBe(false);
+    resolve();
+    expect(await supervisor.waitForExit(root, child)).toMatchObject({ kind: "start-failed", error: "EIO" });
+    expect(closed).toBe(1);
+  } finally { resolve(); supervisor.dispose(); }
+});

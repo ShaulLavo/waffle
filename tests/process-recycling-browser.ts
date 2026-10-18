@@ -1,3 +1,4 @@
+import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -335,6 +336,11 @@ class ProcessFixture {
 type BrowserCase = { label: string; standalone?: boolean; run(fixture: ProcessFixture): Promise<void> };
 // Exercise consuming waits and recyclable shared slots across real Worker boundaries.
 const cases: BrowserCase[] = [
+  { label: "startup diagnostic: worker-selected failure drains before stderr closes", standalone: true, run: () => browserStartupDiagnostic() },
+  { label: "startup diagnostic: executor completion cannot duplicate broker output", standalone: true, run: () => browserStartupDiagnostic(undefined, "drain", true) },
+  { label: "startup diagnostic: stalled reader cannot retain teardown", standalone: true, run: () => browserStartupDiagnostic(undefined, "stalled") },
+  { label: "startup diagnostic: closed reader cannot retain teardown", standalone: true, run: () => browserStartupDiagnostic(undefined, "closed") },
+  { label: "startup diagnostic: disposal cancels a stalled reader", standalone: true, run: () => browserStartupDiagnostic(undefined, "dispose") },
   { label: "cell clone: browser broker spawns and waits after slot recycling", standalone: true, run: browserBrokerCellClone },
   { label: "cell clone: Worker rejects stale process cells after collection and recycling", standalone: true, run: () => browserStaleCellClone(false) },
   { label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id", standalone: true, run: () => browserStaleCellClone(true) },
