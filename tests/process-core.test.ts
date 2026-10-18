@@ -1,56 +1,107 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
+import { controlLoad, controlStore, controlExchange } from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { ExecutableRegistry, FirstSpawnStub, ProcessIdentityAllocator, ProcessSupervisor, Signal, SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal, outcomeWord, claimOutcome, type ProcessContext, type SpawnRequest } from "../proc/index.js";
+import {
+  ExecutableRegistry,
+  FirstSpawnStub,
+  ProcessIdentityAllocator,
+  ProcessSupervisor,
+  Signal,
+  SignalDisposition,
+  SIGNAL_PENDING,
+  createSignalState,
+  signalDisposition,
+  setSignalDisposition,
+  publishSignal,
+  requestSignal,
+  takeSignal,
+  outcomeWord,
+  claimOutcome,
+  type ProcessContext,
+  type SpawnRequest,
+} from "../proc/index.js";
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
   return { promise, resolve, reject };
 }
 const request = (overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  executable: "fixture", argv: ["fixture"], env: {}, cwd: "/", job: 0, fds: [], ...overrides,
+  executable: "fixture",
+  argv: ["fixture"],
+  env: {},
+  cwd: "/",
+  job: 0,
+  fds: [],
+  ...overrides,
 });
 function fixture() {
   const registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "preview1" });
   const contexts = new Map<number, ProcessContext>();
   const terminated: number[] = [];
-  const supervisor = new ProcessSupervisor({ registry, launch(context) {
-    contexts.set(context.pid, context);
-    return { terminate() { terminated.push(context.pid); } };
-  } });
+  const supervisor = new ProcessSupervisor({
+    registry,
+    launch(context) {
+      contexts.set(context.pid, context);
+      return {
+        terminate() {
+          terminated.push(context.pid);
+        },
+      };
+    },
+  });
   const root = supervisor.createRoot();
   return { registry, supervisor, root, contexts, terminated };
 }
 
-for (const recovery of ["retry", "dispose"] as const) test(`throwing completion gate stays pending and permits ${recovery} cleanup`, async () => {
-  const registry = new ExecutableRegistry();
-  registry.register("fixture", { module, adapter: "preview1" });
-  let throwGate = true, closed = 0, revoked = 0, terminated = 0;
-  const supervisor = new ProcessSupervisor({ registry,
-    launch: () => ({ terminate() { terminated++; } }),
-    canConfirmExit() { if (throwGate) throw new Error("completion gate failed"); return true; },
+for (const recovery of ["retry", "dispose"] as const)
+  test(`throwing completion gate stays pending and permits ${recovery} cleanup`, async () => {
+    const registry = new ExecutableRegistry();
+    registry.register("fixture", { module, adapter: "preview1" });
+    let throwGate = true,
+      closed = 0,
+      revoked = 0,
+      terminated = 0;
+    const supervisor = new ProcessSupervisor({
+      registry,
+      launch: () => ({
+        terminate() {
+          terminated++;
+        },
+      }),
+      canConfirmExit() {
+        if (throwGate) throw new Error("completion gate failed");
+        return true;
+      },
+    });
+    try {
+      const root = supervisor.createRoot(),
+        pid = supervisor.reserveSpawn(root, request());
+      await supervisor.start(pid);
+      supervisor
+        .get(pid)!
+        .descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
+      supervisor.registerRevocation(pid, () => revoked++);
+      expect(() => supervisor.exit(pid, 23)).toThrow("completion gate failed");
+      expect(supervisor.get(pid)!.result).toBeNull();
+      expect(supervisor.get(pid)!.revoked).toBe(false);
+      expect([closed, revoked, terminated]).toEqual([0, 0, 0]);
+      if (recovery === "retry") {
+        throwGate = false;
+        supervisor.exit(pid, 23);
+        expect(supervisor.wait(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
+      } else supervisor.dispose();
+      expect([closed, revoked, terminated]).toEqual([1, 1, 1]);
+    } finally {
+      supervisor.dispose();
+    }
   });
-  try {
-    const root = supervisor.createRoot(), pid = supervisor.reserveSpawn(root, request());
-    await supervisor.start(pid);
-    supervisor.get(pid)!.descriptors.open({ kind: "directory", handle: 42 }, 7n, 3n, () => closed++);
-    supervisor.registerRevocation(pid, () => revoked++);
-    expect(() => supervisor.exit(pid, 23)).toThrow("completion gate failed");
-    expect(supervisor.get(pid)!.result).toBeNull();
-    expect(supervisor.get(pid)!.revoked).toBe(false);
-    expect([closed, revoked, terminated]).toEqual([0, 0, 0]);
-    if (recovery === "retry") {
-      throwGate = false;
-      supervisor.exit(pid, 23);
-      expect(supervisor.wait(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
-    } else supervisor.dispose();
-    expect([closed, revoked, terminated]).toEqual([1, 1, 1]);
-  } finally { supervisor.dispose(); }
-});
 
 test("shared allocators reserve independent pid and job number spaces without reuse", () => {
   const first = new ProcessIdentityAllocator();
@@ -66,10 +117,14 @@ test("registry shares concurrent compilation by loader, not executable name or a
   const registry = new ExecutableRegistry();
   let loads = 0;
   const compilation = deferred<WebAssembly.Module>();
-  const load = () => { loads++; return compilation.promise; };
+  const load = () => {
+    loads++;
+    return compilation.promise;
+  };
   registry.register("a", { module: load, adapter: "preview1" });
   registry.register("b", { module: load, adapter: "other" });
-  const a = registry.resolve("a"), b = registry.resolve("b");
+  const a = registry.resolve("a"),
+    b = registry.resolve("b");
   compilation.resolve(module);
   expect((await a).module).toBe(module);
   expect((await b).adapter).toBe("other");
@@ -85,7 +140,10 @@ test("first-spawn returns and retains arbitrary descriptor references before act
   let activations = 0;
   const stub = new FirstSpawnStub({
     reserve: (parent, spec) => supervisor.reserveSpawn(parent, spec),
-    activate: () => { activations++; return activation.promise; },
+    activate: () => {
+      activations++;
+      return activation.promise;
+    },
     fail: (pid, error) => supervisor.failStart(pid, error),
   });
   const pid = stub.spawn(root, request({ fds: [{ child: 9, parent: fd }] }));
@@ -94,7 +152,12 @@ test("first-spawn returns and retains arbitrary descriptor references before act
   expect(closed).toBe(0);
   expect(contexts.size).toBe(0);
   let unrelatedTask = false;
-  await new Promise<void>(resolve => setTimeout(() => { unrelatedTask = true; resolve(); }, 0));
+  await new Promise<void>((resolve) =>
+    setTimeout(() => {
+      unrelatedTask = true;
+      resolve();
+    }, 0),
+  );
   expect(unrelatedTask).toBe(true);
   expect(contexts.size).toBe(0);
   const sibling = stub.spawn(root, request());
@@ -103,7 +166,10 @@ test("first-spawn returns and retains arbitrary descriptor references before act
   await supervisor.start(pid);
   await supervisor.start(sibling);
   expect(activations).toBe(1);
-  expect(contexts.get(pid)!.descriptors.get(9)!.resource).toEqual({ kind: "directory", handle: 42 });
+  expect(contexts.get(pid)!.descriptors.get(9)!.resource).toEqual({
+    kind: "directory",
+    handle: 42,
+  });
   contexts.get(pid)!.exit(3);
   contexts.get(sibling)!.exit(0);
   expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "exited", code: 3, status: 3 });
@@ -114,38 +180,81 @@ test("activation rejection records EIO for every reserved child and releases fds
   const { supervisor, root } = fixture();
   const stub = new FirstSpawnStub({
     reserve: (parent, spec) => supervisor.reserveSpawn(parent, spec),
-    activate: async () => { throw new Error("chunk unavailable"); },
+    activate: async () => {
+      throw new Error("chunk unavailable");
+    },
     fail: (pid, error) => supervisor.failStart(pid, error),
   });
-  const a = stub.spawn(root, request()), b = stub.spawn(root, request());
-  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
-  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
+  const a = stub.spawn(root, request()),
+    b = stub.spawn(root, request());
+  expect(await supervisor.waitForExit(root, a)).toEqual({
+    kind: "start-failed",
+    code: 5,
+    error: "EIO",
+    status: null,
+  });
+  expect(await supervisor.waitForExit(root, b)).toEqual({
+    kind: "start-failed",
+    code: 5,
+    error: "EIO",
+    status: null,
+  });
 });
 
 test("missing and unrunnable executables retain distinct typed start failures", async () => {
   const { registry, supervisor, root } = fixture();
-  registry.register("bad", { module: async () => { throw new Error("invalid wasm"); }, adapter: "preview1" });
+  registry.register("bad", {
+    module: async () => {
+      throw new Error("invalid wasm");
+    },
+    adapter: "preview1",
+  });
   const events: number[] = [];
-  const unsubscribe = supervisor.onChildExit(event => events.push(event.pid));
+  const unsubscribe = supervisor.onChildExit((event) => events.push(event.pid));
   const missing = supervisor.spawn(root, request({ executable: "missing" }));
   const bad = supervisor.spawn(root, request({ executable: "bad" }));
-  expect(await supervisor.waitForExit(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
-  expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
+  expect(await supervisor.waitForExit(root, missing)).toEqual({
+    kind: "start-failed",
+    code: 2,
+    error: "ENOENT",
+    status: null,
+  });
+  expect(await supervisor.waitForExit(root, bad)).toEqual({
+    kind: "start-failed",
+    code: 5,
+    error: "EIO",
+    status: null,
+  });
   expect(events.sort()).toEqual([missing, bad].sort());
-  expect(supervisor.wait(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
+  expect(supervisor.wait(root, missing)).toEqual({
+    kind: "start-failed",
+    code: 2,
+    error: "ENOENT",
+    status: null,
+  });
   expect(() => supervisor.wait(root, missing)).toThrow();
   unsubscribe();
 });
 
-for (const [error, code] of [["ENOENT", 2], ["EACCES", 13]] as const) {
+for (const [error, code] of [
+  ["ENOENT", 2],
+  ["EACCES", 13],
+] as const) {
   test(`a provisional worker handle can report typed startup failure ${error}`, async () => {
     const { supervisor, root, contexts } = fixture();
     try {
       const pid = supervisor.reserveSpawn(root, request());
       await supervisor.start(pid);
       contexts.get(pid)!.startFailed(Object.assign(new Error("could not start"), { code: error }));
-      expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "start-failed", code, error, status: null });
-    } finally { supervisor.dispose(); }
+      expect(await supervisor.waitForExit(root, pid)).toEqual({
+        kind: "start-failed",
+        code,
+        error,
+        status: null,
+      });
+    } finally {
+      supervisor.dispose();
+    }
   });
 }
 
@@ -154,9 +263,29 @@ test("spawn snapshots request data and atomically rejects bad descriptor binding
   const descriptors = supervisor.get(root)!.descriptors;
   const fd = descriptors.open({ kind: "directory", handle: 1 }, 7n, 3n);
   const description = descriptors.get(fd)!.description;
-  expect(() => supervisor.spawn(root, request({ fds: [{ child: 3, parent: fd }, { child: 4, parent: 999 }] }))).toThrow();
+  expect(() =>
+    supervisor.spawn(
+      root,
+      request({
+        fds: [
+          { child: 3, parent: fd },
+          { child: 4, parent: 999 },
+        ],
+      }),
+    ),
+  ).toThrow();
   expect(description.references).toBe(1);
-  expect(() => supervisor.spawn(root, request({ fds: [{ child: 3, parent: fd }, { child: 3, parent: fd }] }))).toThrow();
+  expect(() =>
+    supervisor.spawn(
+      root,
+      request({
+        fds: [
+          { child: 3, parent: fd },
+          { child: 3, parent: fd },
+        ],
+      }),
+    ),
+  ).toThrow();
   expect(description.references).toBe(1);
   const spec = request({ argv: ["original"], env: { A: "original" } });
   const pid = supervisor.spawn(root, spec);
@@ -176,22 +305,34 @@ test("supervisor validates both fd bindings within the signed WASM success range
   const source = descriptors.get(fd)!;
   try {
     for (const invalid of [0x80000000, 0xffffffff, -1, 1.5, NaN]) {
-      for (const binding of [{ child: invalid, parent: fd }, { child: 3, parent: invalid }]) {
+      for (const binding of [
+        { child: invalid, parent: fd },
+        { child: 3, parent: invalid },
+      ]) {
         let error: unknown;
-        try { supervisor.reserveSpawn(root, request({ fds: [binding] })); } catch (caught) { error = caught; }
+        try {
+          supervisor.reserveSpawn(root, request({ fds: [binding] }));
+        } catch (caught) {
+          error = caught;
+        }
         expect(error).toMatchObject({ name: "ProcessError", errno: 28 });
         expect(source.description.references).toBe(1);
       }
     }
     descriptors.inherit(0x7fffffff, source);
-    const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }));
+    const pid = supervisor.reserveSpawn(
+      root,
+      request({ fds: [{ child: 0x7fffffff, parent: 0x7fffffff }] }),
+    );
     const child = supervisor.get(pid)!.descriptors;
     expect(child.get(0x7fffffff)!.description).toBe(source.description);
     const duplicate = child.dup(0x7fffffff);
     expect(duplicate).toBeGreaterThanOrEqual(0);
     expect(duplicate).toBeLessThanOrEqual(0x7fffffff);
     expect(child.get(duplicate)!.description).toBe(source.description);
-  } finally { supervisor.dispose(); }
+  } finally {
+    supervisor.dispose();
+  }
 });
 
 test("kill records signal, interrupts, revokes and publishes logical exit before teardown", async () => {
@@ -205,7 +346,9 @@ test("kill records signal, interrupts, revokes and publishes logical exit before
     expect(controlLoad(context.requestedSignal, 0)).toBe(Signal.SIGINT);
     order.push("revoked");
   });
-  supervisor.onChildExit(event => { if (event.pid === pid) order.push("exit"); });
+  supervisor.onChildExit((event) => {
+    if (event.pid === pid) order.push("exit");
+  });
   supervisor.kill(pid, Signal.SIGINT);
   // No guest checkpoint or default-action acknowledgement is needed.
   expect(order).toEqual(["revoked", "exit"]);
@@ -214,7 +357,11 @@ test("kill records signal, interrupts, revokes and publishes logical exit before
   expect(controlExchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
   expect(controlLoad(context.requestedSignal, 0)).toBe(Signal.SIGINT);
   context.exit(0); // Late zombie messages cannot change recorded cancellation.
-  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGINT, status: 130 });
+  expect(supervisor.wait(root, pid)).toEqual({
+    kind: "signaled",
+    code: Signal.SIGINT,
+    status: 130,
+  });
 });
 
 test("killJob includes same-job descendants but preserves explicit background jobs", async () => {
@@ -241,7 +388,11 @@ test("killJob includes same-job descendants but preserves explicit background jo
   contexts.get(descendant)!.exit(0);
   expect(supervisor.wait(root, background)).toBeNull();
   contexts.get(background)!.exit(11);
-  expect(await supervisor.waitForExit(root, background)).toEqual({ kind: "exited", code: 11, status: 11 });
+  expect(await supervisor.waitForExit(root, background)).toEqual({
+    kind: "exited",
+    code: 11,
+    status: 11,
+  });
 });
 
 test("pending processes killed before module activation never launch", async () => {
@@ -254,26 +405,46 @@ test("pending processes killed before module activation never launch", async () 
   activation.resolve(module);
   await starting;
   expect(contexts.has(pid)).toBe(false);
-  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGKILL, status: 137 });
+  expect(supervisor.wait(root, pid)).toEqual({
+    kind: "signaled",
+    code: Signal.SIGKILL,
+    status: 137,
+  });
 });
 
 test("late asynchronous launch handles are terminated and late revocation hooks run immediately", async () => {
   const registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "preview1" });
   const handle = deferred<{ terminate(): void }>();
-  let context!: ProcessContext, terminated = 0, revoked = 0;
-  const supervisor = new ProcessSupervisor({ registry, launch(value) { context = value; return handle.promise; } });
+  let context!: ProcessContext,
+    terminated = 0,
+    revoked = 0;
+  const supervisor = new ProcessSupervisor({
+    registry,
+    launch(value) {
+      context = value;
+      return handle.promise;
+    },
+  });
   const root = supervisor.createRoot();
   const pid = supervisor.spawn(root, request());
-  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   supervisor.kill(pid, Signal.SIGPIPE);
   context.defaultSignal(Signal.SIGPIPE);
   context.registerRevocation(() => revoked++);
-  handle.resolve({ terminate() { terminated++; } });
+  handle.resolve({
+    terminate() {
+      terminated++;
+    },
+  });
   await supervisor.start(pid);
   expect(terminated).toBe(1);
   expect(revoked).toBe(1);
-  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGPIPE, status: 141 });
+  expect(supervisor.wait(root, pid)).toEqual({
+    kind: "signaled",
+    code: Signal.SIGPIPE,
+    status: 141,
+  });
 });
 
 test("adopted guest pid, job and signal buffers remain the authoritative identities", async () => {
@@ -281,7 +452,12 @@ test("adopted guest pid, job and signal buffers remain the authoritative identit
   const root = supervisor.createRoot({ pid: 40, job: 20 });
   const interrupt = new Int32Array(new SharedArrayBuffer(4));
   const requestedSignal = new Int32Array(new SharedArrayBuffer(4));
-  const pid = supervisor.reserveSpawn(root, request({ job: 20 }), { pid: 41, job: 20, interrupt, requestedSignal });
+  const pid = supervisor.reserveSpawn(root, request({ job: 20 }), {
+    pid: 41,
+    job: 20,
+    interrupt,
+    requestedSignal,
+  });
   expect(pid).toBe(41);
   await supervisor.start(pid);
   expect(contexts.get(pid)!.interrupt).toBe(interrupt);
@@ -297,13 +473,25 @@ test("revocation exceptions do not strand descriptors, waiters or other job memb
   const b = supervisor.spawn(root, request({ job: supervisor.jobOf(a) }));
   await supervisor.start(a);
   await supervisor.start(b);
-  contexts.get(a)!.registerRevocation(() => { throw new Error("broken resource"); });
+  contexts.get(a)!.registerRevocation(() => {
+    throw new Error("broken resource");
+  });
   let secondHook = false;
-  contexts.get(a)!.registerRevocation(() => { secondHook = true; });
+  contexts.get(a)!.registerRevocation(() => {
+    secondHook = true;
+  });
   supervisor.killJob(supervisor.jobOf(a), Signal.SIGKILL);
   expect(secondHook).toBe(true);
-  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "signaled", code: Signal.SIGKILL, status: 137 });
-  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "signaled", code: Signal.SIGKILL, status: 137 });
+  expect(await supervisor.waitForExit(root, a)).toEqual({
+    kind: "signaled",
+    code: Signal.SIGKILL,
+    status: 137,
+  });
+  expect(await supervisor.waitForExit(root, b)).toEqual({
+    kind: "signaled",
+    code: Signal.SIGKILL,
+    status: 137,
+  });
   expect(terminated.sort()).toEqual([a, b].sort());
 });
 
@@ -342,7 +530,8 @@ test("SIGKILL during a handler overrides later handled exits and default actions
 
 test("handled EPIPE keeps its exit code but the explicit default SIGPIPE action reports141", async () => {
   const { supervisor, root, contexts } = fixture();
-  const handled = supervisor.spawn(root, request()), unhandled = supervisor.spawn(root, request());
+  const handled = supervisor.spawn(root, request()),
+    unhandled = supervisor.spawn(root, request());
   await supervisor.start(handled);
   await supervisor.start(unhandled);
   contexts.get(handled)!.exit(23);
@@ -371,9 +560,22 @@ test("descriptor cleanup exceptions still drain all references and dispose cance
   const { supervisor, root } = fixture();
   const descriptors = supervisor.get(root)!.descriptors;
   let releases = 0;
-  const a = descriptors.open({ kind: "directory", handle: 1 }, 1n, 1n, () => { releases++; throw new Error("close failed"); });
-  const b = descriptors.open({ kind: "directory", handle: 2 }, 1n, 1n, () => { releases++; });
-  const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 3, parent: a }, { child: 4, parent: b }] }));
+  const a = descriptors.open({ kind: "directory", handle: 1 }, 1n, 1n, () => {
+    releases++;
+    throw new Error("close failed");
+  });
+  const b = descriptors.open({ kind: "directory", handle: 2 }, 1n, 1n, () => {
+    releases++;
+  });
+  const pid = supervisor.reserveSpawn(
+    root,
+    request({
+      fds: [
+        { child: 3, parent: a },
+        { child: 4, parent: b },
+      ],
+    }),
+  );
   descriptors.close(a);
   descriptors.close(b);
   const waiting = supervisor.waitForExit(root, pid);
@@ -390,7 +592,7 @@ test("job teardown tolerates exit observers reaping another target synchronously
   const b = supervisor.spawn(root, request({ job: supervisor.jobOf(a) }));
   await supervisor.start(a);
   await supervisor.start(b);
-  supervisor.onChildExit(event => {
+  supervisor.onChildExit((event) => {
     if (event.pid !== a) return;
     supervisor.kill(b, Signal.SIGKILL);
     supervisor.reap(root, b);
@@ -416,8 +618,11 @@ test("killJob records every member before any teardown callback can spawn more d
   let rejected = false;
   contexts.get(a)!.registerRevocation(() => {
     expect(controlLoad(contexts.get(b)!.requestedSignal, 0)).toBe(Signal.SIGKILL);
-    try { supervisor.spawn(b, request()); }
-    catch { rejected = true; }
+    try {
+      supervisor.spawn(b, request());
+    } catch {
+      rejected = true;
+    }
   });
   supervisor.killJob(supervisor.jobOf(a), Signal.SIGKILL);
   expect(rejected).toBe(true);
@@ -534,7 +739,12 @@ for (const word of ["requestedSignal", "interrupt"] as const) {
     setSignalDisposition(context.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
     const original = Atomics.compareExchange;
     let raced = false;
-    Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+    Atomics.compareExchange = ((
+      array: Int32Array,
+      index: number,
+      expected: number,
+      replacement: number,
+    ) => {
       if (!raced && array === context[word]) {
         raced = true;
         controlStore(context.requestedSignal, 0, 9);
@@ -542,8 +752,11 @@ for (const word of ["requestedSignal", "interrupt"] as const) {
       }
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
-    try { supervisor.kill(pid, Signal.SIGINT); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      supervisor.kill(pid, Signal.SIGINT);
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(raced).toBe(true);
     expect(supervisor.childExited(root, pid)).toBe(true);
     expect(controlLoad(context.requestedSignal, 0)).toBe(9);
@@ -559,7 +772,12 @@ test("persistent SIGKILL wins when its pending interrupt was consumed before a s
   const original = Atomics.compareExchange;
   setSignalDisposition(context.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
   let raced = false;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
     if (!raced && array === context.interrupt) {
       raced = true;
       controlStore(context.requestedSignal, 0, 9);
@@ -568,8 +786,11 @@ test("persistent SIGKILL wins when its pending interrupt was consumed before a s
     }
     return original(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
-  try { supervisor.kill(pid, Signal.SIGINT); }
-  finally { Atomics.compareExchange = original; }
+  try {
+    supervisor.kill(pid, Signal.SIGINT);
+  } finally {
+    Atomics.compareExchange = original;
+  }
   expect(raced).toBe(true);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
   expect(controlLoad(context.requestedSignal, 0)).toBe(9);
@@ -617,11 +838,15 @@ test("a parent with a sealed terminal outcome cannot reserve descendants before 
 test("signal state starts default, adopts all cells, and validates registration", () => {
   const state = createSignalState();
   expect(state.length).toBe(65);
-  for (const sig of [2, 13, 15, 64]) expect(signalDisposition(state, sig)).toBe(SignalDisposition.DEFAULT);
+  for (const sig of [2, 13, 15, 64])
+    expect(signalDisposition(state, sig)).toBe(SignalDisposition.DEFAULT);
   setSignalDisposition(state, 15, SignalDisposition.HANDLE);
   expect(createSignalState(state)).toBe(state);
-  expect(signalDisposition(createSignalState(state.buffer as SharedArrayBuffer), 15)).toBe(SignalDisposition.HANDLE);
-  for (const sig of [0, 9, 65, -1, 1.5]) expect(() => setSignalDisposition(state, sig, SignalDisposition.HANDLE)).toThrow();
+  expect(signalDisposition(createSignalState(state.buffer as SharedArrayBuffer), 15)).toBe(
+    SignalDisposition.HANDLE,
+  );
+  for (const sig of [0, 9, 65, -1, 1.5])
+    expect(() => setSignalDisposition(state, sig, SignalDisposition.HANDLE)).toThrow();
   for (const mode of [-1, 3, 4, 1.5]) expect(() => setSignalDisposition(state, 2, mode)).toThrow();
   expect(() => createSignalState(new Int32Array(new SharedArrayBuffer(4)))).toThrow();
 });
@@ -634,7 +859,9 @@ test("distinct pending signals coalesce individually and dequeue in signal order
   expect(publishSignal(state, 13)).toBe("handled");
   expect(publishSignal(state, 2)).toBe("handled");
   expect(controlLoad(state, 2)).toBe(SignalDisposition.HANDLE | SIGNAL_PENDING);
-  expect([takeSignal(state), takeSignal(state), takeSignal(state), takeSignal(state)]).toEqual([2, 13, 15, 0]);
+  expect([takeSignal(state), takeSignal(state), takeSignal(state), takeSignal(state)]).toEqual([
+    2, 13, 15, 0,
+  ]);
   expect(signalDisposition(state, 2)).toBe(SignalDisposition.HANDLE);
 });
 
@@ -722,11 +949,16 @@ test("mixed jobs preclaim every default fatal outcome before reentrant teardown"
   let rejected = false;
   contexts.get(a)!.registerRevocation(() => {
     contexts.get(b)!.exit(0);
-    try { supervisor.spawn(b, request()); } catch { rejected = true; }
+    try {
+      supervisor.spawn(b, request());
+    } catch {
+      rejected = true;
+    }
   });
   supervisor.killJob(job, 15);
   expect(rejected).toBe(true);
-  for (const pid of [a, b]) expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 15, status: 143 });
+  for (const pid of [a, b])
+    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 15, status: 143 });
   expect(terminated.sort()).toEqual([a, b].sort());
   expect(takeSignal(contexts.get(handled)!.signalState)).toBe(15);
   expect(controlLoad(contexts.get(ignored)!.interrupt, 0)).toBe(0);
@@ -748,7 +980,6 @@ test("adopted signal state is not reset and children start with independent defa
   supervisor.dispose();
 });
 
-
 test("shared request preclaims default before delayed host observation", async () => {
   const { supervisor, root, contexts } = fixture();
   const pid = supervisor.spawn(root, request());
@@ -765,8 +996,10 @@ test("shared request preclaims default before delayed host observation", async (
 
 test("shared request does not replay handled root delivery on supervisor adoption", () => {
   const transport = {
-    signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)),
-    requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord(),
+    signalState: createSignalState(),
+    interrupt: new Int32Array(new SharedArrayBuffer(4)),
+    requestedSignal: new Int32Array(new SharedArrayBuffer(4)),
+    outcome: outcomeWord(),
   };
   setSignalDisposition(transport.signalState, 2, SignalDisposition.HANDLE);
   expect(requestSignal(transport, 2)).toEqual({ action: "handled", outcome: null });
@@ -782,22 +1015,31 @@ test("shared request does not replay handled root delivery on supervisor adoptio
   supervisor.dispose();
 });
 
-
 for (const mode of [SignalDisposition.DEFAULT, SignalDisposition.IGNORE]) {
   test(`registration racing delivery classifies mode ${mode} without stale pending`, () => {
     const state = createSignalState();
     setSignalDisposition(state, 2, SignalDisposition.HANDLE);
     const original = Atomics.compareExchange;
     let raced = false;
-    Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+    Atomics.compareExchange = ((
+      array: Int32Array,
+      index: number,
+      expected: number,
+      replacement: number,
+    ) => {
       if (!raced && array === state && index === 2) {
         raced = true;
         setSignalDisposition(state, 2, mode);
       }
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
-    try { expect(publishSignal(state, 2)).toBe(mode === SignalDisposition.DEFAULT ? "default" : "ignore"); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      expect(publishSignal(state, 2)).toBe(
+        mode === SignalDisposition.DEFAULT ? "default" : "ignore",
+      );
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(raced).toBe(true);
     expect(controlLoad(state, 2)).toBe(mode);
     expect(takeSignal(state)).toBe(0);
@@ -809,15 +1051,23 @@ test("default restoration racing a new pending delivery consumes it exactly once
   setSignalDisposition(state, 15, SignalDisposition.HANDLE);
   const original = Atomics.compareExchange;
   let raced = false;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
     if (!raced && array === state && index === 15) {
       raced = true;
       publishSignal(state, 15);
     }
     return original(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
-  try { expect(setSignalDisposition(state, 15, SignalDisposition.DEFAULT)).toBe(true); }
-  finally { Atomics.compareExchange = original; }
+  try {
+    expect(setSignalDisposition(state, 15, SignalDisposition.DEFAULT)).toBe(true);
+  } finally {
+    Atomics.compareExchange = original;
+  }
   expect(raced).toBe(true);
   expect(controlLoad(state, 15)).toBe(SignalDisposition.DEFAULT);
   expect(setSignalDisposition(state, 15, SignalDisposition.DEFAULT)).toBe(false);
@@ -829,15 +1079,23 @@ test("dequeue racing ignore cannot deliver a stale handled signal", () => {
   publishSignal(state, 2);
   const original = Atomics.compareExchange;
   let raced = false;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
     if (!raced && array === state && index === 2) {
       raced = true;
       setSignalDisposition(state, 2, SignalDisposition.IGNORE);
     }
     return original(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
-  try { expect(takeSignal(state)).toBe(0); }
-  finally { Atomics.compareExchange = original; }
+  try {
+    expect(takeSignal(state)).toBe(0);
+  } finally {
+    Atomics.compareExchange = original;
+  }
   expect(raced).toBe(true);
   expect(controlLoad(state, 2)).toBe(SignalDisposition.IGNORE);
 });
@@ -857,7 +1115,11 @@ for (const sig of [2, 13, 15]) {
     await launched;
     for (const pid of [reserved, starting]) {
       expect(contexts.has(pid)).toBe(false);
-      expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });
+      expect(supervisor.wait(root, pid)).toEqual({
+        kind: "signaled",
+        code: sig,
+        status: 128 + sig,
+      });
     }
     supervisor.dispose();
   });
@@ -870,12 +1132,12 @@ test("changing pending handled signal to default selects immediate guest default
   const context = contexts.get(pid)!;
   setSignalDisposition(context.signalState, 2, SignalDisposition.HANDLE);
   supervisor.kill(pid, 2);
-  if (setSignalDisposition(context.signalState, 2, SignalDisposition.DEFAULT)) context.defaultSignal(2);
+  if (setSignalDisposition(context.signalState, 2, SignalDisposition.DEFAULT))
+    context.defaultSignal(2);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 2, status: 130 });
   expect(terminated).toEqual([pid]);
   expect(setSignalDisposition(context.signalState, 2, SignalDisposition.DEFAULT)).toBe(false);
 });
-
 
 for (const sig of [1, 10, 64]) {
   test(`self-raised signal ${sig} adopts its typed outcome`, async () => {
@@ -883,7 +1145,10 @@ for (const sig of [1, 10, 64]) {
     const pid = supervisor.spawn(root, request());
     await supervisor.start(pid);
     const context = contexts.get(pid)!;
-    expect(requestSignal(context, sig)).toEqual({ action: "default", outcome: { kind: "signaled", code: sig, status: 128 + sig } });
+    expect(requestSignal(context, sig)).toEqual({
+      action: "default",
+      outcome: { kind: "signaled", code: sig, status: 128 + sig },
+    });
     expect(() => supervisor.observeSignal(pid, sig)).not.toThrow();
     expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });
   });
@@ -896,7 +1161,8 @@ for (const sig of [1, 10, 64]) {
     expect(requestSignal(context, sig).action).toBe("handled");
     expect(() => supervisor.observeSignal(pid, sig)).not.toThrow();
     expect(supervisor.wait(root, pid)).toBeNull();
-    if (setSignalDisposition(context.signalState, sig, SignalDisposition.DEFAULT)) context.defaultSignal(sig);
+    if (setSignalDisposition(context.signalState, sig, SignalDisposition.DEFAULT))
+      context.defaultSignal(sig);
     expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });
   });
 }
@@ -917,7 +1183,6 @@ test("generic self-raise rejects out-of-range signals and KILL bypasses raw igno
   expect(supervisor.wait(root, pid)!.status).toBe(137);
 });
 
-
 test("shared signal helper imports directly under Node strip-only TypeScript", () => {
   const url = new URL("../proc/signals.ts", import.meta.url).href;
   const script = `
@@ -932,12 +1197,14 @@ test("shared signal helper imports directly under Node strip-only TypeScript", (
     assert.equal(takeSignal(transport.signalState), 64);
     assert.throws(() => setSignalDisposition(transport.signalState, 9, SignalDisposition.IGNORE), { name: "ProcessError", errno: 28 });
   `;
-  const result = spawnSync("node", ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 10_000 });
+  const result = spawnSync("node", ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
   expect(result.error).toBeUndefined();
   expect(result.stderr).toBe("");
   expect(result.status).toBe(0);
 });
-
 
 for (const finalizeParent of [false, true]) {
   test(`previously admitted foreground and background spawns survive lazy registration (parent finalized=${finalizeParent})`, async () => {
@@ -951,7 +1218,9 @@ for (const finalizeParent of [false, true]) {
     const state = createSignalState();
     setSignalDisposition(state, 15, SignalDisposition.HANDLE);
     const foreground = supervisor.reserveAdmittedSpawn(root, request({ job: parent.job }), {
-      job: parent.job, signalState: state, outcome: foregroundOutcome,
+      job: parent.job,
+      signalState: state,
+      outcome: foregroundOutcome,
     });
     const background = supervisor.reserveAdmittedSpawn(root, request({ job: -1 }), {});
     expect(supervisor.get(foreground)!.signalState).toBe(state);
@@ -960,17 +1229,26 @@ for (const finalizeParent of [false, true]) {
     await supervisor.start(foreground);
     await supervisor.start(background);
     expect(contexts.has(foreground)).toBe(false);
-    expect(claimOutcome(foregroundOutcome, { kind: "exited", code: 99 })).toEqual({ kind: "signaled", code: 2, status: 130 });
+    expect(claimOutcome(foregroundOutcome, { kind: "exited", code: 99 })).toEqual({
+      kind: "signaled",
+      code: 2,
+      status: 130,
+    });
     if (finalizeParent) {
       expect(supervisor.get(foreground)).toBeUndefined();
       expect(() => supervisor.wait(root, foreground)).toThrow();
-    } else expect(supervisor.wait(root, foreground)).toEqual({ kind: "signaled", code: 2, status: 130 });
+    } else
+      expect(supervisor.wait(root, foreground)).toEqual({ kind: "signaled", code: 2, status: 130 });
     expect(contexts.has(background)).toBe(true);
     expect(supervisor.jobOf(background)).not.toBe(parent.job);
     expect(supervisor.wait(root, background)).toBeNull();
     let rejected = false;
     contexts.get(background)!.registerRevocation(() => {
-      try { supervisor.spawn(root, request()); } catch { rejected = true; }
+      try {
+        supervisor.spawn(root, request());
+      } catch {
+        rejected = true;
+      }
     });
     const backgroundRecord = supervisor.get(background)!;
     contexts.get(background)!.exit(23);
@@ -979,7 +1257,8 @@ for (const finalizeParent of [false, true]) {
     if (finalizeParent) {
       expect(supervisor.get(background)).toBeUndefined();
       expect(() => supervisor.wait(root, background)).toThrow();
-    } else expect(supervisor.wait(root, background)).toEqual({ kind: "exited", code: 23, status: 23 });
+    } else
+      expect(supervisor.wait(root, background)).toEqual({ kind: "exited", code: 23, status: 23 });
     supervisor.dispose();
   });
 }
@@ -988,7 +1267,9 @@ test("admitted registration still validates identities, descriptors and supervis
   const { supervisor, root } = fixture();
   claimOutcome(supervisor.get(root)!.outcome, { kind: "signaled", code: 2 });
   expect(() => supervisor.reserveAdmittedSpawn(root, request(), { pid: root })).toThrow();
-  expect(() => supervisor.reserveAdmittedSpawn(root, request({ fds: [{ child: 0, parent: 99 }] }), {})).toThrow();
+  expect(() =>
+    supervisor.reserveAdmittedSpawn(root, request({ fds: [{ child: 0, parent: 99 }] }), {}),
+  ).toThrow();
   expect(() => supervisor.reserveAdmittedSpawn(root, request({ job: -2 }), {})).toThrow();
   expect(() => supervisor.reserveAdmittedSpawn(999999, request(), {})).toThrow();
   supervisor.dispose();
@@ -1001,14 +1282,19 @@ test("spawn forks process-owned streams once and revokes before releasing inheri
   const resources = new Map<number, import("../core/descriptors.js").Stream>();
   const parent = {
     kind: "pipe" as const,
-    read: () => -6, write: () => 0,
+    read: () => -6,
+    write: () => 0,
     readiness: () => ({ readable: false, writable: true, hangup: false }),
     forProcess(pid: number) {
       events.push(`fork ${pid}`);
-      const stream = { kind: "pipe" as const, read: () => -6, write: () => 0,
+      const stream = {
+        kind: "pipe" as const,
+        read: () => -6,
+        write: () => 0,
         readiness: this.readiness,
         revoke: () => events.push(`revoke ${pid}`),
-        close: () => events.push(`close ${pid}`) };
+        close: () => events.push(`close ${pid}`),
+      };
       resources.set(pid, stream);
       return stream;
     },
@@ -1017,12 +1303,21 @@ test("spawn forks process-owned streams once and revokes before releasing inheri
   const descriptors = supervisor.get(root)!.descriptors;
   const fd = descriptors.open(parent, 7n, 3n);
   const duplicate = descriptors.dup(fd);
-  const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 1, parent: fd }, { child: 2, parent: duplicate }] }));
+  const pid = supervisor.reserveSpawn(
+    root,
+    request({
+      fds: [
+        { child: 1, parent: fd },
+        { child: 2, parent: duplicate },
+      ],
+    }),
+  );
   expect(events).toEqual([`fork ${pid}`]);
   const child = supervisor.get(pid)!.descriptors;
-  expect(child.get(1)!.resource).toBe(resources.get(pid));
+  expect(child.get(1)!.resource).toBe(resources.get(pid)!);
   expect(child.get(1)!.description).toBe(child.get(2)!.description);
-  descriptors.close(fd); descriptors.close(duplicate);
+  descriptors.close(fd);
+  descriptors.close(duplicate);
   expect(events).toEqual([`fork ${pid}`, "close parent"]);
   supervisor.kill(pid, 9);
   expect(events).toEqual([`fork ${pid}`, "close parent", `revoke ${pid}`, `close ${pid}`]);
@@ -1057,51 +1352,113 @@ test("child exit stays hidden from wait until every revocation hook and fd relea
     visible.push(supervisor.wait(root, pid));
     supervisor.exit(pid, 99); // Reentrant cleanup cannot replace the chosen winner.
   });
-  supervisor.get(pid)!.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
-    readiness: () => ({ readable: true, writable: false, hangup: true }),
-    close: () => visible.push(supervisor.wait(root, pid)) }, 0n, 0n);
+  supervisor.get(pid)!.descriptors.open(
+    {
+      kind: "terminal",
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: true, writable: false, hangup: true }),
+      close: () => visible.push(supervisor.wait(root, pid)),
+    },
+    0n,
+    0n,
+  );
   supervisor.kill(pid, 9);
   expect(visible).toEqual([null, null]);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
   supervisor.dispose();
 });
 
-test.each([false, true])("inheritance shares descriptions without widening per-fd rights (fork=%s)", fork => {
-  const { supervisor, root } = fixture();
-  const stream = { kind: "pipe" as const, read: () => -6, write: () => 0,
-    readiness: () => ({ readable: false, writable: true, hangup: false }),
-    ...(fork ? { forProcess: () => ({ kind: "pipe" as const, read: () => -6, write: () => 0,
-      readiness: () => ({ readable: false, writable: true, hangup: false }) }) } : {}) };
-  const parent = supervisor.get(root)!.descriptors;
-  const fd = parent.open(stream, 7n, 3n), dup = parent.dup(fd);
-  parent.get(dup)!.rightsBase = 1n;
-  parent.get(dup)!.rightsInheriting = 0n;
-  const pid = supervisor.reserveSpawn(root, request({ fds: [{ child: 1, parent: fd }, { child: 2, parent: dup }] }));
-  const child = supervisor.get(pid)!.descriptors;
-  expect(child.get(1)!.description).toBe(child.get(2)!.description);
-  expect([child.get(1)!.rightsBase, child.get(1)!.rightsInheriting]).toEqual([7n, 3n]);
-  expect([child.get(2)!.rightsBase, child.get(2)!.rightsInheriting]).toEqual([1n, 0n]);
-  supervisor.dispose();
-});
+test.each([false, true])(
+  "inheritance shares descriptions without widening per-fd rights (fork=%s)",
+  (fork) => {
+    const { supervisor, root } = fixture();
+    const stream = {
+      kind: "pipe" as const,
+      read: () => -6,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: true, hangup: false }),
+      ...(fork
+        ? {
+            forProcess: () => ({
+              kind: "pipe" as const,
+              read: () => -6,
+              write: () => 0,
+              readiness: () => ({ readable: false, writable: true, hangup: false }),
+            }),
+          }
+        : {}),
+    };
+    const parent = supervisor.get(root)!.descriptors;
+    const fd = parent.open(stream, 7n, 3n),
+      dup = parent.dup(fd);
+    parent.get(dup)!.rightsBase = 1n;
+    parent.get(dup)!.rightsInheriting = 0n;
+    const pid = supervisor.reserveSpawn(
+      root,
+      request({
+        fds: [
+          { child: 1, parent: fd },
+          { child: 2, parent: dup },
+        ],
+      }),
+    );
+    const child = supervisor.get(pid)!.descriptors;
+    expect(child.get(1)!.description).toBe(child.get(2)!.description);
+    expect([child.get(1)!.rightsBase, child.get(1)!.rightsInheriting]).toEqual([7n, 3n]);
+    expect([child.get(2)!.rightsBase, child.get(2)!.rightsInheriting]).toEqual([1n, 0n]);
+    supervisor.dispose();
+  },
+);
 
 test("failed endpoint inheritance removes only the reservation's new empty job", () => {
   const { supervisor, root } = fixture();
   const descriptors = supervisor.get(root)!.descriptors;
   let released = 0;
-  const ready = descriptors.open({ kind: "pipe", read: () => 0, write: () => 0,
-    readiness: () => ({ readable: true, writable: true, hangup: false }),
-    forProcess: () => ({ kind: "pipe", read: () => 0, write: () => 0,
-      readiness: () => ({ readable: true, writable: true, hangup: false }), close: () => released++ }) }, 0n, 0n);
-  const failing = descriptors.open({ kind: "pipe", read: () => 0, write: () => 0,
-    readiness: () => ({ readable: true, writable: true, hangup: false }),
-    forProcess: () => { throw new Error("writer slots exhausted"); } }, 0n, 0n);
-  const bindings = [{ child: 1, parent: ready }, { child: 2, parent: failing }];
-  expect(() => supervisor.reserveSpawn(root, request({ fds: bindings }), { job: 200 })).toThrow("writer slots exhausted");
+  const ready = descriptors.open(
+    {
+      kind: "pipe",
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: true, writable: true, hangup: false }),
+      forProcess: () => ({
+        kind: "pipe",
+        read: () => 0,
+        write: () => 0,
+        readiness: () => ({ readable: true, writable: true, hangup: false }),
+        close: () => released++,
+      }),
+    },
+    0n,
+    0n,
+  );
+  const failing = descriptors.open(
+    {
+      kind: "pipe",
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: true, writable: true, hangup: false }),
+      forProcess: () => {
+        throw new Error("writer slots exhausted");
+      },
+    },
+    0n,
+    0n,
+  );
+  const bindings = [
+    { child: 1, parent: ready },
+    { child: 2, parent: failing },
+  ];
+  expect(() => supervisor.reserveSpawn(root, request({ fds: bindings }), { job: 200 })).toThrow(
+    "writer slots exhausted",
+  );
   expect(released).toBe(1);
   expect(supervisor.job(200)).toBeUndefined();
   const child = supervisor.reserveSpawn(root, request());
   const job = supervisor.jobOf(child);
-  expect(() => supervisor.reserveSpawn(root, request({ job, fds: bindings }))).toThrow("writer slots exhausted");
+  expect(() => supervisor.reserveSpawn(root, request({ job, fds: bindings }))).toThrow(
+    "writer slots exhausted",
+  );
   expect(released).toBe(2);
   expect(supervisor.job(job)!.members.has(child)).toBe(true);
   supervisor.dispose();

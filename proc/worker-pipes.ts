@@ -1,6 +1,21 @@
 import { OpenDescription } from "../core/descriptors.js";
-import { PipeController, PipeEndpoint, PipePublicationRegistry, attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, type PipeEndpointHandle, type PipeOptions, type PipePublicationRegistryHandle } from "./pipes.js";
-import { workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client.js";
+import {
+  PipeController,
+  PipeEndpoint,
+  PipePublicationRegistry,
+  attachPipeController,
+  attachPipeEndpoint,
+  attachPipePublicationRegistry,
+  type PipeEndpointHandle,
+  type PipeOptions,
+  type PipePublicationRegistryHandle,
+} from "./pipes.js";
+import {
+  workerProcessState,
+  type WorkerDescriptorCodec,
+  type WorkerProcessMessage,
+  type WorkerProcessTransport,
+} from "./worker-client.js";
 
 export interface WorkerPipeDescriptorToken {
   kind: "pipe";
@@ -36,7 +51,8 @@ export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): Wor
         if (options.fallback) return options.fallback.import(token, pid);
         throw new TypeError("unsupported worker descriptor token");
       }
-      if (token.endpoint.pid !== pid) throw new TypeError("pipe descriptor belongs to another process");
+      if (token.endpoint.pid !== pid)
+        throw new TypeError("pipe descriptor belongs to another process");
       options.onPipe?.(token.endpoint);
       const endpoint = attachPipeEndpoint(token.endpoint);
       return new OpenDescription(endpoint, () => endpoint.close());
@@ -68,34 +84,52 @@ export class WorkerPipeHost {
   constructor(private readonly options: WorkerPipeHostOptions) {
     const state = workerProcessState(options.transport);
     this.pid = state.pid;
-    this.registry = options.registry instanceof PipePublicationRegistry ? options.registry
-      : options.registry ? attachPipePublicationRegistry(options.registry)
-      : new PipePublicationRegistry({ wake: state.wake });
+    this.registry =
+      options.registry instanceof PipePublicationRegistry
+        ? options.registry
+        : options.registry
+          ? attachPipePublicationRegistry(options.registry)
+          : new PipePublicationRegistry({ wake: state.wake });
     if (!options.registry) this.registry.registerProcess(this.pid);
     else if (this.registry.isRevoked(this.pid)) throw new Error("pipe process is revoked");
   }
-  codec(fallback: WorkerDescriptorCodec | undefined = this.options.fallback): WorkerDescriptorCodec {
+  codec(
+    fallback: WorkerDescriptorCodec | undefined = this.options.fallback,
+  ): WorkerDescriptorCodec {
     return createWorkerPipeCodec({ fallback });
   }
   createPipe(): readonly [PipeEndpoint, PipeEndpoint] {
-    const controller = new PipeController({ ...this.options.pipe, registry: this.registry, relay: "manual" });
+    const controller = new PipeController({
+      ...this.options.pipe,
+      registry: this.registry,
+      relay: "manual",
+    });
     let reader: PipeEndpoint | undefined, writer: PipeEndpoint | undefined;
     try {
       reader = controller.retain(this.pid, "read");
       writer = controller.retain(this.pid, "write");
       // Publish before returning endpoints to guest code. No guest-created MessageChannel or
       // page reply lies on this synchronous path; the page alone starts the relay loop.
-      this.options.postMessage({ type: "runtime-proc", operation: "pipe", transport: this.options.transport, handle: reader.handle() });
+      this.options.postMessage({
+        type: "runtime-proc",
+        operation: "pipe",
+        transport: this.options.transport,
+        handle: reader.handle(),
+      });
       return [reader, writer];
     } catch (error) {
-      reader?.close(); writer?.close(); controller.dispose();
+      reader?.close();
+      writer?.close();
+      controller.dispose();
       throw error;
     }
   }
   /** Host capability, not a guest ABI: call only after process/job authority and default action
    * selection. It freezes even cursors on descendant-created pipes the page has not seen yet.
    */
-  revokeProcess(pid: number): void { this.registry.revoke(pid); }
+  revokeProcess(pid: number): void {
+    this.registry.revoke(pid);
+  }
 }
 
 export interface WorkerPipeBrokerOptions {
@@ -107,24 +141,34 @@ export class WorkerPipeBroker {
   private readonly controllers = new Map<string, PipeController>();
   private disposed = false;
   constructor(private readonly options: WorkerPipeBrokerOptions = {}) {}
-  get size(): number { return this.controllers.size; }
+  get size(): number {
+    return this.controllers.size;
+  }
   attach(handle: PipeEndpointHandle): PipeController {
     if (this.disposed) throw new Error("worker pipe broker is disposed");
     const existing = this.controllers.get(handle.id);
     if (existing) return existing;
     // Register before starting: an already-closed delayed announcement can synchronously
     // report closure as its automatic relay starts, without leaving a stale map entry.
-    let controller: PipeController | undefined;
-    controller = attachPipeController(handle, { relay: "manual", onClosed: () => {
-      if (controller) this.retire(handle.id, controller);
-    } });
+    let controller: PipeController | undefined = undefined;
+    controller = attachPipeController(handle, {
+      relay: "manual",
+      onClosed: () => {
+        if (controller) this.retire(handle.id, controller);
+      },
+    });
     this.controllers.set(handle.id, controller);
     if (controller.closed) this.retire(handle.id, controller);
     else if (this.options.relay !== "manual") controller.startRelay();
     return controller;
   }
   codec(fallback?: WorkerDescriptorCodec): WorkerDescriptorCodec {
-    return createWorkerPipeCodec({ fallback, onPipe: handle => { this.attach(handle); } });
+    return createWorkerPipeCodec({
+      fallback,
+      onPipe: (handle) => {
+        this.attach(handle);
+      },
+    });
   }
   pump(): void {
     for (const [id, controller] of this.controllers) {

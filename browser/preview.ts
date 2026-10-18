@@ -23,24 +23,42 @@ export class PreviewRouter {
     return new URL(`${this.options.prefix}/${port}${path}`, this.options.baseURL).href;
   }
 
-  serves(port: number): boolean { return this.servers.has(port); }
-  register(port: number, server: PreviewServer): void { this.servers.set(port, server); }
+  serves(port: number): boolean {
+    return this.servers.has(port);
+  }
+  register(port: number, server: PreviewServer): void {
+    this.servers.set(port, server);
+  }
   unregister(port: number, server: PreviewServer): void {
     if (this.servers.get(port) === server) this.servers.delete(port);
   }
 
   private connectSocket(port: number, reply: MessagePort): void {
     const connection = this.servers.get(port)?.connect(port, {
-      data: chunk => reply.postMessage({ type: "data", chunk }, [chunk.buffer]),
-      end: () => { reply.postMessage({ type: "end" }); reply.close(); },
-      error: () => { reply.postMessage({ type: "error" }); reply.close(); },
+      data: (chunk) => reply.postMessage({ type: "data", chunk }, [chunk.buffer]),
+      end: () => {
+        reply.postMessage({ type: "end" });
+        reply.close();
+      },
+      error: () => {
+        reply.postMessage({ type: "error" });
+        reply.close();
+      },
     });
-    if (!connection) { reply.postMessage({ type: "error" }); reply.close(); return; }
+    if (!connection) {
+      reply.postMessage({ type: "error" });
+      reply.close();
+      return;
+    }
     reply.onmessage = (event: MessageEvent<unknown>) => {
       const message = event.data;
       if (!message || typeof message !== "object" || !("type" in message)) return;
-      if (message.type === "data" && "chunk" in message && message.chunk instanceof Uint8Array) connection.write(message.chunk);
-      if (message.type === "end") { connection.close(); reply.close(); }
+      if (message.type === "data" && "chunk" in message && message.chunk instanceof Uint8Array)
+        connection.write(message.chunk);
+      if (message.type === "end") {
+        connection.close();
+        reply.close();
+      }
     };
     reply.postMessage({ type: "accepted" });
   }
@@ -54,9 +72,13 @@ export class PreviewRouter {
       reply.close();
       return;
     }
-    if (ask.type === "preview-socket") { this.connectSocket(ask.port, reply); return; }
+    if (ask.type === "preview-socket") {
+      this.connectSocket(ask.port, reply);
+      return;
+    }
     if (ask.type !== "preview-request") return;
-    const send = (msg: PreviewReply, transfer: Transferable[] = []) => reply.postMessage(msg, transfer);
+    const send = (msg: PreviewReply, transfer: Transferable[] = []) =>
+      reply.postMessage(msg, transfer);
     let dispatched = false;
     let ended = false;
     const finish = (msg: PreviewReply) => {
@@ -64,12 +86,17 @@ export class PreviewRouter {
       ended = true;
       if (dispatched) reply.close();
     };
-    const request = { method: ask.method, target: ask.target, headers: ask.headers, body: ask.body ? new Uint8Array(ask.body) : null };
+    const request = {
+      method: ask.method,
+      target: ask.target,
+      headers: ask.headers,
+      body: ask.body ? new Uint8Array(ask.body) : null,
+    };
     const accepted = this.servers.get(ask.port)?.request(ask.port, request, {
-      head: head => send({ type: "head", ...head }),
-      data: chunk => send({ type: "data", chunk }, [chunk.buffer]),
+      head: (head) => send({ type: "head", ...head }),
+      data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
       end: () => finish({ type: "end" }),
-      error: message => finish({ type: "error", message }),
+      error: (message) => finish({ type: "error", message }),
     });
     // A transport may finish synchronously; post acceptance before closing its port.
     send({ type: accepted ? "accepted" : "none" });

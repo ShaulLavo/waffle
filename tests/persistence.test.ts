@@ -1,10 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { validatePersistedIndex } from "../fs/storage";
-import { FilesystemService, FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity } from "../fs";
+import {
+  FilesystemService,
+  FilesystemClient,
+  createFilesystemConnection,
+  createFilesystemIdentity,
+  connectFilesystemIdentity,
+} from "../fs";
 
 const cleanup: (() => void)[] = [];
-afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
+afterEach(() => {
+  for (const stop of cleanup.splice(0)) stop();
+});
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (data: Uint8Array) => new TextDecoder().decode(data);
 class Store {
@@ -14,17 +22,31 @@ class Store {
   batches: any[] = [];
   fail = false;
   gate?: Promise<void>;
-  async load() { return this.index && structuredClone(this.index); }
-  async read(key: string) { this.reads++; const data = this.payloads.get(key); if (!data) throw new Error("missing data"); return data.slice(); }
+  async load() {
+    return this.index && structuredClone(this.index);
+  }
+  async read(key: string) {
+    this.reads++;
+    const data = this.payloads.get(key);
+    if (!data) throw new Error("missing data");
+    return data.slice();
+  }
   async persist(batch: any) {
     if (this.gate) await this.gate;
     if (this.fail) throw new Error("storage failed");
     this.batches.push(batch);
-    const nodes = new Map<number, any>((this.index?.nodes ?? []).map((node: any) => [node.ino, node]));
+    const nodes = new Map<number, any>(
+      (this.index?.nodes ?? []).map((node: any) => [node.ino, node]),
+    );
     for (const node of batch.upserts) nodes.set(node.ino, structuredClone(node));
     for (const ino of batch.removes) nodes.delete(ino);
     for (const [key, data] of batch.data) this.payloads.set(key, data.slice());
-    this.index = { version: 1, generation: batch.generation, root: batch.root, nodes: Array.from(nodes.values()) };
+    this.index = {
+      version: 1,
+      generation: batch.generation,
+      root: batch.root,
+      nodes: Array.from(nodes.values()),
+    };
   }
   async flush() {}
   async close() {}
@@ -32,10 +54,17 @@ class Store {
 async function fixture(store: Store, maxBytes?: number, intervalMs = 0) {
   const backend = await PersistentBackend.open(store, { intervalMs });
   const service = new FilesystemService(backend);
-  const connection = maxBytes === undefined ? createFilesystemConnection() : connectFilesystemIdentity(createFilesystemIdentity(undefined, maxBytes));
+  const connection =
+    maxBytes === undefined
+      ? createFilesystemConnection()
+      : connectFilesystemIdentity(createFilesystemIdentity(undefined, maxBytes));
   service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
-  cleanup.push(() => { client.dispose(); service.dispose(); backend.dispose(); });
+  cleanup.push(() => {
+    client.dispose();
+    service.dispose();
+    backend.dispose();
+  });
   return { backend, service, client };
 }
 test("flush preserves data, metadata, hard links and renames; reload loads no payloads", async () => {
@@ -63,12 +92,15 @@ test("a blocked background commit never stalls writes or reads and errors reach 
   const { client, backend } = await fixture(store);
   await client.asyncCall("writeFile", ["/a"], encode("first"));
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   const flushing = client.asyncCall("flush");
-  await new Promise(done => setTimeout(done, 10));
+  await new Promise((done) => setTimeout(done, 10));
   await client.asyncCall("writeFile", ["/b"], encode("second"));
   expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("second");
-  release(); await flushing;
+  release();
+  await flushing;
   store.gate = undefined;
   store.fail = true;
   await expect(backend.flush()).rejects.toThrow("storage failed");
@@ -93,7 +125,8 @@ test("unlinked open files retain bytes while persisted names disappear", async (
 test("one file edit writes bounded metadata instead of the entire tree", async () => {
   const store = new Store();
   const { client } = await fixture(store);
-  for (let i = 0; i < 100; i++) await client.asyncCall("writeFile", [`/pkg/file${i}`], encode("old"));
+  for (let i = 0; i < 100; i++)
+    await client.asyncCall("writeFile", [`/pkg/file${i}`], encode("old"));
   await client.asyncCall("flush");
   await client.asyncCall("writeFile", ["/pkg/file42"], encode("new"));
   await client.asyncCall("flush");
@@ -108,12 +141,16 @@ test("direct shared writes are checkpointed, including writes during an older co
   client.retain(path.node);
   await client.asyncCall("flush");
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   expect(client.write(path.node, [encode("first")], 0)).toBe(5);
   const older = client.asyncCall("flush");
-  await new Promise(done => setTimeout(done, 10));
+  await new Promise((done) => setTimeout(done, 10));
   expect(client.write(path.node, [encode("later")], 0)).toBe(5);
-  release(); await older; store.gate = undefined;
+  release();
+  await older;
+  store.gate = undefined;
   await client.asyncCall("flush");
   client.release(path.node);
   const second = await fixture(store);
@@ -182,9 +219,13 @@ test("persisted files spanning segments reload lazily beyond the resident pool",
 test("memory-only worker sync acknowledges success with a zero errno", async () => {
   const { MemoryBackend } = await import("../fs");
   const service = new FilesystemService(new MemoryBackend());
-  const connection = createFilesystemConnection(); service.connect(connection.server);
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
-  cleanup.push(() => { client.dispose(); service.dispose(); });
+  cleanup.push(() => {
+    client.dispose();
+    service.dispose();
+  });
   const root = await client.asyncCall("preopen", ["/"]);
   expect(await client.asyncCall("sync", [root])).toBe(0);
 });
@@ -192,22 +233,28 @@ test("memory-only worker sync acknowledges success with a zero errno", async () 
 test("background persistence coalesces writes while an earlier checkpoint is blocked", async () => {
   const store = new Store();
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   cleanup.push(release);
   const { client, backend } = await fixture(store, undefined, 2);
   let snapshots = 0;
   const snapshot = backend.shared.snapshot.bind(backend.shared);
-  backend.shared.snapshot = handle => { snapshots++; return snapshot(handle); };
+  backend.shared.snapshot = (handle) => {
+    snapshots++;
+    return snapshot(handle);
+  };
   await client.asyncCall("writeFile", ["/busy"], encode("zero"));
-  await new Promise(done => setTimeout(done, 10));
+  await new Promise((done) => setTimeout(done, 10));
   const first = snapshots;
   for (let i = 0; i < 5; i++) {
     await client.asyncCall("writeFile", ["/busy"], encode(`edit${i}`));
-    await new Promise(done => setTimeout(done, 4));
+    await new Promise((done) => setTimeout(done, 4));
   }
   expect(first).toBeGreaterThan(0);
   expect(snapshots).toBe(first);
-  release(); store.gate = undefined;
+  release();
+  store.gate = undefined;
   await client.asyncCall("flush");
 });
 
@@ -248,7 +295,9 @@ test("full replacement and truncate-to-zero do not load discarded cold contents"
   await first.client.asyncCall("writeFile", ["/truncate"], encode("discarded"));
   await first.client.asyncCall("flush");
   const second = await fixture(store);
-  store.read = async () => { throw new Error("old payload must not be read"); };
+  store.read = async () => {
+    throw new Error("old payload must not be read");
+  };
   await second.client.asyncCall("writeFile", ["/replace"], encode("new"));
   const root = await second.client.asyncCall("preopen", ["/"]);
   const path = await second.client.asyncCall("resolve", [root, "truncate"]);
@@ -261,7 +310,8 @@ test("full replacement and truncate-to-zero do not load discarded cold contents"
 test("rename replacement and removal do not walk the unrelated cold namespace", async () => {
   const store = new Store();
   const first = await fixture(store);
-  for (let i = 0; i < 100; i++) await first.client.asyncCall("writeFile", [`/cold${i}/a`], encode("cold"));
+  for (let i = 0; i < 100; i++)
+    await first.client.asyncCall("writeFile", [`/cold${i}/a`], encode("cold"));
   await first.client.asyncCall("writeFile", ["/a"], encode("hot"));
   await first.client.asyncCall("writeFile", ["/renamed"], encode("replaced"));
   await first.client.asyncCall("writeFile", ["/removed"], encode("removed"));
@@ -270,7 +320,10 @@ test("rename replacement and removal do not walk the unrelated cold namespace", 
   const children = second.backend.fs.root.children;
   const values = children.values.bind(children);
   let walks = 0;
-  children.values = () => { walks++; return values(); };
+  children.values = () => {
+    walks++;
+    return values();
+  };
   await second.client.asyncCall("move", ["/a", "/renamed"]);
   await second.client.asyncCall("remove", ["/removed"]);
   await second.client.asyncCall("flush");
@@ -323,14 +376,17 @@ test("closing a detached descriptor during its commit does not resurrect a paylo
   second.client.retain(path.node);
   await second.client.asyncCall("removePath", [path, false]);
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   cleanup.push(release);
   const pending = second.backend.flush();
-  await new Promise(done => setTimeout(done, 5));
+  await new Promise((done) => setTimeout(done, 5));
   second.client.release(path.node);
   await second.client.asyncCall("stat", [root]);
   const later = second.backend.flush();
-  release(); store.gate = undefined;
+  release();
+  store.gate = undefined;
   await Promise.all([pending, later]);
   expect((second.backend as any).detachedKeys.size).toBe(0);
 });
@@ -342,7 +398,7 @@ test("recursive removal empties retained directory capabilities without destroyi
   const directory = memory.preopen("/dir");
   memory.retain(directory);
   memory.remove("/dir");
-  expect(memory.readdir(directory).map(entry => entry.name)).toEqual([".", ".."]);
+  expect(memory.readdir(directory).map((entry) => entry.name)).toEqual([".", ".."]);
 
   const store = new Store();
   const first = await fixture(store);
@@ -369,20 +425,32 @@ test("retry after a failed unlink checkpoint respects a later relink", async () 
   client.retain(a.node);
   await client.asyncCall("removePath", [a, false]);
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   cleanup.push(release);
   const removal = backend.flush();
-  const removalFailed = removal.then(() => undefined, error => error);
-  await new Promise(done => setTimeout(done, 5));
+  const removalFailed = removal.then(
+    () => undefined,
+    (error) => error,
+  );
+  await new Promise((done) => setTimeout(done, 5));
   const b = await client.asyncCall("resolve", [root, "b"]);
-  expect(await client.asyncCall("link", [{ node: a.node, name: "", parent: undefined }, b])).toBe(0);
+  expect(await client.asyncCall("link", [{ node: a.node, name: "", parent: undefined }, b])).toBe(
+    0,
+  );
   const relink = backend.flush();
-  const relinkFailed = relink.then(() => undefined, error => error);
-  store.fail = true; release();
+  const relinkFailed = relink.then(
+    () => undefined,
+    (error) => error,
+  );
+  store.fail = true;
+  release();
   const failures = await Promise.all([removalFailed, relinkFailed]);
   expect(failures[0]?.message).toContain("storage failed");
   expect(failures[1]?.message).toContain("invalidated");
-  store.gate = undefined; store.fail = false;
+  store.gate = undefined;
+  store.fail = false;
   await backend.flush();
   const second = await fixture(store);
   expect(decode(await second.client.asyncCall("readFile", ["/b"]))).toBe("kept");
@@ -410,43 +478,48 @@ test("dirty detached bytes survive relink and last close before durability", asy
   expect(decode(await reloaded.client.asyncCall("readFile", ["/b"]))).toBe("NEW");
 });
 
-for (const fail of [false, true]) test(`cold relink restores its durable payload after deletion${fail ? " and a failed retry" : ""}`, async () => {
-  const store = new Store();
-  const first = await fixture(store);
-  await first.client.asyncCall("writeFile", ["/a"], encode("OLD"));
-  await first.client.asyncCall("flush");
-  const { client, backend } = await fixture(store);
-  const root = await client.asyncCall("preopen", ["/"]);
-  const a = await client.asyncCall("resolve", [root, "a"]);
-  client.retain(a.node);
-  await client.asyncCall("removePath", [a, false]);
-  await client.asyncCall("flush");
-  const b = await client.asyncCall("resolve", [root, "b"]);
-  expect(await client.asyncCall("link", [{ node: a.node, name: "" }, b])).toBe(0);
-  if (fail) {
-    store.fail = true;
-    await expect(backend.flush()).rejects.toThrow("storage failed");
-    store.fail = false;
-  }
-  await backend.flush();
-  expect(() => validatePersistedIndex(store.index)).not.toThrow();
-  expect(store.reads).toBe(0);
-  expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("OLD");
-  await client.asyncCall("writeFile", ["/b"], encode("NEW"));
-  await client.asyncCall("flush");
-  const revision = backend.shared.revision(a.node)!;
-  expect(backend.shared.unload(a.node, revision)).toBe(true);
-  expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("NEW");
-  client.release(a.node);
-  const reloaded = await fixture(store);
-  expect(decode(await reloaded.client.asyncCall("readFile", ["/b"]))).toBe("NEW");
-});
+for (const fail of [false, true])
+  test(`cold relink restores its durable payload after deletion${fail ? " and a failed retry" : ""}`, async () => {
+    const store = new Store();
+    const first = await fixture(store);
+    await first.client.asyncCall("writeFile", ["/a"], encode("OLD"));
+    await first.client.asyncCall("flush");
+    const { client, backend } = await fixture(store);
+    const root = await client.asyncCall("preopen", ["/"]);
+    const a = await client.asyncCall("resolve", [root, "a"]);
+    client.retain(a.node);
+    await client.asyncCall("removePath", [a, false]);
+    await client.asyncCall("flush");
+    const b = await client.asyncCall("resolve", [root, "b"]);
+    expect(await client.asyncCall("link", [{ node: a.node, name: "" }, b])).toBe(0);
+    if (fail) {
+      store.fail = true;
+      await expect(backend.flush()).rejects.toThrow("storage failed");
+      store.fail = false;
+    }
+    await backend.flush();
+    expect(() => validatePersistedIndex(store.index)).not.toThrow();
+    expect(store.reads).toBe(0);
+    expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("OLD");
+    await client.asyncCall("writeFile", ["/b"], encode("NEW"));
+    await client.asyncCall("flush");
+    const revision = backend.shared.revision(a.node)!;
+    expect(backend.shared.unload(a.node, revision)).toBe(true);
+    expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("NEW");
+    client.release(a.node);
+    const reloaded = await fixture(store);
+    expect(decode(await reloaded.client.asyncCall("readFile", ["/b"]))).toBe("NEW");
+  });
 
 test("a queued deletion checkpoint pins a later cold reattachment until its upsert commits", async () => {
   class CollectingStore extends Store {
     async persist(batch: any) {
       await super.persist(batch);
-      const keep = new Set<string>((this.index.nodes as any[]).flatMap(node => node.data ? [node.data] : []).concat(batch.retainedData ?? []));
+      const keep = new Set<string>(
+        (this.index.nodes as any[])
+          .flatMap((node) => (node.data ? [node.data] : []))
+          .concat(batch.retainedData ?? []),
+      );
       for (const key of this.payloads.keys()) if (!keep.has(key)) this.payloads.delete(key);
     }
   }
@@ -459,17 +532,20 @@ test("a queued deletion checkpoint pins a later cold reattachment until its upse
   const a = await client.asyncCall("resolve", [root, "a"]);
   client.retain(a.node);
   let release!: () => void;
-  store.gate = new Promise<void>(done => { release = done; });
+  store.gate = new Promise<void>((done) => {
+    release = done;
+  });
   cleanup.push(release);
   await client.asyncCall("writeFile", ["/unrelated"], encode("other"));
   const older = backend.flush();
-  await new Promise(done => setTimeout(done, 5));
+  await new Promise((done) => setTimeout(done, 5));
   await client.asyncCall("removePath", [a, false]);
   const removal = backend.flush();
   const b = await client.asyncCall("resolve", [root, "b"]);
   expect(await client.asyncCall("link", [{ node: a.node, name: "" }, b])).toBe(0);
   const relink = backend.flush();
-  release(); store.gate = undefined;
+  release();
+  store.gate = undefined;
   await Promise.all([older, removal, relink]);
   validatePersistedIndex(store.index);
   expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("OLD");

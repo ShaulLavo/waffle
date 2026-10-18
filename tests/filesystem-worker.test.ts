@@ -1,30 +1,53 @@
 import { afterEach, expect, test } from "bun:test";
-import { FilesystemService, MemoryBackend, FilesystemClient, createFilesystemConnection, revokeFilesystem, type FilesystemBackend } from "../fs";
+import {
+  FilesystemService,
+  MemoryBackend,
+  FilesystemClient,
+  createFilesystemConnection,
+  revokeFilesystem,
+  type FilesystemBackend,
+} from "../fs";
 import { HEADER, PAGE, State } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
 function fixture(backend: FilesystemBackend = new MemoryBackend()) {
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
-  cleanups.push(() => { client.dispose(); service.dispose(); });
+  cleanups.push(() => {
+    client.dispose();
+    service.dispose();
+  });
   return { service, client };
 }
 const text = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);
 const encode = (value: string) => new TextEncoder().encode(value);
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 class TrackingBackend extends MemoryBackend {
   readonly pins = new Map<number, number>();
   readonly calls: string[] = [];
-  private gate?: { operation: string; entered: ReturnType<typeof deferred<void>>; released: ReturnType<typeof deferred<void>> };
-  get pinCount(): number { return Array.from(this.pins.values()).reduce((total, count) => total + count, 0); }
-  retain(handle: number): void { super.retain(handle); this.pins.set(handle, (this.pins.get(handle) ?? 0) + 1); }
+  private gate?: {
+    operation: string;
+    entered: ReturnType<typeof deferred<void>>;
+    released: ReturnType<typeof deferred<void>>;
+  };
+  get pinCount(): number {
+    return Array.from(this.pins.values()).reduce((total, count) => total + count, 0);
+  }
+  retain(handle: number): void {
+    super.retain(handle);
+    this.pins.set(handle, (this.pins.get(handle) ?? 0) + 1);
+  }
   release(handle: number): void {
     super.release(handle);
     const count = this.pins.get(handle)!;
@@ -56,18 +79,23 @@ function guestWorker() {
 }
 function nextMessage(worker: Worker): Promise<any> {
   return new Promise((resolve, reject) => {
-    worker.onmessage = event => resolve(event.data);
+    worker.onmessage = (event) => resolve(event.data);
     worker.onerror = reject;
   });
 }
 
 test("backend startup failures report their complete message and original worker stack", async () => {
-  const worker = new Worker(new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href);
+  const worker = new Worker(
+    new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href,
+  );
   cleanups.push(() => worker.terminate());
   const message = nextMessage(worker);
   worker.postMessage({});
   const error = await message;
-  expect(error).toMatchObject({ type: "filesystem-error", message: "Error: Filesystem fixture cannot open storage" });
+  expect(error).toMatchObject({
+    type: "filesystem-error",
+    message: "Error: Filesystem fixture cannot open storage",
+  });
   expect(error.stack).toContain("filesystem-startup-failure.ts");
   worker.terminate();
 });
@@ -77,34 +105,53 @@ const rejectedReasons: [string, string][] = [
   ["null-prototype", "Unknown filesystem worker error"],
   ["hostile-stack", "Error: Filesystem fixture stack is unavailable"],
 ];
-for (const [reason, message] of rejectedReasons) test(`backend startup reports an unprintable ${reason} rejection`, async () => {
-  const worker = new Worker(new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href);
-  cleanups.push(() => worker.terminate());
-  const received = nextMessage(worker);
-  worker.postMessage({ reason });
-  expect(await received).toMatchObject({ type: "filesystem-error", message });
-  worker.terminate();
-});
-
-for (const data of [null, undefined]) test(`a ${String(data)} first message retains the structured diagnostic and worker error fallback`, async () => {
-  const worker = new Worker(new URL("./fixtures/filesystem-default-service.ts", import.meta.url).href);
-  cleanups.push(() => worker.terminate());
-  const diagnostic = new Promise<any>(resolve => { worker.onmessage = event => resolve(event.data); });
-  const failed = new Promise<string>(resolve => {
-    worker.onerror = event => { event.preventDefault(); resolve(event.message); };
+for (const [reason, message] of rejectedReasons)
+  test(`backend startup reports an unprintable ${reason} rejection`, async () => {
+    const worker = new Worker(
+      new URL("./fixtures/filesystem-startup-failure.ts", import.meta.url).href,
+    );
+    cleanups.push(() => worker.terminate());
+    const received = nextMessage(worker);
+    worker.postMessage({ reason });
+    expect(await received).toMatchObject({ type: "filesystem-error", message });
+    worker.terminate();
   });
-  worker.postMessage(data);
-  const [message, error] = await Promise.all([diagnostic, failed]);
-  expect(message).toMatchObject({ type: "filesystem-error", message: expect.stringContaining("connect") });
-  expect(message.stack).toContain("service.ts");
-  expect(error).toContain("connect");
-});
+
+for (const data of [null, undefined])
+  test(`a ${String(data)} first message retains the structured diagnostic and worker error fallback`, async () => {
+    const worker = new Worker(
+      new URL("./fixtures/filesystem-default-service.ts", import.meta.url).href,
+    );
+    cleanups.push(() => worker.terminate());
+    const diagnostic = new Promise<any>((resolve) => {
+      worker.onmessage = (event) => resolve(event.data);
+    });
+    const failed = new Promise<string>((resolve) => {
+      worker.onerror = (event) => {
+        event.preventDefault();
+        resolve(event.message);
+      };
+    });
+    worker.postMessage(data);
+    const [message, error] = await Promise.all([diagnostic, failed]);
+    expect(message).toMatchObject({
+      type: "filesystem-error",
+      message: expect.stringContaining("connect"),
+    });
+    expect(message.stack).toContain("service.ts");
+    expect(error).toContain("connect");
+  });
 
 test("a refused diagnostic transfer still dispatches the original worker error", async () => {
-  const worker = new Worker(new URL("./fixtures/filesystem-diagnostic-transfer-failure.ts", import.meta.url).href);
+  const worker = new Worker(
+    new URL("./fixtures/filesystem-diagnostic-transfer-failure.ts", import.meta.url).href,
+  );
   cleanups.push(() => worker.terminate());
-  const error = new Promise<string>(resolve => {
-    worker.onerror = event => { event.preventDefault(); resolve(event.message); };
+  const error = new Promise<string>((resolve) => {
+    worker.onerror = (event) => {
+      event.preventDefault();
+      resolve(event.message);
+    };
   });
   worker.postMessage({});
   expect(await error).toContain("Original filesystem startup failure");
@@ -116,25 +163,29 @@ test("completed writes are visible to siblings before either process exits", asy
   const sibling = new FilesystemClient(client.fork());
   cleanups.push(() => sibling.dispose());
   await client.asyncCall("writeFile", ["/shared"], new TextEncoder().encode("parent"));
-  expect(text(await sibling.asyncCall("readFile", ["/shared"]) as Uint8Array)).toBe("parent");
+  expect(text((await sibling.asyncCall("readFile", ["/shared"])) as Uint8Array)).toBe("parent");
   await sibling.asyncCall("writeFile", ["/shared"], new TextEncoder().encode("child"));
-  expect(text(await client.asyncCall("readFile", ["/shared"]) as Uint8Array)).toBe("child");
+  expect(text((await client.asyncCall("readFile", ["/shared"])) as Uint8Array)).toBe("child");
 });
 
 test("open identities survive rename, unlink and name reuse", async () => {
   const { client } = fixture();
   await client.asyncCall("writeFile", ["/a"], new TextEncoder().encode("original"));
-  const root = await client.asyncCall("preopen", ["/"]) as number;
-  const from = await client.asyncCall("resolve", [root, "a"]) as any;
+  const root = (await client.asyncCall("preopen", ["/"])) as number;
+  const from = (await client.asyncCall("resolve", [root, "a"])) as any;
   await client.asyncCall("retain", [from.node]);
-  const to = await client.asyncCall("resolve", [root, "b"]) as any;
+  const to = (await client.asyncCall("resolve", [root, "b"])) as any;
   expect(await client.asyncCall("rename", [from, to])).toBe(0);
-  const renamed = await client.asyncCall("resolve", [root, "b"]) as any;
+  const renamed = (await client.asyncCall("resolve", [root, "b"])) as any;
   expect(await client.asyncCall("removePath", [renamed, false])).toBe(0);
   await client.asyncCall("writeFile", ["/b"], new TextEncoder().encode("replacement"));
-  expect(text(await client.asyncCall("read", [from.node, 100, 0]) as Uint8Array)).toBe("original");
-  const replacement = await client.asyncCall("resolve", [root, "b"]) as any;
-  expect((await client.asyncCall("stat", [replacement.node]) as any).ino).not.toBe((await client.asyncCall("stat", [from.node]) as any).ino);
+  expect(text((await client.asyncCall("read", [from.node, 100, 0])) as Uint8Array)).toBe(
+    "original",
+  );
+  const replacement = (await client.asyncCall("resolve", [root, "b"])) as any;
+  expect(((await client.asyncCall("stat", [replacement.node])) as any).ino).not.toBe(
+    ((await client.asyncCall("stat", [from.node])) as any).ino,
+  );
   await client.asyncCall("release", [from.node]);
 });
 
@@ -142,21 +193,24 @@ test("concurrent writers allocate distinct inodes and never lose unrelated files
   const { client } = fixture();
   const sibling = new FilesystemClient(client.fork());
   cleanups.push(() => sibling.dispose());
-  await Promise.all(Array.from({ length: 30 }, async (_, i) => {
-    const writer = i % 2 ? client : sibling;
-    await writer.asyncCall("writeFile", [`/file${i}`], new Uint8Array([i]));
-  }));
-  const entries = await client.asyncCall("lookup", ["/"]) as any;
+  await Promise.all(
+    Array.from({ length: 30 }, async (_, i) => {
+      const writer = i % 2 ? client : sibling;
+      await writer.asyncCall("writeFile", [`/file${i}`], new Uint8Array([i]));
+    }),
+  );
+  const entries = (await client.asyncCall("lookup", ["/"])) as any;
   expect(entries.children.size).toBe(30);
   expect(new Set(Array.from(entries.children.values(), (entry: any) => entry.ino)).size).toBe(30);
-  for (let i = 0; i < 30; i++) expect(await client.asyncCall("readFile", [`/file${i}`])).toEqual(new Uint8Array([i]));
+  for (let i = 0; i < 30; i++)
+    expect(await client.asyncCall("readFile", [`/file${i}`])).toEqual(new Uint8Array([i]));
 });
 
 test("revoking a guest cancels queued requests and releases open handles and overflow results", async () => {
   const { client, service } = fixture();
   const child = new FilesystemClient(client.fork());
   await child.asyncCall("writeFile", ["/keep"], new Uint8Array([7]));
-  const handle = await child.asyncCall("preopen", ["/"]) as number;
+  const handle = (await child.asyncCall("preopen", ["/"])) as number;
   await child.asyncCall("retain", [handle]);
   const pending = child.submit("writeFile", ["/must-not-exist"], new Uint8Array([9]));
   revokeFilesystem(child.connection);
@@ -164,7 +218,12 @@ test("revoking a guest cancels queued requests and releases open handles and ove
   await expect(pending.value()).rejects.toMatchObject({ errno: 11 });
   await client.asyncCall("listFiles", ["/"]);
   expect(await client.asyncCall("readFile", ["/must-not-exist"])).toBeUndefined();
-  expect(service.resources()).toMatchObject({ clients: 1, retained: 0, transient: 0, responses: 0 });
+  expect(service.resources()).toMatchObject({
+    clients: 1,
+    retained: 0,
+    transient: 0,
+    responses: 0,
+  });
   child.dispose();
 });
 
@@ -187,11 +246,18 @@ test("blocking adapter maps backend errors to positive status and negative I/O e
   const { client } = fixture();
   const connection = client.fork();
   const result = new Promise<any>((resolve, reject) => {
-    worker.onmessage = event => resolve(event.data);
+    worker.onmessage = (event) => resolve(event.data);
     worker.onerror = reject;
   });
   worker.postMessage(connection, [connection.port]);
-  expect(await result).toEqual({ missing: 44, escape: 63, invalidRead: -8, invalidResize: 8, original: "before", changed: "after!" });
+  expect(await result).toEqual({
+    missing: 44,
+    escape: 63,
+    invalidRead: -8,
+    invalidResize: 8,
+    original: "before",
+    changed: "after!",
+  });
 });
 
 test("terminating a real worker during an in-flight backend request releases every pin and leaves siblings usable", async () => {
@@ -211,7 +277,12 @@ test("terminating a real worker during an in-flight backend request releases eve
   revokeFilesystem(connection);
   service.sweep();
   expect(backend.pinCount).toBe(0);
-  expect(service.resources()).toMatchObject({ clients: 1, retained: 0, transient: 0, responses: 0 });
+  expect(service.resources()).toMatchObject({
+    clients: 1,
+    retained: 0,
+    transient: 0,
+    responses: 0,
+  });
   gate.release();
   expect(text(await client.asyncCall("readFile", ["/held"]))).toBe("survives");
   await client.asyncCall("writeFile", ["/after-kill"], encode("still live"));
@@ -224,8 +295,8 @@ test("cancelling pending async values wakes every waiter without waiting for the
   await client.asyncCall("writeFile", ["/held"], encode("value"));
   const gate = backend.gateNext("readFile");
   const request = client.submit("readFile", ["/held"]);
-  const first = request.value().catch(error => error);
-  const second = request.value().catch(error => error);
+  const first = request.value().catch((error) => error);
+  const second = request.value().catch((error) => error);
   await gate.entered;
   expect(request.ready).toBe(false);
   const wakeBeforeCancel = Atomics.load(new Int32Array(client.connection.signal), 0);
@@ -250,13 +321,13 @@ test("releasing a queued mutation cancels it before the backend can execute it",
   void blocking.catch(() => {}); // Teardown cancels the caller too if an assertion fails.
   await gate.entered;
   const queued = client.submit("writeFile", ["/cancelled"], encode("never committed"));
-  const result = queued.value().catch(error => error);
+  const result = queued.value().catch((error) => error);
   queued.release();
   expect(await result).toMatchObject({ errno: 11 });
   gate.release();
   await blocking;
   expect(await client.asyncCall("readFile", ["/cancelled"])).toBeUndefined();
-  expect(backend.calls.filter(operation => operation === "writeFile")).toHaveLength(0);
+  expect(backend.calls.filter((operation) => operation === "writeFile")).toHaveLength(0);
   expect(client.completions.size).toBe(0);
 });
 
@@ -324,12 +395,19 @@ test("resource counts include transient capabilities, bound them, and preserve e
   expect(backend.pinCount).toBeLessThanOrEqual(258);
   expect(text(await client.asyncCall("read", [opened.node, PAGE, 0]))).toBe("open identity");
   await client.asyncCall("release", [opened.node]);
-  expect(await client.asyncCall("stat", [opened.node]).catch(error => error)).toMatchObject({ errno: 8 });
+  expect(await client.asyncCall("stat", [opened.node]).catch((error) => error)).toMatchObject({
+    errno: 8,
+  });
   await client.asyncCall("release", [root]);
   client.dispose();
   service.sweep();
   expect(backend.pinCount).toBe(0);
-  expect(service.resources()).toMatchObject({ clients: 0, retained: 0, transient: 0, responses: 0 });
+  expect(service.resources()).toMatchObject({
+    clients: 0,
+    retained: 0,
+    transient: 0,
+    responses: 0,
+  });
 });
 
 test("blocking caches observe sibling same-size writes, stat changes, truncation, and growth after cached EOF", async () => {
@@ -360,21 +438,30 @@ test("blocking caches observe sibling same-size writes, stat changes, truncation
   await client.asyncCall("resize", [path.node, 3, true]);
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });
-  expect(await result).toMatchObject({ count: 3, bytes: [97, 102, 116, 0, 0, 0, 0, 0], stat: { size: 3 } });
+  expect(await result).toMatchObject({
+    count: 3,
+    bytes: [97, 102, 116, 0, 0, 0, 0, 0],
+    stat: { size: 3 },
+  });
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot", offset: 3 });
   expect(await result).toMatchObject({ count: 0, stat: { size: 3 } });
   await client.asyncCall("write", [path.node, 3], encode("growth"));
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot", offset: 3 });
-  expect(await result).toMatchObject({ count: 6, bytes: [103, 114, 111, 119, 116, 104, 0, 0], stat: { size: 9 } });
+  expect(await result).toMatchObject({
+    count: 6,
+    bytes: [103, 114, 111, 119, 116, 104, 0, 0],
+    stat: { size: 9 },
+  });
 });
 
 test("transient eviction invalidates hot resolve/read/stat caches before a cached capability can be reused", async () => {
   const backend = new TrackingBackend();
   const { client, service } = fixture(backend);
   await client.asyncCall("writeFile", ["/cached"], encode("cached!!"));
-  for (let i = 0; i < 300; i++) await client.asyncCall("writeFile", [`/transient-${i}`], new Uint8Array([i % 256]));
+  for (let i = 0; i < 300; i++)
+    await client.asyncCall("writeFile", [`/transient-${i}`], new Uint8Array([i % 256]));
   const worker = guestWorker();
   const connection = client.fork();
   let result = nextMessage(worker);
@@ -400,26 +487,36 @@ test("transient eviction invalidates hot resolve/read/stat caches before a cache
   expect(backend.calls.length).toBe(warmed);
 });
 
-for (const length of [8, PAGE + 7]) test(`releasing a ready ${length > PAGE ? "overflow" : "inline"} completion wakes an already-waiting async value`, async () => {
-  const { client, service } = fixture();
-  await client.asyncCall("writeFile", ["/ready"], new Uint8Array(length).fill(12));
-  const request = client.submit("readFile", ["/ready"], undefined, 128);
-  // Hold only this completion's port notification. Shared state can become ready before that
-  // notification is delivered, and release must not strand value() after deleting its lookup.
-  client.connection.port.onmessage = ({ data }) => {
-    if (data.completed !== request.id) client.completions.get(data.completed)?.notify();
-  };
-  let settled = false;
-  const waiting = request.value().then(value => ({ value, error: undefined }), error => ({ value: undefined, error })).then(result => { settled = true; return result; });
-  await client.asyncCall("listFiles", ["/"]);
-  expect(request.ready).toBe(true);
-  expect(settled).toBe(false);
-  request.release();
-  expect((await waiting).error).toMatchObject({ errno: 11 });
-  await client.asyncCall("listFiles", ["/"]);
-  expect(service.resources().responses).toBe(0);
-  expect(client.completions.size).toBe(0);
-});
+for (const length of [8, PAGE + 7])
+  test(`releasing a ready ${length > PAGE ? "overflow" : "inline"} completion wakes an already-waiting async value`, async () => {
+    const { client, service } = fixture();
+    await client.asyncCall("writeFile", ["/ready"], new Uint8Array(length).fill(12));
+    const request = client.submit("readFile", ["/ready"], undefined, 128);
+    // Hold only this completion's port notification. Shared state can become ready before that
+    // notification is delivered, and release must not strand value() after deleting its lookup.
+    client.connection.port.onmessage = ({ data }) => {
+      if (data.completed !== request.id) client.completions.get(data.completed)?.notify();
+    };
+    let settled = false;
+    const waiting = request
+      .value()
+      .then(
+        (value) => ({ value, error: undefined }),
+        (error) => ({ value: undefined, error }),
+      )
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await client.asyncCall("listFiles", ["/"]);
+    expect(request.ready).toBe(true);
+    expect(settled).toBe(false);
+    request.release();
+    expect((await waiting).error).toMatchObject({ errno: 11 });
+    await client.asyncCall("listFiles", ["/"]);
+    expect(service.resources().responses).toBe(0);
+    expect(client.completions.size).toBe(0);
+  });
 
 test("cancelling overflow retrieval cancels a queued take and wakes its async caller immediately", async () => {
   const backend = new TrackingBackend();
@@ -432,7 +529,7 @@ test("cancelling overflow retrieval cancels a queued take and wakes its async ca
   const blocking = client.asyncCall("listFiles", ["/"]);
   void blocking.catch(() => {}); // Teardown cancels the caller too if an assertion fails.
   await gate.entered;
-  const waiting = request.value().catch(error => error);
+  const waiting = request.value().catch((error) => error);
   expect(client.completions.size).toBe(3); // outer read, gate, and the queued take.
   request.release();
   expect(await waiting).toMatchObject({ errno: 11 });
@@ -526,7 +623,7 @@ test("root revocation cancels descendant async values after the filesystem worke
   const child = new FilesystemClient(service.client.fork());
   cleanups.push(() => child.dispose());
   const inflight = nextMessage(service.worker);
-  const finished = child.asyncCall("readFile", ["/blocked"]).catch(error => error);
+  const finished = child.asyncCall("readFile", ["/blocked"]).catch((error) => error);
   expect(await inflight).toEqual({ inflight: true });
   await service.worker.terminate();
   service.client.dispose();

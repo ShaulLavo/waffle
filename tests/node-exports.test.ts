@@ -23,13 +23,21 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
       if (target.startsWith("./")) expect(existsSync(resolve(root, target))).toBe(true);
     }
   }
-  const specifiers = nodeEntries.map(([key]) => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`);
+  const specifiers = nodeEntries.map(([key]) =>
+    key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`,
+  );
   const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
-  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" })).not.toThrow();
-  const browserScript = `for (const specifier of ${JSON.stringify(browserOnly.map(key => key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`))}) { try { await import(specifier); throw new Error(\`Node unexpectedly resolved ${"$"}{specifier}\`); } catch (error) { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } }`;
-  expect(() => execFileSync("node", ["--input-type=module", "--eval", browserScript], { cwd: root, stdio: "pipe" })).not.toThrow();
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], { cwd: root, stdio: "pipe" }),
+  ).not.toThrow();
+  const browserScript = `for (const specifier of ${JSON.stringify(browserOnly.map((key) => (key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`)))}) { try { await import(specifier); throw new Error(\`Node unexpectedly resolved ${"$"}{specifier}\`); } catch (error) { if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } }`;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", browserScript], {
+      cwd: root,
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
 });
-
 
 test("Node hosts can use the bounded diagnostic drain through its public entry", () => {
   const script = `
@@ -41,9 +49,12 @@ test("Node hosts can use the bounded diagnostic drain through its public entry",
     assert.equal(drainDiagnostic(bytes, part => { const chunk = part.slice(0, 2); chunks.push(chunk); return chunk.length; }), undefined);
     assert.deepEqual(chunks.reduce((all, chunk) => all.concat(Array.from(chunk)), []), Array.from(bytes));
   `;
-  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
-    cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
-  })).not.toThrow();
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
 });
 
 test("Node adapters can read and write tagged process controls through the public helper entry", () => {
@@ -58,11 +69,13 @@ test("Node adapters can read and write tagged process controls through the publi
     controlStore(standalone, 0, 9);
     assert.equal(controlLoad(standalone), 9);
   `;
-  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
-    cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
-  })).not.toThrow();
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
 });
-
 
 test("Node hosts normalize startup failures through the public process entry", () => {
   const script = `
@@ -76,7 +89,10 @@ test("Node hosts normalize startup failures through the public process entry", (
       [new Error("host failed"), "EIO", 5],
     ]) assert.deepEqual(startFailure(error), { kind: "start-failed", code, error: name, status: null });
   `;
-  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
-    cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
-  })).not.toThrow();
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
 });

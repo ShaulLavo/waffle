@@ -1,8 +1,15 @@
+// @ts-check
+/** @typedef {{ bytes(): Uint8Array, view(): DataView, range(ptr: number, length: number): Uint8Array }} Views */
+/** @type {WeakMap<WebAssembly.Memory, Views>} */
 const hosts = new WeakMap();
 
+/** @param {WebAssembly.Memory & { toResizableBuffer?(): ArrayBuffer | SharedArrayBuffer }} memory
+ * @returns {Views}
+ */
 export function memoryViews(memory) {
   const existing = hosts.get(memory);
   if (existing) return existing;
+  /** @type {Views | undefined} */
   let views;
   if (typeof memory.toResizableBuffer === "function") {
     try {
@@ -10,15 +17,19 @@ export function memoryViews(memory) {
       const buffer = memory.toResizableBuffer();
       const bytes = new Uint8Array(buffer);
       const view = new DataView(buffer);
-      views = { bytes: () => bytes, view: () => view };
+      views = {
+        bytes: () => bytes,
+        view: () => view,
+        range: (ptr, length) => new Uint8Array(memory.buffer, ptr, length),
+      };
     } catch {
       // Some hosts expose the conversion but reject it for this memory.
     }
   }
   if (!views) {
-    let buffer;
-    let bytes;
-    let view;
+    let buffer = memory.buffer;
+    let bytes = new Uint8Array(buffer);
+    let view = new DataView(buffer);
     const refresh = () => {
       const current = memory.buffer;
       // Compare identity, not length: grow(0) can detach an unshared fixed buffer.
@@ -28,12 +39,18 @@ export function memoryViews(memory) {
       view = new DataView(buffer);
     };
     views = {
-      bytes: () => { refresh(); return bytes; },
-      view: () => { refresh(); return view; },
+      bytes: () => {
+        refresh();
+        return bytes;
+      },
+      view: () => {
+        refresh();
+        return view;
+      },
+      range: (ptr, length) => new Uint8Array(memory.buffer, ptr, length),
     };
   }
   // Bounded views still need their own range and must reject invalid guest pointers.
-  views.range = (ptr, length) => new Uint8Array(memory.buffer, ptr, length);
   hosts.set(memory, views);
   return views;
 }

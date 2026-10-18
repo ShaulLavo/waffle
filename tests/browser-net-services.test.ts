@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { NetHelper, type NetFetch } from "../browser/net/helper";
 import { NetHost } from "../browser/net/host";
-import { AGAIN, BADF, ERROR, Kind, type NetRequest, OK, UNSUPPORTED } from "../browser/net/protocol";
+import {
+  AGAIN,
+  BADF,
+  ERROR,
+  Kind,
+  type NetRequest,
+  OK,
+  UNSUPPORTED,
+} from "../browser/net/protocol";
 import { createRing, type RingRecord, RingReader, RingWriter } from "../browser/net/ring";
 
 const encode = (value: string) => new TextEncoder().encode(value);
@@ -27,14 +35,25 @@ test("generic network helper uses only its injected fetch and streams its result
   const helper = new NetHelper(sab, transport);
   const host = new NetHost(sab, (request) => helper.handle(request));
   try {
-    const handle = host.fetch(JSON.stringify({ url: "https://network.invalid/api", method: "post", headers: [["x-request", "test"]], redirect: "manual" }), encode("payload"));
+    const handle = host.fetch(
+      JSON.stringify({
+        url: "https://network.invalid/api",
+        method: "post",
+        headers: [["x-request", "test"]],
+        redirect: "manual",
+      }),
+      encode("payload"),
+    );
     expect(handle).toBeGreaterThan(0);
     await until(() => typeof host.fetchHead(handle) !== "number");
     const head = JSON.parse(decode(host.fetchHead(handle)));
     expect(head.status).toBe(201);
     expect(head.headers).toContainEqual(["x-transport", "test"]);
     let incoming: Uint8Array | number = AGAIN;
-    await until(() => { incoming = host.read(handle, 65536); return incoming instanceof Uint8Array; });
+    await until(() => {
+      incoming = host.read(handle, 65536);
+      return incoming instanceof Uint8Array;
+    });
     expect(decode(incoming)).toBe("injected response");
     await until(() => host.read(handle, 65536) === 0);
     expect(calls).toHaveLength(1);
@@ -52,11 +71,20 @@ test("generic network helper uses only its injected fetch and streams its result
 test("injected fetch is called as a function rather than a method of the helper", async () => {
   let receiver: unknown = "not called";
   const helper = new NetHelper(createRing(), async function (this: unknown) {
+    // oxlint-disable-next-line typescript/no-this-alias -- This test records the actual callback/Worker receiver.
     receiver = this;
     return new Response(null);
   });
   try {
-    helper.handle({ type: "fetch", id: 1, method: "GET", url: "https://network.invalid/", headers: [], body: null, redirect: "follow" });
+    helper.handle({
+      type: "fetch",
+      id: 1,
+      method: "GET",
+      url: "https://network.invalid/",
+      headers: [],
+      body: null,
+      redirect: "follow",
+    });
     await until(() => receiver !== "not called");
     expect(receiver).toBeUndefined();
   } finally {
@@ -71,7 +99,9 @@ test("generic helper disposal aborts the injected fetch without publishing an ex
   const helper = new NetHelper(sab, async (_url, options) => {
     signal = options.signal!;
     try {
-      await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      await new Promise<void>((_resolve, reject) =>
+        signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
+      );
       throw new Error("Unreachable");
     } finally {
       finished = true;
@@ -96,7 +126,10 @@ test("generic host owns outgoing bytes without detaching its caller's buffers", 
     messages.push(structuredClone(request, { transfer }));
   });
   const body = encode("owned by caller");
-  const handle = host.fetch(JSON.stringify({ url: "https://network.invalid/", method: "POST" }), body);
+  const handle = host.fetch(
+    JSON.stringify({ url: "https://network.invalid/", method: "POST" }),
+    body,
+  );
   expect(handle).toBeGreaterThan(0);
   expect(decode(body)).toBe("owned by caller");
   expect(messages[0]).toMatchObject({ type: "fetch", body: encode("owned by caller") });
@@ -132,20 +165,37 @@ test("generic handles support local pipes, partial reads, half-close and per-hos
 test("generic fetch reaches a local listener without calling the injected transport", async () => {
   let fetches = 0;
   const sab = createRing();
-  const helper = new NetHelper(sab, async () => { fetches++; throw new Error("Unexpected external fetch"); });
+  const helper = new NetHelper(sab, async () => {
+    fetches++;
+    throw new Error("Unexpected external fetch");
+  });
   const host = new NetHost(sab, (request) => helper.handle(request));
   try {
     const listener = host.listen("localhost", 3000);
-    const request = host.fetch(JSON.stringify({ url: "http://localhost:3000/api?x=1", method: "POST" }), encode("body"));
+    const request = host.fetch(
+      JSON.stringify({ url: "http://localhost:3000/api?x=1", method: "POST" }),
+      encode("body"),
+    );
     let connection = AGAIN;
-    await until(() => { connection = host.accept(listener); return connection > 0; });
+    await until(() => {
+      connection = host.accept(listener);
+      return connection > 0;
+    });
     let incoming: Uint8Array | number = AGAIN;
-    await until(() => { incoming = host.read(connection, 65536); return incoming instanceof Uint8Array; });
+    await until(() => {
+      incoming = host.read(connection, 65536);
+      return incoming instanceof Uint8Array;
+    });
     expect(decode(incoming)).toContain("POST /api?x=1 HTTP/1.1");
     expect(decode(incoming)).toEndWith("body");
-    expect(host.write(connection, encode("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"))).toBeGreaterThan(0);
+    expect(
+      host.write(connection, encode("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")),
+    ).toBeGreaterThan(0);
     await until(() => typeof host.fetchHead(request) !== "number");
-    await until(() => { incoming = host.read(request, 65536); return incoming instanceof Uint8Array; });
+    await until(() => {
+      incoming = host.read(request, 65536);
+      return incoming instanceof Uint8Array;
+    });
     expect(decode(incoming)).toBe("ok");
     expect(fetches).toBe(0);
   } finally {
@@ -183,8 +233,14 @@ test("generic host returns protocol errors and acknowledges only consumed fetch 
 test("generic filesystem notices wake the host without replaying contents", async () => {
   const updates: { path: string; bytes: Uint8Array }[] = [];
   const sab = createRing();
-  const helper = new NetHelper(sab, async () => { throw new Error("Unexpected fetch"); });
-  const host = new NetHost(sab, () => {}, (path, bytes) => updates.push({ path, bytes }));
+  const helper = new NetHelper(sab, async () => {
+    throw new Error("Unexpected fetch");
+  });
+  const host = new NetHost(
+    sab,
+    () => {},
+    (path, bytes) => updates.push({ path, bytes }),
+  );
   try {
     await helper.notifyFileChanged("/app.ts");
     expect(host.poll(0)).toBe(1);
@@ -201,16 +257,33 @@ for (const ending of ["end", "error"] as const) {
   test(`loopback response writes keep every chunk in FIFO order with ${ending} last`, async () => {
     const sab = createRing();
     const reader = new RingReader(sab);
-    const helper = new NetHelper(sab, async () => { throw new Error("Unexpected external fetch"); });
+    const helper = new NetHelper(sab, async () => {
+      throw new Error("Unexpected external fetch");
+    });
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
-      helper.handle({ type: "fetch", id: 2, method: "GET", url: "http://localhost:3000/", headers: [], body: null, redirect: "follow" });
-      await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.Conn); });
-      const connection = JSON.parse(decode(records.find(record => record.kind === Kind.Conn)!.payload)).conn;
+      helper.handle({
+        type: "fetch",
+        id: 2,
+        method: "GET",
+        url: "http://localhost:3000/",
+        headers: [],
+        body: null,
+        redirect: "follow",
+      });
+      await until(() => {
+        records = records.concat(reader.drain());
+        return records.some((record) => record.kind === Kind.Conn);
+      });
+      const connection = JSON.parse(
+        decode(records.find((record) => record.kind === Kind.Conn)!.payload),
+      ).conn;
       const body = "A".repeat(130000).concat("BBB");
       const length = ending === "end" ? body.length : body.length + 1;
-      const first = encode(`HTTP/1.1 200 OK\r\nContent-Length: ${length}\r\n\r\n${"A".repeat(130000)}`);
+      const first = encode(
+        `HTTP/1.1 200 OK\r\nContent-Length: ${length}\r\n\r\n${"A".repeat(130000)}`,
+      );
       const second = encode("BBB");
       helper.handle({ type: "write", id: connection, data: first });
       helper.handle({ type: "write", id: connection, data: second });
@@ -220,12 +293,29 @@ for (const ending of ["end", "error"] as const) {
       const terminal = ending === "end" ? Kind.End : Kind.Error;
       await until(() => {
         records = records.concat(reader.drain());
-        const response = records.filter(record => record.handle === 2);
-        return response.some(record => record.kind === terminal) && response.reduce((size, record) => size + (record.kind === Kind.Data ? record.payload.length : 0), 0) === body.length;
+        const response = records.filter((record) => record.handle === 2);
+        return (
+          response.some((record) => record.kind === terminal) &&
+          response.reduce(
+            (size, record) => size + (record.kind === Kind.Data ? record.payload.length : 0),
+            0,
+          ) === body.length
+        );
       });
-      const response = records.filter(record => record.handle === 2);
-      expect(response.map(record => record.kind)).toEqual([Kind.Head, Kind.Data, Kind.Data, Kind.Data, terminal]);
-      expect(response.filter(record => record.kind === Kind.Data).map(record => decode(record.payload)).join("")).toBe(body);
+      const response = records.filter((record) => record.handle === 2);
+      expect(response.map((record) => record.kind)).toEqual([
+        Kind.Head,
+        Kind.Data,
+        Kind.Data,
+        Kind.Data,
+        terminal,
+      ]);
+      expect(
+        response
+          .filter((record) => record.kind === Kind.Data)
+          .map((record) => decode(record.payload))
+          .join(""),
+      ).toBe(body);
       expect(response.at(-1)!.kind).toBe(terminal);
     } finally {
       helper.dispose();
@@ -236,7 +326,7 @@ for (const ending of ["end", "error"] as const) {
 
 test("closing a listener terminalizes pending local peers without helper close requests", () => {
   const requests: NetRequest[] = [];
-  const host = new NetHost(createRing(), request => requests.push(request));
+  const host = new NetHost(createRing(), (request) => requests.push(request));
   const listener = host.listen("localhost", 3000);
   const client = host.connect("localhost", 3000);
   expect(client).toBeGreaterThan(0);
@@ -248,7 +338,9 @@ test("closing a listener terminalizes pending local peers without helper close r
     expect(host.poll(0)).toBe(1);
     expect(host.write(client, encode("too late"))).toBe(ERROR);
     expect(JSON.parse(String(host.error(client))).code).toBe("EPIPE");
-    expect(requests.filter(request => request.type === "close")).toEqual([{ type: "close", id: listener }]);
+    expect(requests.filter((request) => request.type === "close")).toEqual([
+      { type: "close", id: listener },
+    ]);
   } finally {
     host.close(client);
     host.close(listener);
@@ -258,15 +350,27 @@ test("closing a listener terminalizes pending local peers without helper close r
 test("closing a listener still refuses unaccepted helper-owned connections", async () => {
   const sab = createRing();
   const requests: NetRequest[] = [];
-  const host = new NetHost(sab, request => requests.push(request));
+  const host = new NetHost(sab, (request) => requests.push(request));
   const writer = new RingWriter(sab);
   const listener = host.listen("localhost", 3000);
   const remote = 0x40000001;
   try {
-    await writer.write(listener, Kind.Conn, encode(JSON.stringify({ conn: remote, peer: { address: "127.0.0.1", family: "IPv4", port: 40000 } })));
+    await writer.write(
+      listener,
+      Kind.Conn,
+      encode(
+        JSON.stringify({
+          conn: remote,
+          peer: { address: "127.0.0.1", family: "IPv4", port: 40000 },
+        }),
+      ),
+    );
     host.poll(0);
     expect(host.close(listener)).toBe(OK);
-    expect(requests.filter(request => request.type === "close")).toEqual([{ type: "close", id: remote }, { type: "close", id: listener }]);
+    expect(requests.filter((request) => request.type === "close")).toEqual([
+      { type: "close", id: remote },
+      { type: "close", id: listener },
+    ]);
   } finally {
     host.close(listener);
     writer.dispose();
@@ -277,20 +381,39 @@ for (const delivered of [false, true]) {
   test(`closing a loopback fetch releases its preview connection ${delivered ? "after" : "before"} request delivery`, async () => {
     const sab = createRing();
     const reader = new RingReader(sab);
-    const helper = new NetHelper(sab, async () => { throw new Error("Unexpected external fetch"); });
+    const helper = new NetHelper(sab, async () => {
+      throw new Error("Unexpected external fetch");
+    });
     let records: RingRecord[] = [];
     try {
       helper.handle({ type: "listen", id: 1, host: "localhost", port: 3000 });
-      helper.handle({ type: "fetch", id: 2, method: "GET", url: "http://localhost:3000/stream", headers: [], body: null, redirect: "follow" });
-      if (delivered) await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.Data); });
+      helper.handle({
+        type: "fetch",
+        id: 2,
+        method: "GET",
+        url: "http://localhost:3000/stream",
+        headers: [],
+        body: null,
+        redirect: "follow",
+      });
+      if (delivered)
+        await until(() => {
+          records = records.concat(reader.drain());
+          return records.some((record) => record.kind === Kind.Data);
+        });
       expect(Reflect.get(helper, "connections").size).toBe(1);
       helper.handle({ type: "close", id: 2 });
       expect(Reflect.get(helper, "connections").size).toBe(0);
-      await until(() => { records = records.concat(reader.drain()); return records.some(record => record.kind === Kind.End); });
-      const announcement = records.find(record => record.kind === Kind.Conn)!;
+      await until(() => {
+        records = records.concat(reader.drain());
+        return records.some((record) => record.kind === Kind.End);
+      });
+      const announcement = records.find((record) => record.kind === Kind.Conn)!;
       const connection = JSON.parse(decode(announcement.payload)).conn;
-      expect(records.filter(record => record.handle === connection).map(record => record.kind)).toEqual([Kind.Data, Kind.End]);
-      expect(records.filter(record => record.handle === 2)).toEqual([]);
+      expect(
+        records.filter((record) => record.handle === connection).map((record) => record.kind),
+      ).toEqual([Kind.Data, Kind.End]);
+      expect(records.filter((record) => record.handle === 2)).toEqual([]);
       expect(Reflect.get(helper, "fetches").size).toBe(0);
     } finally {
       helper.dispose();
@@ -302,6 +425,8 @@ for (const delivered of [false, true]) {
 test("generic network services contain no Bun engine, cache or guest-memory bindings", async () => {
   for (const name of ["helper", "host"]) {
     const source = await Bun.file(new URL(`../browser/net/${name}.ts`, import.meta.url)).text();
-    expect(source).not.toMatch(/(?:web\/src|install-cache|installFetch|engineNet|hostFetch|SLOT_NAMES|SlotImpls|MemoryViews|WebAssembly\.Memory|metaPtr|bodyPtr)/);
+    expect(source).not.toMatch(
+      /(?:web\/src|install-cache|installFetch|engineNet|hostFetch|SLOT_NAMES|SlotImpls|MemoryViews|WebAssembly\.Memory|metaPtr|bodyPtr)/,
+    );
   }
 });

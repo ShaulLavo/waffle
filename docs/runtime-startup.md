@@ -11,18 +11,18 @@ in the realm where the milestone occurs. Worker timestamps are forwarded unchang
 not replaced with page receipt times. This puts page and worker events on the same
 time origin for comparison; message delivery can lag behind the recorded milestone.
 
-| Stage | Emission point |
-| --- | --- |
-| `filesystem-worker-created` | Page: immediately after the filesystem `Worker` constructor returns. This does not mean its script has loaded. |
-| `filesystem-connect-requested` | Page: immediately before posting the initial filesystem connection to that worker. |
-| `filesystem-connected` | Worker: handling the initial connection request in the existing startup microtask, immediately before invoking the backend factory. This is connection handling, not backend readiness. |
-| `indexeddb-open-requested` | Worker: immediately before starting the existing IndexedDB database-open operation. |
-| `indexeddb-open-resolved` | Worker: after the existing database-open promise resolves, before requesting its writer lock. |
-| `filesystem-lock-requested` | Worker: immediately before the Web Locks writer request. |
-| `filesystem-lock-acquired` | Worker: in the granted writer callback, before epoch allocation (IndexedDB) or storage setup (OPFS). |
-| `filesystem-epoch-requested` | Worker: immediately before creating the existing strict IndexedDB epoch-allocation transaction. |
-| `filesystem-epoch-resolved` | Worker: after that transaction's existing completion wait resolves. |
-| `filesystem-ready` | Worker: after the backend factory has finished (including persistent-tree recovery) and the initial `FilesystemService.connect` has returned. This is not facade construction or shell/application readiness. |
+| Stage                          | Emission point                                                                                                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filesystem-worker-created`    | Page: immediately after the filesystem `Worker` constructor returns. This does not mean its script has loaded.                                                                                                |
+| `filesystem-connect-requested` | Page: immediately before posting the initial filesystem connection to that worker.                                                                                                                            |
+| `filesystem-connected`         | Worker: handling the initial connection request in the existing startup microtask, immediately before invoking the backend factory. This is connection handling, not backend readiness.                       |
+| `indexeddb-open-requested`     | Worker: immediately before starting the existing IndexedDB database-open operation.                                                                                                                           |
+| `indexeddb-open-resolved`      | Worker: after the existing database-open promise resolves, before requesting its writer lock.                                                                                                                 |
+| `filesystem-lock-requested`    | Worker: immediately before the Web Locks writer request.                                                                                                                                                      |
+| `filesystem-lock-acquired`     | Worker: in the granted writer callback, before epoch allocation (IndexedDB) or storage setup (OPFS).                                                                                                          |
+| `filesystem-epoch-requested`   | Worker: immediately before creating the existing strict IndexedDB epoch-allocation transaction.                                                                                                               |
+| `filesystem-epoch-resolved`    | Worker: after that transaction's existing completion wait resolves.                                                                                                                                           |
+| `filesystem-ready`             | Worker: after the backend factory has finished (including persistent-tree recovery) and the initial `FilesystemService.connect` has returned. This is not facade construction or shell/application readiness. |
 
 For IndexedDB, successful startup emits the table's order. In-memory startup emits
 only the first three stages and `filesystem-ready`. OPFS also emits the two lock

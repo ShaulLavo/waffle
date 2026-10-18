@@ -7,7 +7,7 @@ for (const type of ["error", "blocked"] as const) {
     const request = Object.assign(new EventTarget(), { error: failure }) as IDBOpenDBRequest;
     const factory = { open: () => request } as unknown as IDBFactory;
     const gate = gatedIndexedDB(factory);
-    const result = gate.ready.catch(error => error);
+    const result = gate.ready.catch((error) => error);
     gate.factory.open("failed");
     request.dispatchEvent(new Event(type));
     if (type === "error") expect(await result).toBe(failure);

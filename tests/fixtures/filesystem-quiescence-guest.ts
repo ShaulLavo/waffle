@@ -2,7 +2,9 @@ import { FilesystemClient } from "../../fs/client";
 import type { FilesystemConnection } from "../../fs/protocol";
 
 declare const self: Worker;
-self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection; control: SharedArrayBuffer }>) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<{ connection: FilesystemConnection; control: SharedArrayBuffer }>) => {
   const client = new FilesystemClient(data.connection);
   const control = new Int32Array(data.control);
   client.retain(0);

@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection } from "../fs";
+import {
+  FilesystemClient,
+  FilesystemService,
+  MemoryBackend,
+  createFilesystemConnection,
+} from "../fs";
 import { DEFAULT_SHARED_MAX_BYTES, errno } from "../fs/protocol";
 
 const MiB = 1024 * 1024;
@@ -28,7 +33,10 @@ test("shared files cross multiple 16 MiB segments and return their pages on remo
     await client.asyncCall("remove", ["/large"]);
     expect(backend.shared.resources().usedBytes).toBe(0);
     expect(backend.shared.buffer.byteLength).toBeLessThanOrEqual(24 * MiB);
-  } finally { client.dispose(); service.dispose(); }
+  } finally {
+    client.dispose();
+    service.dispose();
+  }
 });
 
 test("oversized growth reaches the caller as EFBIG and leaves the file usable", async () => {
@@ -40,7 +48,14 @@ test("oversized growth reaches the caller as EFBIG and leaves the file usable", 
     await client.asyncCall("writeFile", ["/file"], new Uint8Array([7]));
     const root = await client.asyncCall("preopen", ["/"]);
     const path = await client.asyncCall("resolve", [root, "file"]);
-    expect(await client.asyncCall("grow", [path.node, DEFAULT_SHARED_MAX_BYTES + 1]).catch(error => error)).toMatchObject({ errno: 22 });
+    expect(
+      await client
+        .asyncCall("grow", [path.node, DEFAULT_SHARED_MAX_BYTES + 1])
+        .catch((error) => error),
+    ).toMatchObject({ errno: 22 });
     expect(await client.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([7]));
-  } finally { client.dispose(); service.dispose(); }
+  } finally {
+    client.dispose();
+    service.dispose();
+  }
 });

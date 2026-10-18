@@ -26,6 +26,20 @@ export interface PersistenceBatch {
   retainedData?: string[];
 }
 
+/** Snapshot before enqueueing so caller mutation cannot change pending persistence. */
+export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
+  return {
+    ...structuredClone({
+      generation: batch.generation,
+      root: batch.root,
+      upserts: batch.upserts,
+      removes: batch.removes,
+      retainedData: batch.retainedData,
+    }),
+    data: new Map(Array.from(batch.data, ([key, bytes]) => [key, new Uint8Array(bytes)])),
+  };
+}
+
 export interface StorageBackend {
   load(): Promise<PersistedIndex | undefined>;
   read(key: string): Promise<Uint8Array>;
@@ -35,9 +49,14 @@ export interface StorageBackend {
   close(): Promise<void>;
 }
 
-export interface ChecksummedRecord { json: string; checksum: string }
+export interface ChecksummedRecord {
+  json: string;
+  checksum: string;
+}
 
-function invalid(): never { throw new Error("Invalid persisted filesystem metadata"); }
+function invalid(): never {
+  throw new Error("Invalid persisted filesystem metadata");
+}
 export function validInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -45,18 +64,31 @@ export function validInteger(value: unknown): value is number {
 export function validatePersistedNode(value: unknown): asserts value is PersistedNode {
   if (!value || typeof value !== "object") invalid();
   const node = value as PersistedNode;
-  if (!validInteger(node.ino) || !validInteger(node.size) || !Number.isFinite(node.mtime)) invalid();
+  if (!validInteger(node.ino) || !validInteger(node.size) || !Number.isFinite(node.mtime))
+    invalid();
   if (node.kind === "file") {
-    if (node.children !== undefined || (node.data !== undefined && (typeof node.data !== "string" || !node.data))
-      || (node.size > 0 && node.data === undefined)) invalid();
+    if (
+      node.children !== undefined ||
+      (node.data !== undefined && (typeof node.data !== "string" || !node.data)) ||
+      (node.size > 0 && node.data === undefined)
+    )
+      invalid();
   } else if (node.kind === "dir") {
     if (node.data !== undefined || !Array.isArray(node.children)) invalid();
     const names = new Set<string>();
     for (const entry of node.children) {
       if (!Array.isArray(entry) || entry.length !== 2) invalid();
       const [name, ino] = entry;
-      if (typeof name !== "string" || !name || name === "." || name === ".." || /[\/\0]/.test(name)
-        || !validInteger(ino) || names.has(name)) invalid();
+      if (
+        typeof name !== "string" ||
+        !name ||
+        name === "." ||
+        name === ".." ||
+        /[/\0]/.test(name) ||
+        !validInteger(ino) ||
+        names.has(name)
+      )
+        invalid();
       names.add(name);
     }
   } else invalid();
@@ -65,7 +97,13 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
 export function validatePersistedIndex(value: unknown): asserts value is PersistedIndex {
   if (!value || typeof value !== "object") invalid();
   const index = value as PersistedIndex;
-  if (index.version !== 1 || !validInteger(index.generation) || !validInteger(index.root) || !Array.isArray(index.nodes)) invalid();
+  if (
+    index.version !== 1 ||
+    !validInteger(index.generation) ||
+    !validInteger(index.root) ||
+    !Array.isArray(index.nodes)
+  )
+    invalid();
   const nodes = new Map<number, PersistedNode>();
   for (const node of index.nodes) {
     validatePersistedNode(node);
@@ -90,8 +128,10 @@ export function validatePersistedIndex(value: unknown): asserts value is Persist
 }
 
 async function checksum(json: string): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json)));
-  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(json)),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function encodeRecord(value: unknown): Promise<ChecksummedRecord> {
@@ -102,9 +142,17 @@ export async function encodeRecord(value: unknown): Promise<ChecksummedRecord> {
 export async function decodeRecord(value: unknown): Promise<unknown> {
   if (!value || typeof value !== "object") return undefined;
   const record = value as ChecksummedRecord;
-  if (typeof record.json !== "string" || typeof record.checksum !== "string"
-    || await checksum(record.json) !== record.checksum) return undefined;
-  try { return JSON.parse(record.json); } catch { return undefined; }
+  if (
+    typeof record.json !== "string" ||
+    typeof record.checksum !== "string" ||
+    (await checksum(record.json)) !== record.checksum
+  )
+    return undefined;
+  try {
+    return JSON.parse(record.json);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function encodeSnapshot(index: PersistedIndex): Promise<ChecksummedRecord> {
@@ -114,5 +162,10 @@ export async function encodeSnapshot(index: PersistedIndex): Promise<Checksummed
 
 export async function decodeSnapshot(value: unknown): Promise<PersistedIndex | undefined> {
   const index = await decodeRecord(value);
-  try { validatePersistedIndex(index); return index; } catch { return undefined; }
+  try {
+    validatePersistedIndex(index);
+    return index;
+  } catch {
+    return undefined;
+  }
 }

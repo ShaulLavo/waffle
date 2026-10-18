@@ -17,12 +17,16 @@ export function drainDiagnostic(
   write: (bytes: Uint8Array) => number,
   active: () => boolean = () => true,
 ): void | Promise<void> {
-  let offset = 0, deadline = now() + DIAGNOSTIC_STALL_TIMEOUT_MS;
+  let offset = 0,
+    deadline = now() + DIAGNOSTIC_STALL_TIMEOUT_MS;
   const step = (): boolean => {
     for (; offset < bytes.length;) {
       const remaining = bytes.length - offset;
       const fail = (errno: number, reason: string): never => {
-        throw new ProcessError(errno, `${reason}; ${remaining} of ${bytes.length} diagnostic bytes unwritten`);
+        throw new ProcessError(
+          errno,
+          `${reason}; ${remaining} of ${bytes.length} diagnostic bytes unwritten`,
+        );
       };
       if (!active()) fail(ProcessErrno.CANCELED, "diagnostic delivery cancelled");
       let written = 0;
@@ -33,7 +37,8 @@ export function drainDiagnostic(
         fail(29 /* WASI EIO */, `diagnostic write threw (${reason})`);
       }
       if (written === -ProcessErrno.AGAIN) {
-        if (now() >= deadline) fail(ProcessErrno.AGAIN, "diagnostic reader made no progress for five seconds");
+        if (now() >= deadline)
+          fail(ProcessErrno.AGAIN, "diagnostic reader made no progress for five seconds");
         return false;
       }
       if (!Number.isInteger(written) || written <= 0 || written > remaining) {
@@ -46,6 +51,8 @@ export function drainDiagnostic(
   };
   if (step()) return;
   return (async () => {
-    do { await new Promise(resolve => delay(resolve, 1)); } while (!step());
+    do {
+      await new Promise((resolve) => delay(resolve, 1));
+    } while (!step());
   })();
 }

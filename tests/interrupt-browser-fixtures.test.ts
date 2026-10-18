@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { interruptFixtureMemory, interruptLoopFixture, interruptShapes, InterruptWord } from "./fixtures/interrupt-browser-loops";
+import {
+  interruptFixtureMemory,
+  interruptLoopFixture,
+  interruptShapes,
+  InterruptWord,
+} from "./fixtures/interrupt-browser-loops";
 import { interruptWorkloadFixture } from "./fixtures/interrupt-browser-workload";
 
 // Tests-first safety gate: an uninstrumented failed test can always be rescued on Safari.
@@ -7,8 +12,11 @@ test("all five original cancellation fixtures validate and return through indepe
   const bytes = interruptLoopFixture();
   expect(WebAssembly.validate(bytes)).toBe(true);
   const module = new WebAssembly.Module(bytes);
-  expect(WebAssembly.Module.imports(module)).toEqual([{ module: "env", name: "memory", kind: "memory" }]);
-  const memory = interruptFixtureMemory(), words = new Int32Array(memory.buffer);
+  expect(WebAssembly.Module.imports(module)).toEqual([
+    { module: "env", name: "memory", kind: "memory" },
+  ]);
+  const memory = interruptFixtureMemory(),
+    words = new Int32Array(memory.buffer);
   Atomics.store(words, InterruptWord.rescue, 1);
   const instance = new WebAssembly.Instance(module, { env: { memory } });
   for (const shape of interruptShapes) {

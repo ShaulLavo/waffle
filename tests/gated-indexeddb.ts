@@ -4,7 +4,10 @@ export function gatedIndexedDB(factory: IDBFactory, onOpened?: () => void, onClo
   let released = false;
   let closed = 0;
   let opened!: () => void, failed!: (error: unknown) => void;
-  const ready = new Promise<void>((resolve, reject) => { opened = resolve; failed = reject; });
+  const ready = new Promise<void>((resolve, reject) => {
+    opened = resolve;
+    failed = reject;
+  });
   const gated = new Proxy(factory, {
     get(target, key) {
       if (key !== "open") {
@@ -14,26 +17,56 @@ export function gatedIndexedDB(factory: IDBFactory, onOpened?: () => void, onClo
       return (...args: Parameters<IDBFactory["open"]>) => {
         const request = target.open(...args);
         let success: IDBOpenDBRequest["onsuccess"] = null;
-        request.addEventListener("error", () => failed(request.error ?? new Error("Gated IndexedDB open failed")), { once: true });
-        request.addEventListener("blocked", () => failed(new Error("Gated IndexedDB open was blocked")), { once: true });
-        request.addEventListener("success", event => {
+        request.addEventListener(
+          "error",
+          () => failed(request.error ?? new Error("Gated IndexedDB open failed")),
+          { once: true },
+        );
+        request.addEventListener(
+          "blocked",
+          () => failed(new Error("Gated IndexedDB open was blocked")),
+          { once: true },
+        );
+        request.addEventListener("success", (event) => {
           const database = request.result;
           const close = database.close.bind(database);
-          database.close = () => { closed++; close(); onClosed?.(); };
-          deliver = () => { success?.call(request, event); };
+          database.close = () => {
+            closed++;
+            close();
+            onClosed?.();
+          };
+          deliver = () => {
+            success?.call(request, event);
+          };
           opened();
           onOpened?.();
           if (released) deliver();
         });
         return new Proxy(request, {
-          get(target, key) { return key === "onsuccess" ? success : Reflect.get(target, key, target); },
+          get(target, key) {
+            return key === "onsuccess" ? success : Reflect.get(target, key, target);
+          },
           set(target, key, value) {
-            if (key === "onsuccess") { success = value; return true; }
+            if (key === "onsuccess") {
+              success = value;
+              return true;
+            }
             return Reflect.set(target, key, value, target);
           },
         });
       };
     },
   });
-  return { factory: gated, ready, get closed() { return closed; }, release() { if (released) return; released = true; deliver?.(); } };
+  return {
+    factory: gated,
+    ready,
+    get closed() {
+      return closed;
+    },
+    release() {
+      if (released) return;
+      released = true;
+      deliver?.();
+    },
+  };
 }

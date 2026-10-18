@@ -14,8 +14,8 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run prepare
-      - run: bun run check
-      - run: bun run check:nodenext
+      - run: bun install --cwd site --frozen-lockfile
+      - run: bun run quality
       - run: bun test
       - run: bun run size
       - run: test -z "$(git ls-files dist)"
