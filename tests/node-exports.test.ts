@@ -31,6 +31,21 @@ test("Node resolves every documented Node package entry to prepared JavaScript",
 });
 
 
+test("Node hosts can use the bounded diagnostic drain through its public entry", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { DIAGNOSTIC_STALL_TIMEOUT_MS, drainDiagnostic } from "waffle/browser/diagnostic";
+    assert.equal(DIAGNOSTIC_STALL_TIMEOUT_MS, 5000);
+    const chunks = [];
+    const bytes = new TextEncoder().encode("node diagnostic λ");
+    assert.equal(drainDiagnostic(bytes, part => { const chunk = part.slice(0, 2); chunks.push(chunk); return chunk.length; }), undefined);
+    assert.deepEqual(chunks.reduce((all, chunk) => all.concat(Array.from(chunk)), []), Array.from(bytes));
+  `;
+  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
+    cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
+  })).not.toThrow();
+});
+
 test("Node adapters can read and write tagged process controls through the public helper entry", () => {
   const script = `
     import assert from "node:assert/strict";
