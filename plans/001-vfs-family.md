@@ -25,11 +25,11 @@ At that baseline:
 
 Prerequisites and coordination:
 
-| Work | State at research time | Required relationship |
-|---|---|---|
-| Exclusive host creation, [PR #16](https://github.com/ShaulLavo/waffle/pull/16) | Merged as `1c6e6bb90f41a36bb1dc8bedd046a392714424dd` | Preserve atomic exclusive creation, including aliases and directory collisions; extend it across concurrent tabs. |
-| `opfs-wait` / `whenBusy`, [PR #21](https://github.com/ShaulLavo/waffle/pull/21) | Open | Land first. Reuse its opening/waiting/ready/failed/disposed lifecycle, cancellation, asynchronous disposal and ownership rules. Do not implement a competing lifecycle. |
-| Inherited fd 3, [PR #19](https://github.com/ShaulLavo/waffle/pull/19) | Open | Land before final guest-fixture certification. Preserve inherited descriptors and real filesystem preopens. Inherit its approved, measured core budget rather than reverting or duplicating its work. |
+| Work                                                                            | State at research time                               | Required relationship                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exclusive host creation, [PR #16](https://github.com/ShaulLavo/waffle/pull/16)  | Merged as `1c6e6bb90f41a36bb1dc8bedd046a392714424dd` | Preserve atomic exclusive creation, including aliases and directory collisions; extend it across concurrent tabs.                                                                                     |
+| `opfs-wait` / `whenBusy`, [PR #21](https://github.com/ShaulLavo/waffle/pull/21) | Open                                                 | Land first. Reuse its opening/waiting/ready/failed/disposed lifecycle, cancellation, asynchronous disposal and ownership rules. Do not implement a competing lifecycle.                               |
+| Inherited fd 3, [PR #19](https://github.com/ShaulLavo/waffle/pull/19)           | Open                                                 | Land before final guest-fixture certification. Preserve inherited descriptors and real filesystem preopens. Inherit its approved, measured core budget rather than reverting or duplicating its work. |
 
 Recheck these PRs before implementation. Base work on their actual merged commits, not their temporary branches.
 
@@ -39,12 +39,12 @@ All implementation happens in exclusive worktrees beneath `../../worktrees/waffl
 
 Use these names for the initial API and scoreboard:
 
-| VFS | Ordinary successful mutation means | Durability barrier | Multi-tab behavior | Browser requirements |
-|---|---|---|---|---|
-| `indexeddb` — default | Existing memory-first completion; strict storage commits happen behind it | `flush` / `fsync` | One active workspace owner; default takeover with epoch fencing, or queued wait | IndexedDB, Web Locks and Waffle’s existing worker/SAB requirements |
-| `opfs-memory` | Memory mutation completed; persistence follows asynchronously | `flush` / `fsync` | One active owner; other tabs wait | OPFS sync handles in a dedicated worker, Web Locks; Chromium, Firefox and WebKit capability matrix |
-| `opfs-wal` | Transaction committed through Waffle’s WAL and its required durability barrier | Commit already durable; `flush` / `fsync` remain ordering barriers | Several live tabs; concurrent readers, serialized writers | Chromium’s behaviorally verified `readwrite-unsafe` handles, Web Locks, dedicated workers |
-| `opfs-safe` | Mutation, including its required namespace changes, is durable before completion | Every mutation is write-through; explicit barriers still order work | One active owner; other tabs wait | Standard exclusive OPFS sync handles, Web Locks; Chromium, Firefox and WebKit capability matrix |
+| VFS                   | Ordinary successful mutation means                                               | Durability barrier                                                  | Multi-tab behavior                                                              | Browser requirements                                                                               |
+| --------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `indexeddb` — default | Existing memory-first completion; strict storage commits happen behind it        | `flush` / `fsync`                                                   | One active workspace owner; default takeover with epoch fencing, or queued wait | IndexedDB, Web Locks and Waffle’s existing worker/SAB requirements                                 |
+| `opfs-memory`         | Memory mutation completed; persistence follows asynchronously                    | `flush` / `fsync`                                                   | One active owner; other tabs wait                                               | OPFS sync handles in a dedicated worker, Web Locks; Chromium, Firefox and WebKit capability matrix |
+| `opfs-wal`            | Transaction committed through Waffle’s WAL and its required durability barrier   | Commit already durable; `flush` / `fsync` remain ordering barriers  | Several live tabs; concurrent readers, serialized writers                       | Chromium’s behaviorally verified `readwrite-unsafe` handles, Web Locks, dedicated workers          |
+| `opfs-safe`           | Mutation, including its required namespace changes, is durable before completion | Every mutation is write-through; explicit barriers still order work | One active owner; other tabs wait                                               | Standard exclusive OPFS sync handles, Web Locks; Chromium, Firefox and WebKit capability matrix    |
 
 The existing nonpersistent memory filesystem remains available for tests and applications that request it. It is not a fifth persistent product.
 
@@ -334,12 +334,12 @@ Historical OPFS numbers are useful leads, not baselines: they were limited sampl
 
 ### Candidate matrix
 
-| VFS | Candidates to measure |
-|---|---|
-| `indexeddb` | **A:** current periodic memory-first checkpoints, delta journal and immutable payloads. **B:** same layout with byte/time-bounded batching and measured compaction thresholds. **C:** strict write-through/group-commit policy, measuring ordinary completion and durable completion separately. **D:** finer-grained payload redo/chunk journal versus whole dirty-file revisions. |
-| `opfs-memory` | **A:** current periodic immutable payloads plus full metadata snapshots. **B:** bounded/coalesced checkpoint batches using the same format. **C:** background redo journal plus periodic checkpoint/compaction. |
-| `opfs-safe` | **A:** per-operation write-through with immutable payloads and recoverable metadata publication. **B:** durable redo journal with lazy checkpointing. **C:** group-committed durable redo, delaying each acknowledgement until the group is flushed. |
-| `opfs-wal` | **A:** one append-only redo stream with copy-on-write checkpoints. **B:** segmented or dual rotating redo streams with generation pins. **C:** the simpler layout with durable group commit and coalesced checkpoint work. |
+| VFS           | Candidates to measure                                                                                                                                                                                                                                                                                                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `indexeddb`   | **A:** current periodic memory-first checkpoints, delta journal and immutable payloads. **B:** same layout with byte/time-bounded batching and measured compaction thresholds. **C:** strict write-through/group-commit policy, measuring ordinary completion and durable completion separately. **D:** finer-grained payload redo/chunk journal versus whole dirty-file revisions. |
+| `opfs-memory` | **A:** current periodic immutable payloads plus full metadata snapshots. **B:** bounded/coalesced checkpoint batches using the same format. **C:** background redo journal plus periodic checkpoint/compaction.                                                                                                                                                                     |
+| `opfs-safe`   | **A:** per-operation write-through with immutable payloads and recoverable metadata publication. **B:** durable redo journal with lazy checkpointing. **C:** group-committed durable redo, delaying each acknowledgement until the group is flushed.                                                                                                                                |
+| `opfs-wal`    | **A:** one append-only redo stream with copy-on-write checkpoints. **B:** segmented or dual rotating redo streams with generation pins. **C:** the simpler layout with durable group commit and coalesced checkpoint work.                                                                                                                                                          |
 
 Internal speculative memory staging is admissible for the durable VFSs; acknowledging that staging before durability is not.
 
@@ -471,12 +471,12 @@ Do not pool results from different hosts into one performance baseline.
 
 ### Browser matrix
 
-| Target | IndexedDB | OPFS memory | OPFS safe | OPFS WAL |
-|---|---|---|---|---|
-| Fixed Chromium on `upcloud-4` | Full | Full | Full | Full, after behavioral probe |
-| Fixed Firefox on `upcloud-4` | Full | Full | Full | Typed unsupported assertion |
-| Fixed Playwright WebKit on `upcloud-4` | Full | Full | Full | Typed unsupported assertion |
-| Shipping Safari on the M1 Mac | Correctness and lifecycle certification; timing tracked separately | Same | Same | Unsupported assertion unless actual support is independently demonstrated |
+| Target                                 | IndexedDB                                                          | OPFS memory | OPFS safe | OPFS WAL                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------ | ----------- | --------- | ------------------------------------------------------------------------- |
+| Fixed Chromium on `upcloud-4`          | Full                                                               | Full        | Full      | Full, after behavioral probe                                              |
+| Fixed Firefox on `upcloud-4`           | Full                                                               | Full        | Full      | Typed unsupported assertion                                               |
+| Fixed Playwright WebKit on `upcloud-4` | Full                                                               | Full        | Full      | Typed unsupported assertion                                               |
+| Shipping Safari on the M1 Mac          | Correctness and lifecycle certification; timing tracked separately | Same        | Same      | Unsupported assertion unless actual support is independently demonstrated |
 
 Playwright WebKit is not shipping Safari or iOS Safari. Use the fleet’s M1 access and atomic Mac reservation, respecting owner use. Real iPhone lifecycle certification is separate from the desktop score.
 
@@ -637,21 +637,21 @@ Typed unsupported cases are required assertions on Firefox and WebKit, not skipp
 
 Each item is a PR-sized unit or a clearly bounded pair where experiment and production selection must remain separate. Do not expose an uncertified new VFS through the public selector.
 
-| Step | Scope and named files | Acceptance |
-|---|---|---|
-| **1. Baseline and harness** | Add `tooling/vfs-workloads.ts`, `tooling/vfs-benchmark.ts` and `tooling/vfs-score.ts`; reuse existing browser runner lifecycle. | Fixed workloads reproducible; current IDB/OPFS baselines captured on the reserved runner; cleanup verified. |
-| **2. Contract and selection** | Add `fs/vfs.ts`; update `browser/shared-fs.ts`, `browser/fs-worker.ts`, `runtime.ts` and `index.ts`. | #21 merged; default unchanged; descriptor/settings/errors tested; existing modes only; matching consumer selector changes prepared. |
-| **3. Transaction/access boundary** | Update `fs/backend.ts`, `fs/service.ts`, `fs/client.ts` and shared-state access policy. | Durable mode cannot bypass service; no async wait inside local mutation critical sections; all existing inode, append, exclusive-create and revocation tests pass. |
-| **4. IndexedDB experiments** | Bounded alternatives in `fs/indexeddb.ts` and `fs/persistent.ts`, with experiment selection confined to tooling. | At least two candidates measured across all workloads; payload-journal candidate either measured or explicitly scheduled in step 7; no default change declared final while a required rival remains unevaluated. |
-| **5. OPFS memory experiments** | Compare snapshot batching in `fs/opfs.ts` and `fs/persistent.ts`. | Current and bounded-batch candidates measured; ordinary ACK and durable end-to-end numbers separated; journaling comparison scheduled in step 7. |
-| **6. Recoverable OPFS transaction primitives** | Add `fs/opfs-journal.ts` and record definitions shared through `fs/storage.ts`; document `docs/vfs.md`. | Complete transaction framing, flush ordering, tail recovery and checkpoint publication tests; not publicly selectable yet. |
-| **7. Journal experiments and default winners** | Run IDB granularity and OPFS background-journal candidates using the shared harness; retain only selected production mechanisms. | Every default/memory VFS has two to four measured candidates; winner/loser table complete; default IDB guardrails pass. |
-| **8. Safe VFS experiments** | Add `fs/opfs-safe.ts`; compare write-through snapshots, durable journal and group commit. | Every mutation ACK is durable; at least two fully eligible designs measured; third measured or explicitly deferred before final selection; crash contract passes. |
-| **9. Unsafe-handle admission and WAL writer** | Add `fs/opfs-wal.ts`; behavioral probe, mount/format rules and single writer recovery. | Chromium probe proves concurrent handles; unsupported engines return typed errors; whole-tree transaction recovery works with competing writers; still not publicly enabled. |
-| **10. Concurrent readers and inode lifetime** | Complete WAL generation pins, cache validation and reclamation; extend `fs/client.ts` and `tests/vfs-multitab-browser.ts`. | Lost broadcasts, open-unlinked files, checkpoint races and killed writers pass; no page-local stale-cache shortcut. |
-| **11. WAL layout experiments** | Compare single/segmented or dual log layout and durable group commit within the certified protocol. | Two to four eligible candidates measured; record deferred experiments honestly; select winner from score plus complexity, not familiarity. |
-| **12. Browser certification and public enablement** | Add `tests/vfs-crash-browser.ts` and `tests/vfs-browser-runner.ts`; update CI and docs. | Full supported-engine matrix, deterministic fault points, merge torture and endurance certification pass; #19 guest fixtures integrated; only then expose all certified VFSs. |
-| **13. Consumer delivery and final ratchet** | Update exact Waffle pins and matching entry points in bun-wasm and bash-web. | Standalone/borrowed ownership, waiting, save/HMR durability, unsupported errors and clean disposal verified in installed packages; final scoreboard and merged commits recorded. |
+| Step                                                | Scope and named files                                                                                                            | Acceptance                                                                                                                                                                                                       |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Baseline and harness**                         | Add `tooling/vfs-workloads.ts`, `tooling/vfs-benchmark.ts` and `tooling/vfs-score.ts`; reuse existing browser runner lifecycle.  | Fixed workloads reproducible; current IDB/OPFS baselines captured on the reserved runner; cleanup verified.                                                                                                      |
+| **2. Contract and selection**                       | Add `fs/vfs.ts`; update `browser/shared-fs.ts`, `browser/fs-worker.ts`, `runtime.ts` and `index.ts`.                             | #21 merged; default unchanged; descriptor/settings/errors tested; existing modes only; matching consumer selector changes prepared.                                                                              |
+| **3. Transaction/access boundary**                  | Update `fs/backend.ts`, `fs/service.ts`, `fs/client.ts` and shared-state access policy.                                          | Durable mode cannot bypass service; no async wait inside local mutation critical sections; all existing inode, append, exclusive-create and revocation tests pass.                                               |
+| **4. IndexedDB experiments**                        | Bounded alternatives in `fs/indexeddb.ts` and `fs/persistent.ts`, with experiment selection confined to tooling.                 | At least two candidates measured across all workloads; payload-journal candidate either measured or explicitly scheduled in step 7; no default change declared final while a required rival remains unevaluated. |
+| **5. OPFS memory experiments**                      | Compare snapshot batching in `fs/opfs.ts` and `fs/persistent.ts`.                                                                | Current and bounded-batch candidates measured; ordinary ACK and durable end-to-end numbers separated; journaling comparison scheduled in step 7.                                                                 |
+| **6. Recoverable OPFS transaction primitives**      | Add `fs/opfs-journal.ts` and record definitions shared through `fs/storage.ts`; document `docs/vfs.md`.                          | Complete transaction framing, flush ordering, tail recovery and checkpoint publication tests; not publicly selectable yet.                                                                                       |
+| **7. Journal experiments and default winners**      | Run IDB granularity and OPFS background-journal candidates using the shared harness; retain only selected production mechanisms. | Every default/memory VFS has two to four measured candidates; winner/loser table complete; default IDB guardrails pass.                                                                                          |
+| **8. Safe VFS experiments**                         | Add `fs/opfs-safe.ts`; compare write-through snapshots, durable journal and group commit.                                        | Every mutation ACK is durable; at least two fully eligible designs measured; third measured or explicitly deferred before final selection; crash contract passes.                                                |
+| **9. Unsafe-handle admission and WAL writer**       | Add `fs/opfs-wal.ts`; behavioral probe, mount/format rules and single writer recovery.                                           | Chromium probe proves concurrent handles; unsupported engines return typed errors; whole-tree transaction recovery works with competing writers; still not publicly enabled.                                     |
+| **10. Concurrent readers and inode lifetime**       | Complete WAL generation pins, cache validation and reclamation; extend `fs/client.ts` and `tests/vfs-multitab-browser.ts`.       | Lost broadcasts, open-unlinked files, checkpoint races and killed writers pass; no page-local stale-cache shortcut.                                                                                              |
+| **11. WAL layout experiments**                      | Compare single/segmented or dual log layout and durable group commit within the certified protocol.                              | Two to four eligible candidates measured; record deferred experiments honestly; select winner from score plus complexity, not familiarity.                                                                       |
+| **12. Browser certification and public enablement** | Add `tests/vfs-crash-browser.ts` and `tests/vfs-browser-runner.ts`; update CI and docs.                                          | Full supported-engine matrix, deterministic fault points, merge torture and endurance certification pass; #19 guest fixtures integrated; only then expose all certified VFSs.                                    |
+| **13. Consumer delivery and final ratchet**         | Update exact Waffle pins and matching entry points in bun-wasm and bash-web.                                                     | Standalone/borrowed ownership, waiting, save/HMR durability, unsupported errors and clean disposal verified in installed packages; final scoreboard and merged commits recorded.                                 |
 
 A step that exceeds one reviewable concern is split without changing its acceptance criteria. Keep default-only optimization separate from WAL correctness changes.
 
@@ -789,6 +789,7 @@ Every VFS in this plan supports symlinks; it isn't a separate VFS. Required work
 - **Tests and docs.** Cover the real filesystem, persistence, WASI, admission and access parity, capability confinement, and the browser. Update docs/host-abi.md.
 
 Consumers:
+
 - **bun-wasm:** switch the alias tests from rejection to success in every host.
 - **bash-web:** add tests for a file alias, a symlinked PATH directory, a loop, a dangling link and an unregistered target. Keep its existing admission regressions: tests/external-commands.spec.ts:155, 167, 189, 225, 254, 305, 319 and 366, and shell/engine/src/process.rs:626 and 666. No current bash-web test depends on rejecting aliases.
 

@@ -13,14 +13,18 @@ test("guest readdir snapshots resizable guest memory before decoding names", asy
     await guest.write("/names/日本語", new Uint8Array());
     let names: Promise<string[]> | undefined;
     let inputs: readonly ArrayBufferLike[] = [];
-    withStrictDecoder(backings => {
+    withStrictDecoder((backings) => {
       names = guest.readdir("/names");
       inputs = backings;
     });
     expect(await names).toEqual(["café", "日本語"]);
     expect(inputs.length).toBeGreaterThan(0);
-    expect(inputs.every(buffer => !Reflect.get(buffer, "resizable") && !Reflect.get(buffer, "growable"))).toBe(true);
-    expect(inputs.every(buffer => buffer !== memory.buffer)).toBe(true);
+    expect(
+      inputs.every(
+        (buffer) => !Reflect.get(buffer, "resizable") && !Reflect.get(buffer, "growable"),
+      ),
+    ).toBe(true);
+    expect(inputs.every((buffer) => buffer !== memory.buffer)).toBe(true);
   } finally {
     guest.dispose();
   }
