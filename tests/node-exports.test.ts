@@ -96,3 +96,36 @@ test("Node hosts normalize startup failures through the public process entry", (
     }),
   ).not.toThrow();
 });
+
+test("Node process hosts expose fd_kind against their current descriptor bindings", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { DescriptorTable } from "waffle/core";
+    import { ProcessABI } from "waffle/proc";
+    const descriptors = new DescriptorTable();
+    const unused = () => { throw new Error("fd_kind must only consult the descriptor table"); };
+    const inaccessible = new Proxy({}, { get: unused });
+    const abi = new ProcessABI({
+      memory: unused, descriptors, fs: inaccessible, pid: 1,
+      service: inaccessible, signals: inaccessible, wait: unused,
+    });
+    try {
+      for (const [expected, kind] of ["other", "pipe", "terminal", "file", "directory"].entries()) {
+        const fd = descriptors.open({ kind }, 0n, 0n);
+        assert.equal(abi.imports.fd_kind(fd), expected);
+        const dup = abi.imports.dup(fd);
+        descriptors.close(fd);
+        assert.equal(abi.imports.fd_kind(fd), -8);
+        assert.equal(abi.imports.fd_kind(dup), expected);
+      }
+      assert.equal(abi.imports.fd_kind(0x7fffffff), -8);
+      assert.equal(abi.imports.fd_kind(-1), -8);
+    } finally { descriptors.dispose(); }
+  `;
+  expect(() =>
+    execFileSync("node", ["--input-type=module", "--eval", script], {
+      cwd: resolve(import.meta.dir, ".."),
+      stdio: "pipe",
+    }),
+  ).not.toThrow();
+});

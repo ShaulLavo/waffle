@@ -1,80 +1,40 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { homedir, tmpdir } from "node:os";
-import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
+import type { Browser, BrowserContext } from "playwright";
+import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 
 type Backend = "indexeddb" | "opfs";
 type WorkerRequest = { kind: "list" } | { kind: "run"; backend: Backend; label: string };
 type TestList = Record<Backend, string[]>;
 
-async function runCase(
-  browser: Browser,
-  name: string,
-  backend: Backend,
-  label: string,
-  passed: TestList,
-  failures: string[],
-): Promise<void> {
-  // WebKit needs a fresh disposable persistent profile for each native OPFS case.
-  const persistent = name === "webkit" && backend === "opfs";
-  const contextMode = persistent ? " [fresh persistent profile]" : "";
-  try {
-    await inWorker<string>(browser, { kind: "run", backend, label }, persistent);
-    passed[backend].push(label);
-    console.log(`  PASS ${name} ${backend}${contextMode}: ${label}`);
-  } catch (error) {
-    const failure = `${name} ${backend}${contextMode}: ${label}\n${String(error)}`;
-    failures.push(failure);
-    console.error(`  FAIL ${failure}`);
-    if (persistentShutdownFailed || cleaning) throw error;
-  }
-}
-
-async function runCases(
-  browser: Browser,
-  name: string,
-  listed: TestList,
-  passed: TestList,
-  failures: string[],
-): Promise<void> {
-  const backends: Backend[] = ["indexeddb", "opfs"];
-  const cases = backends
-    .flatMap((backend) => listed[backend].map((label) => ({ backend, label })))
-    .filter(
-      ({ label }) =>
-        !process.env.STORAGE_TEST_FILTER || label.includes(process.env.STORAGE_TEST_FILTER),
-    );
-  if (!cases.length)
-    throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);
-  for (const { backend, label } of cases)
-    await runCase(browser, name, backend, label, passed, failures);
-}
-
 // Bun strips the types before toString(): the worker has TypeScript source, not handwritten JS.
 function storageWorker(): void {
+  function labels(suites: Record<Backend, { label: string }[]>): TestList {
+    return {
+      indexeddb: suites.indexeddb.map((test) => test.label),
+      opfs: suites.opfs.map((test) => test.label),
+    };
+  }
+  async function runStorageRequest(request: WorkerRequest): Promise<void> {
+    const modulePath = "/tests.js";
+    const tests = (await import(modulePath)) as typeof import("./storage-browser");
+    // The runner owns this route; imported backend suites do not assume one exists.
+    const suites = {
+      indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js"),
+      opfs: tests.opfsStorageTests("/fs-worker.js"),
+    };
+    if (request.kind === "list") {
+      globalThis.postMessage({ result: labels(suites) });
+      return;
+    }
+    const { backend, label } = request;
+    const test = suites[backend].find((test) => test.label === label);
+    if (!test) throw new Error(`Unknown ${backend} storage test: ${label}`);
+    await test.run();
+    globalThis.postMessage({ result: label });
+  }
   globalThis.onmessage = async (event: MessageEvent<WorkerRequest>) => {
     try {
-      const modulePath = "/tests.js";
-      const tests = (await import(modulePath)) as typeof import("./storage-browser");
-      // The runner owns this route; imported backend suites do not assume one exists.
-      const suites = {
-        indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js"),
-        opfs: tests.opfsStorageTests("/fs-worker.js"),
-      };
-      if (event.data.kind === "list") {
-        globalThis.postMessage({
-          result: {
-            indexeddb: suites.indexeddb.map((test) => test.label),
-            opfs: suites.opfs.map((test) => test.label),
-          },
-        });
-      } else {
-        const { backend, label } = event.data;
-        const test = suites[backend].find((test) => test.label === label);
-        if (!test) throw new Error(`Unknown ${backend} storage test: ${label}`);
-        await test.run();
-        globalThis.postMessage({ result: label });
-      }
+      await runStorageRequest(event.data);
     } catch (error) {
       // WebKit's stack contains locations only: never let it replace the actual error message.
       const detail =
@@ -101,229 +61,147 @@ function storageWorker(): void {
   };
 }
 
-// Own all resources before setup: ephemeral listener, contexts/workers, profiles and scratch.
-let scratch: string | undefined;
-let scratchCreation: Promise<string> | undefined;
-let firefoxScratch: string | undefined;
-let firefoxScratchCreation: Promise<string> | undefined;
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-let launch: Promise<Browser> | undefined;
-let persistentContext: BrowserContext | undefined;
-let persistentLaunch: Promise<BrowserContext> | undefined;
-let persistentProfile: string | undefined;
-let persistentProfileCreation: Promise<string> | undefined;
-let persistentShutdownFailed = false;
-let cleaning: Promise<void> | undefined;
-const previousTmp = process.env.TMPDIR;
-async function closePersistent(): Promise<void> {
-  const profile = persistentProfile ?? (await persistentProfileCreation?.catch(() => undefined));
-  const context = persistentContext ?? (await persistentLaunch?.catch(() => undefined));
-  // A rejection deliberately leaves all ownership records intact for the final cleanup retry.
-  await context?.close();
-  persistentContext = undefined;
-  persistentLaunch = undefined;
-  if (profile) await rm(profile, { recursive: true, force: true });
-  persistentProfile = undefined;
-  persistentProfileCreation = undefined;
+function storageCases(listed: TestList) {
+  return (["indexeddb", "opfs"] as const).flatMap((backend) =>
+    listed[backend].map((label) => ({ backend, label })),
+  );
 }
-function cleanup(): Promise<void> {
-  return (cleaning ??= (async () => {
-    let stopped = false;
-    try {
-      try {
-        await closePersistent();
-      } finally {
-        await (browser ?? (await launch?.catch(() => undefined)))?.close();
-      }
-      stopped = true;
-    } finally {
-      server?.stop(true);
-      try {
-        scratch ??= await scratchCreation?.catch(() => undefined);
-        firefoxScratch ??= await firefoxScratchCreation?.catch(() => undefined);
-        if (stopped) {
-          if (scratch) await rm(scratch, { recursive: true, force: true });
-          if (firefoxScratch) await rm(firefoxScratch, { recursive: true, force: true });
-        } else {
-          console.error(
-            `Browser shutdown unconfirmed; retaining task scratch ${scratch}, persistent profile ${persistentProfile}, Firefox scratch ${firefoxScratch}`,
-          );
-        }
-      } finally {
-        if (previousTmp === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = previousTmp;
-      }
-    }
-  })());
-}
-for (const signal of ["SIGINT", "SIGTERM"] as const)
-  process.once(signal, () => {
-    void cleanup().finally(() => process.exit(1));
-  });
-const deadline = setTimeout(() => {
-  console.error("storage browser tests timed out");
-  void cleanup().finally(() => process.exit(1));
-}, 600_000);
-
-/** Each case gets a fresh context/origin store, so browser quotas and leaked state cannot cross cases. */
+const lifecycle = new BrowserRunnerLifecycle();
+let origin = "",
+  persistentShutdownFailed = false;
 async function inWorker<T>(
   browser: Browser,
   request: WorkerRequest,
   persistent = false,
 ): Promise<T> {
-  if (cleaning || persistentShutdownFailed) throw new Error("Storage runner is shutting down");
-  let context: BrowserContext | undefined;
+  let context: BrowserContext | undefined, profile: string | undefined;
   try {
     if (persistent) {
-      // Register profile creation before awaiting it, so cleanup owns this allocation too.
-      persistentProfileCreation = mkdtemp(resolve(scratch!, "webkit-opfs-profile-"));
-      persistentProfile = await persistentProfileCreation;
-      if (cleaning) throw new Error("Storage runner stopped before persistent browser launch");
-      persistentLaunch = webkit.launchPersistentContext(persistentProfile, {
-        headless: true,
-        downloadsPath: scratch,
-        tracesDir: scratch,
-      });
-      context = persistentContext = await persistentLaunch;
+      profile = await lifecycle.directory(lifecycle.scratch, "webkit-opfs-profile-");
+      context = await lifecycle.persistent("webkit", profile);
     } else context = await browser.newContext();
-    if (cleaning) throw new Error("Storage runner stopped before starting worker work");
     const page = await context.newPage();
-    await page.goto(`http://127.0.0.1:${server!.port}`);
-    return await page.evaluate(
-      (request: WorkerRequest) =>
-        new Promise<T>((resolve, reject) => {
-          const worker = new Worker("/worker.js", { type: "module" });
-          const timeout = setTimeout(() => {
-            worker.terminate();
-            reject(new Error("storage case worker timed out"));
-          }, 45_000);
-          const finish = () => {
-            clearTimeout(timeout);
-            worker.terminate();
-          };
-          worker.onmessage = (event) => {
-            finish();
-            if (event.data.error) reject(new Error(event.data.error));
-            else resolve(event.data.result);
-          };
-          worker.onerror = (event) => {
-            finish();
-            reject(new Error(event.message));
-          };
-          worker.onmessageerror = () => {
-            finish();
-            reject(new Error("Could not decode storage worker response"));
-          };
-          worker.postMessage(request);
-        }),
-      request,
-    );
+    await page.goto(origin);
+    return await page.evaluate(storageCase<T>, request);
   } finally {
-    if (persistent) {
-      try {
-        await closePersistent();
-      }
-      /* oxlint-disable no-unsafe-finally -- Failed teardown must fail the run and preserve its scratch. */
-      catch (error) {
-        persistentShutdownFailed = true;
-        throw error;
-      }
-      /* oxlint-enable no-unsafe-finally */
-    } else await context?.close();
+    if (context) await closeStorageContext(context, persistent);
+    if (profile) await lifecycle.removeDirectory(profile);
   }
 }
-
-try {
-  const scratchRoot =
-    process.env.STORAGE_SCRATCH_ROOT ??
-    (process.platform === "darwin" ? resolve(homedir(), "tmp") : tmpdir());
-  await mkdir(scratchRoot, { recursive: true });
-  // Leave room for Chromium's Unix socket suffix even under a task-specific scratch root.
-  scratchCreation = mkdtemp(resolve(scratchRoot, "w-"));
-  scratch = await scratchCreation;
-  if (cleaning) throw new Error("Storage runner stopped during scratch creation");
-  process.env.TMPDIR = scratch;
-  const build = await Bun.build({
-    entrypoints: [resolve(import.meta.dir, "storage-browser.ts")],
-    target: "browser",
-  });
-  if (cleaning) throw new Error("Storage runner stopped before server setup");
-  if (!build.success) throw new AggregateError(build.logs, "Storage test bundle failed");
-  const script = build.outputs[0]!;
-  const fsWorkerBuild = await Bun.build({
-    entrypoints: [resolve(import.meta.dir, "../browser/fs-worker.ts")],
-    target: "browser",
-  });
-  if (!fsWorkerBuild.success)
-    throw new AggregateError(fsWorkerBuild.logs, "Filesystem worker bundle failed");
-  const fsWorkerScript = fsWorkerBuild.outputs[0]!;
-  const openWorkerBuild = await Bun.build({
-    entrypoints: [resolve(import.meta.dir, "storage-open-worker.ts")],
-    target: "browser",
-  });
-  if (!openWorkerBuild.success)
-    throw new AggregateError(openWorkerBuild.logs, "Gated open worker bundle failed");
-  const openWorkerScript = openWorkerBuild.outputs[0]!;
-  const workerScript = `(${storageWorker.toString()})();`;
-  server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: Number(process.env.STORAGE_TEST_PORT ?? 0),
-    fetch(request) {
-      const path = new URL(request.url).pathname;
-      // Match the existing persistence harness's document and worker isolation policy.
-      const headers = {
-        "Cross-Origin-Opener-Policy": "same-origin",
-        "Cross-Origin-Embedder-Policy": "require-corp",
-        "content-type":
-          path === "/tests.js" ||
-          path === "/worker.js" ||
-          path === "/fs-worker.js" ||
-          path === "/open-fs-worker.js"
-            ? "text/javascript"
-            : "text/html",
-      };
-      if (path === "/open-fs-worker.js") return new Response(openWorkerScript, { headers });
-      if (path === "/fs-worker.js") return new Response(fsWorkerScript, { headers });
-      if (path === "/tests.js") return new Response(script, { headers });
-      if (path === "/worker.js") return new Response(workerScript, { headers });
-      return new Response("<!doctype html><title>Storage tests</title>", { headers });
-    },
-  });
-  const failures: string[] = [];
-  for (const name of process.argv.slice(2).length ? process.argv.slice(2) : ["chromium"]) {
-    if (cleaning) throw new Error("Storage runner stopped before browser setup");
-    const engine = { chromium, firefox, webkit }[name];
-    if (!engine) throw new Error(`Unknown browser: ${name}`);
-    // Firefox's profile must not live on /work's VDO filesystem. This tmpfs directory is
-    // task-owned and removed after its browser stops; downloaded artifacts remain on /work.
-    if (name === "firefox" && process.platform === "linux" && !firefoxScratch) {
-      firefoxScratchCreation = mkdtemp("/dev/shm/bun-wasm-storage-firefox-");
-      firefoxScratch = await firefoxScratchCreation;
-    }
-    if (cleaning) throw new Error("Storage runner stopped before browser launch");
-    process.env.TMPDIR = name === "firefox" && firefoxScratch ? firefoxScratch : scratch;
-    launch = engine.launch({ headless: true, downloadsPath: scratch, tracesDir: scratch });
-    browser = await launch;
-    try {
-      const listed = await inWorker<TestList>(browser, { kind: "list" });
-      const passed: TestList = { indexeddb: [], opfs: [] };
-      await runCases(browser, name, listed, passed, failures);
-      console.log(
-        `${name} ${browser.version()}: ${passed.indexeddb.length} IndexedDB and ${passed.opfs.length} OPFS storage tests passed`,
-      );
-    } finally {
-      await browser.close();
-      browser = undefined;
-      launch = undefined;
-    }
+function storageCase<T>(request: WorkerRequest): Promise<T> {
+  function settle(
+    data: { error?: string; result: T },
+    resolve: (value: T | PromiseLike<T>) => void,
+    reject: (reason?: unknown) => void,
+  ): void {
+    if (data.error) reject(new Error(data.error));
+    else resolve(data.result);
   }
+  return new Promise<T>((resolve, reject) => {
+    const worker = new Worker("/worker.js", { type: "module" });
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("storage case worker timed out"));
+    }, 45_000);
+    const finish = () => {
+      clearTimeout(timeout);
+      worker.terminate();
+    };
+    worker.onmessage = (event) => {
+      finish();
+      settle(event.data, resolve, reject);
+    };
+    worker.onerror = (event) => {
+      finish();
+      reject(new Error(event.message));
+    };
+    worker.onmessageerror = () => {
+      finish();
+      reject(new Error("Could not decode storage worker response"));
+    };
+    worker.postMessage(request);
+  });
+}
+async function closeStorageContext(context: BrowserContext, persistent: boolean): Promise<void> {
+  try {
+    if (persistent) await lifecycle.closeContext(context);
+    else await context.close();
+  } catch (error) {
+    if (persistent) persistentShutdownFailed = true;
+    throw error;
+  }
+}
+async function runCase(
+  browser: Browser,
+  name: string,
+  backend: Backend,
+  label: string,
+  passed: TestList,
+  failures: string[],
+): Promise<void> {
+  const persistent = name === "webkit" && backend === "opfs";
+  try {
+    await inWorker<string>(browser, { kind: "run", backend, label }, persistent);
+    passed[backend].push(label);
+    console.log(`  PASS ${name} ${backend}: ${label}`);
+  } catch (error) {
+    const failure = `${name} ${backend}: ${label}\n${String(error)}`;
+    failures.push(failure);
+    console.error(`  FAIL ${failure}`);
+    if (persistentShutdownFailed) throw error;
+  }
+}
+async function runBrowser(name: string, failures: string[]): Promise<void> {
+  if (!(name in engines)) throw new Error(`Unknown browser: ${name}`);
+  const engine = name as keyof typeof engines;
+  // Firefox profiles cannot use the PC's VDO filesystem. Preserve the existing tmpfs policy.
+  const previousTmp = process.env.TMPDIR;
+  if (name === "firefox" && process.platform === "linux")
+    process.env.TMPDIR = await lifecycle.directory("/dev/shm", "waffle-ff-");
+  const browser = await lifecycle.launch(engine);
+  try {
+    const listed = await inWorker<TestList>(browser, { kind: "list" });
+    const passed: TestList = { indexeddb: [], opfs: [] };
+    let selected = 0;
+    const cases = storageCases(listed).filter(
+      ({ label }) =>
+        !process.env.STORAGE_TEST_FILTER || label.includes(process.env.STORAGE_TEST_FILTER),
+    );
+    for (const { backend, label } of cases) {
+      selected++;
+      await runCase(browser, name, backend, label, passed, failures);
+    }
+    if (!selected)
+      throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);
+    console.log(
+      `${name} ${browser.version()}: ${passed.indexeddb.length} IndexedDB and ${passed.opfs.length} OPFS storage tests passed`,
+    );
+  } finally {
+    await lifecycle.closeBrowser(browser);
+    if (previousTmp === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTmp;
+  }
+}
+try {
+  await lifecycle.init();
+  origin = lifecycle.serve(
+    {
+      "/": "<!doctype html><title>Storage tests</title>",
+      "/tests.js": await browserBundle(resolve(import.meta.dir, "storage-browser.ts")),
+      "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+      "/open-fs-worker.js": await browserBundle(resolve(import.meta.dir, "storage-open-worker.ts")),
+      "/worker.js": `(${storageWorker.toString()})();`,
+    },
+    Number(process.env.STORAGE_TEST_PORT ?? 0),
+  );
+  const failures: string[] = [];
+  for (const name of process.argv.slice(2).length ? process.argv.slice(2) : ["chromium"])
+    await runBrowser(name, failures);
   if (failures.length)
     throw new AggregateError(
       failures.map((message) => new Error(message)),
       `${failures.length} storage browser test(s) failed`,
     );
 } finally {
-  clearTimeout(deadline);
-  await cleanup();
+  await lifecycle.close();
 }

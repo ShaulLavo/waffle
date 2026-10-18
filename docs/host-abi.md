@@ -29,6 +29,30 @@ the call takes no arguments, reads no guest memory, never waits and sends no ser
 broker request. In-process and worker adapters expose the same import. It adds no eager
 process-service activation, helper export or RPC operation.
 
+## Descriptor kind import
+
+`runtime_proc.fd_kind(fd: u32) -> i32` looks up the caller's current descriptor table
+and returns the underlying resource's kind, or `-EBADF` (`-8`) for an invalid,
+closed or never-opened fd. It is nonblocking and non-consuming: it reads no payload,
+does not retain the endpoint or change the shared cursor, and requires no descriptor rights.
+Inherited, duplicated and remapped bindings report the real underlying resource, not a
+kind inferred from WASI preview1's filetype (which has no FIFO value).
+
+| Value | Kind                                |
+| ----: | ----------------------------------- |
+|     0 | Other / unknown                     |
+|     1 | Pipe (either runtime_proc endpoint) |
+|     2 | Terminal                            |
+|     3 | Regular file                        |
+|     4 | Directory                           |
+
+These values are append-only: existing numbers must never be reused or renumbered.
+No socket kind is assigned. Guests must not interpret preview1 `UNKNOWN` as a pipe.
+The shared `ProcessABI` exposes the import in host and worker process adapters;
+the browser's signal-only worker namespace also exposes it without activating the
+process service. The descriptor number itself (including stdio 0, 1 and 2) never
+determines its kind.
+
 ## Executable access queries
 
 `runtime_proc.access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` copies both UTF-8
