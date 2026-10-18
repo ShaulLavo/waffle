@@ -200,23 +200,30 @@ export class WorkerProcessClient {
       this.options.postMessage({ type: "runtime-proc", operation: "spawn", transport: child, request: snapshot });
     } catch (error) {
       let cleaned = true;
+      let state: ReturnType<typeof workerProcessState> | undefined;
       try {
-        if (child) claimOutcome(workerProcessState(child).signals.outcome, { kind: "start-failed", code: 13 });
+        if (child) {
+          state = workerProcessState(child);
+          claimOutcome(state.signals.outcome, { kind: "start-failed", code: 13 });
+        }
         for (const token of child?.resources ?? []) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
         }
         try { transfer?.cancel?.(); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
-        if (child && cleaned) {
-          controlStore(workerProcessState(child).confirmed, 0, 1);
+        if (child && state && cleaned) {
+          controlStore(state.confirmed, 0, 1);
           confirmWorkerProcessJob(child);
         }
       } finally { transfer?.release?.(); }
-      if (child && cleaned) {
-        const state = workerProcessState(child);
-        // No caller received this PID. Cache its leader value before freeing its row;
-        // a reentrant exporter may already have admitted another member to the job.
-        collectDirectoryProcess(child);
-        if (controlLoad(state.jobPending) === 0) collectDirectoryJob(child.directory, state.jobSlot, state.job);
+      if (child && state && cleaned) {
+        // Confirmation may orphan-collect this child when its parent died during export.
+        // Keep its independently captured job authority, not a fresh process-row lookup.
+        try { collectDirectoryProcess(child); }
+        catch (cleanupError) { if (!isCollectedProcess(cleanupError)) throw cleanupError; }
+        // A reentrant exporter may have admitted another member; a release callback may
+        // instead have collected/reused the job. Never adopt that replacement's identity.
+        try { if (controlLoad(state.jobPending) === 0) collectDirectoryJob(child.directory, state.jobSlot, state.job); }
+        catch (cleanupError) { if (!isCollectedProcess(cleanupError)) throw cleanupError; }
       }
       throw error;
     }

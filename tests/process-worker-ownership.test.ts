@@ -1173,3 +1173,78 @@ test("supervisor disposal skips unacknowledged collected records and still stops
   expect(Array.from(f.supervisor.table.values())).toEqual([]);
   expect(Array.from(f.supervisor.table.jobValues())).toEqual([]);
 });
+
+test("an unposted failed spawn releases its job when parent death auto-collects its process", () => {
+  const transport = createWorkerProcessTransport({ capacity: 2 });
+  const descriptors = new DescriptorTable(); cleanups.push(() => descriptors.dispose());
+  const { codec, source } = fakeCodec();
+  const { fd, counts } = source(descriptors, "directory");
+  const root = workerProcessState(transport);
+  const failure = new Error("source revoked during export");
+  let held = false, cancelled = 0, released = 0, posted = 0;
+  const client = new WorkerProcessClient({ transport, descriptors, codec: { ...codec, export() {
+    expect(held).toBe(true);
+    claimOutcome(root.signals.outcome, { kind: "signaled", code: 9 });
+    throw failure;
+  } }, postMessage() { posted++; }, prepareSpawn() {
+    held = true;
+    return { cancel() { expect(held).toBe(true); cancelled++; }, release() { expect(held).toBe(true); released++; held = false; } };
+  } });
+  let caught: unknown;
+  try { client.spawn(root.pid, request({ fds: [{ child: 3, parent: fd }] })); }
+  catch (error) { caught = error; }
+  expect(caught).toBe(failure);
+  expect({ held, cancelled, released, posted }).toEqual({ held: false, cancelled: 1, released: 1, posted: 0 });
+  expect(counts[0]).toBe(1);
+  expect(directorySlots(transport.directory)).toEqual([0]);
+  expect(directoryJobs(transport.directory)).toEqual([root.jobSlot]);
+  helpDirectoryJobs(transport.directory);
+  expect(directoryJobs(transport.directory)).toEqual([root.jobSlot]);
+  // The remaining allocator capacity can admit another independent process/job;
+  // no inaccessible zero-pending job occupies the second row after failed export.
+  const next = { ...transport, ...reserveDirectoryProcess(transport, 3, root.pid, 3, root.pid) };
+  const nextState = workerProcessState(next);
+  expect(nextState.job).toBe(3);
+  expect(directorySlots(transport.directory)).toHaveLength(2);
+  expect(directoryJobs(transport.directory)).toHaveLength(2);
+  claimOutcome(nextState.signals.outcome, { kind: "exited", code: 0 });
+  confirmWorkerProcessJob(next); // Dead parent's safe child is automatically collected.
+  collectDirectoryJob(transport.directory, nextState.jobSlot, nextState.job);
+  confirmWorkerProcessJob(transport);
+  collectDirectoryJob(transport.directory, root.jobSlot, root.job);
+  expect(directorySlots(transport.directory)).toEqual([]);
+  expect(directoryJobs(transport.directory)).toEqual([]);
+});
+
+test("failed spawn cleanup cannot collect a job reused during admission-fence release", () => {
+  const transport = createWorkerProcessTransport({ capacity: 2 });
+  const descriptors = new DescriptorTable(); cleanups.push(() => descriptors.dispose());
+  const { codec, source } = fakeCodec(), { fd } = source(descriptors, "directory");
+  const root = workerProcessState(transport);
+  const failure = new Error("revoked export");
+  let replacement!: WorkerProcessTransport;
+  const client = new WorkerProcessClient({ transport, descriptors, codec: { ...codec, export() {
+    claimOutcome(root.signals.outcome, { kind: "signaled", code: 9 }); throw failure;
+  } }, postMessage() { throw new Error("must not publish"); }, prepareSpawn() { return { release() {
+    const failedJob = findDirectoryJob(transport.directory, 2)!;
+    expect(readOutcome(failedJob.outcome)).toMatchObject({ kind: "start-failed", code: 13 });
+    collectDirectoryJob(transport.directory, failedJob.slot, failedJob.id);
+    replacement = { ...transport, ...reserveDirectoryProcess(transport, 3, root.pid, 3, root.pid) };
+    expect(workerProcessState(replacement).jobSlot).toBe(failedJob.slot);
+  } }; } });
+  let caught: unknown;
+  try { client.spawn(root.pid, request({ fds: [{ child: 3, parent: fd }] })); }
+  catch (error) { caught = error; }
+  expect(caught).toBe(failure);
+  const state = workerProcessState(replacement);
+  expect(state.job).toBe(3);
+  expect(readOutcome(state.signals.outcome)).toBeNull();
+  expect(controlLoad(state.jobPending)).toBe(1);
+  claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
+  confirmWorkerProcessJob(replacement);
+  collectDirectoryJob(transport.directory, state.jobSlot, state.job);
+  confirmWorkerProcessJob(transport);
+  collectDirectoryJob(transport.directory, root.jobSlot, root.job);
+  expect(directorySlots(transport.directory)).toEqual([]);
+  expect(directoryJobs(transport.directory)).toEqual([]);
+});
