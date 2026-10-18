@@ -383,6 +383,16 @@ export function installWorkerBindings(transport: WorkerProcessTransport, descrip
   validateWorkerBindings(transport);
   const imported = new Map<number, { description: OpenDescription; resource: Resource }>();
   const staged = new DescriptorTable();
+  const previous = new Map<number, Descriptor | undefined>();
+  const held: OpenDescription[] = [];
+  const installed: number[] = [];
+  let failed = false;
+  let failure: unknown;
+  const cleanupErrors: unknown[] = [];
+  const cleanup = (action: () => void) => { try { action(); } catch (error) { cleanupErrors.push(error); } };
+
+  // Import every token before changing the descriptor table. A malformed later token must not
+  // leave an earlier inherited descriptor live while the worker reports its typed startup error.
   try {
     for (const binding of transport.bindings) {
       let source = imported.get(binding.reference);
@@ -392,7 +402,35 @@ export function installWorkerBindings(transport: WorkerProcessTransport, descrip
         source = { description, resource: description.resource };
         imported.set(binding.reference, source);
       }
-      descriptors.inherit(binding.fd, { ...source, rightsBase: binding.rightsBase, rightsInheriting: binding.rightsInheriting });
     }
-  } finally { staged.dispose(); }
+
+    // Hold replaced descriptions until the transaction commits. This makes rollback safe even
+    // when an inherited fd aliases an existing stdio or preopen descriptor.
+    for (const binding of transport.bindings) {
+      const entry = descriptors.get(binding.fd);
+      previous.set(binding.fd, entry);
+      if (entry) { entry.description.retain(); held.push(entry.description); }
+    }
+    for (const binding of transport.bindings) {
+      const source = imported.get(binding.reference)!;
+      descriptors.inherit(binding.fd, { ...source, rightsBase: binding.rightsBase, rightsInheriting: binding.rightsInheriting });
+      installed.push(binding.fd);
+    }
+  } catch (error) {
+    failed = true;
+    failure = error;
+    for (const fd of installed.reverse()) {
+      const entry = previous.get(fd);
+      if (entry) cleanup(() => descriptors.restore(fd, entry));
+      else cleanup(() => { descriptors.close(fd); });
+    }
+  }
+
+  cleanup(() => staged.dispose());
+  for (const description of held) cleanup(() => description.drop());
+  // Preserve the exact import error for startup classification, including non-Error throws.
+  // Teardown must still refuse a safe completion when any abandoned resource failed release.
+  for (const error of cleanupErrors) descriptors.recordCleanupFailure(error);
+  if (failed) throw failure;
+  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "inherited descriptor cleanup failed");
 }

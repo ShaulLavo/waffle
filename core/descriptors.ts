@@ -60,6 +60,9 @@ export const MAX_DESCRIPTOR = 0x7fffffff;
 export class DescriptorTable {
   private entries = new Map<number, Descriptor>();
   private next = 0;
+  private cleanupFailures: unknown[] = [];
+  /** Deliver a failed transferred-resource release to this table's teardown owner once. */
+  recordCleanupFailure(error: unknown): void { this.cleanupFailures.push(error); }
   get(fd: number): Descriptor | undefined { return this.entries.get(fd); }
   add(description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
     if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
@@ -97,6 +100,14 @@ export class DescriptorTable {
     this.entries.set(fd, { description: source.description, resource: source.resource, rightsBase: source.rightsBase, rightsInheriting: source.rightsInheriting });
     if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
   }
+  /** Restore a complete descriptor binding, including preopen metadata, after a failed transaction. */
+  restore(fd: number, source: Descriptor): void {
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
+    source.description.retain();
+    this.close(fd);
+    this.entries.set(fd, { ...source, resource: source.description.resource });
+    if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+  }
   close(fd: number): boolean {
     const entry = this.entries.get(fd);
     if (!entry) return false;
@@ -114,7 +125,8 @@ export class DescriptorTable {
     return true;
   }
   dispose(): void {
-    const errors: unknown[] = [];
+    const errors = this.cleanupFailures;
+    this.cleanupFailures = [];
     for (const fd of this.entries.keys()) {
       try { this.close(fd); } catch (error) { errors.push(error); }
     }

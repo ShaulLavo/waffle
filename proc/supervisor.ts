@@ -620,12 +620,10 @@ export class ProcessSupervisor {
     this.terminate(handle);
   }
   private disposeDescriptors(descriptors: DescriptorTable): void {
-    // close removes its entry before invoking a release callback; retrying drains any remaining
-    // entries even when one resource's cleanup throws. Do not change the core descriptor API.
-    for (;;) {
-      try { descriptors.dispose(); return; }
-      catch (error) { this.report(error); }
-    }
+    // dispose drains every entry before reporting release errors. These errors are diagnostics,
+    // not transient work: report once and continue to the explicit host quiescence fence.
+    try { descriptors.dispose(); }
+    catch (error) { this.report(error); }
   }
   private terminate(handle: ProcessHandle): void {
     try {
