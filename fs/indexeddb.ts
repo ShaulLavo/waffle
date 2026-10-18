@@ -261,6 +261,7 @@ export class IndexedDBStorage implements StorageBackend {
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
       allocation = undefined;
       if (lost) return;
+      if (versionChangeAbort?.signal.aborted) throw versionChangeAbort.signal.reason;
       owner = new IndexedDBStorage(db, async () => { release(); await lifetime.catch(() => {}); }, compactEvery, epoch, options.onOwnershipLost);
       acquired(owner);
       await held;

@@ -410,7 +410,8 @@ replay any operation: `await runtime.dispose()` cancels a pending request throug
 (`ECANCELED`), and waits for abort/cleanup acknowledgement before terminating. A direct
 `SharedFilesystem` owner uses `await fs.dispose()` instead. Disposal is idempotent. An acquired
 OPFS backend still closes its handles before releasing its lock. Real storage failures remain
-fatal and appear as `state.status === "failed"` with `state.error`.
+fatal and appear as `state.status === "failed"` with `state.error`. An IndexedDB deletion or
+upgrade closes and cancels a waiting connection, rather than leaving the database blocked.
 
 `SharedFilesystem({ persistence: false })` selects a disposable memory-only filesystem; `name`
 selects isolated storage for tests/workspaces. The worker is not a power-loss-safe host
