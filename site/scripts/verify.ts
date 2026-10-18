@@ -22,7 +22,53 @@ await mkdir(evidence, { recursive: true });
 const results: Record<string, unknown>[] = [];
 const failures: string[] = [];
 
-async function prepare(page: Page, url: string) {
+// Publishing corrections to the owner-supplied reference only. Assert the old values
+// so this cannot hide an unrelated reference change or silently alter the candidate.
+async function applyPublishedReferenceCopy(page: Page) {
+  await page.evaluate(() => {
+    const github = 'https://github.com/ShaulLavo/waffle';
+    const bash = 'https://github.com/ShaulLavo/bash-web';
+    const bun = 'https://bun.sprockt.dev/';
+    const link = (selector: string, text: string, before: string, after: string) => {
+      const matches = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))
+        .filter(anchor => anchor.textContent?.replace(/\s+/g, ' ').trim() === text);
+      if (matches.length !== 1 || matches[0]!.getAttribute('href') !== before) {
+        throw new Error(`Original reference link changed: ${selector} / ${text}`);
+      }
+      matches[0]!.setAttribute('href', after);
+    };
+    link('nav a', 'Bun', '#today', bun);
+    link('nav a', 'GitHub', '#', github);
+    link('#today a', 'Open Bash Web', '#', bash);
+    link('#today a', 'Bash Web docs', '#docs', bash);
+    link('#today a', 'Read the Bun guide', '#docs', bun);
+    link('footer a', 'Bash Web', '#today', bash);
+    link('footer a', 'Bun', '#today', bun);
+    link('footer a', 'GitHub', '#', github);
+    const cards = Array.from(document.querySelectorAll<HTMLAnchorElement>('#docs a.wtile'));
+    const destinations = [
+      `${github}/blob/main/docs/getting-started.md`,
+      `${github}/blob/main/docs/architecture.md`,
+      `${github}/blob/main/docs/host-abi.md`, bash, bun, github,
+    ];
+    if (cards.length !== destinations.length) throw new Error('Original reference cards changed');
+    cards.forEach((card, index) => {
+      if (card.getAttribute('href') !== '#') throw new Error(`Original reference card ${index} changed`);
+      card.setAttribute('href', destinations[index]!);
+    });
+    const replaceText = (selector: string, before: string, after: string) => {
+      const matches = Array.from(document.querySelectorAll(selector))
+        .filter(element => element.childElementCount === 0 && element.textContent === before);
+      if (matches.length !== 1) throw new Error(`Original reference text changed: ${before}`);
+      matches[0]!.textContent = after;
+    };
+    replaceText('#docs a.wtile span', 'Run your first program on Waffle →', 'Set up your first Waffle page →');
+    replaceText('#docs a.wtile span', 'Every interface, in detail →', 'The guest and host contract →');
+    replaceText('footer span', '© [YEAR] Waffle', '© 2026 Waffle');
+  });
+}
+
+async function prepare(page: Page, url: string, originalReference: boolean) {
   await page.addInitScript(() => {
     if ((window as any).__advance) return;
     let api: any;
@@ -81,6 +127,7 @@ async function prepare(page: Page, url: string) {
   // advancing synthetic time or changing the readiness condition.
   await page.waitForFunction(() => !!document.querySelector('canvas') && !!(window as any).__scene, undefined, { polling: 100 });
   await page.evaluate(async () => { await document.fonts.ready; });
+  if (originalReference) await applyPublishedReferenceCopy(page);
   // Give original React and the Astro controller equal deterministic frame time.
   for (let i = 0; i < 3; i++) {
     await page.evaluate(() => {
@@ -115,14 +162,14 @@ for (const [engine, type] of engines) {
   const browser = await type.launch({ headless: process.env.HEADFUL !== '1' });
   try {
     for (const width of widths) {
-      const pages = await Promise.all([reference, candidate].map(async (url) => {
+      const pages = await Promise.all([reference, candidate].map(async (url, index) => {
         const page = await browser.newPage({ viewport: { width, height: 800 }, deviceScaleFactor: 1, colorScheme: 'light' });
         page.on('pageerror', error => failures.push(`${engine}/${width}: ${error.message}`));
         page.on('requestfailed', request => failures.push(`${engine}/${width}: ${request.url()}: ${request.failure()?.errorText}`));
         page.on('response', response => {
           if (response.status() >= 400) failures.push(`${engine}/${width}: ${response.status()} ${response.url()}`);
         });
-        await prepare(page, url);
+        await prepare(page, url, index === 0);
         return page;
       }));
       const inventory = async (page: Page) => page.evaluate(() => ({
@@ -179,7 +226,7 @@ for (const [engine, type] of engines) {
       }
       // Start pointer/click tests from fresh scenes: scrolling offscreen for
       // link tests intentionally pauses each renderer at observer delivery time.
-      await Promise.all(pages.map((page, i) => prepare(page, i === 0 ? reference : candidate)));
+      await Promise.all(pages.map((page, i) => prepare(page, i === 0 ? reference : candidate, i === 0)));
       await Promise.all(pages.map(page => settle(page, 1)));
       const pointer = { x: Math.round(width * (width < 860 ? 0.5 : 0.75)), y: 590 };
       await Promise.all(pages.map(async page => {

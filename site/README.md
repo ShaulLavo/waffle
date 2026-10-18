@@ -102,7 +102,11 @@ bun /work/platform-production/heavy/current/run.js --class browser waffle-site-p
 `verify.ts` checks Chromium, Firefox, and WebKit at widths 375, 768, 1280, and
 1920. It compares visible text/links, scroll states, hover/focus, and scene
 pointer/click states with synchronized animation time, writing screenshots and
-`visual-diff.json`. It fails on any pixel/content mismatch. `ENGINES=chromium`
+`visual-diff.json`. Before comparison, it applies the exact published link destinations,
+two documentation-caption corrections and `© 2026 Waffle` to the original reference;
+[the provenance ledger](../docs/bun-patches.md#waffle-landing-page) records these intentional
+departures. It validates the original values before replacing them, does not modify the
+candidate, and still fails on any remaining pixel/content mismatch. `ENGINES=chromium`
 and `WIDTHS=375,1280` select a smaller diagnostic subset; they do not replace the
 full matrix.
 

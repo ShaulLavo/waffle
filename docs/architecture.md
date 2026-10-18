@@ -186,9 +186,9 @@ outside Waffle. Its optional hooks run in this order:
 1. `setup(context)` receives the request, filesystem client, signal state and helpers.
 2. `namespaces(context)` returns extra `WebAssembly.Imports` namespaces for the linker.
    `runtime_proc` remains Waffle-owned; an extension cannot replace it here.
-3. `beforeBindings({ wasi, ...context })` runs after default stdio and the root preopen are
-   created, but before inherited descriptors are installed. It can release unused default
-   stdio or preserve a preopen whose fd an inherited binding will replace.
+3. `beforeBindings({ wasi, ...context })` runs after default stdio and preopens are created,
+   but before inherited descriptors are installed. Incoming targets are already reserved for
+   preopen placement; the hook can release unused default stdio.
 4. `imports(imports, { wasi, ...context })` runs after descriptor binding and linking, before
    instantiation. Mutate the object and return nothing, or return a replacement import object.
    Supply extra namespaces in `namespaces`, since linking rejects unknown imports first.
@@ -201,12 +201,12 @@ A hook that calls `context.finish` ends bootstrap immediately after that hook re
 no subsequent hook or guest entry point runs. Supplied stdio is owned from bootstrap entry,
 including setup/link failures, and is closed before any cleanup acknowledgement.
 
-**Preopen discovery:** the default root remains at fd3. Waffle does not relocate it or remove
-stdio implicitly. An adapter relocating preopens must preserve wasi-libc's discovery scan:
-**it scans from fd3 upward and stops at the first non-preopen**. Merely retaining the root at
-a higher fd behind an inherited non-preopen fd3 is insufficient. Coordinate any relocation
-with preview1 preopen-discovery imports in the `imports` hook, without changing inherited fd
-numbers or their resources.
+**Preopen discovery:** inherited descriptor numbers are reserved before constructing WASI.
+Each preopen takes the lowest free descriptor starting at 3: root is normally fd 3, or fd 4
+when fd 3 is inherited. Sparse high targets do not move root above them. Inherited bindings
+keep their requested numbers. Unpatched wasi-libc stops discovery at the first non-preopen;
+guests that inherit fd 3 must use [Waffle's patched libc scan](wasi-libc.md). Direct `Wasi`
+callers pass incoming targets as `reservedFds` before installing them.
 
 `spawnData()` runs for each actual spawn under filesystem transfer admission. It returns
 structured-cloneable, guest-specific metadata; `filesystem` and `pipeRegistry` are reserved
@@ -340,7 +340,7 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | `pipe(out)` | Writes two little-endian u32 fds, reader then writer; returns 0. |
 | `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
 | `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
-| `start_status(pid)` | Returns 0 once executable entry is committed, `-EAGAIN` while startup is pending, a negative startup errno on failure, or `-ECANCELED` if cancellation prevented entry. Does not consume the child. |
+| `start_status(pid)` | Returns 0 once executable entry is committed, `-EAGAIN` while startup is pending, a positive WASI startup errno on failure, or `-ECANCELED` if cancellation prevented entry. Does not consume the child. |
 | `wait(pid, out)` | Returns 0 and writes u32 kind (0 exited, 1 signaled, 2 start-failed), then i32 exit code, signal number or positive WASI startup errno respectively; returns `-EAGAIN` before confirmed cleanup. |
 | `wait_job(job, flags, out)` | Writes the same eight-byte typed result as `wait`; flags 0 blocks until completion, flags 1 returns `-EAGAIN` while pending. |
 | `kill(pid, sig)`, `kill_job(job, sig)` | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner. |
@@ -368,6 +368,8 @@ workers may still use the default `MemoryBackend`. The page, editor and every gu
 tree; completed writes are visible before exit.
 
 ### Persistence and durability
+
+See [storage ownership and lifecycle](storage.md) for `whenBusy`, waiting, takeover and disposal.
 
 `StorageBackend` separates index loading, immutable payload reads, batched commits and flushing
 from guest transport. `PersistentBackend.open(storage)` loads only the index. Payloads enter the

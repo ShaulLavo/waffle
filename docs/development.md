@@ -30,6 +30,7 @@ scratch directory on the data drive; the runner owns its browser/profile cleanup
 
 - [Architecture and API notes](architecture.md)
 - [Guest and host ABI](host-abi.md)
+- [Storage ownership and lifecycle](storage.md)
 - [Runtime startup](runtime-startup.md)
 - [WASI libc notes](wasi-libc.md)
 - [Bun provenance and patches](bun-patches.md)
