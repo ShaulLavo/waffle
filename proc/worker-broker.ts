@@ -1,4 +1,5 @@
 import { WorkerExecutableAccess, rejectWorkerAccess } from "./worker-access.js";
+import { startFailure } from "./start-failure.js";
 import { collectDirectoryProcess, collectDirectoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, isCollectedProcess } from "./directory.js";
 import { controlLoad, controlStore } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
@@ -256,12 +257,11 @@ export class WorkerProcessBroker {
       this.trace(transport, "dropped", "duplicate-process");
       throw new ProcessError(ProcessErrno.INVAL, "process identity is already registered");
     }
-    let codec: WorkerDescriptorCodec;
-    try { codec = this.codec(transport); }
-    catch (error) { this.trace(transport, "rejected", "admission-failed"); throw error; }
+    let codec: WorkerDescriptorCodec | undefined;
     let admitted = false;
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
+      codec = this.codec(transport);
       if (this.disposed) { reason = "broker-disposed"; throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed"); }
       const parentTransport = this.get(state.parentPid) ?? this.directories.get(workerProcessDirectoryId(transport));
       if (!parentTransport || workerProcessDirectoryId(parentTransport) !== workerProcessDirectoryId(transport)) {
@@ -306,18 +306,28 @@ export class WorkerProcessBroker {
         // Imported descriptions release through the supervisor; discard also releases
         // tokens that failed before import, using the codec's idempotent lifetime.
         for (const token of transport.resources) {
-          try { codec.discard(token); } catch (cleanupError) { this.failedCleanup.add(state.pid); this.report(cleanupError); }
+          try {
+            if (!codec) throw new Error("descriptor codec unavailable for rejected transfer");
+            codec.discard(token);
+          } catch (cleanupError) { this.failedCleanup.add(state.pid); this.report(cleanupError); }
         }
         this.supervisor!.failStart(state.pid, error);
       } else {
-        this.transports.delete(state.pid);
-        claimOutcome(state.signals.outcome, { kind: "start-failed", code: 13 });
+        // Retain cleanup ownership until every token and the host fence completes.
+        this.transports.set(state.pid, transport);
+        this.failedCleanup.add(state.pid);
+        claimOutcome(state.signals.outcome, startFailure(error));
         let cleaned = true;
         for (const token of transport.resources) {
-          try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
+          try {
+            if (!codec) throw new Error("descriptor codec unavailable for rejected transfer");
+            codec.discard(token);
+          } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
         }
         await this.options.quiesce?.(state.pid, transport);
         if (cleaned) {
+          this.transports.delete(state.pid);
+          this.failedCleanup.delete(state.pid);
           controlStore(state.confirmed, 0, 1);
           confirmWorkerProcessJob(transport);
         }
@@ -375,7 +385,14 @@ export class WorkerProcessBroker {
     this.pump();
     for (const [pid, transport] of this.transports) {
       if (transport.resources.length === 0) { wakeWorkerProcess(transport); continue; }
-      const codec = this.codec(transport);
+      let codec: WorkerDescriptorCodec;
+      try { codec = this.codec(transport); }
+      catch (error) {
+        const gate = cleanup.get(pid);
+        if (gate) gate.complete = false;
+        this.report(error);
+        continue;
+      }
       for (const token of transport.resources) {
         try { codec.discard(token); } catch (error) {
           const gate = cleanup.get(pid);

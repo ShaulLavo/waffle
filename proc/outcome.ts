@@ -1,3 +1,4 @@
+import { startFailureName } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 
 /** An outcome's running sentinel and record identity are captured, never readopted. */
@@ -21,7 +22,7 @@ export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWo
 }
 export function processOutcome(result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
   const { kind, code } = result;
-  if (kind === "start-failed") return Object.freeze({ kind, code, error: code === 2 ? "ENOENT" : "EACCES", status: null });
+  if (kind === "start-failed") return Object.freeze({ kind, code, error: startFailureName(code), status: null });
   return Object.freeze({ kind, code, status: kind === "signaled" ? 128 + code : code });
 }
 function decode(encoded: bigint): ProcessExit {
@@ -38,7 +39,7 @@ export function readOutcome(word: OutcomeWord): ProcessExit | null {
 /** A stale producer can only CAS its captured running sentinel, not a new occupant's. */
 export function claimOutcome(word: OutcomeWord, result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
   if (!Number.isSafeInteger(result.code)) throw new RangeError("process outcome code must be a safe integer");
-  if (result.kind === "start-failed" && result.code !== 2 && result.code !== 13) throw new RangeError("start failure must be ENOENT or EACCES");
+  if (result.kind === "start-failed") startFailureName(result.code);
   if (word instanceof OutcomeCell) word.check();
   const encoded = (BigInt(result.code) << 2n) | (result.kind === "exited" ? 1n : result.kind === "signaled" ? 2n : 3n);
   const running = word instanceof OutcomeCell ? word.running : 0n;

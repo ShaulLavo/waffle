@@ -30,7 +30,8 @@ exports working together.
   `core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.
 - Preserve pay-for-use loading: do not load the process implementation before the
   first spawn. Keep bundle-size gates and the core gzip budget in
-  `tooling/runtime-size.ts`; do not raise budgets to hide regressions.
+  `tooling/runtime-size.ts`.
+- Size budgets catch accidental growth. When a change needs more, raise the budget in the same PR and note the measured numbers; don't contort the design to fit.
 - Every new or changed copied/adapted upstream implementation needs a classified
   overview row and section in `docs/bun-patches.md`, including upstream path and
   revision, local changes and reasons. Distinguish original adapters.

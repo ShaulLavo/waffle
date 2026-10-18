@@ -10,7 +10,7 @@ import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, 
 import { readOutcome } from "../proc/outcome.js";
 import { failFirstWorkerImport } from "./first-worker-import.js";
 
-const expectedFailure = { kind: "start-failed", code: 13, error: "EACCES", status: null };
+const expectedFailure = { kind: "start-failed", code: 5, error: "EIO", status: null };
 type Shape = "valid" | "missing-start" | "invalid-start" | "missing-memory" | "invalid-memory";
 function guest(shape: Shape): WebAssembly.Module {
   const text = (name: string) => [name.length].concat(Array.from(new TextEncoder().encode(name)));
@@ -27,22 +27,22 @@ function guest(shape: Shape): WebAssembly.Module {
   return new WebAssembly.Module(new Uint8Array(bytes));
 }
 
-async function fixture(module: WebAssembly.Module) {
+async function fixture(module: WebAssembly.Module, failure?: { at: "connect" | "construct" | "post"; error: unknown }) {
   const previousWorker = globalThis.Worker;
   const ports: MessagePort[] = [], workers: TestWorker[] = [], failureCalls: string[] = [];
   class TestWorker {
     request!: RuntimeWorkerRequest;
     onmessage?: (event: { data: RuntimeWorkerMessage }) => void;
     onerror?: (event: ErrorEvent) => void;
-    constructor() { workers.push(this); }
-    postMessage(request: RuntimeWorkerRequest) { this.request = request; }
+    constructor() { if (failure?.at === "construct") throw failure.error; workers.push(this); }
+    postMessage(request: RuntimeWorkerRequest) { if (failure?.at === "post") throw failure.error; this.request = request; }
     terminate() {}
     emit(message: RuntimeWorkerMessage) { this.onmessage?.({ data: message }); }
   }
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "fixture" });
   const broker = new BrowserProcessBroker({ identities, table, registry,
-    filesystem: { connect(identity) { const pair = connectFilesystemIdentity(identity); ports.push(pair.client.port, pair.server.port); return pair.client; },
+    filesystem: { connect(identity) { if (failure?.at === "connect") throw failure.error; const pair = connectFilesystemIdentity(identity); ports.push(pair.client.port, pair.server.port); return pair.client; },
       revoke() {}, reap() {}, async quiesce() {} },
     launch(context) {
       return broker.launchWorker({ ...context,
@@ -68,7 +68,7 @@ async function fixture(module: WebAssembly.Module) {
     for (const notice of notices) await broker.runtimeMessage(notice, parent.pid);
     const supervisor = await broker.ready();
     await supervisor.start(pid);
-    const worker = workers[0]!, transport = worker.request.runtimeProcess!, state = workerProcessState(transport);
+    const worker = workers[0]!, transport = notices.find(message => message.operation === "spawn")!.transport, state = workerProcessState(transport);
     const childDescriptors = new DescriptorTable();
     const childNotices: WorkerProcessMessage[] = [];
     const child = new WorkerProcessClient({ transport, descriptors: childDescriptors, codec,
@@ -109,7 +109,7 @@ for (const shape of ["missing-start", "invalid-start", "missing-memory", "invali
       expect({ result, ready, ran,
         phases: messages.filter(message => message.type === "phase").map(message => message.name),
         failureCalls: f.failureCalls,
-      }).toEqual({ result: expectedFailure, ready: 0, ran: false, phases: ["worker-start"], failureCalls: ["startFailed"] });
+      }).toEqual({ result: { kind: "start-failed", code: 8, error: "ENOEXEC", status: null }, ready: 0, ran: false, phases: ["worker-start"], failureCalls: ["startFailed"] });
     } finally { await f.dispose(); }
   });
 }
@@ -131,7 +131,7 @@ test("a runnable guest still advertises readiness and completes with its ordinar
 });
 
 for (const origin of ["first-import", "after-binding"] as const) for (const order of ["exit-first", "error-first"] as const) {
-  test(`${origin} EACCES survives ${order} dispatch and a late raw errno exit`, async () => {
+  test(`${origin} EIO survives ${order} dispatch and a late raw errno exit`, async () => {
     const f = await fixture(guest("valid"));
     try {
       let messages: RuntimeWorkerMessage[] = [];
@@ -164,6 +164,24 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       expect(beforeCollection).toEqual(expectedFailure);
       expect(Object.isFrozen(beforeCollection)).toBe(true);
       expect(() => readOutcome(f.state.signals.outcome)).toThrow("collected");
+    } finally { await f.dispose(); }
+  });
+}
+
+for (const at of ["connect", "construct", "post", "event"] as const) {
+  for (const [cause, error, name, code] of [
+    ["host failure", new Error("injected setup failure"), "EIO", 5],
+    ["allocation", new RangeError("injected allocation failure"), "ENOMEM", 12],
+    ["capacity", Object.assign(new Error("setup full"), { code: "EAGAIN" }), "EAGAIN", 11],
+  ] as const) test(`${at} ${cause} after PID reservation is an honest startup error`, async () => {
+    const f = await fixture(guest("valid"), at === "event" ? undefined : { at, error });
+    try {
+      expect(f.pid).toBeGreaterThan(0);
+      if (at === "event") f.worker.onerror!({ preventDefault() {}, message: error.message, error } as ErrorEvent);
+      const expected = { kind: "start-failed", error: name, code, status: null };
+      expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expected);
+      expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expected);
+      expect(f.parent.waitJob(f.parent.pid, f.state.job)).toEqual(expected);
     } finally { await f.dispose(); }
   });
 }

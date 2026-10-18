@@ -52,16 +52,68 @@ Cancellation and process death do not publish a late completion.
 
 Filesystem and process transports use shared-memory completion and readiness words plus message-port control. Descriptor bindings retain independent capability pins while duplicate bindings may share an open-file cursor. Termination selects one atomic outcome; cleanup acknowledgement and filesystem quiescence are separate facts.
 
-Process startup failures use a third atomic outcome tag. `ENOENT` carries code 2,
-`EACCES` carries code 13, and both have `status: null`; ordinary exits 126 and 127
-remain ordinary exits. `runtime_proc.wait` and `wait_job` map the typed outcomes to
-127 and 126 while preserving the typed result for browser and host adapters.
-The initial worker request carries the authoritative outcome view before any
-dynamic process import. Startup errors select typed EACCES; after WASI execution
-begins, failures retain an ordinary execution exit.
-The instantiate phase and executor ready hook run only after validating the
-callable `_start` export and the exported WebAssembly memory. A later exit notice
-or numeric completion cannot replace the atomic typed startup outcome.
+### Typed wait results
+
+Both imports use the same consuming result shape:
+
+```text
+runtime_proc.wait(pid: i32, out: i32) -> i32
+runtime_proc.wait_job(job: i32, flags: i32, out: i32) -> i32
+
+WaitResult (8 bytes, little-endian)
+offset 0: u32 kind   0 = EXITED, 1 = SIGNALED, 2 = START_FAILED
+offset 4: i32 value  exit code, signal number, or positive WASI errno
+```
+
+A return of `0` means a terminal result was collected, **including START_FAILED**.
+A negative return is an error of the wait call, not an executable-start errno.
+Pending calls return `-EAGAIN` (`-6`). Both calls validate the entire 8-byte output
+span before consuming; an output fault leaves the child/job available. Waffle
+writes only kinds 0, 1 and 2; guests must reject any unknown kind as a decode error.
+Actual program exits 126 and 127 remain `{kind: 0, value: 126/127}`; signals use
+`{kind: 1, value: signal}`, without adding 128 in the runtime ABI.
+
+Host/browser `ProcessExit` keeps a named `error`, Linux-style `code`, and
+`status: null` for startup failures. The shared atomic startup tag remains 3;
+it is separate from guest WaitResult kind 2. These are the seven produced errors:
+
+| Error | Host code | Guest WASI value | Cause |
+| --- | ---: | ---: | --- |
+| ENOENT | 2 | 44 | Missing executable or missing path component |
+| EACCES | 13 | 2 | Directory or existing file without its admitted executable registration |
+| ENOTDIR | 20 | 54 | A file used as a directory, including a trailing slash on a file |
+| ENOEXEC | 8 | 45 | Invalid/unsupported Wasm at rewrite/compile, or absent/noncallable `_start` or non-memory `memory` export |
+| ENOMEM | 12 | 48 | Allocation failure during loading or host/Worker setup |
+| EAGAIN | 11 | 6 | Process/setup resource capacity exhausted after reservation |
+| EIO | 5 | 29 | Other loader or host setup failure |
+
+The current filesystem has no symlinks or name-length limits, so it does not
+produce ELOOP or ENAMETOOLONG; executing a directory uses EACCES, not EISDIR.
+Loader, network, digest and arbitrary adapter exceptions are not evidence of an
+invalid executable and do not become ENOEXEC. RangeError allocation failures map
+to ENOMEM. Filesystem connection, Worker construction, postMessage and early
+Worker error failures use EIO unless they carry a known allocation/capacity cause.
+
+Spawn reserves synchronously and returns its PID before asynchronous executable
+admission and Worker creation. Before that return, capacity failures return
+`-EAGAIN` (`-6`), allocation failures return `-ENOMEM` (`-48`), and invalid requests
+return `-EINVAL` (`-28`); there is no collectable child/job for a rolled-back
+reservation. Explicit BADF, SRCH and CHILD authority errors stay distinct.
+Filesystem capacity errors are normalized only at spawn, not other ABI calls.
+After the PID return, setup failures are collected as START_FAILED with the honest
+errno above; they cannot retroactively change the spawn call's return value.
+
+The initial Worker request carries the authoritative outcome before any dynamic
+process import. The instantiate phase and executor ready hook run only after
+validating callable `_start` and exported WebAssembly memory. A later exit notice
+or numeric completion cannot replace the atomic typed startup outcome. Errors
+after execution starts remain ordinary execution failures.
+
+A shell maps START_FAILED ENOENT (WASI 44) to status 127, other startup errors to
+126, signals to 128 + signal, and actual exit codes unchanged. A Node/Bun-style
+guest instead emits a spawn error for START_FAILED (with the named errno and null
+exit status); real exits 126/127 use its ordinary exit-event path. Neither policy
+requires a Bun-specific Waffle import.
 
 ## Jobs and signals
 
@@ -151,11 +203,13 @@ if a collector stops; host cleanup also reconciles the shared state without
 requiring a final Worker notification. An unconsumed completed job deliberately
 retains its job row and cached outcome until its consuming wait.
 
-`wait_job(job, flags, out)` keeps the existing arguments and 4-byte status result;
+`wait_job(job, flags, out)` writes the same 8-byte WaitResult as `wait`;
 flags `1` is nonblocking and `0` blocks. Collecting every direct child with `wait`
 does **not** consume its job: `wait_job(job, 1, out)` returns `-EAGAIN` while any
 descendant member or its cleanup fence remains pending, then succeeds using the
-cached leader outcome after all members finish. Only consuming `wait_job` itself
+cached leader outcome after all members finish. A failed leader returns START_FAILED
+even after its individual wait and process-slot recycling; a failed nonleader is
+reported by its individual wait and never replaces the leader result. Only consuming `wait_job` itself
 makes a repeat return `-ECHILD`. Unknown job IDs return `-ESRCH` (`-71`). Spawn
 selectors are unchanged: `0` and `-1` create foreground/background jobs, and a
 positive selector joins an existing live job.

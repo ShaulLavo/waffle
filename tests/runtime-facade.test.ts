@@ -839,9 +839,9 @@ test("runtime spawn and PATH metadata agree on live canonical executable files",
 
 
 for (const [executable, error, code] of [
-  ["/bin/test-guest/", "EACCES", 13],
+  ["/bin/test-guest/", "ENOTDIR", 20],
   ["/missing/../bin/test-guest", "ENOENT", 2],
-  ["/bin/test-guest/../test-guest", "EACCES", 13],
+  ["/bin/test-guest/../test-guest", "ENOTDIR", 20],
 ] as const) test(`runtime preserves real filesystem traversal constraints for ${executable}`, async () => {
   const runtime = create();
   let loads = 0, launches = 0;

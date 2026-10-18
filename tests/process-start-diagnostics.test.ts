@@ -35,13 +35,13 @@ for (const failure of ["missing", "compile", "launch"] as const) test(`${failure
     await supervisor.start(child);
     expect(events).toEqual(["stderr", "diagnostic", "closed"]);
     expect(failure === "missing" ? (reported as Error).name : reported).toBe(failure === "missing" ? "ExecutableNotFound" : error);
-    expect(supervisor.wait(root, child)).toEqual(failure === "missing" ? { kind: "start-failed", code: 2, error: "ENOENT", status: null } : { kind: "start-failed", code: 13, error: "EACCES", status: null });
+    expect(supervisor.wait(root, child)).toEqual(failure === "missing" ? { kind: "start-failed", code: 2, error: "ENOENT", status: null } : { kind: "start-failed", code: 5, error: "EIO", status: null });
     supervisor.failStart(child, new Error("duplicate startup failure"));
     expect(events).toEqual(["stderr", "diagnostic", "closed"]);
   } finally { supervisor.dispose(); }
 });
 
-test("a throwing startup diagnostic reports its error without replacing typed EACCES", async () => {
+test("a throwing startup diagnostic reports its error without replacing typed EIO", async () => {
   const registry = new ExecutableRegistry();
   registry.register("custom", { module, adapter: "custom" });
   const startupError = new Error("launcher failed"), diagnosticError = new Error("diagnostic sink failed");
@@ -54,7 +54,7 @@ test("a throwing startup diagnostic reports its error without replacing typed EA
     await supervisor.start(child);
     expect(reports).toBe(1);
     expect(errors).toEqual([diagnosticError]);
-    expect(supervisor.wait(root, child)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+    expect(supervisor.wait(root, child)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
   } finally { supervisor.dispose(); }
 });
 
@@ -67,7 +67,7 @@ test("a reentrant startup diagnostic cannot report the same process twice", () =
   try {
     supervisor.failStart(child, error);
     expect(reports).toBe(1);
-    expect(supervisor.wait(root, child)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
+    expect(supervisor.wait(root, child)).toMatchObject({ kind: "start-failed", error: "EIO", status: null });
   } finally { supervisor.dispose(); }
 });
 

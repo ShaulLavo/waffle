@@ -40,7 +40,7 @@ test("job wait retains the leader outcome after direct reap and waits for descen
     f.supervisor.kill(f.child, 9);
     expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
     expect(f.abi.imports.wait_job!(f.job, 0, 64)).toBe(0);
-    expect(new DataView(f.memory.buffer).getInt32(64, true)).toBe(23);
+    expect(new DataView(f.memory.buffer).getInt32(68, true)).toBe(23);
     expect(f.supervisor.get(f.child)).toBeUndefined();
     expect(f.abi.imports.wait_job!(f.job, 1, 64)).toBe(-12);
     expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-12);
@@ -60,7 +60,7 @@ test("blocking wait captures publication before sleeping and reacquires grown me
   try {
     expect(f.abi.imports.wait_job!(f.job, 0, 64)).toBe(0);
     expect(calls).toBe(1);
-    expect(new DataView(f.memory.buffer).getInt32(64, true)).toBe(0);
+    expect(new DataView(f.memory.buffer).getInt32(68, true)).toBe(0);
   } finally { f.supervisor.dispose(); }
 });
 
@@ -142,7 +142,7 @@ test("completion racing registration is immediately ready and does not sleep", (
   try {
     expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
     expect(f.abi.imports.wait_job!(f.job, 0, 64)).toBe(0);
-    expect(new DataView(f.memory.buffer).getInt32(64, true)).toBe(11);
+    expect(new DataView(f.memory.buffer).getInt32(68, true)).toBe(11);
   } finally { f.supervisor.dispose(); }
 });
 
@@ -266,9 +266,31 @@ test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect
     expect(supervisor.get(grandchild)).toBeUndefined();
     expect(supervisor.get(detached)!.result).toBeNull();
     expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(0);
-    expect(new DataView(memory.buffer).getInt32(64, true)).toBe(7);
+    expect(new DataView(memory.buffer).getInt32(68, true)).toBe(7);
     expect(supervisor.get(child)).toBeUndefined();
     expect(supervisor.get(grandchild)).toBeUndefined();
     expect(supervisor.job(job)).toBeUndefined();
   } finally { supervisor.dispose(); }
+});
+
+for (const failed of ["leader", "member"] as const) test(`${failed} startup failure keeps the cached leader result and member cleanup fence`, () => {
+  const f = fixture();
+  try {
+    // Both are direct children so their individual typed outcomes remain collectable.
+    const member = f.supervisor.reserveSpawn(f.shell, request(f.job));
+    f.supervisor.exit(f.child, 0);
+    if (failed === "leader") f.supervisor.failStart(f.leader, { code: "ENOENT" });
+    else f.supervisor.exit(f.leader, 127);
+    expect(f.abi.imports.wait!(f.leader, 64)).toBe(0);
+    const view = new DataView(f.memory.buffer);
+    expect([view.getUint32(64, true), view.getInt32(68, true)]).toEqual(failed === "leader" ? [2, 44] : [0, 127]);
+    expect(f.abi.imports.wait_job!(f.job, 1, 80)).toBe(-6);
+    if (failed === "member") f.supervisor.failStart(member, { code: "EACCES" });
+    else f.supervisor.exit(member, 126);
+    expect(f.abi.imports.wait!(member, 64)).toBe(0);
+    expect([view.getUint32(64, true), view.getInt32(68, true)]).toEqual(failed === "member" ? [2, 2] : [0, 126]);
+    expect(f.abi.imports.wait_job!(f.job, 1, 80)).toBe(0);
+    expect([view.getUint32(80, true), view.getInt32(84, true)]).toEqual(failed === "leader" ? [2, 44] : [0, 127]);
+    expect(f.abi.imports.wait_job!(f.job, 1, 80)).toBe(-12);
+  } finally { f.supervisor.dispose(); }
 });

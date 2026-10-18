@@ -110,7 +110,7 @@ test("first-spawn returns and retains arbitrary descriptor references before act
   expect(closed).toBe(1);
 });
 
-test("activation rejection records EACCES for every reserved child and releases fds", async () => {
+test("activation rejection records EIO for every reserved child and releases fds", async () => {
   const { supervisor, root } = fixture();
   const stub = new FirstSpawnStub({
     reserve: (parent, spec) => supervisor.reserveSpawn(parent, spec),
@@ -118,8 +118,8 @@ test("activation rejection records EACCES for every reserved child and releases 
     fail: (pid, error) => supervisor.failStart(pid, error),
   });
   const a = stub.spawn(root, request()), b = stub.spawn(root, request());
-  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
-  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(await supervisor.waitForExit(root, a)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
+  expect(await supervisor.waitForExit(root, b)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
 });
 
 test("missing and unrunnable executables retain distinct typed start failures", async () => {
@@ -130,7 +130,7 @@ test("missing and unrunnable executables retain distinct typed start failures", 
   const missing = supervisor.spawn(root, request({ executable: "missing" }));
   const bad = supervisor.spawn(root, request({ executable: "bad" }));
   expect(await supervisor.waitForExit(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
-  expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
   expect(events.sort()).toEqual([missing, bad].sort());
   expect(supervisor.wait(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
   expect(() => supervisor.wait(root, missing)).toThrow();

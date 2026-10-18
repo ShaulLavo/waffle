@@ -49,3 +49,26 @@ test("refused modules reject clearly and do not poison subsequent valid loads", 
 test("cache limits must be positive integers", () => {
   for (const capacity of [0, -1, 1.5, NaN]) expect(() => new InterruptModuleCache(capacity)).toThrow();
 });
+
+test("rewrite defects are ENOEXEC, but digest failures retain their own cause", async () => {
+  const { startFailure } = await import("../proc/start-failure.js");
+  try { await new InterruptModuleCache().compile(new Uint8Array([0, 1, 2])); throw new Error("expected invalid module"); }
+  catch (error) { expect(startFailure(error)).toMatchObject({ error: "ENOEXEC", code: 8 }); }
+  const digest = crypto.subtle.digest;
+  try {
+    crypto.subtle.digest = (() => Promise.reject(new TypeError("digest unavailable"))) as typeof digest;
+    try { await new InterruptModuleCache().compile(empty()); throw new Error("expected digest rejection"); }
+    catch (error) { expect(startFailure(error)).toMatchObject({ error: "EIO", code: 5 }); }
+  } finally { crypto.subtle.digest = digest; }
+});
+
+test("allocation while decoding a Wasm name stays ENOMEM rather than ENOEXEC", async () => {
+  const { startFailure } = await import("../proc/start-failure.js");
+  const decode = TextDecoder.prototype.decode;
+  const cache = new InterruptModuleCache();
+  try {
+    TextDecoder.prototype.decode = () => { throw new RangeError("injected name allocation failure"); };
+    try { await cache.compile(new Uint8Array(Array.from(empty()).concat([0, 2, 1, 120]))); throw new Error("expected allocation failure"); }
+    catch (error) { expect(startFailure(error)).toMatchObject({ error: "ENOMEM", code: 12 }); }
+  } finally { TextDecoder.prototype.decode = decode; }
+});

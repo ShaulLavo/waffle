@@ -291,14 +291,14 @@ test("transfer transaction commits only after publishing its independently-owned
   expect(f.messages[0]!.transport.data).toEqual({ filesystem: "child" });
 });
 
-test("lazy activation failure releases transferred lifetimes before confirming EACCES", async () => {
+test("lazy activation failure releases transferred lifetimes before confirming EIO", async () => {
   const f = fixture({ activate: async () => { throw new Error("chunk failed"); } });
   const { fd, counts } = f.source(f.root.options.descriptors);
   const pid = f.root.spawn(1, request({ fds: [{ child: 17, parent: fd }] }));
   f.root.options.descriptors.close(fd);
   await expect(f.flush()).rejects.toThrow("chunk failed");
   expect(counts[0]).toBe(0);
-  expect(f.root.wait(1, pid)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(f.root.wait(1, pid)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
 });
 
 test("an admitted independent child survives its parent's exit before lazy activation", async () => {
@@ -400,7 +400,7 @@ test("rejected worker admissions fence host work before publishing safe job comp
   const job = f.root.jobOf(pid);
   expect(f.root.jobEmpty(1, job)).toBe(false);
   finish(); await expect(pending).rejects.toThrow("chunk failed");
-  expect(f.root.wait(1, pid)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
+  expect(f.root.wait(1, pid)).toMatchObject({ kind: "start-failed", error: "EIO", status: null });
   expect(f.root.jobEmpty(1, job)).toBe(true);
 });
 
@@ -507,12 +507,12 @@ test("failed leader imports retain host leader identity and outcome for queued j
   let imports = 0;
   f.codec.import = (token, pid) => { if (++imports === 1) throw new Error("import failed"); return original(token, pid); };
   await expect(f.flush()).rejects.toThrow("import failed");
-  expect(f.supervisor.get(leaderPid)?.result).toMatchObject({ kind: "start-failed", error: "EACCES", status: null });
+  expect(f.supervisor.get(leaderPid)?.result).toMatchObject({ kind: "start-failed", error: "EIO", status: null });
   expect(f.root.jobEmpty(1, job)).toBe(false);
   await f.flush();
   const joined = f.client(f.broker.get(joinedPid)!);
   joined.exit(7); await f.flush();
-  expect(f.root.waitJob(1, job)).toMatchObject({ kind: "start-failed", error: "EACCES", status: null }); await f.flush();
+  expect(f.root.waitJob(1, job)).toMatchObject({ kind: "start-failed", error: "EIO", status: null }); await f.flush();
   expect(f.supervisor.get(joinedPid)).toBeUndefined();
 });
 
@@ -649,7 +649,7 @@ test("a locally failed unposted leader remains authoritative for its admitted sh
   expect(f.supervisor.canWaitJob(ownerPid, failedLeaderJob)).toBe(true);
   const member = f.client(f.broker.get(memberPid)!);
   member.exit(7); await f.flush();
-  expect(f.supervisor.waitJob(ownerPid, failedLeaderJob)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(f.supervisor.waitJob(ownerPid, failedLeaderJob)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
 });
 
 test("worker transfer release follows published commit or failed cancellation confirmation", () => {
@@ -1261,7 +1261,7 @@ test("an unposted failed spawn releases its job when parent death auto-collects 
   let caught: unknown;
   try { client.spawn(root.pid, request({ fds: [{ child: 3, parent: fd }] })); }
   catch (error) { caught = error; }
-  expect(caught).toBe(failure);
+  expect(caught).toMatchObject({ message: failure.message, errno: 29 });
   expect({ held, cancelled, released, posted }).toEqual({ held: false, cancelled: 1, released: 1, posted: 0 });
   expect(counts[0]).toBe(1);
   expect(directorySlots(transport.directory)).toEqual([0]);
@@ -1295,7 +1295,7 @@ test("failed spawn cleanup cannot collect a job reused during admission-fence re
     claimOutcome(root.signals.outcome, { kind: "signaled", code: 9 }); throw failure;
   } }, postMessage() { throw new Error("must not publish"); }, prepareSpawn() { return { release() {
     const failedJob = findDirectoryJob(transport.directory, 2)!;
-    expect(readOutcome(failedJob.outcome)).toMatchObject({ kind: "start-failed", code: 13 });
+    expect(readOutcome(failedJob.outcome)).toMatchObject({ kind: "start-failed", code: 5 });
     collectDirectoryJob(transport.directory, failedJob.slot, failedJob.id);
     replacement = { ...transport, ...reserveDirectoryProcess(transport, 3, root.pid, 3, root.pid) };
     expect(workerProcessState(replacement).jobSlot).toBe(failedJob.slot);
@@ -1303,7 +1303,7 @@ test("failed spawn cleanup cannot collect a job reused during admission-fence re
   let caught: unknown;
   try { client.spawn(root.pid, request({ fds: [{ child: 3, parent: fd }] })); }
   catch (error) { caught = error; }
-  expect(caught).toBe(failure);
+  expect(caught).toMatchObject({ message: failure.message, errno: 29 });
   const state = workerProcessState(replacement);
   expect(state.job).toBe(3);
   expect(readOutcome(state.signals.outcome)).toBeNull();
@@ -1436,7 +1436,7 @@ for (const completion of ["exit", "kill"] as const) {
     else grandchild.exit(7);
     await f.flush();
     expect(abi.imports.wait_job!(job, 1, 80)).toBe(0);
-    expect(view.getInt32(80, true)).toBe(23);
+    expect(view.getInt32(84, true)).toBe(23);
     expect(abi.imports.wait_job!(job, 1, 80)).toBe(-12);
     await f.flush();
     expect(directorySlots(f.transport.directory)).toHaveLength(1);
@@ -1480,3 +1480,27 @@ test("failed executable spawns release their slots through individual waits beyo
     expect(f.broker.get(pid)).toBeUndefined();
   }
 });
+
+for (const [error, name, code] of [[new RangeError("codec allocation"), "ENOMEM", 12], [new Error("codec failed"), "EIO", 5]] as const) {
+  test(`codec construction failure publishes ${name} and waits for its host cleanup fence`, async () => {
+    const transport = createWorkerProcessTransport(), descriptors = new DescriptorTable();
+    const messages: WorkerProcessMessage[] = [];
+    const codec: WorkerDescriptorCodec = { export() {}, import() { throw new Error("unused"); }, discard() {} };
+    const client = new WorkerProcessClient({ transport, descriptors, codec, postMessage(message) { messages.push(message); } });
+    const pid = client.spawn(client.pid, request()), child = messages[0]!.transport, state = workerProcessState(child), job = state.job;
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }), fence = new Promise<void>(resolve => { release = resolve; });
+    const broker = new WorkerProcessBroker({ supervisor() { throw new Error("must not activate"); }, codec() { throw error; },
+      quiesce() { enter(); return fence; } });
+    broker.adoptRoot(transport);
+    try {
+      const pending = broker.handle(messages[0]!).catch(value => value);
+      await entered;
+      expect(readOutcome(state.signals.outcome)).toEqual({ kind: "start-failed", error: name, code, status: null });
+      expect(client.wait(client.pid, pid)).toBeNull();
+      release(); expect(await pending).toBe(error);
+      expect(client.wait(client.pid, pid)).toMatchObject({ kind: "start-failed", error: name });
+      expect(client.waitJob(client.pid, job)).toMatchObject({ kind: "start-failed", error: name });
+    } finally { release(); broker.dispose(); descriptors.dispose(); }
+  });
+}

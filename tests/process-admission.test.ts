@@ -188,7 +188,7 @@ for (const failure of ["activation", "binding", "start"] as const) test(`a ${fai
     await supervisor.waitForExit(workerProcessState(f.root).pid, child.pid);
   }
   expect(f.events.filter(event => event.stage === "rejected")).toMatchObject([{ reason: `${failure}-failed` }]);
-  expect(readOutcome(workerProcessState(child.message.transport).signals.outcome)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(readOutcome(workerProcessState(child.message.transport).signals.outcome)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
   expect(f.events.some(event => event.stage === "launched")).toBe(false);
   expect(Atomics.load(child.lifetime, 0)).toBe(1);
 });
