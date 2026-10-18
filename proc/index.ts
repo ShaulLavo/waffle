@@ -4,7 +4,7 @@ export { SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition
 export { ProcessIdentityAllocator } from "./identity.js";
 export { outcomeWord, readOutcome, claimOutcome, markStarted, startStatus, serializeOutcome, reviveOutcome } from "./outcome.js";
 export type { OutcomeTransfer, OutcomeCellTransfer, OutcomeWordTransfer } from "./outcome.js";
-export { ExecutableFormatError } from "./start-failure.js";
+export { ExecutableFormatError, startFailure } from "./start-failure.js";
 export type { StartFailure } from "./start-failure.js";
 export { waitStatus } from "./wait-status.js";
 export { ExecutableRegistry, ExecutableNotFound, ExecutableNotRunnable } from "./registry.js";
