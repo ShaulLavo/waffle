@@ -42,3 +42,5 @@ int main(void) {
   }
   return 0;
 }
+
+/* CI input-selection measurement. */
