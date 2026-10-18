@@ -596,7 +596,8 @@ export class IndexedDBStorage implements StorageBackend {
         request(metadata.get("format")),
         completed(tx),
       ]);
-    if (format !== undefined && format !== INDEXEDDB_FORMAT)
+    const formatPresent = metadataKeys.includes("format");
+    if (formatPresent && format !== INDEXEDDB_FORMAT)
       throw new VfsError(
         "INVALID_VFS_FORMAT",
         "indexeddb",
@@ -628,7 +629,7 @@ export class IndexedDBStorage implements StorageBackend {
     const newest = recoverIndex(bases, journals, payloadKeys);
     if (
       !newest &&
-      (metadataKeys.length - Number(format !== undefined) > 1 ||
+      (metadataKeys.length - Number(formatPresent) > 1 ||
         journalKeys.length > 0 ||
         dataKeys.length > 0)
     ) {
@@ -657,7 +658,7 @@ export class IndexedDBStorage implements StorageBackend {
         ).length,
       };
     }
-    if (format === undefined) await this.installFormat();
+    if (!formatPresent) await this.installFormat();
     this.initialized = true;
   }
 

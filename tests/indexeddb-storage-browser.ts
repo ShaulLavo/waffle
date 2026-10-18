@@ -674,30 +674,56 @@ function indexedDBCases(
       );
     });
   });
-  test("IndexedDB rejects mismatched identity without replacing saved data", async (name, open) => {
-    const storage = await open();
-    await storage.persist(batch(1, "preserved"));
-    await storage.close();
-    await change(name, "metadata", "format", "another-format-v9");
-    const reopened = await open();
-    await rejects(reopened.load(), "format identity");
-    await reopened.close();
-    if (filesystemWorkerURL !== undefined)
-      await runtimeInvalidStorageCase(name, "indexeddb", filesystemWorkerURL);
-    await raw(name, async (db) => {
+  for (const identity of ["another-format-v9", undefined])
+    test(`IndexedDB rejects identity ${String(identity)} without replacing saved data`, async (name, open) => {
+      const storage = await open();
+      await storage.persist(batch(1, "preserved"));
+      await storage.close();
+      await raw(
+        name,
+        (db) =>
+          new Promise<void>((resolve, reject) => {
+            const tx = db.transaction("metadata", "readwrite", { durability: "strict" });
+            tx.objectStore("metadata").put(identity, "format");
+            tx.oncomplete = () => resolve();
+            tx.onabort = () => reject(tx.error);
+          }),
+      );
+      const reopened = await open();
+      const error = await reopened.load().catch((failure) => failure);
+      await reopened.close();
       assert(
-        (await request(db.transaction("metadata").objectStore("metadata").get("format"))) ===
-          "another-format-v9",
-        "foreign marker remains untouched",
+        error instanceof VfsError && error.code === "INVALID_VFS_FORMAT",
+        "malformed identity produces the typed format error",
+      );
+      if (filesystemWorkerURL !== undefined)
+        await runtimeInvalidStorageCase(name, "indexeddb", filesystemWorkerURL);
+      await raw(name, async (db) => {
+        const metadata = db.transaction("metadata").objectStore("metadata");
+        const [keys, value] = await Promise.all([
+          request(metadata.getAllKeys()),
+          request(metadata.get("format")),
+        ]);
+        assert(keys.includes("format") && value === identity, "malformed marker remains untouched");
+        assert(
+          new TextDecoder().decode(
+            await request(db.transaction("data").objectStore("data").get("file:1")),
+          ) === "preserved",
+          "foreign workspace payload remains untouched",
+        );
+      });
+      await change(name, "metadata", "format", INDEXEDDB_FORMAT);
+      const restored = await open();
+      assert(
+        (await restored.load())?.generation === 1,
+        "rejected open preserves the saved namespace",
       );
       assert(
-        new TextDecoder().decode(
-          await request(db.transaction("data").objectStore("data").get("file:1")),
-        ) === "preserved",
-        "foreign workspace payload remains untouched",
+        new TextDecoder().decode(await restored.read("file:1")) === "preserved",
+        "saved payload remains recoverable",
       );
+      await restored.close();
     });
-  });
   test("IndexedDB does not adopt unmarked unknown metadata", async (name, open) => {
     const storage = await open();
     await storage.persist(batch(1));
