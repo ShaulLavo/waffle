@@ -99,7 +99,7 @@ export class BrowserProcessBroker {
   private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
   private revokedControllers?: Set<number>;
-  private readonly quiescedControllers = new WeakSet<ProcessController>();
+  private readonly quiescedControllers = new Set<number>();
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
   private launches?: Set<number>;
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
@@ -291,6 +291,7 @@ export class BrowserProcessBroker {
       this.completedRoots.delete(pid);
       this.reservedRoots.delete(pid);
       this.controllers.delete(pid);
+      this.quiescedControllers.delete(pid);
       this.revokedControllers?.delete(pid);
       this.roots.delete(pid);
       this.outputs.delete(pid);
@@ -602,11 +603,11 @@ export class BrowserProcessBroker {
     if (pending) return pending;
     const controller = this.controllers.get(pid);
     // The supervisor drops settled fence promises before physical stop is scheduled.
-    // Remember completion on the controller without retaining finished process IDs.
-    if (controller && this.quiescedControllers.has(controller)) return;
+    // Retain completion only while this process still owns its controller.
+    if (controller && this.quiescedControllers.has(pid)) return;
     const complete = () => {
       this.collectRuntimeProcess(pid);
-      if (controller) this.quiescedControllers.add(controller);
+      if (controller) this.quiescedControllers.add(pid);
     };
     let fence: void | Promise<void>;
     try { fence = this.processFence(pid); } catch (error) { fence = Promise.reject(error); }
@@ -675,6 +676,7 @@ export class BrowserProcessBroker {
     if (this.suspended || this.reservedRoots.has(pid)) return;
     const controller = this.controllers.get(pid);
     this.controllers.delete(pid);
+    this.quiescedControllers.delete(pid);
     this.revokedControllers?.delete(pid);
     this.fences.delete(pid);
     try { controller?.retired?.(); } catch (error) { this.report(error); }
@@ -824,7 +826,7 @@ export class BrowserProcessBroker {
         try { controller.retired?.(); } catch (error) { errors.push(error); }
       }
       this.reservedRoots.clear(); this.completedRoots.clear(); this.rootLeases.clear();
-      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.revokedControllers?.clear(); this.controllerStops?.clear(); this.launches?.clear(); this.pendingLaunches?.clear(); this.fences.clear();
+      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.quiescedControllers.clear(); this.revokedControllers?.clear(); this.controllerStops?.clear(); this.launches?.clear(); this.pendingLaunches?.clear(); this.fences.clear();
       if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
     })().then(resolve, reject);
     return disposal;
