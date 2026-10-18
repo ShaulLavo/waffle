@@ -62,7 +62,7 @@ async function openFilesystem(context: BrowserContext, baseURL: string, backend:
 async function waitState(page: Page, expected: string): Promise<void> {
   await page.waitForFunction(status => {
     const current = (globalThis as any).lockTest.state().status;
-    return current === status || current === "failed" || current === "disposed" || (status === "waiting" && current === "ready");
+    return current === status || current === "failed" || current === "disposed" || ((status === "waiting" || status === "failed") && current === "ready");
   }, expected);
   const current = await state(page);
   assert(current.status === expected, `Expected ${expected}, got ${JSON.stringify(current)}`);
