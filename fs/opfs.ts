@@ -1,3 +1,5 @@
+import { OPFS_FORMAT } from "./vfs-format.js";
+import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 /*
  * The sync-access retry constants and retry loop are adapted from
@@ -396,8 +398,18 @@ export class OpfsStorage implements StorageBackend {
     let existed = false,
       ordinarySnapshotExisted = false;
     const snapshots: Snapshot[] = [];
+    let formatPresent = false;
     for await (const [name, handle] of this.metadata.entries()) {
-      if (!name.startsWith("snapshot-") || handle.kind !== "file") continue;
+      if (isFormatEntry(name, handle.kind)) {
+        formatPresent = true;
+        continue;
+      }
+      if (handle.kind !== "file" || !name.startsWith("snapshot-"))
+        throw new VfsError(
+          "INVALID_VFS_FORMAT",
+          "opfs-memory",
+          "Incompatible OPFS metadata layout",
+        );
       existed = true;
       if (name !== "snapshot-initial.json") ordinarySnapshotExisted = true;
       try {
@@ -409,14 +421,17 @@ export class OpfsStorage implements StorageBackend {
         /* An interrupted new snapshot never damages the prior copy. */
       }
     }
+    if (!existed && !formatPresent) await this.assertEmptyData();
     snapshots.sort(
       (a, b) =>
         b.index.generation - a.index.generation ||
         Number(a.name === "snapshot-initial.json") - Number(b.name === "snapshot-initial.json"),
     );
     if (!snapshots.length && ordinarySnapshotExisted)
-      throw new Error(
-        "Existing OPFS filesystem storage is corrupt; no valid snapshot can be recovered",
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "opfs-memory",
+        "Existing OPFS filesystem storage is corrupt or incompatible; no valid snapshot can be recovered",
       );
     // A torn initial empty baseline means no payload write or committed namespace ever started.
     if (!snapshots.length && existed)
@@ -431,7 +446,24 @@ export class OpfsStorage implements StorageBackend {
     // Reload cannot infer physical durability from a previous close-only checkpoint. Only the
     // current tree, not obsolete rollback-only payloads, is owed by a global fsync.
     if (this.snapshots[0]) this.dirty = new Set(keys(this.snapshots[0].index));
+    // Identity is in the directory entry, so an interrupted marker payload cannot tear it.
+    // Adopt the legacy layout only after validating its recoverable snapshots.
+    if (!formatPresent)
+      await this.write(
+        await this.metadata.getFileHandle(`format-${OPFS_FORMAT}`, { create: true }),
+        new Uint8Array(),
+        true,
+      );
     this.initialized = true;
+  }
+  private async assertEmptyData(): Promise<void> {
+    const first = await this.data.entries().next();
+    if (first.done) return;
+    throw new VfsError(
+      "INVALID_VFS_FORMAT",
+      "opfs-memory",
+      "Unrecognized OPFS workspace without a snapshot",
+    );
   }
   private async commit(batch: PersistenceBatch): Promise<void> {
     const old = this.snapshots[0]?.index;
@@ -610,4 +642,15 @@ export class OpfsStorage implements StorageBackend {
       /* Retaining an extra valid snapshot is safe; cleanup retries next time. */
     }
   }
+}
+
+function isFormatEntry(name: string, kind: string): boolean {
+  if (!name.startsWith("format-")) return false;
+  if (name !== `format-${OPFS_FORMAT}` || kind !== "file")
+    throw new VfsError(
+      "INVALID_VFS_FORMAT",
+      "opfs-memory",
+      "Incompatible OPFS filesystem format identity",
+    );
+  return true;
 }

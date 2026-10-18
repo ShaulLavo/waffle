@@ -1,3 +1,5 @@
+import { INDEXEDDB_FORMAT } from "./vfs-format.js";
+import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
   decodeRecord,
@@ -58,7 +60,7 @@ interface State extends TreeState {
   sinceCompaction: number;
 }
 function metadataError(): never {
-  throw new Error("Invalid persisted filesystem metadata");
+  throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid persisted filesystem metadata");
 }
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -342,7 +344,15 @@ export class IndexedDBStorage implements StorageBackend {
       };
       opening.onerror = () => {
         stopObserving();
-        reject(opening.error ?? new Error("Cannot open filesystem storage"));
+        reject(
+          opening.error?.name === "VersionError"
+            ? new VfsError(
+                "INVALID_VFS_FORMAT",
+                "indexeddb",
+                "Incompatible IndexedDB database version",
+              )
+            : (opening.error ?? new Error("Cannot open filesystem storage")),
+        );
       };
       opening.onblocked = () => {
         stopObserving();
@@ -354,6 +364,17 @@ export class IndexedDBStorage implements StorageBackend {
     if (signal?.aborted) {
       db.close();
       throw signal.reason;
+    }
+    if (
+      db.objectStoreNames.length !== 3 ||
+      !["metadata", "journal", "data"].every((store) => db.objectStoreNames.contains(store))
+    ) {
+      db.close();
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB database schema",
+      );
     }
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -564,15 +585,34 @@ export class IndexedDBStorage implements StorageBackend {
     const tx = this.db.transaction(["metadata", "journal", "data"], "readonly");
     const metadata = tx.objectStore("metadata"),
       journal = tx.objectStore("journal");
-    const [first, second, metadataCount, journalValues, journalKeys, dataKeys] = await Promise.all([
-      request(metadata.get(0)),
-      request(metadata.get(1)),
-      request(metadata.count()),
-      request(journal.getAll()),
-      request(journal.getAllKeys()),
-      request(tx.objectStore("data").getAllKeys()),
-      completed(tx),
-    ]);
+    const [first, second, metadataKeys, journalValues, journalKeys, dataKeys, format] =
+      await Promise.all([
+        request(metadata.get(0)),
+        request(metadata.get(1)),
+        request(metadata.getAllKeys()),
+        request(journal.getAll()),
+        request(journal.getAllKeys()),
+        request(tx.objectStore("data").getAllKeys()),
+        request(metadata.get("format")),
+        completed(tx),
+      ]);
+    const formatPresent = metadataKeys.includes("format");
+    if (formatPresent && format !== INDEXEDDB_FORMAT)
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB filesystem format identity",
+      );
+    if (
+      metadataKeys.some(
+        (key) => key !== 0 && key !== 1 && key !== "epoch" && key !== "active" && key !== "format",
+      )
+    )
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB metadata layout",
+      );
     const payloadKeys = new Set(dataKeys.filter((key): key is string => typeof key === "string"));
     const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
@@ -587,8 +627,17 @@ export class IndexedDBStorage implements StorageBackend {
       }),
     );
     const newest = recoverIndex(bases, journals, payloadKeys);
-    if (!newest && (metadataCount > 1 || journalKeys.length > 0 || dataKeys.length > 0)) {
-      throw new Error("Existing filesystem storage is corrupt; no valid snapshot can be recovered");
+    if (
+      !newest &&
+      (metadataKeys.length - Number(formatPresent) > 1 ||
+        journalKeys.length > 0 ||
+        dataKeys.length > 0)
+    ) {
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Existing filesystem storage is corrupt; no valid snapshot can be recovered",
+      );
     }
     if (newest) {
       const nodes = new Map(newest.nodes.map((node) => [node.ino, node]));
@@ -609,7 +658,31 @@ export class IndexedDBStorage implements StorageBackend {
         ).length,
       };
     }
+    if (!formatPresent) await this.installFormat();
     this.initialized = true;
+  }
+
+  /** Adopt only a validated legacy layout, fenced by the same ownership epoch. */
+  private async installFormat(): Promise<void> {
+    this.assertOwner();
+    const tx = this.db.transaction("metadata", "readwrite", { durability: "strict" });
+    this.transactions.add(tx);
+    const done = completed(tx);
+    const metadata = tx.objectStore("metadata");
+    const epoch = metadata.get("epoch");
+    epoch.onsuccess = () => {
+      if (epoch.result !== this.epoch) {
+        this.loseOwnership();
+        return;
+      }
+      metadata.put(INDEXEDDB_FORMAT, "format");
+    };
+    try {
+      await done;
+      this.assertOwner();
+    } finally {
+      this.transactions.delete(tx);
+    }
   }
 
   private async commit(batch: PersistenceBatch): Promise<void> {
