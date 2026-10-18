@@ -169,6 +169,36 @@ test("process activation is lazy, shared, and adopts the runtime identity alloca
   expect("dispose" in runtime.filesystem).toBe(false);
 });
 
+test("page filesystem writeFile supports atomic exclusive creation", async () => {
+  const runtime = create();
+  await runtime.filesystem.writeFile("/exclusive", "winner", { exclusive: true });
+  try { await runtime.filesystem.writeFile("/exclusive", "clobber", { exclusive: true }); throw new Error("exclusive file create unexpectedly succeeded"); }
+  catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  try { await runtime.filesystem.drain(); } catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+
+  await runtime.filesystem.mkdirp("/directory");
+  try { await runtime.filesystem.writeFile("/directory", "not a directory", { exclusive: true }); throw new Error("exclusive directory create unexpectedly succeeded"); }
+  catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  try { await runtime.filesystem.drain(); } catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+
+  const outcomes = await Promise.allSettled([
+    runtime.filesystem.writeFile("/race", "first", { exclusive: true }),
+    runtime.filesystem.writeFile("/race", "second", { exclusive: true }),
+  ]);
+  expect(outcomes.filter(result => result.status === "fulfilled")).toHaveLength(1);
+  expect(outcomes.filter(result => result.status === "rejected")).toHaveLength(1);
+  expect(outcomes.find(result => result.status === "rejected"))
+    .toMatchObject({ reason: { errno: 20 } });
+  try { await runtime.filesystem.drain(); } catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  expect(new TextDecoder().decode(await runtime.filesystem.readFile("/race")))
+    .toMatch(/^(first|second)$/);
+
+  await runtime.filesystem.writeFile("/exclusive", "updated");
+  expect(new TextDecoder().decode(await runtime.filesystem.readFile("/exclusive"))).toBe("updated");
+  expect(() => runtime.filesystem.writeFile("/invalid", "value", { append: true, exclusive: true }))
+    .toThrow("writeFile cannot append and create exclusively");
+});
+
 test("the public admission observer reaches the lazily activated process host unchanged", async () => {
   const onProcessAdmission: NonNullable<RuntimeOptions["onProcessAdmission"]> = () => {};
   const factory = processHost();

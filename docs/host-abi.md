@@ -6,6 +6,17 @@ Waffle exposes browser-side capabilities to WebAssembly guests without requiring
 
 `SharedFilesystem` owns the worker, storage backend, identity allocator and service lifetime. A process receives a `FilesystemIdentity` and descriptor bindings; it never receives the page's filesystem owner or its disposal method. `Runtime.dispose()` fences admitted filesystem work, stops consumers only after quiescence, closes owned services last, and releases the duplicate-bundle ownership guard.
 
+## Host filesystem writes
+
+`SharedFilesystem.writeFile(path, data, mode)` accepts the legacy boolean append mode and the
+options form `{ append?: boolean, exclusive?: boolean }`. `{ exclusive: true }` performs an
+atomic create: the service reuses the same exclusive `MemFS.create` path as WASI and returns
+`EEXIST` (errno 20) when the target is an existing file or directory. The filesystem service
+queue serializes the existence check and insertion, so concurrent exclusive writers have one
+winner. Missing parent directories retain the host API's existing `mkdirp` behavior. Append and
+exclusive modes cannot be combined; ordinary writes continue to replace existing file contents.
+The operation is shared by memory, IndexedDB and OPFS backends.
+
 ## Process admission
 
 `BrowserProcessBroker` reserves identities and descriptor bindings synchronously, then activates the lazy supervisor. Worker bootstrap receives a compiled module, argv, environment, filesystem connection and optional process transport. Source bytes must pass interruption admission; a precompiled module is accepted only with explicit cooperative execution.
