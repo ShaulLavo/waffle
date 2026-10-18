@@ -2,14 +2,15 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
 import { installClientWorker } from "./process-recycling-browser";
+import { closeBrowserResources, stopBrowserResource } from "./process-recycling-browser-runner-control";
 
 // Run from the repository with Bun. Defaults to the full Chromium/Firefox/WebKit matrix.
 // PROCESS_SCRATCH_ROOT selects the parent of a disposable waffle-slot-recycling-* tree.
 // PROCESS_TEST_FILTER selects case labels without changing the browser matrix.
 const engines = { chromium, firefox, webkit };
 type Engine = keyof typeof engines;
-type BrowserOwner = { name: Engine; creation: Promise<Browser>; stopped: boolean };
-type ContextOwner = { creation: Promise<BrowserContext>; stopped: boolean };
+type BrowserOwner = { name: Engine; creation: Promise<Browser>; stopped: boolean; stopping?: Promise<void> };
+type ContextOwner = { creation: Promise<BrowserContext>; stopped: boolean; stopping?: Promise<void> };
 
 // Register ownership and teardown before allocations (including unresolved launch promises).
 const browsers = new Set<BrowserOwner>();
@@ -22,24 +23,17 @@ let server: ReturnType<typeof Bun.serve> | undefined;
 let cleaning: Promise<void> | undefined;
 const previousTmp = process.env.TMPDIR;
 function active(): void { if (cleaning) throw new Error("Process browser runner is shutting down"); }
-async function stopContext(owner: ContextOwner): Promise<void> {
-  const context = await owner.creation.catch(() => undefined);
-  await context?.close(); owner.stopped = true; contexts.delete(owner);
+function stopContext(owner: ContextOwner): Promise<void> {
+  return stopBrowserResource(contexts, owner);
 }
-async function stopBrowser(owner: BrowserOwner): Promise<void> {
-  const browser = await owner.creation.catch(() => undefined);
-  await browser?.close(); owner.stopped = true; browsers.delete(owner);
+function stopBrowser(owner: BrowserOwner): Promise<void> {
+  return stopBrowserResource(browsers, owner);
 }
 function cleanup(): Promise<void> {
   return cleaning ??= (async () => {
     const errors: unknown[] = [];
     try {
-      for (const owner of contexts) {
-        try { await stopContext(owner); } catch (error) { errors.push(error); }
-      }
-      for (const owner of browsers) {
-        try { await stopBrowser(owner); } catch (error) { errors.push(error); }
-      }
+      errors.push(...await closeBrowserResources(contexts, browsers));
     } finally {
       try { server?.stop(true); }
       catch (error) { errors.push(error); }
