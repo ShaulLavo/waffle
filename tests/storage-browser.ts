@@ -234,10 +234,17 @@ function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase
   });
 
   test("IndexedDB waiters close on versionchange instead of blocking database deletion", async name => {
-    const owner = await IndexedDBStorage.open(name);
+    let releaseOwner!: () => void, reportOwner!: () => void;
+    const held = new Promise<void>(resolve => { releaseOwner = resolve; });
+    const acquired = new Promise<void>(resolve => { reportOwner = resolve; });
+    const lockName = `bun-wasm:filesystem:indexeddb:${name}`;
+    // Hold ownership independently of an IDB connection, so versionchange cannot
+    // release it and accidentally turn this queued-waiter case into a grant race.
+    const owner = navigator.locks.request(lockName, { mode: "exclusive" }, async () => { reportOwner(); await held; });
     const controller = new AbortController();
     let result: Promise<{ storage?: IndexedDBStorage; error?: unknown }> | undefined;
     try {
+      await acquired;
       let reportWaiting!: () => void;
       const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
       let ownershipLost = false;
@@ -246,16 +253,17 @@ function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase
         onOwnershipLost() { ownershipLost = true; },
       }).then(storage => ({ storage }), error => ({ error }));
       await reported;
-      // onversionchange must release both connections without manually closing the waiter.
+      const before = await navigator.locks.query();
+      assert(before.pending?.filter(lock => lock.name === lockName).length === 1, "deletion test must hold the waiter in the queue");
       await request(indexedDB.deleteDatabase(name));
       const outcome = await result;
       assert(outcome.storage === undefined && String(outcome.error).includes("database changed"), "waiting connection did not reject versionchange");
       assert(!ownershipLost, "database deletion was misreported as a takeover");
       const snapshot = await navigator.locks.query();
-      assert(!snapshot.pending?.some(lock => lock.name === `bun-wasm:filesystem:indexeddb:${name}`), "versionchange left an abandoned lock request");
+      assert(!snapshot.pending?.some(lock => lock.name === lockName), "versionchange left an abandoned lock request");
     } finally {
       controller.abort();
-      await owner.close();
+      releaseOwner(); await owner;
       await result?.then(outcome => outcome.storage?.close());
     }
   });
