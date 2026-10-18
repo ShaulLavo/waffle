@@ -655,6 +655,23 @@ Each item is a PR-sized unit or a clearly bounded pair where experiment and prod
 
 A step that exceeds one reviewable concern is split without changing its acceptance criteria. Keep default-only optimization separate from WAL correctness changes.
 
+### Named OPFS target: small-file persistence cost
+
+The Step 1 Firefox OPFS W1 baseline exceeds the 600 s budget: 40,201 of
+50,032 files, about 67 files/s, extrapolated about 750 s. The separate r2
+seed-progress diagnostic observed 198,086,656 payload bytes at 599.49 s,
+40,202 native handle opens and closes, peak one live handle, and healthy worker
+heartbeats and ping replies. This is slow progress, not a stalled worker or handle
+exhaustion. The roughly 15 ms per-file open/write/close cost is a named target for
+step 5 batching and measured handle reuse, and steps 6–7 journaling. Compare those
+candidates on the unchanged fixture and fixed 600 s boundary; do not turn the
+extrapolation into a measured completion or extend this baseline's fence.
+Evidence: `firefox-opfs-w1-seed-progress-r2-20261018`, source
+`2ef38ea9403d2610242959a5a9dde95faf94bcc4`, dispatcher gate
+`waffle-vfs-firefox-seed-diagnostic-r2-20261018T115116Z-qj4wpvn7` under the
+external machine-fleet report root. The three genuine baseline timeout rows stay
+blocked; this diagnostic is not a baseline retry.
+
 For every implementation PR:
 
 - Run the repository’s install, prepare, both TypeScript checks, unit tests and size gate from its exclusive worktree.
