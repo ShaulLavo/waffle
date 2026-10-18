@@ -1,6 +1,9 @@
 import { ProcessErrno, ProcessError } from "./types.ts";
 
 const MASK = 0xffffffffn;
+// Executors may replace the global clock with a guest polyfill. Wait deadlines
+// must keep using the host's monotonic clock, independently of guest time.
+const clock = performance.now.bind(performance);
 export function packedControl(id: number, value: number): bigint { return BigInt(id) << 32n | BigInt(value >>> 0); }
 /** Captures an incarnation once. Every mutation compares the complete tagged word; a
  * suspended writer can never adopt the identity of a replacement row. */
@@ -49,14 +52,14 @@ export function controlNotify(word: ControlCells, index = 0): void {
 export function controlWait(word: ControlCells, index: number, expected: number, timeout?: number): string {
   if (!(word instanceof TaggedCells)) return Atomics.wait(word, index, expected, timeout);
   const duration = timeout === undefined || Number.isNaN(timeout) ? Infinity : Math.max(timeout, 0);
-  const deadline = performance.now() + duration;
+  const deadline = clock() + duration;
   // Lifecycle retirement changes a separate word. Bound sleeps so collection between
   // validation and parking cannot leave an old incarnation asleep indefinitely.
   for (;;) {
     if (word.load(index) !== expected) return "not-equal";
-    const remaining = Math.max(0, deadline - performance.now());
+    const remaining = Math.max(0, deadline - clock());
     const result = Atomics.wait(word.cells, index, packedControl(word.id, expected), Math.min(remaining, 10));
     word.load(index);
-    if (result !== "timed-out" || performance.now() >= deadline) return result;
+    if (result !== "timed-out" || clock() >= deadline) return result;
   }
 }
