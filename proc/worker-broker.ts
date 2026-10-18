@@ -32,6 +32,7 @@ export class WorkerProcessBroker {
   /** One root per active directory, not one tombstone per historical process. */
   private readonly directories = new Map<string, WorkerProcessTransport>();
   private readonly failedCleanup = new Set<number>();
+  private readonly rejectedCleanup = new Map<number, { resourcesReleased: boolean; fenced: boolean }>();
   private acknowledgingJob?: number;
   private supervisor?: ProcessSupervisor;
   private activation?: Promise<ProcessSupervisor>;
@@ -317,19 +318,21 @@ export class WorkerProcessBroker {
         this.transports.set(state.pid, transport);
         this.failedCleanup.add(state.pid);
         claimOutcome(state.signals.outcome, startFailure(error));
-        let cleaned = true;
+        const cleanup = { resourcesReleased: true, fenced: false };
+        this.rejectedCleanup.set(state.pid, cleanup);
         for (const token of transport.resources) {
           try {
             if (!codec) throw new Error("descriptor codec unavailable for rejected transfer");
             codec.discard(token);
-          } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
+          } catch (cleanupError) { cleanup.resourcesReleased = false; this.report(cleanupError); }
         }
         await this.options.quiesce?.(state.pid, transport);
-        if (cleaned) {
+        cleanup.fenced = true;
+        if (cleanup.resourcesReleased) {
           this.transports.delete(state.pid);
           this.failedCleanup.delete(state.pid);
-          controlStore(state.confirmed, 0, 1);
-          confirmWorkerProcessJob(transport);
+          this.rejectedCleanup.delete(state.pid);
+          confirmRejectedProcess(transport, cleanup);
         }
       }
       throw error;
@@ -393,15 +396,23 @@ export class WorkerProcessBroker {
         this.report(error);
         continue;
       }
+      let released = true;
       for (const token of transport.resources) {
         try { codec.discard(token); } catch (error) {
+          released = false;
           const gate = cleanup.get(pid);
           if (gate) gate.complete = false;
           this.report(error);
         }
       }
+      const rejected = this.rejectedCleanup.get(pid);
+      if (rejected) {
+        rejected.resourcesReleased = released;
+        confirmRejectedProcess(transport, rejected);
+      }
       wakeWorkerProcess(transport);
     }
+    this.rejectedCleanup.clear();
     this.transports.clear();
     this.directories.clear();
     this.failedCleanup.clear();
@@ -423,4 +434,13 @@ function confirmDisposedProcess(waiting: Promise<unknown>, identity: WorkerProce
       try { onError?.(error); } catch { /* Diagnostics do not own the fence. */ }
     }
   });
+}
+
+/** Rejected spawns have no supervisor record; their own cleanup state owns confirmation. */
+function confirmRejectedProcess(transport: WorkerProcessTransport, cleanup: { resourcesReleased: boolean; fenced: boolean }): void {
+  if (!cleanup.resourcesReleased || !cleanup.fenced) return;
+  try {
+    controlStore(workerProcessState(transport).confirmed, 0, 1);
+    confirmWorkerProcessJob(transport);
+  } catch (error) { if (!isCollectedProcess(error)) throw error; }
 }

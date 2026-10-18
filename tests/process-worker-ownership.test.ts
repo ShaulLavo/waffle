@@ -1504,3 +1504,45 @@ for (const [error, name, code] of [[new RangeError("codec allocation"), "ENOMEM"
     } finally { release(); broker.dispose(); descriptors.dispose(); }
   });
 }
+
+for (const phase of ["before disposal", "after disposal", "failed fence"] as const) {
+  test(`rejected retained tokens confirm only after release and a successful fence ${phase}`, async () => {
+    const transport = createWorkerProcessTransport(), descriptors = new DescriptorTable();
+    const messages: WorkerProcessMessage[] = [], errors: unknown[] = [];
+    const { codec, source } = fakeCodec();
+    const inherited = source(descriptors);
+    const client = new WorkerProcessClient({ transport, descriptors, codec, postMessage(message) { messages.push(message); } });
+    const pid = client.spawn(client.pid, request({ fds: [{ child: 3, parent: inherited.fd }] }));
+    const child = messages[0]!.transport, state = workerProcessState(child), job = state.job;
+    let recover = false, release!: () => void, entered!: () => void;
+    const fence = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });
+    const broker = new WorkerProcessBroker({ supervisor() { throw new Error("must not activate"); },
+      codec() { if (!recover) throw new RangeError("codec allocation"); return codec; },
+      quiesce() { entered(); return phase === "failed fence" ? Promise.reject(new Error("failed fence")) : fence; },
+      onError(error) { errors.push(error); } });
+    broker.adoptRoot(transport);
+    try {
+      const pending = broker.handle(messages[0]!).catch(error => error);
+      await started;
+      expect(client.wait(client.pid, pid)).toBeNull();
+      expect(inherited.counts[0]).toBe(2);
+      if (phase === "before disposal") { release(); await pending; }
+      if (phase === "failed fence") await pending;
+      recover = true;
+      broker.dispose();
+      expect(inherited.counts[0]).toBe(1);
+      if (phase === "after disposal") { expect(client.wait(client.pid, pid)).toBeNull(); release(); await pending; }
+      if (phase === "failed fence") expect(client.wait(client.pid, pid)).toBeNull();
+      else {
+        // Disposal killed the parent, so safe confirmation also retires its orphan child.
+        expectErrno(() => client.wait(client.pid, pid), ProcessErrno.CHILD);
+        expect(directorySlots(child.directory)).not.toContain(child.slot);
+        const group = directoryJob(child.directory, state.jobSlot, job);
+        expect(controlLoad(group.pending)).toBe(0);
+        expect(readOutcome(group.outcome)).toMatchObject({ kind: "start-failed", error: "ENOMEM" });
+        collectDirectoryJob(child.directory, group.slot, job);
+      }
+      expect(errors.length).toBeGreaterThan(0);
+    } finally { release(); broker.dispose(); descriptors.dispose(); }
+  });
+}
