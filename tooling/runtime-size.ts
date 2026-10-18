@@ -1,7 +1,8 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-export const CORE_BUDGET_BYTES = 7_168;
+// Exact inherited targets and lowest-free preopens: 7,119 -> 7,320 B gzip (+201 B).
+export const CORE_BUDGET_BYTES = 7_424;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES) throw new Error(`core exceeds ${CORE_BUDGET_BYTES} B gzip budget by ${gzipBytes - CORE_BUDGET_BYTES} B`);
 }
