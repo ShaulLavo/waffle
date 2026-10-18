@@ -1,13 +1,15 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
-import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
-import { Wasi, WasiExit, type Stream } from "../core";
-import { guardedStream } from "./guarded-stream";
-import { withFileOffset } from "../core/open-file";
-import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
-import { waitStatus } from "../proc/wait-status";
-import type { ProcessExit } from "../proc/types";
-import { fatalInterrupt } from "../interrupt/check";
-import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client";
+import { checkedSignal, ProcessError } from "../proc/types.js";
+import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
+import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
+import { Wasi, WasiExit, type Stream } from "../core/index.js";
+import { guardedStream } from "./guarded-stream.js";
+import { withFileOffset } from "../core/open-file.js";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome.js";
+import { waitStatus } from "../proc/wait-status.js";
+import type { ProcessExit } from "../proc/types.js";
+import { fatalInterrupt } from "../interrupt/check.js";
+import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -50,7 +52,7 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   interrupt?: Int32Array;
   runtimeState: RuntimeWorkerState | null;
   checkActive(): void;
-  defaultSignal(signal: number): never;
+  defaultSignal(signal: number): void;
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
   finish(result: WorkerResult): void;
 }
@@ -69,6 +71,9 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   outcome?: SharedArrayBuffer | BigInt64Array;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
+  /** Nonconsuming handled/fatal readiness. Required for executor-owned signal transports
+   * (interrupt, requestedSignal or signal) when request.runtimeProcess is absent. */
+  interruptPending?(): boolean;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   setup?(context: WorkerSetupContext<R>): void;
   /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
@@ -118,7 +123,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   host.postMessage({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
-  let processSignalExit: typeof import("../proc/abi").ProcessSignalExit | undefined;
+  let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
@@ -130,16 +135,18 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
     ? claimOutcome(outcome, result)
     : localOutcome ??= processOutcome(result);
-  const defaultSignal = (signal: number): never => {
-    if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
+  const defaultSignal = (signal: number): void => {
+    checkedSignal(signal);
     const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
+    if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled") host.postMessage({ type: "default-signal", signal: winner.code });
-    if (executor.signalError) return executor.signalError(signal);
-    throw new RuntimeWorkerSignal(signal);
+    if (executor.signalError) return executor.signalError(winner.code);
+    throw new RuntimeWorkerSignal(winner.code);
   };
   const checkActive = () => {
     const winner = outcome ? readOutcome(outcome) : localOutcome;
@@ -223,8 +230,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (result) { event.preventDefault(); finish(result); }
   };
   try {
-    const runtime = req.runtimeProcess ? await import("../proc/worker-client") : null;
+    const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
+    if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
+      throw new TypeError("WorkerExecutor.interruptPending is required for executor-owned signal transports");
+    }
     const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
     if (runtimeState) {
       outcome = runtimeState.signals.outcome;
@@ -279,9 +289,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (done) return;
     let instance: WebAssembly.Instance;
     const processImports: Record<string, (...args: number[]) => number | void> = {
-      signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -38,
+      signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
       interrupted: () => req.interruptible ? fatalInterrupt(outcome) : executor.signal?.(0, 0) ?? 0,
-      default_signal: defaultSignal,
+      default_signal: signal => {
+        try { defaultSignal(signal!); return 0; }
+        catch (error) { if (error instanceof ProcessError) return -error.errno; throw error; }
+      },
     };
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
@@ -297,23 +310,24 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         checkActive();
       },
       interrupt,
+      interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : executor.interruptPending ? () => executor.interruptPending!() : undefined,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
     });
     const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
-      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec");
-      const { createProcessFilesystemIdentity } = await import("../fs/protocol");
-      const { WorkerPipeHost } = await import("../proc/worker-pipes");
-      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi");
-      const { createRuntimeTerminalCodec } = await import("./runtime-terminals");
+      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec.js");
+      const { createProcessFilesystemIdentity } = await import("../fs/protocol.js");
+      const { WorkerPipeHost } = await import("../proc/worker-pipes.js");
+      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi.js");
+      const { createRuntimeTerminalCodec } = await import("./runtime-terminals.js");
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess, postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
-        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
+        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess, descriptors: wasi.descriptors,

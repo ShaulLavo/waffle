@@ -1,4 +1,4 @@
-import type { Stream } from "../core/descriptors";
+import type { Stream } from "../core/descriptors.js";
 
 /** Preserve endpoint prototypes, private receivers and optional immediate I/O while guarding
  * every admission operation. Cleanup remains available after logical death. */

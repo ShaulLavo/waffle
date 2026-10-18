@@ -1,4 +1,4 @@
-import { bootstrap, preview1Executor, type RuntimeWorkerRequest } from "./worker";
+import { bootstrap, preview1Executor, type RuntimeWorkerRequest } from "./worker.js";
 
 // Dedicated entry point: its entire import graph belongs to the reusable runtime.
 const context = globalThis as unknown as {

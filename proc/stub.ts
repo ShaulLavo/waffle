@@ -1,5 +1,5 @@
-import type { SpawnRequest } from "./types";
-export { ProcessIdentityAllocator } from "./identity";
+import type { SpawnRequest } from "./types.js";
+export { ProcessIdentityAllocator } from "./identity.js";
 
 export interface ProcessStarter { start(pid: number): void | Promise<void> }
 export interface FirstSpawnOptions {

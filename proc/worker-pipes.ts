@@ -1,6 +1,6 @@
-import { OpenDescription } from "../core/descriptors";
-import { PipeController, PipeEndpoint, PipePublicationRegistry, attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, type PipeEndpointHandle, type PipeOptions, type PipePublicationRegistryHandle } from "./pipes";
-import { workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client";
+import { OpenDescription } from "../core/descriptors.js";
+import { PipeController, PipeEndpoint, PipePublicationRegistry, attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, type PipeEndpointHandle, type PipeOptions, type PipePublicationRegistryHandle } from "./pipes.js";
+import { workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client.js";
 
 export interface WorkerPipeDescriptorToken {
   kind: "pipe";

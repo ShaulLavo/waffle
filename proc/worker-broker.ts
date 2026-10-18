@@ -1,10 +1,10 @@
-import { DescriptorTable, type Resource } from "../core/descriptors";
-import { claimOutcome, readOutcome } from "./outcome";
-import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "./admission";
-import { requestSignal } from "./signals";
-import type { ProcessSupervisor } from "./supervisor";
-import { ProcessErrno, ProcessError } from "./types";
-import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client";
+import { DescriptorTable, type Resource } from "../core/descriptors.js";
+import { claimOutcome, readOutcome } from "./outcome.js";
+import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "./admission.js";
+import { requestSignal } from "./signals.js";
+import type { ProcessSupervisor } from "./supervisor.js";
+import { ProcessErrno, ProcessError } from "./types.js";
+import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client.js";
 
 export interface WorkerProcessBrokerOptions {
   /** Reuse the host's supervisor and executable registry, including its legacy Bun children. */
@@ -153,7 +153,7 @@ export class WorkerProcessBroker {
       }
     });
   }
-  private async spawn(transport: WorkerProcessTransport, request: import("./types").SpawnRequest): Promise<void> {
+  private async spawn(transport: WorkerProcessTransport, request: import("./types.js").SpawnRequest): Promise<void> {
     const state = workerProcessState(transport);
     // A repeated message owns no new references. Reject without discarding the retained
     // lifetimes already held by the first accepted process.

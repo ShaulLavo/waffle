@@ -1,5 +1,5 @@
-import type { Readiness, Stream } from "../core/descriptors";
-import { ProcessError } from "./types";
+import type { Readiness, Stream } from "../core/descriptors.js";
+import { ProcessError } from "./types.js";
 
 export const PipeErrno = Object.freeze({ AGAIN: 6, BADF: 8, INVAL: 28, NFILE: 41, PIPE: 64 });
 export type PipeMode = "read" | "write";

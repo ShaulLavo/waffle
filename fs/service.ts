@@ -1,6 +1,6 @@
-import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup";
-import { MemoryBackend, type FilesystemBackend } from "./backend";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, waitForFilesystemQuiescence, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol";
+import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
+import { MemoryBackend, type FilesystemBackend } from "./backend.js";
+import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, waitForFilesystemQuiescence, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol.js";
 
 const mutations = new Set(["preopen", "release", "write", "append", "resize", "setMtime", "create", "link", "removePath", "rename", "writeFile", "mkdirp", "remove", "move"]);
 interface Session {

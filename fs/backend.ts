@@ -1,7 +1,7 @@
-import { normalize, type FileHandle, type ResolvedPath } from "../core";
-import { MemFS, type Node } from "./memory";
-import { FilesystemError } from "./protocol";
-import { SharedFilesystemState, type SharedSegment } from "./shared";
+import { normalize, type FileHandle, type ResolvedPath } from "../core/index.js";
+import { MemFS, type Node } from "./memory.js";
+import { FilesystemError } from "./protocol.js";
+import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
 /** Storage boundary. 3b can add asynchronous loading/commit without changing guest transport. */
 export interface FilesystemBackend {

@@ -1,4 +1,4 @@
-import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup";
+import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 /*
  * The sync-access retry constants and retry loop are adapted from
  * SLICC-kernel, src/fs/opfs.ts at revision 88c5bb3, Apache-2.0. The
@@ -8,8 +8,8 @@ import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup";
 import {
   decodeSnapshot, encodeSnapshot, validatePersistedIndex, validatePersistedNode, validInteger,
   type PersistenceBatch, type PersistedIndex, type PersistedNode, type StorageBackend,
-} from "./storage";
-import type { StorageLockManager } from "./indexeddb";
+} from "./storage.js";
+import type { StorageLockManager } from "./indexeddb.js";
 
 /** OPFS is owned by the filesystem worker, never a document or guest. */
 export interface OpfsStorageOptions {

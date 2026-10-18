@@ -1,6 +1,6 @@
-import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, releaseFilesystemReservation, type FilesystemIdentity, type FilesystemReservation, type FilesystemConnection } from "./protocol";
-import { MissingDataError, MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared";
+import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core/index.js";
+import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, TRANSIENT_HANDLES, State, FilesystemError, FilesystemSection, createFilesystemConnection, errno, isRevoked, pack, reapFilesystem, unpack, wake, releaseFilesystemReservation, type FilesystemIdentity, type FilesystemReservation, type FilesystemConnection } from "./protocol.js";
+import { MissingDataError, MissingSegmentError, SharedFilesystemState, fixedWriteSources, sharedRevoked } from "./shared.js";
 
 const asyncAtomics = Atomics as typeof Atomics & {
   waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };

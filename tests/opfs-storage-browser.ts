@@ -1,6 +1,6 @@
-import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs";
-import type { PersistenceBatch, PersistedNode } from "../fs/storage";
-import { assert, batch, bytes, rejects, runtimeStartupCase, storageContractCases, type BrowserStorageTest } from "./storage-browser";
+import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
+import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
+import { assert, batch, bytes, rejects, runtimeStartupCase, storageContractCases, type BrowserStorageTest } from "./storage-browser.js";
 
 type SyncAccess = {
   getSize(): number;

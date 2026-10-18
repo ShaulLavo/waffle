@@ -1,22 +1,22 @@
-import { executableAccessResult } from "../proc/access";
-import type { FilesystemConnection, FilesystemIdentity } from "../fs/protocol";
-import { isRevoked } from "../fs/protocol";
-import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor";
-import type { ExecutableRegistry } from "../proc/registry";
-import type { ProcessIdentityAllocator } from "../proc/identity";
-import type { ProcessTable } from "../proc/table";
-import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types";
-import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types";
-import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { WorkerProcessBroker } from "../proc/worker-broker";
-import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission";
-import { MAX_ACCESS_REQUESTS, confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
-import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
-import { WorkerPipeBroker } from "../proc/worker-pipes";
-import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes";
-import { createRuntimeTerminalCodec } from "./runtime-terminals";
-import type { RuntimeWorkerRequest } from "./worker";
+import { executableAccessResult } from "../proc/access.js";
+import type { FilesystemConnection, FilesystemIdentity } from "../fs/protocol.js";
+import { isRevoked } from "../fs/protocol.js";
+import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor.js";
+import type { ExecutableRegistry } from "../proc/registry.js";
+import type { ProcessIdentityAllocator } from "../proc/identity.js";
+import type { ProcessTable } from "../proc/table.js";
+import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types.js";
+import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types.js";
+import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals.js";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { WorkerProcessBroker } from "../proc/worker-broker.js";
+import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission.js";
+import { MAX_ACCESS_REQUESTS, confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
+import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
+import { WorkerPipeBroker } from "../proc/worker-pipes.js";
+import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes.js";
+import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
+import type { RuntimeWorkerRequest } from "./worker.js";
 
 export interface ProcessFilesystem {
   fork?(): FilesystemConnection;
@@ -44,7 +44,7 @@ export interface ProcessController {
 export interface BrowserProcessBrokerOptions {
   filesystem: ProcessFilesystem;
   /** Injectable lazy supervisor module loader; pipe-only roots never invoke it. */
-  activate?: () => Promise<typeof import("../proc")>;
+  activate?: () => Promise<typeof import("../proc/index.js")>;
   identities: ProcessIdentityAllocator;
   registry: ExecutableRegistry;
   table: ProcessTable;
@@ -110,14 +110,14 @@ export class BrowserProcessBroker {
   constructor(private readonly options: BrowserProcessBrokerOptions) {
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(), codec: transport => this.descriptorCodec(transport),
-      onPipe: handle => this.pipes.attach(handle as import("../proc/pipes").PipeEndpointHandle),
+      onPipe: handle => this.pipes.attach(handle as import("../proc/pipes.js").PipeEndpointHandle),
       pumpPipes: () => this.pipes.pump(), onError: error => this.report(error),
       onAdmission: options.onProcessAdmission,
       quiesce: (_pid, transport) => options.filesystem.quiesce(this.filesystem(transport)),
     });
   }
   ready(): Promise<ProcessSupervisor> {
-    return this.activation ??= (this.options.activate?.() ?? import("../proc")).then(proc => {
+    return this.activation ??= (this.options.activate?.() ?? import("../proc/index.js")).then(proc => {
       const supervisor = this.supervisor = new proc.ProcessSupervisor({
         registry: this.options.registry, table: this.options.table,
         launch: context => {
@@ -177,7 +177,7 @@ export class BrowserProcessBroker {
           const child = this.children.get(pid);
           return this.suspended || (child ? child.acknowledged || child.failed : this.controllers.get(pid)?.canConfirmExit?.() ?? true);
         },
-        quiesce: pid => this.quiesceProcess(pid), retainJobResults: true,
+        quiesce: pid => this.quiesceProcess(pid),
         startFailed: (pid, error) => {
           const record = this.options.table.get(pid);
           // Descriptor admission and errors from an already-running worker are not startup failures.
@@ -306,7 +306,7 @@ export class BrowserProcessBroker {
     this.transport.adoptRoot(transport);
     this.roots.set(state.pid, transport);
     this.outputs.set(state.pid, options.output);
-    const data = transport.data as { filesystem: FilesystemIdentity; pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle };
+    const data = transport.data as { filesystem: FilesystemIdentity; pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle };
     const registry = data.pipeRegistry ? attachPipePublicationRegistry(data.pipeRegistry) : new PipePublicationRegistry({ wake: state.wake });
     this.registries.set(state.pid, registry);
     transport.data = { ...data, pipeRegistry: registry.handle() };

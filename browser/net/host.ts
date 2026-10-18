@@ -12,8 +12,8 @@ import {
   OK,
   type PeerAddr,
   UNSUPPORTED,
-} from "./protocol";
-import { RingReader } from "./ring";
+} from "./protocol.js";
+import { RingReader } from "./ring.js";
 
 interface Stream {
   chunks: Uint8Array[];

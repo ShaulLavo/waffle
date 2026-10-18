@@ -1,9 +1,9 @@
-import { withFileOffset } from "./open-file";
+import { withFileOffset } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
-import type { FileSystem, FileStat, ResolvedPath } from "./filesystem";
-import { DescriptorTable, type Resource, type Stream } from "./descriptors";
+import type { FileSystem, FileStat, ResolvedPath } from "./filesystem.js";
+import { DescriptorTable, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 
 // errno
@@ -98,8 +98,10 @@ export interface WasiOptions {
   diagnostic?(data: Uint8Array): void;
   /** Blocks the calling thread for `ms` milliseconds when no shared notification exists. */
   sleep(ms: number): void;
-  /** Signal wake hint: poll returns EINTR without consuming the pending signal or this word. */
+  /** Wake word; without interruptPending, a nonzero value is ready. Poll never consumes it. */
   interrupt?: Int32Array;
+  /** Nonconsuming readiness when interrupt is advisory (for example handled process signals). */
+  interruptPending?(): boolean;
   /** Shared readiness wait. Preserve expected, observed before the readiness scan, to avoid
    * losing a publication. Embedders may check process liveness before and after this wait. */
   wait?(word: Int32Array, expected: number, milliseconds: number): void;
@@ -681,7 +683,7 @@ export class Wasi {
             observe(resource && resource.kind !== "file" && resource.kind !== "directory" ? resource.notification : undefined);
           }
           if (this.opts.interrupt) observe(this.opts.interrupt);
-          if (this.opts.interrupt && Atomics.load(this.opts.interrupt, 0) !== 0) return EINTR;
+          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && Atomics.load(this.opts.interrupt, 0) !== 0)) return EINTR;
           let waitMs = Infinity;
           for (const c of clocks) {
             const remaining = c.deadline - nowNs(c.clock);
@@ -701,10 +703,10 @@ export class Wasi {
             }
           }
           if (ready.length > 0) break;
-          if (this.opts.interrupt && Atomics.load(this.opts.interrupt, 0) !== 0) return EINTR;
-          // One shared source wakes directly; distinct sources or legacy streams need a bounded
-          // rescan because Atomics.wait cannot wait on several addresses at once.
-          if (mixedSources) waitMs = Math.min(waitMs, 10);
+          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && Atomics.load(this.opts.interrupt, 0) !== 0)) return EINTR;
+          // Advisory signal hints can repeat the same value after the readiness scan, losing
+          // a notify before wait. Bound rescans for those as well as independent sources.
+          if (mixedSources || this.opts.interruptPending) waitMs = Math.min(waitMs, 10);
           if (notification) {
             if (this.opts.wait) this.opts.wait(notification, observed, waitMs);
             else Atomics.wait(notification, 0, observed, waitMs);

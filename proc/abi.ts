@@ -1,11 +1,12 @@
-import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors";
-import type { FileSystem } from "../core/filesystem";
-import { withFileOffset } from "../core/open-file";
-import { PipeController } from "./pipes";
-import { readOutcome } from "./outcome";
-import { waitStatus } from "./wait-status";
-import { checkedSignalNumber, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types";
+import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
+import type { FileSystem } from "../core/filesystem.js";
+import { withFileOffset } from "../core/open-file.js";
+import { PipeController } from "./pipes.js";
+import { readOutcome } from "./outcome.js";
+import { WasiExit } from "../core/wasi.js";
+import { waitStatus } from "./wait-status.js";
+import { checkedSignalNumber, defaultSignalTerminates, requestSignal, setSignalDisposition, signalPending, takeSignal, type SignalTransport } from "./signals.js";
+import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
 
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
  * module loading and guest startup happen elsewhere, never on this import's stack. */
@@ -95,7 +96,7 @@ export class ProcessABI {
       access_take: request => this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
       access_cancel: request => this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
       spawn: (ptr, length) => this.result(() => options.service.spawn(options.pid, this.spawnRequest(ptr!, length!))),
-      job_of: pid => this.result(() => options.service.jobOf(pid!)),
+      job_of: pid => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: ptr => this.result(() => this.pipe(ptr!)),
       dup: fd => options.descriptors.dup(fd! >>> 0),
       read: (fd, ptr, length) => this.result(() => this.io(false, fd!, ptr!, length!)),
@@ -113,7 +114,7 @@ export class ProcessABI {
       poll: (ptr, count, timeout, out) => this.result(() => this.poll(ptr!, count!, timeout!, out!)),
       interrupted: () => this.interrupted(),
       signal: (signal, mode) => this.signal(signal!, mode!),
-      default_signal: signal => this.defaultSignal(signal!),
+      default_signal: signal => this.result(() => this.defaultSignal(signal!)),
     };
   }
   private result(operation: () => number): number {
@@ -256,7 +257,8 @@ export class ProcessABI {
     const release = wake ? this.options.service.registerJobWake?.(this.options.pid, job, wake) : undefined;
     try {
       for (;;) {
-        const sequence = wake ? Atomics.load(wake, 0) : 0;
+        const word = wake ?? this.options.signals.interrupt;
+        const sequence = Atomics.load(word, 0);
         // Validate/read readiness separately so a host callback growing memory cannot cause
         // a fault after the consuming operation. No guest code runs between validation/reap.
         if (this.options.service.jobEmpty(this.options.pid, job)) {
@@ -265,18 +267,14 @@ export class ProcessABI {
           if (result) { this.view(ptr, 4).setInt32(0, waitStatus(result), true); return 0; }
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return -27; // EINTR; no signal consumed.
-        const word = wake ?? this.options.signals.interrupt;
-        if (this.options.wait) this.options.wait(10, word, wake ? sequence : 0);
-        else Atomics.wait(word, 0, wake ? sequence : 0, 10);
+        if (this.pending()) return -27; // EINTR; no signal consumed.
+        if (this.options.wait) this.options.wait(10, word, sequence);
+        else Atomics.wait(word, 0, sequence, 10);
       }
     } finally { release?.(); }
   }
   private pending(): boolean {
-    for (let signal = 1; signal <= 64; signal++) {
-      if (Atomics.load(this.options.signals.signalState, signal) & SIGNAL_PENDING) return true;
-    }
-    return false;
+    return signalPending(this.options.signals);
   }
   private interrupted(): number {
     // Fatal outcomes are not handled deliveries. Stop before user code can run another handler.
@@ -296,21 +294,29 @@ export class ProcessABI {
     }
     try {
       checkedSignalNumber(signal);
-      if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -22;
+      if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -ProcessErrno.INVAL;
       if (mode === 3) {
         const result = requestSignal(this.options.signals, signal);
         if (result.action === "default" && result.outcome?.kind === "signaled") this.defaultSignal(result.outcome.code);
-      } else if (setSignalDisposition(this.options.signals.signalState, signal, mode)) this.defaultSignal(signal);
+      } else if (setSignalDisposition(this.options.signals.signalState, signal, mode, this.options.signals.interrupt)) this.defaultSignal(signal);
       return 0;
     } catch (error) {
-      if (error instanceof ProcessError) return -22;
+      if (error instanceof ProcessError) return -error.errno;
       throw error;
     }
   }
-  private defaultSignal(signal: number): never {
+  private defaultSignal(signal: number): number {
     checkedSignalNumber(signal);
-    this.options.service.defaultSignal(this.options.pid, signal);
-    throw new ProcessSignalExit(signal);
+    let winner = readOutcome(this.options.signals.outcome);
+    const killed = Atomics.load(this.options.signals.requestedSignal, 0) === Signal.SIGKILL;
+    if (!winner && !killed && !defaultSignalTerminates(signal)) return 0;
+    if (!winner || winner.kind === "signaled") {
+      this.options.service.defaultSignal(this.options.pid, winner?.code ?? (killed ? Signal.SIGKILL : signal));
+      winner = readOutcome(this.options.signals.outcome);
+    }
+    if (!winner) throw new Error("default signal action did not publish a terminal outcome");
+    if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
+    throw new ProcessSignalExit(winner.code);
   }
   private readiness(sub: Subscription): Readiness | null {
     if (sub.kind === 5) {
@@ -358,7 +364,7 @@ export class ProcessABI {
       if (sub.kind > 5) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
-    if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+    if (this.pending()) return 0;
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
     try {
@@ -383,8 +389,9 @@ export class ProcessABI {
       const deadline = timeout === -1 ? Infinity : this.now() + timeout;
       for (;;) {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
-        const sequence = wake ? Atomics.load(wake, 0) : 0;
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+        const word = wake ?? this.options.signals.interrupt;
+        const sequence = Atomics.load(word, 0);
+        if (this.pending()) return 0;
         const ready: { sub: Subscription; flags: number }[] = [];
         for (const sub of subscriptions) {
           const state = this.readiness(sub);
@@ -401,15 +408,14 @@ export class ProcessABI {
           });
           return ready.length;
         }
-        if (Atomics.load(this.options.signals.interrupt, 0) !== 0 || this.pending()) return 0;
+        if (this.pending()) return 0;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
         // Signals, local child exits and filesystem locks may publish on independent cells.
         // Until every source guarantees this common wake, rescan within 10 ms even when pipe
         // readiness uses it. Pipe publications still wake this wait immediately.
         const milliseconds = Math.min(remaining, 10);
-        const word = wake ?? this.options.signals.interrupt;
-        const expected = wake ? sequence : 0;
+        const expected = sequence;
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
         else Atomics.wait(word, 0, expected, milliseconds);
       }

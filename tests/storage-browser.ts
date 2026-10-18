@@ -1,8 +1,8 @@
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
-import { createRuntime, type RuntimeStartupStage } from "../index";
-import { IndexedDBStorage } from "../fs/indexeddb";
-import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage";
-export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser";
+import { createRuntime, type RuntimeStartupStage } from "../index.js";
+import { IndexedDBStorage } from "../fs/indexeddb.js";
+import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
+export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser.js";
 
 export function assert(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 export async function rejects(action: Promise<unknown>, match: string | RegExp): Promise<void> {

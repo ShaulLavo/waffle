@@ -1,4 +1,4 @@
-import type { PreviewAsk, PreviewMessage, PreviewReply } from "./preview-protocol";
+import type { PreviewAsk, PreviewMessage, PreviewReply } from "./preview-protocol.js";
 
 /** Structural bindings keep this module usable without service-worker globals. */
 export interface PreviewClient {

@@ -1,11 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { createRuntime, type Runtime, type RuntimeStartupObserver, type RuntimeStartupStage } from "../index";
-import { SharedFilesystem } from "../browser/shared-fs";
-import { IndexedDBStorage, type StorageLockManager } from "../fs/indexeddb";
-import { MemoryBackend } from "../fs/backend";
-import { installFilesystemWorker } from "../fs/service";
-import { reportRuntimeStartup } from "../fs/startup";
-import type { FilesystemConnection } from "../fs/protocol";
+import { createRuntime, type Runtime, type RuntimeStartupObserver, type RuntimeStartupStage } from "../index.js";
+import { SharedFilesystem } from "../browser/shared-fs.js";
+import { IndexedDBStorage, type StorageLockManager } from "../fs/indexeddb.js";
+import { MemoryBackend } from "../fs/backend.js";
+import { installFilesystemWorker } from "../fs/service.js";
+import { reportRuntimeStartup } from "../fs/startup.js";
+import type { FilesystemConnection } from "../fs/protocol.js";
 
 const originalWorker = globalThis.Worker;
 const workers: TestWorker[] = [];

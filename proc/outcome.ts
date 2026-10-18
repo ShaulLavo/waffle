@@ -1,4 +1,4 @@
-import type { ProcessExit } from "./types";
+import type { ProcessExit } from "./types.js";
 
 /** One atomic terminal decision: zero is running; the low bits encode the outcome kind.
  * Keeping kind and code in one cell avoids a lock or an intermediate unpublished payload.

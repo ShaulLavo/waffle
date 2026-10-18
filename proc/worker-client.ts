@@ -1,9 +1,9 @@
-import { MAX_ACCESS_REQUESTS } from "./access";
-import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
-import { ProcessIdentityAllocator } from "./identity";
-import { claimOutcome, readOutcome } from "./outcome";
-import { requestSignal, type SignalTransport } from "./signals";
-import { ProcessErrno, ProcessError, checkedSignal, type ProcessExit, type SpawnRequest } from "./types";
+import { MAX_ACCESS_REQUESTS } from "./access.js";
+import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors.js";
+import { ProcessIdentityAllocator } from "./identity.js";
+import { claimOutcome, readOutcome } from "./outcome.js";
+import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
+import { ProcessErrno, ProcessError, checkedSignal, type ProcessExit, type SpawnRequest } from "./types.js";
 
 // Fixed shared records make job signalling synchronous even when descendants' messages have
 // not reached the page. Slots never recycle: a delayed capability cannot address a new guest.
@@ -11,7 +11,7 @@ const HEADER_WORDS = 4;
 const RECORD_WORDS = 80;
 const SIGNAL_OFFSET = 9;
 
-export { MAX_ACCESS_REQUESTS } from "./access";
+export { MAX_ACCESS_REQUESTS } from "./access.js";
 // Two words: pending=0, complete=1, retired=2; then the signed WASI result.
 // The broker stores the result before publishing complete and the common wake.
 export type WorkerAccessRequest = { id: number; completion: SharedArrayBuffer };
@@ -384,7 +384,10 @@ export class WorkerProcessClient {
   }
   defaultSignal(pid: number, signal: number): void {
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid default signal process");
-    if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, "invalid default signal");
+    checkedSignal(signal);
+    const settled = readOutcome(this.signals.outcome);
+    const killed = Atomics.load(this.signals.requestedSignal, 0) === 9;
+    if (!settled && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claimOutcome(this.signals.outcome, { kind: "signaled", code: Atomics.load(this.signals.requestedSignal, 0) === 9 ? 9 : signal });
     this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
