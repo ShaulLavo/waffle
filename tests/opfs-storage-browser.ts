@@ -111,13 +111,14 @@ function focusedCases(): OpfsCase[] {
         const owner = await open();
         await owner.persist(batch(1, "durable marker")); await owner.flush();
         const stages: string[] = [];
-        let waitingReported = false;
-        const waiting = open({ onWaiting() { waitingReported = true; }, onStartupStage(stage) { stages.push(stage); } });
-        await new Promise<void>(resolve => queueMicrotask(resolve));
-        assert(waitingReported, "contested open did not report waiting");
+        let reportWaiting!: () => void;
+        const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
+        const waiting = open({ onWaiting: reportWaiting, onStartupStage(stage) { stages.push(stage); } });
+        await reported;
         let settled = false;
         void waiting.then(() => { settled = true; }, () => { settled = true; });
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        const snapshot = await navigator.locks.query();
+        assert(snapshot.pending?.filter(lock => lock.name === `bun-wasm:filesystem:${name}`).length === 1, "contested open did not queue its lock");
         assert(!settled, "contested open acquired before the owner released its lock");
         await owner.close();
         const next = await waiting;
@@ -133,10 +134,10 @@ function focusedCases(): OpfsCase[] {
       async run(name, open) {
         const owner = await open();
         const controller = new AbortController();
-        let waitingReported = false;
-        const waiting = open({ signal: controller.signal, onWaiting() { waitingReported = true; } });
-        await new Promise<void>(resolve => queueMicrotask(resolve));
-        assert(waitingReported, "cancel test did not enter waiting state");
+        let reportWaiting!: () => void;
+        const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
+        const waiting = open({ signal: controller.signal, onWaiting: reportWaiting });
+        await reported;
         controller.abort();
         await rejects(waiting, /AbortError|aborted/i);
         await owner.close();
@@ -149,10 +150,15 @@ function focusedCases(): OpfsCase[] {
       async run(name, open) {
         const owner = await open();
         const stages = [[], [], []] as string[][];
-        let waitingReported = 0;
-        const waiters = stages.map(stagesForWaiter => open({ onWaiting() { waitingReported++; }, onStartupStage(stage) { stagesForWaiter.push(stage); } }));
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
-        assert(waitingReported === stages.length, `not every waiter reported waiting: ${waitingReported}`);
+        let waitingReported = 0, reportAllWaiting!: () => void;
+        const reported = new Promise<void>(resolve => { reportAllWaiting = resolve; });
+        const waiters = stages.map(stagesForWaiter => open({
+          onWaiting() { if (++waitingReported === stages.length) reportAllWaiting(); },
+          onStartupStage(stage) { stagesForWaiter.push(stage); },
+        }));
+        await reported;
+        const snapshot = await navigator.locks.query();
+        assert(snapshot.pending?.filter(lock => lock.name === `bun-wasm:filesystem:${name}`).length === stages.length, "not every waiter queued its lock");
         await owner.close();
         for (const [index, waiter] of waiters.entries()) {
           const storage = await waiter;
