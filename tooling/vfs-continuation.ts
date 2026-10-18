@@ -88,7 +88,7 @@ export function missingBaselineCells(original: readonly Sample[], baseline: stri
   for (const key of BASELINE_CELLS) {
     const rows = before.get(key) ?? [];
     if (complete(rows)) completedCells.push(key);
-    else if (rows.length >= 7 || rows.some(row => row.state !== "eligible" || !primaryMetrics(row.workload, row.vfs).every(metric => Number.isFinite(row.metrics[metric.name]) && row.metrics[metric.name]! > 0))) blockedCells.push(key);
+    else if (rows.length >= 7 || rows.some(row => (row.state !== "eligible" && !(row.state === "invalid environment" && row.reason?.startsWith("controller-interrupted:"))) || !primaryMetrics(row.workload, row.vfs).every(metric => Number.isFinite(row.metrics[metric.name]) && row.metrics[metric.name]! > 0))) blockedCells.push(key);
     else missingCells.push(key);
   }
   return { completedCells, missingCells, blockedCells };
