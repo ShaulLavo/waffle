@@ -83,6 +83,23 @@ export class DescriptorTable {
   get(fd: number): Descriptor | undefined {
     return mapGet(this.entries, fd);
   }
+  /** Non-consuming runtime_proc classification; independent of rights and preview1 filetype. */
+  kind(fd: number): number {
+    const entry = mapGet(this.entries, fd);
+    if (!entry) return -8; // WASI EBADF
+    switch (entry.resource.kind) {
+      case "pipe":
+        return 1;
+      case "terminal":
+        return 2;
+      case "file":
+        return 3;
+      case "directory":
+        return 4;
+      default:
+        return 0;
+    }
+  }
   add(
     description: OpenDescription,
     rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string },

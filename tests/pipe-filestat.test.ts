@@ -5,7 +5,7 @@ import { ProcessABI } from "../proc/abi.js";
 import { PipeController } from "../proc/pipes.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
-import { browserPipeFilestat } from "./pipe-filestat-browser.js";
+import { browserFdKindWithoutProcess, browserPipeFilestat } from "./pipe-filestat-browser.js";
 import {
   assertPipeFilestat,
   pipeFilestatModule,
@@ -52,7 +52,14 @@ test("pipe metadata rights and filestat survive local supervisor inheritance wit
     env: {},
     fs,
     preopens: {},
-    namespaces: { runtime_proc: { pipe: () => -52, spawn: () => -52 } },
+    namespaces: {
+      runtime_proc: {
+        pipe: () => -52,
+        spawn: () => -52,
+        fd_kind: (fd: number) => childWasi.descriptors.kind(fd >>> 0),
+        dup: (fd: number) => childWasi.descriptors.dup(fd >>> 0),
+      },
+    },
     stdout() {},
     stderr() {},
     sleep() {},
@@ -112,7 +119,14 @@ test("stdio pipe bindings already allow filestat without changing their rights",
     fs: new MemFS(),
     preopens: {},
     stdio: { 0: pipe.retain(1, "read"), 1: pipe.retain(1, "write") },
-    namespaces: { runtime_proc: { pipe: () => -52, spawn: () => -52 } },
+    namespaces: {
+      runtime_proc: {
+        pipe: () => -52,
+        spawn: () => -52,
+        fd_kind: (fd: number) => wasi.descriptors.kind(fd >>> 0),
+        dup: (fd: number) => wasi.descriptors.dup(fd >>> 0),
+      },
+    },
     stdout() {},
     stderr() {},
     sleep() {},
@@ -136,3 +150,7 @@ test("stdio pipe bindings already allow filestat without changing their rights",
 test("guest pipe filestat survives transfer to a real child Worker after parent close", async () => {
   await browserPipeFilestat(new URL("./fixtures/pipe-filestat-worker.ts", import.meta.url).href);
 }, 15_000);
+
+test("signal-only worker namespace exposes fd_kind without a process transport", async () => {
+  await browserFdKindWithoutProcess();
+});
