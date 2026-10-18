@@ -13,7 +13,8 @@ function storageWorker(): void {
     try {
       const modulePath = "/tests.js";
       const tests = await import(modulePath) as typeof import("./storage-browser");
-      const suites = { indexeddb: tests.storageTests(), opfs: tests.opfsStorageTests() };
+      // The runner owns this route; imported backend suites do not assume one exists.
+      const suites = { indexeddb: tests.storageTests("/fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
       if (event.data.kind === "list") {
         globalThis.postMessage({ result: {
           indexeddb: suites.indexeddb.map(test => test.label), opfs: suites.opfs.map(test => test.label),
@@ -129,7 +130,8 @@ async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent 
 try {
   const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "darwin" ? resolve(homedir(), "tmp") : tmpdir());
   await mkdir(scratchRoot, { recursive: true });
-  scratchCreation = mkdtemp(resolve(scratchRoot, "waffle-storage-"));
+  // Leave room for Chromium's Unix socket suffix even under a task-specific scratch root.
+  scratchCreation = mkdtemp(resolve(scratchRoot, "w-"));
   scratch = await scratchCreation;
   if (cleaning) throw new Error("Storage runner stopped during scratch creation");
   process.env.TMPDIR = scratch;
@@ -137,14 +139,18 @@ try {
   if (cleaning) throw new Error("Storage runner stopped before server setup");
   if (!build.success) throw new AggregateError(build.logs, "Storage test bundle failed");
   const script = build.outputs[0]!;
+  const fsWorkerBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "../browser/fs-worker.ts")], target: "browser" });
+  if (!fsWorkerBuild.success) throw new AggregateError(fsWorkerBuild.logs, "Filesystem worker bundle failed");
+  const fsWorkerScript = fsWorkerBuild.outputs[0]!;
   const workerScript = `(${storageWorker.toString()})();`;
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+  server = Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.STORAGE_TEST_PORT ?? 0), fetch(request) {
     const path = new URL(request.url).pathname;
     // Match the existing persistence harness's document and worker isolation policy.
     const headers = {
       "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp",
-      "content-type": path === "/tests.js" || path === "/worker.js" ? "text/javascript" : "text/html",
+      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/fs-worker.js" ? "text/javascript" : "text/html",
     };
+    if (path === "/fs-worker.js") return new Response(fsWorkerScript, { headers });
     if (path === "/tests.js") return new Response(script, { headers });
     if (path === "/worker.js") return new Response(workerScript, { headers });
     return new Response("<!doctype html><title>Storage tests</title>", { headers });

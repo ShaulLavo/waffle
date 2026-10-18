@@ -1,3 +1,4 @@
+import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 /*
  * The sync-access retry constants and retry loop are adapted from
  * SLICC-kernel, src/fs/opfs.ts at revision 88c5bb3, Apache-2.0. The
@@ -12,6 +13,7 @@ import type { StorageLockManager } from "./indexeddb.js";
 
 /** OPFS is owned by the filesystem worker, never a document or guest. */
 export interface OpfsStorageOptions {
+  onStartupStage?: RuntimeStartupObserver;
   root?: FileSystemDirectoryHandle;
   storage?: StorageManager;
   locks?: StorageLockManager;
@@ -104,8 +106,10 @@ export class OpfsStorage implements StorageBackend {
     let release!: () => void, acquired!: () => void, refused!: (error: unknown) => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const ready = new Promise<void>((resolve, reject) => { acquired = resolve; refused = reject; });
+    reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
     const lifetime = locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive", ifAvailable: true }, async lock => {
       if (lock === null) { refused(new Error("OPFS filesystem already has a writer in another tab or a page kept in browser history. Close all playground tabs, including this one, then reopen the playground. Saved files are kept.")); return; }
+      reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
       acquired(); await held;
     });
     void lifetime.catch(refused);

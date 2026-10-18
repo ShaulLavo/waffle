@@ -1,6 +1,6 @@
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
-import { assert, batch, bytes, rejects, storageContractCases, type BrowserStorageTest } from "./storage-browser.js";
+import { assert, batch, bytes, rejects, runtimeStartupCase, storageContractCases, type BrowserStorageTest } from "./storage-browser.js";
 
 type SyncAccess = {
   getSize(): number;
@@ -105,6 +105,15 @@ interface OpfsCase {
 
 function focusedCases(): OpfsCase[] {
   return [
+    {
+      label: "refused writer lock emits no acquired startup milestone",
+      async run(name, open) {
+        await open();
+        const stages: string[] = [];
+        await rejects(OpfsStorage.open(name, { onStartupStage(stage) { stages.push(stage); } }), "already has a writer");
+        assert(JSON.stringify(stages) === JSON.stringify(["filesystem-lock-requested"]), `unexpected refused-lock stages: ${JSON.stringify(stages)}`);
+      },
+    },
     {
       label: "more than 253 payload reads use a genuinely bounded sync-handle cache",
       async run(_name, open) {
@@ -504,12 +513,16 @@ function focusedCases(): OpfsCase[] {
   ];
 }
 
-/** The exact same contract callbacks as IndexedDB, plus OPFS-specific fault/resource cases. */
-export function opfsStorageTests(): BrowserStorageTest[] {
+/** Shared contracts and OPFS faults; a consumer-owned worker URL opts in to runtime probes. */
+export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
   const shared: OpfsCase[] = storageContractCases().map(({ label, run }) => ({
     label, run: (name, open) => run(name, open),
   }));
-  return shared.concat(focusedCases()).map(({ label, run }) => ({
+  const runtime: OpfsCase[] = filesystemWorkerURL === undefined ? [] : [{
+    label: "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
+    run: name => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
+  }];
+  return shared.concat(runtime, focusedCases()).map(({ label, run }) => ({
     label,
     async run() {
       const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;
