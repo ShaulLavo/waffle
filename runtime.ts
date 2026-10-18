@@ -8,6 +8,7 @@ import type { FilesystemIdentity } from "./fs/protocol.js";
 import type { ProcessAdmissionObserver } from "./proc/admission.js";
 import type { RuntimeStartupObserver } from "./fs/startup.js";
 export type { RuntimeStartupStage, RuntimeStartupObserver } from "./fs/startup.js";
+export type { SharedFilesystemOptions, SharedFilesystemState, SharedFilesystemStatus, SharedFilesystemStateObserver } from "./browser/shared-fs.js";
 export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission.js";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
@@ -66,7 +67,7 @@ const filesystemCapabilities = {
   createIdentity: "method", fork: "method", connect: "method", revoke: "method", reap: "method",
   quiesce: "async", drain: "async", flush: "async", resolvePath: "async", lookup: "async", readFile: "async", listFiles: "async",
   mkdirp: "async", writeFile: "async", remove: "async", move: "async",
-  ownershipLost: "readonly", onOwnershipLost: "callback",
+  state: "readonly", ownershipLost: "readonly", onOwnershipLost: "callback", onStateChange: "callback",
 } satisfies Record<keyof RuntimeFilesystem, CapabilityKind>;
 const processCapabilities = {
   ready: "async", registerController: "method", reserveRoot: "method", retainRoot: "method", adoptRoot: "async", adoptRuntimeRoot: "async",
@@ -305,10 +306,16 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
       };
+      // Startup may own a queued storage lock indefinitely. Cancel it before drain or
+      // process activation waits for requests that cannot finish without ownership.
+      const cancelledStartup = filesystem.state.status !== "ready" && options.filesystem?.persistence !== false
+        && (options.filesystem?.storage === "opfs" || options.filesystem?.whenBusy === "wait")
+        ? filesystem.dispose() : undefined;
       disposal = Promise.resolve().then(async () => {
         const attempt = async (operation: () => unknown) => {
           try { await operation(); } catch (error) { failures.push(error); }
         };
+        if (cancelledStartup) await attempt(() => cancelledStartup);
         // Initialization is owned too. A factory already in flight cannot escape teardown.
         if (ownedActivation) {
           await attempt(async () => { host = await ownedActivation; });
@@ -317,7 +324,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // A controller may be awaiting an adapter's launch handle when suspension wins.
         // Its late handle and asynchronous stop still belong to this page, not the next owner.
         while (launching.size) await Promise.allSettled(Array.from(launching));
-        await attempt(() => filesystem.drain());
+        if (!cancelledStartup) await attempt(() => filesystem.drain());
         // Keep the backend and relays alive while every admitted filesystem request fences.
         const failuresBeforeFences = failures.length;
         await Promise.all([

@@ -1,12 +1,25 @@
 import { reportRuntimeStartup, isWorkerStartupMessage, type RuntimeStartupObserver } from "../fs/startup.js";
 import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index.js";
 
-export interface SharedFilesystemOptions {
+export type SharedFilesystemStorage = "indexeddb" | "opfs";
+export type SharedFilesystemBusyOptions =
+  | { storage?: "indexeddb"; whenBusy?: "takeover" | "wait" }
+  | { storage: "opfs"; whenBusy?: "wait" };
+
+export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
+export interface SharedFilesystemState {
+  readonly status: SharedFilesystemStatus;
+  readonly error?: Error;
+}
+export type SharedFilesystemStateObserver = (state: SharedFilesystemState) => void | PromiseLike<void>;
+
+export type SharedFilesystemOptions = SharedFilesystemBusyOptions & {
   workerURL?: string | URL;
   persistence?: boolean;
   name?: string;
-  storage?: "indexeddb" | "opfs";
-}
+  /** Called when startup enters or leaves the queued ownership state. */
+  onStateChange?: SharedFilesystemStateObserver;
+};
 
 export interface ResolvedEntry { readonly path: string; readonly kind: "file" | "dir"; }
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
@@ -21,6 +34,7 @@ function workerError(data: unknown): Error | undefined {
 }
 /** Page-side API: never blocks the UI thread and owns no tree. Mutations complete in memory;
  * drain orders service requests, while flush checkpoints their data and metadata to storage.
+ * Operations issued during opening/waiting remain pending until ownership and recovery finish.
  */
 export class SharedFilesystem {
   readonly client: FilesystemClient;
@@ -28,9 +42,22 @@ export class SharedFilesystem {
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
   private fatal: Error | undefined;
+  private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
+  private startupComplete = false;
+  private cancellableStartup = false;
+  private stopped = false;
+  private clientStopped = false;
+  private disposal?: Promise<void>;
+  private finishDisposal?: (error?: Error) => void;
   ownershipLost = false;
   onOwnershipLost?: () => void;
+  onStateChange?: SharedFilesystemStateObserver;
   constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
+    if (options.storage === "opfs" && (options as { whenBusy?: string }).whenBusy === "takeover") {
+      throw new TypeError('OPFS storage only supports whenBusy: "wait"');
+    }
+    this.onStateChange = options.onStateChange;
+    this.cancellableStartup = options.persistence !== false && (options.storage === "opfs" || options.whenBusy === "wait");
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
     const connection = createFilesystemConnection();
     let worker: Worker | undefined;
@@ -40,6 +67,16 @@ export class SharedFilesystem {
       reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
       this.client = client = new FilesystemClient(connection.client);
       worker.addEventListener("message", event => {
+        if (event.data?.type === "filesystem-disposed") {
+          this.finishDisposal?.(typeof event.data.error === "string" ? new Error(event.data.error) : undefined);
+          return;
+        }
+        if (this.disposal || this.stopped) return;
+        if (event.data?.type === "filesystem-state" && (event.data.status === "waiting" || event.data.status === "ready")) {
+          if (event.data.status === "ready") this.startupComplete = true;
+          this.setState(event.data.status);
+          return;
+        }
         if (onStartupStage && isWorkerStartupMessage(event.data)) {
           reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
           return;
@@ -55,11 +92,18 @@ export class SharedFilesystem {
       });
       worker.addEventListener("error", event => {
         event.preventDefault();
-        this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
+        const error = new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`);
+        if (this.disposal) this.finishDisposal?.(error);
+        else this.fail(error);
       });
-      worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
-      const message: { connect: FilesystemConnection; persistence: boolean; name?: string; storage: "indexeddb" | "opfs"; observeStartup?: true } = {
-        connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb",
+      worker.addEventListener("messageerror", () => {
+        const error = new Error("Filesystem worker message could not be decoded");
+        if (this.disposal) this.finishDisposal?.(error);
+        else this.fail(error);
+      });
+      const message: { connect: FilesystemConnection; persistence: boolean; name?: string; storage: SharedFilesystemStorage; whenBusy?: "takeover" | "wait"; observeStartup?: true } = {
+        connect: connection.server, persistence: options.persistence ?? true, name: options.name,
+        storage: options.storage ?? "indexeddb", whenBusy: options.whenBusy,
       };
       if (onStartupStage) message.observeStartup = true;
       reportRuntimeStartup(onStartupStage, "filesystem-connect-requested");
@@ -78,13 +122,35 @@ export class SharedFilesystem {
     }
   }
 
+  get state(): SharedFilesystemState { return this._state; }
+  private setState(status: SharedFilesystemStatus, error?: Error): void {
+    if (this._state.status === status && this._state.error === error) return;
+    const state = error === undefined ? { status } : { status, error };
+    this._state = Object.freeze(state);
+    try {
+      const pending = this.onStateChange?.(this._state);
+      if (pending) void Promise.resolve(pending).catch(() => {});
+    } catch { /* State observers cannot own filesystem startup or teardown. */ }
+  }
   private fail(error: Error): void {
+    if (this.stopped) return;
     this.fatal ??= error;
+    this.setState("failed", this.fatal);
     // A process does not inherit its parent's lifetime. Publish the separate service-wide
     // revocation so even unpublished independent identities wake when this worker dies.
     revokeFilesystemService(this.client.connection);
+    this.stop();
+  }
+  private stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    try { this.stopClient(); }
+    finally { this.worker.terminate(); }
+  }
+  private stopClient(): void {
+    if (this.clientStopped) return;
+    this.clientStopped = true;
     this.client.dispose();
-    this.worker.terminate();
   }
   private assertLive(): void { if (this.fatal) throw this.fatal; }
   createIdentity(): FilesystemIdentity { this.assertLive(); return createFilesystemIdentity(this.client.connection); }
@@ -109,7 +175,7 @@ export class SharedFilesystem {
     try { return await this.client.asyncCall(operation, args, bytes); }
     catch (error) {
       // Revocation wakes pending requests with ECANCELED. The page owns the worker's
-      // actual failure, such as a refused writer lock or unavailable browser storage.
+      // actual failure, such as unavailable or corrupt browser storage.
       this.assertLive();
       throw error;
     }
@@ -140,5 +206,27 @@ export class SharedFilesystem {
     const error = await this.mutate("move", [from, to]);
     if (error) throw new Error(`rename failed: errno ${error}`);
   }
-  dispose(): void { revokeFilesystemService(this.client.connection); this.client.dispose(); this.worker.terminate(); }
+  /** Revoke synchronously. While waiting for ownership, await worker-side abort and cleanup
+   * before terminating so an abandoned page cannot leave a queued Web Lock request. */
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
+    let finish!: (error?: Error) => void;
+    this.disposal = new Promise<void>((resolve, reject) => {
+      finish = error => {
+        this.stop();
+        if (error) reject(error); else resolve();
+      };
+    });
+    this.finishDisposal = finish;
+    this.setState("disposed");
+    revokeFilesystemService(this.client.connection);
+    if (this.stopped || this.startupComplete || !this.cancellableStartup) finish();
+    else {
+      // Wake pending operations now; the worker is retained only to abort/close startup.
+      this.stopClient();
+      try { this.worker.postMessage({ dispose: true }); }
+      catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+    }
+    return this.disposal;
+  }
 }

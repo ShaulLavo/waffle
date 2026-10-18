@@ -18,8 +18,8 @@ time origin for comparison; message delivery can lag behind the recorded milesto
 | `filesystem-connected` | Worker: handling the initial connection request in the existing startup microtask, immediately before invoking the backend factory. This is connection handling, not backend readiness. |
 | `indexeddb-open-requested` | Worker: immediately before starting the existing IndexedDB database-open operation. |
 | `indexeddb-open-resolved` | Worker: after the existing database-open promise resolves, before requesting its writer lock. |
-| `filesystem-lock-requested` | Worker: immediately before the existing Web Locks writer request. |
-| `filesystem-lock-acquired` | Worker: in the granted writer callback, before epoch allocation (IndexedDB) or storage setup (OPFS). A refused OPFS lock does not emit this stage. |
+| `filesystem-lock-requested` | Worker: immediately before the Web Locks writer request. |
+| `filesystem-lock-acquired` | Worker: in the granted writer callback, before epoch allocation (IndexedDB) or storage setup (OPFS). |
 | `filesystem-epoch-requested` | Worker: immediately before creating the existing strict IndexedDB epoch-allocation transaction. |
 | `filesystem-epoch-resolved` | Worker: after that transaction's existing completion wait resolves. |
 | `filesystem-ready` | Worker: after the backend factory has finished (including persistent-tree recovery) and the initial `FilesystemService.connect` has returned. This is not facade construction or shell/application readiness. |
@@ -30,13 +30,25 @@ stages, but no IndexedDB-open or epoch stages. A failure or hang leaves the sequ
 at the last milestone reached; completion stages are never synthesized for failures.
 Later filesystem identities, forks and connections emit no startup milestones.
 
+Lifecycle is separate from optional measurement: `SharedFilesystem.state` exposes the typed
+statuses `opening`, `waiting`, `ready`, `failed` and `disposed`, and
+`SharedFilesystem.onStateChange` observes transitions even without `onStartupStage`.
+A `whenBusy: "wait"` request may stay in `waiting` until another tab releases ownership.
+OPFS defaults to waiting; IndexedDB defaults to takeover and supports opting into waiting.
+Operations issued before readiness remain pending until ownership and recovery. Await
+`SharedFilesystem.dispose()` (or `runtime.dispose()` for a runtime owner) to cancel startup
+through its worker's `AbortSignal`, with abort acknowledgement before worker termination.
+See the [filesystem ownership settings](../README.md#persistence-and-durability) for defaults,
+unsupported OPFS takeover, operation ordering and cancellation.
+
 Observation does not add an initialization wait, storage operation, retry, timeout,
 service owner, or readiness promise. Callbacks are invoked synchronously at their
 milestones but never awaited; throws and rejected promise-like returns are ignored.
 Observers must not reenter runtime control. Slow synchronous callbacks can delay the
 emitting realm, so keep them small. Installing an observer opts the initial worker
 connection into fixed-stage diagnostic messages. Without one there are no diagnostic
-clock reads, messages, event objects or history allocations. The page validates worker
+clock reads, messages, event objects or history allocations. The small, typed filesystem
+lifecycle messages are independent of diagnostics. The page validates worker
 stage names and finite numeric timestamps before delivering the two scalar arguments.
 
 This is measurement, not a fix for startup stalls. Application leases, shell worker

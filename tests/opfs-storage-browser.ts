@@ -106,12 +106,60 @@ interface OpfsCase {
 function focusedCases(): OpfsCase[] {
   return [
     {
-      label: "refused writer lock emits no acquired startup milestone",
+      label: "contested OPFS opens wait, then read saved data after ownership",
       async run(name, open) {
-        await open();
+        const owner = await open();
+        await owner.persist(batch(1, "durable marker")); await owner.flush();
         const stages: string[] = [];
-        await rejects(OpfsStorage.open(name, { onStartupStage(stage) { stages.push(stage); } }), "already has a writer");
-        assert(JSON.stringify(stages) === JSON.stringify(["filesystem-lock-requested"]), `unexpected refused-lock stages: ${JSON.stringify(stages)}`);
+        let waitingReported = false;
+        const waiting = open({ onWaiting() { waitingReported = true; }, onStartupStage(stage) { stages.push(stage); } });
+        await new Promise<void>(resolve => queueMicrotask(resolve));
+        assert(waitingReported, "contested open did not report waiting");
+        let settled = false;
+        void waiting.then(() => { settled = true; }, () => { settled = true; });
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        assert(!settled, "contested open acquired before the owner released its lock");
+        await owner.close();
+        const next = await waiting;
+        try {
+          assert(stages.includes("filesystem-lock-acquired"), `waiter did not acquire after release: ${JSON.stringify(stages)}`);
+          assert((await next.load())?.generation === 1, "waiter did not recover the saved generation");
+          assert(new TextDecoder().decode(await next.read("file:1")) === "durable marker", "waiter did not recover saved bytes");
+        } finally { await next.close(); }
+      },
+    },
+    {
+      label: "cancelling a waiting OPFS open aborts its queued lock",
+      async run(name, open) {
+        const owner = await open();
+        const controller = new AbortController();
+        let waitingReported = false;
+        const waiting = open({ signal: controller.signal, onWaiting() { waitingReported = true; } });
+        await new Promise<void>(resolve => queueMicrotask(resolve));
+        assert(waitingReported, "cancel test did not enter waiting state");
+        controller.abort();
+        await rejects(waiting, /AbortError|aborted/i);
+        await owner.close();
+        const next = await open();
+        await next.close();
+      },
+    },
+    {
+      label: "several waiting OPFS opens take ownership in turn",
+      async run(name, open) {
+        const owner = await open();
+        const stages = [[], [], []] as string[][];
+        let waitingReported = 0;
+        const waiters = stages.map(stagesForWaiter => open({ onWaiting() { waitingReported++; }, onStartupStage(stage) { stagesForWaiter.push(stage); } }));
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        assert(waitingReported === stages.length, `not every waiter reported waiting: ${waitingReported}`);
+        await owner.close();
+        for (const [index, waiter] of waiters.entries()) {
+          const storage = await waiter;
+          try {
+            assert(stages[index]!.includes("filesystem-lock-acquired"), `waiter ${index} did not acquire: ${JSON.stringify(stages[index])}`);
+          } finally { await storage.close(); }
+        }
       },
     },
     {
@@ -526,13 +574,19 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
     label,
     async run() {
       const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;
-      const opened: OpfsStorage[] = [];
-      const open = async (options?: OpfsStorageOptions) => {
-        const storage = await OpfsStorage.open(name, options); opened.push(storage); return storage;
+      const opened: { cancel: AbortController; pending: Promise<OpfsStorage> }[] = [];
+      const open = (options: OpfsStorageOptions = {}) => {
+        const cancel = new AbortController();
+        const signal = options.signal ? AbortSignal.any([cancel.signal, options.signal]) : cancel.signal;
+        const pending = OpfsStorage.open(name, { ...options, signal });
+        opened.push({ cancel, pending });
+        return pending;
       };
       try { await run(name, open); }
       finally {
-        for (const storage of opened) await storage.close().catch(() => {});
+        // Failure owns queued opens too: abort pending requests before closing granted owners.
+        for (const entry of opened) entry.cancel.abort();
+        for (const entry of opened) await entry.pending.then(storage => storage.close(), () => {}).catch(() => {});
         await OpfsStorage.delete(name);
       }
     },

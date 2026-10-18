@@ -9,7 +9,7 @@ const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload
 
 /** The subset of Web Locks needed by this backend; injectable without an unsafe fallback. */
 export interface StorageLockManager {
-  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true } | { mode: "exclusive"; steal: true },
+  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true } | { mode: "exclusive"; steal: true } | { mode: "exclusive"; signal?: AbortSignal },
     callback: (lock: unknown | null) => Promise<T>): Promise<T>;
 }
 export interface IndexedDBStorageOptions {
@@ -19,6 +19,9 @@ export interface IndexedDBStorageOptions {
   compactEvery?: number;
   onOwnershipLost?: () => void;
   onStartupStage?: RuntimeStartupObserver;
+  signal?: AbortSignal;
+  onWaiting?: () => void;
+  whenBusy?: "takeover" | "wait";
 }
 interface Journal {
   version: 1;
@@ -221,8 +224,13 @@ export class IndexedDBStorage implements StorageBackend {
     const ready = new Promise<IndexedDBStorage>((resolve, reject) => { acquired = resolve; refused = reject; });
     let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
     let lost = false;
+    let granted = false;
     reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
-    const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, { mode: "exclusive", steal: true }, async () => {
+    const lockOptions = options.whenBusy === "wait"
+      ? { mode: "exclusive" as const, signal: options.signal }
+      : { mode: "exclusive" as const, steal: true as const };
+    const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, lockOptions, async () => {
+      granted = true;
       if (lost) return;
       reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
@@ -244,11 +252,16 @@ export class IndexedDBStorage implements StorageBackend {
       acquired(owner);
       await held;
     });
+    queueMicrotask(() => {
+      if (options.whenBusy === "wait" && !granted && !lost && !options.signal?.aborted) {
+        try { options.onWaiting?.(); } catch { /* Observation cannot change ownership. */ }
+      }
+    });
     void lifetime.catch(error => {
       lost = true;
       try { allocation?.abort(); } catch { /* A completed allocation is already durable. */ }
       owner?.loseOwnership();
-      const stolen = error instanceof DOMException && error.name === "AbortError";
+      const stolen = !options.signal?.aborted && error instanceof DOMException && error.name === "AbortError";
       refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
       if (stolen && !owner) options.onOwnershipLost?.();
     });

@@ -141,7 +141,7 @@ export async function runtimeStartupCase(name: string, storage: "indexeddb" | "o
   } finally {
     await runtime.dispose();
     // Worker.terminate() returns before Chromium releases that worker's Web Locks.
-    // Fence test cleanup before the outer fixture uses OPFS's non-waiting delete path.
+    // Fence test cleanup before the outer fixture deletes the OPFS workspace.
     if (storage === "opfs") await navigator.locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive" }, () => {});
   }
 }
@@ -154,6 +154,27 @@ function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase
     test("runtime startup milestones cross the actual filesystem worker boundary", name => runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
     test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", name => runtimeStartupCase(name, false, filesystemWorkerURL));
   }
+  test("IndexedDB whenBusy wait queues ownership without takeover", async (name) => {
+    const owner = await IndexedDBStorage.open(name);
+    const controller = new AbortController();
+    let waiting: Promise<IndexedDBStorage> | undefined;
+    try {
+      await owner.persist(batch(1, "durable marker")); await owner.flush();
+      let reportWaiting!: () => void;
+      const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
+      waiting = IndexedDBStorage.open(name, { whenBusy: "wait", signal: controller.signal, onWaiting: reportWaiting });
+      await reported;
+      await owner.close();
+      const next = await waiting;
+      assert((await next.load())?.generation === 1, "IndexedDB waiter did not recover the saved generation");
+      assert(new TextDecoder().decode(await next.read("file:1")) === "durable marker", "IndexedDB waiter did not recover saved bytes");
+    } finally {
+      controller.abort();
+      await owner.close();
+      await waiting?.then(storage => storage.close(), () => {});
+    }
+  });
+
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };

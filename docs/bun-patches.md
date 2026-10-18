@@ -7,7 +7,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `core/`, `fs/`, `proc/`, `interrupt/` | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked. |
 | `browser/net/` | Original adapter | Generic ring, HTTP framing, fetch and host transport. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle. |
 | `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
-| `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
+| `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation, queued lock ownership/cancellation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `core/memory-views.js` | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity. |
 
 ## SLICC-kernel Apache-2.0 notice
@@ -51,3 +51,12 @@ startup stages around existing operations without copying upstream implementatio
 or changing storage policy. The SLICC-kernel retry fragment in `fs/opfs.ts` remains
 unchanged; the new lock milestones are outside that adapted fragment. See
 [runtime-startup.md](runtime-startup.md) for the clock and stage boundaries.
+
+## Filesystem ownership policy
+
+The queued ownership requests, `whenBusy` settings, lifecycle state and abort/disposal
+handshake in `fs/{opfs,indexeddb,service}.ts`, `browser/{shared-fs,fs-worker}.ts` and
+`runtime.ts` are original Waffle adapters. They change only original ownership glue;
+the SLICC-kernel sync-handle retry fragment at revision `88c5bb3` is unchanged. Storage
+setup occurs under its lock, and cancellation closes acquired resources before releasing
+that ownership. No new upstream implementation was copied.
