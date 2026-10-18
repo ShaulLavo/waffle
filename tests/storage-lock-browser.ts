@@ -12,8 +12,18 @@ type StateRecord = {
 const NativeWorker = globalThis.Worker;
 let terminations = 0;
 let clientDisposals = 0;
+let filesystemWorker: Worker | undefined;
+const probes: string[] = [];
+let disposal: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = { status: "idle" };
 // Instrument calls without replacing the actual browser worker or storage implementation.
 globalThis.Worker = class extends NativeWorker {
+  constructor(url: string | URL, options?: WorkerOptions) {
+    super(url, options);
+    filesystemWorker = this;
+    this.addEventListener("message", event => {
+      if (typeof event.data?.type === "string") probes.push(event.data.type);
+    });
+  }
   terminate(): void { terminations++; super.terminate(); }
 };
 let fs: SharedFilesystem | undefined;
@@ -51,10 +61,10 @@ function lockName(backend: Backend, name: string): string {
   return backend === "indexeddb" ? `bun-wasm:filesystem:indexeddb:${name}` : `bun-wasm:filesystem:${name}`;
 }
 
-async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<void> {
+async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecovery = false): Promise<void> {
   if (fs) throw new Error("filesystem already started");
   const options: SharedFilesystemOptions = {
-    workerURL: "/fs-worker.js",
+    workerURL: gatedRecovery ? "/recovery-fs-worker.js" : "/fs-worker.js",
     name,
     storage: backend,
     onStateChange: record,
@@ -74,6 +84,20 @@ async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<v
   operation: () => operation,
   lockName,
   resources: () => ({ terminations, clientDisposals }),
+  probes: () => probes,
+  disposal: () => disposal,
+  beginDispose(): void {
+    if (disposal.status !== "idle") throw new Error("disposal already started");
+    disposal = { status: "pending" };
+    void requireFilesystem().dispose().then(
+      () => { disposal = { status: "fulfilled" }; },
+      error => { disposal = { status: "rejected", error: errorText(error) }; },
+    );
+  },
+  releaseRecovery(): void {
+    if (!filesystemWorker) throw new Error("filesystem worker has not been created");
+    filesystemWorker.postMessage({ probeReleaseRecovery: true });
+  },
   async seed(): Promise<string> {
     const filesystem = requireFilesystem();
     await filesystem.writeFile("/saved", "durable marker");

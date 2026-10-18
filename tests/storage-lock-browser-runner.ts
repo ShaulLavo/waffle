@@ -51,12 +51,12 @@ async function pageFixture(context: BrowserContext, baseURL: string): Promise<Pa
   await page.waitForFunction(() => (globalThis as any).lockTest !== undefined);
   return page;
 }
-async function startPage(page: Page, backend: Backend, name: string, whenBusy?: "wait" | "takeover"): Promise<void> {
-  await page.evaluate(({ backend, name, whenBusy }) => (globalThis as any).lockTest.start(backend, name, whenBusy), { backend, name, whenBusy });
+async function startPage(page: Page, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery = false): Promise<void> {
+  await page.evaluate(({ backend, name, whenBusy, gatedRecovery }) => (globalThis as any).lockTest.start(backend, name, whenBusy, gatedRecovery), { backend, name, whenBusy, gatedRecovery });
 }
-async function openFilesystem(context: BrowserContext, baseURL: string, backend: Backend, name: string, whenBusy?: "wait" | "takeover"): Promise<Page> {
+async function openFilesystem(context: BrowserContext, baseURL: string, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery = false): Promise<Page> {
   const page = await pageFixture(context, baseURL);
-  await startPage(page, backend, name, whenBusy);
+  await startPage(page, backend, name, whenBusy, gatedRecovery);
   return page;
 }
 async function waitState(page: Page, expected: string): Promise<void> {
@@ -232,6 +232,69 @@ async function indexedDBTakeover(context: BrowserContext, baseURL: string, name:
   } finally { await closePages(pages); }
 }
 
+async function waitProbe(page: Page, probe: string): Promise<void> {
+  await page.waitForFunction(probe => (globalThis as any).lockTest.probes().includes(probe), probe);
+}
+
+async function recoveryOwnershipLoss(context: BrowserContext, baseURL: string, name: string, timing: "disposing" | "recovering" | "ready"): Promise<void> {
+  const pages: Page[] = [];
+  try {
+    const owner = await openFilesystem(context, baseURL, "indexeddb", name, "wait", true); pages.push(owner);
+    await waitProbe(owner, "probe-recovery");
+    const snapshot = await query(owner);
+    assert(snapshot.held?.some((lock: any) => lock.name === lockName("indexeddb", name)), "recovery gate entered without owning the workspace lock");
+    assert((await state(owner)).status === "opening", "gated owner became ready before recovery finished");
+    if (timing === "ready") {
+      await owner.evaluate(() => (globalThis as any).lockTest.releaseRecovery());
+      await assertReady(owner, "owner after gated recovery");
+      await owner.evaluate(() => (globalThis as any).lockTest.seed());
+    } else {
+      await owner.evaluate(() => (globalThis as any).lockTest.beginWrite("must never be replayed"));
+      assert((await owner.evaluate(() => (globalThis as any).lockTest.operation())).status === "pending", "guest work escaped gated recovery");
+      if (timing === "disposing") {
+        await owner.evaluate(() => (globalThis as any).lockTest.beginDispose());
+        await waitProbe(owner, "probe-dispose-received");
+        const beforeLoss = await owner.evaluate(() => ({ disposal: (globalThis as any).lockTest.disposal(), resources: (globalThis as any).lockTest.resources() }));
+        assert(beforeLoss.disposal.status === "pending" && beforeLoss.resources.terminations === 0, `startup disposal did not retain the recovering worker: ${JSON.stringify(beforeLoss)}`);
+      }
+    }
+    const successor = await openFilesystem(context, baseURL, "indexeddb", name); pages.push(successor);
+    // Observe the actual worker message, even when the page ignores it during disposal.
+    await waitProbe(owner, "filesystem-ownership-lost");
+    if (timing !== "ready") {
+      // Without disposal the page terminates its failed worker; posting to that worker
+      // is harmless. In the disposal race this releases the retained cleanup path.
+      await owner.evaluate(() => (globalThis as any).lockTest.releaseRecovery());
+    }
+    if (timing === "disposing") {
+      await owner.waitForFunction(() => (globalThis as any).lockTest.disposal().status !== "pending");
+      const disposal = await owner.evaluate(() => (globalThis as any).lockTest.disposal());
+      assert(disposal.status === "fulfilled", `ownership loss stranded startup disposal: ${JSON.stringify(disposal)}`);
+      await waitProbe(owner, "filesystem-disposed");
+      assert((await state(owner)).status === "disposed", "ownership loss replaced disposed state");
+    } else {
+      await waitState(owner, "failed");
+      assert((await state(owner)).error?.includes("opened in another tab"), "ownership loss did not expose its typed failure");
+      await owner.evaluate(() => (globalThis as any).lockTest.beginDispose());
+      await owner.waitForFunction(() => (globalThis as any).lockTest.disposal().status !== "pending");
+      assert((await owner.evaluate(() => (globalThis as any).lockTest.disposal())).status === "fulfilled", "failed owner's disposal did not settle");
+    }
+    await dispose(owner);
+    const resources = await owner.evaluate(() => (globalThis as any).lockTest.resources());
+    assert(resources.terminations === 1 && resources.clientDisposals === 1, `ownership loss released resources more than once: ${JSON.stringify(resources)}`);
+    await assertReady(successor, "takeover successor");
+    if (timing !== "ready") {
+      await owner.waitForFunction(() => (globalThis as any).lockTest.operation().status === "rejected");
+      const operation = await owner.evaluate(() => (globalThis as any).lockTest.operation());
+      if (timing === "disposing") assert(operation.errno === 11, `cancelled recovery operation did not reject with ECANCELED: ${JSON.stringify(operation)}`);
+      else assert(operation.error?.includes("opened in another tab"), `recovery operation did not report ownership loss: ${JSON.stringify(operation)}`);
+      assert(await successor.evaluate(() => (globalThis as any).lockTest.readQueued()) === undefined, "failed recovery replayed a queued mutation");
+    } else {
+      assert(await successor.evaluate(() => (globalThis as any).lockTest.readSaved()) === "durable marker", "ready owner's flushed data did not survive takeover");
+    }
+  } finally { await closePages(pages); }
+}
+
 async function opfsTakeoverRejected(context: BrowserContext, baseURL: string, name: string): Promise<void> {
   const page = await pageFixture(context, baseURL);
   try {
@@ -258,6 +321,9 @@ function cases(): TestCase[] {
     { backend: "indexeddb", label: "default takeover still fences the old owner", run: (context, url, name) => indexedDBTakeover(context, url, name) },
     { backend: "indexeddb", label: "explicit takeover still fences the old owner", run: (context, url, name) => indexedDBTakeover(context, url, name, "takeover") },
     { backend: "opfs", label: "takeover is rejected for OPFS", run: (context, url, name) => opfsTakeoverRejected(context, url, name) },
+    { backend: "indexeddb", label: "ownership loss during gated recovery acknowledges disposal", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "disposing") },
+    { backend: "indexeddb", label: "ownership loss during gated recovery fails without disposal", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "recovering") },
+    { backend: "indexeddb", label: "ownership loss after gated recovery cleans up once", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "ready") },
   );
   return result;
 }
@@ -313,7 +379,19 @@ try {
   if (!fixtureBuild.success) throw new AggregateError(fixtureBuild.logs, "Storage lock fixture build failed");
   const workerBuild = await Bun.build({ entrypoints: [resolve(source, "browser/fs-worker.ts")], target: "browser" });
   if (!workerBuild.success) throw new AggregateError(workerBuild.logs, "Filesystem worker build failed");
-  const bundles = new Map([["/fixture.js", await fixtureBuild.outputs[0]!.text()], ["/fs-worker.js", await workerBuild.outputs[0]!.text()]]);
+  const recoveryBuild = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "storage-lock-recovery-worker.ts")], target: "browser",
+    plugins: [{ name: "waffle-recovery-source", setup(build) {
+      build.onResolve({ filter: /^\.\.\/fs\/persistent\.js$/ }, () => ({ path: resolve(source, "fs/persistent.ts") }));
+      build.onResolve({ filter: /^\.\.\/browser\/fs-worker\.js$/ }, () => ({ path: resolve(source, "browser/fs-worker.ts") }));
+    } }],
+  });
+  if (!recoveryBuild.success) throw new AggregateError(recoveryBuild.logs, "Gated recovery worker build failed");
+  const bundles = new Map([
+    ["/fixture.js", await fixtureBuild.outputs[0]!.text()],
+    ["/fs-worker.js", await workerBuild.outputs[0]!.text()],
+    ["/recovery-fs-worker.js", await recoveryBuild.outputs[0]!.text()],
+  ]);
   if (cleaning) throw new Error("Storage lock runner stopped before server setup");
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
