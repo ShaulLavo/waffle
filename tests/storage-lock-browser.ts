@@ -11,6 +11,7 @@ type StateRecord = {
 
 const NativeWorker = globalThis.Worker;
 let terminations = 0;
+let clientDisposals = 0;
 // Instrument calls without replacing the actual browser worker or storage implementation.
 globalThis.Worker = class extends NativeWorker {
   terminate(): void { terminations++; super.terminate(); }
@@ -35,6 +36,8 @@ function requireFilesystem(): SharedFilesystem {
 // probes let its owner/control pages start; contested pages must still expose the
 // new typed waiting state and cannot pass by merely leaving a request pending.
 function observeOperationalReadiness(filesystem: SharedFilesystem): void {
+  const disposeClient = filesystem.client.dispose.bind(filesystem.client);
+  filesystem.client.dispose = () => { clientDisposals++; disposeClient(); };
   const hasTypedState = () => (filesystem as { state?: unknown }).state !== undefined;
   void filesystem.listFiles().then(
     () => { if (!hasTypedState()) state = { status: "ready" }; },
@@ -70,7 +73,7 @@ async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<v
   states: () => states,
   operation: () => operation,
   lockName,
-  terminations: () => terminations,
+  resources: () => ({ terminations, clientDisposals }),
   async seed(): Promise<string> {
     const filesystem = requireFilesystem();
     await filesystem.writeFile("/saved", "durable marker");

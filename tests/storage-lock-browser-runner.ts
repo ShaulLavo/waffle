@@ -159,8 +159,9 @@ async function cancelWhileWaiting(context: BrowserContext, baseURL: string, back
     assert(afterDispose.status === "disposed", `waiting dispose did not settle as disposed: ${JSON.stringify(afterDispose)}`);
     const disposedCount = (await waiter.evaluate(() => (globalThis as any).lockTest.states())).filter((item: any) => item.status === "disposed").length;
     assert(disposedCount === 1, `dispose was reported ${disposedCount} times`);
-    const terminations = await waiter.evaluate(() => (globalThis as any).lockTest.terminations());
-    assert(terminations === 1, `waiting disposal terminated its worker ${terminations} times`);
+    const resources = await waiter.evaluate(() => (globalThis as any).lockTest.resources());
+    assert(resources.terminations === 1, `waiting disposal terminated its worker ${resources.terminations} times`);
+    assert(resources.clientDisposals === 1, `waiting disposal released its client ${resources.clientDisposals} times`);
     const third = await pageFixture(context, baseURL); pages.push(third);
     const locks = await query(third);
     const applicationLock = lockName(backend, name);
