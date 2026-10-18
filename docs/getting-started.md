@@ -36,7 +36,7 @@ Create `app.ts`:
 import { createRuntime } from "waffle";
 
 const runtime = createRuntime({
-  filesystem: { workerURL: "/fs-worker.js", persistence: false },
+  filesystem: { workerURL: "/fs-worker.js", vfs: "memory" },
 });
 try {
   await runtime.filesystem.writeFile("/hello.txt", "hello from Waffle");

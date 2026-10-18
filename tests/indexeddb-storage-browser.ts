@@ -1,5 +1,5 @@
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
-import { createRuntime, type RuntimeStartupStage } from "../index.js";
+import { createRuntime, VfsError, type VfsName, type RuntimeStartupStage } from "../index.js";
 import {
   FilesystemClient,
   FilesystemService,
@@ -357,8 +357,7 @@ export async function runtimeStartupCase(
   const runtime = createRuntime({
     filesystem: {
       name,
-      persistence: storage !== false,
-      storage: storage === false ? undefined : storage,
+      vfs: storage === false ? "memory" : storage === "opfs" ? "opfs-memory" : "indexeddb",
       workerURL: new URL(workerURL, location.href),
     },
     onStartupStage(stage, timestamp) {
@@ -405,6 +404,86 @@ export async function runtimeStartupCase(
     // Fence test cleanup before the outer fixture deletes the OPFS workspace.
     if (storage === "opfs")
       await navigator.locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive" }, () => {});
+  }
+}
+
+/** Verify the selector opens existing data, not a newly named/empty workspace. */
+export async function runtimeVfsCase(
+  name: string,
+  vfs: VfsName,
+  workerURL: string | URL,
+  open: () => Promise<StorageBackend>,
+): Promise<void> {
+  const storage = await open();
+  try {
+    await storage.persist(batch(1, "saved before explicit VFS selection"));
+    await storage.flush();
+  } finally {
+    await storage.close();
+  }
+  const runtime = createRuntime({
+    filesystem: { name, vfs, workerURL: new URL(workerURL, location.href) },
+  });
+  try {
+    assert(runtime.filesystem.vfs.id === vfs, "selected descriptor");
+    assert(
+      new TextDecoder().decode(await runtime.filesystem.readFile("/file")) ===
+        "saved before explicit VFS selection",
+      "existing workspace is retained",
+    );
+    await runtime.filesystem.writeFile("/selected", "same format");
+    await runtime.filesystem.flush("/selected");
+  } finally {
+    await runtime.dispose();
+  }
+  const reopened = await open();
+  try {
+    const backend = await PersistentBackend.open(reopened, { intervalMs: 0 });
+    try {
+      const value = await backend.execute("readFile", ["/selected"], new Uint8Array());
+      assert(
+        new TextDecoder().decode(value as Uint8Array) === "same format",
+        "selector preserves persisted format",
+      );
+    } finally {
+      await backend.close();
+    }
+  } finally {
+    await reopened.close();
+  }
+}
+
+/** Assert an established invalid store fails through the production worker without a fallback. */
+export async function runtimeInvalidStorageCase(
+  name: string,
+  vfs: VfsName,
+  workerURL: string | URL,
+): Promise<void> {
+  const runtime = createRuntime({
+    filesystem: { name, vfs, workerURL: new URL(workerURL, location.href) },
+  });
+  try {
+    const error = await runtime.filesystem.listFiles().catch((failure) => failure);
+    assert(
+      error instanceof VfsError && error.code === "INVALID_VFS_FORMAT" && error.vfs === vfs,
+      "typed invalid format and VFS identity survive startup",
+    );
+    assert(runtime.filesystem.state.status === "failed", "invalid format never becomes ready");
+  } finally {
+    await runtime.dispose();
+  }
+}
+
+async function runtimeInvalidFormatCase(name: string, workerURL: string | URL): Promise<void> {
+  // An existing higher database version is incompatible, not a new empty workspace.
+  const db = await request(indexedDB.open(name, 2));
+  db.close();
+  await runtimeInvalidStorageCase(name, "indexeddb", workerURL);
+  const unchanged = await request(indexedDB.open(name));
+  try {
+    assert(unchanged.version === 2, "incompatible database was not reset");
+  } finally {
+    unchanged.close();
   }
 }
 
@@ -534,6 +613,10 @@ function indexedDBCases(
   };
   // Backend-suite consumers need not serve a Waffle runtime worker. Its URL opts in to runtime probes.
   if (filesystemWorkerURL !== undefined) {
+    test("runtime VFS selection preserves existing IndexedDB workspaces", (name, open) =>
+      runtimeVfsCase(name, "indexeddb", filesystemWorkerURL, open));
+    test("runtime VFS selection reports incompatible formats without resetting data", (name) =>
+      runtimeInvalidFormatCase(name, filesystemWorkerURL));
     test("runtime startup milestones cross the actual filesystem worker boundary", (name) =>
       runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
     test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", (name) =>
@@ -545,7 +628,7 @@ function indexedDBCases(
       const owner = createRuntime({
         filesystem: {
           name,
-          persistence: false,
+          vfs: "memory",
           workerURL: new URL(filesystemWorkerURL, location.href),
         },
       });
@@ -963,6 +1046,9 @@ function indexedDBCases(
     const reopened = await open();
     await rejects(reopened.load(), "corrupt");
     await rejects(reopened.persist(batch(4)), "corrupt");
+    await reopened.close();
+    if (filesystemWorkerURL !== undefined)
+      await runtimeInvalidStorageCase(name, "indexeddb", filesystemWorkerURL);
   });
 
   test("compaction keeps both snapshots and collects only unreachable old data", async (_name, open) => {

@@ -2,10 +2,9 @@ import {
   SharedFilesystem,
   type SharedFilesystemOptions,
   type SharedFilesystemState,
-  type SharedFilesystemStorage,
 } from "../browser/shared-fs.js";
 
-type Backend = SharedFilesystemStorage;
+type Backend = "indexeddb" | "opfs";
 type Busy = "wait" | "takeover";
 
 type StateRecord = {
@@ -119,7 +118,7 @@ async function start(
           ? "/recovery-fs-worker.js"
           : "/fs-worker.js",
     name,
-    storage: backend,
+    vfs: backend === "opfs" ? "opfs-memory" : "indexeddb",
     onStateChange: record,
   };
   if (whenBusy !== undefined) (options as { whenBusy?: Busy }).whenBusy = whenBusy;
@@ -237,7 +236,7 @@ async function start(
     const invalid = {
       workerURL: "/fs-worker.js",
       name,
-      storage: "opfs",
+      vfs: "opfs-memory",
       whenBusy: "takeover",
       onStateChange: record,
     } as unknown as SharedFilesystemOptions;

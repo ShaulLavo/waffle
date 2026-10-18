@@ -17,6 +17,8 @@ export type {
   SharedFilesystemStatus,
   SharedFilesystemStateObserver,
 } from "./browser/shared-fs.js";
+export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
+export type { VfsName, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";
 export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission.js";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
@@ -107,6 +109,7 @@ const filesystemCapabilities = {
   remove: "async",
   move: "async",
   state: "readonly",
+  vfs: "readonly",
   ownershipLost: "readonly",
   onOwnershipLost: "callback",
   onStateChange: "callback",
@@ -476,7 +479,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
       };
       const pendingStartup =
-        options.filesystem?.persistence !== false &&
+        filesystem.vfs.persistent &&
         (filesystem.state.status === "opening" || filesystem.state.status === "waiting");
       disposal = Promise.resolve().then(async () => {
         const attempt = async (operation: () => unknown) => {

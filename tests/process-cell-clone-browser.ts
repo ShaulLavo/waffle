@@ -47,7 +47,7 @@ function bounded<T>(pending: Promise<T>): Promise<T> {
 
 /** Actual browser launchWorker postMessage, bootstrap, filesystem and consuming wait. */
 export async function browserBrokerCellClone(): Promise<void> {
-  const filesystem = new SharedFilesystem({ workerURL: "/cell-fs-worker.js", persistence: false });
+  const filesystem = new SharedFilesystem({ workerURL: "/cell-fs-worker.js", vfs: "memory" });
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();

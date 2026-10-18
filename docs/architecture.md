@@ -409,7 +409,7 @@ abandoned journal successors before committing again, preventing an old broken b
 reconnecting to a new save. It validates checksums and the inode graph; existing
 but unrecoverable storage raises an error rather than silently creating an empty filesystem.
 
-`SharedFilesystem({ persistence: false })` selects a disposable memory-only filesystem;
+`SharedFilesystem({ vfs: "memory" })` selects a disposable memory-only filesystem;
 `name` selects an isolated database for tests/workspaces. Closing a page without a completed
 flush may lose its uncommitted edits; browser persistence is not a power-loss-safe host filesystem.
 

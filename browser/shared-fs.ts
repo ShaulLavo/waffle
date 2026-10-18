@@ -20,10 +20,15 @@ import {
 
 export type { WriteFileOptions, WriteFileMode } from "../fs/index.js";
 
-export type SharedFilesystemStorage = "indexeddb" | "opfs";
-export type SharedFilesystemBusyOptions =
-  | { storage?: "indexeddb"; whenBusy?: "takeover" | "wait" }
-  | { storage: "opfs"; whenBusy?: "wait" };
+import {
+  resolveVfs,
+  VfsError,
+  type VfsDescriptor,
+  type VfsErrorCode,
+  type VfsSelection,
+} from "../fs/vfs.js";
+export { getVfsDescriptor, VfsError } from "../fs/vfs.js";
+export type { VfsName, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
 
 export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
 export interface SharedFilesystemState {
@@ -34,9 +39,8 @@ export type SharedFilesystemStateObserver = (
   state: SharedFilesystemState,
 ) => void | PromiseLike<void>;
 
-export type SharedFilesystemOptions = SharedFilesystemBusyOptions & {
+export type SharedFilesystemOptions = VfsSelection & {
   workerURL?: string | URL;
-  persistence?: boolean;
   name?: string;
   /** Called when startup enters or leaves the queued ownership state. */
   onStateChange?: SharedFilesystemStateObserver;
@@ -66,7 +70,13 @@ function workerError(data: unknown): Error | undefined {
     typeof data.message !== "string"
   )
     return;
-  const error = new Error(`Filesystem worker failed: ${data.message}`);
+  const detail = data as { name?: string; code?: VfsErrorCode; vfs?: string };
+  const error =
+    detail.name === "VfsError" && detail.code && typeof detail.vfs === "string"
+      ? new VfsError(detail.code, detail.vfs, data.message)
+      : new Error(`Filesystem worker failed: ${data.message}`);
+  if (detail.name) Object.assign(error, { name: detail.name });
+  if (detail.code) Object.assign(error, { code: detail.code });
   if ("stack" in data && typeof data.stack === "string")
     error.stack = `${error.message}\n${data.stack}`;
   return error;
@@ -77,6 +87,7 @@ function workerError(data: unknown): Error | undefined {
  */
 export class SharedFilesystem {
   readonly client: FilesystemClient;
+  readonly vfs: VfsDescriptor;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
@@ -92,11 +103,10 @@ export class SharedFilesystem {
   onOwnershipLost?: () => void;
   onStateChange?: SharedFilesystemStateObserver;
   constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
-    if (options.storage === "opfs" && (options as { whenBusy?: string }).whenBusy === "takeover") {
-      throw new TypeError('OPFS storage only supports whenBusy: "wait"');
-    }
+    const selection = resolveVfs(options);
+    this.vfs = selection.descriptor;
     this.onStateChange = options.onStateChange;
-    this.cancellableStartup = options.persistence !== false;
+    this.cancellableStartup = this.vfs.persistent;
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
     const connection = createFilesystemConnection();
     let worker: Worker | undefined;
@@ -150,17 +160,15 @@ export class SharedFilesystem {
       });
       const message: {
         connect: FilesystemConnection;
-        persistence: boolean;
         name?: string;
-        storage: SharedFilesystemStorage;
+        vfs: VfsDescriptor["id"];
         whenBusy?: "takeover" | "wait";
         observeStartup?: true;
       } = {
         connect: connection.server,
-        persistence: options.persistence ?? true,
         name: options.name,
-        storage: options.storage ?? "indexeddb",
-        whenBusy: options.whenBusy,
+        vfs: this.vfs.id,
+        whenBusy: selection.whenBusy,
       };
       if (onStartupStage) message.observeStartup = true;
       reportRuntimeStartup(onStartupStage, "filesystem-connect-requested");

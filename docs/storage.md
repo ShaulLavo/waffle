@@ -2,12 +2,13 @@
 
 Storage backends are bundles of performance, browser-support and durability trade-offs;
 small behaviours such as cross-tab contention are initialization settings, not new VFSs.
-`createRuntime({ filesystem: { storage, name, whenBusy } })` chooses the behaviour:
+`createRuntime({ filesystem: { vfs, name, whenBusy } })` chooses the behaviour.
+See [vfs.md](vfs.md) for immutable descriptors, typed errors and exact storage identities:
 
-| Storage     | Default `whenBusy` | Other supported behaviour                                                                                                                                         |
-| ----------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `opfs`      | `"wait"`           | None. `"takeover"` is rejected at the option type and at construction: stealing a Web Lock cannot safely displace another worker's exclusive sync-access handles. |
-| `indexeddb` | `"takeover"`       | `"wait"` queues instead of stealing. Takeover still uses both lock stealing and epoch fencing to stop the displaced writer.                                       |
+| VFS           | Default `whenBusy` | Other supported behaviour                                                                                                                                         |
+| ------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `opfs-memory` | `"wait"`           | None. `"takeover"` is rejected at the option type and at construction: stealing a Web Lock cannot safely displace another worker's exclusive sync-access handles. |
+| `indexeddb`   | `"takeover"`       | `"wait"` queues instead of stealing. Takeover still uses both lock stealing and epoch fencing to stop the displaced writer.                                       |
 
 A wait-policy instance queues one exclusive Web Lock request, with no stealing or repeated
 attempts. `runtime.filesystem.state.status` is `"opening"`, `"waiting"`, `"ready"`, `"failed"`
@@ -30,7 +31,7 @@ OPFS backend still closes its handles before releasing its lock. Real storage fa
 fatal and appear as `state.status === "failed"` with `state.error`. An IndexedDB deletion or
 upgrade closes and cancels a waiting connection, rather than leaving the database blocked.
 
-`SharedFilesystem({ persistence: false })` selects a disposable memory-only filesystem; `name`
+`SharedFilesystem({ vfs: "memory" })` selects a disposable memory-only filesystem; `name`
 selects isolated storage for tests/workspaces. The worker is not a power-loss-safe host
 filesystem beyond the browser's storage guarantees; closing a page without a completed flush
 may lose its uncommitted edits.

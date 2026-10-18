@@ -6,6 +6,8 @@ import {
   bytes,
   rejects,
   runtimeStartupCase,
+  runtimeVfsCase,
+  runtimeInvalidStorageCase,
   storageContractCases,
   type BrowserStorageTest,
 } from "./indexeddb-storage-browser.js";
@@ -131,7 +133,7 @@ interface OpfsCase {
   run(name: string, open: (options?: OpfsStorageOptions) => Promise<OpfsStorage>): Promise<void>;
 }
 
-function focusedCases(): OpfsCase[] {
+function focusedCases(filesystemWorkerURL?: string | URL): OpfsCase[] {
   return [
     {
       label: "contested OPFS opens wait, then read saved data after ownership",
@@ -938,6 +940,9 @@ function focusedCases(): OpfsCase[] {
         const reopened = await open();
         await rejects(reopened.load(), "corrupt");
         await rejects(reopened.persist(batch(2)), "corrupt");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
       },
     },
   ];
@@ -954,12 +959,16 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
       ? []
       : [
           {
+            label: "runtime VFS selection preserves existing OPFS workspaces",
+            run: (name, open) => runtimeVfsCase(name, "opfs-memory", filesystemWorkerURL, open),
+          },
+          {
             label:
               "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
             run: (name) => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
           },
         ];
-  return shared.concat(runtime, focusedCases()).map(({ label, run }) => ({
+  return shared.concat(runtime, focusedCases(filesystemWorkerURL)).map(({ label, run }) => ({
     label,
     async run() {
       const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;

@@ -1,3 +1,4 @@
+import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
   decodeRecord,
@@ -58,7 +59,7 @@ interface State extends TreeState {
   sinceCompaction: number;
 }
 function metadataError(): never {
-  throw new Error("Invalid persisted filesystem metadata");
+  throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid persisted filesystem metadata");
 }
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -342,7 +343,15 @@ export class IndexedDBStorage implements StorageBackend {
       };
       opening.onerror = () => {
         stopObserving();
-        reject(opening.error ?? new Error("Cannot open filesystem storage"));
+        reject(
+          opening.error?.name === "VersionError"
+            ? new VfsError(
+                "INVALID_VFS_FORMAT",
+                "indexeddb",
+                "Incompatible IndexedDB database version",
+              )
+            : (opening.error ?? new Error("Cannot open filesystem storage")),
+        );
       };
       opening.onblocked = () => {
         stopObserving();
@@ -588,7 +597,11 @@ export class IndexedDBStorage implements StorageBackend {
     );
     const newest = recoverIndex(bases, journals, payloadKeys);
     if (!newest && (metadataCount > 1 || journalKeys.length > 0 || dataKeys.length > 0)) {
-      throw new Error("Existing filesystem storage is corrupt; no valid snapshot can be recovered");
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Existing filesystem storage is corrupt; no valid snapshot can be recovered",
+      );
     }
     if (newest) {
       const nodes = new Map(newest.nodes.map((node) => [node.ino, node]));

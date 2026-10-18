@@ -40,7 +40,7 @@ class TestWorker {
 function setup(): SharedFilesystem {
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   const filesystem = new SharedFilesystem({
-    storage: "opfs",
+    vfs: "opfs-memory",
     workerURL: "https://example.test/fs.js",
   });
   filesystems.push(filesystem);
@@ -127,12 +127,12 @@ for (const status of ["waiting", "ready", "failed", "disposed"] as const) {
 }
 
 for (const filesystemOptions of [
-  { storage: "opfs" },
-  { storage: "indexeddb" },
-  { storage: "indexeddb", whenBusy: "takeover" },
-  { storage: "indexeddb", whenBusy: "wait" },
+  { vfs: "opfs-memory" },
+  { vfs: "indexeddb" },
+  { vfs: "indexeddb", whenBusy: "takeover" },
+  { vfs: "indexeddb", whenBusy: "wait" },
 ] as const) {
-  test(`runtime cancels pending ${filesystemOptions.storage} ${"whenBusy" in filesystemOptions ? filesystemOptions.whenBusy : "default"} startup before draining queued mutations`, async () => {
+  test(`runtime cancels pending ${filesystemOptions.vfs} ${"whenBusy" in filesystemOptions ? filesystemOptions.whenBusy : "default"} startup before draining queued mutations`, async () => {
     globalThis.Worker = TestWorker as unknown as typeof Worker;
     const runtime = createRuntime({
       filesystem: { ...filesystemOptions, workerURL: "https://example.test/fs.js" },
@@ -163,7 +163,7 @@ test("a disposed state observer reenters the same runtime disposal", async () =>
   let reentered: Promise<void> | undefined;
   const runtime = createRuntime({
     filesystem: {
-      storage: "opfs",
+      vfs: "opfs-memory",
       workerURL: "https://example.test/fs.js",
       onStateChange(state) {
         if (state.status === "disposed") reentered = runtime.dispose();
@@ -182,9 +182,11 @@ test("a disposed state observer reenters the same runtime disposal", async () =>
 
 test("OPFS takeover is excluded by type and rejected before creating a worker", () => {
   // @ts-expect-error OPFS exclusive sync-access handles cannot be taken over safely.
-  const options: SharedFilesystemOptions = { storage: "opfs", whenBusy: "takeover" };
+  const options: SharedFilesystemOptions = { vfs: "opfs-memory", whenBusy: "takeover" };
   globalThis.Worker = TestWorker as unknown as typeof Worker;
-  expect(() => new SharedFilesystem(options)).toThrow('only supports whenBusy: "wait"');
+  expect(() => new SharedFilesystem(options)).toThrow(
+    "opfs-memory does not support whenBusy: takeover",
+  );
   expect(workers).toHaveLength(0);
 });
 

@@ -564,7 +564,23 @@ function failureDiagnostic(error: unknown) {
   } catch {
     /* A stack getter can throw too. */
   }
-  return { type: "filesystem-error", message, stack };
+  const detail = {
+    name: diagnosticField(error, "name"),
+    code: diagnosticField(error, "code"),
+    vfs: diagnosticField(error, "vfs"),
+  };
+  if (detail.name === "VfsError") message = diagnosticField(error, "message") ?? message;
+  return { type: "filesystem-error", message, stack, ...detail };
+}
+function diagnosticField(error: unknown, key: string): string | undefined {
+  try {
+    if (!error || typeof error !== "object") return;
+    const value: unknown = Reflect.get(error, key);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    /* Diagnostics must survive hostile property getters. */
+    return;
+  }
 }
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(

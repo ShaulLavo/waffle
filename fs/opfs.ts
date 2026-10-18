@@ -1,3 +1,4 @@
+import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 /*
  * The sync-access retry constants and retry loop are adapted from
@@ -415,8 +416,10 @@ export class OpfsStorage implements StorageBackend {
         Number(a.name === "snapshot-initial.json") - Number(b.name === "snapshot-initial.json"),
     );
     if (!snapshots.length && ordinarySnapshotExisted)
-      throw new Error(
-        "Existing OPFS filesystem storage is corrupt; no valid snapshot can be recovered",
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "opfs-memory",
+        "Existing OPFS filesystem storage is corrupt or incompatible; no valid snapshot can be recovered",
       );
     // A torn initial empty baseline means no payload write or committed namespace ever started.
     if (!snapshots.length && existed)
