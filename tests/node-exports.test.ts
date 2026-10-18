@@ -47,3 +47,21 @@ test("Node adapters can read and write tagged process controls through the publi
     cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
   })).not.toThrow();
 });
+
+
+test("Node hosts normalize startup failures through the public process entry", () => {
+  const script = `
+    import assert from "node:assert/strict";
+    import { startFailure, ExecutableFormatError, ProcessError, ProcessErrno } from "waffle/proc";
+    for (const [error, name, code] of [
+      [new ExecutableFormatError("bad executable"), "ENOEXEC", 8],
+      [new RangeError("allocation failed"), "ENOMEM", 12],
+      [new ProcessError(ProcessErrno.AGAIN, "busy"), "EAGAIN", 11],
+      [Object.assign(new Error("missing"), { code: "ENOENT" }), "ENOENT", 2],
+      [new Error("host failed"), "EIO", 5],
+    ]) assert.deepEqual(startFailure(error), { kind: "start-failed", code, error: name, status: null });
+  `;
+  expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
+    cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
+  })).not.toThrow();
+});
