@@ -215,15 +215,17 @@ export class Wasi {
   }
 
   /** Runs `_start`; returns the exit code. */
-  start(instance: WebAssembly.Instance): number {
-    return this.launch(instance) ?? 0;
+  start(instance: WebAssembly.Instance, beforeStart?: () => void): number {
+    return this.launch(instance, beforeStart) ?? 0;
   }
 
   /** Runs `_start`; returns the `proc_exit` code, or null when `_start` returned without exiting. */
-  launch(instance: WebAssembly.Instance): number | null {
+  launch(instance: WebAssembly.Instance, beforeStart?: () => void): number | null {
     const memory = instance.exports.memory ?? this.importedMemory;
     if (!(memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no exported or supplied memory");
     this.memory = memoryViews(memory);
+    // Hosts commit entry after all fallible setup, with no user hook before the call.
+    beforeStart?.();
     try {
       (instance.exports._start as () => void)();
       return null;

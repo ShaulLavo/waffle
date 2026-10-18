@@ -20,6 +20,8 @@ export interface ProcessService {
   wait(parentPid: number, pid: number): ProcessExit | null;
   /** Observe child readiness without consuming its status or capacity. */
   childExited(parentPid: number, pid: number): boolean;
+  startStatus(parentPid: number, pid: number): number;
+  registerChildStartWake?(parentPid: number, pid: number, wake: Int32Array): () => void;
   waitJob(callerPid: number, job: number): ProcessExit | null;
   jobEmpty(callerPid: number, job: number): boolean;
   registerJobWake?(callerPid: number, job: number, wake: Int32Array): () => void;
@@ -121,6 +123,7 @@ export class ProcessABI {
         if (options.service.canSignalJob?.(options.pid, job!) === false) return -63;
         options.service.killJob(job!, signal!); return 0;
       }),
+      start_status: pid => this.result(() => options.service.startStatus(options.pid, pid!)),
       poll: (ptr, count, timeout, out) => this.result(() => this.poll(ptr!, count!, timeout!, out!)),
       interrupted: () => this.interrupted(),
       signal: (signal, mode) => this.signal(signal!, mode!),
@@ -334,6 +337,8 @@ export class ProcessABI {
     throw new ProcessSignalExit(winner.code);
   }
   private readiness(sub: Subscription): Readiness | null {
+    if (sub.kind === 6) return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN
+      ? { readable: true, writable: false, hangup: false } : null;
     if (sub.kind === 5) {
       const ready = this.options.service.accessReady?.(this.options.pid, sub.id);
       if (ready === undefined) throw new ProcessError(NOSYS, "executable query service is unavailable");
@@ -376,7 +381,7 @@ export class ProcessABI {
     for (let index = 0; index < count; index++) {
       const at = index * 16;
       const sub = { kind: input.getUint32(at, true), id: input.getUint32(at + 4, true), userdata: input.getBigUint64(at + 8, true) };
-      if (sub.kind > 5) return -ProcessErrno.INVAL;
+      if (sub.kind > 6) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
     if (this.pending()) return 0;
@@ -386,6 +391,10 @@ export class ProcessABI {
       if (wake) {
         const resources = new Set<Stream>();
         for (const sub of subscriptions) {
+          if (sub.kind === 6) {
+            const release = this.options.service.registerChildStartWake?.(this.options.pid, sub.id, wake);
+            if (release) unregister.push(release);
+          }
           if (sub.kind === 4) {
             const release = this.options.service.registerJobWake?.(this.options.pid, sub.id, wake);
             if (release) unregister.push(release);

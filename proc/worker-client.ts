@@ -4,7 +4,7 @@ import { controlLoad, controlStore } from "./control.js";
 import { createDirectory, directoryState, directorySlots, directoryJob, directoryProcesses, findDirectoryJob, directoryControls, isCollectedProcess, reserveDirectoryProcess, confirmDirectoryProcess, collectDirectoryProcess, collectDirectoryJob, wakeDirectory } from "./directory.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
-import { claimOutcome, readOutcome } from "./outcome.js";
+import { claimOutcome, readOutcome, markStarted, startStatus } from "./outcome.js";
 import { defaultSignalTerminates, requestSignal, type SignalTransport } from "./signals.js";
 import { ProcessErrno, ProcessError, checkedSignal, type ProcessExit, type SpawnRequest } from "./types.js";
 
@@ -253,6 +253,13 @@ export class WorkerProcessClient {
     if (parentPid !== this.pid || target.parentPid !== this.pid || controlLoad(target.jobPending, 0) < 0) throw new ProcessError(ProcessErrno.CHILD, "not a child process");
     return target;
   }
+  /** Publish entry before guest execution, without a message round trip. */
+  started(): boolean {
+    const committed = markStarted(this.signals.outcome);
+    if (committed) wakeWorkerProcess(this.options.transport);
+    return committed;
+  }
+  startStatus(parentPid: number, pid: number): number { return startStatus(this.child(parentPid, pid).signals.outcome); }
   /** Readiness never consumes the exit or releases a zombie's storage. */
   childExited(parentPid: number, pid: number): boolean {
     const target = this.child(parentPid, pid);

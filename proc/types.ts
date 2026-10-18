@@ -67,6 +67,8 @@ export interface ProcessContext {
   readonly signalState: ControlCells;
   /** Shared immutable terminal outcome, atomically arbitrated with synchronous parent stubs. */
   readonly outcome: OutcomeWord;
+  /** Commit executable entry after setup; false means a terminal winner prevented entry. */
+  started(): boolean;
   exit(code: number): void;
   /** Execution failures after startup retain ordinary exit status 126. */
   fail(error: unknown): void;
@@ -84,7 +86,7 @@ export class ProcessError extends Error {
   readonly errno: number;
   constructor(errno: number, message: string) { super(message); this.errno = errno; this.name = "ProcessError"; }
 }
-export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CHILD: 12, INVAL: 28, NOTSUP: 58, SRCH: 71 });
+export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CANCELED: 11, CHILD: 12, INVAL: 28, NOTSUP: 58, SRCH: 71 });
 export function checkedSignal(signal: number): ProcessSignal {
   if (!Number.isInteger(signal) || signal < 1 || signal > 64 || signal === 32 || signal === 33) {
     throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);

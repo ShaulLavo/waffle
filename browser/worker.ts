@@ -9,7 +9,7 @@ import { FilesystemClient, revokeFilesystem, reapFilesystem, sharedRevoked, type
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import { withFileOffset } from "../core/open-file.js";
-import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome.js";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome, markStarted } from "../proc/outcome.js";
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
 import { waitStatus } from "../proc/wait-status.js";
 import type { ProcessExit } from "../proc/types.js";
@@ -416,8 +416,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     executor.instantiated?.({ ...context, wasi, instance });
     if (done) return;
-    started = true;
-    const exited = wasi.launch(instance);
+    const exited = wasi.launch(instance, () => {
+      checkActive();
+      const committed = runtimeProcess ? runtimeProcess.started() : outcome ? markStarted(outcome) : true;
+      if (!committed) checkActive();
+      started = true;
+    });
     host.addEventListener?.("error", onError);
     host.addEventListener?.("unhandledrejection", onRejection);
     const completion = executor.run({ ...context, wasi, instance }, exited);
