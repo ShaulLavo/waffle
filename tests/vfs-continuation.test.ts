@@ -76,6 +76,8 @@ test("missing-cell selection retains successes and blocks failed or malformed hi
   const sevenInterrupted = rows(revision, "W2").map(row => ({ ...row, state: "invalid environment" as const, reason: "controller-interrupted: Target page, context or browser has been closed", metrics: {} }));
   expect(missingBaselineCells(sevenInterrupted, revision).missingCells).toContain("chromium/opfs-memory/W2/host");
   expect(missingBaselineCells(interrupted, revision).blockedCells).not.toContain("chromium/opfs-memory/W2/host");
+  const genuineFailure = interrupted.map((row, i) => i === interrupted.length - 1 ? { ...row, state: "failed correctness" as const } : row);
+  expect(missingBaselineCells(genuineFailure, revision).blockedCells).toContain("chromium/opfs-memory/W2/host");
   const unrelatedEnvironment = interrupted.map(row => row.workload === "W2" ? { ...row, reason: "browser crashed unexpectedly" } : row);
   expect(missingBaselineCells(unrelatedEnvironment, revision).blockedCells).toContain("chromium/opfs-memory/W2/host");
   for (const broken of [original.map(row => row.workload === "W2" ? { ...row, state: "invalid environment" as const } : row), original.map(row => row.workload === "W2" ? { ...row, metrics: { durableInstallMs: 0 } } : row)]) {

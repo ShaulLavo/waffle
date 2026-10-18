@@ -25,7 +25,6 @@ export class BrowserRunnerLifecycle {
   private interrupted = () => { this.controllerInterruption = true; void this.close().catch(console.error).finally(() => process.exit(1)); };
   private deadline: ReturnType<typeof setTimeout>;
   scratch = "";
-  get shuttingDown(): boolean { return !!this.cleaning; }
   get controllerInterrupted(): boolean { return this.controllerInterruption; }
   constructor(timeoutMs = 600_000, private cleanupTimeoutMs = 5000) {
     process.once("SIGINT", this.interrupted); process.once("SIGTERM", this.interrupted);

@@ -33,8 +33,20 @@ for (const phase of ["creation", "closure"] as const) test(`persistent ${phase} 
 
 test("ordinary browser closure failure is not a controller interruption", async () => {
   const lifecycle = new BrowserRunnerLifecycle(60000, 5);
-  const owner = { creation: Promise.resolve({ close: () => Promise.reject(new Error("Target page, context or browser has been closed")) }), stopped: false };
-  (lifecycle as unknown as { browsers: Set<BrowserResourceOwner> }).browsers.add(owner);
-  await expect(lifecycle.close()).rejects.toThrow("cleanup failed");
+  const context = { close: () => Promise.reject(new Error("Target page, context or browser has been closed")), browser: () => null };
+  const owner = { creation: Promise.resolve(context), stopped: false };
+  (lifecycle as unknown as { contexts: Set<BrowserResourceOwner> }).contexts.add(owner);
+  await expect(lifecycle.closeContext(context as unknown as Parameters<typeof lifecycle.closeContext>[0])).rejects.toThrow("has been closed");
   expect(lifecycle.controllerInterrupted).toBe(false);
+  await expect(lifecycle.close()).rejects.toThrow("cleanup failed");
+});
+
+test("controller deadline marks interruption before closing owned resources", () => {
+  const script = `import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+    const lifecycle = new BrowserRunnerLifecycle(5);
+    (lifecycle as unknown as { contexts: Set<unknown> }).contexts.add({ creation: Promise.resolve({ close: async () => console.log("controller-interrupted=" + lifecycle.controllerInterrupted) }), stopped: false });`;
+  const result = Bun.spawnSync([process.execPath, "--eval", script], { timeout: 5000 });
+  expect(result.exitCode).toBe(1);
+  expect(result.stdout.toString()).toContain("controller-interrupted=true");
+  expect(result.stderr.toString()).toContain("Browser runner timed out");
 });
