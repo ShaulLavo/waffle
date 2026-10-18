@@ -1,9 +1,11 @@
 import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
-import { createFilesystemConnection, FilesystemService, MemoryBackend } from "../fs";
+import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs";
+import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory";
+import { DescriptorTable } from "../core/descriptors";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
 import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
@@ -54,7 +56,7 @@ test("injected worker executor observes live descriptors, then acknowledgement f
 });
 
 test("preview1 worker bundle has no Bun engine, native slot or legacy subprocess graph", async () => {
-  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.ts", import.meta.url).pathname], target: "browser", write: false });
+  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.ts", import.meta.url).pathname], target: "browser" });
   expect(result.success).toBe(true);
   const source = await result.outputs[0]!.text();
   for (const marker of ["startEngineHost", "SubprocessHost", "installHostSlots", "bunwasm_ready", "moduleCache", "engine-host.js"]) {
@@ -101,6 +103,84 @@ for (const isolated of [true, false]) test(`generic signal winner guards stdio a
   expect(result.messages.some(message => message.type === "stdout" || message.type === "stderr")).toBe(false);
   expect(result.messages.filter(message => message.type === "default-signal").length).toBe(isolated ? 0 : 3);
   expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
+});
+
+test("a delayed stale Worker releases its filesystem and reports startup failure without touching its replacement", async () => {
+  const root = createWorkerProcessTransport({ capacity: 2 });
+  const descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const owner = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+  const first = owner.spawn(owner.pid, request);
+  const old = notices.find(message => message.operation === "spawn")!;
+  if (old.operation !== "spawn") throw new Error("missing spawn fixture");
+  const state = workerProcessState(old.transport);
+  claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
+  confirmDirectoryProcess(old.transport);
+  collectDirectoryJob(root.directory, state.jobSlot, state.job);
+  const replacement = owner.spawn(owner.pid, request);
+  const latest = notices.at(-1)!;
+  if (latest.operation !== "spawn") throw new Error("missing replacement fixture");
+  const current = workerProcessState(latest.transport);
+  expect(replacement).not.toBe(first);
+  expect(current.slot).toBe(state.slot);
+  const connection = createFilesystemConnection(), messages: RuntimeWorkerMessage[] = [], order: string[] = [];
+  const dispose = spyOn(FilesystemClient.prototype, "dispose");
+  let entered = false;
+  try {
+    await expect(bootstrap({ module, args: [], env: {}, filesystem: connection.client, runtimeProcess: old.transport }, {
+      setup() { entered = true; }, run() { entered = true; return 0; }, beforeFinish() { order.push("executor cleanup"); },
+    }, { crossOriginIsolated: true, postMessage(message) {
+      if (message.type === "error") { expect(dispose).toHaveBeenCalledTimes(1); order.push("acknowledgement"); }
+      messages.push(message);
+    } })).resolves.toBeUndefined();
+    expect(entered).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["executor cleanup", "acknowledgement"]);
+    expect(messages.filter(message => message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("process incarnation was collected") },
+    ]);
+    expect(messages.some(message => message.type === "runtime-proc")).toBe(false);
+    expect(readOutcome(current.signals.outcome)).toBeNull();
+    expect(controlLoad(current.confirmed)).toBe(0);
+    expect(controlLoad(current.jobPending)).toBe(1);
+  } finally { dispose.mockRestore(); descriptors.dispose(); connection.client.port.close(); connection.server.port.close(); }
+});
+
+test("collection during Worker setup cannot bypass filesystem cleanup through a stale outcome", async () => {
+  const root = createWorkerProcessTransport({ capacity: 2 }), descriptors = new DescriptorTable();
+  const notices: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+  client.spawn(client.pid, request);
+  const notice = notices[0]!;
+  if (notice.operation !== "spawn") throw new Error("missing spawn fixture");
+  const state = workerProcessState(notice.transport);
+  let replacement: ReturnType<typeof workerProcessState> | undefined, ran = false;
+  try {
+    const result = await fixture({
+      setup() {
+        claimOutcome(state.signals.outcome, { kind: "exited", code: 23 }); confirmDirectoryProcess(notice.transport);
+        collectDirectoryJob(root.directory, state.jobSlot, state.job);
+        client.spawn(client.pid, request);
+        replacement = workerProcessState(notices.at(-1)!.transport);
+      },
+      run() { ran = true; return 0; },
+    }, { runtimeProcess: notice.transport });
+    expect(ran).toBe(false);
+    expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
+    expect(result.messages.filter(message => message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("process incarnation was collected") },
+    ]);
+    expect(replacement?.slot).toBe(state.slot);
+    expect(readOutcome(replacement!.signals.outcome)).toBeNull();
+    expect(controlLoad(replacement!.confirmed)).toBe(0);
+  } finally { descriptors.dispose(); }
 });
 
 test("generic runtime process adopts the shared signal winner and releases descriptors before exit acknowledgement", async () => {

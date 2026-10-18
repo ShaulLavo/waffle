@@ -65,6 +65,7 @@ export class ProcessTable {
   wasJob(id: number): boolean { return id > 0 && id <= this.highestJob; }
   jobClaimed(id: number): boolean { const outcome = this.jobs.get(id)?.leaderOutcome; return outcome instanceof OutcomeCell && !outcome.valid(); }
   values(): IterableIterator<ProcessRecord> { return this.records.values(); }
+  jobValues(): IterableIterator<ProcessJob> { return this.jobs.values(); }
   require(pid: number): ProcessRecord {
     const record = this.get(pid);
     if (!record) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);

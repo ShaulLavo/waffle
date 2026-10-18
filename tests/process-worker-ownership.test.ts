@@ -1,4 +1,4 @@
-import { collectDirectoryProcess, collectDirectoryJob, directorySlots, directoryJobs, directoryJob, reserveDirectoryProcess } from "../proc/directory";
+import { collectDirectoryProcess, collectDirectoryJob, directorySlots, directoryJobs, directoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, reserveDirectoryProcess } from "../proc/directory";
 import { packedControl, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, test } from "bun:test";
 import { DescriptorTable, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
@@ -9,7 +9,7 @@ import { claimOutcome, readOutcome } from "../proc/outcome";
 import { WorkerProcessBroker } from "../proc/worker-broker";
 import { createWorkerProcessTransport, confirmWorkerProcessJob, installWorkerBindings, WorkerProcessClient, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
 import { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes";
-import type { ProcessContext, ProcessHandle, SpawnRequest } from "../proc/types";
+import { ProcessErrno, ProcessError, type ProcessContext, type ProcessHandle, type SpawnRequest } from "../proc/types";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -917,4 +917,237 @@ test("numeric admitted identities cannot reuse collected rows but captured out-o
   expect(f.supervisor.get(earlier)?.job).toBe(earlierJob);
   expect(earlier).toBeLessThan(later);
   expect(earlierJob).toBeLessThan(oldJob);
+});
+
+
+for (const stopAt of ["seal", "job-retiring", "member-retiring", "member-freed"] as const) {
+  test(`another host pump completes job retirement after collector stops at ${stopAt}`, async () => {
+    const f = fixture({ capacity: 4 });
+    const leader = f.root.spawn(1, request()); await f.flush();
+    const leaderTransport = f.broker.get(leader)!, client = f.client(leaderTransport);
+    const member = client.spawn(leader, request({ job: client.job })); await f.flush();
+    const memberClient = f.client(f.broker.get(member)!);
+    const descendant = memberClient.spawn(member, request({ job: -1 })); await f.flush();
+    f.supervisor.exit(member, 2); f.supervisor.exit(leader, 9);
+    const group = directoryJob(f.transport.directory, workerProcessState(leaderTransport).jobSlot);
+    const original = Atomics.compareExchange;
+    const stopped = new Error("collector terminated");
+    let interrupted = false;
+    const identityOffset = leaderTransport.slot * 76 * 8 + 32;
+    const groupOffset = group.outcome.byteOffset - 3 * 8;
+    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+      const value = original(array, index, expected, replacement);
+      if (!interrupted && array instanceof BigInt64Array && array.buffer === f.transport.directory && index === 0 && (
+        stopAt === "seal" && array.byteOffset === group.pending.byteOffset && replacement === packedControl(group.id, -1) ||
+        stopAt === "job-retiring" && array.byteOffset === groupOffset && replacement === packedControl(group.id, 3) ||
+        stopAt === "member-retiring" && array.byteOffset === identityOffset && replacement === packedControl(leader, 3) ||
+        stopAt === "member-freed" && array.byteOffset === identityOffset && expected === packedControl(leader, 3) && replacement === 0n
+      )) { interrupted = true; throw stopped; }
+      return value;
+    }) as typeof Atomics.compareExchange;
+    try { expect(() => collectDirectoryJob(f.transport.directory, group.slot, group.id)).toThrow(stopped); }
+    finally { Atomics.compareExchange = original; }
+    expect(interrupted).toBe(true);
+    f.broker.pump(); // No consuming worker receipt was ever posted.
+    expect(f.supervisor.job(group.id)).toBeUndefined();
+    expect(f.broker.get(leader)).toBeUndefined(); expect(f.broker.get(member)).toBeUndefined();
+    expect(directorySlots(f.transport.directory)).toHaveLength(2);
+    expect(directoryJobs(f.transport.directory)).toHaveLength(2);
+    expect(f.root.canSignal(1, descendant)).toBe(true);
+    f.root.killJob(f.root.jobOf(descendant), 9); await f.flush();
+    // The independent descendant job remains separately consumable after its parent job.
+    const remaining = Array.from(directoryGroups(f.transport.directory)).find(candidate => candidate.id !== f.root.job)!;
+    expect(f.root.waitJob(1, remaining.id)?.status).toBe(137); await f.flush();
+    expect(directorySlots(f.transport.directory)).toEqual([0]);
+  });
+}
+
+test("host metadata reconciles a consumed job without the worker's final reap notification", async () => {
+  const f = fixture({ capacity: 2 });
+  const pid = f.root.spawn(1, request()); await f.flush();
+  const job = f.root.jobOf(pid);
+  f.supervisor.exit(pid, 18);
+  const silent = new WorkerProcessClient({ ...f.root.options, postMessage() {} });
+  expect(silent.waitJob(1, job)?.code).toBe(18);
+  expect(f.supervisor.job(job)).toBeDefined();
+  f.broker.pump();
+  expect(f.supervisor.job(job)).toBeUndefined(); expect(f.broker.get(pid)).toBeUndefined();
+  expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+  const next = f.root.spawn(1, request()); await f.flush();
+  expect(next).toBeGreaterThan(pid);
+});
+
+test("captured directory enumeration skips an unrelated process collected during its identity read", () => {
+  const root = createWorkerProcessTransport({ capacity: 3 });
+  const old = { ...root, ...reserveDirectoryProcess(root, 2, 1, 1, 1, 0) };
+  const live = { ...root, ...reserveDirectoryProcess(root, 3, 1, 1, 1, 0) };
+  readyForCollection(old);
+  const oldOffset = workerProcessState(old).signals.outcome.byteOffset - 5 * 8;
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const value = original(array, index);
+    if (!raced && array instanceof BigInt64Array && array.buffer === root.directory && array.byteOffset === oldOffset && index === 0) {
+      raced = true; collectDirectoryProcess(old);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try { expect(Array.from(directoryProcesses(root.directory), state => state.pid)).toEqual([1, live.pid]); }
+  finally { Atomics.load = original; }
+  expect(raced).toBe(true);
+});
+
+test("job lookup skips a different job collected during its captured header read", () => {
+  const root = createWorkerProcessTransport({ capacity: 3 });
+  const old = { ...root, ...reserveDirectoryProcess(root, 2, 1, 2, 1) };
+  const live = { ...root, ...reserveDirectoryProcess(root, 3, 1, 3, 1) };
+  readyForCollection(old);
+  const state = workerProcessState(old), header = state.jobOutcome.byteOffset - 3 * 8;
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const value = original(array, index);
+    if (!raced && array instanceof BigInt64Array && array.buffer === root.directory && array.byteOffset === header && index === 0) {
+      raced = true; collectDirectoryJob(root.directory, state.jobSlot, state.job);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try { expect(findDirectoryJob(root.directory, 3)?.leaderPid).toBe(live.pid); }
+  finally { Atomics.load = original; }
+  expect(raced).toBe(true);
+});
+
+test("process and job authorization follow a retiring ancestor before its forwarding scan", async () => {
+  const f = fixture({ capacity: 3 });
+  const parent = f.root.spawn(1, request()); await f.flush();
+  const parentTransport = f.broker.get(parent)!, client = f.client(parentTransport);
+  const child = client.spawn(parent, request({ job: -1 })); await f.flush();
+  const job = f.root.jobOf(child);
+  f.supervisor.exit(parent, 0);
+  const original = Atomics.compareExchange;
+  let raced = false;
+  const identity = workerProcessState(parentTransport).signals.outcome.byteOffset - 5 * 8;
+  Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+    const previous = original(array, index, expected, replacement);
+    if (!raced && array instanceof BigInt64Array && array.buffer.byteLength === f.transport.directory.byteLength && array.byteOffset === identity && replacement === packedControl(parent, 3)) {
+      raced = true;
+      expect(f.root.canSignal(1, child)).toBe(true);
+      expect(f.root.jobEmpty(1, job)).toBe(false);
+      expect(f.root.canSignalJob(1, job)).toBe(true);
+    }
+    return previous;
+  }) as typeof Atomics.compareExchange;
+  try { f.supervisor.reap(1, parent); }
+  finally { Atomics.compareExchange = original; }
+  expect(raced).toBe(true);
+  f.root.killJob(job, 9); await f.flush();
+  expect(f.root.waitJob(1, job)?.status).toBe(137); await f.flush();
+});
+
+test("collecting a captured completed member cannot interrupt signal delivery to live job members", async () => {
+  const f = fixture({ capacity: 3 });
+  const old = f.root.spawn(1, request({ job: f.root.job }));
+  const live = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  f.supervisor.exit(old, 4);
+  const outcome = workerProcessState(f.broker.get(old)!).signals.outcome;
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const value = original(array, index);
+    if (!raced && array instanceof BigInt64Array && array.buffer.byteLength === outcome.buffer.byteLength && array.byteOffset === outcome.byteOffset && index === 0) {
+      raced = true; f.supervisor.reap(1, old);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try { expect(() => f.root.killJob(f.root.job, 15)).not.toThrow(); }
+  finally { Atomics.load = original; }
+  expect(raced).toBe(true);
+  expect(readOutcome(workerProcessState(f.broker.get(live)!).signals.outcome)?.status).toBe(143);
+});
+
+test("large job retirement forwards the whole group with linear directory reads", () => {
+  const root = createWorkerProcessTransport({ capacity: 258 });
+  const leader = { ...root, ...reserveDirectoryProcess(root, 2, 1, 2, 1) };
+  const jobSlot = workerProcessState(leader).jobSlot;
+  const members = [leader];
+  for (let pid = 3; pid <= 257; pid++) members.push({ ...root, ...reserveDirectoryProcess(leader, pid, 2, 2, 1, jobSlot) });
+  const orphan = { ...root, ...reserveDirectoryProcess(members[members.length - 1]!, 258, 257, 3, 257) };
+  for (const member of members) readyForCollection(member);
+  const original = Atomics.load;
+  let reads = 0;
+  Atomics.load = ((array: BigInt64Array, index: number) => { reads++; return original(array, index); }) as typeof Atomics.load;
+  try { expect(collectDirectoryJob(root.directory, jobSlot, 2)?.code).toBe(0); }
+  finally { Atomics.load = original; }
+  expect(reads).toBeLessThan(258 * 50);
+  expect(directorySlots(root.directory)).toHaveLength(2);
+  expect(controlLoad(workerProcessState(orphan).controlParent)).toBe(1);
+});
+
+
+test("job recovery after partial freeing preserves internal-chain forwarding destinations", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  const leader = { ...root, ...reserveDirectoryProcess(root, 2, 1, 2, 1) };
+  const jobSlot = workerProcessState(leader).jobSlot;
+  const member = { ...root, ...reserveDirectoryProcess(leader, 3, 2, 2, 1, jobSlot) };
+  const descendant = { ...root, ...reserveDirectoryProcess(member, 4, 3, 3, 3) };
+  readyForCollection(leader); readyForCollection(member);
+  const original = Atomics.compareExchange;
+  const interrupted = new Error("terminated after first member free");
+  let stopped = false;
+  const identity = workerProcessState(leader).signals.outcome.byteOffset - 5 * 8;
+  Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+    const value = original(array, index, expected, replacement);
+    if (!stopped && array instanceof BigInt64Array && array.buffer === root.directory && array.byteOffset === identity && expected === packedControl(2, 3) && replacement === 0n) {
+      stopped = true; throw interrupted;
+    }
+    return value;
+  }) as typeof Atomics.compareExchange;
+  try { expect(() => collectDirectoryJob(root.directory, jobSlot, 2)).toThrow(interrupted); }
+  finally { Atomics.compareExchange = original; }
+  helpDirectoryJobs(root.directory);
+  expect(stopped).toBe(true);
+  expect(directorySlots(root.directory)).toHaveLength(2);
+  expect(controlLoad(workerProcessState(descendant).controlParent)).toBe(1);
+  expect(controlLoad(workerProcessState(descendant).jobControlParent)).toBe(1);
+});
+
+
+test("an internal readiness SRCH race cannot skip physical termination or orphan collection", async () => {
+  let terminated = 0;
+  const f = fixture({ capacity: 3, terminate() { terminated++; }, beforeActivation(supervisor) {
+    supervisor.registerJobReadiness(() => { throw new ProcessError(ProcessErrno.SRCH, "captured job header was recycled"); });
+  } });
+  const parent = f.root.spawn(1, request()); await f.flush();
+  const client = f.client(f.broker.get(parent)!);
+  const child = client.spawn(parent, request()); await f.flush();
+  expect(() => f.supervisor.exit(child, 3)).not.toThrow();
+  expect(f.supervisor.get(child)?.result?.code).toBe(3);
+  expect(() => f.supervisor.exit(parent, 4)).not.toThrow();
+  expect(terminated).toBe(2);
+  expect(f.supervisor.get(child)).toBeUndefined();
+});
+
+test("host collective signaling ignores collection between its retained-record check and outcome snapshot", async () => {
+  const f = fixture({ capacity: 3 });
+  const leader = f.root.spawn(1, request()); await f.flush();
+  const job = f.root.jobOf(leader);
+  const member = f.root.spawn(1, request({ job })); await f.flush();
+  const transport = f.broker.get(member)!, state = workerProcessState(transport);
+  f.supervisor.onChildExit(event => { if (event.pid === leader) f.supervisor.exit(member, 4); });
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const value = original(array, index);
+    if (!raced && array instanceof BigInt64Array && array.buffer.byteLength === state.signals.outcome.buffer.byteLength && array.byteOffset === state.signals.outcome.byteOffset && index === 0 && f.supervisor.get(member)?.result && controlLoad(state.jobConfirmed) === 1) {
+      raced = true; collectDirectoryProcess(transport);
+    }
+    return value;
+  }) as typeof Atomics.load;
+  try { expect(() => f.supervisor.killJob(job, 15)).not.toThrow(); }
+  finally { Atomics.load = original; }
+  expect(raced).toBe(true);
+  expect(f.supervisor.get(leader)?.result?.status).toBe(143);
+  expect(f.supervisor.get(member)?.result?.status).toBe(143);
+  f.broker.pump();
+  expect(f.supervisor.get(member)).toBeUndefined();
 });

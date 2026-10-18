@@ -1,12 +1,12 @@
-import { collectDirectoryProcess, collectDirectoryJob, directoryJobs, directoryJob } from "./directory.js";
-import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas } from "./control.js";
+import { collectDirectoryProcess, collectDirectoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, isCollectedProcess } from "./directory.js";
+import { controlLoad, controlStore } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "./admission.js";
 import { requestSignal } from "./signals.js";
 import type { ProcessSupervisor } from "./supervisor.js";
 import { ProcessErrno, ProcessError } from "./types.js";
-import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client.js";
+import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerDescriptorCodec, type WorkerProcessMessage, type WorkerProcessTransport } from "./worker-client.js";
 
 export interface WorkerProcessBrokerOptions {
   /** Reuse the host's supervisor and executable registry, including its legacy Bun children. */
@@ -41,37 +41,40 @@ export class WorkerProcessBroker {
   adoptRoot(transport: WorkerProcessTransport): void {
     const state = workerProcessState(transport);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
-    const existing = this.getIdentity(state.pid);
+    const existing = this.get(state.pid);
     if (existing && workerProcessDirectoryId(existing) !== workerProcessDirectoryId(transport)) throw new TypeError("process identity is already registered");
     this.transports.set(state.pid, transport);
     this.directories.set(workerProcessDirectoryId(transport), transport);
   }
   /** Drop one completed root directory only after all descendant consumers and jobs retire. */
   releaseRoot(pid: number): void {
-    const root = this.getIdentity(pid);
+    const root = this.get(pid);
     if (!root) return;
     const state = workerProcessState(root);
-    if (state.parentPid !== 0 || controlLoad(state.confirmed, 0) === 0 || directoryJobs(root.directory).some(slot => directoryJob(root.directory, slot).id !== state.job) || workerProcessSlots(root).some(slot => {
-      const child = workerProcessState(root, slot);
-      return child.pid !== pid && (controlLoad(child.confirmed, 0) === 0 || this.supervisor?.get(child.pid) ||
-        (child.job !== state.job && controlLoad(child.jobPending, 0) >= 0));
-    })) throw new Error("Root directory still has unconfirmed or unreaped processes");
+    let outstanding = state.parentPid !== 0 || controlLoad(state.confirmed, 0) === 0;
+    for (const group of directoryGroups(root.directory)) if (group.id !== state.job) outstanding = true;
+    for (const child of directoryProcesses(root.directory)) {
+      try {
+        if (child.job !== state.job || child.pid !== pid && (controlLoad(child.confirmed, 0) === 0 || this.supervisor?.get(child.pid))) outstanding = true;
+      } catch (error) { if (!isCollectedProcess(error)) throw error; }
+    }
+    if (outstanding) throw new Error("Root directory still has unconfirmed or unreaped processes");
     const directory = workerProcessDirectoryId(root);
     const ownJob = this.sharedJob(state.job);
     if (ownJob && controlLoad(ownJob.group.pending) === 0) collectDirectoryJob(root.directory, ownJob.group.slot, state.job);
-    for (const entries of [this.transports]) for (const [member, transport] of entries) {
+    for (const [member, transport] of this.transports) {
       if (workerProcessDirectoryId(transport) !== directory) continue;
-      entries.delete(member);
+      this.transports.delete(member);
       this.failedCleanup.delete(member);
     }
     this.directories.delete(directory);
   }
   get(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid); }
-  getIdentity(pid: number): WorkerProcessTransport | undefined { return this.transports.get(pid); }
+  getIdentity(pid: number): WorkerProcessTransport | undefined { return this.get(pid); }
   private sharedJob(job: number) {
-    for (const root of this.directories.values()) for (const slot of directoryJobs(root.directory)) {
-      const group = directoryJob(root.directory, slot);
-      if (group.id === job) return { root, group };
+    for (const root of this.directories.values()) {
+      const group = findDirectoryJob(root.directory, job);
+      if (group) return { root, group };
     }
     return undefined;
   }
@@ -195,7 +198,7 @@ export class WorkerProcessBroker {
     const state = workerProcessState(transport);
     // A repeated message owns no new references. Reject without discarding the retained
     // lifetimes already held by the first accepted process.
-    if (this.getIdentity(state.pid)) {
+    if (this.get(state.pid)) {
       this.trace(transport, "dropped", "duplicate-process");
       throw new ProcessError(ProcessErrno.INVAL, "process identity is already registered");
     }
@@ -206,7 +209,7 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       if (this.disposed) { reason = "broker-disposed"; throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed"); }
-      const parentTransport = this.getIdentity(state.parentPid) ?? this.directories.get(workerProcessDirectoryId(transport));
+      const parentTransport = this.get(state.parentPid) ?? this.directories.get(workerProcessDirectoryId(transport));
       if (!parentTransport || workerProcessDirectoryId(parentTransport) !== workerProcessDirectoryId(transport)) {
         reason = parentTransport ? "directory-mismatch" : "unknown-parent"; throw new ProcessError(ProcessErrno.SRCH, "unknown process parent");
       }
@@ -273,22 +276,25 @@ export class WorkerProcessBroker {
     this.options.pumpPipes?.();
     const supervisor = this.supervisor;
     if (!supervisor) return;
+    for (const root of this.directories.values()) helpDirectoryJobs(root.directory);
+    for (const job of Array.from(supervisor.table.jobValues())) supervisor.reconcileCollectedJob(job.id);
     for (const [pid, transport] of this.transports) {
       const record = supervisor.get(pid);
-      if (!record || record.result) continue;
-      let state: ReturnType<typeof workerProcessState>;
-      try { state = workerProcessState(transport); } catch (error) {
-        if (!(error instanceof ProcessError)) throw error;
-        if (record.result) supervisor.table.remove(pid);
-        continue;
-      }
-      const outcome = readOutcome(state.signals.outcome);
-      if (outcome?.kind === "signaled") supervisor.defaultSignal(pid, outcome.code);
-      else if (outcome?.kind === "start-failed") supervisor.failStart(pid, { code: outcome.error });
-      else if (outcome) supervisor.exit(pid, outcome.code);
-      else {
-        const signal = controlLoad(state.signals.requestedSignal, 0);
-        if (signal) supervisor.observeSignal(pid, signal);
+      try {
+        const state = workerProcessState(transport);
+        if (!record || record.result) continue;
+        const outcome = readOutcome(state.signals.outcome);
+        if (outcome?.kind === "signaled") supervisor.defaultSignal(pid, outcome.code);
+        else if (outcome?.kind === "start-failed") supervisor.failStart(pid, { code: outcome.error });
+        else if (outcome) supervisor.exit(pid, outcome.code);
+        else {
+          const signal = controlLoad(state.signals.requestedSignal, 0);
+          if (signal) supervisor.observeSignal(pid, signal);
+        }
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+        if (record?.result) supervisor.table.remove(pid);
+        if (!record || record.result) { this.transports.delete(pid); this.failedCleanup.delete(pid); }
       }
     }
   }
@@ -305,10 +311,7 @@ export class WorkerProcessBroker {
       // disposes the supervisor and clears its event listeners. Retain shared identity
       // only, never descriptor tokens, adapter payloads, or the broker itself.
       const identity: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot: transport.slot, pid: transport.pid, bindings: [], resources: [] };
-      void this.supervisor!.waitForExit(record.parentPid, pid).then(() => {
-        if (!gate.complete) return;
-        try { confirmWorkerProcessJob(identity); } catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH) this.report(error); }
-      });
+      confirmDisposedProcess(this.supervisor!.waitForExit(record.parentPid, pid), identity, gate, this.options.onError);
     }
     for (const transport of this.transports.values()) {
       try { requestSignal(workerProcessState(transport).signals, 9); } catch (error) { if (!(error instanceof ProcessError)) throw error; }
@@ -335,4 +338,16 @@ export class WorkerProcessBroker {
     if (this.options.onAdmission) reportProcessAdmission(this.options.onAdmission, workerProcessState(transport), stage, reason, workerProcessDirectoryId(transport));
   }
   private report(error: unknown): void { try { this.options.onError?.(error); } catch { /* Diagnostics never own cleanup. */ } }
+}
+
+/** No closure here retains the broker, descriptor tokens, or adapter payloads through a fence. */
+function confirmDisposedProcess(waiting: Promise<unknown>, identity: WorkerProcessTransport, gate: { complete: boolean }, onError: WorkerProcessBrokerOptions["onError"]): void {
+  void waiting.then(() => {
+    if (!gate.complete) return;
+    try { confirmWorkerProcessJob(identity); }
+    catch (error) {
+      if (isCollectedProcess(error)) return;
+      try { onError?.(error); } catch { /* Diagnostics do not own the fence. */ }
+    }
+  });
 }

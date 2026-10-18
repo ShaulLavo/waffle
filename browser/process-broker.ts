@@ -1,5 +1,5 @@
 import { executableAccessResult } from "../proc/access.js";
-import { directoryJobs, directoryJob } from "../proc/directory.js";
+import { directoryGroups, directoryProcesses, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas } from "../proc/control.js";
 import type { FilesystemConnection, FilesystemIdentity } from "../fs/protocol.js";
 import { isRevoked } from "../fs/protocol.js";
@@ -13,7 +13,7 @@ import { requestSignal, createSignalState, type SignalTransport } from "../proc/
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission.js";
-import { MAX_ACCESS_REQUESTS, confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
+import { MAX_ACCESS_REQUESTS, confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
 import { WorkerPipeBroker } from "../proc/worker-pipes.js";
 import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes.js";
@@ -213,6 +213,7 @@ export class BrowserProcessBroker {
           }
         })().catch(error => this.report(error));
       });
+      supervisor.onProcessQuiescent(event => { this.fences.delete(event.pid); });
       supervisor.onJobReap(() => this.retireRoots());
       for (const root of this.reservedRoots.values()) if (!supervisor.get(root.pid)) {
         supervisor.createRoot(root);
@@ -265,18 +266,24 @@ export class BrowserProcessBroker {
     if (this.suspended) return;
     for (const pid of this.completedRoots) {
       if (this.rootLeases.has(pid)) continue;
-      const descendant = (child: number): boolean => {
-        for (let parent = this.options.table.parentOf(child); parent; parent = this.options.table.parentOf(parent)) if (parent === pid) return true;
-        return false;
-      };
-      if (Array.from(this.options.table.values()).some(record => descendant(record.pid))) continue;
-      const transport = this.roots.get(pid);
-      if (transport && (directoryJobs(transport.directory).some(slot => directoryJob(transport.directory, slot).id !== workerProcessState(transport).job) || workerProcessSlots(transport).some(slot => {
-        const state = workerProcessState(transport, slot);
-        return state.pid !== pid && (controlLoad(state.confirmed, 0) === 0 ||
-          (state.job !== workerProcessState(transport).job && controlLoad(state.jobPending, 0) >= 0));
-      }))) continue;
-      const root = this.reservedRoots.get(pid), controller = this.controllers.get(pid);
+      // Control ancestry is compressed past exited parents. Immutable rootPid, not that
+      // mutable chain, owns controller/output lifetime until the last descendant is safe.
+      if (Array.from(this.options.table.values()).some(record => record.pid !== pid && record.rootPid === pid && !record.result)) continue;
+      const transport = this.roots.get(pid), root = this.reservedRoots.get(pid);
+      if (transport) {
+        let retained = false;
+        for (const group of directoryGroups(transport.directory)) {
+          if (group.id !== root?.job) { retained = true; break; }
+        }
+        if (!retained) for (const state of directoryProcesses(transport.directory)) {
+          try {
+            if (state.pid !== pid && (controlLoad(state.confirmed, 0) === 0 ||
+                (state.job !== root?.job && controlLoad(state.jobPending, 0) >= 0))) { retained = true; break; }
+          } catch (error) { if (!isCollectedProcess(error)) throw error; }
+        }
+        if (retained) continue;
+      }
+      const controller = this.controllers.get(pid);
       this.transport.releaseRoot(pid);
       this.options.table.remove(pid);
       if (root && !this.options.table.job(root.job)?.members.size) this.options.table.removeJob(root.job);
@@ -362,7 +369,7 @@ export class BrowserProcessBroker {
     // revoke an admitted or still-pending process that happens to use the same numeric PID.
     for (const [rootPid, transport] of this.roots) {
       if (directoryId !== undefined && workerProcessDirectoryId(transport) !== directoryId) continue;
-      if (workerProcessSlots(transport).some(slot => workerProcessState(transport, slot).pid === pid)) {
+      for (const state of directoryProcesses(transport.directory)) if (state.pid === pid) {
         this.registries.get(rootPid)?.revoke(pid);
         return;
       }
@@ -677,7 +684,7 @@ export class BrowserProcessBroker {
     return stopping;
   }
   private stopSafely(child: RuntimeChild): void { try { const pending = this.stop(child); if (pending) void pending.catch(error => this.report(error)); } catch (error) { this.report(error); } }
-  private states() { return Array.from(this.roots.values()).flatMap(root => workerProcessSlots(root).map(slot => workerProcessState(root, slot))); }
+  private states() { return Array.from(this.roots.values()).flatMap(root => Array.from(directoryProcesses(root.directory))); }
   async kill(pid: number, signal: number): Promise<void> {
     const sig = checkedSignal(signal), state = this.states().find(state => state.pid === pid);
     const target = state?.signals ?? this.options.table.get(pid) ?? this.reservedRoots.get(pid);

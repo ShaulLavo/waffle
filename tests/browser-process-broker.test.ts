@@ -1,5 +1,6 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
-import { afterEach, expect, test } from "bun:test";
+import { TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker";
 import { ProcessIdentityAllocator } from "../proc/identity";
 import { ExecutableRegistry } from "../proc/registry";
@@ -386,6 +387,101 @@ test("a pending admission lease retains a completed root until released exactly 
     expect(retired).toBe(1);
     expect((Reflect.get(broker, "reservedRoots") as Map<number, unknown>).has(pid)).toBe(false);
   } finally { release?.(); await broker.dispose(); }
+});
+
+test("a direct root retains its controller while immutable-root descendants outlive compressed ancestry", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  let retired = 0;
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unused"); },
+  });
+  try {
+    const root = await broker.adoptRoot({}, { retired() { retired++; } });
+    const supervisor = await broker.ready();
+    const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+    const child = supervisor.reserveSpawn(root, request), grandchild = supervisor.reserveSpawn(child, request);
+    await broker.rootExit(root, 0);
+    expect(table.parentOf(child)).toBe(0);
+    expect(table.get(child)?.rootPid).toBe(root);
+    expect(table.get(grandchild)?.rootPid).toBe(root);
+    expect(retired).toBe(0);
+    expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(root)).toBe(true);
+    const childExit = supervisor.waitForExit(root, child);
+    supervisor.exit(child, 1); await childExit;
+    expect(table.parentOf(grandchild)).toBe(0);
+    expect(retired).toBe(0);
+    const grandchildExit = supervisor.waitForExit(child, grandchild);
+    supervisor.exit(grandchild, 2); await grandchildExit;
+    expect(retired).toBe(1);
+    expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(root)).toBe(false);
+  } finally { await broker.dispose(); }
+});
+
+test("a long-running direct root does not retain settled child filesystem fences", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unused"); },
+  });
+  const fences = Reflect.get(broker, "fences") as Map<number, Promise<void>>;
+  let release: (() => void) | undefined;
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    for (let iteration = 0; iteration < 64; iteration++) {
+      const child = supervisor.reserveSpawn(root, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+      const job = table.get(child)!.job;
+      const fence = new Promise<void>(resolve => { release = resolve; });
+      broker.registerController(child, { quiesce: () => fence });
+      const completion = supervisor.waitForExit(root, child);
+      supervisor.exit(child, 0);
+      expect(fences.has(child)).toBe(true);
+      expect(table.get(child)?.result).toBeNull();
+      release!(); await completion;
+      supervisor.reap(root, child); broker.releaseLegacyJob(job);
+      expect(fences.size).toBe(0);
+    }
+    expect(table.get(root)?.result).toBeNull();
+  } finally { release?.(); await broker.dispose(); }
+});
+
+for (const operation of ["states", "revoke"] as const) test(`browser ${operation} enumeration skips a concurrently collected unrelated process`, async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unused"); },
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer, capacity: 2 });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const descriptors = new DescriptorTable(), messages: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { messages.push(message); },
+  });
+  let load: ReturnType<typeof spyOn> | undefined;
+  try {
+    await broker.adoptRuntimeRoot(root);
+    client.spawn(client.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const notice = messages[0]!;
+    if (notice.operation !== "spawn") throw new Error("missing spawn fixture");
+    const child = workerProcessState(notice.transport);
+    claimOutcome(child.signals.outcome, { kind: "exited", code: 0 }); confirmDirectoryProcess(notice.transport);
+    const originalLoad = TaggedCells.prototype.load;
+    let collected = false;
+    load = spyOn(TaggedCells.prototype, "load").mockImplementation(function(this: TaggedCells, index = 0) {
+      // Collect the next row while decoding the root. Bare-slot snapshots have already
+      // included that child and subsequently throw; captured enumeration safely skips it.
+      if (!collected && this.buffer === root.directory && this.id === client.pid && index === 2) {
+        collected = true; collectDirectoryJob(root.directory, child.jobSlot, child.job);
+      }
+      return originalLoad.call(this, index);
+    });
+    if (operation === "states") {
+      const states = (Reflect.get(broker, "states") as () => { pid: number }[]).call(broker);
+      expect(states.map(state => state.pid)).toEqual([client.pid]);
+    } else expect(() => broker.revokeRuntimeProcess(-1)).not.toThrow();
+    expect(collected).toBe(true);
+  } finally { load?.mockRestore(); descriptors.dispose(); await broker.dispose(); }
 });
 
 test("a completed runtime root retains queued background descendants until their job is reaped", async () => {
