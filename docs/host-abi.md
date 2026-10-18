@@ -137,8 +137,8 @@ regardless of which producer selected the result; a competing exit or signal emi
 The generic worker does not also emit this startup diagnostic.
 
 Startup diagnostic sinks may return a promise. The supervisor retains finishing ownership
-and stderr until it settles. The browser broker drains partial writes without blocking its
-page or pipe relay. A closed reader fails immediately; a live reader that never drains is
+and stderr until it settles. The browser broker uses only `tryWrite` (missing immediate I/O reports ENOTSUP),
+draining partial writes without blocking its page or pipe relay. A closed reader fails immediately; a live reader that never drains is
 bounded to **five seconds without write progress** (each positive write resets the deadline),
 and broker disposal cancels the drain on its next task turn.
 Undelivered bytes are reported to the host error sink as a `ProcessError` (the stream's

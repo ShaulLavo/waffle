@@ -1,3 +1,4 @@
+import { ProcessErrno } from "../proc/types.js";
 import { TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -744,7 +745,8 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
     const rootPid = await broker.adoptRoot({}), supervisor = await broker.ready();
     const pid = supervisor.reserveSpawn(rootPid, { executable: "fixture", argv: ["fixture"], env: {}, cwd: "/", job: -1, fds: [] });
     const fd = source.open({ kind: "terminal", read: () => 0,
-      write(chunks) { events.push("diagnostic"); output.push(new TextDecoder().decode(chunks[0]!)); return chunks.reduce((sum, chunk) => sum + chunk.length, 0); },
+      write() { throw new Error("startup diagnostics must not use blocking writes"); },
+      tryWrite(chunks) { events.push("diagnostic"); output.push(new TextDecoder().decode(chunks[0]!)); return chunks.reduce((sum, chunk) => sum + chunk.length, 0); },
       readiness: () => ({ readable: false, writable: true, hangup: false }), close() { events.push("closed"); } }, 0n, 0n);
     supervisor.get(pid)!.descriptors.inherit(2, source.get(fd)!);
     source.close(fd);
@@ -1347,5 +1349,31 @@ test("ignored broker notifications preserve the last actually delivered signal f
     expect(record.signal).toBe(2);
     supervisor.defaultSignal(pid);
     expect(readOutcome(record.outcome)).toMatchObject({ kind: "signaled", code: 2 });
+  } finally { await broker.dispose(); }
+});
+
+
+test("startup diagnostics reject write-only stderr without calling its blocking method", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("fixture", { adapter: "fixture", module() { throw new Error("setup failed"); } });
+  const errors: unknown[] = [];
+  let writes = 0, closes = 0;
+  const broker = new BrowserProcessBroker({ identities, table, registry, onError: error => errors.push(error),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unreachable launch"); },
+  });
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    const pid = supervisor.reserveSpawn(root, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    supervisor.get(pid)!.descriptors.openAt(2, { kind: "terminal", read: () => 0,
+      write() { writes++; throw new Error("blocking method called"); }, close() { closes++; },
+      readiness: () => ({ readable: false, writable: true, hangup: false }),
+    }, 0n, 0n);
+    await supervisor.start(pid);
+    expect(writes).toBe(0);
+    expect(closes).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ errno: ProcessErrno.NOTSUP });
+    expect(await supervisor.waitForExit(root, pid)).toMatchObject({ kind: "start-failed", error: "EIO" });
   } finally { await broker.dispose(); }
 });

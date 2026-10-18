@@ -546,7 +546,9 @@ export class BrowserProcessBroker {
     const stderr = record?.descriptors.get(2)?.resource;
     if (stderr?.kind !== "pipe" && stderr?.kind !== "terminal") return;
     const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
-    return drainDiagnostic(bytes, bytes => (stderr.tryWrite ?? stderr.write).call(stderr, [bytes]), () => !this.suspended);
+    const write = stderr.tryWrite;
+    if (!write) throw new ProcessError(ProcessErrno.NOTSUP, "startup diagnostic requires immediate stderr writes");
+    return drainDiagnostic(bytes, bytes => write.call(stderr, [bytes]), () => !this.suspended);
   }
   private collectRuntimeProcess(pid: number, directory?: string): void {
     for (const [rootPid, transport] of this.roots) {
