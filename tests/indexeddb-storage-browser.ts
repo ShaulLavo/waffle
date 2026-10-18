@@ -698,6 +698,31 @@ function indexedDBCases(
       );
     });
   });
+  test("IndexedDB does not adopt unmarked unknown metadata", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    await change(name, "metadata", "format");
+    await change(name, "metadata", "foreign-layout", "untouched");
+    const reopened = await open();
+    await rejects(reopened.load(), "metadata layout");
+    await reopened.close();
+    if (filesystemWorkerURL !== undefined)
+      await runtimeInvalidStorageCase(name, "indexeddb", filesystemWorkerURL);
+    await raw(name, async (db) => {
+      assert(
+        (await request(db.transaction("metadata").objectStore("metadata").get("format"))) ===
+          undefined,
+        "unknown layout is not stamped",
+      );
+      assert(
+        (await request(
+          db.transaction("metadata").objectStore("metadata").get("foreign-layout"),
+        )) === "untouched",
+        "unknown metadata is preserved",
+      );
+    });
+  });
   // Backend-suite consumers need not serve a Waffle runtime worker. Its URL opts in to runtime probes.
   if (filesystemWorkerURL !== undefined) {
     test("runtime VFS selection preserves existing IndexedDB workspaces", (name, open) =>

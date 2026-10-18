@@ -404,7 +404,7 @@ export class OpfsStorage implements StorageBackend {
         formatPresent = true;
         continue;
       }
-      if (handle.kind !== "file" || !isSnapshotName(name))
+      if (handle.kind !== "file" || !name.startsWith("snapshot-"))
         throw new VfsError(
           "INVALID_VFS_FORMAT",
           "opfs-memory",
@@ -653,8 +653,4 @@ function isFormatEntry(name: string, kind: string): boolean {
       "Incompatible OPFS filesystem format identity",
     );
   return true;
-}
-
-function isSnapshotName(name: string): boolean {
-  return name === "snapshot-initial.json" || /^snapshot-\d+-[0-9a-f-]{36}\.json$/.test(name);
 }

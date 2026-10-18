@@ -963,6 +963,24 @@ function focusedCases(filesystemWorkerURL?: string | URL): OpfsCase[] {
       },
     },
     {
+      label: "OPFS does not adopt unmarked unknown metadata",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1));
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        await metadata.getFileHandle("foreign-layout", { create: true });
+        const reopened = await open();
+        await rejects(reopened.load(), "metadata layout");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
+        await metadata.getFileHandle("foreign-layout");
+        await rejects(metadata.getFileHandle(`format-${OPFS_FORMAT}`), "NotFound");
+      },
+    },
+    {
       label: "all corrupt OPFS snapshots reject instead of resetting existing storage",
       async run(name, open) {
         const storage = await open();
