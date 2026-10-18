@@ -222,7 +222,12 @@ try {
     // Firefox profiles on /work's VDO filesystem fail independently of process transport.
     // Put only Firefox's disposable profile/temp files in task-owned tmpfs, not downloads.
     if (name === "firefox" && process.platform === "linux" && !firefoxScratch) {
-      firefoxScratchCreation = mkdtemp("/dev/shm/waffle-slot-recycling-firefox-");
+      firefoxScratchCreation = mkdtemp(
+        resolve(
+          process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
+          "waffle-slot-recycling-firefox-",
+        ),
+      );
       firefoxScratch = await firefoxScratchCreation;
       active();
     }

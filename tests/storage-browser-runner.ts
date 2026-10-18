@@ -157,7 +157,10 @@ async function runBrowser(name: string, failures: string[]): Promise<void> {
   // Firefox profiles cannot use the PC's VDO filesystem. Preserve the existing tmpfs policy.
   const previousTmp = process.env.TMPDIR;
   if (name === "firefox" && process.platform === "linux")
-    process.env.TMPDIR = await lifecycle.directory("/dev/shm", "waffle-ff-");
+    process.env.TMPDIR = await lifecycle.directory(
+      process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
+      "waffle-ff-",
+    );
   const browser = await lifecycle.launch(engine);
   try {
     const listed = await inWorker<TestList>(browser, { kind: "list" });

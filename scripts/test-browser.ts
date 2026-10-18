@@ -1,4 +1,4 @@
-import { runOwned } from "./owned-command.ts";
+import { runBrowserSuite } from "./browser-command.ts";
 
 const stopped = new AbortController();
 const stop = () => stopped.abort();
@@ -17,7 +17,7 @@ try {
   for (const batch of batches) {
     const results = await Promise.allSettled(
       batch.map(({ runner, engines }) =>
-        runOwned([process.execPath, runner].concat(engines), {
+        runBrowserSuite([process.execPath, runner].concat(engines), {
           cwd: import.meta.dir + "/..",
           env: process.env,
           signal: stopped.signal,

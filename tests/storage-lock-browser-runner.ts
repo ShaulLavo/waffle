@@ -820,7 +820,9 @@ try {
     if (!(name in { chromium, firefox, webkit })) throw new Error(`Unknown browser: ${name}`);
     const engine = ({ chromium, firefox, webkit } as Record<EngineName, any>)[name as EngineName];
     if (name === "firefox" && process.platform === "linux") {
-      firefoxScratchCreation = mkdtemp("/dev/shm/waffle-lock-firefox-");
+      firefoxScratchCreation = mkdtemp(
+        resolve(process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm", "waffle-lock-firefox-"),
+      );
       firefoxScratch = await firefoxScratchCreation;
     }
     if (cleaning) throw new Error("Storage lock runner stopped before browser launch");

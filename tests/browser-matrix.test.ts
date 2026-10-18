@@ -18,7 +18,7 @@ if (engines === "chromium,firefox") {
   if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
 } else throw Error("missing engine");
 writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
-if (process.env.MATRIX_FAIL === name) throw Error("fixture failure");
+if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
 `;
 
 async function matrix(failing: string): Promise<void> {
@@ -35,6 +35,8 @@ async function matrix(failing: string): Promise<void> {
       join(import.meta.dir, "../scripts/owned-command.ts"),
       join(root, "scripts/owned-command.ts"),
     );
+    for (const name of ["browser-command.ts", "browser-supervisor.ts"])
+      await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
     for (const runner of runners)
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     let failure: unknown;
@@ -66,6 +68,10 @@ test("browser matrix overlaps Chromium and Firefox suites before running WebKit 
   await matrix("");
 }, 15_000);
 
-test("a failed browser suite remains blocking without hiding the other suites", async () => {
-  await matrix("storage");
-}, 15_000);
+for (const runner of runners) {
+  for (const phase of ["chromium,firefox", "webkit"]) {
+    test(`${runner} ${phase} failure remains blocking without hiding other suites`, async () => {
+      await matrix(`${runner}:${phase}`);
+    }, 15_000);
+  }
+}
