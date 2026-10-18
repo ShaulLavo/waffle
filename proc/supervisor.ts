@@ -1,9 +1,10 @@
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
+import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
 import { checkedSignalNumber, defaultSignalTerminates, createSignalState, requestSignal } from "./signals.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors.js";
 import { ExecutableNotFound, ExecutableRegistry } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
-import { claimOutcome, outcomeWord, readOutcome } from "./outcome.js";
+import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "./outcome.js";
 import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types.js";
 
 interface AccessRequest { result?: number; wake?: Int32Array; }
@@ -30,8 +31,8 @@ export interface RootProcessOptions extends SpawnReservation {
   descriptors?: DescriptorTable;
   foreground?: boolean;
 }
-function signalWord(source?: Int32Array | SharedArrayBuffer): Int32Array {
-  const word = source instanceof Int32Array ? source : new Int32Array(source ?? new SharedArrayBuffer(4));
+function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
+  const word = source instanceof TaggedCells ? source : source instanceof Int32Array ? source : new Int32Array(source ?? new SharedArrayBuffer(4));
   if (!(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) throw new TypeError("signal word must be one shared int32");
   return word;
 }
@@ -51,6 +52,7 @@ export class ProcessSupervisor {
   private readonly listeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobReadiness = new Set<(job: number) => boolean>();
   private readonly jobReapListeners = new Set<(job: number) => void>();
+  private readonly childAccess = new Set<(pid: number, consume: boolean) => boolean>();
   private readonly jobReapClaims = new Set<(job: number) => boolean>();
   private readonly quiescentListeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobListeners = new Map<number, Set<() => void>>();
@@ -128,7 +130,7 @@ export class ProcessSupervisor {
     this.table.require(callerPid);
     const job = this.table.job(jobId);
     if (!job) throw new ProcessError(ProcessErrno.SRCH, `unknown job ${jobId}`);
-    return job.ownerPid === callerPid;
+    return job.controlParent === callerPid;
   }
   /** A job is controlled by its owner and every live or retained ancestor of that owner. */
   canWaitJob(callerPid: number, jobId: number): boolean {
@@ -138,7 +140,7 @@ export class ProcessSupervisor {
     const job = this.table.job(jobId);
     if (!job) throw new ProcessError(this.table.wasJob(jobId) ? ProcessErrno.CHILD : ProcessErrno.SRCH, `unknown or reaped job ${jobId}`);
     const seen = new Set<number>();
-    let owner: number | undefined = job.ownerPid;
+    let owner: number | undefined = job.controlParent;
     while (owner !== undefined && owner !== 0 && !seen.has(owner)) {
       if (owner === callerPid) return true;
       seen.add(owner);
@@ -159,7 +161,7 @@ export class ProcessSupervisor {
     } catch (error) {
       // A blocked worker can claim the shared job immediately after safe publication.
       // Public waiters see CHILD; internal wake/cleanup bookkeeping must not fail for it.
-      if (internal && error instanceof ProcessError && error.errno === ProcessErrno.CHILD) return false;
+      if (internal && error instanceof ProcessError && (error.errno === ProcessErrno.CHILD || error.errno === ProcessErrno.SRCH)) return false;
       throw error;
     }
   }
@@ -172,6 +174,11 @@ export class ProcessSupervisor {
   registerJobReapClaim(claim: (job: number) => boolean): () => void {
     this.jobReapClaims.add(claim);
     return () => { this.jobReapClaims.delete(claim); };
+  }
+  /** Shared adapters observe retained child authority or atomically claim its collection. */
+  registerChildAccess(check: (pid: number, consume: boolean) => boolean): () => void {
+    this.childAccess.add(check);
+    return () => { this.childAccess.delete(check); };
   }
   onJobReap(listener: (job: number) => void): () => void {
     this.jobReapListeners.add(listener);
@@ -196,17 +203,17 @@ export class ProcessSupervisor {
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
     const pid = options.pid ?? this.table.identities.pid();
-    this.table.checkPid(pid);
+    this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt), requestedSignal = signalWord(options.requestedSignal), outcome = outcomeWord(options.outcome), signalState = createSignalState(options.signalState);
     // Explicit root ids may share an existing job, as with an externally reserved guest root.
     const job = options.job !== undefined && this.table.job(options.job)
       ? this.table.job(options.job)!
-      : this.table.createJob(pid, options.foreground ?? true, options.job);
+      : this.table.createJob(pid, options.foreground ?? true, options.job, options.outcome instanceof OutcomeCell ? { ownerPid: pid, leaderPid: pid, outcome: options.outcome, foreground: options.foreground ?? true } : undefined);
     this.table.insert({
       pid, parentPid: 0, job: job.id, descriptors: options.descriptors ?? new DescriptorTable(),
       interrupt, requestedSignal, signalState, outcome, request: null, state: "running", result: null, jobSafe: false, signal: 0, revoked: false,
       revocations: new Set(), waiters: new Set(),
-    });
+    }, options.outcome instanceof OutcomeCell);
     return pid;
   }
   reserveSpawn(parentPid: number, spec: SpawnRequest, reservation: SpawnReservation = {}): number {
@@ -224,7 +231,7 @@ export class ProcessSupervisor {
     const parent = this.table.get(parentPid);
     // A separately selected job can be admitted after an ancestor reaped its exited parent.
     // Its worker already retained the capabilities and ancestry before that reap.
-    if (!parent && (!admitted || !retainedDescriptors || this.table.parentOf(parentPid) === undefined)) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${parentPid}`);
+    if (!parent && (!admitted || !retainedDescriptors)) throw new ProcessError(ProcessErrno.SRCH, `unknown process ${parentPid}`);
     if (!admitted && (parent!.result || parent!.signal === Signal.SIGKILL || readOutcome(parent!.outcome))) throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
     const parentDescriptors = retainedDescriptors ?? parent!.descriptors;
     if (!Number.isInteger(spec.job) || spec.job < -1) throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
@@ -239,7 +246,7 @@ export class ProcessSupervisor {
     const interrupt = signalWord(reservation.interrupt), requestedSignal = signalWord(reservation.requestedSignal), outcome = outcomeWord(reservation.outcome), signalState = createSignalState(reservation.signalState);
     const request = snapshot(spec);
     const pid = reservation.pid ?? this.table.identities.pid();
-    this.table.checkPid(pid);
+    this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
     let job = reservation.job ?? (spec.job > 0 ? spec.job : undefined);
     let createdJob = false;
     if (job !== undefined && !this.table.job(job)) {
@@ -247,7 +254,7 @@ export class ProcessSupervisor {
       this.table.createJob(jobIdentity?.ownerPid ?? parentPid, jobIdentity?.foreground ?? spec.job === 0, job, jobIdentity);
       createdJob = true;
     }
-    if (job === undefined) { job = this.table.createJob(parentPid, spec.job === 0).id; createdJob = true; }
+    if (job === undefined) { job = this.table.createJob(reservation.controlParent ?? parentPid, spec.job === 0).id; createdJob = true; }
     if (jobIdentity) this.table.adoptJobIdentity(job, jobIdentity);
     const descriptors = new DescriptorTable();
     const inherited = new Map<OpenDescription, Descriptor>();
@@ -268,7 +275,7 @@ export class ProcessSupervisor {
         descriptors.inherit(binding.child, { ...target, rightsBase: source.rightsBase, rightsInheriting: source.rightsInheriting });
       }
       this.table.insert({
-        pid, parentPid, job, descriptors,
+        pid, parentPid, job, descriptors, controlParent: reservation.controlParent, rootPid: reservation.rootPid,
         interrupt, requestedSignal, signalState, outcome, request, state: "reserved", result: null, jobSafe: false, signal: 0, revoked: false,
         revocations, waiters: new Set(),
       }, admitted);
@@ -348,7 +355,7 @@ export class ProcessSupervisor {
     checkedSignalNumber(signal);
     const record = this.table.require(pid);
     if (record.result) return;
-    const requested = Atomics.load(record.requestedSignal, 0);
+    const requested = controlLoad(record.requestedSignal, 0);
     if (requested === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
     else if (record.signal !== Signal.SIGKILL && requested !== 0) record.signal = requested;
     if (record.signal === Signal.SIGKILL || readOutcome(record.outcome)) this.finish(pid, { kind: "signaled", code: Signal.SIGKILL });
@@ -357,7 +364,7 @@ export class ProcessSupervisor {
     if (record.result) return;
     const delivery = requestSignal(record, signal);
     if (delivery.action !== "ignore" && delivery.action !== "settled") {
-      record.signal = Atomics.load(record.requestedSignal, 0);
+      record.signal = controlLoad(record.requestedSignal, 0);
     }
     if (delivery.outcome?.kind === "signaled" && delivery.outcome.code === Signal.SIGKILL) record.signal = Signal.SIGKILL;
   }
@@ -371,8 +378,8 @@ export class ProcessSupervisor {
     if (!record || record.result) return;
     const settled = readOutcome(record.outcome);
     if (settled) { this.finish(pid, settled); return; }
-    const sig = checkedSignalNumber(signal ?? (record.signal || Atomics.load(record.requestedSignal, 0)));
-    const killed = Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL;
+    const sig = checkedSignalNumber(signal ?? (record.signal || controlLoad(record.requestedSignal, 0)));
+    const killed = controlLoad(record.requestedSignal, 0) === Signal.SIGKILL;
     if (!killed && !defaultSignalTerminates(sig)) return;
     const winner = claimOutcome(record.outcome, { kind: "signaled", code: killed ? Signal.SIGKILL : sig });
     this.finish(pid, winner);
@@ -385,14 +392,24 @@ export class ProcessSupervisor {
     const targets = Array.from(job.members, pid => this.table.require(pid));
     // Record every target before callbacks: a dying process cannot spawn through an as-yet
     // unmarked sibling, or replace that sibling's SIGKILL with a handled exit.
-    for (const record of targets) this.recordSignal(record, sig);
     for (const record of targets) {
-      if ((record.signal === Signal.SIGKILL || readOutcome(record.outcome)) && this.table.get(record.pid) === record) {
-        this.finish(record.pid, { kind: "signaled", code: Signal.SIGKILL });
-      }
+      try { this.recordSignal(record, sig); }
+      catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
+    }
+    for (const record of targets) {
+      try {
+        if (this.table.get(record.pid) === record && (record.signal === Signal.SIGKILL || readOutcome(record.outcome))) {
+          this.finish(record.pid, { kind: "signaled", code: Signal.SIGKILL });
+        }
+      } catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
     }
   }
-  wait(parentPid: number, pid: number): ProcessExit | null { return this.child(parentPid, pid).result; }
+  /** Observation for readiness polling; only wait/reap consumes a child. */
+  childExited(parentPid: number, pid: number): boolean { return this.child(parentPid, pid).result !== null; }
+  wait(parentPid: number, pid: number): ProcessExit | null {
+    if (!this.child(parentPid, pid).result) return null;
+    return this.reap(parentPid, pid);
+  }
   /** Returns and reaps a completed job, retaining the leader's typed outcome even if it was reaped separately. */
   waitJob(parentPid: number, jobId: number): ProcessExit | null {
     const job = this.requireWaitJob(parentPid, jobId);
@@ -407,11 +424,19 @@ export class ProcessSupervisor {
     for (const claim of this.jobReapClaims) {
       if (!claim(jobId)) throw new ProcessError(ProcessErrno.CHILD, "job was already reaped by another observer");
     }
-    for (const pid of Array.from(job.members)) this.table.remove(pid);
+    this.retireJobMetadata(jobId);
+    return result;
+  }
+  /** The shared consuming claim is authoritative even when its worker never posts a receipt. */
+  reconcileCollectedJob(jobId: number): void {
+    const job = this.table.job(jobId);
+    if (job && job.pendingMembers === 0 && this.table.jobClaimed(jobId)) this.retireJobMetadata(jobId);
+  }
+  private retireJobMetadata(jobId: number): void {
+    for (const record of Array.from(this.table.values())) if (record.job === jobId) this.table.remove(record.pid);
     this.table.removeJob(jobId);
     for (const listener of Array.from(this.jobReapListeners)) this.safely(() => listener(jobId));
     this.jobListeners.delete(jobId);
-    return result;
   }
   waitForExit(parentPid: number, pid: number): Promise<ProcessExit> {
     const record = this.child(parentPid, pid);
@@ -421,13 +446,22 @@ export class ProcessSupervisor {
   reap(parentPid: number, pid: number): ProcessExit {
     const record = this.child(parentPid, pid);
     if (!record.result) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited");
+    this.checkChildAccess(pid, true);
     this.table.remove(pid);
     return record.result;
   }
   private child(parentPid: number, pid: number): ProcessRecord {
     const record = this.table.get(pid);
     if (!record || record.parentPid !== parentPid) throw new ProcessError(ProcessErrno.CHILD, `process ${pid} is not a child of ${parentPid}`);
+    this.checkChildAccess(pid, false);
     return record;
+  }
+  private checkChildAccess(pid: number, consume: boolean): void {
+    for (const check of this.childAccess) {
+      if (check(pid, consume)) continue;
+      this.table.remove(pid);
+      throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
+    }
   }
   onChildExit(listener: (event: ChildExitEvent) => void): () => void {
     this.listeners.add(listener);
@@ -460,6 +494,7 @@ export class ProcessSupervisor {
     this.jobReadiness.clear();
     this.jobReapListeners.clear();
     this.jobReapClaims.clear();
+    this.childAccess.clear();
     this.quiescentListeners.clear();
     this.jobListeners.clear();
   }
@@ -468,7 +503,7 @@ export class ProcessSupervisor {
     if (!record || record.result || this.finishing.has(pid)) return;
     this.finishing.set(pid, record);
     // A synchronous guest-side kill publishes its word before the asynchronous broker message.
-    if (Atomics.load(record.requestedSignal, 0) === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
+    if (controlLoad(record.requestedSignal, 0) === Signal.SIGKILL) this.recordSignal(record, Signal.SIGKILL);
     if (record.signal === Signal.SIGKILL) result = { kind: "signaled", code: Signal.SIGKILL };
     // Parent kill, worker completion and page failure all choose the same immutable outcome.
     // A signal published after our last read still competes at this atomic decision, rather
@@ -499,6 +534,10 @@ export class ProcessSupervisor {
     try { quiescence = this.options.quiesce?.(pid); }
     catch (error) { fenceFailed = true; this.report(error); }
     const safe = () => {
+      const event = Object.freeze({ pid, parentPid: record.parentPid, job: record.job, result: winner });
+      // Publish shared collectibility before host waits or public exit observers can
+      // consume the result and synchronously reserve replacement capacity.
+      for (const listener of Array.from(this.quiescentListeners)) this.safely(() => listener(event));
       record.result = winner;
       record.state = "exited";
       this.table.recordOutcome(record);
@@ -506,15 +545,23 @@ export class ProcessSupervisor {
       this.table.markJobSafe(record);
       for (const resolve of record.waiters) resolve(winner);
       record.waiters.clear();
-      const event = Object.freeze({ pid, parentPid: record.parentPid, job: record.job, result: winner });
       for (const listener of Array.from(this.listeners)) this.safely(() => listener(event));
-      for (const listener of Array.from(this.quiescentListeners)) this.safely(() => listener(event));
       const job = this.table.job(record.job);
       if (job && this.jobIsEmpty(job, true)) {
         const listeners = this.jobListeners.get(record.job);
         if (listeners) for (const listener of Array.from(listeners)) this.safely(listener);
       }
       this.stopHandle(record);
+      // A dead parent cannot collect children. Retain only running descendants and compress
+      // their control ancestry; late orphan completion collects after its own safety fence.
+      for (const child of Array.from(this.table.values())) {
+        if (child.parentPid === pid && child.result) this.table.remove(child.pid);
+        else if (child.controlParent === pid) child.controlParent = record.controlParent ?? 0;
+      }
+      for (const group of Array.from(this.table.values(), member => this.table.job(member.job))) {
+        if (group?.controlParent === pid) group.controlParent = record.controlParent ?? 0;
+      }
+      if (record.parentPid !== 0 && (!this.table.get(record.parentPid) || this.table.get(record.parentPid)?.result)) this.table.remove(pid);
     };
     if (!fenceFailed) {
       if (quiescence) void quiescence.then(safe, error => this.report(error));

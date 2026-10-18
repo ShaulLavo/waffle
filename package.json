@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.30",
+  "version": "0.0.31",
   "private": true,
   "type": "module",
   "exports": {
@@ -171,6 +171,13 @@
       "bun": "./proc/index.ts",
       "browser": "./proc/index.ts",
       "default": "./proc/index.ts"
+    },
+    "./proc/control": {
+      "types": "./proc/control.ts",
+      "node": "./dist/proc/control.js",
+      "bun": "./proc/control.ts",
+      "browser": "./proc/control.ts",
+      "default": "./proc/control.ts"
     },
     "./proc/abi": {
       "types": "./proc/abi.ts",

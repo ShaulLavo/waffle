@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
-import { bootstrap, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { DescriptorTable } from "../core/descriptors";
-import { connectFilesystemIdentity, createFilesystemIdentity } from "../fs/protocol";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessTable } from "../proc/table";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
-import { readOutcome } from "../proc/outcome";
-import { failFirstWorkerImport } from "./first-worker-import";
+import { bootstrap, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { connectFilesystemIdentity, createFilesystemIdentity } from "../fs/protocol.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessTable } from "../proc/table.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { readOutcome } from "../proc/outcome.js";
+import { failFirstWorkerImport } from "./first-worker-import.js";
 
 const expectedFailure = { kind: "start-failed", code: 13, error: "EACCES", status: null };
 type Shape = "valid" | "missing-start" | "invalid-start" | "missing-memory" | "invalid-memory";
@@ -158,9 +158,12 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       }
       f.supervisor.exit(f.pid, 13);
       expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual(expectedFailure);
+      const beforeCollection = readOutcome(f.state.signals.outcome);
       expect(f.parent.wait(f.parent.pid, f.pid)).toEqual(expectedFailure);
       expect(f.supervisor.waitJob(f.parent.pid, f.state.job)).toEqual(expectedFailure);
-      expect(readOutcome(f.state.signals.outcome)).toEqual(expectedFailure);
+      expect(beforeCollection).toEqual(expectedFailure);
+      expect(Object.isFrozen(beforeCollection)).toBe(true);
+      expect(() => readOutcome(f.state.signals.outcome)).toThrow("collected");
     } finally { await f.dispose(); }
   });
 }

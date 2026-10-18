@@ -1,9 +1,9 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { ProcessABI, type ProcessService } from "../../proc/abi";
-import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes";
-import type { SignalTransport } from "../../proc/signals";
-import { DescriptorTable } from "../../core/descriptors";
-import { MemFS } from "../../fs/memory";
+import { ProcessABI, type ProcessService } from "../../proc/abi.js";
+import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes.js";
+import type { SignalTransport } from "../../proc/signals.js";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { MemFS } from "../../fs/memory.js";
 
 const { endpoint, module, pid, signals } = workerData as {
   endpoint: PipeEndpointHandle; module: WebAssembly.Module; pid: number; signals: SignalTransport;
@@ -12,7 +12,7 @@ const descriptors = new DescriptorTable();
 const memory = new WebAssembly.Memory({ initial: 1 });
 descriptors.open(attachPipeEndpoint(endpoint), (1n << 1n) | (1n << 27n), 0n);
 const unused = (): never => { throw new Error("unexpected process service call"); };
-const service: ProcessService = { spawn: unused, waitJob: unused, jobEmpty: unused, wait: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
+const service: ProcessService = { spawn: unused, waitJob: unused, jobEmpty: unused, wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
 const abi = new ProcessABI({ memory, descriptors, fs: new MemFS(), pid, service, signals, wake: endpoint.wake,
   wait(milliseconds, word, expected) {
     parentPort!.postMessage({ phase: "blocked" });

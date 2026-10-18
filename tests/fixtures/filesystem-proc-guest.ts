@@ -1,8 +1,8 @@
-import { DescriptorTable } from "../../core/descriptors";
-import { FilesystemClient, type FilesystemConnection } from "../../fs";
-import { ProcessABI } from "../../proc/abi";
-import { outcomeWord } from "../../proc/outcome";
-import { createSignalState } from "../../proc/signals";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { FilesystemClient, type FilesystemConnection } from "../../fs/index.js";
+import { ProcessABI } from "../../proc/abi.js";
+import { outcomeWord } from "../../proc/outcome.js";
+import { createSignalState } from "../../proc/signals.js";
 
 self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) => {
   const fs = new FilesystemClient(data.connection);
@@ -19,7 +19,7 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
     const wake = new Int32Array(data.connection.signal);
     let blocked = false;
     const abi = new ProcessABI({ memory, descriptors, fs, pid: 1,
-      service: { spawn: unused, waitJob: unused, jobEmpty: unused, wait: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused },
+      service: { spawn: unused, waitJob: unused, jobEmpty: unused, wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused },
       signals: { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() },
       wake,
       wait(milliseconds) {

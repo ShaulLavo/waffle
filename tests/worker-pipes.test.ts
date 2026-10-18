@@ -1,15 +1,16 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { DescriptorTable, type Stream } from "../core/descriptors";
-import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity } from "../fs";
-import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
-import { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, type PipeEndpointHandle, type PipePublicationRegistryHandle } from "../proc/pipes";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { WorkerProcessBroker } from "../proc/worker-broker";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
-import { WorkerPipeBroker, WorkerPipeHost, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "../proc/worker-pipes";
-import { ProcessError, type ProcessContext, type SpawnRequest } from "../proc/types";
+import { DescriptorTable, type Stream } from "../core/descriptors.js";
+import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity } from "../fs/index.js";
+import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
+import { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, attachPipeEndpoint, type PipeEndpointHandle, type PipePublicationRegistryHandle } from "../proc/pipes.js";
+import { directoryJobs } from "../proc/directory.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { WorkerProcessBroker } from "../proc/worker-broker.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
+import { WorkerPipeBroker, WorkerPipeHost, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "../proc/worker-pipes.js";
+import { ProcessError, type ProcessContext, type SpawnRequest } from "../proc/types.js";
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const cleanups: (() => void)[] = [];
@@ -30,6 +31,7 @@ function pairFixture(relay: "auto" | "manual" = "manual", cellsPerProcess = 32, 
   const transport = createWorkerProcessTransport({ capacity: processCapacity });
   const messages: WorkerProcessMessage[] = [];
   const registry = new PipePublicationRegistry({ processCapacity, cellsPerProcess, wake: workerProcessState(transport).wake });
+  registry.registerProcess(1);
   const broker = new WorkerPipeBroker({ relay });
   const host = new WorkerPipeHost({ transport, registry, postMessage: message => messages.push(structuredClone(message)), pipe: { capacity: 8, maxWriters: 4, maxReaders: 4 } });
   cleanups.push(() => broker.dispose());
@@ -53,7 +55,10 @@ function processFixture(cellsPerProcess = 32, processCapacity = 16) {
     return new WorkerProcessClient({ transport, descriptors, codec: host.codec(),
       createPipe: () => host.createPipe(), revokeProcess: pid => host.revokeProcess(pid),
       postMessage: message => pair.messages.push(structuredClone(message)),
-      prepareSpawn: () => ({ data: { pipeRegistry: host.registry.handle() } }),
+      prepareSpawn: pid => {
+        host.registry.registerProcess(pid);
+        return { data: { pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) };
+      },
     });
   }
   const root = client(pair.transport, pair.host);
@@ -134,6 +139,7 @@ test("automatic broker retires registry-revoked endpoints without guest cleanup"
 test("broker keeps pipes alive for transferred descendants and EOF readers", () => {
   const f = pairFixture();
   const [reader, writer] = f.host.createPipe();
+  f.registry.registerProcess(2);
   const inherited = writer.forProcess(2);
   cleanups.push(() => { reader.close(); writer.close(); inherited.close(); });
   f.broker.attach(structuredClone(reader.handle()));
@@ -166,6 +172,7 @@ test("codec reserves inherited endpoint refs before return and preserves data af
   const [reader, writer] = f.host.createPipe();
   const parent = new DescriptorTable(); cleanups.push(() => parent.dispose());
   const fd = parent.open(writer, 127n, 63n);
+  f.registry.registerProcess(2);
   const token = f.host.codec().export(parent.get(fd)!, 2);
   expect(isWorkerPipeDescriptorToken(token)).toBe(true);
   parent.close(fd);
@@ -184,6 +191,7 @@ test("controller and worker imports release one transferred lifetime idempotentl
   cleanups.push(() => { reader.close(); writer.close(); });
   const parent = new DescriptorTable(); cleanups.push(() => parent.dispose());
   const fd = parent.open(writer, 3n, 3n);
+  f.registry.registerProcess(2);
   const token = f.host.codec().export(parent.get(fd)!, 2);
   const control = new DescriptorTable(), guest = new DescriptorTable();
   cleanups.push(() => { control.dispose(); guest.dispose(); });
@@ -204,6 +212,7 @@ test("shared pipe tokens reject imports into the wrong process", () => {
   const [reader, writer] = f.host.createPipe();
   const table = new DescriptorTable(); cleanups.push(() => { table.dispose(); reader.close(); });
   const fd = table.open(writer, 3n, 3n);
+  f.registry.registerProcess(2);
   const token = f.host.codec().export(table.get(fd)!, 2);
   expect(() => f.host.codec().import(token, 3)).toThrow("another process");
   f.host.codec().discard(token);
@@ -214,6 +223,7 @@ test("broker owns relay pumping for readers inherited into another process", () 
   const [reader, writer] = f.host.createPipe();
   const source = new DescriptorTable(); cleanups.push(() => source.dispose());
   const fd = source.open(reader, 3n, 3n);
+  f.registry.registerProcess(2);
   const token = f.host.codec().export(source.get(fd)!, 2);
   const target = new DescriptorTable(); cleanups.push(() => { target.dispose(); writer.close(); });
   target.add(f.broker.codec().import(structuredClone(token), 2), { rightsBase: 3n, rightsInheriting: 3n });
@@ -231,6 +241,7 @@ test("codec import automatically attaches the one responsive relay supervisor", 
   const [reader, writer] = f.host.createPipe();
   const source = new DescriptorTable(); cleanups.push(() => source.dispose());
   const fd = source.open(reader, 3n, 3n);
+  f.registry.registerProcess(2);
   const token = f.host.codec().export(source.get(fd)!, 2);
   const target = new DescriptorTable(); cleanups.push(() => { target.dispose(); writer.close(); });
   target.add(f.broker.codec().import(structuredClone(token), 2), { rightsBase: 3n, rightsInheriting: 3n });
@@ -319,6 +330,100 @@ test("sixteen distinct child workers each use IPC across shared registry growth"
   expect(f.broker.size).toBe(0);
 });
 
+test("3001 pipe-backed spawn/waitJob cycles recycle a two-slot runtime and root disposal clears it", async () => {
+  const transport = createWorkerProcessTransport({ capacity: 2 });
+  const rootState = workerProcessState(transport), directoryBytes = transport.directory.byteLength;
+  const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1, maxCells: 1 << 16, wake: rootState.wake });
+  registry.registerProcess(rootState.pid);
+  const pipes = new WorkerPipeBroker({ relay: "manual" });
+  const messages: WorkerProcessMessage[] = [];
+  const executables = new ExecutableRegistry(); executables.register("fixture", { module: emptyModule, adapter: "preview1" });
+  let terminated = 0, diagnostic: unknown;
+  const supervisor = new ProcessSupervisor({ registry: executables,
+    launch(context) {
+      context.registerRevocation(() => registry.revoke(context.pid));
+      return { terminate() { terminated++; } };
+    },
+    // The real host completes its resource fence here. Collection is independent of the
+    // physical guest handle and is also required for ordinary (not just signaled) exits.
+    quiesce: pid => registry.collectProcess(pid), onError: error => { diagnostic ??= error; },
+  });
+  supervisor.createRoot({ pid: rootState.pid, job: rootState.job, ...rootState.signals });
+  supervisor.registerRevocation(rootState.pid, () => registry.revoke(rootState.pid));
+  const processes = new WorkerProcessBroker({ supervisor: async () => supervisor, codec: () => pipes.codec(),
+    onPipe: handle => pipes.attach(handle as PipeEndpointHandle), pumpPipes: () => pipes.pump(),
+    quiesce: pid => registry.collectProcess(pid), onError: error => { diagnostic ??= error; },
+  });
+  processes.adoptRoot(transport);
+  const descriptors = new DescriptorTable();
+  const postMessage = (message: WorkerProcessMessage) => messages.push(structuredClone(message));
+  const host = new WorkerPipeHost({ transport, registry, postMessage, pipe: { capacity: 8, maxReaders: 1, maxWriters: 1 } });
+  const root = new WorkerProcessClient({ transport, descriptors, codec: host.codec(), postMessage,
+    prepareSpawn: pid => {
+      registry.registerProcess(pid);
+      return { data: { pipeRegistry: registry.handle() }, cancel: () => registry.collectProcess(pid) };
+    },
+  });
+  const flush = async () => { while (messages.length) await processes.handle(messages.shift()!); };
+  cleanups.push(() => { descriptors.dispose(); processes.dispose(); supervisor.dispose(); pipes.dispose(); registry.collectProcess(rootState.pid); });
+  let stale: PipeEndpoint | undefined;
+  try {
+    for (let iteration = 0; iteration < 3001; iteration++) {
+      const pid = root.spawn(rootState.pid, request()), job = root.jobOf(pid);
+      await flush(); await supervisor.start(pid);
+      const childTransport = structuredClone(processes.get(pid)!);
+      const childHost = new WorkerPipeHost({ transport: childTransport,
+        registry: (childTransport.data as { pipeRegistry: PipePublicationRegistryHandle }).pipeRegistry,
+        postMessage, pipe: { capacity: 8, maxReaders: 1, maxWriters: 1 },
+      });
+      const childDescriptors = new DescriptorTable();
+      const child = new WorkerProcessClient({ transport: childTransport, descriptors: childDescriptors,
+        codec: childHost.codec(), postMessage, createPipe: () => childHost.createPipe(),
+      });
+      try {
+        const [reader, writer] = child.createPipe();
+        if (!(reader instanceof PipeEndpoint) || !(writer instanceof PipeEndpoint)) throw new Error("pipe factory returned a non-pipe stream");
+        childDescriptors.open(reader, 3n, 3n); childDescriptors.open(writer, 3n, 3n);
+        if (!stale) stale = attachPipeEndpoint(structuredClone(writer.handle()));
+        await flush();
+        expect(writer.tryWrite([encoder.encode("x")])).toBe(1);
+        expect(output(reader)).toBe("x");
+        supervisor.exit(pid, iteration % 32);
+        // Keep the guest descriptor table and retained handle alive through collection.
+        expect(writer.tryWrite([encoder.encode("late")])).toBe(-PipeErrno.BADF);
+        pipes.pump();
+        expect(root.waitJob(rootState.pid, job)?.code).toBe(iteration % 32);
+        await flush();
+        expect(processes.get(pid)).toBeUndefined();
+        expect(supervisor.get(pid)).toBeUndefined();
+        expect(supervisor.job(job)).toBeUndefined();
+        expect(Array.from(supervisor.table.values())).toHaveLength(1);
+        expect(workerProcessSlots(transport)).toHaveLength(1);
+        expect(directoryJobs(transport.directory)).toHaveLength(1);
+        expect(registry.processCount).toBe(1);
+        expect(pipes.size).toBe(0);
+        expect(messages).toHaveLength(0);
+        expect(diagnostic).toBeUndefined();
+      } finally { childDescriptors.dispose(); registry.collectProcess(pid); }
+    }
+    expect(terminated).toBe(3001);
+    expect(stale!.tryWrite([encoder.encode("stale")])).toBe(-PipeErrno.BADF);
+    expect(transport.directory.byteLength).toBe(directoryBytes);
+    expect(registry.handle().buffer.byteLength).toBeLessThan(512 * 1024);
+    supervisor.exit(rootState.pid, 0);
+    processes.releaseRoot(rootState.pid);
+    supervisor.dispose();
+    expect(registry.processCount).toBe(0);
+    expect(workerProcessSlots(transport)).toHaveLength(0);
+    expect(directoryJobs(transport.directory)).toHaveLength(0);
+    expect(Array.from(supervisor.table.values())).toHaveLength(0);
+    expect(supervisor.job(rootState.job)).toBeUndefined();
+    expect(processes.get(rootState.pid)).toBeUndefined();
+    expect(pipes.size).toBe(0);
+    expect(diagnostic).toBeUndefined();
+  } finally { stale?.close(); }
+});
+
 test("authorized worker kill freezes publication before parent-visible completion", async () => {
   const f = processFixture();
   const [reader, writer] = f.host.createPipe();
@@ -373,6 +478,7 @@ test("pipe codec composes actual filesystem transfers without stealing file owne
   const pipeFd = parent.open(writer, 127n, 63n); cleanups.push(() => reader.close());
   const identity = createProcessFilesystemIdentity(filesystem.connection);
   const exporter = f.host.codec(createFilesystemDescriptorCodec(filesystem, identity));
+  f.registry.registerProcess(2);
   const file = exporter.export(parent.get(fileFd)!, 2), pipe = exporter.export(parent.get(pipeFd)!, 2);
   expect(isWorkerPipeDescriptorToken(file)).toBe(false);
   expect(isWorkerPipeDescriptorToken(pipe)).toBe(true);
@@ -398,6 +504,7 @@ for (const preserveExisting of [false, true]) {
   test(`pipe capacity failure rolls back a partial pair${preserveExisting ? " without damaging existing pipes" : ""}`, () => {
     const transport = createWorkerProcessTransport();
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1, maxCells: preserveExisting ? 7 : 3 });
+    registry.registerProcess(1);
     const broker = new WorkerPipeBroker({ relay: "manual" });
     const messages: WorkerProcessMessage[] = [];
     cleanups.push(() => broker.dispose());

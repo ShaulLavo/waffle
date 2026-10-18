@@ -1,9 +1,9 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { ProcessABI, type ProcessService } from "../../proc/abi";
-import { readOutcome } from "../../proc/outcome";
-import type { SignalTransport } from "../../proc/signals";
-import { DescriptorTable } from "../../core/descriptors";
-import { MemFS } from "../../fs/memory";
+import { ProcessABI, type ProcessService } from "../../proc/abi.js";
+import { readOutcome } from "../../proc/outcome.js";
+import type { SignalTransport } from "../../proc/signals.js";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { MemFS } from "../../fs/memory.js";
 
 const { mode, pid, child, childOutcome, wake, signals } = workerData as {
   mode: "signal" | "child"; pid: number; child: number; childOutcome: BigInt64Array; wake: Int32Array; signals: SignalTransport;
@@ -12,7 +12,7 @@ const descriptors = new DescriptorTable();
 const memory = new WebAssembly.Memory({ initial: 1 });
 const unused = (): never => { throw new Error("unexpected process service operation"); };
 // The parent's real local supervisor publishes this outcome without notifying the pipe wake.
-const service: ProcessService = { spawn: unused, waitJob: unused, jobEmpty: unused, wait: () => readOutcome(childOutcome), kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
+const service: ProcessService = { spawn: unused, waitJob: unused, jobEmpty: unused, wait: () => readOutcome(childOutcome), childExited: () => readOutcome(childOutcome) !== null, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
 const abi = new ProcessABI({ memory, descriptors, fs: new MemFS(), pid, service, signals, wake });
 const view = new DataView(memory.buffer);
 const fd = descriptors.open({ kind: "pipe", notification: wake, read: unused, write: unused, readiness: () => ({ readable: false, writable: false, hangup: false }) }, (1n << 29n) - 1n, 0n);

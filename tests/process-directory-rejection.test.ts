@@ -1,13 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { DescriptorTable } from "../core/descriptors";
-import { createFilesystemIdentity, isRevoked, revokeFilesystem } from "../fs/protocol";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { PipeEndpoint, PipeErrno } from "../proc/pipes";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessTable } from "../proc/table";
-import { createWorkerProcessTransport, WorkerProcessClient, type WorkerProcessMessage } from "../proc/worker-client";
-import { WorkerPipeHost } from "../proc/worker-pipes";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { createFilesystemIdentity, isRevoked, revokeFilesystem } from "../fs/protocol.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { PipeEndpoint, PipeErrno } from "../proc/pipes.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessTable } from "../proc/table.js";
+import { createWorkerProcessTransport, WorkerProcessClient, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { WorkerPipeHost } from "../proc/worker-pipes.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!(); });
@@ -33,7 +33,7 @@ for (const rejection of ["external", "unknown-sender"] as const) test(`rejecting
   const pair = host.createPipe(); reader = pair[0];
   const fd = descriptors.open(pair[1], 1n, 1n), messages: WorkerProcessMessage[] = [];
   const client = new WorkerProcessClient({ transport: root, descriptors, codec: host.codec(), postMessage(message) { messages.push(message); },
-    prepareSpawn: () => ({ data: { filesystem: childFilesystem, pipeRegistry: host.registry.handle() } }),
+    prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: childFilesystem, pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; },
   });
   const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [{ child: 1, parent: fd }] };
   const pid = client.spawn(client.pid, request);

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { posix } from "node:path";
-import { createRuntime, type Runtime, type RuntimeOptions, type RuntimeConsumer } from "../index";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { FilesystemSection, type FilesystemConnection } from "../fs/protocol";
-import { MemoryBackend } from "../fs/backend";
-import { FilesystemService } from "../fs/service";
-import type { ProcessContext } from "../proc/types";
+import { createRuntime, type Runtime, type RuntimeOptions, type RuntimeConsumer } from "../index.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { FilesystemSection, type FilesystemConnection } from "../fs/protocol.js";
+import { MemoryBackend } from "../fs/backend.js";
+import { FilesystemService } from "../fs/service.js";
+import type { ProcessContext } from "../proc/types.js";
 
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
@@ -692,7 +692,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
   }
   visit(root!);
   const inputs = Array.from(initial).flatMap(path => Object.keys(outputs.get(path)!.inputs));
-  const processInputs = inputs.filter(path => /(?:^|\/)proc\//.test(path) && !/(?:^|\/)(identity|stub|outcome|signals|types)\.ts$/.test(path));
+  const processInputs = inputs.filter(path => /(?:^|\/)proc\//.test(path) && !/(?:^|\/)(identity|stub|outcome|signals|control|types)\.ts$/.test(path));
   expect(processInputs).toEqual([]);
   expect(inputs.filter(path => /(?:^|\/)interrupt\//.test(path))).toEqual([]);
   expect(Array.from(outputs.values()).some(output => Object.keys(output.inputs).some(path => path.endsWith("proc/supervisor.ts")))).toBe(true);

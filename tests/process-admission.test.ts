@@ -1,18 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
-import type { ProcessHandle } from "../proc/types";
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { DescriptorTable } from "../core/descriptors";
-import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol";
-import type { ProcessAdmissionEvent } from "../proc/admission";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { PipeEndpoint, PipeErrno } from "../proc/pipes";
-import { ExecutableRegistry } from "../proc/registry";
-import { requestSignal } from "../proc/signals";
-import { claimOutcome, readOutcome } from "../proc/outcome";
-import { ProcessTable } from "../proc/table";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
-import { WorkerPipeHost } from "../proc/worker-pipes";
+import type { ProcessHandle } from "../proc/types.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
+import type { ProcessAdmissionEvent } from "../proc/admission.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { PipeEndpoint, PipeErrno } from "../proc/pipes.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { requestSignal } from "../proc/signals.js";
+import { claimOutcome, readOutcome } from "../proc/outcome.js";
+import { ProcessTable } from "../proc/table.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { WorkerPipeHost } from "../proc/worker-pipes.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!(); });
@@ -48,7 +48,7 @@ async function fixture(options: { observerFailure?: "throw" | "reject"; failModu
   cleanups.push(() => { reader.close(); });
   function spawn(transport = root) {
     const client = new WorkerProcessClient({ transport, descriptors, codec: host.codec(), postMessage(message) { messages.push(message); },
-      prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } }),
+      prepareSpawn: pid => { host.registry.registerProcess(pid); return { data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() }, cancel: () => host.registry.collectProcess(pid) }; },
     });
     const pid = client.spawn(client.pid, { executable: "fixture", argv: ["private argument"], env: { SECRET: "private environment" }, cwd: "/", job: -1, fds: [{ child: 1, parent: fd }] });
     descriptors.close(fd);

@@ -1,9 +1,12 @@
-import { expect, test } from "bun:test";
-import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
-import { createFilesystemConnection, FilesystemService, MemoryBackend } from "../fs";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client";
-import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
+import { expect, spyOn, test } from "bun:test";
+import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker.js";
+import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs/index.js";
+import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals.js";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
 const module = new WebAssembly.Module(new Uint8Array([
@@ -53,7 +56,7 @@ test("injected worker executor observes live descriptors, then acknowledgement f
 });
 
 test("preview1 worker bundle has no Bun engine, native slot or legacy subprocess graph", async () => {
-  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.ts", import.meta.url).pathname], target: "browser", write: false });
+  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.js", import.meta.url).pathname], target: "browser" });
   expect(result.success).toBe(true);
   const source = await result.outputs[0]!.text();
   for (const marker of ["startEngineHost", "SubprocessHost", "installHostSlots", "bunwasm_ready", "moduleCache", "engine-host.js"]) {
@@ -100,6 +103,84 @@ for (const isolated of [true, false]) test(`generic signal winner guards stdio a
   expect(result.messages.some(message => message.type === "stdout" || message.type === "stderr")).toBe(false);
   expect(result.messages.filter(message => message.type === "default-signal").length).toBe(isolated ? 0 : 3);
   expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
+});
+
+test("a delayed stale Worker releases its filesystem and reports startup failure without touching its replacement", async () => {
+  const root = createWorkerProcessTransport({ capacity: 2 });
+  const descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const owner = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+  const first = owner.spawn(owner.pid, request);
+  const old = notices.find(message => message.operation === "spawn")!;
+  if (old.operation !== "spawn") throw new Error("missing spawn fixture");
+  const state = workerProcessState(old.transport);
+  claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
+  confirmDirectoryProcess(old.transport);
+  collectDirectoryJob(root.directory, state.jobSlot, state.job);
+  const replacement = owner.spawn(owner.pid, request);
+  const latest = notices.at(-1)!;
+  if (latest.operation !== "spawn") throw new Error("missing replacement fixture");
+  const current = workerProcessState(latest.transport);
+  expect(replacement).not.toBe(first);
+  expect(current.slot).toBe(state.slot);
+  const connection = createFilesystemConnection(), messages: RuntimeWorkerMessage[] = [], order: string[] = [];
+  const dispose = spyOn(FilesystemClient.prototype, "dispose");
+  let entered = false;
+  try {
+    await expect(bootstrap({ module, args: [], env: {}, filesystem: connection.client, runtimeProcess: old.transport }, {
+      setup() { entered = true; }, run() { entered = true; return 0; }, beforeFinish() { order.push("executor cleanup"); },
+    }, { crossOriginIsolated: true, postMessage(message) {
+      if (message.type === "error") { expect(dispose).toHaveBeenCalledTimes(1); order.push("acknowledgement"); }
+      messages.push(message);
+    } })).resolves.toBeUndefined();
+    expect(entered).toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["executor cleanup", "acknowledgement"]);
+    expect(messages.filter(message => message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("process incarnation was collected") },
+    ]);
+    expect(messages.some(message => message.type === "runtime-proc")).toBe(false);
+    expect(readOutcome(current.signals.outcome)).toBeNull();
+    expect(controlLoad(current.confirmed)).toBe(0);
+    expect(controlLoad(current.jobPending)).toBe(1);
+  } finally { dispose.mockRestore(); descriptors.dispose(); connection.client.port.close(); connection.server.port.close(); }
+});
+
+test("collection during Worker setup cannot bypass filesystem cleanup through a stale outcome", async () => {
+  const root = createWorkerProcessTransport({ capacity: 2 }), descriptors = new DescriptorTable();
+  const notices: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] };
+  client.spawn(client.pid, request);
+  const notice = notices[0]!;
+  if (notice.operation !== "spawn") throw new Error("missing spawn fixture");
+  const state = workerProcessState(notice.transport);
+  let replacement: ReturnType<typeof workerProcessState> | undefined, ran = false;
+  try {
+    const result = await fixture({
+      setup() {
+        claimOutcome(state.signals.outcome, { kind: "exited", code: 23 }); confirmDirectoryProcess(notice.transport);
+        collectDirectoryJob(root.directory, state.jobSlot, state.job);
+        client.spawn(client.pid, request);
+        replacement = workerProcessState(notices.at(-1)!.transport);
+      },
+      run() { ran = true; return 0; },
+    }, { runtimeProcess: notice.transport });
+    expect(ran).toBe(false);
+    expect(result.order).toEqual(["descriptor release", "filesystem release", "acknowledgement"]);
+    expect(result.messages.filter(message => message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("process incarnation was collected") },
+    ]);
+    expect(replacement?.slot).toBe(state.slot);
+    expect(readOutcome(replacement!.signals.outcome)).toBeNull();
+    expect(controlLoad(replacement!.confirmed)).toBe(0);
+  } finally { descriptors.dispose(); }
 });
 
 test("generic runtime process adopts the shared signal winner and releases descriptors before exit acknowledgement", async () => {
@@ -160,7 +241,7 @@ test("descriptor release failures drain the table and filesystem but require the
   const runtimeProcess = createWorkerProcessTransport();
   const outcome = workerProcessState(runtimeProcess).signals.outcome;
   const released: string[] = [];
-  let descriptors: import("../core/descriptors").DescriptorTable;
+  let descriptors: import("../core/descriptors.js").DescriptorTable;
   const result = await fixture({
     instantiated({ wasi }) {
       descriptors = wasi.descriptors;
@@ -254,7 +335,7 @@ for (const interruptible of [false, true]) test(`handled TERM dequeues only thro
       expect(signal(15, 2)).toBe(0);
       expect(requestSignal(state.signals, 15).action).toBe("handled");
       for (let i = 0; i < 3; i++) deliveries.push(interrupted());
-      expect(Atomics.load(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(interruptible ? SIGNAL_PENDING : 0);
+      expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(interruptible ? SIGNAL_PENDING : 0);
       return 0;
     },
   }, { runtimeProcess, module: signalModule(), interruptible });
@@ -383,7 +464,7 @@ test("beforeBindings can release default stdio and preserve a preopen before fd3
 });
 
 for (const append of [false, true]) test(`executor post follows live files and shared offsets (append=${append})`, async () => {
-  const { shareFileResource } = await import("../core/open-file");
+  const { shareFileResource } = await import("../core/open-file.js");
   const writes: [number, string][] = [];
   const result = await fixture({
     instantiated({ wasi, fs, post }) {
@@ -471,7 +552,7 @@ for (const hook of ["setup", "namespaces", "beforeBindings", "imports", "instant
   for (const action of ["finish", "throw"] as const) test(`${hook} ${action} stops bootstrap and releases owned stdio exactly once`, async () => {
     let starts = 0, runs = 0, closed = 0;
     const seen: string[] = [];
-    const stop = (name: string, context: import("../browser/worker").WorkerSetupContext) => {
+    const stop = (name: string, context: import("../browser/worker.js").WorkerSetupContext) => {
       seen.push(name);
       if (name !== hook) return;
       if (action === "throw") throw new Error(`failed ${hook}`);
@@ -540,7 +621,7 @@ for (const moved of [false, true]) test(`default terminal provenance survives be
 });
 
 test("terminal provenance outranks a real resolved PipeEndpoint when spawning the next generation", async () => {
-  const { PipeController } = await import("../proc/pipes");
+  const { PipeController } = await import("../proc/pipes.js");
   const runtimeProcess = createWorkerProcessTransport(), pipe = new PipeController({ relay: "manual" });
   const pid = workerProcessState(runtimeProcess).pid, reader = pipe.retain(pid, "read"), writer = pipe.retain(pid, "write");
   runtimeProcess.resources.push({ kind: "web-terminal", target: 1 });
@@ -558,13 +639,13 @@ test("terminal provenance outranks a real resolved PipeEndpoint when spawning th
 });
 
 test("supplied class streams keep immediate I/O, process capabilities and prototype cleanup", async () => {
-  const { PipeController, PipeEndpoint } = await import("../proc/pipes");
+  const { PipeController, PipeEndpoint } = await import("../proc/pipes.js");
   const pipe = new PipeController({ relay: "manual" });
   const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
   try {
     const result = await fixture({ stdio: { 1: writer },
       run({ wasi }) {
-        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors").Stream;
+        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors.js").Stream;
         expect(stream).toBeInstanceOf(PipeEndpoint);
         expect(stream.notification).toBeDefined();
         expect(stream.tryWrite?.([new Uint8Array([65])])).toBe(1);
@@ -658,8 +739,8 @@ test("generic default-ignore action cannot discard an already selected KILL", as
 
 for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 }, { kind: "start-failed", code: 13 }] as const) {
   test(`generic default action preserves existing ${winner.kind} ${winner.code} without signal unwind`, async () => {
-    const { WasiExit } = await import("../core");
-    const { waitStatus } = await import("../proc/wait-status");
+    const { WasiExit } = await import("../core/index.js");
+    const { waitStatus } = await import("../proc/wait-status.js");
     const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
     let signalCalls = 0;
     const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },
@@ -679,7 +760,7 @@ for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 },
 
 test("generic bootstrap preview1 polling treats stale process wake hints as advisory", async () => {
   const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
-  Atomics.store(state.signals.interrupt, 0, 17);
+  controlStore(state.signals.interrupt, 0, 17);
   let polled = false;
   const result = await fixture({ run({ wasi, instance }) {
     const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);

@@ -1,10 +1,11 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
-import { ProcessABI } from "../proc/abi";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { ExecutableRegistry } from "../proc/registry";
-import { DescriptorTable } from "../core/descriptors";
-import { MemFS } from "../fs/memory";
-import type { SpawnRequest } from "../proc/types";
+import { ProcessABI } from "../proc/abi.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import type { SpawnRequest } from "../proc/types.js";
 
 const request = (job = 0): SpawnRequest => ({ executable: "controlled", argv: [], env: {}, cwd: "/", job, fds: [] });
 function fixture(wait?: (milliseconds: number, word: Int32Array, expected: number) => void) {
@@ -49,12 +50,12 @@ test("job wait retains the leader outcome after direct reap and waits for descen
 test("blocking wait captures publication before sleeping and reacquires grown memory", () => {
   let f: ReturnType<typeof fixture>, calls = 0;
   f = fixture((_milliseconds, word, expected) => {
-    expect(Atomics.load(word, 0)).toBe(expected);
+    expect(controlLoad(word, 0)).toBe(expected);
     calls++;
     f.memory.grow(1);
     f.supervisor.exit(f.leader, 0);
     f.supervisor.exit(f.child, 42);
-    expect(Atomics.load(word, 0)).not.toBe(expected);
+    expect(controlLoad(word, 0)).not.toBe(expected);
   });
   try {
     expect(f.abi.imports.wait_job!(f.job, 0, 64)).toBe(0);
@@ -98,7 +99,7 @@ test("completed jobs cannot be reopened and individual reap preserves job comple
   const f = fixture();
   try {
     f.supervisor.exit(f.leader, 3); f.supervisor.exit(f.child, 0);
-    f.supervisor.reap(f.leader, f.child); f.supervisor.reap(f.shell, f.leader);
+    expect(f.supervisor.get(f.child)).toBeUndefined(); f.supervisor.reap(f.shell, f.leader);
     expect(() => f.supervisor.reserveSpawn(f.shell, request(f.job))).toThrow("completed job");
     expect(f.supervisor.waitJob(f.shell, f.job)?.status).toBe(3);
   } finally { f.supervisor.dispose(); }
@@ -119,14 +120,14 @@ test("process and job confirmation await filesystem fences before individual rea
     expect(supervisor.wait(shell, leader)).toBeNull();
     expect(() => supervisor.reap(shell, leader)).toThrow("has not exited");
     expect(supervisor.jobEmpty(shell, job)).toBe(false);
-    expect(Atomics.load(wake, 0)).toBe(0);
+    expect(controlLoad(wake, 0)).toBe(0);
     await Promise.resolve();
     expect(confirmed).toBe(false);
     release(); await pending; await Promise.resolve();
     expect((await exit).status).toBe(7);
     expect(supervisor.wait(shell, leader)?.status).toBe(7);
-    supervisor.reap(shell, leader);
-    expect(Atomics.load(wake, 0)).toBe(1);
+    expect(() => supervisor.wait(shell, leader)).toThrow("not a child");
+    expect(controlLoad(wake, 0)).toBe(1);
     expect(supervisor.waitJob(shell, job)?.status).toBe(7);
   } finally { unregister(); supervisor.dispose(); }
 });
@@ -161,7 +162,7 @@ test("handled signal interrupts blocking job wait without consuming delivery or 
 test("disposal clears job metadata retained after all individual process records were reaped", () => {
   const f = fixture();
   f.supervisor.exit(f.leader, 0); f.supervisor.exit(f.child, 0);
-  f.supervisor.reap(f.leader, f.child); f.supervisor.reap(f.shell, f.leader);
+  expect(f.supervisor.get(f.child)).toBeUndefined(); f.supervisor.reap(f.shell, f.leader);
   expect(f.supervisor.job(f.job)).toBeDefined();
   f.supervisor.dispose();
   expect(f.supervisor.job(f.job)).toBeUndefined();
@@ -174,12 +175,12 @@ test("an accepted independent spawn can arrive after its parent's job was reaped
       readiness: () => ({ readable: false, writable: true, hangup: false }) }, 64n, 0n);
     f.supervisor.exit(f.leader, 0); f.supervisor.exit(f.child, 0);
     expect(f.supervisor.waitJob(f.shell, f.job)?.status).toBe(0);
-    const accepted = f.supervisor.reserveAdmittedSpawn(f.child, { ...request(-1), fds: [{ child: 19, parent: source }] }, {}, retained);
+    const accepted = f.supervisor.reserveAdmittedSpawn(f.child, { ...request(-1), fds: [{ child: 19, parent: source }] }, { controlParent: f.shell, rootPid: f.shell }, retained);
     expect(f.supervisor.get(accepted)!.parentPid).toBe(f.child);
     expect(f.supervisor.get(accepted)!.descriptors.get(19)).toBeDefined();
     const independent = f.supervisor.jobOf(accepted);
     f.supervisor.exit(accepted, 4);
-    expect(f.supervisor.waitJob(f.child, independent)?.status).toBe(4);
+    expect(f.supervisor.waitJob(f.shell, independent)?.status).toBe(4);
   } finally { retained.dispose(); f.supervisor.dispose(); }
 });
 
@@ -255,9 +256,14 @@ test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect
     supervisor.exit(bun, 7);
     supervisor.reap(shell, bun);
     expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(-6);
+    const exits = new Map<number, number | null>();
+    const stop = supervisor.onChildExit(event => { exits.set(event.pid, event.result.status); });
     expect(shellABI.imports.kill_job!(job, 9)).toBe(0);
-    expect(supervisor.get(child)!.result?.status).toBe(137);
-    expect(supervisor.get(grandchild)!.result?.status).toBe(137);
+    stop();
+    expect(exits.get(child)).toBe(137);
+    expect(exits.get(grandchild)).toBe(137);
+    expect(supervisor.get(child)).toBeUndefined();
+    expect(supervisor.get(grandchild)).toBeUndefined();
     expect(supervisor.get(detached)!.result).toBeNull();
     expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(0);
     expect(new DataView(memory.buffer).getInt32(64, true)).toBe(7);

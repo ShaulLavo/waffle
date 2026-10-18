@@ -1,9 +1,20 @@
-import type { ProcessExit } from "./types.js";
+import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 
-/** One atomic terminal decision: zero is running; the low bits encode the outcome kind.
- * Keeping kind and code in one cell avoids a lock or an intermediate unpublished payload.
- */
-export function outcomeWord(source?: BigInt64Array | SharedArrayBuffer): BigInt64Array {
+/** An outcome's running sentinel and record identity are captured, never readopted. */
+export class OutcomeCell {
+  readonly running: bigint;
+  readonly cells: BigInt64Array;
+  readonly pid: number;
+  readonly valid: () => boolean;
+  constructor(cells: BigInt64Array, pid: number, valid: () => boolean) { this.cells = cells; this.pid = pid; this.valid = valid; this.running = BigInt(pid) << 2n; }
+  get buffer(): SharedArrayBuffer { return this.cells.buffer as SharedArrayBuffer; }
+  get byteOffset(): number { return this.cells.byteOffset; }
+  check(): void { if (!this.valid()) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected"); }
+}
+export type OutcomeWord = BigInt64Array | OutcomeCell;
+/** Standalone outcomes do not recycle and use the zero running sentinel. */
+export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWord {
+  if (source instanceof OutcomeCell) return source;
   const word = source instanceof BigInt64Array ? source : new BigInt64Array(source ?? new SharedArrayBuffer(8));
   if (!(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) throw new TypeError("outcome word must be one shared int64");
   return word;
@@ -15,17 +26,23 @@ export function processOutcome(result: Pick<ProcessExit, "kind" | "code">): Proc
 }
 function decode(encoded: bigint): ProcessExit {
   const tag = encoded & 3n;
+  if (tag === 0n) throw new ProcessError(ProcessErrno.SRCH, "outcome incarnation changed");
   return processOutcome({ kind: tag === 1n ? "exited" : tag === 2n ? "signaled" : "start-failed", code: Number(encoded >> 2n) });
 }
-export function readOutcome(word: BigInt64Array): ProcessExit | null {
-  const encoded = Atomics.load(word, 0);
-  return encoded === 0n ? null : decode(encoded);
+export function readOutcome(word: OutcomeWord): ProcessExit | null {
+  if (word instanceof OutcomeCell) word.check();
+  const encoded = Atomics.load(word instanceof OutcomeCell ? word.cells : word, 0);
+  if (word instanceof OutcomeCell) word.check();
+  return encoded === (word instanceof OutcomeCell ? word.running : 0n) ? null : decode(encoded);
 }
-/** Every producer adopts the first complete outcome; later signals cannot replace an exit. */
-export function claimOutcome(word: BigInt64Array, result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
+/** A stale producer can only CAS its captured running sentinel, not a new occupant's. */
+export function claimOutcome(word: OutcomeWord, result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
   if (!Number.isSafeInteger(result.code)) throw new RangeError("process outcome code must be a safe integer");
   if (result.kind === "start-failed" && result.code !== 2 && result.code !== 13) throw new RangeError("start failure must be ENOENT or EACCES");
+  if (word instanceof OutcomeCell) word.check();
   const encoded = (BigInt(result.code) << 2n) | (result.kind === "exited" ? 1n : result.kind === "signaled" ? 2n : 3n);
-  const previous = Atomics.compareExchange(word, 0, 0n, encoded);
-  return decode(previous === 0n ? encoded : previous);
+  const running = word instanceof OutcomeCell ? word.running : 0n;
+  const previous = Atomics.compareExchange(word instanceof OutcomeCell ? word.cells : word, 0, running, encoded);
+  if (word instanceof OutcomeCell) word.check();
+  return decode(previous === running ? encoded : previous);
 }

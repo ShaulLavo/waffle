@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { ProcessABI } from "../proc/abi";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { MemFS } from "../fs/memory";
+import { ProcessABI } from "../proc/abi.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { MemFS } from "../fs/memory.js";
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 for (const [executable, error, code, status] of [["missing", "ENOENT", 2, 127], ["broken", "EACCES", 13, 126]] as const) {
@@ -24,7 +24,7 @@ for (const [executable, error, code, status] of [["missing", "ENOENT", 2, 127], 
       const view = new DataView(memory.buffer);
       expect(view.getUint32(64, true)).toBe(0);
       expect(view.getInt32(68, true)).toBe(status);
-      expect(supervisor.reap(shell, pid)).toEqual(expected);
+      expect(() => supervisor.reap(shell, pid)).toThrow("not a child");
       expect(abi.imports.wait_job!(job, 0, 72)).toBe(0);
       expect(view.getInt32(72, true)).toBe(status);
       expect(abi.imports.wait_job!(job, 1, 72)).toBe(-12);
@@ -76,9 +76,9 @@ test("typed startup failure becomes observable only after descriptor release and
 });
 
 test("a generic root retains typed EACCES when its first process import fails", async () => {
-  const { createWorkerProcessTransport, workerProcessState } = await import("../proc/worker-client");
-  const { createFilesystemConnection } = await import("../fs/protocol");
-  const { failFirstWorkerImport } = await import("./first-worker-import");
+  const { createWorkerProcessTransport, workerProcessState } = await import("../proc/worker-client.js");
+  const { createFilesystemConnection } = await import("../fs/protocol.js");
+  const { failFirstWorkerImport } = await import("./first-worker-import.js");
   const transport = createWorkerProcessTransport();
   const connection = createFilesystemConnection();
   const state = workerProcessState(transport);

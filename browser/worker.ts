@@ -1,7 +1,10 @@
+import { directoryState, isCollectedProcess } from "../proc/directory.js";
+import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
+import type { OutcomeWord } from "../proc/outcome.js";
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { checkedSignal, ProcessError } from "../proc/types.js";
 import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
-import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
+import { FilesystemClient, revokeFilesystem, reapFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import { withFileOffset } from "../core/open-file.js";
@@ -18,7 +21,7 @@ export interface RuntimeWorkerRequest {
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
   /** Authoritative terminal word available before loading process adapters. */
-  outcome?: SharedArrayBuffer | BigInt64Array;
+  outcome?: SharedArrayBuffer | OutcomeWord;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -48,8 +51,8 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   request: R;
   fs: FilesystemClient;
   isolated: boolean;
-  outcome: BigInt64Array | null;
-  interrupt?: Int32Array;
+  outcome: OutcomeWord | null;
+  interrupt?: ControlCells;
   runtimeState: RuntimeWorkerState | null;
   checkActive(): void;
   defaultSignal(signal: number): void;
@@ -68,7 +71,7 @@ export interface WorkerExecutionContext<R extends RuntimeWorkerRequest = Runtime
 export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   hostCallFd?: number;
   env?(request: R): Record<string, string>;
-  outcome?: SharedArrayBuffer | BigInt64Array;
+  outcome?: SharedArrayBuffer | OutcomeWord;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
   /** Nonconsuming handled/fatal readiness. Required for executor-owned signal transports
@@ -127,17 +130,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
-  const sharedOutcome = req.outcome ?? executor.outcome;
-  let outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
-  let requestedSignal: Int32Array | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
+  // A delayed physical Worker can start after its process incarnation was collected.
+  // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
+  let outcome: OutcomeWord | null = null;
+  let requestedSignal: ControlCells | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
-  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
-    ? claimOutcome(outcome, result)
-    : localOutcome ??= processOutcome(result);
+  const detachCollectedProcess = (error: unknown): void => {
+    if (!isCollectedProcess(error)) throw error;
+    // Shared authority can disappear during asynchronous adapter loading, too. Only local
+    // cleanup/reporting remains valid; never send an exit for the slot's new incarnation.
+    outcome = null; runtimeProcess = null; requestedSignal = undefined;
+  };
+  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
+    try { if (outcome) return claimOutcome(outcome, result); }
+    catch (error) { detachCollectedProcess(error); }
+    return localOutcome ??= processOutcome(result);
+  };
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
-    const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
+    const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
     if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
@@ -162,7 +174,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const finish = (result: WorkerResult) => {
     if (done) return;
     done = true;
-    const settled = outcome ? readOutcome(outcome) : localOutcome;
+    let settled = localOutcome;
+    try { if (outcome) settled = readOutcome(outcome); }
+    catch (error) { detachCollectedProcess(error); }
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
     const startupFailure = "error" in result && !started;
@@ -230,6 +244,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (result) { event.preventDefault(); finish(result); }
   };
   try {
+    // A valid process must publish even its first adapter-import failure to shared state.
+    // Keep this synchronous, while still routing a stale incarnation through finish().
+    const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : req.outcome ?? executor.outcome;
+    outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
     if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
@@ -311,7 +329,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       },
       interrupt,
       interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : executor.interruptPending ? () => executor.interruptPending!() : undefined,
-      wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+      wait: (word, expected, ms) => { checkActive(); controlWait(word, 0, expected, ms); checkActive(); },
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,
     });
@@ -337,16 +355,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive }), postMessage,
         createPipe: () => { checkActive(); return pipes.createPipe(); },
         revokeProcess: pid => pipes.revokeProcess(pid),
-        prepareSpawn: () => {
+        prepareSpawn: pid => {
           checkActive();
           const end = fs.beginTransfer();
+          let filesystem: ReturnType<typeof createProcessFilesystemIdentity> | undefined;
+          let enrolled = false;
+          const cancel = () => {
+            if (filesystem) { revokeFilesystem(filesystem); reapFilesystem(filesystem); }
+            if (enrolled) pipes.registry.collectProcess(pid);
+          };
           try {
             const data = executor.spawnData?.();
             checkActive();
-            const filesystem = createProcessFilesystemIdentity(fs.connection);
-            return { data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() },
-              codec: createRuntimeTerminalCodec({ fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)) }), release: end };
-          } catch (error) { end(); throw error; }
+            pipes.registry.registerProcess(pid);
+            enrolled = true;
+            filesystem = createProcessFilesystemIdentity(fs.connection);
+            return { cancel, data: { ...data, filesystem, pipeRegistry: pipes.registry.handle() }, codec: createRuntimeTerminalCodec({ fallback: pipes.codec(createFilesystemDescriptorCodec(fs, filesystem)) }), release: end };
+          } catch (error) {
+            try { cancel(); } finally { end(); }
+            throw error;
+          }
         },
       });
       // Record original default-terminal destinations before the hook moves/closes any fd.
@@ -358,7 +386,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         descriptors: wasi.descriptors, fs, pid: runtimeProcess.pid, service: runtimeProcess,
         signals: runtimeProcess.signals, wake: runtimeProcess.wake,
         createPipe: () => runtimeProcess!.createPipe(),
-        wait: (ms, word, expected) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
+        wait: (ms, word, expected) => { checkActive(); controlWait(word, 0, expected, ms); checkActive(); },
       });
       for (const [name, call] of Object.entries(abi.imports)) {
         // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.

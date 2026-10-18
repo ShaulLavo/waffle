@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { DescriptorTable } from "../core/descriptors";
-import { ProcessError } from "../proc/types";
-import { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
+import { DescriptorTable } from "../core/descriptors.js";
+import { ProcessError } from "../proc/types.js";
+import { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
 
 const encode = new TextEncoder();
 const decode = new TextDecoder();
@@ -288,6 +288,7 @@ function publication(endpoint: ReturnType<PipeController["retain"]>): BigInt64Ar
 describe("canonical publication revocation", () => {
   test("registry-only kill freezes an unknown pipe and preserves precisely its committed prefix", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 16, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -300,20 +301,22 @@ describe("canonical publication revocation", () => {
     expect(() => controller.retain(2, "write")).toThrow();
   });
 
-  test("registry freezes unused cells too, preventing registration after unknown-process kill", () => {
+  test("registry revokes enrolled processes without cells and rejects unknown owners", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 4, cellsPerProcess: 4 });
+    registry.registerProcess(99); registry.registerProcess(103);
     registry.revoke(99);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     expect(() => controller.retain(99, "write")).toThrow();
     expect(() => registry.allocate(99)).toThrow();
-    // A fresh pid has a fresh permanent row even when its initial hash collides.
+    // A fresh enrolled pid has its own row even when its initial hash collides.
     const writer = controller.retain(103, "write");
     expect(writer.handle().pid).toBe(103);
   });
 
   test("kill after the final liveness check still defeats the producer CAS", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -356,6 +359,7 @@ describe("canonical publication revocation", () => {
 
   test("registry-only reader kill freezes its lease and wakes writers with EPIPE", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -369,6 +373,7 @@ describe("canonical publication revocation", () => {
 
   test("registry-only writer kill wakes supervisor relay and delivers EOF to inherited readers", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), second = reader.forProcess(4);
@@ -384,6 +389,7 @@ describe("canonical publication revocation", () => {
 
   test("disposing one pipe does not revoke unrelated endpoints of the same live process", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const first = new PipeController({ capacity: 8, registry }), second = new PipeController({ capacity: 8, registry });
     controllers.push(first, second);
     first.retain(1, "read"); first.retain(2, "write");
@@ -396,6 +402,7 @@ describe("canonical publication revocation", () => {
 
   test("32-bit counters wrap while canonical allocation and close bits survive", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -457,6 +464,7 @@ describe("worker-backed synchronous pipe waits", () => {
 
   test("a spinning producer cannot publish one byte past the frozen kill watermark", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 1024, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -504,6 +512,7 @@ describe("worker-backed synchronous pipe waits", () => {
 
 test("relay redirects a chunk when its selected reader is killed at the source claim CAS", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+  registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), inherited = reader.forProcess(4);
@@ -529,6 +538,7 @@ test("relay redirects a chunk when its selected reader is killed at the source c
 
 test("a registry-only kill wakes fd_read blocked in another worker with EOF", async () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+  registry.registerProcess(1); registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const reader = controller.retain(1, "read");
@@ -550,6 +560,7 @@ test("a registry-only kill wakes fd_read blocked in another worker with EOF", as
 
 test("concurrent first reader and writer reservation cannot omit the canonical reader lease", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
+  registry.registerProcess(1); registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const original = Atomics.store;
@@ -572,6 +583,7 @@ test("concurrent first reader and writer reservation cannot omit the canonical r
 
 test("failed canonical lease allocation does not leave an unpublished writer holding EOF open", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 2 });
+  registry.registerProcess(1); registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const reader = controller.retain(1, "read"), allocate = PipePublicationRegistry.prototype.allocate;
@@ -603,6 +615,7 @@ describe("relay shared-queue regressions", () => {
   for (const death of ["close", "registry"] as const) {
     test(`unconsumed delivery survives reader ${death} and precedes later source bytes`, () => {
       const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+      registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
       const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
       controllers.push(controller);
       const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
@@ -834,6 +847,7 @@ describe("ordered record adversarial boundaries", () => {
 describe("relay recovery exactness and scheduling", () => {
   test("only the exact unread suffix of a partially consumed dead delivery is recovered", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
     const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
@@ -851,6 +865,7 @@ describe("relay recovery exactness and scheduling", () => {
 
   test("guest and dead-delivery reclaimer compete on the same canonical consumed CAS", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
     const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
@@ -889,6 +904,7 @@ describe("relay recovery exactness and scheduling", () => {
 
   test("continuous real-worker relay traffic cannot starve a timer kill task", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
     const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
@@ -939,6 +955,7 @@ describe("terminal controller lifecycle", () => {
   test("automatic terminal observation fires once after fd close or registry-only revoke", async () => {
     for (const registryDeath of [false, true]) {
       const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
+      registry.registerProcess(1); registry.registerProcess(2);
       let calls = 0;
       const controller = new PipeController({ capacity: 8, registry, onClosed: () => { calls++; } });
       controllers.push(controller);
@@ -1069,6 +1086,7 @@ test("a reservation paused after claiming its negative owner cannot publish afte
 describe("growable canonical registry", () => {
   test("10000 sequential pipes grow a shared registry without reusing old canonical cells", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
+    registry.registerProcess(1); registry.registerProcess(7);
     const initial = registry.handle().buffer.byteLength, cloned = attachPipePublicationRegistry(structuredClone(registry.handle()));
     const old = registry.allocate(7), oldCursor = registry.canonical(old);
     Atomics.or(oldCursor, 0, 1n << 32n);
@@ -1097,21 +1115,23 @@ describe("growable canonical registry", () => {
 for (const killAt of ["before-link", "after-link", "after-final-check"] as const) {
   test(`registry allocation cannot escape revocation ${killAt}`, () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
-    const buffer = registry.handle().buffer, headsAt = 16 + 8 * 8, revokedAt = 16 + 8 * 4;
+    registry.registerProcess(2);
+    const buffer = registry.handle().buffer;
     const compareExchange = Atomics.compareExchange, load = Atomics.load;
-    let killed = false, revokedLoads = 0;
-    Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
-      const link = array instanceof Int32Array && array.buffer === buffer && array.byteOffset === headsAt && index === 2;
+    let killed = false, ownerLoads = 0;
+    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+      const link = array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16 && index === 2 &&
+        expected >> 32n === 2n && (replacement & 0x7fffffffn) !== 0n && !(replacement & (1n << 31n));
       if (!killed && link && killAt === "before-link") { killed = true; registry.revoke(2); }
       const result = compareExchange(array, index, expected, replacement);
       if (!killed && link && killAt === "after-link") { killed = true; registry.revoke(2); }
       return result;
     }) as typeof Atomics.compareExchange;
-    Atomics.load = ((array: Int32Array, index: number) => {
+    Atomics.load = ((array: BigInt64Array, index: number) => {
       const result = load(array, index);
-      if (array instanceof Int32Array && array.buffer === buffer && array.byteOffset === revokedAt && index === 2) {
-        revokedLoads++;
-        if (!killed && killAt === "after-final-check" && revokedLoads === 2) { killed = true; registry.revoke(2); }
+      if (array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16 && index === 2) {
+        ownerLoads++;
+        if (!killed && killAt === "after-final-check" && ownerLoads === 3) { killed = true; registry.revoke(2); }
       }
       return result;
     }) as typeof Atomics.load;
@@ -1127,6 +1147,7 @@ for (const killAt of ["before-link", "after-link", "after-final-check"] as const
 
 test("a competing larger SAB growth makes a smaller stale grow target harmless", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1 }), buffer = registry.handle().buffer;
+  registry.registerProcess(1);
   registry.allocate(1); registry.allocate(1);
   const prototype = SharedArrayBuffer.prototype as SharedArrayBuffer & { grow(length: number): void };
   const grow = prototype.grow;
@@ -1144,6 +1165,7 @@ test("a competing larger SAB growth makes a smaller stale grow target harmless",
 
 test("concurrent same-pid workers grow and contend on one registry list through pre-growth handles", async () => {
   const registry = new PipePublicationRegistry({ processCapacity: 4, cellsPerProcess: 1 });
+  registry.registerProcess(2); registry.registerProcess(3);
   const module = new URL("../proc/pipes.ts", import.meta.url).href;
   const source = `import {attachPipePublicationRegistry} from ${JSON.stringify(module)};
     self.onmessage = ({data}) => {
@@ -1167,8 +1189,9 @@ test("concurrent same-pid workers grow and contend on one registry list through 
 
 test("registry lifetime budgets fail with ENFILE rather than an untyped host exception", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1 });
+  registry.registerProcess(1); registry.registerProcess(2);
   registry.allocate(1); registry.allocate(2);
-  try { registry.allocate(3); throw new Error("unexpected allocation"); }
+  try { registry.registerProcess(3); throw new Error("unexpected enrollment"); }
   catch (error) { expect(error).toBeInstanceOf(ProcessError); expect((error as ProcessError).errno).toBe(41); }
   Atomics.store(new Int32Array(registry.handle().buffer, 0, 1), 0, 1 << 24);
   try { registry.allocate(1); throw new Error("unexpected allocation"); }
@@ -1179,6 +1202,7 @@ test("registry lifetime budgets fail with ENFILE rather than an untyped host exc
 for (const maxCells of [2, 3]) {
   test(`typed global budget exhaustion at ${maxCells} cells leaves no unpublished writer or open EOF`, () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1, maxCells });
+    registry.registerProcess(1); registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
     const reader = controller.retain(1, "read");

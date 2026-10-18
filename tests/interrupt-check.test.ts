@@ -1,7 +1,8 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
-import { fatalInterrupt } from "../interrupt/check";
-import { claimOutcome, outcomeWord } from "../proc/outcome";
-import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals";
+import { fatalInterrupt } from "../interrupt/check.js";
+import { claimOutcome, outcomeWord } from "../proc/outcome.js";
+import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals.js";
 
 function transport() {
   return { outcome: outcomeWord(), signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)) };
@@ -21,7 +22,7 @@ test("a handled signal remains queued for a cooperative guest's existing handler
   const state = transport();
   setSignalDisposition(state.signalState, 2, 2);
   requestSignal(state, 2);
-  expect(Atomics.load(state.interrupt, 0)).toBe(2);
+  expect(controlLoad(state.interrupt, 0)).toBe(2);
   expect(fatalInterrupt(state.outcome)).toBe(0);
   expect(takeSignal(state.signalState)).toBe(2);
   expect(takeSignal(state.signalState)).toBe(0);

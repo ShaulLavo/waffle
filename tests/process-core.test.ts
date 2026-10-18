@@ -1,6 +1,7 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { ExecutableRegistry, FirstSpawnStub, ProcessIdentityAllocator, ProcessSupervisor, Signal, SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal, outcomeWord, claimOutcome, type ProcessContext, type SpawnRequest } from "../proc";
+import { ExecutableRegistry, FirstSpawnStub, ProcessIdentityAllocator, ProcessSupervisor, Signal, SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal, outcomeWord, claimOutcome, type ProcessContext, type SpawnRequest } from "../proc/index.js";
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 function deferred<T>() {
@@ -132,7 +133,6 @@ test("missing and unrunnable executables retain distinct typed start failures", 
   expect(await supervisor.waitForExit(root, bad)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
   expect(events.sort()).toEqual([missing, bad].sort());
   expect(supervisor.wait(root, missing)).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
-  supervisor.reap(root, missing);
   expect(() => supervisor.wait(root, missing)).toThrow();
   unsubscribe();
 });
@@ -201,8 +201,8 @@ test("kill records signal, interrupts, revokes and publishes logical exit before
   const context = contexts.get(pid)!;
   const order: string[] = [];
   context.registerRevocation(() => {
-    expect(Atomics.load(context.interrupt, 0)).toBe(Signal.SIGINT);
-    expect(Atomics.load(context.requestedSignal, 0)).toBe(Signal.SIGINT);
+    expect(controlLoad(context.interrupt, 0)).toBe(Signal.SIGINT);
+    expect(controlLoad(context.requestedSignal, 0)).toBe(Signal.SIGINT);
     order.push("revoked");
   });
   supervisor.onChildExit(event => { if (event.pid === pid) order.push("exit"); });
@@ -210,9 +210,9 @@ test("kill records signal, interrupts, revokes and publishes logical exit before
   // No guest checkpoint or default-action acknowledgement is needed.
   expect(order).toEqual(["revoked", "exit"]);
   expect(terminated).toEqual([pid]);
-  expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGINT, status: 130 });
-  expect(Atomics.exchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
-  expect(Atomics.load(context.requestedSignal, 0)).toBe(Signal.SIGINT);
+  expect(supervisor.childExited(root, pid)).toBe(true);
+  expect(controlExchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
+  expect(controlLoad(context.requestedSignal, 0)).toBe(Signal.SIGINT);
   context.exit(0); // Late zombie messages cannot change recorded cancellation.
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: Signal.SIGINT, status: 130 });
 });
@@ -230,11 +230,13 @@ test("killJob includes same-job descendants but preserves explicit background jo
   expect(supervisor.jobOf(child)).toBe(supervisor.jobOf(foreground));
   expect(supervisor.jobOf(descendant)).not.toBe(supervisor.jobOf(foreground));
   expect(supervisor.job(supervisor.jobOf(background))!.foreground).toBe(false);
+  const selectedRecords = [supervisor.get(foreground)!, supervisor.get(child)!];
   supervisor.killJob(supervisor.jobOf(foreground), Signal.SIGTERM);
-  for (const pid of [foreground, child]) {
-    expect(supervisor.get(pid)!.result).toEqual({ kind: "signaled", code: Signal.SIGTERM, status: 143 });
+  for (const record of selectedRecords) {
+    expect(record.result).toEqual({ kind: "signaled", code: Signal.SIGTERM, status: 143 });
   }
-  expect(Atomics.load(contexts.get(descendant)!.interrupt, 0)).toBe(0);
+  expect(supervisor.get(child)).toBeUndefined(); // A dead parent's zombie child is collected.
+  expect(controlLoad(contexts.get(descendant)!.interrupt, 0)).toBe(0);
   expect(supervisor.wait(child, descendant)).toBeNull();
   contexts.get(descendant)!.exit(0);
   expect(supervisor.wait(root, background)).toBeNull();
@@ -284,7 +286,7 @@ test("adopted guest pid, job and signal buffers remain the authoritative identit
   await supervisor.start(pid);
   expect(contexts.get(pid)!.interrupt).toBe(interrupt);
   supervisor.kill(pid, Signal.SIGTERM);
-  expect(Atomics.load(requestedSignal, 0)).toBe(Signal.SIGTERM);
+  expect(controlLoad(requestedSignal, 0)).toBe(Signal.SIGTERM);
   expect(supervisor.jobOf(pid)).toBe(20);
   expect(() => supervisor.reserveSpawn(root, request(), { pid: 41 })).toThrow();
 });
@@ -314,13 +316,13 @@ test("handled SIGINT may exit zero and pending requested signal never reclassifi
   setSignalDisposition(contexts.get(handled)!.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
   setSignalDisposition(contexts.get(crashed)!.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
   supervisor.kill(handled, Signal.SIGINT);
-  expect(Atomics.exchange(contexts.get(handled)!.interrupt, 0, 0)).toBe(Signal.SIGINT);
+  expect(controlExchange(contexts.get(handled)!.interrupt, 0, 0)).toBe(Signal.SIGINT);
   expect(supervisor.wait(root, handled)).toBeNull();
   expect(terminated).toEqual([]);
   contexts.get(handled)!.exit(0);
   expect(supervisor.wait(root, handled)).toEqual({ kind: "exited", code: 0, status: 0 });
   supervisor.kill(crashed, Signal.SIGINT);
-  Atomics.exchange(contexts.get(crashed)!.interrupt, 0, 0);
+  controlExchange(contexts.get(crashed)!.interrupt, 0, 0);
   contexts.get(crashed)!.fail(new WebAssembly.RuntimeError("unrelated trap after handling"));
   expect(supervisor.wait(root, crashed)).toEqual({ kind: "exited", code: 126, status: 126 });
 });
@@ -331,7 +333,7 @@ test("SIGKILL during a handler overrides later handled exits and default actions
   await supervisor.start(pid);
   setSignalDisposition(contexts.get(pid)!.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
   supervisor.kill(pid, Signal.SIGINT);
-  Atomics.exchange(contexts.get(pid)!.interrupt, 0, 0);
+  controlExchange(contexts.get(pid)!.interrupt, 0, 0);
   supervisor.kill(pid, Signal.SIGKILL);
   contexts.get(pid)!.exit(0);
   contexts.get(pid)!.defaultSignal(Signal.SIGINT);
@@ -358,8 +360,10 @@ test("reaping an ancestor preserves descendant job discovery and released pids c
   const job = supervisor.jobOf(a);
   contexts.get(a)!.exit(0);
   supervisor.reap(root, a);
+  const orphan = supervisor.get(descendant)!;
   supervisor.killJob(job, Signal.SIGKILL);
-  expect(supervisor.get(descendant)!.result!.status).toBe(137);
+  expect(orphan.result!.status).toBe(137);
+  expect(supervisor.get(descendant)).toBeUndefined();
   expect(() => supervisor.reserveSpawn(root, request(), { pid: a })).toThrow();
 });
 
@@ -411,7 +415,7 @@ test("killJob records every member before any teardown callback can spawn more d
   await supervisor.start(b);
   let rejected = false;
   contexts.get(a)!.registerRevocation(() => {
-    expect(Atomics.load(contexts.get(b)!.requestedSignal, 0)).toBe(Signal.SIGKILL);
+    expect(controlLoad(contexts.get(b)!.requestedSignal, 0)).toBe(Signal.SIGKILL);
     try { supervisor.spawn(b, request()); }
     catch { rejected = true; }
   });
@@ -432,7 +436,8 @@ test("job wait releases retained final-member metadata without affecting backgro
   expect(supervisor.job(job)).toBeDefined();
   expect(supervisor.job(descendantJob)).toBeDefined();
   contexts.get(b)!.exit(0);
-  supervisor.reap(a, b);
+  expect(supervisor.get(b)).toBeUndefined();
+  expect(() => supervisor.reap(a, b)).toThrow();
   expect(supervisor.waitJob(root, job)?.status).toBe(0);
   expect(supervisor.waitJob(root, descendantJob)?.status).toBe(0);
   expect(supervisor.job(job)).toBeUndefined();
@@ -451,7 +456,7 @@ test("an already recorded job SIGKILL cannot be replaced by a reentrant handled 
   });
   supervisor.killJob(supervisor.jobOf(a), Signal.SIGKILL);
   expect(supervisor.wait(root, b)).toEqual({ kind: "signaled", code: 9, status: 137 });
-  expect(Atomics.load(contexts.get(b)!.interrupt, 0)).toBe(9);
+  expect(controlLoad(contexts.get(b)!.interrupt, 0)).toBe(9);
 });
 
 test("explicit adopted job ids cannot be reused after their final member is reaped", async () => {
@@ -469,8 +474,8 @@ test("a guest-side SIGKILL recorded before a delayed broker notification wins an
   const pid = supervisor.spawn(root, request());
   await supervisor.start(pid);
   const context = contexts.get(pid)!;
-  Atomics.store(context.requestedSignal, 0, Signal.SIGKILL);
-  Atomics.store(context.interrupt, 0, Signal.SIGKILL);
+  controlStore(context.requestedSignal, 0, Signal.SIGKILL);
+  controlStore(context.interrupt, 0, Signal.SIGKILL);
   context.exit(0);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
 });
@@ -482,12 +487,12 @@ test("observing an already delivered signal records it without publishing a seco
   const context = contexts.get(pid)!;
   setSignalDisposition(context.signalState, Signal.SIGINT, SignalDisposition.HANDLE);
   for (let request = 0; request < 2; request++) {
-    Atomics.store(context.requestedSignal, 0, Signal.SIGINT);
-    Atomics.store(context.interrupt, 0, Signal.SIGINT);
-    expect(Atomics.exchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
+    controlStore(context.requestedSignal, 0, Signal.SIGINT);
+    controlStore(context.interrupt, 0, Signal.SIGINT);
+    expect(controlExchange(context.interrupt, 0, 0)).toBe(Signal.SIGINT);
     supervisor.observeSignal(pid, Signal.SIGINT);
     expect(supervisor.get(pid)!.signal).toBe(Signal.SIGINT);
-    expect(Atomics.load(context.interrupt, 0)).toBe(0);
+    expect(controlLoad(context.interrupt, 0)).toBe(0);
   }
   context.exit(0);
   expect(supervisor.wait(root, pid)!.status).toBe(0);
@@ -497,7 +502,7 @@ test("observing an already published SIGKILL still revokes and completes the pro
   const { supervisor, root, contexts } = fixture();
   const pid = supervisor.spawn(root, request());
   await supervisor.start(pid);
-  Atomics.store(contexts.get(pid)!.requestedSignal, 0, Signal.SIGKILL);
+  controlStore(contexts.get(pid)!.requestedSignal, 0, Signal.SIGKILL);
   supervisor.observeSignal(pid, Signal.SIGKILL);
   expect(supervisor.wait(root, pid)!.status).toBe(137);
 });
@@ -508,13 +513,13 @@ for (const delivery of ["kill", "killJob", "defaultSignal", "observeSignal"] as 
     const pid = supervisor.spawn(root, request());
     await supervisor.start(pid);
     const context = contexts.get(pid)!;
-    Atomics.store(context.requestedSignal, 0, Signal.SIGKILL);
-    Atomics.store(context.interrupt, 0, Signal.SIGKILL);
+    controlStore(context.requestedSignal, 0, Signal.SIGKILL);
+    controlStore(context.interrupt, 0, Signal.SIGKILL);
     if (delivery === "killJob") supervisor.killJob(supervisor.jobOf(pid), Signal.SIGTERM);
     else supervisor[delivery](pid, Signal.SIGINT);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
-    expect(Atomics.load(context.requestedSignal, 0)).toBe(9);
-    expect(Atomics.load(context.interrupt, 0)).toBe(9);
+    expect(supervisor.childExited(root, pid)).toBe(true);
+    expect(controlLoad(context.requestedSignal, 0)).toBe(9);
+    expect(controlLoad(context.interrupt, 0)).toBe(9);
     context.exit(0);
     expect(supervisor.wait(root, pid)!.status).toBe(137);
   });
@@ -532,17 +537,17 @@ for (const word of ["requestedSignal", "interrupt"] as const) {
     Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
       if (!raced && array === context[word]) {
         raced = true;
-        Atomics.store(context.requestedSignal, 0, 9);
-        Atomics.store(context.interrupt, 0, 9);
+        controlStore(context.requestedSignal, 0, 9);
+        controlStore(context.interrupt, 0, 9);
       }
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
     try { supervisor.kill(pid, Signal.SIGINT); }
     finally { Atomics.compareExchange = original; }
     expect(raced).toBe(true);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
-    expect(Atomics.load(context.requestedSignal, 0)).toBe(9);
-    expect(Atomics.load(context.interrupt, 0)).toBe(9);
+    expect(supervisor.childExited(root, pid)).toBe(true);
+    expect(controlLoad(context.requestedSignal, 0)).toBe(9);
+    expect(controlLoad(context.interrupt, 0)).toBe(9);
   });
 }
 
@@ -557,9 +562,9 @@ test("persistent SIGKILL wins when its pending interrupt was consumed before a s
   Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
     if (!raced && array === context.interrupt) {
       raced = true;
-      Atomics.store(context.requestedSignal, 0, 9);
-      Atomics.store(context.interrupt, 0, 9);
-      Atomics.exchange(context.interrupt, 0, 0);
+      controlStore(context.requestedSignal, 0, 9);
+      controlStore(context.interrupt, 0, 9);
+      controlExchange(context.interrupt, 0, 0);
     }
     return original(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
@@ -567,8 +572,8 @@ test("persistent SIGKILL wins when its pending interrupt was consumed before a s
   finally { Atomics.compareExchange = original; }
   expect(raced).toBe(true);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
-  expect(Atomics.load(context.requestedSignal, 0)).toBe(9);
-  expect(Atomics.load(context.interrupt, 0)).toBe(9);
+  expect(controlLoad(context.requestedSignal, 0)).toBe(9);
+  expect(controlLoad(context.interrupt, 0)).toBe(9);
 });
 
 test("a terminal exit cannot be replaced by a later SIGKILL request", async () => {
@@ -579,7 +584,7 @@ test("a terminal exit cannot be replaced by a later SIGKILL request", async () =
   context.exit(23);
   supervisor.kill(pid, Signal.SIGKILL);
   expect(supervisor.wait(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
-  expect(Atomics.load(context.requestedSignal, 0)).toBe(0);
+  expect(controlLoad(context.requestedSignal, 0)).toBe(0);
 });
 
 test("default action adopts a shared terminal winner even before its signal words are published", async () => {
@@ -590,8 +595,8 @@ test("default action adopts a shared terminal winner even before its signal word
   claimOutcome(context.outcome, { kind: "signaled", code: 9 });
   expect(() => context.defaultSignal()).not.toThrow();
   expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
-  expect(Atomics.load(context.requestedSignal, 0)).toBe(9);
-  expect(Atomics.load(context.interrupt, 0)).toBe(9);
+  expect(controlLoad(context.requestedSignal, 0)).toBe(9);
+  expect(controlLoad(context.interrupt, 0)).toBe(9);
 });
 
 test("a shared terminal winner prevents launch even before pending signal publication", async () => {
@@ -628,7 +633,7 @@ test("distinct pending signals coalesce individually and dequeue in signal order
   expect(publishSignal(state, 2)).toBe("handled");
   expect(publishSignal(state, 13)).toBe("handled");
   expect(publishSignal(state, 2)).toBe("handled");
-  expect(Atomics.load(state, 2)).toBe(SignalDisposition.HANDLE | SIGNAL_PENDING);
+  expect(controlLoad(state, 2)).toBe(SignalDisposition.HANDLE | SIGNAL_PENDING);
   expect([takeSignal(state), takeSignal(state), takeSignal(state), takeSignal(state)]).toEqual([2, 13, 15, 0]);
   expect(signalDisposition(state, 2)).toBe(SignalDisposition.HANDLE);
 });
@@ -665,7 +670,7 @@ for (const sig of [Signal.SIGINT, Signal.SIGTERM, Signal.SIGPIPE]) {
     let revoked = 0;
     contexts.get(pid)!.registerRevocation(() => revoked++);
     supervisor.kill(pid, sig);
-    expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });
+    expect(supervisor.childExited(root, pid)).toBe(true);
     expect(revoked).toBe(1);
     expect(terminated).toEqual([pid]);
     contexts.get(pid)!.exit(0);
@@ -697,7 +702,7 @@ test("ignored PIPE does not interrupt and preserves the EPIPE handler's exit", a
   const context = contexts.get(pid)!;
   setSignalDisposition(context.signalState, 13, SignalDisposition.IGNORE);
   supervisor.kill(pid, 13);
-  expect(Atomics.load(context.interrupt, 0)).toBe(0);
+  expect(controlLoad(context.interrupt, 0)).toBe(0);
   expect(takeSignal(context.signalState)).toBe(0);
   expect(supervisor.wait(root, pid)).toBeNull();
   context.exit(23);
@@ -724,7 +729,7 @@ test("mixed jobs preclaim every default fatal outcome before reentrant teardown"
   for (const pid of [a, b]) expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: 15, status: 143 });
   expect(terminated.sort()).toEqual([a, b].sort());
   expect(takeSignal(contexts.get(handled)!.signalState)).toBe(15);
-  expect(Atomics.load(contexts.get(ignored)!.interrupt, 0)).toBe(0);
+  expect(controlLoad(contexts.get(ignored)!.interrupt, 0)).toBe(0);
   expect(supervisor.wait(root, handled)).toBeNull();
   expect(supervisor.wait(root, ignored)).toBeNull();
   supervisor.dispose();
@@ -794,7 +799,7 @@ for (const mode of [SignalDisposition.DEFAULT, SignalDisposition.IGNORE]) {
     try { expect(publishSignal(state, 2)).toBe(mode === SignalDisposition.DEFAULT ? "default" : "ignore"); }
     finally { Atomics.compareExchange = original; }
     expect(raced).toBe(true);
-    expect(Atomics.load(state, 2)).toBe(mode);
+    expect(controlLoad(state, 2)).toBe(mode);
     expect(takeSignal(state)).toBe(0);
   });
 }
@@ -814,7 +819,7 @@ test("default restoration racing a new pending delivery consumes it exactly once
   try { expect(setSignalDisposition(state, 15, SignalDisposition.DEFAULT)).toBe(true); }
   finally { Atomics.compareExchange = original; }
   expect(raced).toBe(true);
-  expect(Atomics.load(state, 15)).toBe(SignalDisposition.DEFAULT);
+  expect(controlLoad(state, 15)).toBe(SignalDisposition.DEFAULT);
   expect(setSignalDisposition(state, 15, SignalDisposition.DEFAULT)).toBe(false);
 });
 
@@ -834,7 +839,7 @@ test("dequeue racing ignore cannot deliver a stale handled signal", () => {
   try { expect(takeSignal(state)).toBe(0); }
   finally { Atomics.compareExchange = original; }
   expect(raced).toBe(true);
-  expect(Atomics.load(state, 2)).toBe(SignalDisposition.IGNORE);
+  expect(controlLoad(state, 2)).toBe(SignalDisposition.IGNORE);
 });
 
 for (const sig of [2, 13, 15]) {
@@ -906,7 +911,7 @@ test("generic self-raise rejects out-of-range signals and KILL bypasses raw igno
     expect(() => supervisor.observeSignal(pid, sig)).toThrow();
     expect(() => context.defaultSignal(sig)).toThrow();
   }
-  Atomics.store(context.signalState, 9, SignalDisposition.IGNORE);
+  controlStore(context.signalState, 9, SignalDisposition.IGNORE);
   expect(requestSignal(context, 9).outcome).toEqual({ kind: "signaled", code: 9, status: 137 });
   supervisor.observeSignal(pid, 9);
   expect(supervisor.wait(root, pid)!.status).toBe(137);
@@ -955,7 +960,11 @@ for (const finalizeParent of [false, true]) {
     await supervisor.start(foreground);
     await supervisor.start(background);
     expect(contexts.has(foreground)).toBe(false);
-    expect(supervisor.wait(root, foreground)).toEqual({ kind: "signaled", code: 2, status: 130 });
+    expect(claimOutcome(foregroundOutcome, { kind: "exited", code: 99 })).toEqual({ kind: "signaled", code: 2, status: 130 });
+    if (finalizeParent) {
+      expect(supervisor.get(foreground)).toBeUndefined();
+      expect(() => supervisor.wait(root, foreground)).toThrow();
+    } else expect(supervisor.wait(root, foreground)).toEqual({ kind: "signaled", code: 2, status: 130 });
     expect(contexts.has(background)).toBe(true);
     expect(supervisor.jobOf(background)).not.toBe(parent.job);
     expect(supervisor.wait(root, background)).toBeNull();
@@ -963,9 +972,14 @@ for (const finalizeParent of [false, true]) {
     contexts.get(background)!.registerRevocation(() => {
       try { supervisor.spawn(root, request()); } catch { rejected = true; }
     });
+    const backgroundRecord = supervisor.get(background)!;
     contexts.get(background)!.exit(23);
     expect(rejected).toBe(true);
-    expect(supervisor.wait(root, background)).toEqual({ kind: "exited", code: 23, status: 23 });
+    expect(backgroundRecord.result).toEqual({ kind: "exited", code: 23, status: 23 });
+    if (finalizeParent) {
+      expect(supervisor.get(background)).toBeUndefined();
+      expect(() => supervisor.wait(root, background)).toThrow();
+    } else expect(supervisor.wait(root, background)).toEqual({ kind: "exited", code: 23, status: 23 });
     supervisor.dispose();
   });
 }
@@ -984,7 +998,7 @@ test("admitted registration still validates identities, descriptors and supervis
 test("spawn forks process-owned streams once and revokes before releasing inherited dups", () => {
   const { supervisor, root } = fixture();
   const events: string[] = [];
-  const resources = new Map<number, import("../core/descriptors").Stream>();
+  const resources = new Map<number, import("../core/descriptors.js").Stream>();
   const parent = {
     kind: "pipe" as const,
     read: () => -6, write: () => 0,

@@ -11,6 +11,7 @@ export class ProcessIdentityAllocator {
   }
   pid(): number { return this.allocate(0); }
   job(): number { return this.allocate(1); }
+  hasJob(id: number): boolean { return Number.isInteger(id) && id > 0 && id <= Atomics.load(this.counters, 1); }
   observePid(id: number): void { this.observe(0, id); }
   observeJob(id: number): void { this.observe(1, id); }
   private allocate(index: number): number {

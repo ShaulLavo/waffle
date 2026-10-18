@@ -1,3 +1,4 @@
+import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
@@ -99,12 +100,12 @@ export interface WasiOptions {
   /** Blocks the calling thread for `ms` milliseconds when no shared notification exists. */
   sleep(ms: number): void;
   /** Wake word; without interruptPending, a nonzero value is ready. Poll never consumes it. */
-  interrupt?: Int32Array;
+  interrupt?: ControlCells;
   /** Nonconsuming readiness when interrupt is advisory (for example handled process signals). */
   interruptPending?(): boolean;
   /** Shared readiness wait. Preserve expected, observed before the readiness scan, to avoid
    * losing a publication. Embedders may check process liveness before and after this wait. */
-  wait?(word: Int32Array, expected: number, milliseconds: number): void;
+  wait?(word: ControlCells, expected: number, milliseconds: number): void;
   trace?: (line: string) => void;
 }
 
@@ -665,15 +666,15 @@ export class Wasi {
           } else ready.push({ userdata, type, error: EINVAL, nbytes: 0n, flags: 0 });
         }
         for (;;) {
-          let notification: Int32Array | undefined;
+          let notification: ControlCells | undefined;
           let observed = 0;
           let mixedSources = false;
-          const observe = (word?: Int32Array) => {
+          const observe = (word?: ControlCells) => {
             if (!word || typeof SharedArrayBuffer === "undefined" || !(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) {
               mixedSources = true;
             } else if (!notification) {
               notification = word;
-              observed = Atomics.load(word, 0);
+              observed = controlLoad(word, 0);
             } else if (notification.buffer !== word.buffer || notification.byteOffset !== word.byteOffset) mixedSources = true;
           };
           // Snapshot before checking readiness. A publisher racing the scan makes wait return
@@ -683,7 +684,7 @@ export class Wasi {
             observe(resource && resource.kind !== "file" && resource.kind !== "directory" ? resource.notification : undefined);
           }
           if (this.opts.interrupt) observe(this.opts.interrupt);
-          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && Atomics.load(this.opts.interrupt, 0) !== 0)) return EINTR;
+          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)) return EINTR;
           let waitMs = Infinity;
           for (const c of clocks) {
             const remaining = c.deadline - nowNs(c.clock);
@@ -703,13 +704,13 @@ export class Wasi {
             }
           }
           if (ready.length > 0) break;
-          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && Atomics.load(this.opts.interrupt, 0) !== 0)) return EINTR;
+          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)) return EINTR;
           // Advisory signal hints can repeat the same value after the readiness scan, losing
           // a notify before wait. Bound rescans for those as well as independent sources.
           if (mixedSources || this.opts.interruptPending) waitMs = Math.min(waitMs, 10);
           if (notification) {
             if (this.opts.wait) this.opts.wait(notification, observed, waitMs);
-            else Atomics.wait(notification, 0, observed, waitMs);
+            else controlWait(notification, 0, observed, waitMs);
           } else this.opts.sleep(subscriptions.length > 0 ? Math.min(waitMs, 10) : waitMs);
         }
         // A service may have reentered or grown memory while waiting.

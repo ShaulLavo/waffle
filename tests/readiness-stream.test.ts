@@ -1,11 +1,12 @@
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { afterEach, expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { Wasi, type WasiOptions } from "../core/wasi";
-import type { Readiness, Stream } from "../core/descriptors";
-import { MemFS } from "../fs/memory";
-import { PipeController } from "../proc/pipes";
-import { createSignalState, requestSignal, setSignalDisposition, signalPending, takeSignal } from "../proc/signals";
-import { outcomeWord } from "../proc/outcome";
+import { Wasi, type WasiOptions } from "../core/wasi.js";
+import type { Readiness, Stream } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import { PipeController } from "../proc/pipes.js";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, takeSignal } from "../proc/signals.js";
+import { outcomeWord } from "../proc/outcome.js";
 
 const ALL = (1n << 29n) - 1n;
 const cleanups: (() => void)[] = [];
@@ -66,7 +67,7 @@ test("notification sequence is observed before readiness so a racing publish can
   };
   const f = fixture({ wait(word, expected) {
     waits++;
-    expect(expected).toBe(0); expect(Atomics.load(word, 0)).toBe(1);
+    expect(expected).toBe(0); expect(controlLoad(word, 0)).toBe(1);
     expect(Atomics.wait(word, 0, expected, 0)).toBe("not-equal");
   } });
   const fd = f.wasi.descriptors.open(stream, ALL, ALL);
@@ -153,29 +154,29 @@ test("a handled signal interrupts preview1 poll without consuming its hint or pe
   } });
   f.subscribe(0, f.wasi.descriptors.open(endpoint(idle(), notification), ALL, ALL));
   expect(f.poll()).toBe(27);
-  expect(Atomics.load(signals.interrupt, 0)).toBe(2);
+  expect(controlLoad(signals.interrupt, 0)).toBe(2);
   expect(takeSignal(signals.signalState)).toBe(2);
 });
 
 test("an already pending interrupt returns EINTR without sleeping or changing event memory", () => {
-  const interrupt = new Int32Array(new SharedArrayBuffer(4)); Atomics.store(interrupt, 0, 15);
+  const interrupt = new Int32Array(new SharedArrayBuffer(4)); controlStore(interrupt, 0, 15);
   const f = fixture({ interrupt, wait() { throw new Error("pending interrupt slept"); } });
   f.subscribe(0, f.wasi.descriptors.open(endpoint(idle()), ALL, ALL));
   f.view().setUint32(1024, 0xabcdef12, true);
   expect(f.poll()).toBe(27);
   expect(f.view().getUint32(1024, true)).toBe(0xabcdef12);
-  expect(Atomics.load(interrupt, 0)).toBe(15);
+  expect(controlLoad(interrupt, 0)).toBe(15);
 });
 
 test("clock-only preview1 poll can wait on the interrupt cell and preserve signal delivery", () => {
   const interrupt = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ interrupt, wait(word, expected, milliseconds) {
     expect(word).toBe(interrupt); expect(expected).toBe(0); expect(milliseconds).toBeGreaterThan(0);
-    expect(milliseconds).toBeLessThanOrEqual(1000); Atomics.store(interrupt, 0, 2); Atomics.notify(interrupt, 0);
+    expect(milliseconds).toBeLessThanOrEqual(1000); controlStore(interrupt, 0, 2); Atomics.notify(interrupt, 0);
   } });
   f.clock(0, 1_000_000_000n);
   expect(f.poll()).toBe(27);
-  expect(Atomics.load(interrupt, 0)).toBe(2);
+  expect(controlLoad(interrupt, 0)).toBe(2);
 });
 
 test("preview1 poll refreshes its output view after a notification wait grows guest memory", () => {
@@ -193,7 +194,7 @@ test("worker preview1 poll wakes from the same pipe endpoint used by ordinary fd
   const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
   // Install all teardown before starting the worker. The parent owns both endpoint references.
   cleanups.push(() => { reader.close(); writer.close(); });
-  const worker = new Worker(new URL("./fixtures/wasi-poll-guest.ts", import.meta.url), { workerData: { endpoint: reader.handle() } });
+  const worker = new Worker(new URL("./fixtures/wasi-poll-guest.js", import.meta.url), { workerData: { endpoint: reader.handle() } });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await new Promise<unknown>((resolve, reject) => {
