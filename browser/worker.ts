@@ -549,6 +549,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const namespaces = executor.namespaces?.(context);
     if (done) return;
     const processImports: Record<string, (...args: number[]) => number | void> = {
+      fd_kind: (fd) => {
+        checkActive();
+        return wasi!.descriptors.kind(fd! >>> 0);
+      },
       signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
       interrupted: () =>
         req.interruptible ? fatalInterrupt(outcome) : (executor.signal?.(0, 0) ?? 0),

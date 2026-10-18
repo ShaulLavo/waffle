@@ -170,6 +170,7 @@ export class ProcessABI {
       job_of: (pid) => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: (ptr) => this.result(() => this.pipe(ptr!)),
       dup: (fd) => options.descriptors.dup(fd! >>> 0),
+      fd_kind: (fd) => options.descriptors.kind(fd! >>> 0),
       read: (fd, ptr, length) => this.result(() => this.io(false, fd!, ptr!, length!)),
       write: (fd, ptr, length) => this.result(() => this.io(true, fd!, ptr!, length!)),
       wait: (pid, ptr) => this.result(() => this.wait(pid!, ptr!)),

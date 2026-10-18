@@ -1,3 +1,8 @@
+import {
+  assertDescriptorKinds,
+  assertStdioKinds,
+  assertPipeStdio,
+} from "./fixtures/fd-kind-cases.js";
 import { Wasi } from "../core/wasi.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
 import { MemFS } from "../fs/memory.js";
@@ -11,11 +16,12 @@ import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import {
   assertPipeFilestat,
   pipeFilestatModule,
+  fdKindModule,
   pipeReadRights,
   pipeWriteRights,
   type PipeFilestatGuest,
 } from "./fixtures/pipe-filestat-guest.js";
-import type { RuntimeWorkerMessage } from "../browser/worker.js";
+import { bootstrap, type RuntimeWorkerMessage } from "../browser/worker.js";
 
 function childMessage(
   message: RuntimeWorkerMessage,
@@ -73,10 +79,13 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
   try {
     connection = createFilesystemConnection();
     wasi.start(instance);
+    assertDescriptorKinds(wasi.descriptors, guest.fd_kind);
+    assertStdioKinds(wasi.descriptors, guest.fd_kind);
     if (guest.pipe(32) !== 0) throw new Error("guest pipe creation failed");
     const view = new DataView(guest.memory.buffer),
       reader = view.getUint32(32, true),
       writer = view.getUint32(36, true);
+    assertPipeStdio(wasi.descriptors, guest.fd_kind, reader, writer);
     assertPipeFilestat(guest, reader, pipeReadRights);
     assertPipeFilestat(guest, writer, pipeWriteRights);
     const request = new TextEncoder().encode(
@@ -116,5 +125,40 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
     for (const token of child?.resources ?? []) codec.discard(token);
     connection?.client.port.close();
     connection?.server.port.close();
+  }
+}
+
+/** Even a worker with no process transport must instantiate the fd_kind import. */
+export async function browserFdKindWithoutProcess(): Promise<void> {
+  const connection = createFilesystemConnection();
+  let ran = false;
+  try {
+    await bootstrap(
+      { module: fdKindModule(), args: [], env: {}, filesystem: connection.client },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        run({ instance, wasi }) {
+          const kind = instance.exports.fd_kind as (fd: number) => number;
+          assertDescriptorKinds(wasi.descriptors, kind);
+          assertStdioKinds(wasi.descriptors, kind);
+          ran = true;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          if (message.type === "error") throw new Error(message.message);
+        },
+      },
+    );
+    if (!ran) throw new Error("signal-only worker did not run fd_kind guest");
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
   }
 }

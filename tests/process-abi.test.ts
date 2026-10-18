@@ -1,3 +1,4 @@
+import { assertDescriptorKinds } from "./fixtures/fd-kind-cases.js";
 import { controlWait, controlLoad, controlStore, controlExchange } from "../proc/control.js";
 
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -94,6 +95,31 @@ function fixture(overrides: Partial<ProcessABIOptions> = {}) {
     waits: () => waits,
   };
 }
+
+test("fd_kind is local, needs no rights and preserves every resource's state", () => {
+  const f = fixture();
+  const unused = (): never => {
+    throw new Error("fd_kind must not read memory, wait or contact a service");
+  };
+  const abi = new ProcessABI({
+    memory: unused,
+    descriptors: f.descriptors,
+    fs: new Proxy(f.fs, { get: unused }),
+    pid: f.pid,
+    service: new Proxy(f.supervisor, { get: unused }),
+    signals: new Proxy(f.signals, { get: unused }),
+    wait: unused,
+  });
+  assertDescriptorKinds(f.descriptors, abi.imports.fd_kind!);
+  const [reader, writer] = f.pipe();
+  expect(abi.imports.fd_kind!(reader)).toBe(1);
+  expect(abi.imports.fd_kind!(writer)).toBe(1);
+  const duplicate = abi.imports.dup!(reader);
+  expect(abi.imports.fd_kind!(duplicate)).toBe(1);
+  f.descriptors.close(reader);
+  expect(abi.imports.fd_kind!(reader)).toBe(-8);
+  expect(abi.imports.fd_kind!(duplicate)).toBe(1);
+});
 
 test("getpid returns each caller's own runtime identity, not its parent or job", () => {
   const f = fixture();
