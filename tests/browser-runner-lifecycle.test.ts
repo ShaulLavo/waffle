@@ -30,3 +30,11 @@ for (const phase of ["creation", "closure"] as const) test(`persistent ${phase} 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("ordinary browser closure failure is not a controller interruption", async () => {
+  const lifecycle = new BrowserRunnerLifecycle(60000, 5);
+  const owner = { creation: Promise.resolve({ close: () => Promise.reject(new Error("Target page, context or browser has been closed")) }), stopped: false };
+  (lifecycle as unknown as { browsers: Set<BrowserResourceOwner> }).browsers.add(owner);
+  await expect(lifecycle.close()).rejects.toThrow("cleanup failed");
+  expect(lifecycle.controllerInterrupted).toBe(false);
+});
