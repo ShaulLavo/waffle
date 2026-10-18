@@ -209,7 +209,8 @@ does **not** consume its job: `wait_job(job, 1, out)` returns `-EAGAIN` while an
 descendant member or its cleanup fence remains pending, then succeeds using the
 cached leader outcome after all members finish. A failed leader returns START_FAILED
 even after its individual wait and process-slot recycling; a failed nonleader is
-reported by its individual wait and never replaces the leader result. Only consuming `wait_job` itself
+reported by its individual wait and never replaces the leader result. Only consuming
+`wait_job` itself
 makes a repeat return `-ECHILD`. Unknown job IDs return `-ESRCH` (`-71`). Spawn
 selectors are unchanged: `0` and `-1` create foreground/background jobs, and a
 positive selector joins an existing live job.

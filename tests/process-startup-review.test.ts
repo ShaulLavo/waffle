@@ -185,3 +185,17 @@ for (const at of ["connect", "construct", "post", "event"] as const) {
     } finally { await f.dispose(); }
   });
 }
+
+test("allocation failure during Wasm instantiation stays typed ENOMEM", async () => {
+  const f = await fixture(guest("valid")), previous = WebAssembly.Instance;
+  try {
+    WebAssembly.Instance = new Proxy(previous, { construct() { throw new RangeError("Wasm memory allocation failed"); } });
+    const messages = await runWorker(f.worker.request);
+    expect(messages.find(message => message.type === "error")).toMatchObject({ errno: "ENOMEM" });
+    for (const message of messages) {
+      if (message.type === "runtime-proc") await f.broker.runtimeMessage(message, f.pid);
+      else f.worker.emit(message);
+    }
+    expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual({ kind: "start-failed", error: "ENOMEM", code: 12, status: null });
+  } finally { WebAssembly.Instance = previous; await f.dispose(); }
+});
