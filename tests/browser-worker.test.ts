@@ -4,6 +4,7 @@ import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type Runtime
 import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs/index.js";
 import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
 import { DescriptorTable } from "../core/descriptors.js";
+import { shareFileResource } from "../core/open-file.js";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
 import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals.js";
@@ -87,6 +88,55 @@ async function fixture(executor: WorkerExecutor, options: { isolated?: boolean; 
     return { messages, order };
   } finally { connection.client.port.close(); connection.server.port.close(); }
 }
+
+test("runtime diagnostics claim the execution failure before a queued signal can win", async () => {
+  let defaultSignal!: (signal: number) => void;
+  let writes = 0;
+  const result = await fixture({
+    stdio: { 2: { kind: "terminal", read: () => 0, write: () => { throw new Error("blocking diagnostic write"); },
+      tryWrite() {
+        if (writes++ === 0) {
+          queueMicrotask(() => { try { defaultSignal(15); } catch { /* the claimed failure rejects the signal */ } });
+          return -6;
+        }
+        return -64;
+      }, readiness: () => ({ readable: false, writable: true, hangup: false }) } },
+    setup({ defaultSignal: signal }) { defaultSignal = signal; },
+    run() { throw new Error("execution failed"); },
+  });
+  expect(result.messages.filter(message => message.type === "error")).toMatchObject([
+    { code: 1, cleanupErrors: [expect.stringContaining("diagnostic write failed (-64)")] },
+  ]);
+});
+
+test("file stderr diagnostics use bounded immediate I/O instead of blocking under the shared offset lock", async () => {
+  let lock!: SharedArrayBuffer;
+  let blockingWrites = 0;
+  const started = performance.now();
+  const result = await fixture({
+    instantiated({ wasi, fs }) {
+      const resource = { kind: "file" as const, handle: 17, offset: 0, append: false };
+      lock = shareFileResource(resource, fs.connection);
+      const alias = wasi.descriptors.open(resource, 1n << 6n, 0n);
+      wasi.descriptors.close(2);
+      wasi.descriptors.inherit(2, wasi.descriptors.get(alias)!);
+      wasi.descriptors.close(alias);
+      // A live owner makes blocking withFileOffset wait indefinitely. Immediate mode must
+      // return EAGAIN to the shared drain instead, so the five-second deadline still applies.
+      Atomics.store(new Int32Array(lock), 0, fs.connection.owner);
+      fs.write = () => { blockingWrites++; return -64; };
+      fs.tryWrite = () => -6;
+    },
+    run() { throw new Error("file diagnostic"); },
+  });
+  const elapsed = performance.now() - started;
+  Atomics.store(new Int32Array(lock), 0, 0);
+  expect(elapsed).toBeLessThan(6_000);
+  expect(blockingWrites).toBe(0);
+  expect(result.messages.filter(message => message.type === "error")).toMatchObject([
+    { code: 1, cleanupErrors: [expect.stringContaining("reader made no progress for five seconds")] },
+  ]);
+}, 10_000);
 
 for (const isolated of [true, false]) test(`generic signal winner guards stdio and survives caught unwinds (isolated=${isolated})`, async () => {
   const result = await fixture({

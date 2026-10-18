@@ -13,6 +13,12 @@ for (const result of [0, -64, -8, NaN, 999]) test(`diagnostic invalid/closed wri
   expect(() => drainDiagnostic(new Uint8Array(2), () => result)).toThrow(ProcessError);
 });
 
+test("diagnostic writer exceptions become typed failures with the unwritten span", () => {
+  expect(() => drainDiagnostic(new Uint8Array(7), () => { throw new Error("closed"); })).toThrow(
+    expect.objectContaining({ errno: 29, message: expect.stringContaining("7 of 7 diagnostic bytes unwritten") }),
+  );
+});
+
 test("diagnostic cancellation retains a typed error and unwritten count", async () => {
   let active = true;
   const pending = drainDiagnostic(new Uint8Array(13), () => -6, () => active);

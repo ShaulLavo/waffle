@@ -25,7 +25,13 @@ export function drainDiagnostic(
         throw new ProcessError(errno, `${reason}; ${remaining} of ${bytes.length} diagnostic bytes unwritten`);
       };
       if (!active()) fail(ProcessErrno.CANCELED, "diagnostic delivery cancelled");
-      const written = write(bytes.subarray(offset));
+      let written: number;
+      try {
+        written = write(bytes.subarray(offset));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        fail(29 /* WASI EIO */, `diagnostic write threw (${reason})`);
+      }
       if (written === -ProcessErrno.AGAIN) {
         if (now() >= deadline) fail(ProcessErrno.AGAIN, "diagnostic reader made no progress for five seconds");
         return false;

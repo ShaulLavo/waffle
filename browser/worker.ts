@@ -137,6 +137,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
+  let outcomeReserved = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -154,7 +155,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
     const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
-    if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
+    const existing = outcomeReserved ? localOutcome : outcome ? readOutcome(outcome) : localOutcome;
+    if (!existing && !killed && !defaultSignalTerminates(signal)) return;
+    if (outcomeReserved && existing) {
+      if (existing.kind !== "signaled") throw new WasiExit(waitStatus(existing));
+      throw new WasiExit(waitStatus(existing));
+    }
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
@@ -165,7 +171,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     throw new RuntimeWorkerSignal(winner.code);
   };
   const checkActive = () => {
-    const winner = outcome ? readOutcome(outcome) : localOutcome;
+    const winner = outcomeReserved ? (outcome ? readOutcome(outcome) : null) : outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked()) throw new WasiExit(1);
@@ -192,9 +198,16 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const startupFailure = "error" in result && !started;
     const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
-    // Startup failures claim before cleanup; runtime diagnostics retain live stderr until drained.
+    // Claim the runtime outcome before draining so a signal delivered during backpressure
+    // cannot replace the original execution failure.
     const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
-    let winner = runtimeDiagnostic || (executor.complete && !startupFailure) ? settled : claim(ownResult);
+    let winner: ProcessExit;
+    if (runtimeDiagnostic) {
+      outcomeReserved = true;
+      winner = localOutcome ??= processOutcome(ownResult);
+    } else {
+      winner = executor.complete && !startupFailure ? settled : claim(ownResult);
+    }
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -209,6 +222,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         const pending = drainDiagnostic(bytes, data => writeDiagnostic!(data));
         if (pending) await pending;
       } catch (error) { collect(error); }
+      outcomeReserved = false;
       winner = claim(ownResult);
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
@@ -310,6 +324,19 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // Like preview1, an empty write neither appends nor moves the shared file cursor.
       if (!data.length) return 0;
       if (resource.kind !== "file") return immediate ? resource.tryWrite?.([data]) ?? -58 : resource.write([data]);
+      if (immediate) {
+        return withFileOffset(resource, () => {
+          if (resource.append) {
+            const result = fs.tryAppend(resource.handle, [data]);
+            if (typeof result === "number") return result;
+            resource.offset = result.offset;
+            return result.written;
+          }
+          const written = fs.tryWrite(resource.handle, [data], resource.offset);
+          if (written >= 0) resource.offset += written;
+          return written;
+        }, true);
+      }
       const written = withFileOffset(resource, () => {
         if (resource.append) {
           const result = fs.append(resource.handle, [data]);

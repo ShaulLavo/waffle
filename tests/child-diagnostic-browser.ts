@@ -23,12 +23,20 @@ export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-wo
   runtimeProcess.bindings.push({ fd: 2, reference: 0, rightsBase: 1n << 6n, rightsInheriting: 0n });
   const diagnostic = "pipe diagnostic " + "λ".repeat(8192), expected = `Error: ${diagnostic}\n`;
   // This run owns only one Worker, one RPC connection, pipe endpoints and its deadline.
-  let worker: Worker | undefined, timer: ReturnType<typeof setTimeout> | undefined, draining: Promise<void> | undefined;
+  let worker: Worker | undefined, draining: Promise<void> | undefined;
   let stopped = false;
+  const deadline = async <T>(operation: Promise<T>, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout`)), 12_000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
   try {
     worker = new Worker(workerUrl, { type: "module" });
     const done = Promise.withResolvers<Extract<RuntimeWorkerMessage, { type: "error" }>>();
-    timer = setTimeout(() => done.reject(new Error("child diagnostic timeout")), 12_000);
     worker.onerror = event => done.reject(event.error ?? new Error(event.message));
     worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => { if (data.type === "error") done.resolve(data); };
     if (mode === "closed") reader.close();
@@ -50,14 +58,14 @@ export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-wo
       }
     };
     draining = mode === "draining" || mode === "slow" ? drain() : undefined;
-    const [message] = await Promise.all([done.promise, draining]);
+    const [message] = await deadline(Promise.all([done.promise, draining]), "child diagnostic acknowledgement and EOF");
     const elapsed = performance.now() - started;
     const outcome = readOutcome(workerProcessState(runtimeProcess).signals.outcome);
     check(outcome?.kind === "exited" && outcome.code === 1, "diagnostic delivery changed the runtime error outcome");
     if (mode === "stalled") {
       check(elapsed >= DIAGNOSTIC_STALL_TIMEOUT_MS && elapsed < DIAGNOSTIC_STALL_TIMEOUT_MS + 3_000, `stalled reader deadline: ${elapsed}ms`);
       check(message.cleanupErrors?.length === 1 && message.cleanupErrors[0]!.includes("reader made no progress for five seconds"), "missing stalled diagnostic delivery report");
-      await drain();
+      await deadline(drain(), "stalled child diagnostic EOF");
     } else if (mode === "closed") {
       check(elapsed < 3_000, `closed reader retained a dead child for ${elapsed}ms`);
       check(message.cleanupErrors?.length === 1 && message.cleanupErrors[0]!.includes("diagnostic write failed (-64)"), "missing closed diagnostic delivery report");
@@ -72,7 +80,7 @@ export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-wo
     check(bytes.length === length && bytes.every((byte, index) => byte === wanted[index]), "diagnostic bytes were lost, duplicated or reordered before EOF");
   } finally {
     stopped = true;
-    clearTimeout(timer); worker?.terminate(); reader.close(); writer.close(); pipe.dispose();
+    worker?.terminate(); reader.close(); writer.close(); pipe.dispose();
     await draining?.catch(() => {});
     connection.client.port.close(); connection.server.port.close();
   }
