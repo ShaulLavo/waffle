@@ -332,7 +332,10 @@ try {
     const keepAlive = await context.newPage();
     await keepAlive.goto(`http://127.0.0.1:${server.port}/blank`);
     console.log(JSON.stringify({ engine: name, version: context.browser()?.version(), source }));
+    let selected = 0;
     for (const test of cases()) {
+      if (process.env.STORAGE_LOCK_TEST_FILTER && !`${test.backend}: ${test.label}`.includes(process.env.STORAGE_LOCK_TEST_FILTER)) continue;
+      selected++;
       const testName = uniqueName(`${name}-${test.backend}`);
       try {
         await test.run(context, `http://127.0.0.1:${server.port}/`, testName);
@@ -342,6 +345,7 @@ try {
         failures.push(failure); console.error(`FAIL ${failure}`);
       }
     }
+    if (selected === 0) throw new Error(`No storage lock cases match ${JSON.stringify(process.env.STORAGE_LOCK_TEST_FILTER)}`);
     await context.close(); context = undefined; launching = undefined;
     if (firefoxScratch) { await rm(firefoxScratch, { recursive: true, force: true }); firefoxScratch = undefined; }
   }
