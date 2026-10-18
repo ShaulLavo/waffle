@@ -94,6 +94,8 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
 });
 
 test("persistent exclusive creation does not hydrate an existing cold file", async () => {
+  let reads = 0;
+  let flushed: readonly string[] | undefined;
   const backend = await PersistentBackend.open({
     async load() {
       return { version: 1, generation: 1, root: 1, nodes: [
@@ -101,13 +103,18 @@ test("persistent exclusive creation does not hydrate an existing cold file", asy
         { ino: 2, kind: "file", size: 4, mtime: 1, data: "cold-payload" },
       ] };
     },
-    async read() { throw new Error("exclusive create must not load the existing payload"); },
-    async persist() {}, async flush() {}, async close() {},
+    async read() { reads++; return encode("cold"); },
+    async persist() {}, async flush(keys) { flushed = keys; }, async close() {},
   }, { intervalMs: 0 });
   try {
     expect(backend.shared.resources().files).toBe(0);
     expect(backend.prepare!("writeFile", ["/cold", false, true], new Uint8Array())).toBeUndefined();
     expect(backend.shared.resources().files).toBe(0);
+    await backend.prepare!("readFile", ["/./cold"], new Uint8Array());
+    expect(reads).toBe(1);
+    expect(decode(backend.execute("readFile", ["/./cold"], new Uint8Array()))).toBe("cold");
+    await backend.flush("/./cold");
+    expect(flushed).toEqual(["cold-payload"]);
   } finally { await backend.close(); }
 });
 

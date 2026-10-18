@@ -89,6 +89,14 @@ export class PersistentBackend extends MemoryBackend {
     }
   }
   protected isLinked(node: Node): boolean { return this.nodes.has(node.ino); }
+  private resolveNode(path: string): Node | undefined {
+    let node = this.fs.lookup(path);
+    if (!node && path.startsWith("/")) {
+      const resolved = this.fs.resolveAbsolute(path);
+      if (typeof resolved !== "number" && resolved.node !== undefined) node = this.fs.nodeForHandle(resolved.node);
+    }
+    return node;
+  }
   /** Dead handles are no longer enumerable in shared memory; prune their private owners too. */
   private pruneDetached(): void {
     for (const [handle, node] of this.registeredNodes) if (this.shared.revision(handle) === undefined) {
@@ -171,7 +179,7 @@ export class PersistentBackend extends MemoryBackend {
   prepare(operation: string, args: any[]): void | Promise<void> {
     if (this.stopped) throw new Error("filesystem persistence backend is closed");
     const target = ["read", "write", "append", "grow", "resize"].includes(operation) ? args[0]
-      : operation === "readFile" || operation === "writeFile" ? this.fs.lookup(args[0]) : undefined;
+      : operation === "readFile" || operation === "writeFile" ? this.resolveNode(args[0]) : undefined;
     const handle = typeof target === "number" ? target : target?.kind === "file" ? this.fs.handleForNode(target) : undefined;
     const resources = this.shared.resources();
     if (resources.files > 1024 || resources.usedBytes >= resources.maxBytes / 2) this.evictClean(handle);
@@ -180,7 +188,7 @@ export class PersistentBackend extends MemoryBackend {
       else return this.ensureLoaded(args[0]);
     }
     if (operation === "readFile" || operation === "writeFile") {
-      const node = this.fs.lookup(args[0]);
+      const node = this.resolveNode(args[0]);
       if (node?.kind === "file") {
         const handle = this.fs.handleForNode(node);
         if (operation === "writeFile") {
@@ -212,7 +220,7 @@ export class PersistentBackend extends MemoryBackend {
   /** Background close-only checkpoint. Explicit saves/fsync use flush() for payload durability. */
   checkpoint(durable = false, target?: FileHandle | string): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("filesystem persistence backend is closed"));
-    const selected = typeof target === "string" ? this.fs.lookup(target)
+    const selected = typeof target === "string" ? this.resolveNode(target)
       : target === undefined ? undefined : this.fs.nodeForHandle(target);
     this.pruneDetached();
     const changed = new Set(this.dirty);
