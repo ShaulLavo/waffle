@@ -1,8 +1,8 @@
 import { test, expect } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { BASELINE_CELLS, CONTROLLER_EDITS, parseCells, assertSelectionScope, controllerWithSelection, compareContinuation, assembleBaseline } from "../tooling/vfs-continuation.js";
+import { BASELINE_CELLS, CONTROLLER_EDITS, parseCells, assertSelectionScope, controllerWithSelection, compareContinuation, assembleBaseline, missingBaselineCells } from "../tooling/vfs-continuation.js";
 import type { Sample } from "../tooling/vfs-score.js";
 import { SCORE_PROTOCOL } from "../tooling/vfs-score-config.js";
 
@@ -20,7 +20,7 @@ async function repository() {
     await writeFile(resolve(root, "tooling/vfs-workloads.ts"), "// unchanged fixture\n");
     git(root, "add", "."); git(root, "commit", "-qm", "baseline"); const baseline = git(root, "rev-parse", "HEAD");
     await writeFile(resolve(root, "tooling/vfs-benchmark.ts"), controllerWithSelection(controller));
-    await writeFile(resolve(root, "tooling/vfs-continuation.ts"), "// selection orchestration\n");
+    await writeFile(resolve(root, "tooling/vfs-continuation.ts"), await readFile(resolve(import.meta.dir, "../tooling/vfs-continuation.ts"), "utf8"));
     git(root, "add", "."); git(root, "commit", "-qm", "selection only"); const revision = git(root, "rev-parse", "HEAD");
     return { root, controller, baseline, revision, close: () => rm(root, { recursive: true, force: true }) };
   } catch (error) { await rm(root, { recursive: true, force: true }); throw error; }
@@ -50,6 +50,33 @@ test("continuation audit permits exact selection edits and records the complete 
     expect(() => compareContinuation(fixture.root, fixture.baseline.slice(0, 7), fixture.revision)).toThrow("full Git");
     expect(() => controllerWithSelection("unrecognized controller")).toThrow("exact audited");
   } finally { await fixture.close(); }
+});
+test("continuation audit binds executable helper bytes and rejects mode changes", async () => {
+  const fixture = await repository();
+  try {
+    await writeFile(resolve(fixture.root, "tooling/vfs-continuation.ts"), "process.env.TMPDIR = '/different-profile-root';\n");
+    git(fixture.root, "add", "."); git(fixture.root, "commit", "-qm", "invalid helper behavior");
+    expect(() => compareContinuation(fixture.root, fixture.baseline, git(fixture.root, "rev-parse", "HEAD"))).toThrow("executing reviewed helper");
+    git(fixture.root, "reset", "--hard", fixture.revision);
+    for (const path of ["tooling/vfs-continuation.ts", "tooling/vfs-benchmark.ts"]) {
+      git(fixture.root, "update-index", "--chmod=+x", path); git(fixture.root, "commit", "-qm", "invalid file mode");
+      expect(() => compareContinuation(fixture.root, fixture.baseline, git(fixture.root, "rev-parse", "HEAD"))).toThrow("non-executable");
+      git(fixture.root, "reset", "--hard", fixture.revision);
+    }
+  } finally { await fixture.close(); }
+});
+test("missing-cell selection retains successes and blocks failed or malformed history", () => {
+  const revision = "a".repeat(40);
+  const original = rows(revision, "W1").concat(rows(revision, "W2").slice(0, 3));
+  const selected = missingBaselineCells(original, revision);
+  expect(selected.completedCells).toEqual(["chromium/opfs-memory/W1/host"]);
+  expect(selected.missingCells.length).toBe(59); expect(selected.blockedCells).toEqual([]);
+  for (const broken of [original.map(row => row.workload === "W2" ? { ...row, state: "invalid environment" as const } : row), original.map(row => row.workload === "W2" ? { ...row, metrics: { durableInstallMs: 0 } } : row)]) {
+    const selection = missingBaselineCells(broken, revision);
+    expect(selection.blockedCells).toEqual(["chromium/opfs-memory/W2/host"]);
+    expect(selection.missingCells).not.toContain("chromium/opfs-memory/W2/host");
+  }
+  expect(() => missingBaselineCells(original, "b".repeat(40))).toThrow("identity");
 });
 test("continuation audit rejects a clock edit even inside the allowed controller path", async () => {
   const fixture = await repository();

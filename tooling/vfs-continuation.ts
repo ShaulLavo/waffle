@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// The recorded revision must execute this independently reviewed helper, not just
+// an identically named file with arbitrary behavior. Capture it before any audit.
+const AUDITED_HELPER = readFileSync(fileURLToPath(import.meta.url), "utf8");
 import { BROWSERS, WORKLOADS, LANES, SCORE_PROTOCOL, primaryMetrics, type BrowserName, type Workload, type Lane } from "./vfs-score-config.js";
 import { cellKey, type Sample } from "./vfs-score.js";
 
@@ -43,6 +49,10 @@ export function compareContinuation(root: string, baseline: string, revision: st
   const changedFiles = git(root, "diff", "--no-ext-diff", "--name-only", baseline, revision).trim().split("\n").filter(Boolean);
   const permitted = new Set(["tooling/vfs-benchmark.ts", "tooling/vfs-continuation.ts", "tests/vfs-continuation.test.ts"]);
   if (!changedFiles.includes("tooling/vfs-benchmark.ts") || changedFiles.some(path => !permitted.has(path))) throw new Error(`Continuation changes a measured or non-orchestration path: ${changedFiles.join(", ")}`);
+  for (const entry of git(root, "ls-tree", revision, "--", ...Array.from(permitted)).trim().split("\n")) {
+    if (!entry.startsWith("100644 blob ")) throw new Error("Continuation orchestration must use ordinary non-executable source files");
+  }
+  if (git(root, "show", `${revision}:tooling/vfs-continuation.ts`) !== AUDITED_HELPER) throw new Error("Continuation helper differs from the executing reviewed helper");
   const original = git(root, "show", `${baseline}:tooling/vfs-benchmark.ts`);
   const controller = git(root, "show", `${revision}:tooling/vfs-benchmark.ts`);
   if (controller !== controllerWithSelection(original)) throw new Error("Continuation controller differs outside the exact audited selection/orchestration insertions");
@@ -69,11 +79,25 @@ function complete(rows: readonly Sample[]): boolean {
     && [-2, -1].every(repetition => rows.some(row => row.warmup && row.repetition === repetition))
     && [0, 1, 2, 3, 4].every(repetition => rows.some(row => !row.warmup && row.repetition === repetition));
 }
+/** Select only interrupted/absent cells; correctness and environment failures are
+ * history, not permission to retry until a favorable result appears. */
+export function missingBaselineCells(original: readonly Sample[], baseline: string) {
+  const before = groups(original, baseline);
+  const completedCells: string[] = [], missingCells: string[] = [], blockedCells: string[] = [];
+  for (const key of BASELINE_CELLS) {
+    const rows = before.get(key) ?? [];
+    if (complete(rows)) completedCells.push(key);
+    else if (rows.length >= 7 || rows.some(row => row.state !== "eligible" || !primaryMetrics(row.workload, row.vfs).every(metric => Number.isFinite(row.metrics[metric.name]) && row.metrics[metric.name]! > 0))) blockedCells.push(key);
+    else missingCells.push(key);
+  }
+  return { completedCells, missingCells, blockedCells };
+}
 /** Assemble an initial archive, never a promotion candidate. Original partial history
  * remains separate and visible; it cannot be pooled into a continuation's five samples. */
 export function assembleBaseline(root: string, baseline: string, revision: string, original: readonly Sample[], continued: readonly Sample[]) {
   const provenance = compareContinuation(root, baseline, revision);
   const before = groups(original, baseline), after = groups(continued, revision);
+  const selection = missingBaselineCells(original, baseline);
   const all = original.concat(continued);
   if (new Set(all.map(row => row.runner)).size > 1) throw new Error("Continuation changed the benchmark runner");
   for (const browser of BROWSERS) if (new Set(all.filter(row => row.browser === browser && row.browserVersion !== "unavailable").map(row => row.browserVersion)).size > 1) throw new Error(`Continuation changed ${browser}'s version`);
@@ -82,7 +106,7 @@ export function assembleBaseline(root: string, baseline: string, revision: strin
   for (const key of BASELINE_CELLS) {
     const old = before.get(key) ?? [], next = after.get(key) ?? [];
     if (complete(old) && next.length) throw new Error(`Continuation reran completed cell ${key}`);
-    if (next.length && old.some(row => row.state !== "eligible")) throw new Error(`Continuation would retry a failed/invalid cell ${key}`);
+    if (next.length && selection.blockedCells.includes(key)) throw new Error(`Continuation would retry a failed/invalid cell ${key}`);
     if (next.length) { incompleteHistory = incompleteHistory.concat(old); samples = samples.concat(next); if (complete(next)) completedCells.push(key); }
     else { samples = samples.concat(old); if (complete(old)) completedCells.push(key); }
   }
