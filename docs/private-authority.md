@@ -98,12 +98,12 @@ it writes no build outputs or temporary projects.
 `payloadExceptions` matches **file, owning function, rule and exact expression**.
 It contains no whole-file or wildcard suppression. The allowed cases are:
 
-| Owner | Payload-only operation | Why it carries no private authority |
-| --- | --- | --- |
-| `proc/pipes.ts` `length` | Reduce caller-supplied byte iovecs to a count | Elements are the caller's payload; the callback captures no ring or lifetime state. |
-| `Ring.read` / `Ring.write` | Iterate `chunks` | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
-| Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length` | Guest stdout/stderr bytes, not directory, signal or endpoint buffers. |
-| Terminal codec `import.write` | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
+| Owner                                      | Payload-only operation                                                                          | Why it carries no private authority                                                                                             |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `proc/pipes.ts` `length`                   | Reduce caller-supplied byte iovecs to a count                                                   | Elements are the caller's payload; the callback captures no ring or lifetime state.                                             |
+| `Ring.read` / `Ring.write`                 | Iterate `chunks`                                                                                | These are caller-owned destinations/sources. Actual private ring copying uses captured helpers. The loop body is still checked. |
+| Worker bootstrap `output`, `write`, `post` | Read `data.buffer` / `data.length`                                                              | Guest stdout/stderr bytes, not directory, signal or endpoint buffers.                                                           |
+| Terminal codec `import.write`              | Count/iterate terminal chunks, allocate an outbound byte array, copy payload, read byte lengths | These values are guest iovecs and fresh output bytes. The separate WeakMap of Stream provenance is private and remains checked. |
 
 `ProcessABI.span` and `ProcessABI.view` are additionally named payload-return
 boundaries: their views point into the guest's WebAssembly memory, not process

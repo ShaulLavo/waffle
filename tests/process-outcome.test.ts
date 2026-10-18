@@ -1,18 +1,9 @@
-import type {
-  controlLoad,
-  controlStore,
-  controlCas,
-  controlExchange,
-  controlAdd,
-} from "../proc/control.js";
 import { expect, test } from "bun:test";
-import type { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();
 const Atomics = isolated.atomics;
-const { controlLoad, controlStore, controlCas, controlExchange, controlAdd } =
-  isolated.load<typeof import("../proc/control.js")>("control");
 const { claimOutcome, outcomeWord, readOutcome } =
   isolated.load<typeof import("../proc/outcome.js")>("outcome");
 

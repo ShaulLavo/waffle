@@ -1,36 +1,12 @@
-import type {
-  controlLoad,
-  controlStore,
-  controlCas,
-  controlExchange,
-  controlAdd,
-} from "../proc/control.js";
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import type {
-  ExecutableRegistry,
-  FirstSpawnStub,
-  ProcessIdentityAllocator,
-  ProcessSupervisor,
-  Signal,
-  SignalDisposition,
-  SIGNAL_PENDING,
-  createSignalState,
-  signalDisposition,
-  setSignalDisposition,
-  publishSignal,
-  requestSignal,
-  takeSignal,
-  outcomeWord,
-  claimOutcome,
-  ProcessContext,
-  SpawnRequest,
-} from "../proc/index.js";
+import type { ProcessContext, SpawnRequest } from "../proc/index.js";
+type ProcessSupervisor = import("../proc/index.js").ProcessSupervisor;
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();
 const Atomics = isolated.atomics;
-const { controlLoad, controlStore, controlCas, controlExchange, controlAdd } =
+const { controlLoad, controlStore, controlExchange } =
   isolated.load<typeof import("../proc/control.js")>("control");
 const {
   ExecutableRegistry,

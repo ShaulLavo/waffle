@@ -22,6 +22,7 @@ export default {
         "tests/interrupt-browser.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host}.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
+        "tests/fixtures/private-authority-cases.ts",
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",

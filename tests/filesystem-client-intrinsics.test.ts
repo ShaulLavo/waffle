@@ -23,16 +23,20 @@ function fixture() {
     revocations: [new native.SharedArrayBufferConstructor(4)],
     shared: new native.SharedArrayBufferConstructor(4),
     segments: [],
-    capabilities: new native.SharedArrayBufferConstructor((protocol.CAPABILITY_HEADER + 2 * protocol.CAPABILITY_WORDS) * 4),
+    capabilities: new native.SharedArrayBufferConstructor(
+      (protocol.CAPABILITY_HEADER + 2 * protocol.CAPABILITY_WORDS) * 4,
+    ),
     sections: new native.SharedArrayBufferConstructor(4),
     owner: 1,
     maxBytes: protocol.PAGE,
     ownerStates: new native.SharedArrayBufferConstructor(8),
     reservations: [],
   });
-  const source = connection(), target = connection();
+  const source = connection(),
+    target = connection();
   const targetCapabilities = new native.Int32ArrayConstructor(target.capabilities);
-  for (let index = 0; index < native.typedArrayLength(targetCapabilities); index++) targetCapabilities[index] = -1;
+  for (let index = 0; index < native.typedArrayLength(targetCapabilities); index++)
+    targetCapabilities[index] = -1;
   targetCapabilities[0] = 0;
   const capabilities = new native.Int32ArrayConstructor(source.capabilities);
   capabilities[protocol.CAPABILITY_HEADER] = 7;
@@ -40,44 +44,69 @@ function fixture() {
   const revocation = new native.Int32ArrayConstructor(source.revocations[0]!);
   const signal = new native.Int32ArrayConstructor(source.signal);
   const revoked = () => native.atomicsLoad(revocation, 0) !== 0;
-  const wake = () => { native.atomicsAdd(signal, 0, 1); native.atomicsNotify(signal, 0); };
+  const wake = () => {
+    native.atomicsAdd(signal, 0, 1);
+    native.atomicsNotify(signal, 0);
+  };
   // Predeclare every allocation so the observer recognizes buffers created after poisoning.
-  const allocations = [new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
-    new native.SharedArrayBufferConstructor(protocol.HEADER + 4), new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
-    new native.SharedArrayBufferConstructor(8)];
+  const allocations = [
+    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
+    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
+    new native.SharedArrayBufferConstructor(protocol.HEADER + 4),
+    new native.SharedArrayBufferConstructor(8),
+  ];
   let allocation = 0;
   const captures = {
     ...native,
     SharedArrayBufferConstructor: new Proxy(native.SharedArrayBufferConstructor, {
       construct(_target, args) {
         const buffer = allocations[allocation++];
-        if (!buffer || native.sharedArrayBufferByteLength(buffer) !== args[0]) throw new Error("unexpected client allocation");
+        if (!buffer || native.sharedArrayBufferByteLength(buffer) !== args[0])
+          throw new Error("unexpected client allocation");
         return buffer;
       },
     }),
   };
   const bindings = {
-    ...protocol, ...captures,
+    ...protocol,
+    ...captures,
     pack: () => new native.Uint8ArrayConstructor(),
     unpack: (bytes: Uint8Array) => bytes,
-    isRevoked: revoked, sharedRevoked: () => revoked, wake,
+    isRevoked: revoked,
+    sharedRevoked: () => revoked,
+    wake,
     reapFilesystem() {},
     releaseFilesystemReservation(reservation: protocol.FilesystemReservation) {
       native.atomicsStore(new native.Int32ArrayConstructor(reservation.state), 0, 2);
     },
-    FilesystemSection: class { enter() {} exit() {} },
-    SharedFilesystemState: class { isUnlinked() { return false; } },
+    FilesystemSection: class {
+      enter() {}
+      exit() {}
+    },
+    SharedFilesystemState: class {
+      isUnlinked() {
+        return false;
+      }
+    },
   };
   const names = Object.keys(bindings);
   const evaluate = new Function(...names.concat([clientSource]));
-  const exports = evaluate(...names.map(name => bindings[name as keyof typeof bindings])) as {
+  const exports = evaluate(...names.map((name) => bindings[name as keyof typeof bindings])) as {
     FilesystemClient: new (connection: protocol.FilesystemConnection) => FilesystemClient;
     FilesystemCompletion: typeof FilesystemCompletion;
   };
   const client = new exports.FilesystemClient(source);
   const buffers = allocations.concat([
-    source.capabilities, source.epoch, source.signal, source.revocations[0]!, source.sections,
-    target.capabilities, target.epoch, target.signal, target.revocations[0]!, target.sections,
+    source.capabilities,
+    source.epoch,
+    source.signal,
+    source.revocations[0]!,
+    source.sections,
+    target.capabilities,
+    target.epoch,
+    target.signal,
+    target.revocations[0]!,
+    target.sections,
   ]);
   return { client, source, target, buffers, capabilities, revocation, wake };
 }
@@ -88,26 +117,36 @@ test("filesystem client keeps completion, capability, and revocation views out o
   let report: IntrinsicsReport | undefined;
   let copied: Uint8Array | undefined, copiedAsync: Uint8Array | undefined;
   let cancelled: unknown;
-  let remaining = -1, references = -1, reservations = -1;
+  let remaining = -1,
+    references = -1,
+    reservations = -1;
   const observer = poisonProcessIntrinsics(buffers);
   try {
     const complete = client.submit("read", [], payload, 4);
     complete.cells[0] = protocol.State.Complete;
     complete.cells[2] = 2;
     complete.cells[4] = 1;
-    native.typedArraySet(new native.Uint8ArrayConstructor(complete.buffer, protocol.HEADER), payload);
+    native.typedArraySet(
+      new native.Uint8ArrayConstructor(complete.buffer, protocol.HEADER),
+      payload,
+    );
     copied = complete.wait();
 
     const completeAsync = client.submit("read", [], payload, 4);
     completeAsync.cells[0] = protocol.State.Complete;
     completeAsync.cells[2] = 2;
     completeAsync.cells[4] = 1;
-    native.typedArraySet(new native.Uint8ArrayConstructor(completeAsync.buffer, protocol.HEADER), payload);
+    native.typedArraySet(
+      new native.Uint8ArrayConstructor(completeAsync.buffer, protocol.HEADER),
+      payload,
+    );
     copiedAsync = await completeAsync.value();
     completeAsync.release();
 
     const pending = client.submit("read", [], payload, 4);
-    const waiting = pending.value().catch(error => { cancelled = error; });
+    const waiting = pending.value().catch((error) => {
+      cancelled = error;
+    });
     client.retain(7);
     const reservation = client.reserve(7, target);
     client.adopt(reservation);

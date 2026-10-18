@@ -2,7 +2,6 @@ import {
   arrayAppend,
   isSharedArrayBuffer,
   DataViewConstructor,
-  SharedArrayBufferConstructor,
   Uint8ArrayConstructor,
   dataViewGetBigUint64,
   dataViewGetUint32,

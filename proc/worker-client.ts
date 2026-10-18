@@ -254,7 +254,7 @@ export class WorkerProcessClient {
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
     const cells = this.accesses ? mapGet(this.accesses, id) : undefined;
     if (!cells || atomicsLoad(cells, 0) === 2) {
-      this.accesses && mapDelete(this.accesses, id);
+      if (this.accesses) mapDelete(this.accesses, id);
       throw new ProcessError(ProcessErrno.BADF, "unknown executable query");
     }
     return cells;
@@ -295,10 +295,7 @@ export class WorkerProcessClient {
       throw spawnError(error);
     }
   }
-  private reserveSpawn(parentPid: number, request: SpawnRequest): number {
-    this.admit();
-    if (parentPid !== this.pid)
-      throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
+  private spawnSources(request: SpawnRequest): Descriptor[] {
     const fds = new SetConstructor<number>();
     const sources: Descriptor[] = [];
     for (let index = 0; index < request.fds.length; index++) {
@@ -318,6 +315,13 @@ export class WorkerProcessClient {
       if (!source) throw new ProcessError(ProcessErrno.BADF, "missing inherited descriptor");
       arrayAppend(sources, source);
     }
+    return sources;
+  }
+  private reserveSpawn(parentPid: number, request: SpawnRequest): number {
+    this.admit();
+    if (parentPid !== this.pid)
+      throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
+    const sources: Descriptor[] = this.spawnSources(request);
     if (!Number.isInteger(request.job) || request.job < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const job = request.job > 0 ? request.job : this.identities.job();

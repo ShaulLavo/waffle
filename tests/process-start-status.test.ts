@@ -2,20 +2,10 @@ import { expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import type { ProcessABI, ProcessService } from "../proc/abi.js";
-import type { controlLoad, controlStore } from "../proc/control.js";
-import type { claimOutcome, markStarted, readOutcome, startStatus } from "../proc/outcome.js";
-import type { ExecutableRegistry } from "../proc/registry.js";
-import type { ProcessSupervisor } from "../proc/supervisor.js";
-import type { ProcessTable } from "../proc/table.js";
-import type { ProcessError, ProcessContext } from "../proc/types.js";
-import type {
-  createWorkerProcessTransport,
-  WorkerProcessClient,
-  workerProcessState,
-  confirmWorkerProcessJob,
-  WorkerProcessMessage,
-} from "../proc/worker-client.js";
+import type { ProcessService } from "../proc/abi.js";
+
+import type { ProcessContext } from "../proc/types.js";
+import type { WorkerProcessMessage } from "../proc/worker-client.js";
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();

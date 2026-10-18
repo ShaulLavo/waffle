@@ -8,7 +8,9 @@ const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
   readFileSync(new URL("../../proc/pipes.ts", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, "")
-    .concat("\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry };\n"),
+    .concat(
+      "\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry };\n",
+    ),
 );
 
 /**
@@ -29,18 +31,33 @@ export function isolatedPipes() {
     if (!key.startsWith("atomics")) continue;
     const method = key.slice("atomics".length);
     const name = method[0]!.toLowerCase() + method.slice(1);
-    captured[key] = (...args: unknown[]) => Reflect.apply(Reflect.get(atomics, name), atomics, args);
+    captured[key] = (...args: unknown[]) =>
+      Reflect.apply(Reflect.get(atomics, name), atomics, args);
   }
   captured.SharedArrayBufferConstructor = new Proxy(native.SharedArrayBufferConstructor, {
-    construct(_target, args, newTarget) { return Reflect.construct(hooks.SharedArrayBufferConstructor, args, newTarget); },
+    construct(_target, args, newTarget) {
+      return Reflect.construct(hooks.SharedArrayBufferConstructor, args, newTarget);
+    },
   });
-  captured.sharedArrayBufferGrow = (buffer: SharedArrayBuffer, length: number) => hooks.sharedArrayBufferGrow(buffer, length);
-  captured.typedArraySubarray = (view: Uint8Array, begin?: number, end?: number) => hooks.typedArraySubarray(view, begin, end);
+  captured.sharedArrayBufferGrow = (buffer: SharedArrayBuffer, length: number) =>
+    hooks.sharedArrayBufferGrow(buffer, length);
+  captured.typedArraySubarray = (view: Uint8Array, begin?: number, end?: number) =>
+    hooks.typedArraySubarray(view, begin, end);
   const context = {
     ...captured,
-    ProcessError, Error, RangeError, TypeError, crypto, console, queueMicrotask, setTimeout, clearTimeout,
+    ProcessError,
+    Error,
+    RangeError,
+    TypeError,
+    crypto,
+    console,
+    queueMicrotask,
+    setTimeout,
+    clearTimeout,
     pipeExports: undefined as unknown as typeof Pipes,
   };
-  runInNewContext(source, context, { filename: new URL("../../proc/pipes.ts", import.meta.url).pathname });
+  runInNewContext(source, context, {
+    filename: new URL("../../proc/pipes.ts", import.meta.url).pathname,
+  });
   return { pipes: context.pipeExports, atomics, hooks };
 }

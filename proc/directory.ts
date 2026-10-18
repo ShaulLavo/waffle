@@ -6,11 +6,11 @@ import {
   controlStore,
   type CellValidity,
 } from "./control.js";
-import { arrayAppend } from "./intrinsics.ts";
 import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.js";
 import type { SignalTransport } from "./signals.js";
 import {
+  arrayAppend,
   atomicsAdd,
   atomicsCompareExchange,
   atomicsLoad,
@@ -23,7 +23,6 @@ import {
   cryptoGetRandomValues,
   typedArraySet,
   typedArraySubarray,
-  objectFreeze,
   MapConstructor,
   SetConstructor,
   mapGet,

@@ -1,4 +1,4 @@
-import { isInstance, isSharedArrayBuffer, SharedArrayBufferConstructor } from "./intrinsics.ts";
+import { isInstance, isSharedArrayBuffer } from "./intrinsics.ts";
 import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors.js";
 import { shareFileResource } from "../core/open-file.js";
 import { FilesystemClient } from "../fs/client.js";

@@ -3,19 +3,10 @@ import { controlStore, controlLoad } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
-import type { ProcessABI, ProcessSignalExit } from "../proc/abi";
-import type { ExecutableRegistry } from "../proc/registry";
-import type { ProcessSupervisor } from "../proc/supervisor";
-import type { claimOutcome, readOutcome } from "../proc/outcome";
-import type {
-  createSignalState,
-  requestSignal,
-  setSignalDisposition,
-  SIGNAL_PENDING,
-  takeSignal,
-} from "../proc/signals";
-import type { checkedSignal, ProcessError } from "../proc/types";
-import type { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client";
+type ProcessSignalExit = import("../proc/abi").ProcessSignalExit;
+
+type ProcessError = import("../proc/types").ProcessError;
+
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();

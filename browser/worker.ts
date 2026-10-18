@@ -192,12 +192,12 @@ export function describeWorkerError(err: unknown): string {
     : head;
 }
 
-/** Instantiate one process using explicit capabilities; never creates a page runtime. */
-export async function bootstrap<R extends RuntimeWorkerRequest>(
-  req: R,
-  executor: WorkerExecutor<R>,
-  host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
-): Promise<void> {
+function createSleepCell(host: RuntimeWorkerHost): Int32Array | null {
+  if (!host.crossOriginIsolated || typeof SharedArrayBufferConstructor !== "function") return null;
+  return new Int32ArrayConstructor(new SharedArrayBufferConstructor(4));
+}
+
+function captureWorkerHost(host: RuntimeWorkerHost) {
   const postMethod = host === globalThis ? defaultPostMessage : host.postMessage;
   const addListener = host === globalThis ? defaultAddEventListener : host.addEventListener;
   const removeListener =
@@ -205,14 +205,22 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const postToHost = (message: RuntimeWorkerMessage, transfer?: Transferable[]) => {
     reflectApply(postMethod, host, transfer ? [message, transfer] : [message]);
   };
+  return { postToHost, addListener, removeListener };
+}
+
+/** Instantiate one process using explicit capabilities; never creates a page runtime. */
+export async function bootstrap<R extends RuntimeWorkerRequest>(
+  req: R,
+  executor: WorkerExecutor<R>,
+  host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
+): Promise<void> {
+  const { postToHost, addListener, removeListener } = captureWorkerHost(host);
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
-  const isolated = host.crossOriginIsolated && typeof SharedArrayBufferConstructor === "function";
-  const sleepCell = isolated
-    ? new Int32ArrayConstructor(new SharedArrayBufferConstructor!(4))
-    : null;
+  const sleepCell = createSleepCell(host);
+  const isolated = sleepCell !== null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.

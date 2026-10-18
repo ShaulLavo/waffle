@@ -1,16 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
-import type { ProcessABI } from "../proc/abi";
-import type { ExecutableRegistry } from "../proc/registry";
-import type { ProcessSupervisor } from "../proc/supervisor";
-import type { WorkerProcessBroker } from "../proc/worker-broker";
-import type {
-  WorkerProcessClient,
-  createWorkerProcessTransport,
-  workerProcessState,
-  WorkerProcessMessage,
-} from "../proc/worker-client";
+
+import type { WorkerProcessMessage } from "../proc/worker-client";
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();

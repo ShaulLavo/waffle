@@ -1,22 +1,13 @@
-import type {
-  controlLoad,
-  controlStore,
-  controlCas,
-  controlExchange,
-  controlAdd,
-} from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
-import type { ProcessABI, ProcessSignalExit } from "../proc/abi.js";
-import type { claimOutcome, outcomeWord } from "../proc/outcome.js";
-import type { createSignalState, requestSignal } from "../proc/signals.js";
+type ProcessSignalExit = import("../proc/abi.js").ProcessSignalExit;
+
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();
 const Atomics = isolated.atomics;
-const { controlLoad, controlStore, controlCas, controlExchange, controlAdd } =
-  isolated.load<typeof import("../proc/control.js")>("control");
+const { controlLoad } = isolated.load<typeof import("../proc/control.js")>("control");
 const { ProcessABI, ProcessSignalExit } = isolated.load<typeof import("../proc/abi.js")>("abi");
 const { claimOutcome, outcomeWord } = isolated.load<typeof import("../proc/outcome.js")>("outcome");
 const { createSignalState, requestSignal } =

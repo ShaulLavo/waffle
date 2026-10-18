@@ -49,6 +49,24 @@ import {
   type SharedJobIdentity,
 } from "./types.js";
 
+function addWakeListener(
+  registry: Map<number, Set<() => void>>,
+  id: number,
+  wake: Int32Array,
+): () => void {
+  let listeners = registry.get(id);
+  if (!listeners) registry.set(id, (listeners = new Set()));
+  const listener = () => {
+    atomicsAdd(wake, 0, 1);
+    atomicsNotify(wake, 0);
+  };
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) registry.delete(id);
+  };
+}
+
 interface AccessRequest {
   result?: number;
   wake?: Int32Array;
@@ -327,17 +345,7 @@ export class ProcessSupervisor {
     if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
       throw new TypeError("job wake must be one shared int32");
     this.requireWaitJob(callerPid, jobId);
-    let listeners = this.jobListeners.get(jobId);
-    if (!listeners) this.jobListeners.set(jobId, (listeners = new Set()));
-    const listener = () => {
-      atomicsAdd(wake, 0, 1);
-      atomicsNotify(wake, 0);
-    };
-    listeners.add(listener);
-    return () => {
-      listeners!.delete(listener);
-      if (listeners!.size === 0) this.jobListeners.delete(jobId);
-    };
+    return addWakeListener(this.jobListeners, jobId, wake);
   }
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
@@ -621,17 +629,7 @@ export class ProcessSupervisor {
     if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
       throw new TypeError("startup wake must be one shared int32");
     this.child(parentPid, pid);
-    let listeners = this.startListeners.get(pid);
-    if (!listeners) this.startListeners.set(pid, (listeners = new Set()));
-    const listener = () => {
-      atomicsAdd(wake, 0, 1);
-      atomicsNotify(wake, 0);
-    };
-    listeners.add(listener);
-    return () => {
-      listeners!.delete(listener);
-      if (listeners!.size === 0) this.startListeners.delete(pid);
-    };
+    return addWakeListener(this.startListeners, pid, wake);
   }
   private notifyStart(pid: number): void {
     const listeners = this.startListeners.get(pid);

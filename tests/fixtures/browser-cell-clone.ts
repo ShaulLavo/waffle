@@ -18,13 +18,18 @@ import { ProcessError, ProcessErrno } from "../../proc/types.js";
 // Capture is earlier than bootstrap invocation: a recycled executor may already
 // have replaced the worker globals when the next bootstrap request arrives.
 async function bootstrapWithGuestHost(request: RuntimeWorkerRequest): Promise<void> {
-  const post = globalThis.postMessage, add = globalThis.addEventListener, remove = globalThis.removeEventListener;
-  const replaced = () => { throw new Error("bootstrap called a guest-owned Worker host hook"); };
+  const post = globalThis.postMessage,
+    add = globalThis.addEventListener,
+    remove = globalThis.removeEventListener;
+  const replaced = () => {
+    throw new Error("bootstrap called a guest-owned Worker host hook");
+  };
   globalThis.postMessage = replaced;
   globalThis.addEventListener = replaced;
   globalThis.removeEventListener = replaced;
-  try { await bootstrap(request, { run: () => 23 }); }
-  finally {
+  try {
+    await bootstrap(request, { run: () => 23 });
+  } finally {
     globalThis.postMessage = post;
     globalThis.addEventListener = add;
     globalThis.removeEventListener = remove;

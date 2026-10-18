@@ -1,13 +1,6 @@
 import { expect, test } from "bun:test";
-import type {
-  attachPipeEndpoint,
-  attachPipePublicationRegistry,
-  PipeController,
-  PipeErrno,
-  PipePublicationRegistry,
-} from "../proc/pipes.js";
-import type { createWorkerProcessTransport } from "../proc/worker-client.js";
-import type { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes.js";
+type PipePublicationRegistry = import("../proc/pipes.js").PipePublicationRegistry;
+
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();

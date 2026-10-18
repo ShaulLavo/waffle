@@ -1,7 +1,6 @@
 import {
   isSharedArrayBuffer,
   Int32ArrayConstructor,
-  SharedArrayBufferConstructor,
   atomicsCompareExchange,
   atomicsLoad,
   atomicsStore,

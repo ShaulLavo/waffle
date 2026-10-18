@@ -1,10 +1,9 @@
-import { controlLoad } from "../../proc/control.js";
+import { controlLoad, controlWait } from "../../proc/control.js";
 import { parentPort, workerData } from "node:worker_threads";
 import { ProcessABI, type ProcessService } from "../../proc/abi.js";
 import { readOutcome } from "../../proc/outcome.js";
 import type { SignalTransport } from "../../proc/signals.js";
 import { DescriptorTable } from "../../core/descriptors.js";
-import { controlWait } from "../../proc/control.js";
 import { MemFS } from "../../fs/memory.js";
 
 const { mode, pid, child, childOutcome, wake, signals } = workerData as {

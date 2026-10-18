@@ -92,26 +92,59 @@ test("injected worker executor observes live descriptors, then acknowledgement f
 
 test("bootstrap captures explicit host methods before executor setup replaces them", async () => {
   const connection = createFilesystemConnection();
-  const messages: RuntimeWorkerMessage[] = [], listeners: string[] = [];
+  const messages: RuntimeWorkerMessage[] = [],
+    listeners: string[] = [];
   const host = {
     crossOriginIsolated: true,
-    postMessage(message: RuntimeWorkerMessage) { expect(this).toBe(host); messages.push(message); },
-    addEventListener(type: string) { expect(this).toBe(host); listeners.push(`add:${type}`); },
-    removeEventListener(type: string) { expect(this).toBe(host); listeners.push(`remove:${type}`); },
+    postMessage(message: RuntimeWorkerMessage) {
+      expect(this).toBe(host);
+      messages.push(message);
+    },
+    addEventListener(type: string) {
+      expect(this).toBe(host);
+      listeners.push(`add:${type}`);
+    },
+    removeEventListener(type: string) {
+      expect(this).toBe(host);
+      listeners.push(`remove:${type}`);
+    },
   };
-  const replaced = () => { throw new Error("guest host hook called"); };
+  const replaced = () => {
+    throw new Error("guest host hook called");
+  };
   try {
-    await bootstrap({ module, args: [], env: {}, filesystem: connection.client }, {
-      setup({ fs }) {
-        fs.preopen = () => 1; fs.retain = () => {}; fs.release = () => {};
-        host.postMessage = replaced; host.addEventListener = replaced; host.removeEventListener = replaced;
+    await bootstrap(
+      { module, args: [], env: {}, filesystem: connection.client },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+          host.postMessage = replaced;
+          host.addEventListener = replaced;
+          host.removeEventListener = replaced;
+        },
+        run(context) {
+          context.post("stdout", new Uint8Array([65]));
+          return 23;
+        },
       },
-      run(context) { context.post("stdout", new Uint8Array([65])); return 23; },
-    }, host);
-    expect(messages.filter(message => message.type === "stdout")).toEqual([{ type: "stdout", data: new Uint8Array([65]) }]);
-    expect(messages.filter(message => message.type === "exit")).toMatchObject([{ code: 23 }]);
-    expect(listeners).toEqual(["add:error", "add:unhandledrejection", "remove:error", "remove:unhandledrejection"]);
-  } finally { connection.client.port.close(); connection.server.port.close(); }
+      host,
+    );
+    expect(messages.filter((message) => message.type === "stdout")).toEqual([
+      { type: "stdout", data: new Uint8Array([65]) },
+    ]);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([{ code: 23 }]);
+    expect(listeners).toEqual([
+      "add:error",
+      "add:unhandledrejection",
+      "remove:error",
+      "remove:unhandledrejection",
+    ]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
 });
 
 test("preview1 worker bundle has no Bun engine, native slot or legacy subprocess graph", async () => {

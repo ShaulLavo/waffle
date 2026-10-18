@@ -3,18 +3,30 @@ import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import type * as Intrinsics from "../proc/intrinsics.ts";
-import { enforcedModules, payloadExceptions, scanAuthorityProject } from "../tooling/private-authority.ts";
+import {
+  enforcedModules,
+  payloadExceptions,
+  scanAuthorityProject,
+} from "../tooling/private-authority.ts";
 
 const root = resolve(import.meta.dir, "..");
 const fixture = "tests/fixtures/private-authority-cases.ts";
 
-function isolatedIntrinsics(cryptoHost: { getRandomValues: typeof crypto.getRandomValues; randomUUID?: () => string } = { getRandomValues: crypto.getRandomValues.bind(crypto) }) {
+function isolatedIntrinsics(
+  cryptoHost: { getRandomValues: typeof crypto.getRandomValues; randomUUID?: () => string } = {
+    getRandomValues: crypto.getRandomValues.bind(crypto),
+  },
+) {
   const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
-    readFileSync(resolve(root, "proc/intrinsics.ts"), "utf8").replace(/^export /gm, "")
-      .concat("\nglobalThis.captured = { arrayAppend, cryptoRandomUUID }; globalThis.guestObject = Object;\n"),
+    readFileSync(resolve(root, "proc/intrinsics.ts"), "utf8")
+      .replace(/^export /gm, "")
+      .concat(
+        "\nglobalThis.captured = { arrayAppend, cryptoRandomUUID }; globalThis.guestObject = Object;\n",
+      ),
   );
   const context = {
-    crypto: cryptoHost, setTimeout,
+    crypto: cryptoHost,
+    setTimeout,
     captured: undefined as unknown as Pick<typeof Intrinsics, "arrayAppend" | "cryptoRandomUUID">,
     guestObject: undefined as unknown as ObjectConstructor,
   };
@@ -25,24 +37,39 @@ function isolatedIntrinsics(cryptoHost: { getRandomValues: typeof crypto.getRand
 describe("private process authority builtin boundary", () => {
   test("captured array appends ignore inherited descriptor fields and replaced defineProperty", () => {
     const { captured, guestObject } = isolatedIntrinsics();
-    const inherited = () => { throw new Error("inherited descriptor field consulted"); };
+    const inherited = () => {
+      throw new Error("inherited descriptor field consulted");
+    };
     const descriptor = { __proto__: null, configurable: true, get: inherited };
-    for (const key of ["get", "set", "value"]) guestObject.defineProperty(guestObject.prototype, key, descriptor);
+    for (const key of ["get", "set", "value"])
+      guestObject.defineProperty(guestObject.prototype, key, descriptor);
     guestObject.defineProperty = inherited;
-    const value = {}, entries: object[] = [];
+    const value = {},
+      entries: object[] = [];
     captured.arrayAppend(entries, value);
     expect(entries).toEqual([value]);
-    expect(Object.getOwnPropertyDescriptor(entries, "0")).toEqual({ value, writable: true, enumerable: true, configurable: true });
+    expect(Object.getOwnPropertyDescriptor(entries, "0")).toEqual({
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   });
 
   test("UUID capture retains both its method and crypto receiver", () => {
     const cryptoHost = {
       getRandomValues: crypto.getRandomValues.bind(crypto),
-      randomUUID() { expect(this).toBe(cryptoHost); return "captured-uuid"; },
+      randomUUID() {
+        expect(this).toBe(cryptoHost);
+        return "captured-uuid";
+      },
     };
     const context = isolatedIntrinsics(cryptoHost);
     cryptoHost.randomUUID = () => "guest-uuid";
-    context.crypto = { getRandomValues: cryptoHost.getRandomValues, randomUUID: () => "replaced-crypto-uuid" };
+    context.crypto = {
+      getRandomValues: cryptoHost.getRandomValues,
+      randomUUID: () => "replaced-crypto-uuid",
+    };
     expect(context.captured.cryptoRandomUUID()).toBe("captured-uuid");
   });
 
@@ -59,8 +86,49 @@ describe("private process authority builtin boundary", () => {
     expect(production).toEqual([]);
     const cases = findings.filter((finding) => finding.file === fixture);
     const rejected = new Set(Array.from(cases, (finding) => finding.scope));
-    for (const name of ["liveAtomics", "liveConstructor", "liveGetter", "liveSubview", "privateMap", "inferredMap", "liveIteration", "liveSpread", "liveArrayMethod", "liveArrayFrom", "liveReflection", "liveApply", "liveCall", "liveBind", "liveProxy", "species", "iterator", "aliasedBuiltin", "aliasedConstructor", "privateFunctionReceiver", "renamedCaptureGetter", "livePrototypeCall", "inheritedDescriptor", "inheritedOptions", "inheritedPropertyMap", "inheritedProxyHandler", "liveIdentity", "liveMessage"]) expect(rejected.has(name), name).toBe(true);
-    for (const name of ["captured", "indexed", "ordinaryPayload", "runtimeMethod", "plainObjectSpread", "harmlessText", "ordinaryNamedCall", "renamedCaptured", "capturedDescriptor"]) expect(rejected.has(name), name).toBe(false);
+    for (const name of [
+      "liveAtomics",
+      "liveConstructor",
+      "liveGetter",
+      "liveSubview",
+      "privateMap",
+      "inferredMap",
+      "liveIteration",
+      "liveSpread",
+      "liveArrayMethod",
+      "liveArrayFrom",
+      "liveReflection",
+      "liveApply",
+      "liveCall",
+      "liveBind",
+      "liveProxy",
+      "species",
+      "iterator",
+      "aliasedBuiltin",
+      "aliasedConstructor",
+      "privateFunctionReceiver",
+      "renamedCaptureGetter",
+      "livePrototypeCall",
+      "inheritedDescriptor",
+      "inheritedOptions",
+      "inheritedPropertyMap",
+      "inheritedProxyHandler",
+      "liveIdentity",
+      "liveMessage",
+    ])
+      expect(rejected.has(name), name).toBe(true);
+    for (const name of [
+      "captured",
+      "indexed",
+      "ordinaryPayload",
+      "runtimeMethod",
+      "plainObjectSpread",
+      "harmlessText",
+      "ordinaryNamedCall",
+      "renamedCaptured",
+      "capturedDescriptor",
+    ])
+      expect(rejected.has(name), name).toBe(false);
     expect(cases.some((finding) => finding.rule === "mutable-getter")).toBe(true);
     expect(cases.some((finding) => finding.rule === "private-iteration")).toBe(true);
     expect(cases.some((finding) => finding.rule === "species")).toBe(true);

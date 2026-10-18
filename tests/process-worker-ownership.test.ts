@@ -1,27 +1,7 @@
-import type { ProcessABI } from "../proc/abi.js";
+import { fixtureSpawnRequest as request } from "./fixtures/spawn-request.ts";
+
 import { MemFS } from "../fs/memory.js";
-import type {
-  collectDirectoryProcess,
-  collectDirectoryJob,
-  directorySlots,
-  directoryJobs,
-  directoryJob,
-  directoryProcesses,
-  directoryGroups,
-  findDirectoryJob,
-  helpDirectoryJobs,
-  reserveDirectoryProcess,
-} from "../proc/directory.js";
-import type {
-  packedControl,
-  controlLoad,
-  controlStore,
-  controlCas,
-  controlExchange,
-  controlAdd,
-  controlWait,
-  controlNotify,
-} from "../proc/control.js";
+
 import { afterEach, expect, test } from "bun:test";
 import {
   DescriptorTable,
@@ -30,29 +10,16 @@ import {
   type Resource,
   type Stream,
 } from "../core/descriptors.js";
-import type { ExecutableRegistry } from "../proc/registry.js";
-import type { ProcessSupervisor } from "../proc/supervisor.js";
-import type { SignalDisposition, setSignalDisposition } from "../proc/signals.js";
-import type { claimOutcome, readOutcome } from "../proc/outcome.js";
-import type { WorkerProcessBroker } from "../proc/worker-broker.js";
+
+type ProcessSupervisor = import("../proc/supervisor.js").ProcessSupervisor;
+
 import type {
-  createWorkerProcessTransport,
-  confirmWorkerProcessJob,
-  installWorkerBindings,
-  WorkerProcessClient,
-  workerProcessState,
   WorkerDescriptorCodec,
   WorkerProcessMessage,
   WorkerProcessTransport,
 } from "../proc/worker-client.js";
-import type { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes.js";
-import type {
-  ProcessErrno,
-  ProcessError,
-  ProcessContext,
-  ProcessHandle,
-  SpawnRequest,
-} from "../proc/types.js";
+
+import type { ProcessContext, ProcessHandle } from "../proc/types.js";
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();
@@ -103,15 +70,7 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-const request = (overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  executable: "fixture",
-  argv: ["fixture"],
-  env: {},
-  cwd: "/",
-  job: 0,
-  fds: [],
-  ...overrides,
-});
+
 function expectErrno(operation: () => unknown, errno: number): void {
   let error: unknown;
   try {

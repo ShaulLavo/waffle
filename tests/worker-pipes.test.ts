@@ -1,3 +1,4 @@
+import { fixtureSpawnRequest as request } from "./fixtures/spawn-request.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import { DescriptorTable, type Stream } from "../core/descriptors.js";
@@ -9,35 +10,16 @@ import {
   createFilesystemConnection,
   createProcessFilesystemIdentity,
 } from "../fs/index.js";
-import type { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
-import type {
-  PipeController,
-  PipeEndpoint,
-  PipeErrno,
-  PipePublicationRegistry,
-  attachPipeEndpoint,
-  PipeEndpointHandle,
-  PipePublicationRegistryHandle,
-} from "../proc/pipes.js";
-import type { directoryJobs } from "../proc/directory.js";
-import type { ExecutableRegistry } from "../proc/registry.js";
-import type { ProcessSupervisor } from "../proc/supervisor.js";
-import type { WorkerProcessBroker } from "../proc/worker-broker.js";
-import type {
-  createWorkerProcessTransport,
-  WorkerProcessClient,
-  workerProcessSlots,
-  workerProcessState,
-  WorkerProcessMessage,
-  WorkerProcessTransport,
-} from "../proc/worker-client.js";
-import type {
-  WorkerPipeBroker,
-  WorkerPipeHost,
-  createWorkerPipeCodec,
-  isWorkerPipeDescriptorToken,
-} from "../proc/worker-pipes.js";
-import type { ProcessError, ProcessContext, SpawnRequest } from "../proc/types.js";
+
+import type { PipeEndpointHandle, PipePublicationRegistryHandle } from "../proc/pipes.js";
+type PipeController = import("../proc/pipes.js").PipeController;
+type PipeEndpoint = import("../proc/pipes.js").PipeEndpoint;
+
+import type { WorkerProcessMessage, WorkerProcessTransport } from "../proc/worker-client.js";
+type WorkerPipeBroker = import("../proc/worker-pipes.js").WorkerPipeBroker;
+type WorkerPipeHost = import("../proc/worker-pipes.js").WorkerPipeHost;
+import type { ProcessContext } from "../proc/types.js";
+type ProcessError = import("../proc/types.js").ProcessError;
 import { isolatedProcess } from "./fixtures/isolated-process.js";
 
 const isolated = await isolatedProcess();
@@ -68,15 +50,7 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-const request = (overrides: Partial<SpawnRequest> = {}): SpawnRequest => ({
-  executable: "fixture",
-  argv: ["fixture"],
-  env: {},
-  cwd: "/",
-  job: 0,
-  fds: [],
-  ...overrides,
-});
+
 function output(endpoint: PipeEndpoint, capacity = 64): number | string {
   const bytes = new Uint8Array(capacity);
   const size = endpoint.tryRead([bytes]);

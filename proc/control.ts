@@ -1,6 +1,6 @@
 import { ProcessErrno, ProcessError } from "./types.ts";
-import { isInstance } from "./intrinsics.ts";
 import {
+  isInstance,
   atomicsCompareExchange,
   atomicsLoad,
   atomicsNotify,

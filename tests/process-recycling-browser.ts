@@ -356,10 +356,7 @@ function snapshot(state: ReturnType<typeof workerProcessState>) {
   };
 }
 type MutationResult = { operation: string; errno: number | null };
-function mutateCaptured(
-  client: WorkerProcessClient,
-  state: ReturnType<typeof workerProcessState>,
-): MutationResult[] {
+function capturedAttempts() {
   const results: MutationResult[] = [];
   const attempt = (operation: string, action: () => unknown) => {
     try {
@@ -370,6 +367,13 @@ function mutateCaptured(
       results.push({ operation, errno: error.errno });
     }
   };
+  return { results, attempt };
+}
+function mutateCaptured(
+  client: WorkerProcessClient,
+  state: ReturnType<typeof workerProcessState>,
+): MutationResult[] {
+  const { results, attempt } = capturedAttempts();
   const controls = [
     ["interrupt", state.signals.interrupt, 0],
     ["requestedSignal", state.signals.requestedSignal, 0],
@@ -401,16 +405,7 @@ function mutateCaptured(
 }
 
 function readCaptured(state: ReturnType<typeof workerProcessState>): MutationResult[] {
-  const results: MutationResult[] = [];
-  const attempt = (operation: string, action: () => unknown) => {
-    try {
-      action();
-      results.push({ operation, errno: null });
-    } catch (error) {
-      if (!(error instanceof ProcessError)) throw error;
-      results.push({ operation, errno: error.errno });
-    }
-  };
+  const { results, attempt } = capturedAttempts();
   const controls = [
     ["interrupt", state.signals.interrupt],
     ["requestedSignal", state.signals.requestedSignal],
@@ -1610,7 +1605,6 @@ async function rejectsProcess(action: () => Promise<unknown>, label: string): Pr
   throw new Error(`${label}: unexpectedly succeeded`);
 }
 
-/** @browserEntry Called outside the import graph by generated pages or compiler probes. */
 export function processBrowserCases(): string[] {
   return cases.map((test) => test.label);
 }
