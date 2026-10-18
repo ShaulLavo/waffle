@@ -2708,73 +2708,122 @@ for (const phase of ["before disposal", "after disposal", "failed fence"] as con
   });
 }
 
-for (const ordering of ["before-claim", "after-claim", "helper-header"] as const) for (const recycle of [false, true]) {
-  test(`wait_job preserves its claim result when a helper retires ${ordering}${recycle ? " and recycles the slot" : ""}`, async () => {
-    const f = fixture({ capacity: 2 });
-    const memory = new WebAssembly.Memory({ initial: 1 });
-    const abi = new ProcessABI({ memory, descriptors: f.root.options.descriptors, fs: new MemFS(),
-      pid: f.root.pid, service: f.root, signals: f.root.signals });
-    const view = new DataView(memory.buffer);
-    const pid = f.root.spawn(1, request()); await f.flush();
-    const state = workerProcessState(f.broker.get(pid)!);
-    const group = directoryJob(f.transport.directory, state.jobSlot, state.job);
-    f.supervisor.exit(pid, 23);
-    const cas = Atomics.compareExchange, load = Atomics.load;
-    let claimed = false, raced = false, nextPid: number | undefined;
-    const retire = () => {
-      raced = true;
-      if (ordering === "before-claim") expect(f.root.waitJob(1, group.id)?.code).toBe(23);
-      else helpDirectoryJobs(f.transport.directory);
-      expectErrno(() => f.root.waitJob(1, group.id), ProcessErrno.CHILD);
-      if (recycle) nextPid = f.root.spawn(1, request());
-    };
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      const target = !raced && array instanceof BigInt64Array && array.buffer === f.transport.directory &&
-        array.byteOffset === group.pending.byteOffset && index === 0 && expected === packedControl(group.id, 0) && replacement === packedControl(group.id, -1);
-      if (target && ordering === "before-claim") retire();
-      const previous = cas(array, index, expected, replacement);
-      if (target && previous === expected) claimed = true;
-      if (target && ordering === "after-claim") retire();
-      return previous;
-    }) as typeof Atomics.compareExchange;
-    Atomics.load = ((array: BigInt64Array, index: number) => {
-      if (ordering === "helper-header" && claimed && !raced && array instanceof BigInt64Array &&
-        array.buffer === f.transport.directory && array.byteOffset + index * 8 === group.pending.byteOffset) retire();
-      return load(array, index);
-    }) as typeof Atomics.load;
-    view.setInt32(64, -99, true); view.setInt32(68, -99, true);
-    let result: number;
-    try { result = abi.imports.wait_job!(group.id, 1, 64); }
-    finally { Atomics.compareExchange = cas; Atomics.load = load; }
-    expect(raced).toBe(true);
-    expect(result).toBe(ordering === "before-claim" ? -ProcessErrno.CHILD : 0);
-    expect(view.getInt32(64, true)).toBe(ordering === "before-claim" ? -99 : 0);
-    expect(view.getInt32(68, true)).toBe(ordering === "before-claim" ? -99 : 23);
-    expect(abi.imports.wait_job!(group.id, 1, 64)).toBe(-ProcessErrno.CHILD);
-    expect(abi.imports.wait_job!(999999, 1, 64)).toBe(-ProcessErrno.SRCH);
-    expectErrno(() => controlCas(group.pending, 0, 0, 9), ProcessErrno.SRCH);
-    if (nextPid !== undefined) {
-      const next = workerProcessState(f.messages.find(message => message.operation === "spawn")!.transport);
-      expect(next.pid).toBe(nextPid); expect(next.jobSlot).toBe(group.slot);
-      expect(controlLoad(next.jobPending)).toBe(1); expect(readOutcome(next.jobOutcome)).toBeNull();
-    }
-    await f.flush();
-  });
-}
+for (const ordering of ["before-claim", "after-claim", "helper-header"] as const)
+  for (const recycle of [false, true]) {
+    test(`wait_job preserves its claim result when a helper retires ${ordering}${recycle ? " and recycles the slot" : ""}`, async () => {
+      const f = fixture({ capacity: 2 });
+      const memory = new WebAssembly.Memory({ initial: 1 });
+      const abi = new ProcessABI({
+        memory,
+        descriptors: f.root.options.descriptors,
+        fs: new MemFS(),
+        pid: f.root.pid,
+        service: f.root,
+        signals: f.root.signals,
+      });
+      const view = new DataView(memory.buffer);
+      const pid = f.root.spawn(1, request());
+      await f.flush();
+      const state = workerProcessState(f.broker.get(pid)!);
+      const group = directoryJob(f.transport.directory, state.jobSlot, state.job);
+      f.supervisor.exit(pid, 23);
+      const cas = Atomics.compareExchange,
+        load = Atomics.load;
+      let claimed = false,
+        raced = false,
+        nextPid: number | undefined;
+      const retire = () => {
+        raced = true;
+        if (ordering === "before-claim") expect(f.root.waitJob(1, group.id)?.code).toBe(23);
+        else helpDirectoryJobs(f.transport.directory);
+        expectErrno(() => f.root.waitJob(1, group.id), ProcessErrno.CHILD);
+        if (recycle) nextPid = f.root.spawn(1, request());
+      };
+      Atomics.compareExchange = ((
+        array: BigInt64Array,
+        index: number,
+        expected: bigint,
+        replacement: bigint,
+      ) => {
+        const target =
+          !raced &&
+          array instanceof BigInt64Array &&
+          array.buffer === f.transport.directory &&
+          array.byteOffset === group.pending.byteOffset &&
+          index === 0 &&
+          expected === packedControl(group.id, 0) &&
+          replacement === packedControl(group.id, -1);
+        if (target && ordering === "before-claim") retire();
+        const previous = cas(array, index, expected, replacement);
+        if (target && previous === expected) claimed = true;
+        if (target && ordering === "after-claim") retire();
+        return previous;
+      }) as typeof Atomics.compareExchange;
+      Atomics.load = ((array: BigInt64Array, index: number) => {
+        if (
+          ordering === "helper-header" &&
+          claimed &&
+          !raced &&
+          array instanceof BigInt64Array &&
+          array.buffer === f.transport.directory &&
+          array.byteOffset + index * 8 === group.pending.byteOffset
+        )
+          retire();
+        return load(array, index);
+      }) as typeof Atomics.load;
+      view.setInt32(64, -99, true);
+      view.setInt32(68, -99, true);
+      let result: number;
+      try {
+        result = abi.imports.wait_job!(group.id, 1, 64);
+      } finally {
+        Atomics.compareExchange = cas;
+        Atomics.load = load;
+      }
+      expect(raced).toBe(true);
+      expect(result).toBe(ordering === "before-claim" ? -ProcessErrno.CHILD : 0);
+      expect(view.getInt32(64, true)).toBe(ordering === "before-claim" ? -99 : 0);
+      expect(view.getInt32(68, true)).toBe(ordering === "before-claim" ? -99 : 23);
+      expect(abi.imports.wait_job!(group.id, 1, 64)).toBe(-ProcessErrno.CHILD);
+      expect(abi.imports.wait_job!(999999, 1, 64)).toBe(-ProcessErrno.SRCH);
+      expectErrno(() => controlCas(group.pending, 0, 0, 9), ProcessErrno.SRCH);
+      if (nextPid !== undefined) {
+        const next = workerProcessState(
+          f.messages.find((message) => message.operation === "spawn")!.transport,
+        );
+        expect(next.pid).toBe(nextPid);
+        expect(next.jobSlot).toBe(group.slot);
+        expect(controlLoad(next.jobPending)).toBe(1);
+        expect(readOutcome(next.jobOutcome)).toBeNull();
+      }
+      await f.flush();
+    });
+  }
 
 for (const snapshot of ["authorization", "readiness", "outcome", "collection-readiness"] as const) {
   test(`a competing collector during the ${snapshot} snapshot reports ECHILD`, async () => {
     const f = fixture({ capacity: 2 });
-    const pid = f.root.spawn(1, request()); await f.flush();
+    const pid = f.root.spawn(1, request());
+    await f.flush();
     const state = workerProcessState(f.broker.get(pid)!);
     const group = directoryJob(f.transport.directory, state.jobSlot, state.job);
     f.supervisor.exit(pid, 23);
-    const offset = snapshot === "authorization" ? group.controlParent.byteOffset : snapshot === "outcome" ? group.outcome.byteOffset : group.pending.byteOffset;
+    const offset =
+      snapshot === "authorization"
+        ? group.controlParent.byteOffset
+        : snapshot === "outcome"
+          ? group.outcome.byteOffset
+          : group.pending.byteOffset;
     const selectedRead = snapshot === "readiness" ? 2 : snapshot === "collection-readiness" ? 3 : 1;
     const original = Atomics.load;
-    let reads = 0, raced = false;
+    let reads = 0,
+      raced = false;
     Atomics.load = ((array: BigInt64Array, index: number) => {
-      const target = !raced && array instanceof BigInt64Array && array.buffer === f.transport.directory && array.byteOffset + index * 8 === offset;
+      const target =
+        !raced &&
+        array instanceof BigInt64Array &&
+        array.buffer === f.transport.directory &&
+        array.byteOffset + index * 8 === offset;
       if (target && ++reads === selectedRead) {
         raced = true;
         expect(f.root.waitJob(1, group.id)?.code).toBe(23);
@@ -2782,8 +2831,11 @@ for (const snapshot of ["authorization", "readiness", "outcome", "collection-rea
       }
       return original(array, index);
     }) as typeof Atomics.load;
-    try { expectErrno(() => f.root.waitJob(1, group.id), ProcessErrno.CHILD); }
-    finally { Atomics.load = original; }
+    try {
+      expectErrno(() => f.root.waitJob(1, group.id), ProcessErrno.CHILD);
+    } finally {
+      Atomics.load = original;
+    }
     expect(raced).toBe(true);
     await f.flush();
   });
@@ -2793,22 +2845,40 @@ test("a sealed pending job reports ECHILD while its header remains live", async 
   const f = fixture({ capacity: 2 });
   const memory = new WebAssembly.Memory({ initial: 1 });
   const view = new DataView(memory.buffer);
-  view.setInt32(64, -99, true); view.setInt32(68, -99, true);
-  const abi = new ProcessABI({ memory, descriptors: f.root.options.descriptors, fs: new MemFS(),
-    pid: f.root.pid, service: f.root, signals: f.root.signals });
-  const pid = f.root.spawn(1, request()); await f.flush();
+  view.setInt32(64, -99, true);
+  view.setInt32(68, -99, true);
+  const abi = new ProcessABI({
+    memory,
+    descriptors: f.root.options.descriptors,
+    fs: new MemFS(),
+    pid: f.root.pid,
+    service: f.root,
+    signals: f.root.signals,
+  });
+  const pid = f.root.spawn(1, request());
+  await f.flush();
   const state = workerProcessState(f.broker.get(pid)!);
   const group = directoryJob(f.transport.directory, state.jobSlot, state.job);
   f.supervisor.exit(pid, 23);
   const original = Atomics.load;
   let sealed = false;
   Atomics.load = ((array: BigInt64Array, index: number) => {
-    const target = !sealed && array instanceof BigInt64Array && array.buffer === f.transport.directory &&
+    const target =
+      !sealed &&
+      array instanceof BigInt64Array &&
+      array.buffer === f.transport.directory &&
       array.byteOffset + index * 8 === group.outcome.byteOffset;
     if (target) {
       sealed = true;
       const pending = new BigInt64Array(f.transport.directory, group.pending.byteOffset, 1);
-      expect(Atomics.compareExchange(pending, 0, packedControl(group.id, 0), packedControl(group.id, -1))).toBe(packedControl(group.id, 0));
+      expect(
+        Atomics.compareExchange(
+          pending,
+          0,
+          packedControl(group.id, 0),
+          packedControl(group.id, -1),
+        ),
+      ).toBe(packedControl(group.id, 0));
       const header = new BigInt64Array(f.transport.directory, group.outcome.byteOffset - 24, 1);
       expect(Atomics.load(header, 0)).toBe(packedControl(group.id, 1));
     }
@@ -2816,7 +2886,9 @@ test("a sealed pending job reports ECHILD while its header remains live", async 
   }) as typeof Atomics.load;
   try {
     expect(abi.imports.wait_job!(group.id, 1, 64)).toBe(-ProcessErrno.CHILD);
-  } finally { Atomics.load = original; }
+  } finally {
+    Atomics.load = original;
+  }
   expect(sealed).toBe(true);
   expect(view.getInt32(64, true)).toBe(-99);
   expect(view.getInt32(68, true)).toBe(-99);
