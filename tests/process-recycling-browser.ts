@@ -19,6 +19,7 @@ import {
   controlStore,
   controlWait,
 } from "../proc/control.js";
+import { WorkerPipeBroker } from "../proc/worker-pipes.js";
 import { PipeController, PipePublicationRegistry, attachPipeEndpoint } from "../proc/pipes.js";
 import { directoryJobs, directorySlots } from "../proc/directory.js";
 import { claimOutcome, markStarted, readOutcome, startStatus } from "../proc/outcome.js";
@@ -131,6 +132,7 @@ export async function installClientWorker(
 /** @browserEntry Called outside the import graph by generated pages or compiler probes. */
 export function installProcessTestWorker(): void {
   const descriptors = new DescriptorTable();
+  const send = globalThis.postMessage.bind(globalThis);
   let client: WorkerProcessClient | undefined;
   let captured: ReturnType<typeof workerProcessState> | undefined;
   let poisoned: ReturnType<typeof poisonProcessIntrinsics> | undefined;
@@ -145,7 +147,7 @@ export function installProcessTestWorker(): void {
           descriptors,
           codec: emptyCodec,
           postMessage(message) {
-            globalThis.postMessage(message);
+            send(message);
           },
         });
         client.installBindings();
@@ -227,6 +229,21 @@ export function installProcessTestWorker(): void {
   };
 }
 
+function assertDistinctPipeAttachments(
+  first: ReturnType<PipeController["retain"]> | undefined,
+  second: ReturnType<PipeController["retain"]> | undefined,
+): void {
+  if (!first || !second) return;
+  const broker = new WorkerPipeBroker({ relay: "manual" });
+  try {
+    const a = broker.attach(first.handle()),
+      b = broker.attach(second.handle());
+    assert(a !== b && broker.size === 2, "broker attachment never aliases independent pipes");
+  } finally {
+    broker.dispose();
+  }
+}
+
 /** A real Worker exercises private pipe/registry/descriptor state while guest hooks run. */
 function exercisePrivatePipes(): IntrinsicsReport {
   const registry = new PipePublicationRegistry({
@@ -260,7 +277,26 @@ function exercisePrivatePipes(): IntrinsicsReport {
     readHandle.wake.buffer as SharedArrayBuffer,
   ]);
   let report: IntrinsicsReport;
+  let first: PipeController | undefined, second: PipeController | undefined;
+  let firstReader: ReturnType<PipeController["retain"]> | undefined,
+    secondReader: ReturnType<PipeController["retain"]> | undefined;
   try {
+    // Identity must come from the pre-guest native, not the constant replacement.
+    first = new PipeController({ relay: "manual" });
+    second = new PipeController({ relay: "manual" });
+    firstReader = first.retain(1, "read");
+    secondReader = second.retain(1, "read");
+    assert(
+      firstReader.handle().id !== secondReader.handle().id,
+      "independent poisoned pipes retain distinct identity",
+    );
+    let foreignRejected = false;
+    try {
+      first.duplicate(secondReader);
+    } catch {
+      foreignRejected = true;
+    }
+    assert(foreignRejected, "pipe duplicate rejects a foreign endpoint");
     const attached = attachPipeEndpoint(writeHandle);
     const fd = table.open(attached, 0n, 0n),
       duplicate = table.dup(fd);
@@ -284,8 +320,17 @@ function exercisePrivatePipes(): IntrinsicsReport {
     reader.close();
     writer.close();
     pipe.dispose();
-    registry.collectProcess(1);
-    registry.collectProcess(2);
+    // Broker is trusted page-owned code: run attachment after restoring the guest realm.
+    try {
+      assertDistinctPipeAttachments(firstReader, secondReader);
+    } finally {
+      firstReader?.close();
+      secondReader?.close();
+      first?.dispose();
+      second?.dispose();
+      registry.collectProcess(1);
+      registry.collectProcess(2);
+    }
   }
   equal(Array.from(output), [65, 66, 67], "pipe payload stays correct");
   assert(arena.byteLength > before, "pipe arena grows under guest replacements");
@@ -955,6 +1000,9 @@ const cases: BrowserCase[] = [
         "Map.set",
         "Map.get",
         "Reflect.get",
+        "Object.prototype.get",
+        "Object.prototype.set",
+        "crypto.randomUUID",
       ]) {
         assert(report.canaries.includes(name), `pipe observer ${name} positive control`);
       }
@@ -1396,6 +1444,10 @@ async function restoreAndAuditIntrinsics(
       "Function.apply",
       "Function.bind",
       "Proxy",
+      "Object.prototype.get",
+      "Object.prototype.set",
+      "postMessage",
+      "crypto.randomUUID",
     ]) {
       assert(report.replacements.includes(name), `Worker ${pid}: ${name} was not replaced`);
     }
@@ -1429,6 +1481,10 @@ async function restoreAndAuditIntrinsics(
       "Function.apply",
       "Function.bind",
       "Proxy",
+      "Object.prototype.get",
+      "Object.prototype.set",
+      "postMessage",
+      "crypto.randomUUID",
     ]) {
       assert(
         report.canaries.includes(name),

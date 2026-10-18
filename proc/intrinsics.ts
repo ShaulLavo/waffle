@@ -90,6 +90,12 @@ export function dataViewSetBigUint64(view: DataView, offset: number, value: bigi
 
 const nativeCrypto = crypto;
 export const cryptoGetRandomValues = nativeCrypto.getRandomValues.bind(nativeCrypto);
+// Core imports also work outside secure contexts, where UUID allocation is absent.
+// Capture without binding; only identity allocation needs this capability.
+const randomUUID = nativeCrypto.randomUUID;
+export function cryptoRandomUUID(): string { return apply(randomUUID, nativeCrypto, []); }
+// Relay scheduling passes a closure over private pipe state to the native timer.
+export const scheduleTimeout = globalThis.setTimeout.bind(globalThis);
 
 // Private collections must not pass their receiver or entries through guest methods.
 export const MapConstructor = Map;
@@ -117,12 +123,13 @@ export function setAdd<T>(set: Set<T>, value: T): void { apply(setAddMethod, set
 export function setDelete<T>(set: Set<T>, value: T): boolean { return apply(setDeleteMethod, set, [value]); }
 export function setForEach<T>(set: ReadonlySet<T>, callback: (value: T) => void): void { apply(setForEachMethod, set, [callback]); }
 
-const defineProperty = Object.defineProperty;
+export const objectDefineProperty = Object.defineProperty;
 const functionHasInstance = Function.prototype[Symbol.hasInstance];
 export function isInstance<T>(value: unknown, constructor: abstract new (...args: any[]) => T): value is T { return reflectApply(functionHasInstance, constructor, [value]); }
 /** Define an own array entry without dispatching an inherited indexed setter. */
 export function arrayAppend<T>(array: T[], value: T): void {
-  defineProperty(array, array.length, { value, writable: true, enumerable: true, configurable: true });
+  const descriptor = { __proto__: null, value, writable: true, enumerable: true, configurable: true };
+  objectDefineProperty(array, array.length, descriptor);
 }
 export function isSharedArrayBuffer(value: unknown): value is SharedArrayBuffer {
   if (!sharedLength) return false;

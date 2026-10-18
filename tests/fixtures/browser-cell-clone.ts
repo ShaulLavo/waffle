@@ -15,6 +15,22 @@ import {
 } from "../../proc/outcome.js";
 import { ProcessError, ProcessErrno } from "../../proc/types.js";
 
+// Capture is earlier than bootstrap invocation: a recycled executor may already
+// have replaced the worker globals when the next bootstrap request arrives.
+async function bootstrapWithGuestHost(request: RuntimeWorkerRequest): Promise<void> {
+  const post = globalThis.postMessage, add = globalThis.addEventListener, remove = globalThis.removeEventListener;
+  const replaced = () => { throw new Error("bootstrap called a guest-owned Worker host hook"); };
+  globalThis.postMessage = replaced;
+  globalThis.addEventListener = replaced;
+  globalThis.removeEventListener = replaced;
+  try { await bootstrap(request, { run: () => 23 }); }
+  finally {
+    globalThis.postMessage = post;
+    globalThis.addEventListener = add;
+    globalThis.removeEventListener = remove;
+  }
+}
+
 type Capture = { operation: "capture"; outcome: OutcomeTransfer; controls: TaggedCellsTransfer[] };
 let captured:
   | { outcome: ReturnType<typeof reviveOutcome>; controls: ReturnType<typeof reviveTaggedCells>[] }
@@ -26,7 +42,7 @@ globalThis.onmessage = async (
   try {
     if (!("operation" in request)) {
       // Exercise the public bootstrap with the exact request posted by launchWorker.
-      await bootstrap(request, { run: () => 23 });
+      await bootstrapWithGuestHost(request);
     } else if (request.operation === "capture") {
       captured = {
         outcome: reviveOutcome(request.outcome),

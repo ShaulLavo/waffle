@@ -8,7 +8,7 @@ export interface AuthorityFinding {
   file: string;
   line: number;
   scope: string;
-  rule: "mutable-builtin" | "mutable-getter" | "private-iteration" | "species";
+  rule: "mutable-builtin" | "mutable-getter" | "private-iteration" | "species" | "native-conversion" | "authority-global";
   expression: string;
 }
 
@@ -57,7 +57,7 @@ export const payloadExceptions: readonly PayloadException[] = [
 
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
-  "browser/worker.ts", "browser/guarded-stream.ts", "browser/runtime-terminals.ts", "core/descriptors.ts",
+  "proc/intrinsics.ts", "browser/worker.ts", "browser/guarded-stream.ts", "browser/runtime-terminals.ts", "core/descriptors.ts",
   "proc/abi.ts", "proc/access.ts", "proc/admission.ts", "proc/control.ts", "proc/directory.ts",
   "proc/filesystem-codec.ts", "proc/identity.ts", "proc/outcome.ts", "proc/pipes.ts", "proc/signals.ts",
   "proc/start-errno.ts", "proc/start-failure.ts", "proc/types.ts", "proc/wait-status.ts", "proc/worker-access.ts",
@@ -309,7 +309,7 @@ function inference(files: readonly ast.SourceFile[], root: string) {
     memo.set(node, result);
     return result;
   }
-  return { infer, isPrivate: (node: ast.Node) => infer(node).has(privateMark) };
+  return { infer, declaration: lookup, isPrivate: (node: ast.Node) => infer(node).has(privateMark) };
 }
 
 export async function scanAuthorityProject(root: string, extraFiles: readonly string[] = [], auditDependencies = false): Promise<AuthorityFinding[]> {
@@ -323,7 +323,7 @@ export async function scanAuthorityProject(root: string, extraFiles: readonly st
       const pending = Array.from(roots, (file) => resolve(root, file));
       while (pending.length) {
         const path = pending.pop()!;
-        if (files.has(path) || trustedModules[relative(root, path)]) continue;
+        if (files.has(path) || (trustedModules[relative(root, path)] && relative(root, path) !== "proc/intrinsics.ts")) continue;
         const file = await project.program.getSourceFile(path);
         if (!file) throw new Error(`private-authority checker cannot inspect ${path}`);
         files.set(path, { project, file });
@@ -360,6 +360,53 @@ export async function scanAuthorityProject(root: string, extraFiles: readonly st
   } finally { await api.close(); }
 }
 
+function unwrap(node: ast.Node): ast.Node {
+  while (ast.isAsExpression(node) || node.kind === ast.SyntaxKind.TypeAssertionExpression || ast.isParenthesizedExpression(node) || ast.isNonNullExpression(node)) node = node.expression;
+  return node;
+}
+function initializer(analysis: ReturnType<typeof inference>, node: ast.Node, seen = new Set<ast.Node>()): ast.Node {
+  node = unwrap(node);
+  if (seen.has(node)) return node;
+  seen.add(node);
+  if (!ast.isIdentifier(node)) return node;
+  const declaration = analysis.declaration(node, node.text);
+  if (declaration && ast.isVariableDeclaration(declaration) && declaration.initializer) return initializer(analysis, declaration.initializer, seen);
+  return node;
+}
+function nativeName(analysis: ReturnType<typeof inference>, node: ast.Node, seen = new Set<ast.Node>()): string {
+  node = unwrap(node);
+  if (seen.has(node)) return "";
+  seen.add(node);
+  const access = member(node);
+  if (access && ["Object", "Reflect"].includes(access.receiver.getText())) return `${access.receiver.getText()}.${access.name}`;
+  if (!ast.isIdentifier(node)) return "";
+  const declaration = analysis.declaration(node, node.text);
+  if (declaration && ast.isVariableDeclaration(declaration) && declaration.initializer) return nativeName(analysis, declaration.initializer, seen);
+  const name = declaration && ast.isImportSpecifier(declaration) ? (declaration.propertyName ?? declaration.name).text : node.text;
+  return ({ objectCreate: "Object.create", objectDefineProperty: "Object.defineProperty", reflectDefineProperty: "Reflect.defineProperty", ProxyConstructor: "Proxy", SharedArrayBufferConstructor: "SharedArrayBuffer", ArrayBufferConstructor: "ArrayBuffer", arrayFrom: "Array.from" } as Record<string, string>)[name] ?? name;
+}
+
+function checkPropertyMap(analysis: ReturnType<typeof inference>, argument: ast.Node | undefined, check: (node: ast.Node | undefined) => void): void {
+  check(argument);
+  if (!argument) return;
+  const map = initializer(analysis, argument);
+  if (!ast.isObjectLiteralExpression(map)) return;
+  for (const property of map.properties) {
+    if (ast.isPropertyAssignment(property)) check(property.initializer);
+  }
+}
+
+/** Native conversion can consult inherited hooks even through captured methods.
+ * Check the capture module too: its call arguments are not a trusted boundary. */
+function checkNativeConversions(analysis: ReturnType<typeof inference>, node: ast.Node, check: (node: ast.Node | undefined) => void): void {
+  if (!ast.isCallExpression(node) && !ast.isNewExpression(node)) return;
+  const name = nativeName(analysis, node.expression), args = node.arguments ?? [];
+  if (["Object.defineProperty", "Reflect.defineProperty"].includes(name)) check(args[2]);
+  if (["Object.create", "Object.defineProperties"].includes(name)) checkPropertyMap(analysis, args[1], check);
+  if (["Proxy", "SharedArrayBuffer", "ArrayBuffer"].includes(name)) check(args[1]);
+  if (name === "Array.from") check(args[0]);
+}
+
 function scanSource(analysis: ReturnType<typeof inference>, file: ast.SourceFile, path: string): AuthorityFinding[] {
   const nodes: ast.Node[] = [];
   function visit(node: ast.Node): void {
@@ -385,7 +432,17 @@ function scanSource(analysis: ReturnType<typeof inference>, file: ast.SourceFile
     const finding: AuthorityFinding = { file: path, line: file.text.slice(0, node.getStart()).split("\n").length, scope: scopeOf(node), rule, expression: node.getText() };
     if (!payloadExceptions.some((entry) => entry.file === path && entry.scope === finding.scope && entry.rule === rule && entry.expression === finding.expression)) findings.push(finding);
   }
+  function conversionLiteral(argument: ast.Node | undefined): void {
+    if (!argument) return;
+    const literal = initializer(analysis, argument);
+    if (!ast.isObjectLiteralExpression(literal)) return;
+    const nullPrototype = literal.properties.some(property => ast.isPropertyAssignment(property)
+      && property.name.getText() === "__proto__" && property.initializer.kind === ast.SyntaxKind.NullKeyword);
+    if (!nullPrototype) report(literal, "native-conversion");
+  }
   for (const node of nodes) {
+    checkNativeConversions(analysis, node, conversionLiteral);
+    if (path === "proc/intrinsics.ts") continue;
     // WorkerPipeBroker is instantiated only by the trusted page. The codec and
     // endpoint adapters in the SAME module remain checked.
     if (path === "proc/worker-pipes.ts" && scopeOf(node).split(".")[0] === "WorkerPipeBroker") continue;
@@ -403,6 +460,10 @@ function scanSource(analysis: ReturnType<typeof inference>, file: ast.SourceFile
     }
     if (!ast.isCallExpression(node) && !ast.isNewExpression(node)) continue;
     const callee = member(node.expression);
+    const callText = node.expression.getText();
+    if (["setTimeout", "clearTimeout", "queueMicrotask", "structuredClone", "postMessage", "Date"].includes(callText)
+      || /^(?:globalThis\.)?(?:crypto\.(?:randomUUID|getRandomValues)|performance\.now|Date\.now|setTimeout|clearTimeout|queueMicrotask|structuredClone|postMessage)$/.test(callText)
+      || (callee?.name === "postMessage" && infer(callee.receiver).has("RuntimeWorkerHost"))) report(node, "authority-global");
     let privateArgument = false;
     for (const argument of node.arguments ?? []) if (isPrivate(argument)) { privateArgument = true; break; }
     if (callee) {

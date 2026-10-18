@@ -24,6 +24,13 @@ A callback that closes over a private endpoint is authority too.
 - Invoke captured prototype methods/getters through captured `Reflect.apply` or
   an equivalent captured uncurried helper. `captured.call(...)`, `.apply(...)`
   and `.bind(...)` still look up mutable `Function.prototype` methods.
+- Native descriptor conversion still reads inherited fields. Pass null-prototype
+  descriptors, constructor options, proxy handlers and array-like records to
+  captured natives; capturing the function alone does not protect its arguments.
+- Capture process identity generation and relay timers before guest execution.
+  Capture the default Worker's postMessage/listener hooks at module load, and
+  explicit embedding-host hooks once at bootstrap entry. Preserve their receiver
+  through captured `Reflect.apply`, never a later host/global lookup.
 - Use captured constructors and Map/Set/WeakMap operations for private
   collections. Use indexed loops over owned arrays, or captured collection
   traversal helpers. Do not use `for-of`, iterable spread or mutable array
@@ -60,14 +67,16 @@ checked or trusted; they do not silently escape an old file list.
 The page-only supervisor, table, registry, broker and lazy facade are named in
 `trustedModules`. `WorkerPipeBroker` alone is page-owned; the codec and endpoint
 adapters in the same file remain checked. The intrinsic module is a manually
-reviewed capture-time trust root. Dedicated filesystem service/backends are not
+reviewed capture-time trust root; its native-conversion arguments are also checked.
+Dedicated filesystem service/backends are not
 guest-realm implementations. The guest-memory view helper is payload-only, not
 a place to store process buffers.
 
 The guard rejects live Atomics/Object/Reflect/Proxy operations on inferred private
 values, mutable native view/collection operations and getters, detached builtin
-aliases, Function call/apply/bind exposure, and private iteration/species paths.
-It accepts captured helpers, indexed traversal, ordinary payload arrays and
+aliases, Function call/apply/bind exposure, private iteration/species paths,
+live identity/timer/host-send globals, and prototyped literal arguments to native
+conversion. It accepts captured helpers, indexed traversal, ordinary payload arrays and
 runtime-owned methods. The deliberately unsafe examples in
 `tests/fixtures/private-authority-cases.ts` are parsed, never executed.
 

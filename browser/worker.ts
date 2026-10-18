@@ -42,6 +42,7 @@ import {
   SharedArrayBufferConstructor,
   atomicsWait,
   objectEntries,
+  reflectApply,
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
@@ -172,6 +173,11 @@ export class RuntimeWorkerSignal extends ExecutionUnwind {
 
 // Keep the native clock before an executor can install guest-side globals.
 const perfNow = performance.now.bind(performance);
+// The default Worker host is guest-visible. Capture its native hooks at module load;
+// explicit embedding hosts supply trusted callbacks, captured once at bootstrap entry.
+const defaultPostMessage = globalThis.postMessage;
+const defaultAddEventListener = globalThis.addEventListener;
+const defaultRemoveEventListener = globalThis.removeEventListener;
 
 /** `Name: message` plus the first stack frames. */
 export function describeWorkerError(err: unknown): string {
@@ -192,7 +198,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   executor: WorkerExecutor<R>,
   host: RuntimeWorkerHost = globalThis as unknown as RuntimeWorkerHost,
 ): Promise<void> {
-  host.postMessage({ type: "phase", name: "worker-start", duration: 0 });
+  const postMethod = host === globalThis ? defaultPostMessage : host.postMessage;
+  const addListener = host === globalThis ? defaultAddEventListener : host.addEventListener;
+  const removeListener =
+    host === globalThis ? defaultRemoveEventListener : host.removeEventListener;
+  const postToHost = (message: RuntimeWorkerMessage, transfer?: Transferable[]) => {
+    reflectApply(postMethod, host, transfer ? [message, transfer] : [message]);
+  };
+  postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
@@ -241,7 +254,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled")
-      host.postMessage({ type: "default-signal", signal: winner.code });
+      postToHost({ type: "default-signal", signal: winner.code });
     if (executor.signalError) return executor.signalError(winner.code);
     throw new RuntimeWorkerSignal(winner.code);
   };
@@ -348,7 +361,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
       winner ??= claim(ownResult);
-      host.postMessage({
+      postToHost({
         type: "cleanup-error",
         code: waitStatus(winner),
         signal: winner.kind === "signaled" ? winner.code : undefined,
@@ -371,9 +384,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       (executor.complete || "code" in result || settled || winner.kind === "signaled") &&
       !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")
     ) {
-      host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
+      postToHost({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
-      host.postMessage({
+      postToHost({
         type: "error",
         code,
         errno: winner.kind === "start-failed" ? winner.error : undefined,
@@ -450,7 +463,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
       checkIoActive();
-      host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
+      postToHost({ type, data }, [data.buffer as ArrayBuffer]);
     };
     const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
       if (immediate) checkIoActive();
@@ -600,7 +613,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const { ProcessABI, ProcessSignalExit } = await import("../proc/abi.js");
       const { createRuntimeTerminalCodec } = await import("./runtime-terminals.js");
       processSignalExit = ProcessSignalExit;
-      const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
+      const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess,
         postMessage,
@@ -722,7 +735,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       throw new ExecutableFormatError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
-    host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
+    postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     executor.instantiated?.({ ...context, wasi, instance });
     if (done) return;
     const exited = wasi.launch(instance, () => {
@@ -736,8 +749,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       releaseStartupStderr?.();
       started = true;
     });
-    host.addEventListener?.("error", onError);
-    host.addEventListener?.("unhandledrejection", onRejection);
+    if (addListener) reflectApply(addListener, host, ["error", onError]);
+    if (addListener) reflectApply(addListener, host, ["unhandledrejection", onRejection]);
     const completion = executor.run({ ...context, wasi, instance }, exited);
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
@@ -747,8 +760,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     try {
       await pendingFinish;
     } finally {
-      host.removeEventListener?.("error", onError);
-      host.removeEventListener?.("unhandledrejection", onRejection);
+      if (removeListener) reflectApply(removeListener, host, ["error", onError]);
+      if (removeListener) reflectApply(removeListener, host, ["unhandledrejection", onRejection]);
     }
   }
 }

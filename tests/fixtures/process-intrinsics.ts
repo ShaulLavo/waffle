@@ -4,6 +4,8 @@ const nativeConstruct = Reflect.construct;
 const nativeOwnKeys = Reflect.ownKeys;
 const nativeDescriptor = Object.getOwnPropertyDescriptor;
 const nativeDefine = Object.defineProperty;
+const nativeDelete = Reflect.deleteProperty;
+const nativePostMessage = globalThis.postMessage;
 const nativePrototype = Object.getPrototypeOf;
 const nativeIsView = ArrayBuffer.isView;
 const NativeSharedArrayBuffer = SharedArrayBuffer;
@@ -21,6 +23,23 @@ export interface IntrinsicsReport {
   replacements: string[];
   canaries: string[];
   leaks: string[];
+}
+
+function restoreProperty(owner: object, key: PropertyKey, original: PropertyDescriptor | undefined): void {
+  if (!original) { nativeDelete(owner, key); return; }
+  const restored = { __proto__: null, ...original };
+  nativeDefine(owner, key, restored);
+}
+
+function observedPostMessage(observe: (name: string, receiver: unknown, args: readonly unknown[]) => void): Function {
+  return function(this: unknown, ...args: unknown[]) {
+    observe("postMessage", undefined, args);
+    return nativeApply(nativePostMessage, this, args);
+  };
+}
+
+function inheritedField(name: string, inspect: (name: string, value: unknown) => void): PropertyDescriptor {
+  return { configurable: true, get: function(this: unknown) { inspect(name, this); return undefined; } };
 }
 
 /** Transparent guest replacements: record exposure, but preserve native behavior so
@@ -67,9 +86,10 @@ export function poisonProcessIntrinsics(buffers: readonly SharedArrayBuffer[]): 
     for (let index = 0; index < args.length; index++) inspect(name, args[index]);
   };
   const replace = (owner: object, key: PropertyKey, descriptor: PropertyDescriptor, name: string) => {
-    const original = nativeDescriptor(owner, key)!;
-    nativeDefine(owner, key, descriptor);
-    undo[undo.length] = () => nativeDefine(owner, key, original);
+    const original = nativeDescriptor(owner, key);
+    const replacement = { __proto__: null, ...descriptor };
+    nativeDefine(owner, key, replacement);
+    undo[undo.length] = () => restoreProperty(owner, key, original);
     replacements[replacements.length] = name;
   };
   const methods = (owner: object, family: string, getters = false) => {
@@ -152,6 +172,14 @@ export function poisonProcessIntrinsics(buffers: readonly SharedArrayBuffer[]): 
       } }, name);
     }
 
+    if (typeof nativePostMessage === "function") {
+      replace(globalThis, "postMessage", { configurable: true, writable: true, value: observedPostMessage(observe) }, "postMessage");
+      globalThis.postMessage({ type: "intrinsics-canary", buffer: canary });
+    }
+    replace(crypto, "randomUUID", { configurable: true, writable: true,
+      value: () => "00000000-0000-4000-8000-000000000000" }, "crypto.randomUUID");
+    if (crypto.randomUUID() === "00000000-0000-4000-8000-000000000000") nativeApply(nativeSetAdd, canaries, ["crypto.randomUUID"]);
+
     // Positive controls use guest-visible replacements, not the captured natives.
     // Assert each exposure observer is live even if Waffle correctly never calls it.
     Atomics.load(canaryView, 0);
@@ -181,6 +209,14 @@ export function poisonProcessIntrinsics(buffers: readonly SharedArrayBuffer[]): 
     const noop = function() {};
     noop.call(canaryView); noop.apply(canaryView, []); noop.bind(canaryView);
     new Proxy(canaryView, {});
+    // Native descriptor conversion performs inherited Get/HasProperty for omitted
+    // fields. Install last so only the code under test and these canaries see it.
+    for (const key of ["get", "set"] as const) {
+      const name = `Object.prototype.${key}`;
+      replace(Object.prototype, key, inheritedField(name, inspect), name);
+    }
+    const descriptorCanary = { value: canary } as PropertyDescriptor;
+    void descriptorCanary.get; void descriptorCanary.set;
   } catch (error) {
     for (let index = undo.length - 1; index >= 0; index--) undo[index]!();
     throw error;

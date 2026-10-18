@@ -1,6 +1,6 @@
 // Parsed but never executed: deliberately unsafe examples for the static guard.
 import type { Descriptor, Stream } from "../../core/descriptors.js";
-import { Int32ArrayConstructor, Int32ArrayConstructor as SafeView, atomicsLoad, typedArrayBuffer, typedArraySubarray, mapGet, MapConstructor } from "../../proc/intrinsics.ts";
+import { objectDefineProperty, Int32ArrayConstructor, Int32ArrayConstructor as SafeView, atomicsLoad, typedArrayBuffer, typedArraySubarray, mapGet, MapConstructor } from "../../proc/intrinsics.ts";
 
 type PrivateAlias = SharedArrayBuffer;
 type NestedAlias = Map<number, Descriptor>;
@@ -64,3 +64,15 @@ export function renamedCaptureGetter(buffer: PrivateAlias): ArrayBufferLike { re
 export function renamedCaptured(buffer: PrivateAlias): ArrayBufferLike { return typedArrayBuffer(new SafeView(buffer)); }
 
 export function livePrototypeCall(view: Int32Array): void { Int32Array.prototype.set.call(view, [1]); }
+
+const nativeDefine = Object.defineProperty;
+export function inheritedDescriptor(stream: Stream): void { nativeDefine({}, "entry", { value: stream }); }
+export function inheritedOptions(): SharedArrayBuffer { return new SharedArrayBuffer(4, { maxByteLength: 8 }); }
+export function inheritedPropertyMap(): object { return Object.create(null, { __proto__: null, entry: { value: 1 } }); }
+export function inheritedProxyHandler(stream: Stream): Stream { return new Proxy(stream, { get() { return undefined; } }); }
+export function liveIdentity(): string { return crypto.randomUUID(); }
+export function liveMessage(host: import("../../browser/worker.js").RuntimeWorkerHost, message: import("../../browser/worker.js").RuntimeWorkerMessage): void { host.postMessage(message); }
+export function capturedDescriptor(stream: Stream): void {
+  const descriptor = { __proto__: null, value: stream, writable: true };
+  objectDefineProperty({}, "entry", descriptor);
+}

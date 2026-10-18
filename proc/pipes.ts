@@ -1,4 +1,6 @@
 import {
+  cryptoRandomUUID,
+  scheduleTimeout,
   arrayFrom,
   isSharedArrayBuffer,
   BigInt64ArrayConstructor,
@@ -179,11 +181,12 @@ export class PipePublicationRegistry {
     const initialCells = Math.min(processCapacity * cellsPerProcess, this.maxCells);
     // ES2022's declarations predate growable SABs; the host must implement the modern API.
     const SharedBuffer = SharedArrayBufferConstructor as unknown as {
-      new (length: number, options: { maxByteLength: number }): SharedArrayBuffer;
+      new (length: number, options: { __proto__: null; maxByteLength: number }): SharedArrayBuffer;
     };
     const buffer =
       attached?.buffer ??
       new SharedBuffer(this.cellBase + initialCells * 16, {
+        __proto__: null,
         maxByteLength: this.cellBase + this.maxCells * 16,
       });
     this.data = { buffer, processCapacity, cellsPerProcess, wake: this.wake };
@@ -610,12 +613,14 @@ class PipeState {
     this.selection = new BigInt64ArrayConstructor(this.buffer, 32, 1);
     this.changed = new Int32ArrayConstructor(this.buffer, 4, 1);
     const ringStride = stride(this.capacity);
+    const writerSlots = { __proto__: null, length: this.maxWriters };
+    const readerSlots = { __proto__: null, length: this.maxReaders };
     this.writers = arrayFrom(
-      { length: this.maxWriters },
+      writerSlots,
       (_, slot) => new Ring(this.buffer, HEADER + slot * ringStride, this.capacity, this.registry),
     );
     this.readers = arrayFrom(
-      { length: this.maxReaders },
+      readerSlots,
       (_, slot) =>
         new Ring(
           this.buffer,
@@ -1002,7 +1007,7 @@ export class PipeEndpoint implements Stream {
           atomicsLoad(this.ring.demand, 0) > 0 &&
           !state.hangup
         ) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
         }
         return;
       }
@@ -1051,7 +1056,7 @@ export class PipeController {
       if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
         throw new TypeError("pipe wake must be one shared int32");
       this.state = new PipeState({
-        id: crypto.randomUUID(),
+        id: cryptoRandomUUID(),
         buffer: new SharedArrayBufferConstructor(
           HEADER + (maxWriters + maxReaders) * stride(capacity),
         ),
@@ -1229,7 +1234,7 @@ export class PipeController {
       // Registry revocation has no pipe address, so registry-backed relays use the service word.
       if (atomicsLoad(signal, 0) !== observed) {
         // A microtask-only loop starves kill/exit MessagePort tasks under continuous traffic.
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
         continue;
       }
       await waitChanged(signal, observed);

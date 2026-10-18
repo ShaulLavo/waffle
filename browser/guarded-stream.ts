@@ -22,7 +22,8 @@ export function guardedStream(
   // Keep instanceof identity without proxying frozen own properties: wrapped methods must
   // differ from their originals, which a non-configurable target property would forbid.
   const target: Stream = objectCreate(objectGetPrototypeOf(stream));
-  const guarded = new ProxyConstructor(target, {
+  const handler: ProxyHandler<Stream> & { __proto__: null } = {
+    __proto__: null,
     get(_target, key) {
       const value = reflectGet(stream, key, stream);
       if (typeof value !== "function") return value;
@@ -46,7 +47,8 @@ export function guardedStream(
       mapSet(methods, key, method);
       return method;
     },
-  });
+  };
+  const guarded = new ProxyConstructor(target, handler);
   owned?.(guarded);
   return guarded;
 }

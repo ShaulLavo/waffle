@@ -1,8 +1,8 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// Same-realm intrinsic captures and private descriptor collections: 7,967 B gzip
-// on Bun 1.4.2 (2026-10-18). Keep a bounded 225-byte margin, not an open-ended gate.
+// Same-realm intrinsic captures and private descriptor collections: 8,006 B gzip
+// on Bun 1.4.2 (2026-10-18). Keep a bounded 186-byte margin, not an open-ended gate.
 export const CORE_BUDGET_BYTES = 8_192;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
