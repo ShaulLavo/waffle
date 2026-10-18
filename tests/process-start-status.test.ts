@@ -12,10 +12,10 @@ import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, 
 
 const module = new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]));
 const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] };
-function fixture(options: { quiesce?(): Promise<void>; launch?(context: ProcessContext): void } = {}) {
+function fixture(options: { quiesce?(): Promise<void>; launch?(context: ProcessContext): void; canConfirmExit?(): boolean; startFailed?(pid: number,error: unknown): void } = {}) {
   const registry = new ExecutableRegistry();
   registry.register("fixture", { module, adapter: "preview1" });
-  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, launch(context) { options.launch?.(context); return { terminate() {} }; } });
+  const supervisor = new ProcessSupervisor({ registry, quiesce: options.quiesce, canConfirmExit: options.canConfirmExit, startFailed: options.startFailed, launch(context) { options.launch?.(context); return { terminate() {} }; } });
   const root = supervisor.createRoot(), pid = supervisor.reserveSpawn(root, request);
   const memory = new WebAssembly.Memory({ initial: 1 }), wake = new Int32Array(new SharedArrayBuffer(4));
   function abi(service: ProcessService = supervisor, wait?: (milliseconds: number, word: import("../proc/control.js").ControlCells, expected: number) => void) {
@@ -75,7 +75,8 @@ test("launch handle acquisition is not successful entry, and non-child authority
 });
 
 test("a host failure racing entry is an ordinary execution failure, not a late spawn error", () => {
-  const f = fixture(), original = Atomics.compareExchange;
+  const diagnostics: unknown[] = [];
+  const f = fixture({startFailed(_pid,error) { diagnostics.push(error); }}), original = Atomics.compareExchange;
   let raced = false;
   Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
     const outcome = f.supervisor.get(f.pid)!.outcome;
@@ -89,6 +90,7 @@ test("a host failure racing entry is an ordinary execution failure, not a late s
   finally { Atomics.compareExchange = original; }
   try {
     expect(raced).toBe(true);
+    expect(diagnostics).toEqual([]);
     expect(f.supervisor.startStatus(f.root,f.pid)).toBe(0);
     expect(f.supervisor.wait(f.root,f.pid)).toEqual({ kind: "exited", code: 126, status: 126 });
   } finally { f.dispose(); }
@@ -180,4 +182,60 @@ test("Wasi entry callback runs after memory setup, directly before _start", () =
     expect((failed as Error).message).toBe("memory view setup failed");
     expect(order).toEqual(["commit","entry"]);
   } finally { wasi.descriptors.dispose(); }
+});
+
+for (const winner of ["failed-executor", "guest-exit"] as const) test(`post-entry host failure fences ${winner} without discarding the real exit acknowledgement gate`, async () => {
+  let fenced = 0, acknowledge = false, raced = false;
+  const f = fixture({canConfirmExit:() => acknowledge, quiesce: async () => { fenced++; }, launch(context) { context.started(); throw new Error("launcher rejected after entry"); }});
+  const original = Atomics.compareExchange;
+  Atomics.compareExchange = ((array: BigInt64Array,index: number,expected: bigint,replacement: bigint) => {
+    const outcome = f.supervisor.get(f.pid)!.outcome;
+    if (winner === "guest-exit" && !raced && array.buffer === outcome.buffer && (replacement & 3n) === 1n) {
+      raced = true; claimOutcome(outcome,{kind:"exited",code:42});
+    }
+    return original(array,index,expected,replacement);
+  }) as typeof Atomics.compareExchange;
+  try { await f.supervisor.start(f.pid); }
+  finally { Atomics.compareExchange = original; }
+  try {
+    expect(f.supervisor.startStatus(f.root,f.pid)).toBe(0);
+    if (winner === "guest-exit") {
+      expect(raced).toBe(true);
+      expect(fenced).toBe(0);
+      expect(f.supervisor.get(f.pid)!.revoked).toBe(false);
+      expect(f.supervisor.wait(f.root,f.pid)).toBeNull();
+      acknowledge = true; f.supervisor.exit(f.pid,42);
+    }
+    const result = await f.supervisor.waitForExit(f.root,f.pid);
+    expect(fenced).toBe(1);
+    expect(result).toEqual({kind:"exited",code:winner === "guest-exit" ? 42 : 126,status:winner === "guest-exit" ? 42 : 126});
+  } finally { f.dispose(); }
+});
+
+for (const adapter of ["worker", "supervisor"] as const) for (const operation of ["query", "poll"] as const) test(`${adapter} ${operation} reports ECHILD when another observer collects during its outcome read`, () => {
+  const transport = createWorkerProcessTransport(), descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const codec = {export() {throw new Error("unused");},import() {throw new Error("unused");},discard() {}};
+  const parent = new WorkerProcessClient({transport,descriptors,codec,postMessage:message => notices.push(message)});
+  const pid = parent.spawn(parent.pid,request), childTransport = notices.find(message => message.operation === "spawn")!.transport, state = workerProcessState(childTransport);
+  const registry = new ExecutableRegistry(), supervisor = new ProcessSupervisor({registry,launch() {throw new Error("unused");}});
+  supervisor.createRoot({pid:parent.pid});
+  supervisor.reserveAdmittedSpawn(parent.pid,request,{pid,outcome:state.signals.outcome});
+  claimOutcome(state.signals.outcome,{kind:"exited",code:0});
+  controlStore(state.confirmed,0,1); confirmWorkerProcessJob(childTransport);
+  const service = adapter === "worker" ? parent : supervisor;
+  const memory = new WebAssembly.Memory({initial:1});
+  const abi = new ProcessABI({memory,descriptors,fs:new MemFS(),pid:parent.pid,signals:parent.signals,service});
+  const view = new DataView(memory.buffer); view.setUint32(0,6,true); view.setUint32(4,pid,true);
+  const original = Atomics.load;
+  let raced = false;
+  Atomics.load = ((array: BigInt64Array,index: number) => {
+    if (!raced && array.buffer === state.signals.outcome.buffer && array.byteOffset === state.signals.outcome.byteOffset) {
+      raced = true; expect(parent.wait(parent.pid,pid)).toEqual({kind:"exited",code:0,status:0});
+    }
+    return original(array,index);
+  }) as typeof Atomics.load;
+  try { expect(operation === "query" ? abi.imports.start_status!(pid) : abi.imports.poll!(0,1,0,64)).toBe(-12); }
+  finally { Atomics.load = original; }
+  try { expect(raced).toBe(true); }
+  finally { supervisor.dispose(); descriptors.dispose(); }
 });

@@ -10,7 +10,7 @@ import type { ProcessTable } from "../proc/table.js";
 import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types.js";
 import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types.js";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals.js";
-import { claimOutcome, outcomeWord, readOutcome, serializeOutcome, startStatus } from "../proc/outcome.js";
+import { claimOutcome, outcomeWord, readOutcome, startStatus, serializeOutcome } from "../proc/outcome.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission.js";
 import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
@@ -78,7 +78,6 @@ interface RuntimeChild {
   worker?: Worker;
   acknowledged: boolean;
   failed: boolean;
-  started: boolean;
   stopped: boolean;
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
@@ -475,7 +474,7 @@ export class BrowserProcessBroker {
       this.options.filesystem.revoke(filesystem);
     });
     // Record cleanup ownership before either connection or Worker construction can throw.
-    const child: RuntimeChild = { filesystem, context, acknowledged: false, failed: false, started: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
+    const child: RuntimeChild = { filesystem, context, acknowledged: false, failed: false, stopped: false, cleanup: options.cleanup, wake: options.wake };
     this.children.set(context.pid, child);
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
@@ -486,7 +485,6 @@ export class BrowserProcessBroker {
     const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: serializeOutcome(context.outcome) };
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
-      if (data.type === "phase" && data.name === "instantiate") child.started = true;
       let selected: ReturnType<typeof readOutcome>, entered = false;
       try {
         selected = readOutcome(context.outcome);
@@ -523,13 +521,20 @@ export class BrowserProcessBroker {
       if (data.cleanupErrors?.length) this.report(new Error(`Worker cleanup: ${data.cleanupErrors.join("; ")}`));
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal);
       else if (data.type === "exit") context.exit(data.code);
-      else if (!child.started) context.startFailed(Object.assign(new Error(data.message), { code: data.errno }));
+      else if (!entered) context.startFailed(Object.assign(new Error(data.message), { code: data.errno }));
       else context.fail(new Error(data.message));
       this.stopSafely(child);
     };
     worker.onerror = event => {
       event.preventDefault(); child.failed = true;
-      if (!child.started) context.startFailed(event.error ?? new Error(event.message));
+      let status: number;
+      try { status = startStatus(context.outcome); }
+      catch (error) {
+        // Browser error delivery may outlive collection; it cannot target a recycled row.
+        if (error instanceof ProcessError && (error.errno === ProcessErrno.SRCH || error.errno === ProcessErrno.CHILD)) return;
+        throw error;
+      }
+      if (status !== 0) context.startFailed(event.error ?? new Error(event.message));
       else context.fail(new Error(event.message));
       this.stopSafely(child);
     };

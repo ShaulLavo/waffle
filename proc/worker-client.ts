@@ -259,7 +259,13 @@ export class WorkerProcessClient {
     if (committed) wakeWorkerProcess(this.options.transport);
     return committed;
   }
-  startStatus(parentPid: number, pid: number): number { return startStatus(this.child(parentPid, pid).signals.outcome); }
+  startStatus(parentPid: number, pid: number): number {
+    try { return startStatus(this.child(parentPid, pid).signals.outcome); }
+    catch (error) {
+      if (isCollectedProcess(error)) throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
+      throw error;
+    }
+  }
   /** Readiness never consumes the exit or releases a zombie's storage. */
   childExited(parentPid: number, pid: number): boolean {
     const target = this.child(parentPid, pid);
