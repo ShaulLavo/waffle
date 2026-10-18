@@ -1151,3 +1151,25 @@ test("host collective signaling ignores collection between its retained-record c
   f.broker.pump();
   expect(f.supervisor.get(member)).toBeUndefined();
 });
+
+test("supervisor disposal skips unacknowledged collected records and still stops live members", async () => {
+  let terminated = 0;
+  const f = fixture({ capacity: 3, terminate() { terminated++; } });
+  const old = f.root.spawn(1, request()); await f.flush(); await f.supervisor.start(old);
+  const oldState = workerProcessState(f.broker.get(old)!);
+  const { fd, counts } = f.source(f.root.options.descriptors);
+  const live = f.root.spawn(1, request({ fds: [{ child: 1, parent: fd }] }));
+  f.root.options.descriptors.close(fd);
+  await f.flush(); await f.supervisor.start(live);
+  f.supervisor.exit(old, 21);
+  const silent = new WorkerProcessClient({ ...f.root.options, postMessage() {} });
+  expect(silent.waitJob(1, oldState.job)?.code).toBe(21);
+  expect(() => readOutcome(oldState.signals.outcome)).toThrow("collected");
+  expect(f.supervisor.get(old)?.result?.code).toBe(21); // No host receipt or pump yet.
+  expect(counts[0]).toBe(1);
+  expect(() => f.supervisor.dispose()).not.toThrow();
+  expect(terminated).toBe(2);
+  expect(counts[0]).toBe(0);
+  expect(Array.from(f.supervisor.table.values())).toEqual([]);
+  expect(Array.from(f.supervisor.table.jobValues())).toEqual([]);
+});

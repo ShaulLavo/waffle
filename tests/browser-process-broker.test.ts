@@ -1,5 +1,5 @@
 import { TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
-import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory";
+import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker";
 import { ProcessIdentityAllocator } from "../proc/identity";
@@ -11,7 +11,7 @@ import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, 
 import { DescriptorTable } from "../core/descriptors";
 import { connectFilesystemIdentity, createFilesystemIdentity, revokeFilesystem } from "../fs/protocol";
 import { createSignalState, type SignalTransport } from "../proc/signals";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
+import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes";
 
@@ -482,6 +482,135 @@ for (const operation of ["states", "revoke"] as const) test(`browser ${operation
     } else expect(() => broker.revokeRuntimeProcess(-1)).not.toThrow();
     expect(collected).toBe(true);
   } finally { load?.mockRestore(); descriptors.dispose(); await broker.dispose(); }
+});
+
+test("suspension still fences and stops every consumer when a Worker collects a captured process", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  let stops = 0, retired = 0, fenced = 0;
+  const diagnostics: unknown[] = [];
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(), onError: error => diagnostics.push(error),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() { fenced++; } },
+    launch() { throw new Error("unused"); },
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer, capacity: 2 });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  let load: ReturnType<typeof spyOn> | undefined;
+  try {
+    await broker.adoptRuntimeRoot(root, { stop() { stops++; }, retired() { retired++; } });
+    client.spawn(client.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    const notice = notices[0]!;
+    if (notice.operation !== "spawn") throw new Error("missing spawn fixture");
+    const child = workerProcessState(notice.transport), rootState = workerProcessState(root);
+    claimOutcome(child.signals.outcome, { kind: "exited", code: 0 }); confirmDirectoryProcess(notice.transport);
+    const originalLoad = TaggedCells.prototype.load;
+    let collected = false;
+    load = spyOn(TaggedCells.prototype, "load").mockImplementation(function(this: TaggedCells, index = 0) {
+      // All shared states have been decoded by now. Collection during the preceding
+      // root's signal publication invalidates a later member of that captured array.
+      if (!collected && this.buffer === root.directory && this.id === root.pid && this.byteOffset === rootState.signals.requestedSignal.byteOffset) {
+        collected = true; collectDirectoryJob(root.directory, child.jobSlot, child.job);
+      }
+      return originalLoad.call(this, index);
+    });
+    const disposal = broker.dispose();
+    await expect(disposal).resolves.toBeUndefined();
+    expect(broker.dispose()).toBe(disposal);
+    expect(collected).toBe(true);
+    expect(fenced).toBeGreaterThan(0);
+    expect(stops).toBe(1); expect(retired).toBe(1); expect(diagnostics).toEqual([]);
+    for (const name of ["reservedRoots", "controllers", "roots", "outputs", "registries", "fences"])
+      expect((Reflect.get(broker, name) as Map<unknown, unknown>).size).toBe(0);
+  } finally { load?.mockRestore(); descriptors.dispose(); await broker.dispose().catch(() => {}); }
+});
+
+test("suspension skips consumed shared outcomes still retained in completed host records", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("fixture", { adapter: "fixture", module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])), interruptible: true });
+  let stopped = 0, retired = 0;
+  const diagnostics: unknown[] = [];
+  const broker = new BrowserProcessBroker({ identities, table, registry, onError: error => diagnostics.push(error),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { return { terminate() {} }; },
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer, capacity: 2 });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    prepareSpawn: () => ({ data: { filesystem: createFilesystemIdentity() } }),
+    postMessage(message) { notices.push(message); },
+  });
+  try {
+    await broker.adoptRuntimeRoot(root, { stop() { stopped++; }, retired() { retired++; } });
+    const pid = client.spawn(client.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    await broker.runtimeMessage(notices.shift()!, client.pid);
+    const supervisor = await broker.ready();
+    await supervisor.start(pid);
+    const child = workerProcessState(broker.transportFor(pid)!);
+    const completion = supervisor.waitForExit(client.pid, pid);
+    supervisor.exit(pid, 23); await completion;
+    expect(client.waitJob(client.pid, child.job)?.code).toBe(23);
+    // The shared consuming receipt is still queued, so the host retains this completed row.
+    expect(notices.at(-1)?.operation).toBe("reap-job");
+    expect(table.get(pid)?.result?.code).toBe(23);
+    expect(() => readOutcome(child.signals.outcome)).toThrow("collected");
+    await expect(broker.dispose()).resolves.toBeUndefined();
+    expect(stopped).toBe(1); expect(retired).toBe(1); expect(diagnostics).toEqual([]);
+    expect(Array.from(table.values())).toHaveLength(0);
+  } finally { descriptors.dispose(); await broker.dispose().catch(() => {}); }
+});
+
+for (const phase of ["publication", "outcome snapshot"] as const) test(`whole-job signalling continues after collection during ${phase}`, async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
+  const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("unused"); },
+  });
+  const root = createWorkerProcessTransport({ pid: identities.pid(), job: identities.job(), identity: identities.buffer, capacity: 3 });
+  root.data = { filesystem: createFilesystemIdentity() };
+  const descriptors = new DescriptorTable(), notices: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport: root, descriptors,
+    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
+    postMessage(message) { notices.push(message); },
+  });
+  let guard: ReturnType<typeof spyOn> | undefined;
+  try {
+    await broker.adoptRuntimeRoot(root);
+    const request = { executable: "fixture", argv: [], env: {}, cwd: "/", job: client.job, fds: [] };
+    client.spawn(client.pid, request); client.spawn(client.pid, request);
+    const dead = notices[0]!, live = notices[1]!;
+    if (dead.operation !== "spawn" || live.operation !== "spawn") throw new Error("missing spawn fixture");
+    const child = workerProcessState(dead.transport), sibling = workerProcessState(live.transport), rootState = workerProcessState(root);
+    claimOutcome(child.signals.outcome, { kind: "exited", code: 0 }); confirmDirectoryProcess(dead.transport);
+    let collected = false;
+    if (phase === "publication") {
+      const originalLoad = TaggedCells.prototype.load;
+      guard = spyOn(TaggedCells.prototype, "load").mockImplementation(function(this: TaggedCells, index = 0) {
+        if (!collected && this.buffer === root.directory && this.id === root.pid && this.byteOffset === rootState.signals.requestedSignal.byteOffset) {
+          collected = true; collectDirectoryProcess(dead.transport);
+        }
+        return originalLoad.call(this, index);
+      });
+    } else {
+      const originalCheck = OutcomeCell.prototype.check;
+      guard = spyOn(OutcomeCell.prototype, "check").mockImplementation(function(this: OutcomeCell) {
+        if (!collected && this.buffer === root.directory && this.pid === child.pid &&
+            controlLoad(rootState.signals.requestedSignal) === 9 && controlLoad(sibling.signals.requestedSignal) === 9) {
+          collected = true; collectDirectoryProcess(dead.transport);
+        }
+        originalCheck.call(this);
+      });
+    }
+    await expect(broker.killJob(client.job, 9)).resolves.toBeUndefined();
+    expect(collected).toBe(true);
+    expect(readOutcome(sibling.signals.outcome)).toMatchObject({ kind: "signaled", code: 9 });
+    expect(controlLoad(sibling.signals.requestedSignal)).toBe(9);
+  } finally { guard?.mockRestore(); descriptors.dispose(); await broker.dispose(); }
 });
 
 test("a completed runtime root retains queued background descendants until their job is reaped", async () => {
