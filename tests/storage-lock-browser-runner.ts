@@ -263,7 +263,9 @@ function cases(): TestCase[] {
 }
 
 let scratch: string | undefined;
+let scratchCreation: Promise<string> | undefined;
 let firefoxScratch: string | undefined;
+let firefoxScratchCreation: Promise<string> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 let context: BrowserContext | undefined;
 let launching: Promise<BrowserContext> | undefined;
@@ -279,6 +281,8 @@ async function cleanup(): Promise<void> {
       stopped = true;
     } finally {
       server?.stop(true);
+      scratch ??= await scratchCreation?.catch(() => undefined);
+      firefoxScratch ??= await firefoxScratchCreation?.catch(() => undefined);
       if (stopped) {
         if (scratch) await rm(scratch, { recursive: true, force: true });
         if (firefoxScratch) await rm(firefoxScratch, { recursive: true, force: true });
@@ -297,7 +301,9 @@ const deadline = setTimeout(() => {
 try {
   const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "darwin" ? resolve(homedir(), "tmp") : tmpdir());
   await mkdir(scratchRoot, { recursive: true });
-  scratch = await mkdtemp(resolve(scratchRoot, "wlock-"));
+  scratchCreation = mkdtemp(resolve(scratchRoot, "wlock-"));
+  scratch = await scratchCreation;
+  if (cleaning) throw new Error("Storage lock runner stopped during scratch creation");
   const fixtureBuild = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "storage-lock-browser.ts")], target: "browser",
     plugins: [{ name: "waffle-lock-source", setup(build) {
@@ -308,6 +314,7 @@ try {
   const workerBuild = await Bun.build({ entrypoints: [resolve(source, "browser/fs-worker.ts")], target: "browser" });
   if (!workerBuild.success) throw new AggregateError(workerBuild.logs, "Filesystem worker build failed");
   const bundles = new Map([["/fixture.js", await fixtureBuild.outputs[0]!.text()], ["/fs-worker.js", await workerBuild.outputs[0]!.text()]]);
+  if (cleaning) throw new Error("Storage lock runner stopped before server setup");
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
     const script = bundles.get(path);
@@ -323,7 +330,11 @@ try {
   for (const name of requestedEngines) {
     if (!(name in { chromium, firefox, webkit })) throw new Error(`Unknown browser: ${name}`);
     const engine = ({ chromium, firefox, webkit } as Record<EngineName, any>)[name as EngineName];
-    if (name === "firefox" && process.platform === "linux") firefoxScratch = await mkdtemp("/dev/shm/waffle-lock-firefox-");
+    if (name === "firefox" && process.platform === "linux") {
+      firefoxScratchCreation = mkdtemp("/dev/shm/waffle-lock-firefox-");
+      firefoxScratch = await firefoxScratchCreation;
+    }
+    if (cleaning) throw new Error("Storage lock runner stopped before browser launch");
     const profileRoot = name === "firefox" && firefoxScratch ? firefoxScratch : scratch;
     const profile = resolve(profileRoot!, name);
     process.env.TMPDIR = profileRoot;
@@ -348,7 +359,10 @@ try {
     }
     if (selected === 0) throw new Error(`No storage lock cases match ${JSON.stringify(process.env.STORAGE_LOCK_TEST_FILTER)}`);
     await context.close(); context = undefined; launching = undefined;
-    if (firefoxScratch) { await rm(firefoxScratch, { recursive: true, force: true }); firefoxScratch = undefined; }
+    if (firefoxScratch) {
+      await rm(firefoxScratch, { recursive: true, force: true });
+      firefoxScratch = undefined; firefoxScratchCreation = undefined;
+    }
   }
   if (failures.length) throw new AggregateError(failures.map(item => new Error(item)), `${failures.length} storage lock test(s) failed`);
 } finally { clearTimeout(deadline); await cleanup(); }
