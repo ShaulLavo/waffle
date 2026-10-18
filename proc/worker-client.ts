@@ -351,15 +351,29 @@ export class WorkerProcessClient {
   private report(error: unknown): void { try { this.options.onError?.(error); } catch { /* Diagnostics never own cleanup. */ } }
 }
 
+/** Validate every child binding before importing or replacing a descriptor. */
+function validateWorkerBindings(transport: WorkerProcessTransport): void {
+  const targets = new Set<number>();
+  for (const binding of transport.bindings) {
+    if (!Number.isInteger(binding.fd) || binding.fd < 0 || binding.fd > MAX_DESCRIPTOR || targets.has(binding.fd)) {
+      throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
+    }
+    targets.add(binding.fd);
+    if (!Number.isInteger(binding.reference) || binding.reference < 0 || binding.reference >= transport.resources.length) {
+      throw new TypeError("invalid transferred descriptor reference");
+    }
+  }
+}
+
 /** Group duplicate bindings by open description, retaining exactly one transferred lifetime. */
 export function installWorkerBindings(transport: WorkerProcessTransport, descriptors: DescriptorTable, codec: WorkerDescriptorCodec): void {
+  validateWorkerBindings(transport);
   const imported = new Map<number, { description: OpenDescription; resource: Resource }>();
   const staged = new DescriptorTable();
   try {
     for (const binding of transport.bindings) {
       let source = imported.get(binding.reference);
       if (!source) {
-        if (!Number.isInteger(binding.reference) || binding.reference < 0 || binding.reference >= transport.resources.length) throw new TypeError("invalid transferred descriptor reference");
         const description = codec.import(transport.resources[binding.reference], workerProcessState(transport).pid);
         staged.add(description, { rightsBase: binding.rightsBase, rightsInheriting: binding.rightsInheriting });
         source = { description, resource: description.resource };

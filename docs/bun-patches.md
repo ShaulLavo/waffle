@@ -9,6 +9,11 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/process-broker.ts`, `browser/worker.ts` | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned. |
 | `fs/opfs.ts` | Adaptation | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `core/memory-views.js` | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity. |
+| `patches/wasi-libc/preopen-scan.patch` | Adaptation | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan. |
+
+## Patched wasi-libc preopen scan
+
+`patches/wasi-libc/preopen-scan.patch` applies to wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c`, the source revision recorded by wasi-sdk 34. The adapted branch handles an open non-preopen descriptor in the fd-3 scan: `fd_fdstat_get` success continues to the next descriptor, `BADF` ends discovery at the first empty slot, and every other error follows the existing error path. `scripts/build-wasi-libc.sh` downloads that exact revision, applies this patch, and builds a `wasm32-wasip1` sysroot with wasi-sdk 34. Consumers must use the resulting sysroot and pin the matching Waffle commit; Waffle does not provide a compatibility path for an unpatched libc scan.
 
 ## SLICC-kernel Apache-2.0 notice
 

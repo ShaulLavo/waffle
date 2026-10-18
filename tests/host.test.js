@@ -18,6 +18,41 @@ function host(fs = new MemFS(), options = {}, fallback = false) {
   }
   return { wasi, memory, view, bytes, calls, open };
 }
+test('WASI preopens fill the lowest unreserved descriptor gaps', () => {
+  for (const [reserved, expected] of [
+    [[], [3, 4]],
+    [[3], [4, 5]],
+    [[3, 4, 5, 6, 7, 8, 9], [10, 11]],
+    [[5], [3, 4]],
+    [[3, 10, 11, 12], [4, 5]],
+    [[3, 1_000_000], [4, 5]],
+  ]) {
+    const wasi = new Wasi({ args: [], env: {}, fs: new MemFS(), preopens: { '/': '/', '/tmp': '/tmp' }, reservedFds: reserved, stdout() {}, stderr() {}, sleep() {} });
+    expect(expected.map(fd => wasi.descriptors.get(fd)?.preopen)).toEqual(['/', '/tmp']);
+    wasi.descriptors.dispose();
+  }
+});
+
+test('WASI validates all reserved targets before opening stdio or filesystem preopens', () => {
+  let preopens = 0;
+  const fs = new MemFS();
+  const preopen = fs.preopen.bind(fs);
+  fs.preopen = path => { preopens++; return preopen(path); };
+  expect(() => new Wasi({ args: [], env: {}, fs, preopens: { '/': '/' }, reservedFds: [3, 3], stdout() {}, stderr() {}, sleep() {} })).toThrow(RangeError);
+  expect(preopens).toBe(0);
+});
+
+test('WASI reports inherited descriptors as non-preopens', () => {
+  const wasi = new Wasi({ args: [], env: {}, fs: new MemFS(), preopens: { '/': '/' }, reservedFds: [3], stdout() {}, stderr() {}, sleep() {} });
+  const calls = wasi.functions();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  wasi.start({ exports: { memory, _start() {} } });
+  expect(calls.fd_prestat_get(0, 0)).toBe(8);
+  expect(calls.fd_prestat_get(3, 0)).toBe(8);
+  expect(wasi.descriptors.get(4)?.preopen).toBe('/');
+  wasi.descriptors.dispose();
+});
+
 test('WASI duplicates really share the seek cursor, append flags, and lifetime', () => {
   const fs = new MemFS(); fs.writeFile('/file', 'hello');
   const h = host(fs);

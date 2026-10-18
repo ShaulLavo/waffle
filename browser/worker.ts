@@ -83,9 +83,7 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   setup?(context: WorkerSetupContext<R>): void;
   /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
   namespaces?(context: WorkerSetupContext<R>): WebAssembly.Imports;
-  /** Runs after default stdio/root preopen creation, before inherited descriptor binding.
-   * If relocating preopens, preserve wasi-libc's contiguous discovery scan from fd3 upward:
-   * it stops at the first non-preopen. No relocation happens by default. */
+  /** Runs after default stdio/preopen creation, before inherited descriptor binding. */
   beforeBindings?(context: WorkerBindingsContext<R>): void;
   /** Mutate or replace the linked import object, after bindings and before instantiation. */
   imports?(imports: WebAssembly.Imports, context: WorkerBindingsContext<R>): WebAssembly.Imports | void;
@@ -319,7 +317,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     };
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
-      args: req.args, env, fs, preopens: { "/": "/" }, stdio,
+      args: req.args, env, fs, preopens: { "/": "/" },
+      reservedFds: req.runtimeProcess?.bindings.map(binding => binding.fd), stdio,
       stdout: data => { output("stdout", data); }, stderr: data => { output("stderr", data); },
       diagnostic: data => { post("stderr", data); },
       sleep: ms => {
