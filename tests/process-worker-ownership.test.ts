@@ -1248,3 +1248,96 @@ test("failed spawn cleanup cannot collect a job reused during admission-fence re
   expect(directorySlots(transport.directory)).toEqual([]);
   expect(directoryJobs(transport.directory)).toEqual([]);
 });
+
+test("a new job stays private when its leader's full process-slot scan races a public join", () => {
+  const root = createWorkerProcessTransport({ capacity: 3 });
+  const messages: WorkerProcessMessage[] = [];
+  const { codec } = fakeCodec();
+  const make = (transport: WorkerProcessTransport) => {
+    const descriptors = new DescriptorTable(); cleanups.push(() => descriptors.dispose());
+    return new WorkerProcessClient({ transport, descriptors, codec, postMessage(message) { messages.push(message); } });
+  };
+  const a = make(root);
+  const parentPid = a.spawn(1, request({ job: a.job })), parent = messages.at(-1)!.transport;
+  a.spawn(1, request({ job: a.job }));
+  const filler = messages.at(-1)!.transport, b = make(parent);
+  readyForCollection(filler);
+  const original = Atomics.compareExchange;
+  let raced = false, joinError: unknown;
+  const offset = workerProcessState(filler).signals.outcome.byteOffset - 5 * 8;
+  Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+    const previous = original(array, index, expected, replacement);
+    if (!raced && array instanceof BigInt64Array && array.buffer === root.directory && array.byteOffset === offset && index === 0 && expected === 0n && replacement === packedControl(4, 2)) {
+      raced = true;
+      collectDirectoryProcess(filler);
+      try { b.spawn(parentPid, request({ job: 2 })); }
+      catch (error) { joinError = error; }
+    }
+    return previous;
+  }) as typeof Atomics.compareExchange;
+  try { expectErrno(() => a.spawn(1, request()), ProcessErrno.AGAIN); }
+  finally { Atomics.compareExchange = original; }
+  expect(raced).toBe(true);
+  expect(joinError).toMatchObject({ name: "ProcessError", errno: ProcessErrno.CHILD });
+  expect(messages).toHaveLength(2); // Neither the failed creator nor racing join published.
+  expect(Array.from(directoryProcesses(root.directory), state => state.pid)).toEqual([1, parentPid]);
+  expect(directoryJobs(root.directory)).toEqual([0]);
+  helpDirectoryJobs(root.directory);
+  expect(directoryJobs(root.directory)).toEqual([0]);
+  const nextPid = b.spawn(parentPid, request()), next = messages.at(-1)!.transport;
+  const nextState = workerProcessState(next);
+  expect(nextState.pid).toBe(nextPid);
+  expect(nextState.jobLeaderPid).toBe(nextPid);
+  expect(nextState.jobOwner).toBe(parentPid);
+  expect(readOutcome(nextState.jobOutcome)).toBeNull();
+  expect(directorySlots(root.directory)).toHaveLength(3);
+  expect(directoryJobs(root.directory)).toHaveLength(2);
+  readyForCollection(next);
+  expect(a.waitJob(1, nextState.job)?.code).toBe(0);
+  readyForCollection(parent); collectDirectoryProcess(parent);
+  const rootState = workerProcessState(root);
+  readyForCollection(root); collectDirectoryJob(root.directory, rootState.jobSlot, rootState.job);
+  expect(directorySlots(root.directory)).toEqual([]);
+  expect(directoryJobs(root.directory)).toEqual([]);
+});
+
+test("a successfully published new job is joinable with its original leader and typed outcome", async () => {
+  const f = fixture({ capacity: 3 });
+  const leader = f.root.spawn(1, request()); await f.flush();
+  const job = f.root.jobOf(leader);
+  const member = f.root.spawn(1, request({ job })); await f.flush();
+  expect(workerProcessState(f.broker.get(member)!)).toMatchObject({ job, jobLeaderPid: leader, jobOwner: 1 });
+  f.supervisor.exit(leader, 27); f.supervisor.exit(member, 4);
+  expect(f.root.waitJob(1, job)?.code).toBe(27); await f.flush();
+  expect(directorySlots(f.transport.directory)).toEqual([0]);
+  expect(directoryJobs(f.transport.directory)).toEqual([0]);
+});
+
+for (const joining of [false, true]) {
+  test(`process initialization failure rolls back ${joining ? "joined membership" : "private job"} and its captured process reservation`, () => {
+    const root = createWorkerProcessTransport({ capacity: 2 });
+    const rootState = workerProcessState(root);
+    const original = Atomics.store;
+    const failure = new Error("initialization interrupted");
+    let interrupted = false;
+    Atomics.store = ((array: BigInt64Array, index: number, value: bigint) => {
+      if (!interrupted && array instanceof BigInt64Array && array.buffer === root.directory && array.byteOffset === 32 + 76 * 8 && index === 1 && value === packedControl(2, 1)) {
+        interrupted = true; throw failure;
+      }
+      return original(array, index, value);
+    }) as typeof Atomics.store;
+    try { expect(() => reserveDirectoryProcess(root, 2, 1, joining ? rootState.job : 2, 1, joining ? rootState.jobSlot : undefined)).toThrow(failure); }
+    finally { Atomics.store = original; }
+    expect(interrupted).toBe(true);
+    expect(directorySlots(root.directory)).toEqual([0]);
+    expect(directoryJobs(root.directory)).toEqual([0]);
+    expect(controlLoad(rootState.jobPending)).toBe(1);
+    const next = { ...root, ...reserveDirectoryProcess(root, 3, 1, 3, 1) };
+    const state = workerProcessState(next);
+    expect(state.pid).toBe(3);
+    readyForCollection(next); collectDirectoryJob(root.directory, state.jobSlot, state.job);
+    readyForCollection(root); collectDirectoryJob(root.directory, rootState.jobSlot, rootState.job);
+    expect(directorySlots(root.directory)).toEqual([]);
+    expect(directoryJobs(root.directory)).toEqual([]);
+  });
+}

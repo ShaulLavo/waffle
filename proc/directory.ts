@@ -136,43 +136,50 @@ export function directoryControls(directory: SharedArrayBuffer, first: () => num
   return false;
 }
 export function reserveDirectoryProcess(handle: DirectoryHandle, pid: number, parentPid: number, job: number, ownerPid: number, jobSlot?: number, foreground = true): DirectoryHandle {
-  let group: ReturnType<typeof directoryJob>;
-  let created = false;
-  if (jobSlot === undefined) {
-    const reserved = allocate(handle.directory, job, true);
-    const raw = reserved.raw;
-    for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(job, 0));
-    Atomics.store(raw, 1, packedControl(job, ownerPid));
-    Atomics.store(raw, 2, packedControl(job, pid));
-    Atomics.store(raw, 3, BigInt(pid) << 2n);
-    Atomics.store(raw, 4, packedControl(job, 1));
-    Atomics.store(raw, 5, packedControl(job, Number(foreground)));
-    Atomics.store(raw, 6, packedControl(job, ownerPid));
-    Atomics.store(raw, 7, packedControl(job, parentPid === 0 ? pid : directoryState(handle).rootPid));
-    Atomics.store(raw, 0, packedControl(job, 1));
-    group = directoryJob(handle.directory, reserved.slot, job);
-    created = true;
-  } else {
-    group = directoryJob(handle.directory, jobSlot, job);
-    for (;;) {
-      const count = controlLoad(group.pending);
-      if (count <= 0) throw new ProcessError(ProcessErrno.CHILD, "job has completed or been collected");
-      if (controlCas(group.pending, 0, count, count + 1) === count) break;
+  let created: ReturnType<typeof allocate> | undefined;
+  let reserved: ReturnType<typeof allocate> | undefined;
+  let joined: TaggedCells | undefined;
+  try {
+    let group: { slot: number; rootPid: number };
+    if (jobSlot === undefined) {
+      const rootPid = parentPid === 0 ? pid : directoryState(handle).rootPid;
+      created = allocate(handle.directory, job, true);
+      const raw = created.raw;
+      for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(job, 0));
+      Atomics.store(raw, 1, packedControl(job, ownerPid));
+      Atomics.store(raw, 2, packedControl(job, pid));
+      Atomics.store(raw, 3, BigInt(pid) << 2n);
+      Atomics.store(raw, 4, packedControl(job, 1));
+      Atomics.store(raw, 5, packedControl(job, Number(foreground)));
+      Atomics.store(raw, 6, packedControl(job, ownerPid));
+      Atomics.store(raw, 7, packedControl(job, rootPid));
+      group = { slot: created.slot, rootPid };
+    } else {
+      const existing = directoryJob(handle.directory, jobSlot, job);
+      for (;;) {
+        const count = controlLoad(existing.pending);
+        if (count <= 0) throw new ProcessError(ProcessErrno.CHILD, "job has completed or been collected");
+        if (controlCas(existing.pending, 0, count, count + 1) === count) break;
+      }
+      joined = existing.pending;
+      group = existing;
     }
-  }
-  let reserved: ReturnType<typeof allocate>;
-  try { reserved = allocate(handle.directory, pid); }
-  catch (error) {
-    group.pending.add(0, -1);
-    if (created) Atomics.compareExchange(row(handle.directory, group.slot, true), 0, packedControl(job, 1), 0n);
+    reserved = allocate(handle.directory, pid);
+    const raw = reserved.raw;
+    for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(pid, 0));
+    for (const [index, value] of [[1, parentPid], [2, job], [73, parentPid], [74, group.rootPid], [75, group.slot]]) Atomics.store(raw, index!, packedControl(pid, value!));
+    Atomics.store(raw, 5, BigInt(pid) << 2n);
+    // A new job stays private until its leader owns an initialized process row.
+    // No fallible allocation remains once other workers can join the published job.
+    if (created) Atomics.store(created.raw, 0, packedControl(job, 1));
+    Atomics.store(raw, 0, packedControl(pid, 1));
+    return { directory: handle.directory, slot: reserved.slot, pid };
+  } catch (error) {
+    if (reserved) Atomics.compareExchange(reserved.raw, 0, packedControl(pid, 2), 0n);
+    if (created) Atomics.compareExchange(created.raw, 0, packedControl(job, 2), 0n);
+    else joined?.add(0, -1);
     throw error;
   }
-  const raw = reserved.raw;
-  for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(pid, 0));
-  for (const [index, value] of [[1, parentPid], [2, job], [73, parentPid], [74, group.rootPid], [75, group.slot]]) Atomics.store(raw, index!, packedControl(pid, value!));
-  Atomics.store(raw, 5, BigInt(pid) << 2n);
-  Atomics.store(raw, 0, packedControl(pid, 1));
-  return { directory: handle.directory, slot: reserved.slot, pid };
 }
 export function wakeDirectory(directory: SharedArrayBuffer): void { const wake = new Int32Array(directory, 4, 1); Atomics.add(wake, 0, 1); Atomics.notify(wake, 0); }
 export function confirmDirectoryProcess(handle: DirectoryHandle): void {
