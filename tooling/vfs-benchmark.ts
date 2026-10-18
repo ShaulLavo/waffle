@@ -309,8 +309,10 @@ async function campaign(options: Options): Promise<void> {
               }
             } catch (error) {
               const message = String(error); sample.reason = message;
-              sample.state = /identity table exhausted|errno 51|errno 48|ENOSPC|QuotaExceeded/i.test(message) ? "deferred/not measured" : "failed correctness";
-              sample.observations = { ...sample.observations, failure: message, capacityLimitIsNotAChangedFixture: true };
+              const controllerInterrupted = lifecycle.shuttingDown && /Target page, context or browser has been closed/i.test(message);
+              sample.state = /identity table exhausted|errno 51|errno 48|ENOSPC|QuotaExceeded/i.test(message) ? "deferred/not measured" : controllerInterrupted ? "invalid environment" : "failed correctness";
+              sample.reason = controllerInterrupted ? `controller-interrupted: ${message}` : message;
+              sample.observations = { ...sample.observations, failure: message, ...(controllerInterrupted ? { controllerInterrupted: true } : {}), capacityLimitIsNotAChangedFixture: true };
             } finally {
               if (context) await lifecycle.closeContext(context);
               await lifecycle.removeDirectory(profile);

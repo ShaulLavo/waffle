@@ -24,6 +24,7 @@ export class BrowserRunnerLifecycle {
   private interrupted = () => { void this.close().catch(console.error).finally(() => process.exit(1)); };
   private deadline: ReturnType<typeof setTimeout>;
   scratch = "";
+  get shuttingDown(): boolean { return !!this.cleaning || this.admissionStopped; }
   constructor(timeoutMs = 600_000, private cleanupTimeoutMs = 5000) {
     process.once("SIGINT", this.interrupted); process.once("SIGTERM", this.interrupted);
     this.deadline = setTimeout(() => { console.error("Browser runner timed out"); this.interrupted(); }, timeoutMs);
