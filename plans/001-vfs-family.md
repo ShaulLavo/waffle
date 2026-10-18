@@ -829,3 +829,14 @@ Fresh and first-visit fields are separately prefixed and are never averaged into
 the seeded-reopen primary score. If added after an immutable screening campaign
 has begun, capture this decomposition in a separately identified W1 campaign and
 retain the earlier evidence unchanged; do not infer missing timings from totals.
+
+Run each browser selection through its own dispatcher, independently of the chat
+or shell caller's lifetime. Task-owned transient controller services may wait for
+another selection's terminal marker before submitting; that local wait is outside
+the next dispatcher's admission deadline. Give every dispatcher its own deadline,
+immutable source bundle and terminal status. Completed browser selections are not
+run again. A cancelled admission or truncated selection remains incomplete in the
+campaign ledger, with its original log retained; a terminal marker alone is not a
+successful measurement. Verify the dispatcher's status, required samples and actual
+host cleanup before extraction. Stop and remove only task-created controller units,
+bundles and scripts once their consumers finish; keep the immutable result ledger.
