@@ -89,10 +89,12 @@ export function missingBaselineCells(original: readonly Sample[], baseline: stri
     const rows = before.get(key) ?? [];
     if (complete(rows)) completedCells.push(key);
     else {
-      const interrupted = rows.some(row => row.state === "invalid environment" && row.reason?.startsWith("controller-interrupted:"));
-      if (!interrupted && (rows.length >= 7 || rows.some(row => (row.state !== "eligible") || !primaryMetrics(row.workload, row.vfs).every(metric => Number.isFinite(row.metrics[metric.name]) && row.metrics[metric.name]! > 0)))) blockedCells.push(key);
+      const blocked = rows.length >= 7 || rows.some(row => {
+        if (row.state === "invalid environment" && row.reason?.startsWith("controller-interrupted:")) return false;
+        return row.state !== "eligible" || !primaryMetrics(row.workload, row.vfs).every(metric => Number.isFinite(row.metrics[metric.name]) && row.metrics[metric.name]! > 0);
+      });
+      if (blocked) blockedCells.push(key); else missingCells.push(key);
     }
-    else missingCells.push(key);
   }
   return { completedCells, missingCells, blockedCells };
 }
