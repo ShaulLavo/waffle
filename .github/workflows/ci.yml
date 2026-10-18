@@ -32,6 +32,9 @@ jobs:
       - run: bun tests/storage-browser-runner.ts chromium firefox webkit
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+      - run: bun tests/process-recycling-browser-runner.ts chromium firefox webkit
+        env:
+          PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
   site:
     runs-on: ubuntu-latest
     defaults:
