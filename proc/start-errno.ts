@@ -18,4 +18,3 @@ export function startFailureName(code: number): StartFailure {
   throw new RangeError("unknown process startup errno");
 }
 export function startFailureErrno(error: StartFailure): number { return failures[error].wasi; }
-
