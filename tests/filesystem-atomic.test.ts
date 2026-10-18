@@ -66,6 +66,14 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   await expectErrno(client.asyncCall("writeFile", ["/", false, true], encode("not root")), 20);
   await expectErrno(client.asyncCall("writeFile", ["/created/child", false, true], encode("not nested")), 54);
   await expectErrno(client.asyncCall("writeFile", ["/created", true, true], encode("invalid modes")), 28);
+  await client.asyncCall("mkdirp", ["/a"]);
+  await client.asyncCall("writeFile", ["/a/../canonical", false, true], encode("canonical"));
+  expect(decode(await client.asyncCall("readFile", ["/canonical"]))).toBe("canonical");
+  expect(await client.asyncCall("lookup", ["/a/../canonical"])).toBeUndefined();
+  await expectErrno(client.asyncCall("writeFile", ["/new/.", false, true], encode("not a file")), 44);
+  expect(await client.asyncCall("lookup", ["/new"])).toBeUndefined();
+  await expectErrno(client.asyncCall("writeFile", ["/missing/../x", false, true], encode("not a file")), 44);
+  expect(await client.asyncCall("lookup", ["/missing"])).toBeUndefined();
   const outcomes = await Promise.allSettled([
     client.asyncCall("writeFile", ["/race", false, true], encode("first")),
     sibling.asyncCall("writeFile", ["/race", false, true], encode("second")),

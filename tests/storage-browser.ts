@@ -60,6 +60,14 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
     await rejects(client.asyncCall("writeFile", ["/", false, true], bytes("not root")), "20");
     await rejects(client.asyncCall("writeFile", ["/created/child", false, true], bytes("not nested")), "54");
     await rejects(client.asyncCall("writeFile", ["/created", true, true], bytes("invalid modes")), "28");
+    await client.asyncCall("mkdirp", ["/a"]);
+    await client.asyncCall("writeFile", ["/a/../canonical", false, true], bytes("canonical"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/canonical"])) === "canonical", "canonical target receives bytes");
+    assert(await client.asyncCall("lookup", ["/a/../canonical"]) === undefined, "raw dot path is not a duplicate entry");
+    await rejects(client.asyncCall("writeFile", ["/new/.", false, true], bytes("not a file")), "44");
+    assert(await client.asyncCall("lookup", ["/new"]) === undefined, "failed dot path does not create parents");
+    await rejects(client.asyncCall("writeFile", ["/missing/../x", false, true], bytes("not a file")), "44");
+    assert(await client.asyncCall("lookup", ["/missing"]) === undefined, "failed parent traversal does not create parents");
 
     const outcomes = await Promise.allSettled([
       client.asyncCall("writeFile", ["/race", false, true], bytes("first")),

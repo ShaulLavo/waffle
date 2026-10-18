@@ -151,21 +151,28 @@ export class MemoryBackend implements FilesystemBackend {
       case "writeFile": {
         if (b && c) throw new FilesystemError(28, "writeFile cannot append and create exclusively");
         if (c) {
-          // The service queue is the namespace lock. Reuse MemFS.create's exclusive path so
-          // the existence check and file insertion cannot be separated by another writer.
-          try { this.fs.mkdirp(dirname(a)); }
-          catch { throw new FilesystemError(54); }
-          const path = this.fs.resolveAbsolute(a);
-          if (typeof path === "number") throw new FilesystemError(path);
+          // The service queue is the namespace lock. Resolve before creating parents so a
+          // malformed or impossible path cannot leave directories behind. Once the actual tree
+          // has validated dot segments, write through the same canonical target used by create.
+          const hasDotSegment = a.split("/").some((part: string) => part === "." || part === "..");
+          let path = this.fs.resolveAbsolute(a);
+          if (typeof path === "number") {
+            if (path !== 44 || hasDotSegment) throw new FilesystemError(path);
+            try { this.fs.mkdirp(dirname(a)); }
+            catch { throw new FilesystemError(54); }
+            path = this.fs.resolveAbsolute(a);
+            if (typeof path === "number") throw new FilesystemError(path);
+          }
           if (path.node !== undefined) throw new FilesystemError(20);
           if (path.trailingSlash) throw new FilesystemError(54);
+          const target = normalize(a);
           const result = this.fs.create(path, "file", true);
           if (typeof result !== "number") throw new FilesystemError(result.error);
           try {
-            this.fs.writeFile(a, data.slice(), false);
+            this.fs.writeFile(target, data.slice(), false);
             this.sync(result);
           } catch (error) {
-            this.fs.remove(a);
+            this.fs.remove(target);
             throw error;
           }
           return;
