@@ -698,21 +698,32 @@ export class BrowserProcessBroker {
     if (supervisor.get(pid)) supervisor.observeSignal(pid, sig);
     else if (!state && !target) supervisor.kill(pid, sig);
   }
+  private requestSignalIfPresent(target: SignalTransport, signal: number): void {
+    try { requestSignal(target, signal); }
+    catch (error) {
+      // Captured members can be collected after enumeration. Their vanished authority
+      // must not prevent signalling/fencing the remaining consumers of a job or runtime.
+      if (!isCollectedProcess(error)) throw error;
+    }
+  }
   async killJob(job: number, signal: number, reserved: readonly { pid: number; signals: SignalTransport }[] = []): Promise<void> {
     const sig = checkedSignal(signal), states = this.states().filter(state => state.job === job);
     const seen = new Set(states.map(state => state.pid));
     const records = Array.from(this.options.table.values()).filter(record => record.job === job && !seen.has(record.pid));
     // Generic reservations and admitted legacy processes select all terminal winners before
     // any callback can revoke capabilities. Observation never publishes the signal twice.
-    for (const state of states) requestSignal(state.signals, sig);
-    for (const record of records) requestSignal(record, sig);
+    for (const state of states) this.requestSignalIfPresent(state.signals, sig);
+    for (const record of records) this.requestSignalIfPresent(record, sig);
     const published = new Set(states.map(state => state.pid).concat(records.map(record => record.pid)));
     const roots = Array.from(this.reservedRoots.values()).filter(root => root.job === job && !published.has(root.pid));
     const reservations = roots.map<{ pid: number; signals: SignalTransport }>(root => ({ pid: root.pid, signals: root })).concat(reserved);
-    for (const target of reservations) if (!published.has(target.pid)) { requestSignal(target.signals, sig); published.add(target.pid); }
+    for (const target of reservations) if (!published.has(target.pid)) { this.requestSignalIfPresent(target.signals, sig); published.add(target.pid); }
     // Directory reservations can own pipe endpoints before a spawn message reaches the
     // supervisor. Freeze those rows too, after every member has selected its outcome.
-    for (const state of states) if (readOutcome(state.signals.outcome)?.kind === "signaled") this.revokeRuntimeProcess(state.pid);
+    for (const state of states) {
+      try { if (readOutcome(state.signals.outcome)?.kind === "signaled") this.revokeRuntimeProcess(state.pid); }
+      catch (error) { if (!isCollectedProcess(error)) throw error; }
+    }
     this.wake();
     const supervisor = await this.ready();
     if (this.suspended) return;
@@ -755,9 +766,9 @@ export class BrowserProcessBroker {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     // Publish every outcome before running user revocation callbacks.
-    for (const state of this.states()) requestSignal(state.signals, 9);
-    for (const root of this.reservedRoots.values()) requestSignal(root, 9);
-    for (const record of this.options.table.values()) requestSignal(record, 9);
+    for (const state of this.states()) this.requestSignalIfPresent(state.signals, 9);
+    for (const root of this.reservedRoots.values()) this.requestSignalIfPresent(root, 9);
+    for (const record of this.options.table.values()) this.requestSignalIfPresent(record, 9);
     for (const state of this.states()) { this.revokeRuntimeProcess(state.pid); const transport = this.transport.get(state.pid); if (transport) this.options.filesystem.revoke(this.filesystem(transport)); }
     for (const pid of this.controllers.keys()) {
       try { this.revokeController(pid); } catch (error) { this.report(error); }

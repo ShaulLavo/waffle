@@ -63,6 +63,44 @@ The instantiate phase and executor ready hook run only after validating the
 callable `_start` export and the exported WebAssembly memory. A later exit notice
 or numeric completion cannot replace the atomic typed startup outcome.
 
+## Process collection and reuse
+
+Process and job identities are monotonically allocated, non-wrapping incarnations;
+shared directory slots are recyclable storage, not identities. Captured process
+and job controls carry their incarnation in the same atomic word as the value.
+A late Worker cannot adopt a replacement's authority by retaining a shared view.
+An outcome is selected only against its process-specific running sentinel, so a
+late exit or signal cannot replace a successor's outcome.
+
+`runtime_proc.wait` observes a child's terminal outcome repeatedly. It does not
+collect the child. An exited child remains a zombie until collection and retains
+capacity while uncollected. Resource and filesystem fences must settle before a
+terminal outcome is collectable; choosing an outcome alone is not proof that a
+Worker's resources are safe to release.
+
+`wait_job` consumes a completed job and releases its remaining shared process
+slots. Host records are reconciled by subsequent broker receipts or pumping;
+physical host-map cleanup is not synchronous with a Worker's consuming return.
+Its nonblocking form reports pending until every live member and its cleanup
+fence has settled. Job-empty polling is observational. A job keeps its
+leader's typed outcome independently of the leader's process row, and completed
+members do not remain in its live membership. Shared job collection is helpable
+if a collector stops; host cleanup also reconciles the shared state without
+requiring a final Worker notification. An unconsumed completed job deliberately
+retains its job row and cached outcome until its consuming wait.
+
+Parent retirement collects completed children and forwards live descendants'
+controlling ancestry, preserving permitted signal and wait authority through
+compressed control-parent links. Immutable root ownership separately retains the
+controller, output, and shutdown lifetime after intermediate controllers disappear;
+it does not grant arbitrary ancestors signal authority while a direct owner lives.
+
+Pipe publication owners are enrolled before descriptor export under the spawn
+admission fence. Owner collection freezes old cursors and releases owner metadata;
+a delayed Worker cannot reenroll a collected identity. Cursor cells themselves
+are not reused: retained endpoint views have no cursor-incarnation field, and the
+separate cursor arena remains bounded at 16,777,216 cells (256 MiB).
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.
