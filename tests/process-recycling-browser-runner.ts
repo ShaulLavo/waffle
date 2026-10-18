@@ -171,6 +171,12 @@ try {
   });
   if (!startupWorkerBuild.success)
     throw new AggregateError(startupWorkerBuild.logs, "Startup diagnostic Worker bundle failed");
+  const quietWorkerBuild = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "fixtures/start-failure-quiet-worker.ts")],
+    target: "browser",
+  });
+  if (!quietWorkerBuild.success)
+    throw new AggregateError(quietWorkerBuild.logs, "Quiet startup failure Worker bundle failed");
   const diagnosticWorkerBuild = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "child-diagnostic-worker.ts")],
     target: "browser",
@@ -195,6 +201,8 @@ try {
       };
       if (path === "/pipe-filestat-worker.js")
         return new Response(pipeFilestatBuild.outputs[0]!, { headers });
+      if (path === "/start-failure-quiet-worker.js")
+        return new Response(quietWorkerBuild.outputs[0]!, { headers });
       if (path === "/startup-diagnostic-worker.js")
         return new Response(startupWorkerBuild.outputs[0]!, { headers });
       if (path === "/child-diagnostic-worker.js")

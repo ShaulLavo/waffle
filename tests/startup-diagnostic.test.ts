@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 
 test(
-  "real bootstrap startup failure keeps stderr until its one complete diagnostic drains",
+  "real bootstrap startup failure reports once to host after ordered acknowledgement",
   () =>
     browserStartupDiagnostic(
       new URL("./fixtures/startup-diagnostic-worker.ts", import.meta.url).href,
@@ -12,7 +12,7 @@ test(
 
 for (const mode of ["stalled", "closed", "dispose"] as const)
   test(
-    `startup diagnostic teardown finishes with a ${mode} reader`,
+    `suppressed startup diagnostic teardown finishes with a ${mode} reader`,
     () =>
       browserStartupDiagnostic(
         new URL("./fixtures/startup-diagnostic-worker.ts", import.meta.url).href,

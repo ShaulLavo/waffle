@@ -857,8 +857,14 @@ export class BrowserProcessBroker {
   ): void | Promise<void> {
     const record = this.options.table.get(pid);
     if (record?.state === "starting") this.traceProcess(record, "rejected", "start-failed");
+    // Host spawns can also have a bookkeeping parent. Only an admitted runtime_proc child
+    // has a parent consuming START_FAILED; keep its full diagnostic on the host, not fd 2.
+    const runtimeChild =
+      record !== undefined && record.parentPid !== 0 && this.transport.get(pid) !== undefined;
+    if (runtimeChild) this.report(error);
     const controller = this.controllers.get(pid);
     if (controller?.startFailed) return controller.startFailed(error, active);
+    if (runtimeChild) return;
     const stderr = this.children.get(pid)?.startupStderr ?? record?.descriptors.get(2)?.resource;
     if (stderr?.kind !== "pipe" && stderr?.kind !== "terminal") return;
     const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
