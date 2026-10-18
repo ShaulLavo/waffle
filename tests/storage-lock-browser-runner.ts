@@ -301,7 +301,8 @@ async function lateRecoveryPublication(context: BrowserContext, baseURL: string,
   try {
     const owner = await openFilesystem(context, baseURL, "indexeddb", name, "wait", "recovered"); pages.push(owner);
     await waitProbe(owner, "probe-recovered");
-    await owner.evaluate(() => (globalThis as any).lockTest.beginWrite("stale recovered mutation"));
+    await owner.evaluate(() => (globalThis as any).lockTest.beginDirectWrite("queued", "stale recovered mutation"));
+    assert((await owner.evaluate(() => (globalThis as any).lockTest.directWrite("queued"))).status === "pending", "queued write escaped load recovery gate");
     const successor = await openFilesystem(context, baseURL, "indexeddb", name); pages.push(successor);
     await waitProbe(owner, "filesystem-ownership-lost");
     const beforeRelease = await state(owner);
@@ -317,9 +318,14 @@ async function lateRecoveryPublication(context: BrowserContext, baseURL: string,
     assert(!probes.includes("filesystem-state:ready"), "worker published a recovered backend after ownership was lost");
     assert(probes.includes("probe-backend-disposed"), "worker did not dispose the backend returned after ownership loss");
     await waitState(owner, "failed");
+    await owner.evaluate(() => (globalThis as any).lockTest.beginDirectWrite("new", "new stale mutation"));
+    for (const label of ["queued", "new"]) {
+      await owner.waitForFunction(label => (globalThis as any).lockTest.directWrite(label).status !== "pending", label);
+      const result = await owner.evaluate(label => (globalThis as any).lockTest.directWrite(label), label);
+      assert(result.status === "rejected" && result.isError === true && typeof result.name === "string" && typeof result.message === "string", `${label} writeFile did not reject with an Error: ${JSON.stringify(result)}`);
+    }
     await owner.evaluate(() => (globalThis as any).lockTest.releaseOwnershipLoss());
     await dispose(owner);
-    await owner.waitForFunction(() => (globalThis as any).lockTest.operation().status === "rejected");
     const resources = await owner.evaluate(() => (globalThis as any).lockTest.resources());
     assert(resources.terminations === 1 && resources.clientDisposals === 1, `late recovery cleanup was not exactly once: ${JSON.stringify(resources)}`);
     await assertReady(successor, "late-recovery takeover successor");

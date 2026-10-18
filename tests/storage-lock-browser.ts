@@ -38,7 +38,9 @@ globalThis.Worker = class extends NativeWorker {
 let fs: SharedFilesystem | undefined;
 let state: StateRecord = { status: "opening" };
 const states: StateRecord[] = [];
-let operation: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string; errno?: number } = { status: "idle" };
+type OperationRecord = { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string; errno?: number; isError?: boolean; name?: string; message?: string };
+let operation: OperationRecord = { status: "idle" };
+const directWrites: Record<"queued" | "new", OperationRecord> = { queued: { status: "idle" }, new: { status: "idle" } };
 
 function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -131,7 +133,17 @@ async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecov
     const filesystem = requireFilesystem();
     void filesystem.writeFile("/queued", text).then(() => filesystem.flush()).then(
       () => { operation = { status: "fulfilled" }; },
-      error => { operation = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno }; },
+      error => { operation = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno, isError: error instanceof Error, name: error?.name, message: error?.message }; },
+    );
+  },
+  directWrite: (label: "queued" | "new") => directWrites[label],
+  beginDirectWrite(label: "queued" | "new", text: string): void {
+    if (directWrites[label].status !== "idle") throw new Error("direct write already started");
+    directWrites[label] = { status: "pending" };
+    // Observe writeFile itself: a later flush failure must not hide an accepted write.
+    void requireFilesystem().writeFile("/queued", text).then(
+      () => { directWrites[label] = { status: "fulfilled" }; },
+      error => { directWrites[label] = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno, isError: error instanceof Error, name: error?.name, message: error?.message }; },
     );
   },
   async readQueued(): Promise<string | undefined> {
