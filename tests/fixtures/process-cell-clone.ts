@@ -64,12 +64,16 @@ class Guest {
   private messages: unknown[] = [];
   private failure?: Error;
   private pending?: { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
-  constructor(data: object) {
-    this.channel.port1.on("message", message => {
+  constructor(data: object, readAfterExit = false) {
+    const readReplies = () => this.channel.port1.on("message", message => {
       const pending = this.pending;
       if (pending) { this.pending = undefined; clearTimeout(pending.timer); pending.resolve(message); }
       else this.messages.push(message);
     });
+    // Worker exit only follows messages on parentPort, not this transferred port.
+    // Its own close event follows its queued replies, so that is the reply fence.
+    this.channel.port1.on("close", () => this.fail(new Error("Node worker reply port closed before the next reply")));
+    if (!readAfterExit) readReplies();
     try {
       this.worker = new Worker(new URL(import.meta.url), { workerData: { ...data, port: this.channel.port2 }, transferList: [this.channel.port2] });
     } catch (error) {
@@ -77,7 +81,9 @@ class Guest {
       throw error;
     }
     this.worker.on("error", error => this.fail(error));
-    this.worker.on("exit", code => this.fail(new Error(`Node worker exited before the next reply (${code})`)));
+    // Leave replies buffered until exit to force the legal exit-before-reply
+    // ordering in the regression case, without timers or scheduler assumptions.
+    if (readAfterExit) this.worker.once("exit", readReplies);
   }
   private fail(error: Error): void {
     this.failure = error;
@@ -107,7 +113,7 @@ function fixture() {
   const child = reserveDirectoryProcess(root, 71, root.pid, 901, root.pid);
   return { root, child, state: workerProcessState(child) };
 }
-async function instances(): Promise<void> {
+async function instances(readAfterExit = false): Promise<void> {
   const { child, state } = fixture();
   assert.notEqual(state.job, state.pid);
   let guest: Guest | undefined;
@@ -115,9 +121,14 @@ async function instances(): Promise<void> {
     // Deliberately pass the actual instances, not extracted buffers or serializer
     // output. Main's captured validity closures throw DataCloneError right here.
     guest = new Guest({ role: "instances", process: state.signals.outcome, job: state.jobOutcome,
-      controls: [state.signals.interrupt, state.signals.signalState, state.jobPending], transport: child });
+      controls: [state.signals.interrupt, state.signals.signalState, state.jobPending], transport: child }, readAfterExit);
     assert.deepEqual(await guest.next(), { phase: "instances", pid: state.pid, job: state.job });
   } finally { await guest?.close(); }
+}
+async function noReply(): Promise<void> {
+  const guest = new Guest({ role: "no-reply" });
+  try { await assert.rejects(guest.next(), /reply port closed before the next reply/); }
+  finally { await guest.close(); }
 }
 async function stale(mode: "process" | "job"): Promise<void> {
   const { root, child, state } = fixture();
@@ -238,6 +249,7 @@ async function runWorker(): Promise<void> {
   const port = workerData.port as MessagePort;
   const descriptors = new DescriptorTable();
   try {
+    if (workerData.role === "no-reply") return;
     if (workerData.role === "instances") {
       const cloned = workerData as { process: outcome.OutcomeCell; job: outcome.OutcomeCell; controls: control.TaggedCells[]; transport: WorkerProcessTransport };
       const state = workerProcessState(cloned.transport);
@@ -293,9 +305,10 @@ async function runWorker(): Promise<void> {
 
 if (isMainThread) {
   const mode = process.argv[2];
-  if (mode === "instances") await instances();
+  if (mode === "instances" || mode === "instances-after-exit") await instances(mode === "instances-after-exit");
   else if (mode === "process" || mode === "job") await stale(mode);
   else if (mode === "broker") await broker();
+  else if (mode === "no-reply") await noReply();
   else throw new Error(`unknown fixture mode ${mode}`);
   console.log(`ok ${mode}`);
 } else await runWorker();
