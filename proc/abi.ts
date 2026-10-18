@@ -84,6 +84,7 @@ export class ProcessABI {
     }
     this.now = options.now ?? clock;
     this.imports = {
+      getpid: () => options.pid,
       spawn: (ptr, length) => this.result(() => options.service.spawn(options.pid, this.spawnRequest(ptr!, length!))),
       job_of: pid => this.result(() => options.service.jobOf(pid!)),
       pipe: ptr => this.result(() => this.pipe(ptr!)),

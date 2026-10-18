@@ -10,6 +10,14 @@ Waffle exposes browser-side capabilities to WebAssembly guests without requiring
 
 `BrowserProcessBroker` reserves identities and descriptor bindings synchronously, then activates the lazy supervisor. Worker bootstrap receives a compiled module, argv, environment, filesystem connection and optional process transport. Source bytes must pass interruption admission; a precompiled module is accepted only with explicit cooperative execution.
 
+## Process identity import
+
+`runtime_proc.getpid: () -> i32` returns the calling process's own positive runtime PID,
+not its parent PID or job ID. `ProcessABI` reads its already-bound `options.pid` directly;
+the call takes no arguments, reads no guest memory, never waits and sends no service or
+broker request. In-process and worker adapters expose the same import. It adds no eager
+process-service activation, helper export or RPC operation.
+
 ## Transport contracts
 
 Filesystem and process transports use shared-memory completion and readiness words plus message-port control. Descriptor bindings retain independent capability pins while duplicate bindings may share an open-file cursor. Termination selects one atomic outcome; cleanup acknowledgement and filesystem quiescence are separate facts.
