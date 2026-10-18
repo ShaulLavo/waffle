@@ -1,5 +1,6 @@
+import { executableAccessResult } from "../proc/access";
 import type { FilesystemConnection, FilesystemIdentity } from "../fs/protocol";
-import { errno, isRevoked } from "../fs/protocol";
+import { isRevoked } from "../fs/protocol";
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor";
 import type { ExecutableRegistry } from "../proc/registry";
 import type { ProcessIdentityAllocator } from "../proc/identity";
@@ -418,9 +419,7 @@ export class BrowserProcessBroker {
     let result = 0;
     try { active(); await this.options.registry.check(message.path, message.cwd, active); active(); }
     catch (error) {
-      const code = (error as { code?: string } | null)?.code;
-      result = -(code === "ENOENT" ? 44 : code === "EACCES" ? 2 : code === "ENOTDIR" ? 54
-        : error instanceof ProcessError ? error.errno : errno(error));
+      result = executableAccessResult(error);
     }
     // Retired requests can never publish a late result or wake a future request.
     const owned = requests.get(id) === request;

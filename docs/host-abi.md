@@ -34,15 +34,19 @@ The result is point-in-time: spawn checks the live file and registration again, 
 success cannot authorize an unlinked or unregistered program. Other filesystem failures retain
 their WASI errno (unexpected failures are EIO, never invented ENOENT).
 
-The process broker owns these requests because the filesystem worker has no executable registry.
+The process broker owns worker requests because the filesystem worker has no executable registry.
 Reusing filesystem request kind 3 would couple storage to the optional process/module graph.
-Request maps and completion cells are created only on first use; there is no registry snapshot.
-The imports never await, call `Atomics.wait`, compile, spawn, or allocate descriptors.
+Cooperative in-process guests use the same imports through their existing `ProcessSupervisor`,
+with the same registry check, result codes, 64-request bound and take/cancel/death ownership.
+Request maps and worker completion cells are created only on first use; there is no registry
+snapshot or activation of another supervisor. The imports never await, call `Atomics.wait`,
+compile, spawn, or allocate descriptors.
 
-Poll kind 5 subscribes to an executable query request ID. The broker stores the result before
-publishing completion and increments the process directory's common wake sequence only after
-publication, so a completion racing `poll` cannot be lost. Cancellation and process death do
-not publish a late completion.
+Poll kind 5 subscribes to an executable query request ID. Both adapters store the result before
+publishing completion and increment their ABI's common wake sequence only after publication,
+so a completion racing `poll` cannot be lost. `ProcessABI` forwards its supplied shared `wake`
+word to the in-process query service; worker clients use their process directory's wake word.
+Cancellation and process death do not publish a late completion.
 
 ## Transport contracts
 

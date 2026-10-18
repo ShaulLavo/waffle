@@ -1,3 +1,4 @@
+import { MAX_ACCESS_REQUESTS } from "./access";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors";
 import { ProcessIdentityAllocator } from "./identity";
 import { claimOutcome, readOutcome } from "./outcome";
@@ -10,8 +11,7 @@ const HEADER_WORDS = 4;
 const RECORD_WORDS = 80;
 const SIGNAL_OFFSET = 9;
 
-/** Allocated only on executable-query use; IDs never recycle within a process. */
-export const MAX_ACCESS_REQUESTS = 64;
+export { MAX_ACCESS_REQUESTS } from "./access";
 // Two words: pending=0, complete=1, retired=2; then the signed WASI result.
 // The broker stores the result before publishing complete and the common wake.
 export type WorkerAccessRequest = { id: number; completion: SharedArrayBuffer };

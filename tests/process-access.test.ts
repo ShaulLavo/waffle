@@ -232,3 +232,121 @@ function accessModule(): WebAssembly.Module {
   const exports = [4].concat(names.flatMap((name, i) => string(name).concat([0, i])));
   return new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0].concat(section(1, types), section(2, imports), section(7, exports))));
 }
+
+async function parityFixture(kind: "worker" | "cooperative") {
+  const f = await fixture();
+  const supervisor = new ProcessSupervisor({ registry: f.registry, launch() { throw new Error("queries must not launch"); } });
+  const root = supervisor.createRoot();
+  const descriptors = supervisor.get(root)!.descriptors;
+  const abi = kind === "worker" ? f.abi : new ProcessABI({ memory: f.memory, fs: f.fs, descriptors, pid: root,
+    service: supervisor, signals: supervisor.get(root)!, wake: f.client.wake,
+    wait() { throw new Error("nonblocking query slept"); },
+  });
+  return { ...f, abi, supervisor, root, descriptors,
+    start(path = "./guest", cwd = "/bin", mode = 1) {
+      return abi.imports.access_start!(1024, f.put(path, 1024), 2048, f.put(cwd, 2048), mode);
+    },
+    poll(id: number) {
+      const view = new DataView(f.memory.buffer);
+      view.setUint32(256, 5, true); view.setUint32(260, id, true); view.setBigUint64(264, 99n, true);
+      return abi.imports.poll!(256, 1, 0, 512);
+    },
+    settle: () => kind === "worker" ? Promise.all(f.deliver()) : new Promise<void>(resolve => setTimeout(resolve, 0)),
+    die() { if (kind === "worker") f.client.defaultSignal(f.client.pid, 9); else supervisor.kill(root, 9); },
+    async close() { supervisor.dispose(); await f.close(); },
+  };
+}
+
+for (const kind of ["worker", "cooperative"] as const) {
+  for (const [path, cwd, expected] of [
+    ["guest", "/bin", 0], ["./guest", "/bin", 0], ["../guest", "/bin/sub", 0],
+    ["/bin/guest", "/missing-cwd", 0], ["/../bin/guest", "/", 0], ["../bin/guest", "/", 0],
+    ["/bin/../../bin/guest", "/", 0], ["missing", "/bin", -44], ["plain", "/bin", -2],
+    ["sub", "/bin", -2], ["/bin/guest/", "/", -54], ["/bin/guest/../guest", "/", -54],
+    ["/missing/../bin/guest", "/", -44], ["﻿guest", "/bin", -44],
+  ] as const) test(`${kind} access parity: ${path} from ${cwd} gives ${expected}`, async () => {
+    const f = await parityFixture(kind);
+    try {
+      const before = Atomics.load(f.client.wake, 0), id = f.start(path, cwd);
+      expect(id).toBeGreaterThan(0);
+      await f.settle();
+      expect(Atomics.load(f.client.wake, 0)).toBeGreaterThan(before);
+      expect(f.poll(id)).toBe(1);
+      expect(f.abi.imports.access_take!(id)).toBe(expected);
+      expect(f.abi.imports.access_take!(id)).toBe(-8);
+      expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
+      expect(f.descriptors.get(0)).toBeUndefined();
+      expect(f.counts()).toEqual({ loads: 0, activations: 0, launches: 0, transfers: 0, waits: 0 });
+    } finally { await f.close(); }
+  });
+
+  test(`${kind} access parity: pending queries keep scheduler live and cancellation drops late completion`, async () => {
+    const f = await parityFixture(kind), deferred = f.defer();
+    let pending: Promise<unknown> | undefined;
+    try {
+      const id = f.start(); expect(id).toBeGreaterThan(0);
+      pending = f.settle(); await deferred.started;
+      expect(f.abi.imports.access_take!(id)).toBe(-6);
+      expect(f.poll(id)).toBe(0);
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      expect(f.abi.imports.getpid!()).toBe(kind === "worker" ? f.client.pid : f.root);
+      expect(f.abi.imports.access_cancel!(id)).toBe(0);
+      const sequence = Atomics.load(f.client.wake, 0);
+      deferred.release(); await pending; await f.settle();
+      expect(f.abi.imports.access_take!(id)).toBe(-8);
+      expect(Atomics.load(f.client.wake, 0)).toBe(sequence);
+      expect(f.counts()).toEqual({ loads: 0, activations: 0, launches: 0, transfers: 0, waits: 0 });
+    } finally { deferred.release(); await pending; await f.close(); }
+  });
+
+  test(`${kind} access parity: bounds, live registration checks and death retirement`, async () => {
+    const f = await parityFixture(kind);
+    try {
+      const ids = Array.from({ length: MAX_ACCESS_REQUESTS }, () => f.start());
+      expect(ids.every(id => id > 0)).toBe(true);
+      expect(f.start()).toBe(-6);
+      await f.settle(); expect(f.start()).toBe(-6);
+      expect(f.abi.imports.access_take!(ids[0]!)).toBe(0);
+      f.registry.unregister("/bin/guest");
+      const missingRegistration = f.start(); await f.settle();
+      expect(f.abi.imports.access_take!(missingRegistration)).toBe(-2);
+      f.register(); f.fs.remove("/bin/guest");
+      const missingFile = f.start(); await f.settle();
+      expect(f.abi.imports.access_take!(missingFile)).toBe(-44);
+      f.die();
+      expect(f.abi.imports.access_take!(ids[1]!)).toBe(-71);
+      expect(f.abi.imports.access_cancel!(ids[2]!)).toBe(-71);
+      expect(f.start()).toBe(-71);
+      expect(f.counts()).toEqual({ loads: 0, activations: 0, launches: 0, transfers: 0, waits: 0 });
+    } finally { await f.close(); }
+  });
+}
+
+for (const kind of ["worker", "cooperative"] as const) test(`${kind} access parity: death discards a pending lookup without a late wake`, async () => {
+  const f = await parityFixture(kind), deferred = f.defer();
+  let pending: Promise<unknown> | undefined;
+  try {
+    const id = f.start(); expect(id).toBeGreaterThan(0);
+    pending = f.settle(); await deferred.started;
+    f.die();
+    const sequence = Atomics.load(f.client.wake, 0);
+    expect(f.abi.imports.access_take!(id)).toBe(-71);
+    deferred.release(); await pending; await f.settle();
+    expect(Atomics.load(f.client.wake, 0)).toBe(sequence);
+    expect(f.abi.imports.access_cancel!(id)).toBe(-71);
+  } finally { deferred.release(); await pending; await f.close(); }
+});
+
+for (const kind of ["worker", "cooperative"] as const) test(`${kind} access parity: copied inputs, invalid modes and request ownership`, async () => {
+  const f = await parityFixture(kind);
+  try {
+    for (const mode of [0, 2, 3, -1]) expect(f.start("guest", "/bin", mode)).toBe(-28);
+    for (const [path, cwd] of [["", "/bin"], ["guest", "bin"], ["a\0b", "/bin"]]) expect(f.start(path, cwd)).toBe(-28);
+    const id = f.start("../guest", "/bin/sub"); expect(id).toBeGreaterThan(0);
+    new Uint8Array(f.memory.buffer).fill(0, 1024, 4096); f.memory.grow(1);
+    await f.settle(); expect(f.abi.imports.access_take!(id)).toBe(0);
+    expect(f.abi.imports.access_cancel!(id)).toBe(-8);
+    expect(f.lookups).toEqual(["/bin/sub/../guest"]);
+    expect(f.counts()).toEqual({ loads: 0, activations: 0, launches: 0, transfers: 0, waits: 0 });
+  } finally { await f.close(); }
+});

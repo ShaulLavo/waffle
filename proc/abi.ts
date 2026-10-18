@@ -22,7 +22,7 @@ export interface ProcessService {
   /** Privileged local services check guest authority; broker clients are already caller-bound. */
   canSignal?(callerPid: number, targetPid: number): boolean;
   canSignalJob?(callerPid: number, job: number): boolean;
-  accessStart?(pid: number, path: string, cwd: string): number;
+  accessStart?(pid: number, path: string, cwd: string, wake?: Int32Array): number;
   accessTake?(pid: number, request: number): number;
   accessCancel?(pid: number, request: number): number;
   accessReady?(pid: number, request: number): boolean;
@@ -148,7 +148,7 @@ export class ProcessABI {
     if (mode !== 1) return -ProcessErrno.INVAL;
     const path = this.accessPath(ptr, length), cwd = this.accessPath(cwdPtr, cwdLength);
     if (!cwd.startsWith("/")) return -ProcessErrno.INVAL;
-    return this.options.service.accessStart?.(this.options.pid, path, cwd) ?? -NOSYS;
+    return this.options.service.accessStart?.(this.options.pid, path, cwd, this.options.wake) ?? -NOSYS;
   }
   private spawnRequest(ptr: number, length: number): SpawnRequest {
     // Guest memory may be resizable; TextDecoder's WebIDL input requires a fixed buffer.
