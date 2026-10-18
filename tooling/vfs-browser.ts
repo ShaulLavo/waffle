@@ -176,7 +176,7 @@ function createFilesystem(input: BrowserRequest): SharedFilesystem {
     {
       workerURL: "/fs-worker.js",
       name: input.name,
-      storage: input.backend,
+      vfs: input.backend === "opfs" ? "opfs-memory" : "indexeddb",
       ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}),
     },
     (stage, timestamp) => {
