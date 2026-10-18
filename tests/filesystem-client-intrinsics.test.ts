@@ -7,7 +7,7 @@ import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/proce
 
 const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
   readFileSync(new URL("../fs/client.ts", import.meta.url), "utf8")
-    .replace(/^import .*;\n/gm, "")
+    .replace(/^import\b[^;]*;\n/gm, "")
     .replace(/^export /gm, "")
     .concat("\nreturn { FilesystemClient, FilesystemCompletion };\n"),
 );
