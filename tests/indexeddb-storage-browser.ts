@@ -487,6 +487,24 @@ async function runtimeInvalidFormatCase(name: string, workerURL: string | URL): 
   }
 }
 
+async function runtimeInvalidSchemaCase(name: string, workerURL: string | URL): Promise<void> {
+  const opening = indexedDB.open(name, 1);
+  opening.onupgradeneeded = () => opening.result.createObjectStore("not-a-filesystem");
+  const db = await request(opening);
+  db.close();
+  await runtimeInvalidStorageCase(name, "indexeddb", workerURL);
+  const unchanged = await request(indexedDB.open(name));
+  try {
+    assert(
+      unchanged.objectStoreNames.length === 1 &&
+        unchanged.objectStoreNames.contains("not-a-filesystem"),
+      "incompatible schema was not changed",
+    );
+  } finally {
+    unchanged.close();
+  }
+}
+
 async function promptly<T>(pending: Promise<T>): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -617,6 +635,8 @@ function indexedDBCases(
       runtimeVfsCase(name, "indexeddb", filesystemWorkerURL, open));
     test("runtime VFS selection reports incompatible formats without resetting data", (name) =>
       runtimeInvalidFormatCase(name, filesystemWorkerURL));
+    test("runtime VFS selection reports incompatible schemas without changing their stores", (name) =>
+      runtimeInvalidSchemaCase(name, filesystemWorkerURL));
     test("runtime startup milestones cross the actual filesystem worker boundary", (name) =>
       runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
     test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", (name) =>

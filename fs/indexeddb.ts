@@ -364,6 +364,14 @@ export class IndexedDBStorage implements StorageBackend {
       db.close();
       throw signal.reason;
     }
+    if (!["metadata", "journal", "data"].every((store) => db.objectStoreNames.contains(store))) {
+      db.close();
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB database schema",
+      );
+    }
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
