@@ -22,7 +22,7 @@ export function verify(actual: Uint8Array, identity: number, size: number, offse
   if (actual.length !== size || hash(actual) !== hash(content(identity, size, offset))) throw new Error(`Content verification failed: ${identity}/${offset}/${size}, got ${actual.length}`);
 }
 const number = (n: number) => n.toString().padStart(5, "0");
-export function w1Path(file: number): string { return `/d${number(Math.floor(file / 10))}/f${number(file)}`; }
+function w1Path(file: number): string { return `/d${number(Math.floor(file / 10))}/f${number(file)}`; }
 export const W1_READ_SET = Array.from({ length: 128 }, (_, i) => (i * 389 + FIXTURE_SEED) % SIZES.W1.files);
 /** Seed through today's storage API, outside timing. This avoids preloading 50,000
  * tiny files into a 64-KiB-per-file resident pool and does not change runtime behavior.

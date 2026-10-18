@@ -49,7 +49,7 @@ let startupReady: Promise<void> = Promise.resolve();
 // Compile before browser filesystem/first-use clocks. Controller readiness
 // deliberately includes this worker startup and compilation.
 const guest = new WebAssembly.Module(guestFixture());
-export async function request(input: BrowserRequest): Promise<BrowserResult> {
+async function request(input: BrowserRequest): Promise<BrowserResult> {
   const empty = (): BrowserResult => ({ metrics: {}, latencies: {}, acknowledgements: [], observations: {} });
   if (input.action === "delete-empty") {
     if (fs || input.backend !== "indexeddb") throw new Error("Delete only a closed diagnostic IndexedDB workspace");

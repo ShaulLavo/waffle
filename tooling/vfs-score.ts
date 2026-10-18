@@ -27,7 +27,7 @@ export function median(values: readonly number[]): number {
   const sorted = values.toSorted((a, b) => a - b), middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
-export function percentile(values: readonly number[], fraction: number): number {
+function percentile(values: readonly number[], fraction: number): number {
   if (!values.length || fraction <= 0 || fraction > 1) throw new Error("Invalid percentile");
   return values.toSorted((a, b) => a - b)[Math.ceil(fraction * values.length) - 1]!;
 }
@@ -66,7 +66,7 @@ function group(rows: readonly Sample[], initialArchive = false): Map<string, Sam
   }
   return result;
 }
-export interface CellScore { key: string; state: Eligibility; reason?: string; score?: number; raw: Record<string, { baseline: number; candidate: number; unit: string }>; acceptedScore?: number; paired: Record<string, ReturnType<typeof pairedInterval>>; guardrails: Record<string, ReturnType<typeof pairedInterval> & { pass: boolean }>; }
+interface CellScore { key: string; state: Eligibility; reason?: string; score?: number; raw: Record<string, { baseline: number; candidate: number; unit: string }>; acceptedScore?: number; paired: Record<string, ReturnType<typeof pairedInterval>>; guardrails: Record<string, ReturnType<typeof pairedInterval> & { pass: boolean }>; }
 /** The initial baseline remains immutable. An accepted reference is a separate ratchet input.
  * Missing/failed cells are visible and make the fixed-mask score incomplete, never faster. */
 export function score(initial: readonly Sample[], candidate: readonly Sample[], accepted?: readonly Sample[], acceptedBest: Partial<Record<VfsName, number>> = {}) {
