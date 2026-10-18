@@ -1,3 +1,4 @@
+import { OPFS_FORMAT } from "../fs/vfs-format.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
 import {
@@ -6,6 +7,8 @@ import {
   bytes,
   rejects,
   runtimeStartupCase,
+  runtimeVfsCase,
+  runtimeInvalidStorageCase,
   storageContractCases,
   type BrowserStorageTest,
 } from "./indexeddb-storage-browser.js";
@@ -131,7 +134,7 @@ interface OpfsCase {
   run(name: string, open: (options?: OpfsStorageOptions) => Promise<OpfsStorage>): Promise<void>;
 }
 
-function focusedCases(): OpfsCase[] {
+function focusedCases(filesystemWorkerURL?: string | URL): OpfsCase[] {
   return [
     {
       label: "contested OPFS opens wait, then read saved data after ownership",
@@ -914,6 +917,70 @@ function focusedCases(): OpfsCase[] {
       },
     },
     {
+      label: "OPFS persists format identity and adopts validated unmarked data",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1, "legacy data"));
+        await storage.flush();
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.getFileHandle(`format-${OPFS_FORMAT}`);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        const adopted = await open();
+        assert((await adopted.load())?.generation === 1, "legacy namespace survives adoption");
+        assert(
+          new TextDecoder().decode(await adopted.read("file:1")) === "legacy data",
+          "legacy payload survives adoption",
+        );
+        await adopted.close();
+        await metadata.getFileHandle(`format-${OPFS_FORMAT}`);
+      },
+    },
+    {
+      label: "OPFS rejects mismatched identity without replacing saved data",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1, "preserved"));
+        await storage.flush();
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        await metadata.getFileHandle("format-another-v9", { create: true });
+        const reopened = await open();
+        await rejects(reopened.load(), "format identity");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
+        await metadata.getFileHandle("format-another-v9");
+        await metadata.removeEntry("format-another-v9");
+        const restored = await open();
+        assert((await restored.load())?.generation === 1, "failed open preserves namespace");
+        assert(
+          new TextDecoder().decode(await restored.read("file:1")) === "preserved",
+          "failed open preserves payload",
+        );
+        await restored.close();
+      },
+    },
+    {
+      label: "OPFS does not adopt unmarked unknown metadata",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1));
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        await metadata.getFileHandle("foreign-layout", { create: true });
+        const reopened = await open();
+        await rejects(reopened.load(), "metadata layout");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
+        await metadata.getFileHandle("foreign-layout");
+        await rejects(metadata.getFileHandle(`format-${OPFS_FORMAT}`), "NotFound");
+      },
+    },
+    {
       label: "all corrupt OPFS snapshots reject instead of resetting existing storage",
       async run(name, open) {
         const storage = await open();
@@ -938,6 +1005,9 @@ function focusedCases(): OpfsCase[] {
         const reopened = await open();
         await rejects(reopened.load(), "corrupt");
         await rejects(reopened.persist(batch(2)), "corrupt");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
       },
     },
   ];
@@ -954,12 +1024,16 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
       ? []
       : [
           {
+            label: "runtime VFS selection preserves existing OPFS workspaces",
+            run: (name, open) => runtimeVfsCase(name, "opfs-memory", filesystemWorkerURL, open),
+          },
+          {
             label:
               "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
             run: (name) => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
           },
         ];
-  return shared.concat(runtime, focusedCases()).map(({ label, run }) => ({
+  return shared.concat(runtime, focusedCases(filesystemWorkerURL)).map(({ label, run }) => ({
     label,
     async run() {
       const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;

@@ -1,3 +1,4 @@
+import { withVfsImplementation } from "../fs/vfs-internal.js";
 import { indexeddbStartupIntervals } from "./vfs-startup.js";
 import type { RuntimeStartupStage } from "../fs/startup.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
@@ -173,12 +174,12 @@ function createFilesystem(input: BrowserRequest): SharedFilesystem {
     ready = resolve;
   });
   return new SharedFilesystem(
-    {
+    withVfsImplementation(input.backend === "opfs" ? "opfs-memory" : "indexeddb", {
       workerURL: "/fs-worker.js",
       name: input.name,
-      storage: input.backend,
+      mode: "fast",
       ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}),
-    },
+    }),
     (stage, timestamp) => {
       startup[stage] = timestamp;
       if (stage === "filesystem-ready") ready();

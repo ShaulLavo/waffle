@@ -1,16 +1,19 @@
+import { withVfsImplementation } from "../fs/vfs-internal.js";
 import {
   SharedFilesystem,
+  VfsError,
   type SharedFilesystemOptions,
   type SharedFilesystemState,
-  type SharedFilesystemStorage,
 } from "../browser/shared-fs.js";
 
-type Backend = SharedFilesystemStorage;
+type Backend = "indexeddb" | "opfs";
 type Busy = "wait" | "takeover";
 
 type StateRecord = {
   status: SharedFilesystemState["status"];
   error?: string;
+  code?: string;
+  vfs?: string;
 };
 
 const NativeWorker = globalThis.Worker;
@@ -67,7 +70,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 function record(next: SharedFilesystemState): void {
-  state = { status: next.status, error: next.error?.message };
+  state = {
+    status: next.status,
+    error: next.error?.message,
+    ...(next.error instanceof VfsError ? { code: next.error.code, vfs: next.error.vfs } : {}),
+  };
   states.push(state);
 }
 function requireFilesystem(): SharedFilesystem {
@@ -111,17 +118,20 @@ async function start(
 ): Promise<void> {
   if (fs) throw new Error("filesystem already started");
   holdOwnershipLoss = gatedRecovery === "recovered";
-  const options: SharedFilesystemOptions = {
-    workerURL:
-      gatedRecovery === "recovered"
-        ? "/recovery-fs-worker.js?recovered"
-        : gatedRecovery
-          ? "/recovery-fs-worker.js"
-          : "/fs-worker.js",
-    name,
-    storage: backend,
-    onStateChange: record,
-  };
+  const options: SharedFilesystemOptions = withVfsImplementation(
+    backend === "opfs" ? "opfs-memory" : "indexeddb",
+    {
+      workerURL:
+        gatedRecovery === "recovered"
+          ? "/recovery-fs-worker.js?recovered"
+          : gatedRecovery
+            ? "/recovery-fs-worker.js"
+            : "/fs-worker.js",
+      name,
+      mode: "fast",
+      onStateChange: record,
+    },
+  );
   if (whenBusy !== undefined) (options as { whenBusy?: Busy }).whenBusy = whenBusy;
   fs = new SharedFilesystem(options);
   observeOperationalReadiness(fs);
@@ -234,13 +244,13 @@ async function start(
     return navigator.locks.query();
   },
   async failWithOpfsTakeover(name: string): Promise<void> {
-    const invalid = {
+    const invalid = withVfsImplementation("opfs-memory", {
       workerURL: "/fs-worker.js",
       name,
-      storage: "opfs",
+      mode: "fast",
       whenBusy: "takeover",
       onStateChange: record,
-    } as unknown as SharedFilesystemOptions;
+    } as SharedFilesystemOptions);
     try {
       fs = new SharedFilesystem(invalid);
       observeOperationalReadiness(fs);

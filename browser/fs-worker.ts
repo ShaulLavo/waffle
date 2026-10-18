@@ -5,14 +5,15 @@ import {
   IndexedDBStorage,
   OpfsStorage,
 } from "../fs/index.js";
+import { resolveVfs, requireVfsCapabilities } from "../fs/vfs.js";
 installFilesystemWorker(self, async (options, onStartupStage, signal, onWaiting) => {
-  if (options.persistence === false) return new MemoryBackend();
+  const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
+  requireVfsCapabilities(descriptor.implementation);
+  if (descriptor.implementation === "memory") return new MemoryBackend();
   let backend: PersistentBackend | undefined;
   let ownershipLost = false;
-  if (options.storage === "opfs" && options.whenBusy === "takeover")
-    throw new TypeError('OPFS storage only supports whenBusy: "wait"');
   const storage =
-    options.storage === "opfs"
+    descriptor.implementation === "opfs-memory"
       ? await OpfsStorage.open(options.name ?? "waffle-workspace", {
           onStartupStage,
           signal,
@@ -22,7 +23,7 @@ installFilesystemWorker(self, async (options, onStartupStage, signal, onWaiting)
           onStartupStage,
           signal,
           onWaiting,
-          whenBusy: options.whenBusy,
+          whenBusy,
           onOwnershipLost() {
             ownershipLost = true;
             backend?.dispose();

@@ -59,7 +59,7 @@ function installWorker(): void {
 function filesystem(onStartupStage?: RuntimeStartupObserver): SharedFilesystem {
   installWorker();
   const fs = new SharedFilesystem(
-    { workerURL: "https://example.test/fs.js", persistence: false },
+    { workerURL: "https://example.test/fs.js", mode: "memory" },
     onStartupStage,
   );
   filesystems.push(fs);
@@ -79,7 +79,7 @@ test("runtime observation is opt-in, with no diagnostic clocks or messages by de
   clockSpies.push(clock);
   installWorker();
   const runtime = createRuntime({
-    filesystem: { workerURL: "https://example.test/fs.js", persistence: false },
+    filesystem: { workerURL: "https://example.test/fs.js", mode: "memory" },
   });
   runtimes.push(runtime);
   expect(await runtime.filesystem.listFiles()).toEqual([]);
@@ -101,7 +101,7 @@ test("runtime forwards fixed stages and original worker timestamps, with readine
     });
   installWorker();
   const runtime = createRuntime({
-    filesystem: { workerURL: "https://example.test/fs.js", persistence: false },
+    filesystem: { workerURL: "https://example.test/fs.js", mode: "memory" },
     onStartupStage: (stage, timestamp) => {
       seen.push([stage, timestamp]);
     },
@@ -194,6 +194,10 @@ function indexedDBFixture() {
   let grant!: () => void;
   let closed = false;
   const db = {
+    objectStoreNames: {
+      length: 3,
+      contains: (name: string) => ["metadata", "journal", "data"].includes(name),
+    },
     close() {
       closed = true;
     },
