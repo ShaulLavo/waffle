@@ -171,20 +171,28 @@ function equal(actual: unknown, expected: unknown, label: string): void {
 }
 function exited(code: number): ProcessExit { return { kind: "exited", code, status: code }; }
 
-class ProcessWorker {
+export class ProcessWorker {
   private worker?: Worker;
   private failure?: Error;
   private sequence = 0;
   private readonly pending = new Map<number, {
     resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>;
   }>();
-  constructor(readonly transport: WorkerProcessTransport, readonly notify: (message: WorkerProcessMessage) => void) {}
+  constructor(readonly transport: WorkerProcessTransport, readonly notify: (message: WorkerProcessMessage) => void,
+    private readonly failed: (error: Error) => void,
+    private readonly createWorker = () => new Worker("/process-client.js", { type: "module" })) {}
+  private fail(error: Error): void {
+    if (this.failure) return;
+    this.failure = error;
+    try { this.failed(error); }
+    finally { this.stop(error); }
+  }
   async start(): Promise<void> {
-    this.worker = new Worker("/process-client.js", { type: "module" });
+    this.worker = this.createWorker();
     this.worker.onmessage = (event: MessageEvent<Response | WorkerProcessMessage | WorkerFatal>) => {
       if ("type" in event.data) {
         if (event.data.type === "process-test-fatal") {
-          this.stop(Object.assign(new Error(event.data.error.message), event.data.error));
+          this.fail(Object.assign(new Error(event.data.error.message), event.data.error));
         } else this.notify(event.data);
         return;
       }
@@ -196,9 +204,9 @@ class ProcessWorker {
     };
     this.worker.onerror = event => {
       event.preventDefault();
-      this.stop(new Error(`Process Worker error: ${event.message || "unknown error"} at ${event.filename}:${event.lineno}:${event.colno}`));
+      this.fail(new Error(`Process Worker error: ${event.message || "unknown error"} at ${event.filename}:${event.lineno}:${event.colno}`));
     };
-    this.worker.onmessageerror = () => this.stop(new Error("Process Worker response could not be decoded"));
+    this.worker.onmessageerror = () => this.fail(new Error("Process Worker response could not be decoded"));
     const result = await this.request<{ isolated: boolean; shared: boolean }>({ operation: "init", transport: this.transport });
     assert(result.isolated && result.shared, "Worker must have real cross-origin-isolated shared memory");
   }
@@ -264,7 +272,7 @@ class ProcessFixture {
       const admission = this.broker.handle(message, pid);
       void admission.catch(() => {});
       this.admissions.push(admission);
-    });
+    }, error => this.errors.push(error));
     this.workers.set(pid, worker); // Own Worker and all its RPC timers before allocation.
     await worker.start();
     return worker;
@@ -467,7 +475,7 @@ async function rootCleanupCase(): Promise<void> {
       if (activation === "eager") await broker.ready();
       // Exit's directory outcome is already published; rootExit owns host completion.
       // Keep the real Worker notice to replay after retirement, as a queued late message.
-      const worker = new ProcessWorker(transport, message => notices.push(message));
+      const worker = new ProcessWorker(transport, message => notices.push(message), error => diagnostics.push(error));
       workers.set(pid, worker);
       await worker.start();
       await worker.request({ operation: "exit", code: 0 });
@@ -484,13 +492,13 @@ async function rootCleanupCase(): Promise<void> {
     }
     equal(retired, 2, "one retirement callback per completed root");
     equal(Array.from(table.values()).length, 0, "all root host records collected");
-    equal(diagnostics.map(String), [], "root retirement diagnostics");
   } finally {
     try { await broker.dispose(); }
     finally {
       for (const worker of workers.values()) worker.stop(); workers.clear();
     }
   }
+  equal(diagnostics.map(String), [], "root retirement diagnostics");
 }
 
 async function rejectsErrno(action: () => Promise<unknown>, expected: number, label: string): Promise<void> {
@@ -518,7 +526,7 @@ export async function runProcessBrowserCase(label: string): Promise<string> {
   try {
     if (!test.standalone) await fixture.start();
     await test.run(fixture);
-    equal(fixture.errors.map(String), [], "unexpected broker diagnostics");
-    return label;
   } finally { await fixture.close(); }
+  equal(fixture.errors.map(String), [], "unexpected broker or Worker diagnostics");
+  return label;
 }
