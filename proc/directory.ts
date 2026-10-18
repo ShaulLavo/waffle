@@ -455,7 +455,8 @@ function finishDirectoryJob(directory: SharedArrayBuffer, slot: number, job: num
     retiring = packedControl(job, 3);
   let token = Atomics.load(group, 0);
   if (token === ready) {
-    if (controlLoad(cells(group, job, 4)) !== -1) return;
+    // A helper may have retired and reused the header after our lifecycle read.
+    if (Atomics.load(group, 4) !== packedControl(job, -1)) return;
     Atomics.compareExchange(group, 0, ready, retiring);
     token = Atomics.load(group, 0);
   }
@@ -569,12 +570,31 @@ export function collectDirectoryJob(
   slot: number,
   job: number,
 ): ProcessExit {
-  const group = directoryJob(directory, slot, job);
-  const result = readOutcome(group.outcome);
-  if (!result || controlLoad(group.pending) !== 0)
-    throw new ProcessError(ProcessErrno.AGAIN, "job has not become empty");
-  if (controlCas(group.pending, 0, 0, -1) !== 0)
+  let result: ProcessExit;
+  try {
+    const group = directoryJob(directory, slot, job);
+    const outcome = readOutcome(group.outcome);
+    const pending = controlLoad(group.pending);
+    if (pending < 0) throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
+    if (!outcome || pending !== 0)
+      throw new ProcessError(ProcessErrno.AGAIN, "job has not become empty");
+    result = outcome;
+  } catch (error) {
+    if (isCollectedProcess(error))
+      throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
+    throw error;
+  }
+  // This tagged CAS is the consuming linearization point. Once it succeeds, a
+  // helper may immediately free/reuse the header, so a post-CAS live-row check
+  // would discard our successful claim. The complete expected word rejects a
+  // competing collector and every replacement incarnation without touching it.
+  const pending = row(directory, slot, true).subarray(4, 5);
+  if (
+    Atomics.compareExchange(pending, 0, packedControl(job, 0), packedControl(job, -1)) !==
+    packedControl(job, 0)
+  ) {
     throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
+  }
   finishDirectoryJob(directory, slot, job);
   return result;
 }

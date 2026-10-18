@@ -483,22 +483,34 @@ export class WorkerProcessClient {
         this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH,
         `unknown or collected job ${job}`,
       );
-    if (
-      callerPid === this.pid &&
-      directoryControls(
-        this.options.transport.directory,
-        () => controlLoad(group.controlParent),
-        callerPid,
+    try {
+      if (
+        callerPid === this.pid &&
+        directoryControls(
+          this.options.transport.directory,
+          () => controlLoad(group.controlParent),
+          callerPid,
+        )
       )
-    )
-      return group;
+        return group;
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.CHILD, `job ${job} has been collected`);
+      throw error;
+    }
     throw new ProcessError(63, `job ${job} is outside the caller's owner chain`);
   }
   private jobIsEmpty(group: ReturnType<typeof directoryJob>): boolean {
-    const pending = controlLoad(group.pending);
-    if (pending < 0)
-      throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
-    return pending === 0;
+    try {
+      const pending = controlLoad(group.pending);
+      if (pending < 0)
+        throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
+      return pending === 0;
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
+      throw error;
+    }
   }
   jobEmpty(callerPid: number, job: number): boolean {
     return this.jobIsEmpty(this.requireJob(callerPid, job));
