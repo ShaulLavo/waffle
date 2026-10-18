@@ -498,4 +498,3 @@ Plain Node consumers that only need the JavaScript memory helper use
 `waffle/core/memory-views`, without loading the TypeScript WASI adapter. The repository's
 unbundled headless hosts import that JavaScript source relatively, so native CLI tests do not require
 installing playground dependencies.
-
