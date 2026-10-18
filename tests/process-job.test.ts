@@ -126,7 +126,7 @@ test("process and job confirmation await filesystem fences before individual rea
     release(); await pending; await Promise.resolve();
     expect((await exit).status).toBe(7);
     expect(supervisor.wait(shell, leader)?.status).toBe(7);
-    supervisor.reap(shell, leader);
+    expect(() => supervisor.wait(shell, leader)).toThrow("not a child");
     expect(controlLoad(wake, 0)).toBe(1);
     expect(supervisor.waitJob(shell, job)?.status).toBe(7);
   } finally { unregister(); supervisor.dispose(); }

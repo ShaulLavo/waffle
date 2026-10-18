@@ -1,3 +1,5 @@
+import { ProcessABI } from "../proc/abi";
+import { MemFS } from "../fs/memory";
 import { collectDirectoryProcess, collectDirectoryJob, directorySlots, directoryJobs, directoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, reserveDirectoryProcess } from "../proc/directory";
 import { packedControl, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
 import { afterEach, expect, test } from "bun:test";
@@ -256,11 +258,11 @@ test("worker authority permits self and descendants but not sibling processes or
   expect(f.root.wait(1, b)).toBeNull();
 });
 
-test("directory exhaustion is bounded and never reuses a completed process identity", async () => {
+test("uncollected zombies retain bounded capacity and keep unique process identities", async () => {
   const f = fixture({ capacity: 2 });
   const pid = f.root.spawn(1, request()); await f.flush(); await f.supervisor.start(pid);
   f.contexts.get(pid)!.exit(0);
-  expect(f.root.wait(1, pid)?.status).toBe(0);
+  expect(f.root.childExited(1, pid)).toBe(true);
   expect(() => f.root.spawn(1, request())).toThrow("directory is full");
   expect(f.messages.length).toBe(0);
 });
@@ -732,7 +734,8 @@ test("more than three thousand same-job child lifetimes recycle bounded process 
     await f.flush();
     f.supervisor.exit(pid, cycle);
     expect(f.root.wait(1, pid)?.code).toBe(cycle);
-    expect(f.supervisor.reap(1, pid).code).toBe(cycle);
+    await f.flush();
+    expect(f.supervisor.get(pid)).toBeUndefined();
     expectErrno(() => f.root.wait(1, pid), 12);
     f.contexts.delete(pid);
     expect(directorySlots(f.transport.directory)).toHaveLength(1);
@@ -1117,9 +1120,9 @@ test("an internal readiness SRCH race cannot skip physical termination or orphan
   const f = fixture({ capacity: 3, terminate() { terminated++; }, beforeActivation(supervisor) {
     supervisor.registerJobReadiness(() => { throw new ProcessError(ProcessErrno.SRCH, "captured job header was recycled"); });
   } });
-  const parent = f.root.spawn(1, request()); await f.flush();
+  const parent = f.root.spawn(1, request()); await f.flush(); await f.supervisor.start(parent);
   const client = f.client(f.broker.get(parent)!);
-  const child = client.spawn(parent, request()); await f.flush();
+  const child = client.spawn(parent, request()); await f.flush(); await f.supervisor.start(child);
   expect(() => f.supervisor.exit(child, 3)).not.toThrow();
   expect(f.supervisor.get(child)?.result?.code).toBe(3);
   expect(() => f.supervisor.exit(parent, 4)).not.toThrow();
@@ -1341,3 +1344,74 @@ for (const joining of [false, true]) {
     expect(directoryJobs(root.directory)).toEqual([]);
   });
 }
+
+for (const completion of ["exit", "kill"] as const) {
+  test(`worker wait collects direct child but wait_job retains a live grandchild until ${completion}`, async () => {
+    const f = fixture({ capacity: 3 });
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const abi = new ProcessABI({ memory, descriptors: f.root.options.descriptors, fs: new MemFS(),
+      pid: f.root.pid, service: f.root, signals: f.root.signals });
+    const view = new DataView(memory.buffer);
+    const leaderPid = f.root.spawn(f.root.pid, request()); await f.flush();
+    const job = f.root.jobOf(leaderPid), leader = f.client(f.broker.get(leaderPid)!);
+    const grandchildPid = leader.spawn(leaderPid, request({ job })); await f.flush();
+    const grandchild = f.client(f.broker.get(grandchildPid)!);
+    expect(abi.imports.wait!(leaderPid, 64)).toBe(-6);
+    leader.exit(23); await f.flush();
+    // Exactly bash-web's order: collect direct children first, then wait on their group.
+    expect(abi.imports.wait!(leaderPid, 64)).toBe(0);
+    expect(view.getInt32(68, true)).toBe(23);
+    expect(abi.imports.wait!(leaderPid, 64)).toBe(-12);
+    await f.flush();
+    expect(directorySlots(f.transport.directory)).toHaveLength(2);
+    expect(f.supervisor.get(leaderPid)).toBeUndefined();
+    for (let repeat = 0; repeat < 3; repeat++) expect(abi.imports.wait_job!(job, 1, 80)).toBe(-6);
+    // The orphan remains controllable even though its original parent's slot is gone.
+    if (completion === "kill") f.root.kill(grandchildPid, 9);
+    else grandchild.exit(7);
+    await f.flush();
+    expect(abi.imports.wait_job!(job, 1, 80)).toBe(0);
+    expect(view.getInt32(80, true)).toBe(23);
+    expect(abi.imports.wait_job!(job, 1, 80)).toBe(-12);
+    await f.flush();
+    expect(directorySlots(f.transport.directory)).toHaveLength(1);
+    expect(directoryJobs(f.transport.directory)).toHaveLength(1);
+  });
+}
+
+test("worker child polling is observational and the consuming wait releases capacity before its receipt", async () => {
+  const f = fixture({ capacity: 2 });
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const abi = new ProcessABI({ memory, descriptors: f.root.options.descriptors, fs: new MemFS(),
+    pid: f.root.pid, service: f.root, signals: f.root.signals });
+  const pid = f.root.spawn(f.root.pid, request({ job: f.root.job })); await f.flush();
+  const view = new DataView(memory.buffer);
+  view.setUint32(256, 2, true); view.setUint32(260, pid, true);
+  f.supervisor.exit(pid, 31);
+  for (let repeat = 0; repeat < 3; repeat++) {
+    expect(abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+    expect(directorySlots(f.transport.directory)).toHaveLength(2);
+  }
+  expect(abi.imports.wait!(pid, 64)).toBe(0);
+  expect(view.getInt32(68, true)).toBe(31);
+  expect(abi.imports.wait!(pid, 64)).toBe(-12);
+  expect(abi.imports.poll!(256, 1, 0, 512)).toBe(-12);
+  const next = f.root.spawn(f.root.pid, request({ job: f.root.job }));
+  expect(next).toBeGreaterThan(pid);
+  await f.flush();
+  expect(f.supervisor.get(pid)).toBeUndefined();
+  expect(f.supervisor.get(next)).toBeDefined();
+});
+
+test("failed executable spawns release their slots through individual waits beyond directory capacity", async () => {
+  const f = fixture({ capacity: 2 });
+  for (let iteration = 0; iteration < 32; iteration++) {
+    const pid = f.root.spawn(f.root.pid, request({ executable: "missing", job: f.root.job }));
+    await f.flush(); await f.supervisor.start(pid);
+    expect(f.root.wait(f.root.pid, pid)).toMatchObject({ kind: "start-failed", error: "ENOENT" });
+    expect(directorySlots(f.transport.directory)).toHaveLength(1);
+    await f.flush();
+    expect(f.supervisor.get(pid)).toBeUndefined();
+    expect(f.broker.get(pid)).toBeUndefined();
+  }
+});

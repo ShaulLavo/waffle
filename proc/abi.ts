@@ -13,7 +13,10 @@ import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest
  * module loading and guest startup happen elsewhere, never on this import's stack. */
 export interface ProcessService {
   spawn(parentPid: number, request: SpawnRequest): number;
+  /** Consume one safely exited child; null means it is still pending. */
   wait(parentPid: number, pid: number): ProcessExit | null;
+  /** Observe child readiness without consuming its status or capacity. */
+  childExited(parentPid: number, pid: number): boolean;
   waitJob(callerPid: number, job: number): ProcessExit | null;
   jobEmpty(callerPid: number, job: number): boolean;
   registerJobWake?(callerPid: number, job: number, wake: Int32Array): () => void;
@@ -326,7 +329,7 @@ export class ProcessABI {
       return ready ? { readable: true, writable: false, hangup: false } : null;
     }
     if (sub.kind === 4) return this.options.service.jobEmpty(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
-    if (sub.kind === 2) return this.options.service.wait(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
+    if (sub.kind === 2) return this.options.service.childExited(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
     const fs: NonblockingFileSystem = this.options.fs;
     if (sub.kind === 3) {
       const ready = this.options.service.filesystemReady

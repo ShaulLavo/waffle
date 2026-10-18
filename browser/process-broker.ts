@@ -99,6 +99,7 @@ export class BrowserProcessBroker {
   private readonly rootLeases = new Map<number, number>();
   private readonly controllers = new Map<number, ProcessController>();
   private revokedControllers?: Set<number>;
+  private readonly quiescedControllers = new WeakSet<ProcessController>();
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
   private launches?: Set<number>;
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
@@ -385,22 +386,22 @@ export class BrowserProcessBroker {
     // process row was collected. The still-live directory and captured PID authenticate
     // the notice, never the process now occupying its old slot.
     let retainedNotice = false;
-    if (!sender && (message.operation === "spawn" || message.operation === "reap-job")) {
+    if (!sender && (message.operation === "spawn" || message.operation === "reap-job" || message.operation === "reap-process")) {
       const directory = workerProcessDirectoryId(message.transport);
       const root = Array.from(this.roots.values()).find(root => workerProcessDirectoryId(root) === directory);
       if (root) {
-        if (message.operation === "reap-job") retainedNotice = message.transport.pid === senderPid;
+        if (message.operation === "reap-job" || message.operation === "reap-process") retainedNotice = message.transport.pid === senderPid;
         else {
           try { retainedNotice = workerProcessState(message.transport).parentPid === senderPid; }
           catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
         }
       }
     }
-    if ((!sender && !retainedNotice) || this.suspended || (sender && message.operation !== "reap-job" && (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)))))) {
+    if ((!sender && !retainedNotice) || this.suspended || (sender && message.operation !== "reap-job" && message.operation !== "reap-process" && (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)))))) {
       this.rejectMessage(message, senderPid, this.suspended ? "broker-disposed" : !sender ? "unknown-sender" : result?.kind === "signaled" ? "sender-signaled" : "sender-revoked"); return;
     }
     if (message.operation === "access" || message.operation === "access-cancel") {
-      if (result || workerProcessState(message.transport).pid !== senderPid ||
+      if (!sender || result || workerProcessState(message.transport).pid !== senderPid ||
         workerProcessDirectoryId(sender) !== workerProcessDirectoryId(message.transport)) {
         this.rejectMessage(message, senderPid, "wrong-sender"); return;
       }
@@ -599,14 +600,22 @@ export class BrowserProcessBroker {
   private quiesceProcess(pid: number): void | Promise<void> {
     const pending = this.fences.get(pid);
     if (pending) return pending;
+    const controller = this.controllers.get(pid);
+    // The supervisor drops settled fence promises before physical stop is scheduled.
+    // Remember completion on the controller without retaining finished process IDs.
+    if (controller && this.quiescedControllers.has(controller)) return;
+    const complete = () => {
+      this.collectRuntimeProcess(pid);
+      if (controller) this.quiescedControllers.add(controller);
+    };
     let fence: void | Promise<void>;
     try { fence = this.processFence(pid); } catch (error) { fence = Promise.reject(error); }
     if (fence) {
-      const complete = Promise.resolve(fence).then(() => this.collectRuntimeProcess(pid));
-      this.fences.set(pid, complete);
-      return complete;
+      const pending = Promise.resolve(fence).then(complete);
+      this.fences.set(pid, pending);
+      return pending;
     }
-    this.collectRuntimeProcess(pid);
+    complete();
   }
   private revokeController(pid: number): void {
     const controller = this.controllers.get(pid);

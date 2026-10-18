@@ -332,14 +332,14 @@ class ProcessFixture {
 }
 
 type BrowserCase = { label: string; standalone?: boolean; run(fixture: ProcessFixture): Promise<void> };
-// These cases deliberately use the existing observational wait and consuming waitJob.
-// Direct child reap/waitpid assertions await ABI clearance.
+// Exercise consuming waits and recyclable shared slots across real Worker boundaries.
 const cases: BrowserCase[] = [
-  { label: "shared Worker exit waits remain observational until job collection", async run(f) {
+  { label: "shared Worker waits consume one child independently of job collection", async run(f) {
     const pid = await f.spawn(), job = f.job(pid);
     equal(await f.call(f.pid, { operation: "wait", pid }), null, "running child wait");
     await f.exit(pid, 23);
-    for (let repeat = 0; repeat < 3; repeat++) equal(await f.call(f.pid, { operation: "wait", pid }), exited(23), "repeatable wait");
+    equal(await f.call(f.pid, { operation: "wait", pid }), exited(23), "consuming wait");
+    await rejectsErrno(() => f.call(f.pid, { operation: "wait", pid }), ProcessErrno.CHILD, "repeat wait");
     equal(await f.call(f.pid, { operation: "wait-job", job }), exited(23), "job outcome");
     assert(!f.supervisor.get(pid), "Job collection must remove the host process record");
     await rejectsProcess(() => f.call(f.pid, { operation: "wait", pid }), "collected child wait");
@@ -362,12 +362,34 @@ const cases: BrowserCase[] = [
     }
     equal(Array.from(f.supervisor.table.values(), record => record.pid), [f.pid], "remaining host processes");
   } },
+  { label: "repeated real Worker individual waits recycle a still-live shell job", async run(f) {
+    const job = f.job(f.pid);
+    for (let iteration = 0; iteration < 32; iteration++) {
+      const pid = await f.spawn(f.pid, job);
+      await f.exit(pid, iteration);
+      equal(await f.call(f.pid, { operation: "wait", pid }), exited(iteration), "individual collection");
+      await rejectsErrno(() => f.call(f.pid, { operation: "wait", pid }), ProcessErrno.CHILD, "repeat individual wait");
+      f.workers.get(pid)!.stop(); f.workers.delete(pid); f.notices.length = 0;
+      equal(directorySlots(f.root.directory), [f.root.slot], "only the still-live shell occupies a slot");
+      equal(directoryJobs(f.root.directory).length, 1, "the shell's job remains live");
+    }
+  } },
+  { label: "direct child wait leaves a live grandchild pending until job collection", async run(f) {
+    const leader = await f.spawn(), job = f.job(leader);
+    const grandchild = await f.spawn(leader, job);
+    await f.exit(leader, 23);
+    equal(await f.call(f.pid, { operation: "wait", pid: leader }), exited(23), "collect direct child");
+    for (let repeat = 0; repeat < 3; repeat++) equal(await f.call(f.pid, { operation: "wait-job", job }), null, "orphan keeps group pending");
+    await f.exit(grandchild, 7);
+    equal(await f.call(f.pid, { operation: "wait-job", job }), exited(23), "cached leader outcome after grandchild exit");
+    await rejectsErrno(() => f.call(f.pid, { operation: "wait-job", job }), ProcessErrno.CHILD, "repeat group collection");
+  } },
   { label: "unreaped zombie keeps immutable outcome across late Worker messages", async run(f) {
     const pid = await f.spawn(), job = f.job(pid);
     await f.exit(pid, 7);
     await f.call(pid, { operation: "exit", code: 99 });
-    equal(await f.call(f.pid, { operation: "wait", pid }), exited(7), "late exit cannot replace zombie outcome");
     assert(f.supervisor.get(pid) && f.broker.get(pid), "Uncollected zombie must remain addressable");
+    equal(await f.call(f.pid, { operation: "wait", pid }), exited(7), "late exit cannot replace zombie outcome");
     equal(await f.call(f.pid, { operation: "wait-job", job }), exited(7), "zombie job collection");
   } },
   { label: "unreaped zombies retain capacity until consuming job wait", async run(f) {

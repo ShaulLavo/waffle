@@ -119,11 +119,21 @@ A late Worker cannot adopt a replacement's authority by retaining a shared view.
 An outcome is selected only against its process-specific running sentinel, so a
 late exit or signal cannot replace a successor's outcome.
 
-`runtime_proc.wait` observes a child's terminal outcome repeatedly. It does not
-collect the child. An exited child remains a zombie until collection and retains
-capacity while uncollected. Resource and filesystem fences must settle before a
-terminal outcome is collectable; choosing an outcome alone is not proof that a
-Worker's resources are safe to release.
+`runtime_proc.wait(pid, out)` consumes one direct child's terminal outcome. It
+returns `-EAGAIN` (`-6`) while the child or its resource/filesystem cleanup fence is
+pending. Success writes the existing 8-byte little-endian kind/code record and
+immediately releases that child's shared process slot, independently of its job.
+A subsequent wait, or a wait for a non-child, returns `-ECHILD` (`-12`). Pipe-owner
+metadata has been released by the cleanup fence; a consuming wait never retains it.
+An exited but uncollected child remains a zombie and retains process capacity.
+Choosing an outcome alone is not proof that a Worker's resources are safe to release.
+
+Poll kind 2 observes a child's readiness through
+`ProcessService.childExited(parentPid, pid): boolean`; it never consumes the exit
+or releases capacity. Repeated readiness polls leave exactly one successful `wait`
+available. The host-side observation throws ECHILD for a collected or non-child
+PID (guest poll returns `-12`). Host `wait` is consuming too; `waitForExit` remains
+an asynchronous observation, and explicit host `reap` also consumes a child.
 
 `wait_job` consumes a completed job and releases its remaining shared process
 slots. Host records are reconciled by subsequent broker receipts or pumping;
@@ -135,6 +145,25 @@ members do not remain in its live membership. Shared job collection is helpable
 if a collector stops; host cleanup also reconciles the shared state without
 requiring a final Worker notification. An unconsumed completed job deliberately
 retains its job row and cached outcome until its consuming wait.
+
+`wait_job(job, flags, out)` keeps the existing arguments and 4-byte status result;
+flags `1` is nonblocking and `0` blocks. Collecting every direct child with `wait`
+does **not** consume its job: `wait_job(job, 1, out)` returns `-EAGAIN` while any
+descendant member or its cleanup fence remains pending, then succeeds using the
+cached leader outcome after all members finish. Only consuming `wait_job` itself
+makes a repeat return `-ECHILD`. Unknown job IDs return `-ESRCH` (`-71`). Spawn
+selectors are unchanged: `0` and `-1` create foreground/background jobs, and a
+positive selector joins an existing live job.
+
+Host control fields in `ProcessContext`, `SignalTransport`, `SpawnReservation`
+and `ProcessABIOptions.wait` use `ControlCells` (`Int32Array | TaggedCells`). Outcome
+fields use `OutcomeWord` (`BigInt64Array | OutcomeCell`); `claimOutcome` and
+`readOutcome` accept that union, so consumers must use those helpers rather than
+raw atomics on outcome fields. `SpawnReservation` also carries optional
+`controlParent` and `rootPid`; `SharedJobIdentity` carries optional `controlParent`.
+Captured stale tagged controls/outcomes throw `ProcessError(SRCH = 71)` and cannot
+read or change the next occupant of the recycled slot. These are matching-package
+host contracts, not version-negotiation paths.
 
 Parent retirement collects completed children and forwards live descendants'
 controlling ancestry, preserving permitted signal and wait authority through

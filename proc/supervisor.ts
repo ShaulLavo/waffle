@@ -398,7 +398,12 @@ export class ProcessSupervisor {
       } catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
     }
   }
-  wait(parentPid: number, pid: number): ProcessExit | null { return this.child(parentPid, pid).result; }
+  /** Observation for readiness polling; only wait/reap consumes a child. */
+  childExited(parentPid: number, pid: number): boolean { return this.child(parentPid, pid).result !== null; }
+  wait(parentPid: number, pid: number): ProcessExit | null {
+    if (!this.child(parentPid, pid).result) return null;
+    return this.reap(parentPid, pid);
+  }
   /** Returns and reaps a completed job, retaining the leader's typed outcome even if it was reaped separately. */
   waitJob(parentPid: number, jobId: number): ProcessExit | null {
     const job = this.requireWaitJob(parentPid, jobId);

@@ -211,19 +211,19 @@ test("file errors and capability checks do not advance offsets or write guest bu
   expect(f.abi.imports.write!(read, 2048, 1)).toBe(-76);
 });
 
-test("wait emits little-endian exit/signal records and remains level-triggered", () => {
+test("wait emits little-endian exit/signal records and consumes each child once", () => {
   const f = fixture();
   const normal = f.spawn(), signaled = f.spawn();
   f.supervisor.exit(normal, 23);
   expect(f.abi.imports.wait!(normal, 64)).toBe(0);
   expect(Array.from(f.bytes().subarray(64, 72))).toEqual([0, 0, 0, 0, 23, 0, 0, 0]);
-  expect(f.abi.imports.wait!(normal, 64)).toBe(0);
+  expect(f.abi.imports.wait!(normal, 64)).toBe(-12);
   expect(f.abi.imports.kill!(signaled, Signal.SIGTERM)).toBe(0);
   expect(f.abi.imports.wait!(signaled, 64)).toBe(0);
   expect(Array.from(f.bytes().subarray(64, 72))).toEqual([1, 0, 0, 0, 15, 0, 0, 0]);
   expect(f.abi.imports.wait!(99999, 64)).toBe(-12);
   expect(f.abi.imports.kill!(99999, 2)).toBe(-71);
-  expect(f.abi.imports.kill!(normal, 32)).toBe(-28);
+  expect(f.abi.imports.kill!(f.pid, 32)).toBe(-28);
   expect(f.abi.imports.job_of!(99999)).toBe(-71);
 });
 
@@ -299,7 +299,7 @@ test("poll timeout, invalid subscriptions and filesystem completion do not corru
   expect(f.abi.imports.poll!(65528, 1, 0, 512)).toBe(-21);
   expect(f.abi.imports.poll!(256, -1, 0, 512)).toBe(-21);
   expect(f.abi.imports.poll!(256, 1, 0, 65528)).toBe(-21);
-  const service = { waitJob: f.supervisor.waitJob.bind(f.supervisor), jobEmpty: f.supervisor.jobEmpty.bind(f.supervisor), spawn: f.supervisor.spawn.bind(f.supervisor), wait: f.supervisor.wait.bind(f.supervisor), kill: f.supervisor.kill.bind(f.supervisor), killJob: f.supervisor.killJob.bind(f.supervisor), jobOf: f.supervisor.jobOf.bind(f.supervisor), defaultSignal: f.supervisor.defaultSignal.bind(f.supervisor), filesystemReady: (_pid: number, request: number) => request === 77 && complete };
+  const service = { waitJob: f.supervisor.waitJob.bind(f.supervisor), jobEmpty: f.supervisor.jobEmpty.bind(f.supervisor), spawn: f.supervisor.spawn.bind(f.supervisor), wait: f.supervisor.wait.bind(f.supervisor), childExited: f.supervisor.childExited.bind(f.supervisor), kill: f.supervisor.kill.bind(f.supervisor), killJob: f.supervisor.killJob.bind(f.supervisor), jobOf: f.supervisor.jobOf.bind(f.supervisor), defaultSignal: f.supervisor.defaultSignal.bind(f.supervisor), filesystemReady: (_pid: number, request: number) => request === 77 && complete };
   const other = new ProcessABI({ memory: f.memory, descriptors: f.descriptors, fs: f.fs, pid: f.pid, signals: f.signals, service });
   f.sub(0, 3, 77);
   expect(other.imports.poll!(256, 1, 0, 512)).toBe(1);
@@ -659,4 +659,20 @@ test("a worker-hosted WASM guest returns EAGAIN before poll blocks and wakes on 
     clearTimeout(timer);
     await worker.terminate();
   }
+});
+
+test("repeated child readiness polling does not collect the later consuming wait", () => {
+  const f = fixture(), pid = f.spawn();
+  f.sub(0, 2, pid);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
+  f.supervisor.exit(pid, 37);
+  for (let repeat = 0; repeat < 3; repeat++) {
+    expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(1);
+    expect(f.supervisor.get(pid)).toBeDefined();
+    expect(f.supervisor.childExited(f.pid, pid)).toBe(true);
+  }
+  expect(f.abi.imports.wait!(pid, 64)).toBe(0);
+  expect(f.view().getInt32(68, true)).toBe(37);
+  expect(f.abi.imports.wait!(pid, 64)).toBe(-12);
+  expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-12);
 });

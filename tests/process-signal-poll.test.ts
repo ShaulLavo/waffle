@@ -12,7 +12,7 @@ function fixture() {
     requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() };
   const unused = (): never => { throw new Error("unexpected service operation"); };
   const abi = new ProcessABI({ memory: new WebAssembly.Memory({ initial: 1 }), descriptors, fs: new MemFS(), pid: 1, signals,
-    service: { spawn: unused, wait: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused } });
+    service: { spawn: unused, wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused } });
   return { abi, signals, dispose: () => descriptors.dispose() };
 }
 
