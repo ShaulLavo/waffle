@@ -9,10 +9,15 @@ const fixture = `
 import { existsSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const name = process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
-if (process.argv.slice(2).join(",") !== "chromium,firefox,webkit") throw Error("missing engine");
-writeFileSync(name + ".started", "");
-while (!names.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
-writeFileSync(name + ".finished", "all engines");
+const engines = process.argv.slice(2).join(",");
+if (engines === "chromium,firefox") {
+  writeFileSync(name + ".started", "");
+  while (!names.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
+} else if (engines === "webkit") {
+  if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early WebKit");
+  if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
+} else throw Error("missing engine");
+writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
 if (process.env.MATRIX_FAIL === name) throw Error("fixture failure");
 `;
 
@@ -45,15 +50,19 @@ async function matrix(failing: string): Promise<void> {
     }
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing !== "");
-    for (const runner of runners)
-      expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("all engines");
+    for (const runner of runners) {
+      expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
+        "chromium,firefox",
+      );
+      expect(await readFile(join(root, `${runner}.webkit.finished`), "utf8")).toBe("webkit");
+    }
   } finally {
     if (cleanupError) console.error(`Retained browser matrix scratch: ${root}`, cleanupError);
     else await rm(root, { recursive: true, force: true });
   }
 }
 
-test("browser matrix launches all suites concurrently with every engine", async () => {
+test("browser matrix overlaps Chromium and Firefox suites before running WebKit suites alone", async () => {
   await matrix("");
 }, 15_000);
 

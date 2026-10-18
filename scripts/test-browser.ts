@@ -9,21 +9,29 @@ const runners = [
   "tests/storage-lock-browser-runner.ts",
   "tests/process-recycling-browser-runner.ts",
 ];
+const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
+  runners.map((runner) => [{ runner, engines: ["webkit"] }]),
+);
+let failures: Error[] = [];
 try {
-  const results = await Promise.allSettled(
-    runners.map((runner) =>
-      runOwned([process.execPath, runner, "chromium", "firefox", "webkit"], {
-        cwd: import.meta.dir + "/..",
-        env: process.env,
-        signal: stopped.signal,
-      }),
-    ),
-  );
-  const failures = results.flatMap((result, index) =>
-    result.status === "rejected"
-      ? [new Error(`${runners[index]} failed`, { cause: result.reason })]
-      : [],
-  );
+  for (const batch of batches) {
+    const results = await Promise.allSettled(
+      batch.map(({ runner, engines }) =>
+        runOwned([process.execPath, runner].concat(engines), {
+          cwd: import.meta.dir + "/..",
+          env: process.env,
+          signal: stopped.signal,
+        }),
+      ),
+    );
+    failures = failures.concat(
+      results.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [new Error(`${batch[index]?.runner} failed`, { cause: result.reason })]
+          : [],
+      ),
+    );
+  }
   if (failures.length) throw new AggregateError(failures, "Browser matrix failed");
 } finally {
   process.removeListener("SIGINT", stop);
