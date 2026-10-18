@@ -1,3 +1,4 @@
+import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
@@ -334,6 +335,9 @@ class ProcessFixture {
 type BrowserCase = { label: string; standalone?: boolean; run(fixture: ProcessFixture): Promise<void> };
 // Exercise consuming waits and recyclable shared slots across real Worker boundaries.
 const cases: BrowserCase[] = [
+  { label: "cell clone: browser broker spawns and waits after slot recycling", standalone: true, run: browserBrokerCellClone },
+  { label: "cell clone: Worker rejects stale process cells after collection and recycling", standalone: true, run: () => browserStaleCellClone(false) },
+  { label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id", standalone: true, run: () => browserStaleCellClone(true) },
   { label: "shared Worker waits consume one child independently of job collection", async run(f) {
     const pid = await f.spawn(), job = f.job(pid);
     equal(await f.call(f.pid, { operation: "wait", pid }), null, "running child wait");

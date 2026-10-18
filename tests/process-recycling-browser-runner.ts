@@ -108,10 +108,16 @@ try {
   if (!build.success) throw new AggregateError(build.logs, "Process browser fixture bundle failed");
   const script = build.outputs[0]!;
   const worker = `(${installClientWorker.toString()})();`;
+  const cellWorkerBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "fixtures/browser-cell-clone.ts")], target: "browser" });
+  if (!cellWorkerBuild.success) throw new AggregateError(cellWorkerBuild.logs, "Cell clone Worker bundle failed");
+  const cellFsBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "../browser/fs-worker.ts")], target: "browser" });
+  if (!cellFsBuild.success) throw new AggregateError(cellFsBuild.logs, "Cell clone filesystem Worker bundle failed");
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
     const headers = { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp",
       "Content-Type": path === "/" ? "text/html" : "text/javascript" };
+    if (path === "/cell-worker.js") return new Response(cellWorkerBuild.outputs[0]!, { headers });
+    if (path === "/cell-fs-worker.js") return new Response(cellFsBuild.outputs[0]!, { headers });
     if (path === "/tests.js") return new Response(script, { headers });
     if (path === "/process-client.js") return new Response(worker, { headers });
     if (path === "/") return new Response("<!doctype html><title>Process transport tests</title>", { headers });

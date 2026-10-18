@@ -10,7 +10,7 @@ import type { ProcessTable } from "../proc/table.js";
 import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types.js";
 import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types.js";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals.js";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { claimOutcome, outcomeWord, readOutcome, serializeOutcome } from "../proc/outcome.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission.js";
 import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
@@ -483,7 +483,7 @@ export class BrowserProcessBroker {
       connection = this.options.filesystem.connect(filesystem);
       worker = child.worker = new Worker(options.workerUrl, { type: "module" });
     } catch (error) { child.failed = true; connection?.port.close(); throw error; }
-    const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: context.outcome };
+    const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: serializeOutcome(context.outcome) };
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "phase" && data.name === "instantiate") child.started = true;

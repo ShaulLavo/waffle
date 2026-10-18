@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { ProcessABI } from "../proc/abi.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { claimOutcome, outcomeWord, readOutcome, serializeOutcome } from "../proc/outcome.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { ProcessError } from "../proc/types.js";
 
@@ -109,7 +109,7 @@ test("a generic root retains typed EIO when its first process import fails", asy
   try {
     const messages: unknown[] = [];
     await failFirstWorkerImport({ module, args: [], env: {}, filesystem: connection.client,
-      runtimeProcess: transport, outcome: state.signals.outcome }, message => messages.push(message));
+      runtimeProcess: transport, outcome: serializeOutcome(state.signals.outcome) }, message => messages.push(message));
     expect(readOutcome(state.signals.outcome)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
     expect(messages).toContainEqual(expect.objectContaining({ type: "error", code: 126, message: expect.stringContaining("first worker-client import rejected") }));
   } finally { connection.client.port.close(); connection.server.port.close(); }
