@@ -1,19 +1,19 @@
-import { TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
-import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory";
+import { TaggedCells, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
+import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { BrowserProcessBroker } from "../browser/process-broker";
-import { ProcessIdentityAllocator } from "../proc/identity";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessTable } from "../proc/table";
-import type { RootProcessOptions } from "../proc/supervisor";
-import type { WorkerProcessBroker } from "../proc/worker-broker";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
-import { DescriptorTable } from "../core/descriptors";
-import { connectFilesystemIdentity, createFilesystemIdentity, revokeFilesystem } from "../fs/protocol";
-import { createSignalState, type SignalTransport } from "../proc/signals";
-import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
-import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessTable } from "../proc/table.js";
+import type { RootProcessOptions } from "../proc/supervisor.js";
+import type { WorkerProcessBroker } from "../proc/worker-broker.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { connectFilesystemIdentity, createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
+import { createSignalState, type SignalTransport } from "../proc/signals.js";
+import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes.js";
 
 test("one browser process owner admits multiple roots with shared monotonically allocated identities", async () => {
   const identities = new ProcessIdentityAllocator();
@@ -53,7 +53,7 @@ test("root admission cannot create a live process behind concurrent disposal", a
 });
 
 test("revocation never allocates a process in an unrelated root pipe registry", async () => {
-  const { PipePublicationRegistry } = await import("../proc/pipes");
+  const { PipePublicationRegistry } = await import("../proc/pipes.js");
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
   const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
@@ -74,7 +74,7 @@ test("revocation never allocates a process in an unrelated root pipe registry", 
 });
 
 test("failed direct root activation retains its consumer fence and stop capability", async () => {
-  const proc = await import("../proc");
+  const proc = await import("../proc/index.js");
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
   const failure = new Error("partial root initialization failed");
   let release!: () => void;
@@ -113,7 +113,7 @@ test("adopting and closing a pipe-only root never activates a supervisor", async
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
   let activations = 0;
   const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
-    activate: async () => { activations++; return import("../proc"); },
+    activate: async () => { activations++; return import("../proc/index.js"); },
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
     launch() { throw new Error("unused"); },
   });
@@ -131,7 +131,7 @@ test("explicit lazy root identities advance the shared allocator before activati
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
   let activations = 0;
   const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
-    activate: async () => { activations++; return import("../proc"); },
+    activate: async () => { activations++; return import("../proc/index.js"); },
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
     launch() { throw new Error("unused"); },
   });
@@ -151,7 +151,7 @@ test("explicit lazy root identities advance the shared allocator before activati
 });
 
 test("job kill publishes every lazy direct and runtime root before callbacks and activation", async () => {
-  const proc = await import("../proc");
+  const proc = await import("../proc/index.js");
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities);
   let releaseActivation!: (value: typeof proc) => void;
   const activation = new Promise<typeof proc>(resolve => { releaseActivation = resolve; });
@@ -187,9 +187,8 @@ test("job kill publishes every lazy direct and runtime root before callbacks and
     const supervisor = await broker.ready();
     expect(supervisor.get(firstPid)?.result?.status).toBe(137);
     expect(supervisor.get(secondPid)?.result?.status).toBe(137);
-    // The killed lazy runtime root retires before activation; its outcome was
-    // already checked above alongside the direct roots before any callback.
-    expect(supervisor.get(genericState.pid)).toBeUndefined();
+    // Runtime roots also wait for the asynchronous shared-resource cleanup fence.
+    expect(await supervisor.waitForExit(0, genericState.pid)).toMatchObject({ status: 137 });
     expect(supervisor.get(otherPid)?.result).toBeNull();
   } finally {
     releaseActivation(proc);
@@ -318,7 +317,7 @@ for (const kind of ["direct", "runtime"] as const) test(`one hundred completed $
   let activations = 0, stops = 0, retired = 0;
   const filesystem = createFilesystemIdentity();
   const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
-    activate: async () => { activations++; return import("../proc"); },
+    activate: async () => { activations++; return import("../proc/index.js"); },
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
     launch() { throw new Error("unused"); },
   });
@@ -760,15 +759,15 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
 });
 
 for (const failure of ["first-import", "error-event", "running-error"] as const) test(`generic child ${failure} preserves startup versus execution failure`, async () => {
-  const { failFirstWorkerImport } = await import("./first-worker-import");
+  const { failFirstWorkerImport } = await import("./first-worker-import.js");
   const previousWorker = globalThis.Worker;
   const workers: FakeWorker[] = [], ports: MessagePort[] = [];
   class FakeWorker {
-    request?: import("../browser/worker").RuntimeWorkerRequest;
+    request?: import("../browser/worker.js").RuntimeWorkerRequest;
     onmessage: ((event: MessageEvent) => void) | null = null;
     onerror: ((event: ErrorEvent) => void) | null = null;
     constructor() { workers.push(this); }
-    postMessage(request: import("../browser/worker").RuntimeWorkerRequest) { this.request = request; }
+    postMessage(request: import("../browser/worker.js").RuntimeWorkerRequest) { this.request = request; }
     terminate() {}
     emit(data: unknown) { this.onmessage?.({ data } as MessageEvent); }
   }
@@ -828,14 +827,14 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
     const moduleRequested = new Promise<void>(resolve => { resolvingModule = resolve; });
     registry.register("leader", { adapter: "fixture", module, interruptible: true });
     registry.register("descendant", { adapter: "fixture", async module() { resolvingModule(); await moduleGate; return module; }, interruptible: true });
-    const contexts = new Map<number, import("../proc/types").ProcessContext>();
+    const contexts = new Map<number, import("../proc/types.js").ProcessContext>();
     const diagnostics: unknown[] = [], ports: MessagePort[] = [];
     const previousWorker = globalThis.Worker, workers = new Map<number, FakeWorker>();
     class FakeWorker {
       onmessage: ((event: MessageEvent) => void) | null = null;
       onerror: ((event: ErrorEvent) => void) | null = null;
       terminations = 0;
-      postMessage(request: import("../browser/worker").RuntimeWorkerRequest) {
+      postMessage(request: import("../browser/worker.js").RuntimeWorkerRequest) {
         workers.set(workerProcessState(request.runtimeProcess!).pid, this);
       }
       terminate() { this.terminations++; }
@@ -900,7 +899,7 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       const childPid = parent.client.spawn(parentPid, spawn("descendant", parent.client.job, 1));
       const notice = messages.shift()!;
       expect(notice.operation).toBe("spawn");
-      const inherited = notice.transport.resources[0] as { endpoint: import("../proc/pipes").PipeEndpointHandle };
+      const inherited = notice.transport.resources[0] as { endpoint: import("../proc/pipes.js").PipeEndpointHandle };
       const control = new Int32Array(inherited.endpoint.buffer, 0, 6), generation = controlLoad(control, 5);
       const lifetime = new Int32Array(inherited.endpoint.lifetime);
       const parentWorker = workers.get(parentPid)!;
@@ -912,7 +911,7 @@ for (const activation of ["lazy", "eager"] as const) for (const exitAt of ["befo
       // Acknowledgement then closes the parent's proxy before queued admission executes.
       parent.descriptors.dispose();
       parent.client.exit(0);
-      revokeFilesystem((broker.transportFor(parentPid)!.data as { filesystem: import("../fs/protocol").FilesystemIdentity }).filesystem);
+      revokeFilesystem((broker.transportFor(parentPid)!.data as { filesystem: import("../fs/protocol.js").FilesystemIdentity }).filesystem);
       if (exitAt === "before-admission") {
         parentWorker.emit(notice);
         expect(supervisor.get(childPid)).toBeUndefined();
@@ -1040,7 +1039,7 @@ for (const controllerStop of [false, true]) test(`an external asynchronous handl
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("external", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
   const events: string[] = [];
-  let release!: () => void, context!: import("../proc/types").ProcessContext;
+  let release!: () => void, context!: import("../proc/types.js").ProcessContext;
   const physical = new Promise<void>(resolve => { release = resolve; });
   const broker = new BrowserProcessBroker({ identities, table, registry,
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
@@ -1105,7 +1104,7 @@ test("lazy external roots revoke before fencing without activating a supervisor"
   let release!: () => void, activations = 0;
   const fence = new Promise<void>(resolve => { release = resolve; });
   const broker = new BrowserProcessBroker({ identities, table, registry: new ExecutableRegistry(),
-    activate: async () => { activations++; return import("../proc"); },
+    activate: async () => { activations++; return import("../proc/index.js"); },
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} }, launch() { throw new Error("unused"); } });
   let completion: Promise<void> | undefined;
   try {
@@ -1123,9 +1122,9 @@ test("a pending external launcher retains authority until its late rejection the
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("pending", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
   const events: string[] = [];
-  let rejectLaunch!: (error: unknown) => void, entered!: () => void, context!: import("../proc/types").ProcessContext;
+  let rejectLaunch!: (error: unknown) => void, entered!: () => void, context!: import("../proc/types.js").ProcessContext;
   const launching = new Promise<void>(resolve => { entered = resolve; });
-  const pending = new Promise<import("../proc/types").ProcessHandle>((_resolve, reject) => { rejectLaunch = reject; });
+  const pending = new Promise<import("../proc/types.js").ProcessHandle>((_resolve, reject) => { rejectLaunch = reject; });
   const broker = new BrowserProcessBroker({ identities, table, registry, onError() {},
     filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
     launch(value) { context = value; entered(); return pending; } });
@@ -1180,10 +1179,10 @@ for (const settlement of ["resolve", "reject"] as const) test(`disposal retains 
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("pending", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
   const events: string[] = [];
-  let resolveLaunch!: (handle: import("../proc/types").ProcessHandle) => void, rejectLaunch!: (error: unknown) => void;
+  let resolveLaunch!: (handle: import("../proc/types.js").ProcessHandle) => void, rejectLaunch!: (error: unknown) => void;
   let entered!: () => void, releaseStop!: () => void;
   const launching = new Promise<void>(resolve => { entered = resolve; });
-  const pending = new Promise<import("../proc/types").ProcessHandle>((resolve, reject) => { resolveLaunch = resolve; rejectLaunch = reject; });
+  const pending = new Promise<import("../proc/types.js").ProcessHandle>((resolve, reject) => { resolveLaunch = resolve; rejectLaunch = reject; });
   const physical = new Promise<void>(resolve => { releaseStop = resolve; });
   const handle = { terminate() { events.push("terminate"); return physical; } };
   const broker = new BrowserProcessBroker({ identities, table, registry, onError() {},
@@ -1225,7 +1224,7 @@ for (const exitAt of ["after launch", "during launch", "launch throws"] as const
   const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
   registry.register("external", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
   const failure = new Error("exited notification failed"), errors: unknown[] = [], events: string[] = [];
-  let release!: () => void, context!: import("../proc/types").ProcessContext;
+  let release!: () => void, context!: import("../proc/types.js").ProcessContext;
   const physical = new Promise<void>(resolve => { release = resolve; });
   const broker = new BrowserProcessBroker({ identities, table, registry,
     onError(error) { errors.push(error); events.push("error"); },

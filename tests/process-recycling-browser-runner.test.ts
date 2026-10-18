@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { installClientWorker, ProcessWorker, type ProcessWorkerBootstrapHost } from "./process-recycling-browser";
-import { closeBrowserResources, stopBrowserResource, type BrowserResourceOwner } from "./process-recycling-browser-runner-control";
-import { createWorkerProcessTransport } from "../proc/worker-client";
+import { installClientWorker, ProcessWorker, type ProcessWorkerBootstrapHost } from "./process-recycling-browser.js";
+import { closeBrowserResources, stopBrowserResource, type BrowserResourceOwner } from "./process-recycling-browser-runner-control.js";
+import { createWorkerProcessTransport } from "../proc/worker-client.js";
 
 type FixtureModule = { installProcessTestWorker(): void };
 function deferred<T>() {

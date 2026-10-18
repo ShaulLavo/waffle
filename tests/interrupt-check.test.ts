@@ -1,8 +1,8 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
-import { fatalInterrupt } from "../interrupt/check";
-import { claimOutcome, outcomeWord } from "../proc/outcome";
-import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals";
+import { fatalInterrupt } from "../interrupt/check.js";
+import { claimOutcome, outcomeWord } from "../proc/outcome.js";
+import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals.js";
 
 function transport() {
   return { outcome: outcomeWord(), signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)) };

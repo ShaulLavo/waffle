@@ -1,12 +1,12 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, spyOn, test } from "bun:test";
-import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker";
-import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs";
-import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory";
-import { DescriptorTable } from "../core/descriptors";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client";
-import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals";
+import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type RuntimeWorkerRequest, type WorkerExecutor } from "../browser/worker.js";
+import { createFilesystemConnection, FilesystemClient, FilesystemService, MemoryBackend } from "../fs/index.js";
+import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, type WorkerProcessMessage } from "../proc/worker-client.js";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals.js";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
 const module = new WebAssembly.Module(new Uint8Array([
@@ -56,7 +56,7 @@ test("injected worker executor observes live descriptors, then acknowledgement f
 });
 
 test("preview1 worker bundle has no Bun engine, native slot or legacy subprocess graph", async () => {
-  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.ts", import.meta.url).pathname], target: "browser" });
+  const result = await Bun.build({ entrypoints: [new URL("../browser/preview1-worker.js", import.meta.url).pathname], target: "browser" });
   expect(result.success).toBe(true);
   const source = await result.outputs[0]!.text();
   for (const marker of ["startEngineHost", "SubprocessHost", "installHostSlots", "bunwasm_ready", "moduleCache", "engine-host.js"]) {
@@ -241,7 +241,7 @@ test("descriptor release failures drain the table and filesystem but require the
   const runtimeProcess = createWorkerProcessTransport();
   const outcome = workerProcessState(runtimeProcess).signals.outcome;
   const released: string[] = [];
-  let descriptors: import("../core/descriptors").DescriptorTable;
+  let descriptors: import("../core/descriptors.js").DescriptorTable;
   const result = await fixture({
     instantiated({ wasi }) {
       descriptors = wasi.descriptors;
@@ -464,7 +464,7 @@ test("beforeBindings can release default stdio and preserve a preopen before fd3
 });
 
 for (const append of [false, true]) test(`executor post follows live files and shared offsets (append=${append})`, async () => {
-  const { shareFileResource } = await import("../core/open-file");
+  const { shareFileResource } = await import("../core/open-file.js");
   const writes: [number, string][] = [];
   const result = await fixture({
     instantiated({ wasi, fs, post }) {
@@ -552,7 +552,7 @@ for (const hook of ["setup", "namespaces", "beforeBindings", "imports", "instant
   for (const action of ["finish", "throw"] as const) test(`${hook} ${action} stops bootstrap and releases owned stdio exactly once`, async () => {
     let starts = 0, runs = 0, closed = 0;
     const seen: string[] = [];
-    const stop = (name: string, context: import("../browser/worker").WorkerSetupContext) => {
+    const stop = (name: string, context: import("../browser/worker.js").WorkerSetupContext) => {
       seen.push(name);
       if (name !== hook) return;
       if (action === "throw") throw new Error(`failed ${hook}`);
@@ -621,7 +621,7 @@ for (const moved of [false, true]) test(`default terminal provenance survives be
 });
 
 test("terminal provenance outranks a real resolved PipeEndpoint when spawning the next generation", async () => {
-  const { PipeController } = await import("../proc/pipes");
+  const { PipeController } = await import("../proc/pipes.js");
   const runtimeProcess = createWorkerProcessTransport(), pipe = new PipeController({ relay: "manual" });
   const pid = workerProcessState(runtimeProcess).pid, reader = pipe.retain(pid, "read"), writer = pipe.retain(pid, "write");
   runtimeProcess.resources.push({ kind: "web-terminal", target: 1 });
@@ -639,13 +639,13 @@ test("terminal provenance outranks a real resolved PipeEndpoint when spawning th
 });
 
 test("supplied class streams keep immediate I/O, process capabilities and prototype cleanup", async () => {
-  const { PipeController, PipeEndpoint } = await import("../proc/pipes");
+  const { PipeController, PipeEndpoint } = await import("../proc/pipes.js");
   const pipe = new PipeController({ relay: "manual" });
   const reader = pipe.retain(1, "read"), writer = pipe.retain(1, "write");
   try {
     const result = await fixture({ stdio: { 1: writer },
       run({ wasi }) {
-        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors").Stream;
+        const stream = wasi.descriptors.get(1)!.resource as import("../core/descriptors.js").Stream;
         expect(stream).toBeInstanceOf(PipeEndpoint);
         expect(stream.notification).toBeDefined();
         expect(stream.tryWrite?.([new Uint8Array([65])])).toBe(1);
@@ -739,8 +739,8 @@ test("generic default-ignore action cannot discard an already selected KILL", as
 
 for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 }, { kind: "start-failed", code: 13 }] as const) {
   test(`generic default action preserves existing ${winner.kind} ${winner.code} without signal unwind`, async () => {
-    const { WasiExit } = await import("../core");
-    const { waitStatus } = await import("../proc/wait-status");
+    const { WasiExit } = await import("../core/index.js");
+    const { waitStatus } = await import("../proc/wait-status.js");
     const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
     let signalCalls = 0;
     const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },

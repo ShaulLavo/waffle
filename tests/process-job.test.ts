@@ -1,11 +1,11 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control";
+import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
 import { expect, test } from "bun:test";
-import { ProcessABI } from "../proc/abi";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { ExecutableRegistry } from "../proc/registry";
-import { DescriptorTable } from "../core/descriptors";
-import { MemFS } from "../fs/memory";
-import type { SpawnRequest } from "../proc/types";
+import { ProcessABI } from "../proc/abi.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { DescriptorTable } from "../core/descriptors.js";
+import { MemFS } from "../fs/memory.js";
+import type { SpawnRequest } from "../proc/types.js";
 
 const request = (job = 0): SpawnRequest => ({ executable: "controlled", argv: [], env: {}, cwd: "/", job, fds: [] });
 function fixture(wait?: (milliseconds: number, word: Int32Array, expected: number) => void) {

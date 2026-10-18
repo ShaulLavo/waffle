@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { DescriptorTable } from "../core/descriptors";
-import { ProcessError } from "../proc/types";
-import { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
+import { DescriptorTable } from "../core/descriptors.js";
+import { ProcessError } from "../proc/types.js";
+import { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
 
 const encode = new TextEncoder();
 const decode = new TextDecoder();

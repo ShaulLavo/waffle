@@ -1,9 +1,9 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { ProcessABI, type ProcessService } from "../../proc/abi";
-import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes";
-import type { SignalTransport } from "../../proc/signals";
-import { DescriptorTable } from "../../core/descriptors";
-import { MemFS } from "../../fs/memory";
+import { ProcessABI, type ProcessService } from "../../proc/abi.js";
+import { attachPipeEndpoint, type PipeEndpointHandle } from "../../proc/pipes.js";
+import type { SignalTransport } from "../../proc/signals.js";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { MemFS } from "../../fs/memory.js";
 
 const { endpoint, module, pid, signals } = workerData as {
   endpoint: PipeEndpointHandle; module: WebAssembly.Module; pid: number; signals: SignalTransport;

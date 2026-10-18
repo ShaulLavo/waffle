@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes";
-import { createWorkerProcessTransport } from "../proc/worker-client";
-import { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes";
+import { attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import { createWorkerProcessTransport } from "../proc/worker-client.js";
+import { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes.js";
 
 const STOP = 1n << 32n;
 const REVOKED = 1n << 31n;

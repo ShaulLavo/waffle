@@ -1,9 +1,9 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { ProcessABI, type ProcessService } from "../../proc/abi";
-import { readOutcome } from "../../proc/outcome";
-import type { SignalTransport } from "../../proc/signals";
-import { DescriptorTable } from "../../core/descriptors";
-import { MemFS } from "../../fs/memory";
+import { ProcessABI, type ProcessService } from "../../proc/abi.js";
+import { readOutcome } from "../../proc/outcome.js";
+import type { SignalTransport } from "../../proc/signals.js";
+import { DescriptorTable } from "../../core/descriptors.js";
+import { MemFS } from "../../fs/memory.js";
 
 const { mode, pid, child, childOutcome, wake, signals } = workerData as {
   mode: "signal" | "child"; pid: number; child: number; childOutcome: BigInt64Array; wake: Int32Array; signals: SignalTransport;

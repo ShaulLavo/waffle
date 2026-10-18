@@ -1,16 +1,16 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { DescriptorTable, type Stream } from "../core/descriptors";
-import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity } from "../fs";
-import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
-import { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, attachPipeEndpoint, type PipeEndpointHandle, type PipePublicationRegistryHandle } from "../proc/pipes";
-import { directoryJobs } from "../proc/directory";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { WorkerProcessBroker } from "../proc/worker-broker";
-import { createWorkerProcessTransport, WorkerProcessClient, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
-import { WorkerPipeBroker, WorkerPipeHost, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "../proc/worker-pipes";
-import { ProcessError, type ProcessContext, type SpawnRequest } from "../proc/types";
+import { DescriptorTable, type Stream } from "../core/descriptors.js";
+import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity } from "../fs/index.js";
+import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
+import { PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, attachPipeEndpoint, type PipeEndpointHandle, type PipePublicationRegistryHandle } from "../proc/pipes.js";
+import { directoryJobs } from "../proc/directory.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { WorkerProcessBroker } from "../proc/worker-broker.js";
+import { createWorkerProcessTransport, WorkerProcessClient, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
+import { WorkerPipeBroker, WorkerPipeHost, createWorkerPipeCodec, isWorkerPipeDescriptorToken } from "../proc/worker-pipes.js";
+import { ProcessError, type ProcessContext, type SpawnRequest } from "../proc/types.js";
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const cleanups: (() => void)[] = [];
