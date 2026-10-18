@@ -1,6 +1,6 @@
-import type { FileHandle, FileStat } from "../core";
-import { PAGE, FilesystemError, isRevoked, SHARED_SEGMENT_BYTES, MAX_SHARED_SEGMENTS, DEFAULT_SHARED_MAX_BYTES, createSharedSegment, normalizeSharedMaxBytes, type FilesystemSection, type GrowableSharedSegment } from "./protocol";
-export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol";
+import type { FileHandle, FileStat } from "../core/index.js";
+import { PAGE, FilesystemError, isRevoked, SHARED_SEGMENT_BYTES, MAX_SHARED_SEGMENTS, DEFAULT_SHARED_MAX_BYTES, createSharedSegment, normalizeSharedMaxBytes, type FilesystemSection, type GrowableSharedSegment } from "./protocol.js";
+export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
 const MAGIC = 0x42574653;
 const HEADER_WORDS = 16;

@@ -1,7 +1,7 @@
-import type { FileHandle } from "../core";
-import { MemoryBackend } from "./backend";
-import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory";
-import type { PersistedIndex, PersistedNode, PersistenceBatch, StorageBackend } from "./storage";
+import type { FileHandle } from "../core/index.js";
+import { MemoryBackend } from "./backend.js";
+import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory.js";
+import type { PersistedIndex, PersistedNode, PersistenceBatch, StorageBackend } from "./storage.js";
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
  * no lock or guest request is held across a background commit. */

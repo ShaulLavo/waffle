@@ -1,5 +1,5 @@
-import type { Resource } from "./descriptors";
-import { FilesystemError, FilesystemSection, isRevoked, type FilesystemIdentity } from "../fs/protocol";
+import type { Resource } from "./descriptors.js";
+import { FilesystemError, FilesystemSection, isRevoked, type FilesystemIdentity } from "../fs/protocol.js";
 
 type FileResource = Extract<Resource, { kind: "file" }>;
 interface SharedOffset {

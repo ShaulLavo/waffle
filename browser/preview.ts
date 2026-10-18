@@ -1,6 +1,6 @@
-import type { ConnectionSink, PreviewConnection, PreviewSink } from "./net/helper";
-import type { PreviewRequest } from "./net/http1";
-import type { PreviewMessage, PreviewReply } from "./preview-protocol";
+import type { ConnectionSink, PreviewConnection, PreviewSink } from "./net/helper.js";
+import type { PreviewRequest } from "./net/http1.js";
+import type { PreviewMessage, PreviewReply } from "./preview-protocol.js";
 
 /** A server transport, independent of the guest engine or worker owning it. */
 export interface PreviewServer {

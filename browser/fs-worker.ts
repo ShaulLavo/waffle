@@ -1,4 +1,4 @@
-import { installFilesystemWorker, MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index";
+import { installFilesystemWorker, MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index.js";
 installFilesystemWorker(self, async options => {
   if (options.persistence === false) return new MemoryBackend();
   let backend: PersistentBackend | undefined;

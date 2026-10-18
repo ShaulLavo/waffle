@@ -1,4 +1,4 @@
-import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index";
+import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index.js";
 
 export interface SharedFilesystemOptions {
   workerURL?: string | URL;

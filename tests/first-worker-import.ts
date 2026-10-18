@@ -10,7 +10,7 @@ const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
   readFileSync(new URL("../browser/worker.ts", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, "")
-    .replace(/import\("\.\.\/proc\/worker-client"\)/g, "loadRuntime()")
+    .replace(/import\("\.\.\/proc\/worker-client\.js"\)/g, "loadRuntime()")
     .concat("\nglobalThis.runBootstrap = bootstrap;\n"),
 );
 

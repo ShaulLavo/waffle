@@ -1,5 +1,5 @@
-import { errno } from "../fs/protocol";
-import { ProcessError } from "./types";
+import { errno } from "../fs/protocol.js";
+import { ProcessError } from "./types.js";
 
 /** Live pending or completed-but-untaken executable queries per process. */
 export const MAX_ACCESS_REQUESTS = 64;

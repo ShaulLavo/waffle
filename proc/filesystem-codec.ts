@@ -1,8 +1,8 @@
-import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors";
-import { shareFileResource } from "../core/open-file";
-import { FilesystemClient } from "../fs/client";
-import { releaseFilesystemReservation, type FilesystemIdentity, type FilesystemReservation } from "../fs/protocol";
-import type { WorkerDescriptorCodec } from "./worker-client";
+import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors.js";
+import { shareFileResource } from "../core/open-file.js";
+import { FilesystemClient } from "../fs/client.js";
+import { releaseFilesystemReservation, type FilesystemIdentity, type FilesystemReservation } from "../fs/protocol.js";
+import type { WorkerDescriptorCodec } from "./worker-client.js";
 
 export interface FilesystemDescriptorToken {
   kind: "filesystem";

@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "private": true,
   "type": "module",
   "exports": {
@@ -429,7 +429,8 @@
     "prepare": "bun prepare.ts",
     "test": "bun test ./tests",
     "check": "tsc -p .",
-    "size": "bun tooling/runtime-size.ts"
+    "size": "bun tooling/runtime-size.ts",
+    "check:nodenext": "tsc -p tsconfig.nodenext.json"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",

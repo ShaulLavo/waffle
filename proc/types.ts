@@ -1,4 +1,4 @@
-import type { DescriptorTable } from "../core/descriptors";
+import type { DescriptorTable } from "../core/descriptors.js";
 
 export const Signal = Object.freeze({ SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGTERM: 15 });
 export type ProcessSignal = 2 | 9 | 13 | 15;

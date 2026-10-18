@@ -1,11 +1,11 @@
-import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors";
-import type { FileSystem } from "../core/filesystem";
-import { withFileOffset } from "../core/open-file";
-import { PipeController } from "./pipes";
-import { readOutcome } from "./outcome";
-import { waitStatus } from "./wait-status";
-import { checkedSignalNumber, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types";
+import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
+import type { FileSystem } from "../core/filesystem.js";
+import { withFileOffset } from "../core/open-file.js";
+import { PipeController } from "./pipes.js";
+import { readOutcome } from "./outcome.js";
+import { waitStatus } from "./wait-status.js";
+import { checkedSignalNumber, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal, type SignalTransport } from "./signals.js";
+import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
 
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
  * module loading and guest startup happen elsewhere, never on this import's stack. */

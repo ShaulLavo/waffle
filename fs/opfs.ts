@@ -7,8 +7,8 @@
 import {
   decodeSnapshot, encodeSnapshot, validatePersistedIndex, validatePersistedNode, validInteger,
   type PersistenceBatch, type PersistedIndex, type PersistedNode, type StorageBackend,
-} from "./storage";
-import type { StorageLockManager } from "./indexeddb";
+} from "./storage.js";
+import type { StorageLockManager } from "./indexeddb.js";
 
 /** OPFS is owned by the filesystem worker, never a document or guest. */
 export interface OpfsStorageOptions {
