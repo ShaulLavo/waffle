@@ -6,6 +6,7 @@
   },
   "include": [
     "index.ts",
+    "tooling/**/*.ts",
     "runtime.ts",
     "browser/**/*.ts",
     "core/**/*.ts",
