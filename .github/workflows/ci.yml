@@ -88,12 +88,18 @@ jobs:
           echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
           "$HOME/downloader/bin/wasmtime" --version
       - uses: actions/cache@v4
+        id: fixtures
+        with:
+          path: ${{ runner.temp }}/libc-fixtures
+          key: ${{ runner.os }}-libc-sdk34-${{ hashFiles('scripts/build-wasi-libc.sh', 'scripts/test-wasi-libc.ts', 'scripts/owned-command.ts', 'patches/wasi-libc/**', 'tests/fixtures/preopen-guest.c', 'tests/fixtures/wasm-start-section.ts') }}
+      - uses: actions/cache@v4
+        if: steps.fixtures.outputs.cache-hit != 'true'
         id: sdk
         with:
           path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Install pinned wasi-sdk 34
-        if: steps.sdk.outputs.cache-hit != 'true'
+        if: steps.fixtures.outputs.cache-hit != 'true' && steps.sdk.outputs.cache-hit != 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
@@ -105,6 +111,7 @@ jobs:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
           WASMTIME: wasmtime
+          WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
   browser:
     runs-on: ubuntu-latest
     steps:

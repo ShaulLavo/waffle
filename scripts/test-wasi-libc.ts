@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addStartSection } from "../tests/fixtures/wasm-start-section.ts";
@@ -29,7 +29,7 @@ async function run(command: string[], env: NodeJS.ProcessEnv = process.env): Pro
     throw error;
   }
 }
-try {
+async function buildFixtures(): Promise<void> {
   const sysroot = join(root, "sysroot");
   await run(["bash", join(repo, "scripts/build-wasi-libc.sh"), sysroot]);
   for (const flavor of ["patched", "stock"]) {
@@ -53,9 +53,17 @@ try {
         );
     }
   }
+}
+
+const cache = process.env.WASI_LIBC_FIXTURE_CACHE;
+const fixtures = cache && existsSync(cache) ? cache : root;
+const fixtureNames = ["patched.wasm", "patched-start.wasm", "stock.wasm", "stock-start.wasm"];
+try {
+  if (fixtures === root) await buildFixtures();
+  else console.log(`Using cached wasi-libc fixtures: ${fixtures}`);
   await run(["bun", "test", "./tests/wasi-libc.test.ts"], {
     ...process.env,
-    WAFFLE_LIBC_FIXTURES: root,
+    WAFFLE_LIBC_FIXTURES: fixtures,
   });
   writeFileSync(join(root, "fixture"), "fixture");
   await run([
@@ -63,16 +71,20 @@ try {
     "run",
     "--dir",
     `${root}::/`,
-    join(root, "patched.wasm"),
+    join(fixtures, "patched.wasm"),
   ]);
   // A second stock host proves that the patch adds no Waffle-only import requirement.
   await run([
     "node",
     "--disable-warning=ExperimentalWarning",
     join(repo, "tests/fixtures/preopen-node-host.ts"),
-    join(root, "patched.wasm"),
+    join(fixtures, "patched.wasm"),
     root,
   ]);
+  if (cache && fixtures === root) {
+    mkdirSync(cache);
+    for (const name of fixtureNames) copyFileSync(join(root, name), join(cache, name));
+  }
 } finally {
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);

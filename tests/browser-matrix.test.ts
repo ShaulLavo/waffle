@@ -40,16 +40,16 @@ async function matrix(failing: string): Promise<void> {
         timeoutMs: 5000,
       });
     } catch (error) {
-      if (error instanceof CommandCleanupError) cleanupError = error;
+      cleanupError = error instanceof CommandCleanupError ? error : undefined;
       failure = error;
     }
+    expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing !== "");
     for (const runner of runners)
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("all engines");
   } finally {
-    if (cleanupError)
-      throw new Error(`Retained browser matrix scratch: ${root}`, { cause: cleanupError });
-    await rm(root, { recursive: true, force: true });
+    if (cleanupError) console.error(`Retained browser matrix scratch: ${root}`, cleanupError);
+    else await rm(root, { recursive: true, force: true });
   }
 }
 
