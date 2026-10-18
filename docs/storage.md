@@ -20,8 +20,10 @@ its lock indefinitely. Several waiters acquire ownership in Web Locks queue orde
 
 File operations issued while opening/waiting remain pending and execute only after ownership
 and recovery. No guest filesystem request is served before ownership. Cancellation does not
-replay any operation: `await runtime.dispose()` cancels a pending request through the worker's
-`AbortSignal`, revokes queued filesystem operations with `FilesystemError` errno 11
+replay any operation: `await runtime.dispose()` cancels pending startup through the worker's
+`AbortSignal`, including an unresolved IndexedDB open under either busy policy. IndexedDB cannot
+abort an open request itself; a late success closes its database without requesting ownership or
+publishing a backend. Disposal revokes queued filesystem operations with `FilesystemError` errno 11
 (`ECANCELED`), and waits for abort/cleanup acknowledgement before terminating. A direct
 `SharedFilesystem` owner uses `await fs.dispose()` instead. Disposal is idempotent. An acquired
 OPFS backend still closes its handles before releasing its lock. Real storage failures remain

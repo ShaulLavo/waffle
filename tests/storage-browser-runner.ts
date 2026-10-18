@@ -13,7 +13,7 @@ function storageWorker(): void {
       const modulePath = "/tests.js";
       const tests = await import(modulePath) as typeof import("./storage-browser");
       // The runner owns this route; imported backend suites do not assume one exists.
-      const suites = { indexeddb: tests.storageTests("/fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
+      const suites = { indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
       if (event.data.kind === "list") {
         globalThis.postMessage({ result: {
           indexeddb: suites.indexeddb.map(test => test.label), opfs: suites.opfs.map(test => test.label),
@@ -72,6 +72,7 @@ try {
     "/": "<!doctype html><title>Storage tests</title>",
     "/tests.js": await browserBundle(resolve(import.meta.dir, "storage-browser.ts")),
     "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+    "/open-fs-worker.js": await browserBundle(resolve(import.meta.dir, "storage-open-worker.ts")),
     "/worker.js": `(${storageWorker.toString()})();`,
   }, Number(process.env.STORAGE_TEST_PORT ?? 0));
   const failures: string[] = [];

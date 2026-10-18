@@ -212,25 +212,35 @@ export class IndexedDBStorage implements StorageBackend {
       : options.signal;
     reportRuntimeStartup(options.onStartupStage, "indexeddb-open-requested");
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      if (signal?.aborted) { reject(signal.reason); return; }
       const opening = factory.open(name, 1);
       let blocked = false;
+      // IDBOpenDBRequest cannot be cancelled. Settle startup through its existing
+      // AbortSignal, then close any database delivered after cleanup was acknowledged.
+      const abort = () => reject(signal!.reason);
+      const stopObserving = () => signal?.removeEventListener("abort", abort);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
       opening.onupgradeneeded = () => {
         for (const store of ["metadata", "journal", "data"]) opening.result.createObjectStore(store);
       };
       opening.onsuccess = () => {
+        stopObserving();
         const db = opening.result;
+        if (signal?.aborted || blocked) { db.close(); return; }
         // Waiting connections must give way to deletion/upgrades before they own a lock.
         // The owner replaces this handler once its epoch has been allocated.
         db.onversionchange = () => {
           versionChangeAbort?.abort(new Error("Filesystem database changed while opening"));
           db.close();
         };
-        if (blocked) db.close(); else resolve(db);
+        resolve(db);
       };
-      opening.onerror = () => reject(opening.error ?? new Error("Cannot open filesystem storage"));
-      opening.onblocked = () => { blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
+      opening.onerror = () => { stopObserving(); reject(opening.error ?? new Error("Cannot open filesystem storage")); };
+      opening.onblocked = () => { stopObserving(); blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
     });
     reportRuntimeStartup(options.onStartupStage, "indexeddb-open-resolved");
+    if (signal?.aborted) { db.close(); throw signal.reason; }
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     let acquired!: (storage: IndexedDBStorage) => void, refused!: (error: unknown) => void;
@@ -238,6 +248,10 @@ export class IndexedDBStorage implements StorageBackend {
     let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
     let lost = false;
     let granted = false;
+    // Once granted, Web Locks no longer observes abort. Retire an in-flight epoch
+    // transaction through its normal completion/abort event before closing ownership.
+    const abortAllocation = () => { try { allocation?.abort(); } catch { /* Completion already won. */ } };
+    signal?.addEventListener("abort", abortAllocation, { once: true });
     reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
     const lockOptions = options.whenBusy === "wait"
       ? { mode: "exclusive" as const, signal }
@@ -245,8 +259,10 @@ export class IndexedDBStorage implements StorageBackend {
     const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, lockOptions, async () => {
       granted = true;
       if (lost) return;
+      if (signal?.aborted) { refused(signal.reason); return; }
       reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
+      if (signal?.aborted) throw signal.reason;
       allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
       const done = completed(allocation);
       let epoch = 0;
@@ -261,7 +277,7 @@ export class IndexedDBStorage implements StorageBackend {
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
       allocation = undefined;
       if (lost) return;
-      if (versionChangeAbort?.signal.aborted) throw versionChangeAbort.signal.reason;
+      if (signal?.aborted) throw signal.reason;
       owner = new IndexedDBStorage(db, async () => { release(); await lifetime.catch(() => {}); }, compactEvery, epoch, options.onOwnershipLost);
       acquired(owner);
       await held;
@@ -279,8 +295,12 @@ export class IndexedDBStorage implements StorageBackend {
       refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
       if (stolen && !owner) options.onOwnershipLost?.();
     });
-    try { return await ready; }
-    catch (error) { release(); db.close(); throw error; }
+    try {
+      const storage = await ready;
+      if (signal?.aborted) throw signal.reason;
+      return storage;
+    } catch (error) { release(); db.close(); throw signal?.aborted ? signal.reason : error; }
+    finally { signal?.removeEventListener("abort", abortAllocation); }
   }
 
   private loseOwnership(): Error {
