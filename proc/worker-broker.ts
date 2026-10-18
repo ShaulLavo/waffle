@@ -127,6 +127,18 @@ export class WorkerProcessBroker {
           collectDirectoryJob(shared.root.directory, shared.group.slot, job);
           return true;
         });
+        const stopChildAccess = supervisor.registerChildAccess((pid, consume) => {
+          const transport = this.transports.get(pid);
+          if (!transport) return true;
+          try {
+            if (consume) collectDirectoryProcess(transport);
+            else workerProcessState(transport);
+            return true;
+          } catch (error) {
+            if (!isCollectedProcess(error)) throw error;
+            return false;
+          }
+        });
         const stopRemove = supervisor.table.onRemove(record => {
           const transport = this.transports.get(record.pid);
           if (!transport || !record.result) return;
@@ -138,7 +150,7 @@ export class WorkerProcessBroker {
           this.failedCleanup.delete(record.pid);
         });
         const stopReap = supervisor.onJobReap(job => this.reapTransports(job));
-        this.stopListening = () => { stopQuiescent(); stopReadiness(); stopClaim(); stopReap(); stopRemove(); };
+        this.stopListening = () => { stopQuiescent(); stopReadiness(); stopClaim(); stopChildAccess(); stopReap(); stopRemove(); };
       }
       return supervisor;
     });
@@ -304,7 +316,8 @@ export class WorkerProcessBroker {
       // disposes the supervisor and clears its event listeners. Retain shared identity
       // only, never descriptor tokens, adapter payloads, or the broker itself.
       const identity: WorkerProcessTransport = { directory: transport.directory, identity: transport.identity, slot: transport.slot, pid: transport.pid, bindings: [], resources: [] };
-      confirmDisposedProcess(this.supervisor!.waitForExit(record.parentPid, pid), identity, gate, this.options.onError);
+      try { confirmDisposedProcess(this.supervisor!.waitForExit(record.parentPid, pid), identity, gate, this.options.onError); }
+      catch (error) { if (!isCollectedProcess(error)) throw error; }
     }
     for (const transport of this.transports.values()) {
       try { requestSignal(workerProcessState(transport).signals, 9); } catch (error) { if (!(error instanceof ProcessError)) throw error; }

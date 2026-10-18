@@ -72,7 +72,7 @@ const processCapabilities = {
 const supervisorCapabilities = {
   table: "readonly", get: "method", job: "method", jobOf: "method", canSignal: "method", canSignalJob: "method", canWaitJob: "method",
   accessStart: "method", accessTake: "method", accessCancel: "method", accessReady: "method",
-  registerJobReadiness: "method", registerJobReapClaim: "method", onJobReap: "method", jobEmpty: "method", registerJobWake: "method",
+  registerJobReadiness: "method", registerJobReapClaim: "method", registerChildAccess: "method", onJobReap: "method", jobEmpty: "method", registerJobWake: "method",
   createRoot: "method", reserveSpawn: "method", reserveAdmittedSpawn: "method", spawn: "method", start: "async",
   failStart: "method", exit: "method", kill: "method", observeSignal: "method", defaultSignal: "method", killJob: "method",
   wait: "method", childExited: "method", waitJob: "method", reapJob: "method", reconcileCollectedJob: "method", waitForExit: "async", reap: "method",

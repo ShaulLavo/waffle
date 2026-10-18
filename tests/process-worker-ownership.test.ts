@@ -766,6 +766,37 @@ test("more than three thousand distinct job lifetimes recycle process and job sl
   }
 });
 
+for (const hostOperation of ["wait", "reap", "childExited", "waitForExit"] as const) {
+  test(`host ${hostOperation} rejects shared child collection before the Worker receipt`, async () => {
+    const f = fixture({ capacity: 2 });
+    const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+    f.supervisor.exit(pid, 7);
+    expect(f.root.wait(1, pid)?.code).toBe(7);
+    expect(f.supervisor.get(pid)?.result?.code).toBe(7); // Receipt deliberately withheld.
+    expectErrno(() => f.supervisor[hostOperation](1, pid), 12);
+    expect(f.supervisor.get(pid)).toBeUndefined();
+    const replacement = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+    expect(replacement).toBeGreaterThan(pid);
+  });
+}
+
+test("a host consuming claim rejects a Worker that wins after host observation", async () => {
+  const f = fixture({ capacity: 2 });
+  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+  f.supervisor.exit(pid, 8);
+  let raced = false;
+  const stop = f.supervisor.registerChildAccess((target, consume) => {
+    if (target === pid && !consume && !raced) {
+      raced = true;
+      expect(f.root.wait(1, pid)?.code).toBe(8);
+    }
+    return true;
+  });
+  try { expectErrno(() => f.supervisor.reap(1, pid), 12); }
+  finally { stop(); }
+  expect(raced).toBe(true);
+});
+
 test("collected process and job controls fail immediately before their slots are reused", async () => {
   const f = fixture({ capacity: 2 });
   const pid = f.root.spawn(1, request()); await f.flush();

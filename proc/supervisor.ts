@@ -52,6 +52,7 @@ export class ProcessSupervisor {
   private readonly listeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobReadiness = new Set<(job: number) => boolean>();
   private readonly jobReapListeners = new Set<(job: number) => void>();
+  private readonly childAccess = new Set<(pid: number, consume: boolean) => boolean>();
   private readonly jobReapClaims = new Set<(job: number) => boolean>();
   private readonly quiescentListeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobListeners = new Map<number, Set<() => void>>();
@@ -173,6 +174,11 @@ export class ProcessSupervisor {
   registerJobReapClaim(claim: (job: number) => boolean): () => void {
     this.jobReapClaims.add(claim);
     return () => { this.jobReapClaims.delete(claim); };
+  }
+  /** Shared adapters observe retained child authority or atomically claim its collection. */
+  registerChildAccess(check: (pid: number, consume: boolean) => boolean): () => void {
+    this.childAccess.add(check);
+    return () => { this.childAccess.delete(check); };
   }
   onJobReap(listener: (job: number) => void): () => void {
     this.jobReapListeners.add(listener);
@@ -440,13 +446,22 @@ export class ProcessSupervisor {
   reap(parentPid: number, pid: number): ProcessExit {
     const record = this.child(parentPid, pid);
     if (!record.result) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited");
+    this.checkChildAccess(pid, true);
     this.table.remove(pid);
     return record.result;
   }
   private child(parentPid: number, pid: number): ProcessRecord {
     const record = this.table.get(pid);
     if (!record || record.parentPid !== parentPid) throw new ProcessError(ProcessErrno.CHILD, `process ${pid} is not a child of ${parentPid}`);
+    this.checkChildAccess(pid, false);
     return record;
+  }
+  private checkChildAccess(pid: number, consume: boolean): void {
+    for (const check of this.childAccess) {
+      if (check(pid, consume)) continue;
+      this.table.remove(pid);
+      throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
+    }
   }
   onChildExit(listener: (event: ChildExitEvent) => void): () => void {
     this.listeners.add(listener);
@@ -479,6 +494,7 @@ export class ProcessSupervisor {
     this.jobReadiness.clear();
     this.jobReapListeners.clear();
     this.jobReapClaims.clear();
+    this.childAccess.clear();
     this.quiescentListeners.clear();
     this.jobListeners.clear();
   }

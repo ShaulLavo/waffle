@@ -138,8 +138,11 @@ PID (guest poll returns `-12`). Host `wait` is consuming too; `waitForExit` rema
 an asynchronous observation, and explicit host `reap` also consumes a child.
 
 `wait_job` consumes a completed job and releases its remaining shared process
-slots. Host records are reconciled by subsequent broker receipts or pumping;
-physical host-map cleanup is not synchronous with a Worker's consuming return.
+slots. Host records are reconciled by subsequent broker receipts, pumping, or host
+child access; physical host-map cleanup is not synchronous with a Worker's consuming
+return. The shared consuming claim is authoritative across host and Worker adapters:
+a host wait, reap or child observation rejects an already-collected shared child even
+before its Worker receipt arrives.
 Its nonblocking form reports pending until every live member and its cleanup
 fence has settled. Job-empty polling is observational. A job keeps its
 leader's typed outcome independently of the leader's process row, and completed
