@@ -1,3 +1,4 @@
+import { WorkerExecutableAccess, rejectWorkerAccess } from "./worker-access.js";
 import { collectDirectoryProcess, collectDirectoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, isCollectedProcess } from "./directory.js";
 import { controlLoad, controlStore } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
@@ -37,6 +38,40 @@ export class WorkerProcessBroker {
   private disposed = false;
   // Preserve admission ordering while the optional supervisor chunk is still loading.
   private admission: Promise<void> = Promise.resolve();
+  private readonly accesses = new WorkerExecutableAccess({
+    active: sender => !this.disposed && this.get(sender.pid) !== undefined,
+    check: async (sender, path, cwd, active, onCancel) => {
+      const supervisor = await this.ready();
+      active();
+      const wake = new Int32Array(new SharedArrayBuffer(4));
+      const id = supervisor.accessStart(sender.pid, path, cwd, wake);
+      if (id < 0) return id;
+      let cancelled = false, retired = false;
+      const stop = supervisor.registerRevocation(sender.pid, () => this.accesses.revoke(sender.pid, workerProcessDirectoryId(sender)));
+      const retire = () => {
+        if (retired) return;
+        retired = true;
+        try { supervisor.accessCancel(sender.pid, id); }
+        catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.BADF) throw error; }
+        finally { Atomics.add(wake, 0, 1); Atomics.notify(wake, 0); }
+      };
+      onCancel(() => { cancelled = true; retire(); });
+      try {
+        for (;;) {
+          const expected = Atomics.load(wake, 0);
+          if (cancelled) return -ProcessErrno.BADF;
+          active();
+          if (supervisor.accessReady(sender.pid, id)) {
+            const result = supervisor.accessTake(sender.pid, id);
+            retired = true;
+            return result;
+          }
+          // No timeout: completion, cancellation and revocation all notify this word.
+          await (Atomics as unknown as { waitAsync(array: Int32Array, index: number, value: number): { value: string | Promise<string> } }).waitAsync(wake, 0, expected).value;
+        }
+      } finally { stop(); retire(); }
+    },
+  });
   constructor(private readonly options: WorkerProcessBrokerOptions) {}
   adoptRoot(transport: WorkerProcessTransport): void {
     const state = workerProcessState(transport);
@@ -156,6 +191,20 @@ export class WorkerProcessBroker {
     });
   }
   handle(message: WorkerProcessMessage, senderPid?: number): Promise<void> {
+    if (message.operation === "access" || message.operation === "access-cancel") {
+      const sender = this.get(senderPid ?? message.transport.pid);
+      let authenticated = false;
+      try {
+        authenticated = !!sender && !this.disposed && sender.pid === message.transport.pid &&
+          workerProcessDirectoryId(sender) === workerProcessDirectoryId(message.transport) &&
+          !readOutcome(workerProcessState(sender).signals.outcome) && workerProcessState(message.transport).pid === sender.pid;
+      } catch (error) { if (!isCollectedProcess(error)) throw error; }
+      if (!authenticated) { rejectWorkerAccess(message); return Promise.resolve(); }
+      // Query completion must not hold the spawn admission queue, including while its
+      // metadata lookup is deferred. Child notices wait only for parent admission.
+      if (message.operation === "access-cancel") return this.accesses.handle(message, sender!);
+      return this.admission.then(() => this.accesses.handle(message, sender!));
+    }
     let state: ReturnType<typeof workerProcessState>;
     try { state = workerProcessState(message.transport); }
     catch (error) {
@@ -306,6 +355,7 @@ export class WorkerProcessBroker {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.accesses.dispose();
     const cleanup = new Map<number, { complete: boolean }>();
     for (const [pid, transport] of this.transports) {
       const record = this.supervisor?.get(pid);
