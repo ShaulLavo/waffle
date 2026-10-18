@@ -10,7 +10,7 @@ function fixture() {
   let terminated = 0;
   // Exercise the actual page-side failure handler without starting a browser worker.
   const fs = Object.assign(Object.create(SharedFilesystem.prototype), {
-    client, worker: { terminate() { terminated++; } }, writes: Promise.resolve(),
+    client, worker: { terminate() { terminated++; } }, writes: Promise.resolve(), _state: { status: "opening" },
   }) as SharedFilesystem & { fail(error: Error): void };
   cleanups.push(() => { client.dispose(); root.server.port.close(); });
   return { fs, client, terminated: () => terminated };

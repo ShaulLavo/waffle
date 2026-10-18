@@ -9,7 +9,7 @@ const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload
 
 /** The subset of Web Locks needed by this backend; injectable without an unsafe fallback. */
 export interface StorageLockManager {
-  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true } | { mode: "exclusive"; steal: true },
+  request<T>(name: string, options: { mode: "exclusive"; steal: true } | { mode: "exclusive"; signal?: AbortSignal },
     callback: (lock: unknown | null) => Promise<T>): Promise<T>;
 }
 export interface IndexedDBStorageOptions {
@@ -19,6 +19,9 @@ export interface IndexedDBStorageOptions {
   compactEvery?: number;
   onOwnershipLost?: () => void;
   onStartupStage?: RuntimeStartupObserver;
+  signal?: AbortSignal;
+  onWaiting?: () => void;
+  whenBusy?: "takeover" | "wait";
 }
 interface Journal {
   version: 1;
@@ -203,6 +206,10 @@ export class IndexedDBStorage implements StorageBackend {
     if (!Number.isSafeInteger(compactEvery) || compactEvery < 1) throw new Error("Invalid compaction interval");
     // Open before requesting the lock so its callback starts epoch allocation without
     // awaiting another task. Losing a grant aborts allocation as well as later commits.
+    const versionChangeAbort = options.whenBusy === "wait" ? new AbortController() : undefined;
+    const signal = versionChangeAbort
+      ? (options.signal ? AbortSignal.any([options.signal, versionChangeAbort.signal]) : versionChangeAbort.signal)
+      : options.signal;
     reportRuntimeStartup(options.onStartupStage, "indexeddb-open-requested");
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const opening = factory.open(name, 1);
@@ -210,7 +217,16 @@ export class IndexedDBStorage implements StorageBackend {
       opening.onupgradeneeded = () => {
         for (const store of ["metadata", "journal", "data"]) opening.result.createObjectStore(store);
       };
-      opening.onsuccess = () => { if (blocked) opening.result.close(); else resolve(opening.result); };
+      opening.onsuccess = () => {
+        const db = opening.result;
+        // Waiting connections must give way to deletion/upgrades before they own a lock.
+        // The owner replaces this handler once its epoch has been allocated.
+        db.onversionchange = () => {
+          versionChangeAbort?.abort(new Error("Filesystem database changed while opening"));
+          db.close();
+        };
+        if (blocked) db.close(); else resolve(db);
+      };
       opening.onerror = () => reject(opening.error ?? new Error("Cannot open filesystem storage"));
       opening.onblocked = () => { blocked = true; reject(new Error("Filesystem database upgrade is blocked")); };
     });
@@ -221,8 +237,13 @@ export class IndexedDBStorage implements StorageBackend {
     const ready = new Promise<IndexedDBStorage>((resolve, reject) => { acquired = resolve; refused = reject; });
     let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
     let lost = false;
+    let granted = false;
     reportRuntimeStartup(options.onStartupStage, "filesystem-lock-requested");
-    const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, { mode: "exclusive", steal: true }, async () => {
+    const lockOptions = options.whenBusy === "wait"
+      ? { mode: "exclusive" as const, signal }
+      : { mode: "exclusive" as const, steal: true as const };
+    const lifetime = locks.request(`bun-wasm:filesystem:indexeddb:${name}`, lockOptions, async () => {
+      granted = true;
       if (lost) return;
       reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
@@ -240,15 +261,21 @@ export class IndexedDBStorage implements StorageBackend {
       reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
       allocation = undefined;
       if (lost) return;
+      if (versionChangeAbort?.signal.aborted) throw versionChangeAbort.signal.reason;
       owner = new IndexedDBStorage(db, async () => { release(); await lifetime.catch(() => {}); }, compactEvery, epoch, options.onOwnershipLost);
       acquired(owner);
       await held;
+    });
+    queueMicrotask(() => {
+      if (options.whenBusy === "wait" && !granted && !lost && !signal?.aborted) {
+        try { options.onWaiting?.(); } catch { /* Observation cannot change ownership. */ }
+      }
     });
     void lifetime.catch(error => {
       lost = true;
       try { allocation?.abort(); } catch { /* A completed allocation is already durable. */ }
       owner?.loseOwnership();
-      const stolen = error instanceof DOMException && error.name === "AbortError";
+      const stolen = !signal?.aborted && error instanceof DOMException && error.name === "AbortError";
       refused(owner?.ownershipError ?? (stolen ? new Error(OWNERSHIP_LOST_MESSAGE) : error));
       if (stolen && !owner) options.onOwnershipLost?.();
     });

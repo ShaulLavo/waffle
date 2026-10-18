@@ -385,12 +385,7 @@ abandoned journal successors before committing again, preventing an old broken b
 reconnecting to a new save. It validates checksums and the inode graph; existing
 but unrecoverable storage raises an error rather than silently creating an empty filesystem.
 
-One Web Lock is held for the database connection's lifetime. A second tab using the same database
-is refused with a filesystem-worker error, not made a competing writer or a stale read-only
-copy. Closing the first tab releases its lock. `SharedFilesystem({ persistence: false })` selects
-a disposable memory-only filesystem; `name` selects an isolated database for tests/workspaces.
-The worker is not a power-loss-safe host filesystem beyond the browser's strict IndexedDB
-transaction guarantee; closing a page without a completed flush may lose its uncommitted edits.
+See [storage ownership and lifecycle](docs/storage.md) for contention settings, readiness and cancellation.
 
 Ports schedule requests; each request owns a SharedArrayBuffer with a 32-byte completion header,
 JSON operation/arguments and optional binary input. Results overwrite the data region. Large
