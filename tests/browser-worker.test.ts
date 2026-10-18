@@ -428,7 +428,7 @@ test("executor hooks link extra namespaces after setup and before instantiation,
   expect((spawn.transport.data as Record<string, unknown>).pipeRegistry).toBeObject();
 });
 
-test("beforeBindings can release default stdio and preserve a preopen before fd3 inheritance", async () => {
+test("beforeBindings can release default stdio while fd3 inheritance preserves the root preopen", async () => {
   const runtimeProcess = createWorkerProcessTransport();
   runtimeProcess.resources.push({ kind: "web-terminal", target: 0 });
   runtimeProcess.bindings.push({ fd: 3, reference: 0, rightsBase: 0n, rightsInheriting: 0n });
@@ -438,10 +438,7 @@ test("beforeBindings can release default stdio and preserve a preopen before fd3
       readiness: () => ({ readable: true, writable: true, hangup: true }), close() { closed++; } } },
     beforeBindings({ wasi }) {
       for (const fd of [0, 1, 2]) wasi.descriptors.close(fd);
-      // A real adapter also adjusts preview1 discovery in its imports hook: wasi-libc scans
-      // from fd3 upward and stops at the first non-preopen. This test checks lifetime only.
-      const root = wasi.descriptors.get(3)!;
-      wasi.descriptors.add(root.description, { rightsBase: root.rightsBase, rightsInheriting: root.rightsInheriting, preopen: "/" });
+      // Waffle reserved fd3 before constructing the root preopen, so the root is already at fd4.
     },
     resolveTerminal(target) {
       expect(target).toBe(0);

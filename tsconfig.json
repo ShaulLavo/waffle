@@ -30,6 +30,12 @@
     "tests/storage-browser-runner.ts",
     "tests/storage-lock-browser-runner.ts",
     "tests/storage-lock-browser.ts",
-    "tests/browser-filesystem-cancel.test.ts"
+    "tests/browser-filesystem-cancel.test.ts",
+    "scripts/test-wasi-libc.ts",
+    "tests/wasi-libc.test.ts",
+    "tests/wasm-start-section.test.ts",
+    "tests/preopen-placement.test.ts",
+    "tests/libc-tooling.test.ts",
+    "tests/fixtures/preopen-node-host.ts"
   ]
 }

@@ -5,7 +5,7 @@ import { withFileOffset } from "./open-file.js";
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
 import type { FileSystem, FileStat, ResolvedPath } from "./filesystem.js";
-import { DescriptorTable, type Resource, type Stream } from "./descriptors.js";
+import { DescriptorTable, MAX_DESCRIPTOR, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 
 // errno
@@ -90,6 +90,8 @@ export interface WasiOptions {
   hostCallFd?: number;
   /** Preopened directories: guest name -> absolute path in `fs`. */
   preopens: Record<string, string>;
+  /** Child descriptor targets reserved before preopens are placed. */
+  reservedFds?: readonly number[];
   /** Optional blocking stdin for subprocess pipes; absent means EOF. */
   stdin?(cap: number): Uint8Array | number;
   /** Bound endpoints replace the default terminal descriptions (for example child pipes). */
@@ -168,6 +170,11 @@ export class Wasi {
   }
 
   constructor(private opts: WasiOptions) {
+    const reserved = new Set<number>();
+    for (const fd of opts.reservedFds ?? []) {
+      if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR || reserved.has(fd)) throw new RangeError("invalid or duplicate reserved descriptor number");
+      reserved.add(fd);
+    }
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
     for (const which of [0, 1, 2] as const) {
@@ -182,14 +189,29 @@ export class Wasi {
         readiness: () => ({ readable: true, writable: true, hangup: which === 0 && !this.opts.stdin }),
       }, RIGHTS_TTY, RIGHTS_TTY);
     }
+    // Preopens are contiguous from fd 3 in the absence of bindings, and fill only the
+    // lowest gaps that incoming child targets do not reserve. This keeps libc discovery
+    // bounded by the occupied prefix rather than by a sparse high descriptor.
+    let fd = 3;
     for (const [name, path] of Object.entries(opts.preopens)) {
-      this.openFile({ kind: "directory", handle: opts.fs.preopen(path) }, RIGHTS_ALL, RIGHTS_ALL, name);
+      while (reserved.has(fd) || this.descriptors.get(fd)) {
+        if (fd === MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
+        fd++;
+      }
+      if (fd > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
+      this.openFileAt(fd, { kind: "directory", handle: opts.fs.preopen(path) }, RIGHTS_ALL, RIGHTS_ALL, name);
+      fd++;
     }
   }
 
   private openFile(resource: Extract<Resource, { handle: number }>, base: bigint, inheriting: bigint, preopen?: string): number {
     this.opts.fs.retain(resource.handle);
     return this.descriptors.open(resource, base, inheriting, () => this.opts.fs.release(resource.handle), preopen);
+  }
+
+  private openFileAt(fd: number, resource: Extract<Resource, { handle: number }>, base: bigint, inheriting: bigint, preopen?: string): number {
+    this.opts.fs.retain(resource.handle);
+    return this.descriptors.openAt(fd, resource, base, inheriting, () => this.opts.fs.release(resource.handle), preopen);
   }
 
   /** Runs `_start`; returns the exit code. */
