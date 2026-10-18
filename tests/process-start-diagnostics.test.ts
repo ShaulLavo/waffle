@@ -16,7 +16,7 @@ for (const failure of ["missing", "compile", "launch"] as const) test(`${failure
       reported = value;
       const record = supervisor.get(pid)!;
       expect(record.revoked).toBe(false);
-      expect(readOutcome(record.outcome)).toBeNull();
+      expect(readOutcome(record.outcome)).toMatchObject({kind:"start-failed", status:null});
       const stderr = record.descriptors.get(2)!.resource;
       if (stderr.kind !== "terminal") throw new Error("inherited stderr missing");
       stderr.write([new TextEncoder().encode(String(value))]);

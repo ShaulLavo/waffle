@@ -5,7 +5,7 @@ import { checkedSignalNumber, defaultSignalTerminates, createSignalState, reques
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors.js";
 import { ExecutableRegistry } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
-import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "./outcome.js";
+import { OutcomeCell, claimOutcome, outcomeWord, readOutcome, markStarted, startStatus } from "./outcome.js";
 import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types.js";
 
 interface AccessRequest { result?: number; wake?: Int32Array; }
@@ -57,6 +57,7 @@ export class ProcessSupervisor {
   private readonly jobReapClaims = new Set<(job: number) => boolean>();
   private readonly quiescentListeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobListeners = new Map<number, Set<() => void>>();
+  private readonly startListeners = new Map<number, Set<() => void>>();
   private disposed = false;
   private accesses?: Map<number, ProcessAccesses>;
   /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
@@ -317,6 +318,7 @@ export class ProcessSupervisor {
         pid: record.pid, parentPid: record.parentPid, job: record.job, request: record.request!,
         module: executable.module, adapter: executable.adapter, interruptible: executable.interruptible,
         descriptors: record.descriptors, interrupt: record.interrupt, requestedSignal: record.requestedSignal, signalState: record.signalState, outcome: record.outcome,
+        started: () => this.started(record.pid),
         exit: code => this.exit(record.pid, code), fail: () => this.exit(record.pid, 126), startFailed: error => this.failStart(record.pid, error),
         defaultSignal: signal => this.defaultSignal(record.pid, signal),
         registerRevocation: hook => this.registerRevocation(record.pid, hook),
@@ -329,15 +331,38 @@ export class ProcessSupervisor {
       else if (!record.revoked) record.state = "running";
     } catch (error) { this.failStart(record.pid, error); }
   }
-  failStart(pid: number, error: unknown): void {
-    const record = this.table.get(pid);
-    if (record && !record.result && !record.revoked && !readOutcome(record.outcome) && !this.startFailures.has(record)) {
-      // Mark before notification: a diagnostic sink may reenter failure handling.
-      this.startFailures.add(record);
-      this.safely(() => this.options.startFailed?.(pid, error));
-    }
-    this.finish(pid, startFailure(error));
+  /** Launch handles do not prove entry; the executing host calls this at its entry boundary. */
+  started(pid: number): boolean {
+    const record = this.table.require(pid);
+    if (record.revoked || !markStarted(record.outcome)) return false;
+    record.state = "running";
+    this.notifyStart(pid);
+    return true;
   }
+  startStatus(parentPid: number, pid: number): number {
+    try { return startStatus(this.child(parentPid, pid).outcome); }
+    catch (error) {
+      if (error instanceof ProcessError && (error.errno === ProcessErrno.SRCH || error.errno === ProcessErrno.CHILD)) throw new ProcessError(ProcessErrno.CHILD, "not a retained child process");
+      throw error;
+    }
+  }
+  registerChildStartWake(parentPid: number, pid: number, wake: Int32Array): () => void {
+    if (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1) throw new TypeError("startup wake must be one shared int32");
+    this.child(parentPid, pid);
+    let listeners = this.startListeners.get(pid);
+    if (!listeners) this.startListeners.set(pid, listeners = new Set());
+    const listener = () => { Atomics.add(wake, 0, 1); Atomics.notify(wake, 0); };
+    listeners.add(listener);
+    return () => {
+      listeners!.delete(listener);
+      if (listeners!.size === 0) this.startListeners.delete(pid);
+    };
+  }
+  private notifyStart(pid: number): void {
+    const listeners = this.startListeners.get(pid);
+    if (listeners) for (const listener of Array.from(listeners)) this.safely(listener);
+  }
+  failStart(pid: number, error: unknown): void { this.finish(pid, startFailure(error), error); }
   exit(pid: number, code: number): void {
     if (!Number.isInteger(code)) throw new ProcessError(ProcessErrno.INVAL, "exit code must be an integer");
     this.finish(pid, { kind: "exited", code });
@@ -498,8 +523,9 @@ export class ProcessSupervisor {
     this.childAccess.clear();
     this.quiescentListeners.clear();
     this.jobListeners.clear();
+    this.startListeners.clear();
   }
-  private finish(pid: number, result: Omit<ProcessExit, "status">): void {
+  private finish(pid: number, result: Omit<ProcessExit, "status">, startError?: unknown): void {
     const record = this.table.get(pid);
     if (!record || record.result || this.finishing.has(pid)) return;
     this.finishing.set(pid, record);
@@ -509,10 +535,28 @@ export class ProcessSupervisor {
     // Parent kill, worker completion and page failure all choose the same immutable outcome.
     // A signal published after our last read still competes at this atomic decision, rather
     // than overriding one observer's already-final result after the fact.
-    const winner = claimOutcome(record.outcome, result);
+    let winner: ProcessExit, claimed = false, failedExecutor = false;
+    const ownClaim = () => { claimed = true; };
+    try { winner = claimOutcome(record.outcome, result, ownClaim); }
+    catch (error) {
+      // Entry and a host-side setup error can race. Entry's CAS changes this into an
+      // execution failure, never START_FAILED after observers saw successful entry.
+      if (result.kind !== "start-failed" || !(error instanceof ProcessError) || error.errno !== ProcessErrno.INVAL || startStatus(record.outcome) !== 0) {
+        this.finishing.delete(pid);
+        throw error;
+      }
+      winner = claimOutcome(record.outcome, { kind: "exited", code: 126 }, ownClaim);
+      failedExecutor = claimed;
+    }
+    if (claimed && winner.kind === "start-failed" && !this.startFailures.has(record)) {
+      // The immutable CAS winner decides diagnostics, before descriptors are released.
+      this.startFailures.add(record);
+      this.safely(() => this.options.startFailed?.(pid, startError));
+    }
+    this.notifyStart(pid);
     // Check the immutable winner, not an earlier read: a worker may ordinary-exit while a
     // signal observer is entering this function. Its queued output must still drain first.
-    if (winner.kind === "exited" && !this.disposed) {
+    if (winner.kind === "exited" && !failedExecutor && !this.disposed) {
       let canConfirm: boolean;
       try { canConfirm = this.options.canConfirmExit?.(pid) !== false; }
       catch (error) { this.finishing.delete(pid); throw error; }

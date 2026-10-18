@@ -2,7 +2,7 @@ export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./admissio
 export type { SignalTransport, SignalRequestResult } from "./signals.js";
 export { SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal } from "./signals.js";
 export { ProcessIdentityAllocator } from "./identity.js";
-export { outcomeWord, readOutcome, claimOutcome, serializeOutcome, reviveOutcome } from "./outcome.js";
+export { outcomeWord, readOutcome, claimOutcome, markStarted, startStatus, serializeOutcome, reviveOutcome } from "./outcome.js";
 export type { OutcomeTransfer, OutcomeCellTransfer, OutcomeWordTransfer } from "./outcome.js";
 export { ExecutableFormatError } from "./start-failure.js";
 export type { StartFailure } from "./start-failure.js";

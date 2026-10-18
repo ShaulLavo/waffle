@@ -4,7 +4,7 @@ import { DescriptorTable } from "../core/descriptors.js";
 import { serializeTaggedCells, type TaggedCells } from "../proc/control.js";
 import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess, reserveDirectoryProcess } from "../proc/directory.js";
 import { ProcessIdentityAllocator } from "../proc/identity.js";
-import { claimOutcome, readOutcome, serializeOutcome } from "../proc/outcome.js";
+import { claimOutcome, readOutcome, serializeOutcome, markStarted, startStatus } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessTable } from "../proc/table.js";
 import { ProcessError, ProcessErrno } from "../proc/types.js";
@@ -82,8 +82,15 @@ export async function browserStaleCellClone(job: boolean): Promise<void> {
     worker.onmessage = ({ data }) => { if (data.failure) pending?.reject(new Error(data.failure)); else pending?.resolve(data); pending = undefined; };
     worker.onerror = event => { event.preventDefault(); pending?.reject(new Error(event.message)); };
     worker.onmessageerror = () => pending?.reject(new Error("cell Worker message could not be decoded"));
+    assert(markStarted(outcome), "commit entry before cloning the started-running cell");
     equal(await request({ operation: "capture", outcome: serializeOutcome(outcome), controls: controls.map(serializeTaggedCells) }), { phase: "captured" }, "capture live cells");
-    claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
+    const exited = { kind: "exited", code: 23, status: 23 } as const;
+    equal(readOutcome(outcome), null, "cloned entry remains invisible to outcome readers");
+    equal(startStatus(outcome), 0, "cloned entry remains visible to startup readers");
+    equal(claimOutcome(outcome, exited), exited, "claim after entry");
+    equal(claimOutcome(outcome, { kind: "exited", code: 99 }), exited, "only one terminal winner");
+    equal(await request({ operation: "terminal" }), { phase: "terminal" }, "Worker retains startup after terminal claim");
+    claimOutcome(state.signals.outcome, exited);
     confirmDirectoryProcess(child);
     collectDirectoryProcess(child);
     collectDirectoryJob(root.directory, state.jobSlot, state.job);
@@ -94,7 +101,7 @@ export async function browserStaleCellClone(job: boolean): Promise<void> {
         equal(workerProcessState(replacement).jobSlot, state.jobSlot, "same job slot");
       }
       const before = Array.from(new BigInt64Array(root.directory), String);
-      equal(await request({ operation: "stale" }), { phase: "stale", rejected: 2 + controls.length * 2 }, `${phase}: Worker rejects old cells`);
+      equal(await request({ operation: "stale" }), { phase: "stale", rejected: 4 + controls.length * 2 }, `${phase}: Worker rejects old cells`);
       try { readOutcome(outcome); throw new Error("parent read of stale outcome succeeded"); }
       catch (error) { assert(error instanceof ProcessError && error.errno === ProcessErrno.SRCH, "parent stale read must reject SRCH"); }
       equal(Array.from(new BigInt64Array(root.directory), String), before, "stale operations must not mutate replacement");

@@ -1,4 +1,4 @@
-import { startFailureName } from "./start-errno.ts";
+import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 import { packedControl, type CellValidity } from "./control.ts";
 
@@ -17,6 +17,7 @@ export interface OutcomeWordTransfer {
 }
 export type OutcomeTransfer = SharedArrayBuffer | OutcomeCellTransfer | OutcomeWordTransfer;
 
+const STARTED = 4n;
 /** An outcome's running sentinel and record identity are captured, never readopted. */
 export class OutcomeCell {
   readonly running: bigint;
@@ -25,7 +26,7 @@ export class OutcomeCell {
   readonly validity: CellValidity;
   private readonly identity: BigInt64Array;
   constructor(cells: BigInt64Array, pid: number, validity: CellValidity) {
-    this.cells = cells; this.pid = pid; this.validity = validity; this.running = BigInt(pid) << 2n;
+    this.cells = cells; this.pid = pid; this.validity = validity; this.running = BigInt(pid) << 3n;
     this.identity = new BigInt64Array(validity.buffer, validity.byteOffset, 1);
   }
   get buffer(): SharedArrayBuffer { return this.cells.buffer as SharedArrayBuffer; }
@@ -50,7 +51,7 @@ export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
   if (source instanceof SharedArrayBuffer) return outcomeWord(source);
   if (source.type === "outcome-word") return outcomeWord(new BigInt64Array(source.buffer, source.byteOffset, 1));
   if (source.type === "outcome-cell") {
-    if (source.running !== (BigInt(source.pid) << 2n)) throw new TypeError("invalid outcome running sentinel");
+    if (source.running !== (BigInt(source.pid) << 3n)) throw new TypeError("invalid outcome running sentinel");
     return new OutcomeCell(new BigInt64Array(source.buffer, source.byteOffset, 1), source.pid, source.validity);
   }
   throw new TypeError("invalid outcome transfer");
@@ -63,22 +64,57 @@ export function processOutcome(result: Pick<ProcessExit, "kind" | "code">): Proc
 function decode(encoded: bigint): ProcessExit {
   const tag = encoded & 3n;
   if (tag === 0n) throw new ProcessError(ProcessErrno.SRCH, "outcome incarnation changed");
-  return processOutcome({ kind: tag === 1n ? "exited" : tag === 2n ? "signaled" : "start-failed", code: Number(encoded >> 2n) });
+  return processOutcome({ kind: tag === 1n ? "exited" : tag === 2n ? "signaled" : "start-failed", code: Number(encoded >> 3n) });
+}
+function cells(word: OutcomeWord): BigInt64Array { return word instanceof OutcomeCell ? word.cells : word; }
+function running(word: OutcomeWord): bigint { return word instanceof OutcomeCell ? word.running : 0n; }
+function load(word: OutcomeWord): bigint {
+  if (word instanceof OutcomeCell) word.check();
+  const encoded = Atomics.load(cells(word), 0);
+  if (word instanceof OutcomeCell) word.check();
+  // Neither an old pending nor an old started producer may adopt a recycled row.
+  if ((encoded & 3n) === 0n && (encoded & ~STARTED) !== running(word)) throw new ProcessError(ProcessErrno.SRCH, "outcome incarnation changed");
+  return encoded;
 }
 export function readOutcome(word: OutcomeWord): ProcessExit | null {
-  if (word instanceof OutcomeCell) word.check();
-  const encoded = Atomics.load(word instanceof OutcomeCell ? word.cells : word, 0);
-  if (word instanceof OutcomeCell) word.check();
-  return encoded === (word instanceof OutcomeCell ? word.running : 0n) ? null : decode(encoded);
+  const encoded = load(word);
+  return (encoded & 3n) === 0n ? null : decode(encoded);
 }
-/** A stale producer can only CAS its captured running sentinel, not a new occupant's. */
-export function claimOutcome(word: OutcomeWord, result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
+/** Non-consuming startup observation, independent of exit cleanup and collection. */
+export function startStatus(word: OutcomeWord): number {
+  const encoded = load(word);
+  if (encoded & STARTED) return 0;
+  if ((encoded & 3n) === 0n) return -ProcessErrno.AGAIN;
+  const result = decode(encoded);
+  return result.kind === "start-failed" ? startFailureErrno(result.error) : -ProcessErrno.CANCELED;
+}
+/** Commit executable entry against the same atomic winner as kill and startup failure.
+ * The caller publishes its common wake after success, immediately before entering guest code.
+ * False means a terminal winner prevented entry; a repeated live commit is harmless. */
+export function markStarted(word: OutcomeWord): boolean {
+  for (;;) {
+    const previous = load(word);
+    if ((previous & 3n) !== 0n) return false;
+    if (previous & STARTED) return true;
+    const observed = Atomics.compareExchange(cells(word), 0, previous, previous | STARTED);
+    if (word instanceof OutcomeCell) word.check();
+    if (observed === previous) return true;
+  }
+}
+/** A stale producer can only CAS its captured running sentinel, not a new occupant's.
+ * STARTED is sticky, but never itself a terminal result. onClaim only runs for this
+ * caller's successful terminal CAS, so host failures need not await a failed executor. */
+export function claimOutcome(word: OutcomeWord, result: Pick<ProcessExit, "kind" | "code">, onClaim?: () => void): ProcessExit {
   if (!Number.isSafeInteger(result.code)) throw new RangeError("process outcome code must be a safe integer");
   if (result.kind === "start-failed") startFailureName(result.code);
-  if (word instanceof OutcomeCell) word.check();
-  const encoded = (BigInt(result.code) << 2n) | (result.kind === "exited" ? 1n : result.kind === "signaled" ? 2n : 3n);
-  const running = word instanceof OutcomeCell ? word.running : 0n;
-  const previous = Atomics.compareExchange(word instanceof OutcomeCell ? word.cells : word, 0, running, encoded);
-  if (word instanceof OutcomeCell) word.check();
-  return decode(previous === running ? encoded : previous);
+  const value = (BigInt(result.code) << 3n) | (result.kind === "exited" ? 1n : result.kind === "signaled" ? 2n : 3n);
+  for (;;) {
+    const previous = load(word);
+    if ((previous & 3n) !== 0n) return decode(previous);
+    if (result.kind === "start-failed" && (previous & STARTED)) throw new ProcessError(ProcessErrno.INVAL, "startup failure after executable entry");
+    const encoded = value | (previous & STARTED);
+    const observed = Atomics.compareExchange(cells(word), 0, previous, encoded);
+    if (word instanceof OutcomeCell) word.check();
+    if (observed === previous) { onClaim?.(); return decode(encoded); }
+  }
 }

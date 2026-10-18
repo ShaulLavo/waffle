@@ -154,7 +154,7 @@ export function reserveDirectoryProcess(handle: DirectoryHandle, pid: number, pa
       for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(job, 0));
       Atomics.store(raw, 1, packedControl(job, ownerPid));
       Atomics.store(raw, 2, packedControl(job, pid));
-      Atomics.store(raw, 3, BigInt(pid) << 2n);
+      Atomics.store(raw, 3, BigInt(pid) << 3n);
       Atomics.store(raw, 4, packedControl(job, 1));
       Atomics.store(raw, 5, packedControl(job, Number(foreground)));
       Atomics.store(raw, 6, packedControl(job, ownerPid));
@@ -174,7 +174,7 @@ export function reserveDirectoryProcess(handle: DirectoryHandle, pid: number, pa
     const raw = reserved.raw;
     for (let i = 1; i < raw.length; i++) Atomics.store(raw, i, packedControl(pid, 0));
     for (const [index, value] of [[1, parentPid], [2, job], [73, parentPid], [74, group.rootPid], [75, group.slot]]) Atomics.store(raw, index!, packedControl(pid, value!));
-    Atomics.store(raw, 5, BigInt(pid) << 2n);
+    Atomics.store(raw, 5, BigInt(pid) << 3n);
     // A new job stays private until its leader owns an initialized process row.
     // No fallible allocation remains once other workers can join the published job.
     if (created) Atomics.store(created.raw, 0, packedControl(job, 1));

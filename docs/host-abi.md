@@ -132,6 +132,69 @@ guest instead emits a spawn error for START_FAILED (with the named errno and nul
 exit status); real exits 126/127 use its ordinary exit-event path. Neither policy
 requires a Bun-specific Waffle import.
 
+## Observing child startup
+
+```text
+runtime_proc.start_status(pid: i32) -> i32
+```
+
+This non-consuming query applies to retained direct children, with the same caller
+and child authority as `wait`. A reserved PID alone does not prove successful startup.
+
+| Return | Meaning |
+| --- | --- |
+| `-EAGAIN` (`-6`) | Admission, instantiation or setup is still pending |
+| `0` | Executable entry was committed successfully |
+| Positive WASI errno | START_FAILED, using the seven values in the table above |
+| `-ECANCELED` (`-11`) | Exit or a signal won before executable entry |
+| `-ECHILD` (`-12`) | Unknown PID, not a direct child, or already collected |
+
+Success stays observable through immediate exit, later signals and cleanup, until
+collection. Startup errors are likewise repeatedly observable without consuming a
+wait result. Cancellation preserves the actual exit/signal for ordinary `wait`;
+it does not replace it with a startup error. Startup observation does not wait for
+descriptor release or the host filesystem quiescence fence.
+
+Poll subscription **kind 6, CHILD_START**, uses the child PID as `id` and the existing
+16-byte subscription/event layouts. It becomes readable whenever `start_status`
+is no longer `-EAGAIN`. CHILD_START is **level-triggered and stays readable until
+collection**; callers remove the subscription after its first event. An invalid or
+collected child reports the same authority error as a child wait. Neither polling
+nor querying collects a startup or terminal result. Hosts publish the atomic state
+before incrementing the common wake sequence, so publication racing a poll scan or
+its wait cannot be lost.
+
+### Host executable-entry boundary
+
+The browser bootstrap completes `WebAssembly.Instance` construction (including a
+Wasm start section), validates callable `_start` and exported memory, runs
+`executor.instantiated`, and initializes Waffle's WASI memory views. Only then does
+it atomically commit entry, directly before calling `_start`, with no fallible
+user hook or setup between commitment and the call. A trap inside `_start` is a
+post-start execution failure. A Wasm start section that calls `proc_exit` before
+`_start` instead yields `-ECANCELED` and retains its real exit code.
+
+Custom supervisor executors call `ProcessContext.started()` at this boundary;
+worker clients call `WorkerProcessClient.started()`. Both publish readiness after
+committing the shared outcome bit. Hosts with no callback inside their entry API
+commit at the last fallible point before entry: validate `_start` and memory and
+finish host setup, then commit immediately before the entry call. For Node's WASI,
+this means immediately before `wasi.start(instance)`; its internal memory setup has
+already had its only failure condition (a missing memory export) checked.
+
+The sticky entry bit shares the terminal outcome's atomic word. Entry and a
+pre-entry signal or startup failure arbitrate through that same CAS. A false
+`started()`/`markStarted()` result means a terminal result prevented entry: the
+host must not execute guest code. Entry commitment is not a promise that the
+first guest instruction beats a racing kill. A later host failure cannot become
+START_FAILED after successful entry. `readOutcome` still returns no outcome for a
+started-but-running process, and terminal claiming still chooses exactly one
+immutable winner. Recycled record validity applies equally before and after entry.
+
+A Node-style caller can therefore emit `spawn` once it observes zero, or `error`
+without `spawn` for startup failure, without waiting for output or exit (which
+could deadlock a child waiting for stdin from the `spawn` handler).
+
 ## Jobs and signals
 
 `runtime_proc.job_of(0)` returns the calling process's current job, using the
