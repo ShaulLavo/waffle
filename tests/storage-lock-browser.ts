@@ -18,7 +18,7 @@ globalThis.Worker = class extends NativeWorker {
 let fs: SharedFilesystem | undefined;
 let state: StateRecord = { status: "opening" };
 const states: StateRecord[] = [];
-let operation: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = { status: "idle" };
+let operation: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string; errno?: number } = { status: "idle" };
 
 function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -63,7 +63,10 @@ async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<v
 
 (globalThis as typeof globalThis & { lockTest?: unknown }).lockTest = {
   start,
-  state: () => state,
+  state: (): StateRecord => {
+    const current = (fs as { state?: SharedFilesystemState } | undefined)?.state;
+    return current ? { status: current.status, error: current.error?.message } : state;
+  },
   states: () => states,
   operation: () => operation,
   lockName,
@@ -85,7 +88,7 @@ async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<v
     const filesystem = requireFilesystem();
     void filesystem.writeFile("/queued", text).then(() => filesystem.flush()).then(
       () => { operation = { status: "fulfilled" }; },
-      error => { operation = { status: "rejected", error: errorText(error) }; },
+      error => { operation = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno }; },
     );
   },
   async readQueued(): Promise<string | undefined> {
@@ -109,8 +112,12 @@ async function start(backend: Backend, name: string, whenBusy?: Busy): Promise<v
       whenBusy: "takeover",
       onStateChange: record,
     } as unknown as SharedFilesystemOptions;
-    fs = new SharedFilesystem(invalid);
-    observeOperationalReadiness(fs);
+    try {
+      fs = new SharedFilesystem(invalid);
+      observeOperationalReadiness(fs);
+    } catch (error) {
+      record({ status: "failed", error: error instanceof Error ? error : new Error(String(error)) });
+    }
   },
 };
 

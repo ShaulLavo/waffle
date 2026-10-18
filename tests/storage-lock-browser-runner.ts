@@ -150,7 +150,11 @@ async function cancelWhileWaiting(context: BrowserContext, baseURL: string, back
     await assertReady(owner, "cancel owner");
     const waiter = await openFilesystem(context, baseURL, backend, name, "wait"); pages.push(waiter);
     await assertWaiting(waiter, "cancel waiter");
+    await waiter.evaluate(() => (globalThis as any).lockTest.beginWrite("must never be replayed"));
     await waiter.evaluate(async () => { await (globalThis as any).lockTest.dispose(); await (globalThis as any).lockTest.dispose(); });
+    await waiter.waitForFunction(() => (globalThis as any).lockTest.operation().status === "rejected");
+    const cancelled = await waiter.evaluate(() => (globalThis as any).lockTest.operation());
+    assert(cancelled.errno === 11, `cancelled guest work did not reject with ECANCELED: ${JSON.stringify(cancelled)}`);
     const afterDispose = await state(waiter);
     assert(afterDispose.status === "disposed", `waiting dispose did not settle as disposed: ${JSON.stringify(afterDispose)}`);
     const disposedCount = (await waiter.evaluate(() => (globalThis as any).lockTest.states())).filter((item: any) => item.status === "disposed").length;
@@ -165,6 +169,7 @@ async function cancelWhileWaiting(context: BrowserContext, baseURL: string, back
     await barrier(third, backend, name);
     await startPage(third, backend, name, "wait");
     await assertReady(third, "third page after cancelled waiter");
+    assert(await third.evaluate(() => (globalThis as any).lockTest.readQueued()) === undefined, "cancelled mutation was replayed");
   } finally { await closePages(pages); }
 }
 
