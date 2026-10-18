@@ -1,4 +1,4 @@
-import { ProcessErrno, ProcessError, type ProcessExit } from "./types.js";
+import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 
 /** An outcome's running sentinel and record identity are captured, never readopted. */
 export class OutcomeCell {
