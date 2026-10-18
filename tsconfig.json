@@ -27,6 +27,9 @@
     "tests/interrupt-browser-runner-control.ts",
     "tests/process-recycling-browser-runner.ts",
     "tests/process-recycling-browser-runner.test.ts",
-    "tests/storage-browser-runner.ts"
+    "tests/storage-browser-runner.ts",
+    "tests/storage-lock-browser-runner.ts",
+    "tests/storage-lock-browser.ts",
+    "tests/browser-filesystem-cancel.test.ts"
   ]
 }

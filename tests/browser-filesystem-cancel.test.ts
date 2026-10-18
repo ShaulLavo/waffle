@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs";
-import { createRuntime } from "../runtime";
+import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs.js";
+import { createRuntime } from "../runtime.js";
 
 const originalWorker = globalThis.Worker;
 const workers: TestWorker[] = [];

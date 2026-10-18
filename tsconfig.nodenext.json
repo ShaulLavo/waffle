@@ -14,6 +14,9 @@
     "interrupt/**/*.ts",
     "tests/interrupt-browser-runner-control.ts",
     "tests/storage-browser.ts",
-    "tests/opfs-storage-browser.ts"
+    "tests/opfs-storage-browser.ts",
+    "tests/storage-lock-browser-runner.ts",
+    "tests/storage-lock-browser.ts",
+    "tests/browser-filesystem-cancel.test.ts"
   ]
 }
