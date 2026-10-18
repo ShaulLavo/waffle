@@ -110,7 +110,9 @@ positive selector joins an existing live job.
 
 Host control fields in `ProcessContext`, `SignalTransport`, `SpawnReservation`
 and `ProcessABIOptions.wait` use `ControlCells` (`Int32Array | TaggedCells`). Outcome
-fields use `OutcomeWord` (`BigInt64Array | OutcomeCell`); `claimOutcome` and
+fields use `OutcomeWord` (`BigInt64Array | OutcomeCell`). Import `ControlCells`,
+`TaggedCells` and the `controlLoad`/`controlStore`/other control helpers from
+`waffle/proc/control`; they accept both standalone and tagged words. `claimOutcome` and
 `readOutcome` accept that union, so consumers must use those helpers rather than
 raw atomics on outcome fields. `SpawnReservation` also carries optional
 `controlParent` and `rootPid`; `SharedJobIdentity` carries optional `controlParent`.
