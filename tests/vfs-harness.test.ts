@@ -96,6 +96,9 @@ test("WAL unsupported assertions are mandatory for family completeness", () => {
     all.push(...fixtures().map(row => ({ ...row, vfs, state: vfs === "opfs-wal" && row.browser !== "chromium" ? "unsupported as specified" as const : "eligible" as const, metrics: Object.fromEntries(primaryMetrics(row.workload, vfs).map(metric => [metric.name, 100])) })));
   }
   expect(score(all, all).family.complete).toBe(true);
+  const composedInitial = all.map(row => row.vfs === "opfs-safe" || row.vfs === "opfs-wal" ? { ...row, campaign: "later-initial-baselines", revision: "b".repeat(40) } : row);
+  expect(score(composedInitial, all).family.complete).toBe(true);
+  expect(() => score(composedInitial, composedInitial)).toThrow("mixes revisions");
   const missing = all.filter(row => row.vfs !== "opfs-wal" || row.browser === "chromium");
   expect(score(missing, missing).family.complete).toBe(false);
   expect(score(all, all.map((row, i) => i === all.length - 1 ? { ...row, state: "failed correctness" } : row)).family.complete).toBe(false);

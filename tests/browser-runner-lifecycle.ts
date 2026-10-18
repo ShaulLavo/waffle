@@ -2,10 +2,10 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
-import { closeBrowserResources, stopBrowserResource, type BrowserResourceOwner } from "./process-recycling-browser-runner-control.js";
+import { stopBrowserResource, type BrowserResourceOwner } from "./process-recycling-browser-runner-control.js";
 
 export const engines = { chromium, firefox, webkit };
-type Owner<T extends Browser | BrowserContext> = BrowserResourceOwner & { creation: Promise<T> };
+type Owner<T extends Browser | BrowserContext> = BrowserResourceOwner & { creation: Promise<T>; parent?: Owner<Browser> };
 async function bounded<T>(operation: Promise<T>, phase: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Browser runner ${phase} timed out`)), 10000); })]); }
@@ -24,7 +24,7 @@ export class BrowserRunnerLifecycle {
   private interrupted = () => { void this.close().catch(console.error).finally(() => process.exit(1)); };
   private deadline: ReturnType<typeof setTimeout>;
   scratch = "";
-  constructor(timeoutMs = 600_000) {
+  constructor(timeoutMs = 600_000, private cleanupTimeoutMs = 5000) {
     process.once("SIGINT", this.interrupted); process.once("SIGTERM", this.interrupted);
     this.deadline = setTimeout(() => { console.error("Browser runner timed out"); this.interrupted(); }, timeoutMs);
   }
@@ -64,7 +64,7 @@ export class BrowserRunnerLifecycle {
     this.assertLive(); const owner: Owner<BrowserContext> = { creation: engines[name].launchPersistentContext(profile, { headless: true, downloadsPath: this.scratch, tracesDir: this.scratch }), stopped: false };
     this.contexts.add(owner); const context = await owner.creation;
     const browser = context.browser();
-    if (browser) this.browsers.add({ creation: Promise.resolve(browser), stopped: false });
+    if (browser) { owner.parent = { creation: Promise.resolve(browser), stopped: false }; this.browsers.add(owner.parent); }
     this.assertLive(); return context;
   }
   async closeContext(context: BrowserContext): Promise<void> {
@@ -85,7 +85,18 @@ export class BrowserRunnerLifecycle {
       const hardStop = setTimeout(() => { console.error("Browser cleanup exceeded its 60-second fence"); process.exit(1); }, 60000);
       let failures: unknown[] = [];
       try {
-        failures = await closeBrowserResources(this.contexts, this.browsers, 5000);
+        for (const owner of this.contexts) {
+          try { await stopBrowserResource(this.contexts, owner, this.cleanupTimeoutMs); }
+          catch (error) { failures.push(error); }
+        }
+        for (const owner of this.browsers) {
+          try { await stopBrowserResource(this.browsers, owner, this.cleanupTimeoutMs); }
+          catch (error) { failures.push(error); }
+          // A known enclosing browser's confirmed closure proves only its own
+          // contexts dead. An empty browser set proves nothing about an unresolved
+          // independent persistent launch or a context with browser() === null.
+          if (owner.stopped) for (const context of this.contexts) if (context.parent === owner) { context.stopped = true; this.contexts.delete(context); }
+        }
         try { this.server?.stop(true); } catch (error) { failures.push(error); }
         if (!this.contexts.size && !this.browsers.size) {
           for (const pending of Array.from(this.directories)) {

@@ -54,12 +54,13 @@ export function pairedInterval(reference: readonly number[], candidate: readonly
   return { ratio: Math.exp(logs.reduce((a, b) => a + b, 0) / logs.length), lower: percentile(draws, 0.025), upper: percentile(draws, 0.975), pairs: logs.length };
 }
 export function cellKey(row: Pick<Sample, "browser" | "vfs" | "workload" | "lane">): string { return `${row.browser}/${row.vfs}/${row.workload}/${row.lane}`; }
-function group(rows: readonly Sample[]): Map<string, Sample[]> {
+function group(rows: readonly Sample[], initialArchive = false): Map<string, Sample[]> {
   const result = new Map<string, Sample[]>();
-  if (new Set(rows.map(row => `${row.revision}/${row.campaign}`)).size > 1) throw new Error("Scoring input mixes revisions or campaigns");
+  if (!initialArchive && new Set(rows.map(row => `${row.revision}/${row.campaign}`)).size > 1) throw new Error("Scoring input mixes revisions or campaigns");
   for (const row of rows) {
     if (row.protocol !== SCORE_PROTOCOL) throw new Error(`Score protocol mismatch: ${row.protocol}`);
     const key = cellKey(row); const entries = result.get(key) ?? [];
+    if (entries.some(r => r.revision !== row.revision || r.campaign !== row.campaign)) throw new Error(`Scoring cell ${key} mixes revisions or campaigns`);
     if (entries.some(r => r.repetition === row.repetition && r.warmup === row.warmup)) throw new Error(`Duplicate repetition in ${key}`);
     entries.push(row); result.set(key, entries);
   }
@@ -69,7 +70,7 @@ export interface CellScore { key: string; state: Eligibility; reason?: string; s
 /** The initial baseline remains immutable. An accepted reference is a separate ratchet input.
  * Missing/failed cells are visible and make the fixed-mask score incomplete, never faster. */
 export function score(initial: readonly Sample[], candidate: readonly Sample[], accepted?: readonly Sample[], acceptedBest: Partial<Record<VfsName, number>> = {}) {
-  const bases = group(initial), next = group(candidate), ratchet = accepted ? group(accepted) : undefined;
+  const bases = group(initial, true), next = group(candidate), ratchet = accepted ? group(accepted) : undefined;
   const cells: CellScore[] = [];
   for (const vfs of VFS_NAMES) for (const browser of BROWSERS) for (const workload of WORKLOADS) for (const lane of LANES) {
     const key = cellKey({ browser, vfs, workload, lane });
