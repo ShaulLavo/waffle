@@ -65,6 +65,13 @@ export class DescriptorTable {
     if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     let fd = this.next;
     while (this.entries.has(fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    return this.addAt(fd, description, rights);
+  }
+  /** Add a descriptor at an exact number without replacing an existing entry. */
+  addAt(fd: number, description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
+    if (this.entries.has(fd)) throw new Error(`descriptor ${fd} is already open`);
+    if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     description.retain();
     this.entries.set(fd, { ...rights, description, resource: description.resource });
     this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
@@ -72,6 +79,9 @@ export class DescriptorTable {
   }
   open(resource: Resource, rightsBase: bigint, rightsInheriting: bigint, release?: () => void, preopen?: string): number {
     return this.add(new OpenDescription(resource, release ?? (resource.kind === "pipe" || resource.kind === "terminal" ? () => resource.close?.() : undefined)), { rightsBase, rightsInheriting, preopen });
+  }
+  openAt(fd: number, resource: Resource, rightsBase: bigint, rightsInheriting: bigint, release?: () => void, preopen?: string): number {
+    return this.addAt(fd, new OpenDescription(resource, release ?? (resource.kind === "pipe" || resource.kind === "terminal" ? () => resource.close?.() : undefined)), { rightsBase, rightsInheriting, preopen });
   }
   dup(fd: number): number {
     const entry = this.entries.get(fd);
