@@ -3,30 +3,46 @@ import { ProcessABI } from "../proc/abi.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
-import { MemFS } from "../fs/memory.js";
+import { MemoryBackend } from "../fs/backend.js";
+import { ProcessError } from "../proc/types.js";
 
 const module = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-for (const [executable, error, code, status] of [["missing", "ENOENT", 2, 127], ["broken", "EACCES", 13, 126]] as const) {
-  test(`${error} stays typed through process and job wait while the ABI reports ${status}`, async () => {
-    const registry = new ExecutableRegistry();
-    registry.register("broken", { adapter: "preview1", module: () => { throw new Error("invalid executable"); } });
+const failures = [
+  ["ENOENT", 2, 44], ["EACCES", 13, 2], ["ENOTDIR", 20, 54], ["ENOEXEC", 8, 45],
+  ["ENOMEM", 12, 48], ["EAGAIN", 11, 6], ["EIO", 5, 29],
+] as const;
+for (const [error, code, wasi] of failures) {
+  test(`${error} stays typed through consuming process and job ABI waits`, async () => {
+    const backend = new MemoryBackend();
+    backend.fs.writeFile("/bin/fixture", "");
+    const registry = new ExecutableRegistry(path => backend.execute("resolvePath", [path], new Uint8Array()));
+    registry.register("/bin/fixture", { adapter: "preview1", module: () => {
+      if (error === "ENOEXEC") return new WebAssembly.Module(new Uint8Array([1, 2, 3]));
+      if (error === "ENOMEM") throw new RangeError("allocation failed");
+      if (error === "EAGAIN") throw new ProcessError(6, "capacity exhausted");
+      throw new Error("loader or host failed");
+    } });
+    const executable = error === "ENOENT" ? "/bin/missing" : error === "ENOTDIR" ? "/bin/fixture/child"
+      : error === "EACCES" ? "/bin" : "/bin/fixture";
     const supervisor = new ProcessSupervisor({ registry, launch() { throw new Error("must not launch"); } });
     const shell = supervisor.createRoot();
     const memory = new WebAssembly.Memory({ initial: 1 });
     const abi = new ProcessABI({ memory, descriptors: supervisor.get(shell)!.descriptors,
-      fs: new MemFS(), pid: shell, service: supervisor, signals: supervisor.get(shell)! });
+      fs: backend.fs, pid: shell, service: supervisor, signals: supervisor.get(shell)! });
     try {
       const pid = supervisor.spawn(shell, { executable, argv: [], env: {}, cwd: "/", job: 0, fds: [] });
       const job = supervisor.jobOf(pid);
       const expected = { kind: "start-failed", error, code, status: null };
       expect(await supervisor.waitForExit(shell, pid)).toEqual(expected);
+      // The first four bytes fitting is not enough, and neither fault may consume.
+      expect(abi.imports.wait!(pid, 65532)).toBe(-21);
+      expect(abi.imports.wait_job!(job, 1, 65532)).toBe(-21);
       expect(abi.imports.wait!(pid, 64)).toBe(0);
       const view = new DataView(memory.buffer);
-      expect(view.getUint32(64, true)).toBe(0);
-      expect(view.getInt32(68, true)).toBe(status);
-      expect(() => supervisor.reap(shell, pid)).toThrow("not a child");
+      expect([view.getUint32(64, true), view.getInt32(68, true)]).toEqual([2, wasi]);
+      expect(abi.imports.wait!(pid, 64)).toBe(-12);
       expect(abi.imports.wait_job!(job, 0, 72)).toBe(0);
-      expect(view.getInt32(72, true)).toBe(status);
+      expect([view.getUint32(72, true), view.getInt32(76, true)]).toEqual([2, wasi]);
       expect(abi.imports.wait_job!(job, 1, 72)).toBe(-12);
     } finally { supervisor.dispose(); }
   });
@@ -42,11 +58,19 @@ for (const status of [126, 127]) test(`a program exiting ${status} remains an or
   try {
     const pid = supervisor.spawn(shell, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
     expect(await supervisor.waitForExit(shell, pid)).toEqual({ kind: "exited", code: status, status });
-    expect(supervisor.waitJob(shell, supervisor.jobOf(pid))).toEqual({ kind: "exited", code: status, status });
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const abi = new ProcessABI({ memory, descriptors: supervisor.get(shell)!.descriptors,
+      fs: new MemoryBackend().fs, pid: shell, service: supervisor, signals: supervisor.get(shell)! });
+    const job = supervisor.jobOf(pid);
+    expect(abi.imports.wait!(pid, 64)).toBe(0);
+    expect(abi.imports.wait_job!(job, 0, 72)).toBe(0);
+    const view = new DataView(memory.buffer);
+    expect([view.getUint32(64, true), view.getInt32(68, true)]).toEqual([0, status]);
+    expect([view.getUint32(72, true), view.getInt32(76, true)]).toEqual([0, status]);
   } finally { supervisor.dispose(); }
 });
 
-test("start-failed tag is 3 and rejects errno values outside ENOENT/EACCES", () => {
+test("start-failed tag is 3 and rejects unsupported errno values", () => {
   const word = outcomeWord();
   expect(() => claimOutcome(word, { kind: "start-failed", code: 126 })).toThrow(RangeError);
   expect(readOutcome(word)).toBeNull();
@@ -75,7 +99,7 @@ test("typed startup failure becomes observable only after descriptor release and
   } finally { release(); await fence; supervisor.dispose(); }
 });
 
-test("a generic root retains typed EACCES when its first process import fails", async () => {
+test("a generic root retains typed EIO when its first process import fails", async () => {
   const { createWorkerProcessTransport, workerProcessState } = await import("../proc/worker-client.js");
   const { createFilesystemConnection } = await import("../fs/protocol.js");
   const { failFirstWorkerImport } = await import("./first-worker-import.js");
@@ -86,7 +110,38 @@ test("a generic root retains typed EACCES when its first process import fails", 
     const messages: unknown[] = [];
     await failFirstWorkerImport({ module, args: [], env: {}, filesystem: connection.client,
       runtimeProcess: transport, outcome: state.signals.outcome }, message => messages.push(message));
-    expect(readOutcome(state.signals.outcome)).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+    expect(readOutcome(state.signals.outcome)).toEqual({ kind: "start-failed", code: 5, error: "EIO", status: null });
     expect(messages).toContainEqual(expect.objectContaining({ type: "error", code: 126, message: expect.stringContaining("first worker-client import rejected") }));
   } finally { connection.client.port.close(); connection.server.port.close(); }
 });
+
+test("signals use a tagged signal number rather than a shell status in both waits", () => {
+  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); } });
+  const shell = supervisor.createRoot(), memory = new WebAssembly.Memory({ initial: 1 });
+  const abi = new ProcessABI({ memory, descriptors: supervisor.get(shell)!.descriptors,
+    fs: new MemoryBackend().fs, pid: shell, service: supervisor, signals: supervisor.get(shell)! });
+  try {
+    const pid = supervisor.reserveSpawn(shell, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    const job = supervisor.jobOf(pid);
+    supervisor.kill(pid, 9);
+    expect(abi.imports.wait!(pid, 64)).toBe(0);
+    expect(abi.imports.wait_job!(job, 0, 72)).toBe(0);
+    const view = new DataView(memory.buffer);
+    expect([view.getUint32(64, true), view.getInt32(68, true)]).toEqual([1, 9]);
+    expect([view.getUint32(72, true), view.getInt32(76, true)]).toEqual([1, 9]);
+  } finally { supervisor.dispose(); }
+});
+
+for (const [errno, name, code] of [[44, "ENOENT", 2], [2, "EACCES", 13], [54, "ENOTDIR", 20]] as const) {
+  test(`loader filesystem errno ${errno} retains explicit ${name}`, async () => {
+    const { FilesystemError } = await import("../fs/protocol.js");
+    const registry = new ExecutableRegistry();
+    registry.register("fixture", { adapter: "fixture", module() { throw new FilesystemError(errno); } });
+    const supervisor = new ProcessSupervisor({ registry, launch() { throw new Error("must not launch"); } });
+    const shell = supervisor.createRoot();
+    try {
+      const pid = supervisor.spawn(shell, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+      expect(await supervisor.waitForExit(shell, pid)).toEqual({ kind: "start-failed", error: name, code, status: null });
+    } finally { supervisor.dispose(); }
+  });
+}

@@ -1,3 +1,4 @@
+import { ProcessError, ProcessErrno } from "./types.ts";
 /** Two independent, monotonic namespaces shared by synchronous guest spawn stubs.
  * This module has no supervisor/worker imports, so a guest can reserve before proc loads.
  */
@@ -17,7 +18,7 @@ export class ProcessIdentityAllocator {
   private allocate(index: number): number {
     for (;;) {
       const current = Atomics.load(this.counters, index);
-      if (current < 0 || current === 0x7fffffff) throw new RangeError("process identity namespace exhausted");
+      if (current < 0 || current === 0x7fffffff) throw new ProcessError(ProcessErrno.AGAIN, "process identity namespace exhausted");
       if (Atomics.compareExchange(this.counters, index, current, current + 1) === current) return current + 1;
     }
   }

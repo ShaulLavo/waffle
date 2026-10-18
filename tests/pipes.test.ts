@@ -1214,3 +1214,15 @@ for (const maxCells of [2, 3]) {
     if (maxCells === 3) expect(Atomics.load(registry.canonical(2), 0) & (1n << 32n)).toBe(1n << 32n);
   });
 }
+
+test("endpoint lifetime allocation failure does not retain an invisible writer", () => {
+  const { controller, reader, writer } = pipe();
+  const previous = globalThis.SharedArrayBuffer;
+  try {
+    globalThis.SharedArrayBuffer = new Proxy(previous, { construct() { throw new RangeError("injected lifetime allocation"); } });
+    expect(() => controller.duplicate(writer)).toThrow(RangeError);
+  } finally { globalThis.SharedArrayBuffer = previous; }
+  writer.close();
+  expect(output(reader)).toBe("");
+  reader.close();
+});

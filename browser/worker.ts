@@ -1,3 +1,4 @@
+import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import type { OutcomeWord } from "../proc/outcome.js";
@@ -9,6 +10,7 @@ import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import { withFileOffset } from "../core/open-file.js";
 import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome.js";
+import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
 import { waitStatus } from "../proc/wait-status.js";
 import type { ProcessExit } from "../proc/types.js";
 import { fatalInterrupt } from "../interrupt/check.js";
@@ -32,7 +34,7 @@ export type RuntimeWorkerMessage = WorkerProcessMessage
   | { type: "phase"; name: string; duration: number }
   | { type: "stdout" | "stderr"; data: Uint8Array }
   | { type: "exit"; code: number; signal?: number; sleep?: SleepMode; cleanupErrors?: string[] }
-  | { type: "error"; code: number; message: string; sleep?: SleepMode; cleanupErrors?: string[] }
+  | { type: "error"; code: number; errno?: StartFailure; message: string; sleep?: SleepMode; cleanupErrors?: string[] }
   /** Owned-resource release failed: diagnostic only, never a quiescence acknowledgement. */
   | { type: "cleanup-error"; code: number; signal?: number; message: string; cleanupErrors: string[]; sleep?: SleepMode }
   | { type: "default-signal"; signal: number };
@@ -102,7 +104,7 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   run(context: WorkerExecutionContext<R>, exited: number | null): number | Promise<number>;
 }
 
-export class RuntimeWorkerSignal extends Error {
+export class RuntimeWorkerSignal extends ExecutionUnwind {
   constructor(readonly signal: number) { super(`Process stopped by signal ${signal}`); }
 }
 
@@ -180,7 +182,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
     const startupFailure = "error" in result && !started;
-    const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? { kind: "start-failed", code: 13 }
+    const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
     // Generic commands select their winner before any reentrant cleanup callback. Legacy
     // transports still publish completion only after their buffered diagnostics and release.
@@ -226,7 +228,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (executor.complete || "code" in result || settled || winner.kind === "signaled") {
       host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
-      host.postMessage({ type: "error", code, message: describeWorkerError(result.error), sleep: sleepMode, ...diagnostics });
+      host.postMessage({ type: "error", code, errno: winner.kind === "start-failed" ? winner.error : undefined, message: describeWorkerError(result.error), sleep: sleepMode, ...diagnostics });
     }
   };
   const terminalResult = (error: unknown): { code: number; signal?: number } | null => {
@@ -409,8 +411,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
     instance = new WebAssembly.Instance(req.module, linked);
-    if (typeof instance.exports._start !== "function") throw new TypeError("guest has no _start entry point");
-    if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no memory");
+    if (typeof instance.exports._start !== "function") throw new ExecutableFormatError("guest has no _start entry point");
+    if (!(instance.exports.memory instanceof WebAssembly.Memory)) throw new ExecutableFormatError("guest has no memory");
     host.postMessage({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     executor.instantiated?.({ ...context, wasi, instance });
     if (done) return;

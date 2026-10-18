@@ -26,7 +26,7 @@ const HEADER = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const SECTION_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 10, 11];
 
 function fail(reason: string): never {
-  throw new Error(`Cannot instrument WebAssembly: ${reason}`);
+  throw new WebAssembly.CompileError(`Cannot instrument WebAssembly: ${reason}`);
 }
 
 class Reader {
@@ -67,7 +67,13 @@ class Reader {
     this.position += length;
     return result;
   }
-  name(): string { return decoder.decode(this.take(this.u32())); }
+  name(): string {
+    const bytes = this.take(this.u32());
+    try { return decoder.decode(bytes); } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      return fail("invalid UTF-8 name");
+    }
+  }
   done(): void {
     if (this.position !== this.bytes.length) fail("unconsumed section or function body");
   }

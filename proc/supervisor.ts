@@ -1,8 +1,9 @@
+import { spawnError, startFailure } from "./start-failure.js";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
 import { checkedSignalNumber, defaultSignalTerminates, createSignalState, requestSignal } from "./signals.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors.js";
-import { ExecutableNotFound, ExecutableRegistry } from "./registry.js";
+import { ExecutableRegistry } from "./registry.js";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
 import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "./outcome.js";
 import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types.js";
@@ -217,7 +218,8 @@ export class ProcessSupervisor {
     return pid;
   }
   reserveSpawn(parentPid: number, spec: SpawnRequest, reservation: SpawnReservation = {}): number {
-    return this.reserveProcess(parentPid, spec, reservation, false);
+    try { return this.reserveProcess(parentPid, spec, reservation, false); }
+    catch (error) { throw spawnError(error); }
   }
   /** Controller-only adoption of a spawn accepted before lazy supervisor activation.
    * Admission and descriptor retention must already have happened while the parent was live.
@@ -334,8 +336,7 @@ export class ProcessSupervisor {
       this.startFailures.add(record);
       this.safely(() => this.options.startFailed?.(pid, error));
     }
-    const missing = error instanceof ExecutableNotFound || error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT";
-    this.finish(pid, { kind: "start-failed", code: missing ? 2 : 13 });
+    this.finish(pid, startFailure(error));
   }
   exit(pid: number, code: number): void {
     if (!Number.isInteger(code)) throw new ProcessError(ProcessErrno.INVAL, "exit code must be an integer");

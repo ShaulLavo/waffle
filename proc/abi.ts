@@ -1,3 +1,4 @@
+import { ExecutionUnwind } from "../core/unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "./control.js";
 import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
@@ -6,6 +7,8 @@ import { PipeController } from "./pipes.js";
 import { readOutcome } from "./outcome.js";
 import { WasiExit } from "../core/wasi.js";
 import { waitStatus } from "./wait-status.js";
+import { spawnError, startFailureErrno } from "./start-failure.js";
+import { FilesystemError } from "../fs/protocol.js";
 import { checkedSignalNumber, defaultSignalTerminates, requestSignal, setSignalDisposition, signalPending, takeSignal, type SignalTransport } from "./signals.js";
 import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
 
@@ -66,7 +69,7 @@ export interface ProcessABIOptions {
 }
 
 /** Explicit default-action unwind; an unrelated WASM trap must never be treated as a signal. */
-export class ProcessSignalExit extends Error {
+export class ProcessSignalExit extends ExecutionUnwind {
   readonly status: number;
   constructor(readonly signal: number) {
     super(`default action for signal ${signal}`);
@@ -99,7 +102,10 @@ export class ProcessABI {
       access_start: (ptr, length, cwdPtr, cwdLength, mode) => this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
       access_take: request => this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
       access_cancel: request => this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
-      spawn: (ptr, length) => this.result(() => options.service.spawn(options.pid, this.spawnRequest(ptr!, length!))),
+      spawn: (ptr, length) => this.result(() => {
+        try { return options.service.spawn(options.pid, this.spawnRequest(ptr!, length!)); }
+        catch (error) { throw spawnError(error); }
+      }),
       job_of: pid => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
       pipe: ptr => this.result(() => this.pipe(ptr!)),
       dup: fd => options.descriptors.dup(fd! >>> 0),
@@ -124,7 +130,8 @@ export class ProcessABI {
   private result(operation: () => number): number {
     try { return operation(); }
     catch (error) {
-      if (error instanceof ProcessError) return -error.errno;
+      if (error instanceof ProcessError || error instanceof FilesystemError) return -error.errno;
+      if (error instanceof RangeError) return -48; // ENOMEM, including host buffer allocation.
       throw error;
     }
   }
@@ -249,14 +256,17 @@ export class ProcessABI {
     this.span(ptr, 8);
     const result = this.options.service.wait(this.options.pid, pid);
     if (!result) return -ProcessErrno.AGAIN;
-    const output = this.view(ptr, 8);
-    output.setUint32(0, result.kind === "signaled" ? 1 : 0, true);
-    output.setInt32(4, result.kind === "start-failed" ? waitStatus(result) : result.code, true);
+    this.writeWaitResult(ptr, result);
     return 0;
+  }
+  private writeWaitResult(ptr: number, result: ProcessExit): void {
+    const output = this.view(ptr, 8);
+    output.setUint32(0, result.kind === "exited" ? 0 : result.kind === "signaled" ? 1 : 2, true);
+    output.setInt32(4, result.kind === "start-failed" ? startFailureErrno(result.error) : result.code, true);
   }
   private waitJob(job: number, flags: number, ptr: number): number {
     if (flags !== 0 && flags !== 1) return -ProcessErrno.INVAL;
-    this.span(ptr, 4); // Faults must not consume a completed job.
+    this.span(ptr, 8); // Faults must not consume a completed job.
     const wake = this.options.wake;
     const release = wake ? this.options.service.registerJobWake?.(this.options.pid, job, wake) : undefined;
     try {
@@ -266,9 +276,9 @@ export class ProcessABI {
         // Validate/read readiness separately so a host callback growing memory cannot cause
         // a fault after the consuming operation. No guest code runs between validation/reap.
         if (this.options.service.jobEmpty(this.options.pid, job)) {
-          this.span(ptr, 4);
+          this.span(ptr, 8);
           const result = this.options.service.waitJob(this.options.pid, job);
-          if (result) { this.view(ptr, 4).setInt32(0, waitStatus(result), true); return 0; }
+          if (result) { this.writeWaitResult(ptr, result); return 0; }
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
         if (this.pending()) return -27; // EINTR; no signal consumed.
@@ -305,7 +315,8 @@ export class ProcessABI {
       } else if (setSignalDisposition(this.options.signals.signalState, signal, mode, this.options.signals.interrupt)) this.defaultSignal(signal);
       return 0;
     } catch (error) {
-      if (error instanceof ProcessError) return -error.errno;
+      if (error instanceof ProcessError || error instanceof FilesystemError) return -error.errno;
+      if (error instanceof RangeError) return -48; // ENOMEM, including host buffer allocation.
       throw error;
     }
   }

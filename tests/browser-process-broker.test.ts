@@ -753,7 +753,7 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
       broker.registerController(pid, controller);
     }
     await supervisor.start(pid);
-    expect(supervisor.get(pid)?.result).toMatchObject({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+    expect(supervisor.get(pid)?.result).toMatchObject({ kind: "start-failed", code: 5, error: "EIO", status: null });
     expect(output).toHaveLength(1);
     expect(output[0]).toContain(failure.message);
     expect(events).toEqual([diagnostic === "controller" ? "controller-diagnostic" : "diagnostic", "closed"]);
@@ -802,7 +802,7 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
     }
     const result = await supervisor.waitForExit(client.pid, pid);
     expect(result).toEqual(failure === "running-error" ? { kind: "exited", code: 126, status: 126 }
-      : { kind: "start-failed", code: 13, error: "EACCES", status: null });
+      : { kind: "start-failed", code: 5, error: "EIO", status: null });
     expect(client.wait(client.pid, pid)).toEqual(result);
   } finally {
     descriptors.dispose();

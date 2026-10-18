@@ -1,3 +1,4 @@
+import { spawnError, startFailure } from "./start-failure.js";
 import { MAX_ACCESS_REQUESTS } from "./access.js";
 import { controlLoad, controlStore } from "./control.js";
 import { createDirectory, directoryState, directorySlots, directoryJob, directoryProcesses, findDirectoryJob, directoryControls, isCollectedProcess, reserveDirectoryProcess, confirmDirectoryProcess, collectDirectoryProcess, collectDirectoryJob, wakeDirectory } from "./directory.js";
@@ -159,6 +160,10 @@ export class WorkerProcessClient {
     this.accesses.clear();
   }
   spawn(parentPid: number, request: SpawnRequest): number {
+    try { return this.reserveSpawn(parentPid, request); }
+    catch (error) { throw spawnError(error); }
+  }
+  private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
     if (parentPid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const fds = new Set<number>();
@@ -205,7 +210,7 @@ export class WorkerProcessClient {
       try {
         if (child) {
           state = workerProcessState(child);
-          claimOutcome(state.signals.outcome, { kind: "start-failed", code: 13 });
+          claimOutcome(state.signals.outcome, startFailure(error));
         }
         for (const token of child?.resources ?? []) {
           try { codec.discard(token); } catch (cleanupError) { cleaned = false; this.report(cleanupError); }
@@ -230,7 +235,8 @@ export class WorkerProcessClient {
     }
     // Publication transferred ownership. Never discard published resources if a host
     // commit fails; release the admission fence after the complete handoff either way.
-    try { transfer?.commit?.(); } finally { transfer?.release?.(); }
+    try { transfer?.commit?.(); } catch (error) { this.report(error); }
+    finally { try { transfer?.release?.(); } catch (error) { this.report(error); } }
     return pid;
   }
   private find(pid: number, retained = false) {

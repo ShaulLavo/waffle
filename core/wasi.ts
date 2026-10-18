@@ -1,3 +1,4 @@
+import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
@@ -73,7 +74,7 @@ const EVENTTYPE_CLOCK = 0;
 const EVENTTYPE_FD_READ = 1;
 const EVENTRWFLAGS_HANGUP = 1;
 
-export class WasiExit extends Error {
+export class WasiExit extends ExecutionUnwind {
   constructor(public code: number) {
     super(`exit ${code}`);
   }

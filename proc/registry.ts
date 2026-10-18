@@ -1,3 +1,4 @@
+import { ExecutableFormatError } from "./start-failure.js";
 import { normalize } from "../core/path.js";
 
 /** Only metadata is needed for executable admission, never file contents or a filesystem owner. */
@@ -83,7 +84,12 @@ export class ExecutableRegistry {
         }));
       } catch (error) { reject(error); }
     }
-    const module = await pending;
+    let module: WebAssembly.Module;
+    try { module = await pending; }
+    catch (error) {
+      if (error instanceof WebAssembly.CompileError) throw new ExecutableFormatError(error.message, { cause: error });
+      throw error;
+    }
     assertActive();
     return { module, adapter: entry.adapter, interruptible: entry.interruptible };
   }

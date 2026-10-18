@@ -3,6 +3,8 @@ export type { SignalTransport, SignalRequestResult } from "./signals.js";
 export { SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition, setSignalDisposition, publishSignal, requestSignal, takeSignal } from "./signals.js";
 export { ProcessIdentityAllocator } from "./identity.js";
 export { outcomeWord, readOutcome, claimOutcome } from "./outcome.js";
+export { ExecutableFormatError } from "./start-failure.js";
+export type { StartFailure } from "./start-failure.js";
 export { waitStatus } from "./wait-status.js";
 export { ExecutableRegistry, ExecutableNotFound, ExecutableNotRunnable } from "./registry.js";
 export type { Executable, ResolvedExecutable, ExecutableLookup } from "./registry.js";

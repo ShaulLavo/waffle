@@ -520,13 +520,13 @@ export class BrowserProcessBroker {
       if (data.cleanupErrors?.length) this.report(new Error(`Worker cleanup: ${data.cleanupErrors.join("; ")}`));
       if (data.type === "exit" && data.signal) context.defaultSignal(data.signal);
       else if (data.type === "exit") context.exit(data.code);
-      else if (!child.started) context.startFailed(new Error(data.message));
+      else if (!child.started) context.startFailed(Object.assign(new Error(data.message), { code: data.errno }));
       else context.fail(new Error(data.message));
       this.stopSafely(child);
     };
     worker.onerror = event => {
       event.preventDefault(); child.failed = true;
-      if (!child.started) context.startFailed(new Error(event.message));
+      if (!child.started) context.startFailed(event.error ?? new Error(event.message));
       else context.fail(new Error(event.message));
       this.stopSafely(child);
     };

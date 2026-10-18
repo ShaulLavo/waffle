@@ -1,3 +1,4 @@
+import type { StartFailure } from "./start-errno.ts";
 import type { ControlCells } from "./control.js";
 import type { OutcomeWord } from "./outcome.js";
 import type { DescriptorTable } from "../core/descriptors.js";
@@ -14,7 +15,7 @@ export type ProcessSignal = number;
 export type Signal = ProcessSignal;
 export type ProcessExit = Readonly<
   | { kind: "exited" | "signaled"; code: number; status: number }
-  | { kind: "start-failed"; code: number; error: "ENOENT" | "EACCES"; status: null }
+  | { kind: "start-failed"; code: number; error: StartFailure; status: null }
 >;
 export interface DescriptorBinding { child: number; parent: number }
 export interface SpawnRequest {

@@ -497,6 +497,8 @@ class PipeState {
   retain(pid: number, mode: PipeMode): PipeEndpoint {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff || this.closed) throw new Error("invalid pipe process");
     if (this.registry?.isRevoked(pid) || this.writers.concat(this.readers).some(ring => ring.owner === pid && ring.references < 0)) throw new Error("pipe process is revoked");
+    // Allocate before acquiring a ring reference, so failed allocation owns no endpoint.
+    const lifetime = new SharedArrayBuffer(4);
     const rings = mode === "write" ? this.writers : this.readers;
     // Deterministic probing makes simultaneous reservation of the SAME pid contend on the
     // same slot. Negative owner is an unpublished reservation, never a live writer/reader.
@@ -537,8 +539,8 @@ class PipeState {
       selected = slot;
       break;
     }
-    if (selected < 0) throw new Error(`pipe ${mode} process limit reached`);
-    const endpoint = new PipeEndpoint(this, pid, mode, selected, new SharedArrayBuffer(4));
+    if (selected < 0) throw new ProcessError(PipeErrno.NFILE, `pipe ${mode} process limit reached`);
+    const endpoint = new PipeEndpoint(this, pid, mode, selected, lifetime);
     try {
       // Both sides publish identity before checking the other side. Concurrent first reader
       // and writer reservations cannot both miss registering the direct consumer's lease.
