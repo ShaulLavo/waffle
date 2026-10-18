@@ -8,6 +8,7 @@ import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
 import { FilesystemClient, revokeFilesystem, reapFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
+import { drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
 import { claimOutcome, outcomeWord, processOutcome, readOutcome, markStarted } from "../proc/outcome.js";
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
@@ -136,6 +137,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
+  let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -169,15 +171,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (winner) throw new WasiExit(waitStatus(winner));
     if (revoked()) throw new WasiExit(1);
   };
+  // Only the synchronous host-authored diagnostic write may use still-owned I/O after its
+  // terminal claim. Guest calls remain guarded, and revocation still retires that authority.
+  const checkIoActive = () => {
+    if (!diagnosticWrite) { checkActive(); return; }
+    if (revoked()) throw new WasiExit(1);
+  };
   // Ownership begins before setup/namespaces can fail or finish the process.
   const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
-  const finish = (result: WorkerResult) => {
+  let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
+  let pendingFinish: Promise<void> | undefined;
+  const finish = (result: WorkerResult): void => {
     if (done) return;
     done = true;
+    pendingFinish = finishOwned(result);
+  };
+  const finishOwned = async (result: WorkerResult): Promise<void> => {
     let settled = localOutcome;
     try { if (outcome) settled = readOutcome(outcome); }
     catch (error) { detachCollectedProcess(error); }
@@ -186,9 +199,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const startupFailure = "error" in result && !started;
     const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
-    // Startup failures select their winner before any reentrant cleanup callback. Executor-
-    // owned ordinary completion still follows its buffered diagnostics and descriptor release.
-    let winner = executor.complete && !startupFailure ? settled : claim(ownResult);
+    // Claim the runtime outcome before draining so a signal delivered during backpressure
+    // cannot replace the original execution failure.
+    const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
+    let winner = runtimeDiagnostic || !executor.complete || startupFailure ? claim(ownResult) : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -197,6 +211,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const attempt = (cleanup: () => void): boolean => {
       try { cleanup(); return true; } catch (error) { collect(error); return false; }
     };
+    if (runtimeDiagnostic && "error" in result) {
+      try {
+        const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
+        const pending = drainDiagnostic(bytes, data => writeDiagnostic!(data));
+        if (pending) await pending;
+      } catch (error) { collect(error); }
+      winner = claim(ownResult);
+    }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
@@ -270,32 +292,45 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       requestedSignal = runtimeState.signals.requestedSignal;
     }
     const stdio = ownedStdio ? {
-      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkActive) } : {}),
-      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkActive) } : {}),
-      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkActive) } : {}),
+      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
+      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
+      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
     } : undefined;
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
-      checkActive();
+      checkIoActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
     };
-    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
-      checkActive();
+    const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
+      if (immediate) checkIoActive(); else checkActive();
       const fd = type === "stderr" ? 2 : 1;
       if (!wasi) {
         const stream = stdio?.[fd];
-        if (stream) return stream.write([data]) === data.length;
+        if (stream) return immediate ? stream.tryWrite?.([data]) ?? -58 : stream.write([data]);
         output(type, data);
-        return true;
+        return data.length;
       }
       const descriptor = wasi.descriptors.get(fd);
-      if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return false;
+      if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return -8;
       const resource = descriptor.resource;
-      if (resource.kind === "directory") return false;
+      if (resource.kind === "directory") return -31;
       // Like preview1, an empty write neither appends nor moves the shared file cursor.
-      if (!data.length) return true;
-      if (resource.kind !== "file") return resource.write([data]) === data.length;
+      if (!data.length) return 0;
+      if (resource.kind !== "file") return immediate ? resource.tryWrite?.([data]) ?? -58 : resource.write([data]);
+      if (immediate) {
+        return withFileOffset(resource, () => {
+          if (resource.append) {
+            const result = fs.tryAppend(resource.handle, [data]);
+            if (typeof result === "number") return result;
+            resource.offset = result.offset;
+            return result.written;
+          }
+          const written = fs.tryWrite(resource.handle, [data], resource.offset);
+          if (written >= 0) resource.offset += written;
+          return written;
+        }, true);
+      }
       const written = withFileOffset(resource, () => {
         if (resource.append) {
           const result = fs.append(resource.handle, [data]);
@@ -307,8 +342,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         if (written >= 0) resource.offset += written;
         return written;
       });
-      return written === data.length;
+      return written;
     };
+    writeDiagnostic = data => {
+      diagnosticWrite = true;
+      try { return write("stderr", data, true); }
+      finally { diagnosticWrite = false; }
+    };
+    const post = (type: "stdout" | "stderr", data: Uint8Array) => write(type, data) === data.length;
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
     if (done) return;
@@ -364,7 +405,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         // Terminal provenance takes priority even when its resolved stream is a PipeEndpoint.
         codec: createRuntimeTerminalCodec({ fallback: pipes.codec(), descriptors: wasi.descriptors,
           resolveTerminal: executor.resolveTerminal?.bind(executor),
-          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive }), postMessage,
+          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive: checkIoActive }), postMessage,
         createPipe: () => { checkActive(); return pipes.createPipe(); },
         revokeProcess: pid => pipes.revokeProcess(pid),
         prepareSpawn: pid => {
@@ -441,8 +482,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   } catch (error) {
     finish(terminalResult(error) ?? { error });
   } finally {
-    host.removeEventListener?.("error", onError);
-    host.removeEventListener?.("unhandledrejection", onRejection);
+    try { await pendingFinish; }
+    finally {
+      host.removeEventListener?.("error", onError);
+      host.removeEventListener?.("unhandledrejection", onRejection);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.43",
+  "version": "0.0.44",
   "private": true,
   "type": "module",
   "exports": {
@@ -365,6 +365,13 @@
       "bun": "./browser/preview-protocol.ts",
       "browser": "./browser/preview-protocol.ts",
       "default": "./browser/preview-protocol.ts"
+    },
+    "./browser/diagnostic": {
+      "types": "./browser/diagnostic.ts",
+      "node": "./dist/browser/diagnostic.js",
+      "bun": "./browser/diagnostic.ts",
+      "browser": "./browser/diagnostic.ts",
+      "default": "./browser/diagnostic.ts"
     },
     "./browser/preview": {
       "types": "./browser/preview.ts",
