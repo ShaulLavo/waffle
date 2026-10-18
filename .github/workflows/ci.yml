@@ -107,8 +107,6 @@ jobs:
           WASMTIME: wasmtime
   browser:
     runs-on: ubuntu-latest
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -121,7 +119,7 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/cache@v4
         with:
-          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
       - run: bunx playwright install --with-deps chromium firefox webkit
       - run: bun run test:browser

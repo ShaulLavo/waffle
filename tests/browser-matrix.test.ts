@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runOwned } from "../scripts/owned-command.ts";
+import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = ["storage", "storage-lock", "process-recycling"];
 const fixture = `
@@ -18,6 +18,7 @@ if (process.env.MATRIX_FAIL === name) throw Error("fixture failure");
 
 async function matrix(failing: string): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "waffle-browser-matrix-"));
+  let cleanupError: CommandCleanupError | undefined;
   try {
     await mkdir(join(root, "scripts"));
     await mkdir(join(root, "tests"));
@@ -39,12 +40,15 @@ async function matrix(failing: string): Promise<void> {
         timeoutMs: 5000,
       });
     } catch (error) {
+      if (error instanceof CommandCleanupError) cleanupError = error;
       failure = error;
     }
     expect(failure instanceof Error).toBe(failing !== "");
     for (const runner of runners)
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("all engines");
   } finally {
+    if (cleanupError)
+      throw new Error(`Retained browser matrix scratch: ${root}`, { cause: cleanupError });
     await rm(root, { recursive: true, force: true });
   }
 }
