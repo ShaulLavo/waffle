@@ -196,6 +196,163 @@ test("duplicate inherited bindings share one exported lifetime and one child des
   expect(counts[1]).toBe(2);
 });
 
+test("partial inherited binding import rolls back descriptors and releases each imported lifetime once", () => {
+  const transport = createWorkerProcessTransport();
+  transport.bindings = [
+    { fd: 17, reference: 0, rightsBase: 1n, rightsInheriting: 0n },
+    { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n },
+  ];
+  transport.resources = ["retained", "reject"];
+  const descriptors = new DescriptorTable();
+  const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+  let releases = 0;
+  const codec: WorkerDescriptorCodec = {
+    import(token) {
+      if (token === "reject") throw new TypeError("binding rejected");
+      return new OpenDescription(stream, () => { releases++; });
+    },
+    export() { throw new Error("unexpected export"); },
+    discard() {},
+  };
+  try {
+    expect(() => installWorkerBindings(transport, descriptors, codec)).toThrow(TypeError);
+    expect(descriptors.get(17)).toBeUndefined();
+    expect(descriptors.get(31)).toBeUndefined();
+    expect(releases).toBe(1);
+  } finally { descriptors.dispose(); }
+});
+
+test("binding rollback preserves complete preopen metadata after a later install fails", () => {
+  const transport = createWorkerProcessTransport();
+  transport.bindings = [
+    { fd: 0, reference: 0, rightsBase: 1n, rightsInheriting: 0n },
+    { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n },
+  ];
+  transport.resources = ["first", "second"];
+  class FailingTable extends DescriptorTable {
+    private installs = 0;
+    override inherit(fd: number, source: Descriptor): void {
+      if (++this.installs === 2) throw new Error("binding install failed");
+      super.inherit(fd, source);
+    }
+  }
+  const descriptors = new FailingTable();
+  const preopen = { kind: "directory" as const, handle: 1 };
+  descriptors.open(preopen, 7n, 9n, undefined, "/");
+  const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+  let releases = 0;
+  const codec: WorkerDescriptorCodec = {
+    import() { return new OpenDescription(stream, () => { releases++; }); },
+    export() { throw new Error("unexpected export"); }, discard() {},
+  };
+  try {
+    expect(() => installWorkerBindings(transport, descriptors, codec)).toThrow("binding install failed");
+    expect(descriptors.get(0)?.preopen).toBe("/");
+    expect(descriptors.get(0)?.resource).toBe(preopen);
+    expect(descriptors.get(31)).toBeUndefined();
+    expect(releases).toBe(2);
+  } finally { descriptors.dispose(); }
+});
+
+test("non-Error binding failures stay typed while cleanup failures remain on descriptor teardown", () => {
+  for (const primary of [null, undefined, 0, false]) {
+    const transport = createWorkerProcessTransport();
+    transport.bindings = [{ fd: 17, reference: 0, rightsBase: 1n, rightsInheriting: 0n }, { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n }];
+    transport.resources = ["retained", "reject"];
+    const descriptors = new DescriptorTable();
+    const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+    let releases = 0;
+    const codec: WorkerDescriptorCodec = {
+      import(token) {
+        if (token === "reject") throw primary;
+        return new OpenDescription(stream, () => { releases++; throw new Error("release failed"); });
+      },
+      export() { throw new Error("unexpected export"); }, discard() {},
+    };
+    let caught: unknown;
+    try { installWorkerBindings(transport, descriptors, codec); } catch (error) { caught = error; }
+    expect(caught).toBe(primary);
+    expect(descriptors.get(17)).toBeUndefined();
+    expect(releases).toBe(1);
+    expect(() => descriptors.dispose()).toThrow("release failed");
+    expect(() => descriptors.dispose()).not.toThrow();
+  }
+});
+
+function rejectedTransfer(transport: WorkerProcessTransport) {
+  transport.bindings = [{ fd: 17, reference: 0, rightsBase: 1n, rightsInheriting: 0n }, { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n }];
+  transport.resources = ["retained", "reject"];
+  const primary = new ProcessError(2, "binding rejected");
+  const releaseFailure = new Error("staged release failed");
+  const stats = { releases: 0, rejectedDiscards: 0 };
+  const release = () => {
+    if (stats.releases) return;
+    stats.releases++;
+    throw releaseFailure;
+  };
+  const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+  const codec: WorkerDescriptorCodec = {
+    import(token) {
+      if (token === "reject") throw primary;
+      return new OpenDescription(stream, release);
+    },
+    export() { throw new Error("unexpected export"); },
+    discard(token) { if (token === "retained") release(); else stats.rejectedDiscards++; },
+  };
+  return { primary, releaseFailure, stats, codec };
+}
+
+test("supervisor failStart reports staged cleanup once and reaches its fence without retrying disposal", async () => {
+  const transport = createWorkerProcessTransport(), descriptors = new DescriptorTable();
+  const failure = rejectedTransfer(transport), diagnostics: unknown[] = [];
+  let finishFence!: () => void;
+  const fence = new Promise<void>(resolve => { finishFence = resolve; });
+  let fences = 0;
+  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("must not launch"); },
+    onError(error) { diagnostics.push(error); }, quiesce() { fences++; return fence; } });
+  const pid = supervisor.createRoot({ descriptors });
+  try {
+    expect(() => installWorkerBindings(transport, descriptors, failure.codec)).toThrow(failure.primary);
+    supervisor.failStart(pid, failure.primary);
+    expect(fences).toBe(1);
+    expect(supervisor.get(pid)!.result).toBeNull();
+    expect(diagnostics).toHaveLength(1);
+    expect((diagnostics[0] as AggregateError).errors[0].errors).toEqual([failure.releaseFailure]);
+    expect(() => descriptors.dispose()).not.toThrow();
+    supervisor.failStart(pid, failure.primary);
+    finishFence(); await fence;
+    expect(supervisor.get(pid)!.result).toEqual({ kind: "start-failed", error: "EACCES", code: 13, status: null });
+    expect(failure.stats.releases).toBe(1);
+    expect(diagnostics).toHaveLength(1);
+  } finally { finishFence(); await fence; supervisor.dispose(); }
+  expect(diagnostics).toHaveLength(1);
+});
+
+test("broker import and staged release failures finish admission with typed outcome and one cleanup report", async () => {
+  const transport = createWorkerProcessTransport(), descriptors = new DescriptorTable();
+  const state = workerProcessState(transport), diagnostics: unknown[] = [];
+  let launches = 0, fences = 0;
+  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { launches++; return { terminate() {} }; },
+    onError(error) { diagnostics.push(error); }, quiesce() { fences++; } });
+  supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+  const messages: WorkerProcessMessage[] = [];
+  const client = new WorkerProcessClient({ transport, descriptors, codec: fakeCodec().codec, postMessage(message) { messages.push(message); } });
+  const pid = client.spawn(state.pid, request()), message = messages[0]!;
+  const failure = rejectedTransfer(message.transport);
+  const broker = new WorkerProcessBroker({ supervisor: () => Promise.resolve(supervisor), codec: failure.codec });
+  broker.adoptRoot(transport);
+  try {
+    await expect(broker.handle(message)).rejects.toBe(failure.primary);
+    expect(launches).toBe(0);
+    expect(fences).toBe(1);
+    expect(diagnostics).toHaveLength(1);
+    expect((diagnostics[0] as AggregateError).errors[0].errors).toEqual([failure.releaseFailure]);
+    expect(failure.stats).toEqual({ releases: 1, rejectedDiscards: 1 });
+    expect(client.wait(state.pid, pid)).toEqual({ kind: "start-failed", error: "EACCES", code: 13, status: null });
+  } finally { broker.dispose(); supervisor.dispose(); descriptors.dispose(); }
+  expect(diagnostics).toHaveLength(1);
+});
+
 test("fatal selection freezes resources synchronously but wait stays pending until broker revocation completes", async () => {
   const f = fixture();
   const { fd } = f.source(f.root.options.descriptors);
