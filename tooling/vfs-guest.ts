@@ -1,5 +1,6 @@
 import { Wasi } from "../core/wasi.js";
 import type { FileSystem } from "../core/filesystem.js";
+import { decode } from "../fs/memory.js";
 import type { WorkloadIO } from "./vfs-workloads.js";
 
 const signatures: Record<string, readonly number[]> = {
@@ -35,7 +36,6 @@ export class GuestIO implements WorkloadIO {
   private bytes: Uint8Array;
   private view: DataView;
   private encoder = new TextEncoder();
-  private decoder = new TextDecoder();
   private fds = new Map<string, number>();
   constructor(fs: FileSystem, module: WebAssembly.Module) {
     this.wasi = new Wasi({ fs, args: [], env: {}, preopens: { "/": "/" }, stdout() {}, stderr() {}, sleep() {} });
@@ -85,7 +85,7 @@ export class GuestIO implements WorkloadIO {
         let offset = 0;
         while (offset + 24 <= count) {
           const nameLength = this.view.getUint32(8192 + offset + 16, true); if (offset + 24 + nameLength > count) break;
-          cookie = this.view.getBigUint64(8192 + offset, true); result.push(this.decoder.decode(this.bytes.subarray(8192 + offset + 24, 8192 + offset + 24 + nameLength))); offset += 24 + nameLength;
+          cookie = this.view.getBigUint64(8192 + offset, true); result.push(decode(this.bytes.subarray(8192 + offset + 24, 8192 + offset + 24 + nameLength))); offset += 24 + nameLength;
         }
         if (!offset) throw new Error("Guest readdir made no progress");
       }
