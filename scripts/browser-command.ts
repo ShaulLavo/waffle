@@ -8,7 +8,7 @@ export async function runBrowserSuite(
   if (process.platform !== "linux") return runOwned(command, options);
   options.signal?.throwIfAborted();
   const child = Bun.spawn(
-    [process.execPath, import.meta.dir + "/browser-supervisor.ts"].concat(command),
+    [process.execPath, import.meta.dir + "/browser-supervisor.ts", "65000"].concat(command),
     {
       cwd: options.cwd,
       env: {

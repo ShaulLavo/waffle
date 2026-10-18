@@ -8,7 +8,7 @@ import {
 } from "./process-recycling-browser-runner-control.js";
 
 // Run from the repository with Bun. Defaults to the full Chromium/Firefox/WebKit matrix.
-// PROCESS_SCRATCH_ROOT selects the parent of a disposable waffle-slot-recycling-* tree.
+// PROCESS_SCRATCH_ROOT selects the parent of a disposable wproc-* tree.
 // PROCESS_TEST_FILTER selects case labels without changing the browser matrix.
 const engines = { chromium, firefox, webkit };
 type Engine = keyof typeof engines;
@@ -132,7 +132,7 @@ try {
       resources: "process-browser",
       borrowed: { scratchRoot, browsers: selected },
       owned: [
-        "waffle-slot-recycling-* scratch",
+        "wproc-* scratch",
         "optional tmpfs Firefox profile parent",
         "ephemeral loopback port 0",
         "headless browsers, contexts, Workers and RPC timers",
@@ -141,7 +141,7 @@ try {
   );
   await mkdir(scratchRoot, { recursive: true });
   active();
-  scratchCreation = mkdtemp(resolve(scratchRoot, "waffle-slot-recycling-"));
+  scratchCreation = mkdtemp(resolve(scratchRoot, "wproc-"));
   scratch = await scratchCreation;
   active();
   process.env.TMPDIR = scratch;
@@ -223,10 +223,7 @@ try {
     // Put only Firefox's disposable profile/temp files in task-owned tmpfs, not downloads.
     if (name === "firefox" && process.platform === "linux" && !firefoxScratch) {
       firefoxScratchCreation = mkdtemp(
-        resolve(
-          process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
-          "waffle-slot-recycling-firefox-",
-        ),
+        resolve(process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm", "ff-"),
       );
       firefoxScratch = await firefoxScratchCreation;
       active();

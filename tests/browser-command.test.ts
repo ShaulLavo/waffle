@@ -73,17 +73,11 @@ setInterval(() => {}, 1000);
 );
 
 async function containedFixture(
-  mode: "normal" | "fast-exit" | "killed-owner" | "hung-owner",
+  mode: "normal" | "fast-exit" | "killed-owner" | "hung-owner" | "killed-launcher" | "deadline",
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "wc-"));
-  const controller = new AbortController();
   const suite = join(root, "suite.ts");
   const supervisor = resolve(repo, "scripts/browser-supervisor.ts");
-  const launcher = join(root, "launcher.ts");
-  writeFileSync(
-    launcher,
-    `import {supervise} from ${JSON.stringify(supervisor)}; process.exitCode = await supervise(process.argv.slice(2), 100);`,
-  );
   writeFileSync(
     suite,
     `
@@ -98,8 +92,26 @@ if (process.env.MODE === "normal") { browser.kill("SIGKILL"); await browser.exit
 setInterval(() => {}, 1000);
 `,
   );
-  const child = Bun.spawn([process.execPath, launcher, process.execPath, suite], {
-    env: { ...process.env, PROBE: root, MODE: mode, WAFFLE_BROWSER_PARENT: String(process.pid) },
+  const outer = join(root, "outer.ts");
+  writeFileSync(
+    outer,
+    `
+const supervisor = Bun.spawn([process.execPath, ${JSON.stringify(supervisor)}, "100", process.execPath, ${JSON.stringify(suite)}], {env:{...process.env, WAFFLE_BROWSER_PARENT:String(process.pid)}, detached:true, stdout:"ignore", stderr:"inherit"});
+await supervisor.exited;
+`,
+  );
+  const command =
+    mode === "killed-launcher"
+      ? [process.execPath, outer]
+      : [process.execPath, supervisor, "100", process.execPath, suite];
+  const child = Bun.spawn(command, {
+    env: {
+      ...process.env,
+      PROBE: root,
+      MODE: mode,
+      WAFFLE_BROWSER_PARENT: String(process.pid),
+      WAFFLE_BROWSER_TIMEOUT: mode === "deadline" ? "100" : "5000",
+    },
     detached: true,
     stdout: "ignore",
     stderr: "inherit",
@@ -108,6 +120,7 @@ setInterval(() => {}, 1000);
     await ready(join(root, "ready"));
     if (mode === "killed-owner") kill(Number(readFileSync(join(root, "ready"), "utf8")), "SIGKILL");
     if (mode === "hung-owner") child.kill("SIGTERM");
+    if (mode === "killed-launcher") child.kill("SIGKILL");
     const exit = await Promise.race([
       child.exited,
       Bun.sleep(5000).then(() => {
@@ -115,11 +128,17 @@ setInterval(() => {}, 1000);
       }),
     ]);
     expect(exit === 0).toBe(mode === "normal" || mode === "fast-exit");
-    expect(alive(Number(readFileSync(join(root, "browser"), "utf8")))).toBe(false);
+    const browser = Number(readFileSync(join(root, "browser"), "utf8"));
+    const scratch = readFileSync(join(root, "scratch"), "utf8").split("\n");
+    const end = Date.now() + 5000;
+    while (alive(browser) || scratch.some(existsSync)) {
+      if (Date.now() >= end) throw Error("orphan supervisor did not finish cleanup");
+      await Bun.sleep(10);
+    }
+    expect(alive(browser)).toBe(false);
     for (const directory of readFileSync(join(root, "scratch"), "utf8").split("\n"))
       expect(existsSync(directory)).toBe(false);
   } finally {
-    controller.abort();
     child.kill("SIGKILL");
     await child.exited;
     if (existsSync(join(root, "browser")))
@@ -129,7 +148,14 @@ setInterval(() => {}, 1000);
     rmSync(root, { recursive: true, force: true });
   }
 }
-for (const mode of ["normal", "fast-exit", "killed-owner", "hung-owner"] as const)
+for (const mode of [
+  "normal",
+  "fast-exit",
+  "killed-owner",
+  "hung-owner",
+  "killed-launcher",
+  "deadline",
+] as const)
   linuxTest(
     `browser containment retires detached children after ${mode}`,
     () => containedFixture(mode),

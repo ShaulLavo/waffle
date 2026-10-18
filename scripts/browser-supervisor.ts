@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const PR_SET_CHILD_SUBREAPER = 36;
+const WNOHANG = 1;
 const libc = dlopen("libc.so.6", {
   prctl: {
     args: [FFIType.i32, FFIType.u64, FFIType.u64, FFIType.u64, FFIType.u64],
@@ -54,7 +56,7 @@ function killAdopted(pid: number): void {
 async function retireChildren(): Promise<void> {
   const deadline = Date.now() + 5000;
   while (true) {
-    while (libc.symbols.waitpid(-1, null, 1) > 0) {
+    while (libc.symbols.waitpid(-1, null, WNOHANG) > 0) {
       /* Reap adopted children only after the suite is reaped. */
     }
     const owned = children();
@@ -72,24 +74,46 @@ function signalSuite(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+function monitorSuite(
+  pid: number,
+  parent: number,
+  graceMs: number,
+  stopped: { at: number | undefined },
+): ReturnType<typeof setInterval> {
+  const deadline = Date.now() + Number(process.env.WAFFLE_BROWSER_TIMEOUT ?? 600_000);
+  let forwarded = false;
+  return setInterval(() => {
+    if (parentOf(process.pid) !== parent || Date.now() >= deadline) stopped.at ??= Date.now();
+    if (stopped.at === undefined) return;
+    if (!forwarded) {
+      forwarded = true;
+      signalSuite(pid, "SIGTERM");
+    }
+    if (Date.now() - stopped.at >= graceMs) signalSuite(pid, "SIGKILL");
+  }, 20);
+}
+
 /** Subreaping catches even detached grandchildren whose parent exits before our first poll. */
-export async function supervise(command: string[], graceMs = 65_000): Promise<number> {
+async function supervise(command: string[], graceMs: number): Promise<number> {
   if (!command.length) throw Error("Missing browser suite command");
-  if (libc.symbols.prctl(36, 1, 0, 0, 0) !== 0)
+  if (libc.symbols.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) !== 0)
     throw Error("Cannot own detached browser descendants");
-  let stopAt: number | undefined;
+  const stopped: { at: number | undefined } = { at: undefined };
   const stop = () => {
-    stopAt ??= Date.now();
+    stopped.at ??= Date.now();
   };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
-  const root = process.env.STORAGE_SCRATCH_ROOT ?? tmpdir();
+  const parent = Number(process.env.WAFFLE_BROWSER_PARENT ?? process.ppid);
+  const root = process.env.STORAGE_SCRATCH_ROOT ?? process.env.PROCESS_SCRATCH_ROOT ?? tmpdir();
   mkdirSync(root, { recursive: true });
-  const scratch = mkdtempSync(join(root, "wb-"));
-  const shm = mkdtempSync("/dev/shm/wb-");
-  let retired = false;
+  let scratch: string | undefined;
+  let shm: string | undefined;
+  let retired = true;
   let poll: ReturnType<typeof setInterval> | undefined;
   try {
+    scratch = mkdtempSync(join(root, "wb-"));
+    shm = mkdtempSync("/dev/shm/wb-");
     const child = Bun.spawn(command, {
       env: {
         ...process.env,
@@ -102,36 +126,25 @@ export async function supervise(command: string[], graceMs = 65_000): Promise<nu
       stdout: "inherit",
       stderr: "inherit",
     });
-    const suite = child;
-    const deadline = Date.now() + Number(process.env.WAFFLE_BROWSER_TIMEOUT ?? 600_000);
-    let forwarded = false;
-    poll = setInterval(() => {
-      if (
-        parentOf(process.pid) !== Number(process.env.WAFFLE_BROWSER_PARENT ?? process.ppid) ||
-        Date.now() >= deadline
-      )
-        stop();
-      if (stopAt === undefined) return;
-      if (!forwarded) {
-        forwarded = true;
-        signalSuite(suite.pid, "SIGTERM");
-      }
-      if (Date.now() - stopAt >= graceMs) signalSuite(suite.pid, "SIGKILL");
-    }, 20);
+    retired = false;
+    poll = monitorSuite(child.pid, parent, graceMs, stopped);
     const code = await child.exited;
     clearInterval(poll);
     await retireChildren();
     retired = true;
-    return stopAt === undefined ? code : 1;
+    return stopped.at === undefined ? code : 1;
   } finally {
     if (poll) clearInterval(poll);
     process.removeListener("SIGTERM", stop);
     process.removeListener("SIGINT", stop);
     if (retired) {
-      rmSync(scratch, { recursive: true, force: true });
-      rmSync(shm, { recursive: true, force: true });
+      if (scratch) rmSync(scratch, { recursive: true, force: true });
+      if (shm) rmSync(shm, { recursive: true, force: true });
     } else console.error(`Retained browser scratch until descendants retire: ${scratch}, ${shm}`);
   }
 }
 
-if (import.meta.main) process.exitCode = await supervise(process.argv.slice(2));
+const graceMs = Number(process.argv[2]);
+if (!Number.isFinite(graceMs) || graceMs <= 0)
+  throw Error("Expected positive browser cleanup grace in milliseconds");
+process.exitCode = await supervise(process.argv.slice(3), graceMs);
