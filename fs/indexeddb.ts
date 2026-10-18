@@ -9,7 +9,7 @@ const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload
 
 /** The subset of Web Locks needed by this backend; injectable without an unsafe fallback. */
 export interface StorageLockManager {
-  request<T>(name: string, options: { mode: "exclusive"; ifAvailable: true } | { mode: "exclusive"; steal: true } | { mode: "exclusive"; signal?: AbortSignal },
+  request<T>(name: string, options: { mode: "exclusive"; steal: true } | { mode: "exclusive"; signal?: AbortSignal },
     callback: (lock: unknown | null) => Promise<T>): Promise<T>;
 }
 export interface IndexedDBStorageOptions {
