@@ -105,6 +105,7 @@ async function contested(context: BrowserContext, baseURL: string, backend: Back
     const applicationLock = lockName(backend, name);
     assert(locks.pending?.some((lock: any) => lock.name === applicationLock), `waiting ${backend} page did not queue ${applicationLock}`);
     await dispose(owner);
+    await owner.close();
     await assertReady(waiter, "waiter after owner disposal");
     assert(await waiter.evaluate(() => (globalThis as any).lockTest.readSaved()) === "durable marker", `${backend} waiter lost flushed data`);
   } finally { await closePages(pages); }
@@ -177,6 +178,9 @@ async function fifoWaiters(context: BrowserContext, baseURL: string, backend: Ba
       const waiter = await openFilesystem(context, baseURL, backend, name, "wait");
       pages.push(waiter); waiters.push(waiter);
       await assertWaiting(waiter, `FIFO waiter ${index}`);
+      const snapshot = await query(waiter);
+      const queued = snapshot.pending?.filter((lock: any) => lock.name === lockName(backend, name)).length;
+      assert(queued === index + 1, `FIFO request ${index} was not queued before its successor: ${JSON.stringify(snapshot)}`);
     }
     await dispose(owner);
     for (let index = 0; index < waiters.length; index++) {
@@ -208,12 +212,12 @@ async function guestWork(context: BrowserContext, baseURL: string, backend: Back
   } finally { await closePages(pages); }
 }
 
-async function indexedDBTakeover(context: BrowserContext, baseURL: string, name: string): Promise<void> {
+async function indexedDBTakeover(context: BrowserContext, baseURL: string, name: string, policy?: "takeover"): Promise<void> {
   const pages: Page[] = [];
   try {
     const owner = await openFilesystem(context, baseURL, "indexeddb", name); pages.push(owner);
     await assertReady(owner, "takeover owner");
-    const contender = await openFilesystem(context, baseURL, "indexeddb", name); pages.push(contender);
+    const contender = await openFilesystem(context, baseURL, "indexeddb", name, policy); pages.push(contender);
     await assertReady(contender, "takeover contender");
     await owner.waitForFunction(() => (globalThis as any).lockTest.state().status === "failed");
     const ownerState = await state(owner);
@@ -246,6 +250,7 @@ function cases(): TestCase[] {
   }
   result.push(
     { backend: "indexeddb", label: "default takeover still fences the old owner", run: (context, url, name) => indexedDBTakeover(context, url, name) },
+    { backend: "indexeddb", label: "explicit takeover still fences the old owner", run: (context, url, name) => indexedDBTakeover(context, url, name, "takeover") },
     { backend: "opfs", label: "takeover is rejected for OPFS", run: (context, url, name) => opfsTakeoverRejected(context, url, name) },
   );
   return result;
@@ -317,7 +322,7 @@ try {
     const profile = resolve(profileRoot!, name);
     process.env.TMPDIR = profileRoot;
     launching = engine.launchPersistentContext(profile, { headless: true, downloadsPath: scratch, tracesDir: scratch });
-    context = await launching;
+    context = await launching!;
     context.setDefaultTimeout(15_000);
     const keepAlive = await context.newPage();
     await keepAlive.goto(`http://127.0.0.1:${server.port}/blank`);
