@@ -1288,13 +1288,14 @@ for (const activation of ["lazy", "eager"] as const) for (const signalAt of ["re
     const childPid = bun.client.spawn(bunPid, request(job)), childNotice = messages.shift()!;
     const child = makeClient(childNotice.transport);
     expect(child.abi.imports.job_of!(0)).toBe(job);
-    expect(Atomics.load(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(2);
+    expect(controlLoad(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(2);
     expect(child.client.job).toBe(job);
     expect(table.get(childPid)).toBeUndefined();
     if (signalAt === "admitted") {
       await broker.runtimeMessage(bunNotice, shell.client.pid);
       await broker.runtimeMessage(childNotice, bunPid);
     }
+    const childExit = signalAt === "admitted" ? (await broker.ready()).waitForExit(bunPid, childPid) : undefined;
     // Reserved descendants are targeted synchronously even before the page admits them.
     expect(shell.abi.imports.kill_job!(job, 9)).toBe(0);
     expect(readOutcome(child.client.signals.outcome)?.status).toBe(137);
@@ -1306,17 +1307,18 @@ for (const activation of ["lazy", "eager"] as const) for (const signalAt of ["re
     const supervisor = await broker.ready();
     await supervisor.waitForExit(shell.client.pid, bunPid);
     if (signalAt === "admitted") {
-      await supervisor.waitForExit(bunPid, childPid);
-      expect(supervisor.jobOf(childPid)).toBe(job);
+      expect(await childExit).toMatchObject({ kind: "signaled", code: 9, status: 137 });
+      expect(supervisor.get(childPid)).toBeUndefined();
     } else {
       // Admission rejects a killed sender's queued child, but confirms that shared
       // reservation after cleanup instead of leaking its pending membership.
       expect(supervisor.get(childPid)).toBeUndefined();
-      expect(Atomics.load(workerProcessState(childNotice.transport).confirmed, 0)).toBe(1);
+      // Its dead parent's orphan reservation is collected at the safety fence.
+      expect(() => workerProcessState(childNotice.transport)).toThrow("process incarnation was collected");
     }
     expect(supervisor.jobOf(bunPid)).toBe(job);
     expect(supervisor.jobEmpty(shell.client.pid, job)).toBe(true);
-    expect(Atomics.load(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(0);
+    expect(controlLoad(workerProcessState(bunNotice.transport).jobPending, 0)).toBe(0);
     expect(shell.abi.imports.wait_job!(job, 1, 64)).toBe(0);
     while (messages.length) await broker.runtimeMessage(messages.shift()!, shell.client.pid);
     expect(table.get(bunPid)).toBeUndefined();

@@ -256,9 +256,14 @@ test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect
     supervisor.exit(bun, 7);
     supervisor.reap(shell, bun);
     expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(-6);
+    const exits = new Map<number, number | null>();
+    const stop = supervisor.onChildExit(event => { exits.set(event.pid, event.result.status); });
     expect(shellABI.imports.kill_job!(job, 9)).toBe(0);
-    expect(supervisor.get(child)!.result?.status).toBe(137);
-    expect(supervisor.get(grandchild)!.result?.status).toBe(137);
+    stop();
+    expect(exits.get(child)).toBe(137);
+    expect(exits.get(grandchild)).toBe(137);
+    expect(supervisor.get(child)).toBeUndefined();
+    expect(supervisor.get(grandchild)).toBeUndefined();
     expect(supervisor.get(detached)!.result).toBeNull();
     expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(0);
     expect(new DataView(memory.buffer).getInt32(64, true)).toBe(7);

@@ -95,20 +95,13 @@ export class WorkerProcessBroker {
     return this.activation ??= this.options.supervisor().then(supervisor => {
       this.supervisor = supervisor;
       if (!this.disposed) {
-        const stopExit = supervisor.onChildExit(event => {
-          if (this.disposed) return;
-          const transport = this.transports.get(event.pid);
-          // The supervisor publishes exit only after revocation, descriptor cleanup and
-          // its asynchronous host-work fence; process and job waits share that boundary.
-          if (transport && !this.failedCleanup.has(event.pid)) { controlStore(workerProcessState(transport).confirmed, 0, 1); wakeWorkerProcess(transport); }
-        });
         const stopQuiescent = supervisor.onProcessQuiescent(event => {
           if (this.disposed) return;
           const transport = this.transports.get(event.pid);
           if (transport && !this.failedCleanup.has(event.pid)) {
             confirmWorkerProcessJob(transport);
-            // An exit observer may already have consumed the host process record before
-            // this final job fence. Honor that collection after safe confirmation.
+            // Disposal may have removed the host process record while its asynchronous
+            // fence was pending. Honor that retirement after safe shared confirmation.
             if (!supervisor.get(event.pid)) {
               try { collectDirectoryProcess(transport); }
               catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
@@ -145,7 +138,7 @@ export class WorkerProcessBroker {
           this.failedCleanup.delete(record.pid);
         });
         const stopReap = supervisor.onJobReap(job => this.reapTransports(job));
-        this.stopListening = () => { stopExit(); stopQuiescent(); stopReadiness(); stopClaim(); stopReap(); stopRemove(); };
+        this.stopListening = () => { stopQuiescent(); stopReadiness(); stopClaim(); stopReap(); stopRemove(); };
       }
       return supervisor;
     });

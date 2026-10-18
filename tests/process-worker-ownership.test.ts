@@ -1,7 +1,7 @@
 import { ProcessABI } from "../proc/abi.js";
 import { MemFS } from "../fs/memory.js";
 import { collectDirectoryProcess, collectDirectoryJob, directorySlots, directoryJobs, directoryJob, directoryProcesses, directoryGroups, findDirectoryJob, helpDirectoryJobs, reserveDirectoryProcess } from "../proc/directory.js";
-import { packedControl, controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
+import { packedControl, controlLoad, controlStore, controlCas, controlExchange, controlAdd, controlWait, controlNotify } from "../proc/control.js";
 import { afterEach, expect, test } from "bun:test";
 import { DescriptorTable, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors.js";
 import { ExecutableRegistry } from "../proc/registry.js";
@@ -209,8 +209,9 @@ test("fatal selection freezes resources synchronously but wait stays pending unt
   expect(f.root.wait(1, pid)).toBeNull();
   expect(controlLoad(f.root.wake, 0)).toBeGreaterThan(before);
   await f.flush();
-  expect(f.root.wait(1, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
   expect(controlLoad(state.confirmed, 0)).toBe(1);
+  expect(f.root.wait(1, pid)).toEqual({ kind: "signaled", code: 9, status: 137 });
+  expectErrno(() => controlLoad(state.confirmed), 71);
 });
 
 test("handled and ignored signals preserve resource authority and share the disposition state", async () => {
@@ -379,8 +380,9 @@ test("worker process and job completion both await the host-work fence", async (
   const before = controlLoad(f.root.wake, 0);
   finish(); await fence; await Promise.resolve();
   expect(controlLoad(f.root.wake, 0)).toBeGreaterThan(before);
-  expect(f.root.wait(1, pid)?.status).toBe(0);
   expect(controlLoad(state.confirmed, 0)).toBe(1);
+  expect(f.root.wait(1, pid)?.status).toBe(0);
+  expectErrno(() => controlLoad(state.confirmed), 71);
   expect(f.root.jobEmpty(1, child.job)).toBe(true);
   expect(f.root.waitJob(1, child.job)?.status).toBe(0);
   await f.flush();
@@ -703,8 +705,9 @@ test("broker disposal preserves safe confirmation after listener cleanup without
     finishFence(); await fence; await Promise.resolve();
     expect(terminationStarted).toBe(true);
     expect(physicallyTerminated).toBe(false);
-    expect(controlLoad(state.confirmed, 0)).toBe(1);
-    expect(controlLoad(state.jobConfirmed, 0)).toBe(1);
+    // Supervisor disposal retires the dead parent's safely fenced orphan row.
+    expectErrno(() => controlLoad(state.confirmed), 71);
+    expectErrno(() => controlLoad(state.jobConfirmed), 71);
     expect(controlLoad(state.jobPending, 0)).toBe(0);
     expect(controlLoad(state.wake, 0)).toBeGreaterThan(before);
     expectErrno(() => f.root.wait(1, pid), 12);
@@ -760,6 +763,31 @@ test("more than three thousand distinct job lifetimes recycle process and job sl
     expect(Array.from(f.supervisor.table.values())).toHaveLength(1);
     expect(f.supervisor.job(job)).toBeUndefined();
     expect(Reflect.get(f.broker, "transports").size).toBe(1);
+  }
+});
+
+test("collected process and job controls fail immediately before their slots are reused", async () => {
+  const f = fixture({ capacity: 2 });
+  const pid = f.root.spawn(1, request()); await f.flush();
+  const old = workerProcessState(f.broker.get(pid)!);
+  f.supervisor.exit(pid, 0);
+  expect(f.supervisor.wait(1, pid)?.code).toBe(0);
+  for (const word of [old.confirmed, old.jobConfirmed, old.controlParent, old.signals.interrupt, old.signals.requestedSignal, old.signals.signalState]) {
+    expectErrno(() => controlLoad(word), 71);
+    expectErrno(() => controlStore(word, 0, 9), 71);
+    expectErrno(() => controlCas(word, 0, 0, 9), 71);
+    expectErrno(() => controlExchange(word, 0, 9), 71);
+    expectErrno(() => controlAdd(word, 0, 1), 71);
+    expectErrno(() => controlWait(word, 0, 0, 0), 71);
+    expectErrno(() => controlNotify(word), 71);
+  }
+  expect(controlLoad(old.jobPending)).toBe(0);
+  expect(f.supervisor.waitJob(1, old.job)?.code).toBe(0);
+  for (const word of [old.jobPending, old.jobControlParent]) {
+    expectErrno(() => controlLoad(word), 71);
+    expectErrno(() => controlStore(word, 0, 9), 71);
+    expectErrno(() => controlWait(word, 0, 0, 0), 71);
+    expectErrno(() => controlNotify(word), 71);
   }
 });
 
@@ -829,7 +857,7 @@ test("a job collector completes when an individual collector wins after its slot
   let raced = false;
   Atomics.load = ((array: BigInt64Array, index: number) => {
     const value = original(array, index);
-    if (!raced && array instanceof BigInt64Array && index === 0 && array.byteOffset === state.signals.outcome.byteOffset - 5 * 8 && controlLoad(state.jobPending) === -1) {
+    if (!raced && array instanceof BigInt64Array && index === 0 && array.byteOffset === state.signals.outcome.byteOffset - 5 * 8 && Number(BigInt.asIntN(32, original(state.jobPending.cells, 0))) === -1) {
       raced = true;
       collectDirectoryProcess(member);
     }
@@ -888,17 +916,23 @@ test("a pending launch stops only its captured old handle after collection and r
   expect(f.supervisor.get(replacement)?.result).toBeNull();
 });
 
-test("reentrant process reap before job confirmation completes shared collection once confirmed", async () => {
-  const f = fixture({ capacity: 2 });
-  const pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
+test("host waits in an early exit observer release shared capacity before returning", async () => {
+  let pid = 0, replacement = 0;
+  const f = fixture({ capacity: 2, beforeActivation(supervisor) {
+    supervisor.onChildExit(event => {
+      if (event.pid !== pid) return;
+      expect(supervisor.wait(1, pid)?.code).toBe(21);
+      replacement = f.root.spawn(1, request({ job: f.root.job }));
+    });
+  } });
+  pid = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
   const waiting = f.supervisor.waitForExit(1, pid);
-  f.supervisor.onChildExit(event => { if (event.pid === pid) f.supervisor.reap(1, pid); });
   f.supervisor.exit(pid, 21);
   expect(await waiting).toEqual({ kind: "exited", code: 21, status: 21 });
   expect(f.broker.get(pid)).toBeUndefined();
-  expect(directorySlots(f.transport.directory)).toEqual([0]);
-  const replacement = f.root.spawn(1, request({ job: f.root.job })); await f.flush();
   expect(replacement).toBeGreaterThan(pid);
+  await f.flush();
+  expect(directorySlots(f.transport.directory)).toHaveLength(2);
 });
 
 test("numeric admitted identities cannot reuse collected rows but captured out-of-order admissions remain valid", async () => {

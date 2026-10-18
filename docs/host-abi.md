@@ -127,6 +127,8 @@ A subsequent wait, or a wait for a non-child, returns `-ECHILD` (`-12`). Pipe-ow
 metadata has been released by the cleanup fence; a consuming wait never retains it.
 An exited but uncollected child remains a zombie and retains process capacity.
 Choosing an outcome alone is not proof that a Worker's resources are safe to release.
+Shared collectibility is published before host exit observers and waiters see the
+result, so a consuming host wait can immediately reserve replacement capacity.
 
 Poll kind 2 observes a child's readiness through
 `ProcessService.childExited(parentPid, pid): boolean`; it never consumes the exit

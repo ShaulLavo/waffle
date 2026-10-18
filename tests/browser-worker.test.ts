@@ -760,7 +760,7 @@ for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 },
 
 test("generic bootstrap preview1 polling treats stale process wake hints as advisory", async () => {
   const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
-  Atomics.store(state.signals.interrupt, 0, 17);
+  controlStore(state.signals.interrupt, 0, 17);
   let polled = false;
   const result = await fixture({ run({ wasi, instance }) {
     const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);

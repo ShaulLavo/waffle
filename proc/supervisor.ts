@@ -518,6 +518,10 @@ export class ProcessSupervisor {
     try { quiescence = this.options.quiesce?.(pid); }
     catch (error) { fenceFailed = true; this.report(error); }
     const safe = () => {
+      const event = Object.freeze({ pid, parentPid: record.parentPid, job: record.job, result: winner });
+      // Publish shared collectibility before host waits or public exit observers can
+      // consume the result and synchronously reserve replacement capacity.
+      for (const listener of Array.from(this.quiescentListeners)) this.safely(() => listener(event));
       record.result = winner;
       record.state = "exited";
       this.table.recordOutcome(record);
@@ -525,9 +529,7 @@ export class ProcessSupervisor {
       this.table.markJobSafe(record);
       for (const resolve of record.waiters) resolve(winner);
       record.waiters.clear();
-      const event = Object.freeze({ pid, parentPid: record.parentPid, job: record.job, result: winner });
       for (const listener of Array.from(this.listeners)) this.safely(() => listener(event));
-      for (const listener of Array.from(this.quiescentListeners)) this.safely(() => listener(event));
       const job = this.table.job(record.job);
       if (job && this.jobIsEmpty(job, true)) {
         const listeners = this.jobListeners.get(record.job);

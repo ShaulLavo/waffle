@@ -312,7 +312,7 @@ export class ProcessABI {
   private defaultSignal(signal: number): number {
     checkedSignalNumber(signal);
     let winner = readOutcome(this.options.signals.outcome);
-    const killed = Atomics.load(this.options.signals.requestedSignal, 0) === Signal.SIGKILL;
+    const killed = controlLoad(this.options.signals.requestedSignal, 0) === Signal.SIGKILL;
     if (!winner && !killed && !defaultSignalTerminates(signal)) return 0;
     if (!winner || winner.kind === "signaled") {
       this.options.service.defaultSignal(this.options.pid, winner?.code ?? (killed ? Signal.SIGKILL : signal));
