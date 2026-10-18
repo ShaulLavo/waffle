@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.51",
+  "version": "0.0.52",
   "private": true,
   "type": "module",
   "exports": {
@@ -443,6 +443,7 @@
     "prepare": "bun prepare.ts",
     "test": "bun test ./tests",
     "test:libc": "bun scripts/test-wasi-libc.ts",
+    "test:browser": "bun scripts/test-browser.ts",
     "check": "tsc -p .",
     "size": "bun tooling/runtime-size.ts",
     "check:nodenext": "tsc -p tsconfig.nodenext.json",

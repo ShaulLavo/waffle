@@ -3,8 +3,46 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/../bun-cache
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      libc: ${{ steps.paths.outputs.libc }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            libc:
+              - '.github/**'
+              - 'patches/**'
+              - 'scripts/**'
+              - 'core/**'
+              - 'fs/**'
+              - 'proc/**'
+              - 'interrupt/**'
+              - 'browser/**'
+              - 'runtime.ts'
+              - 'index.ts'
+              - 'package.json'
+              - 'bun.lock'
+              - 'tests/wasi-libc.test.ts'
+              - 'tests/fixtures/**'
   package:
     runs-on: ubuntu-latest
     steps:
@@ -12,14 +50,19 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.BUN_INSTALL_CACHE_DIR }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
-      - run: bun run prepare
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
       - run: bun test
       - run: bun run size
       - run: test -z "$(git ls-files dist)"
   libc:
+    needs: changes
+    if: needs.changes.outputs.libc == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,8 +75,13 @@ jobs:
       - uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: 49.0.3
-      - run: bun install --frozen-lockfile
+      - uses: actions/cache@v4
+        id: sdk
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Install pinned wasi-sdk 34
+        if: steps.sdk.outputs.cache-hit != 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
@@ -47,22 +95,26 @@ jobs:
           WASMTIME: wasmtime
   browser:
     runs-on: ubuntu-latest
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/../playwright
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run prepare
-      - run: bunx playwright install --with-deps
-      - run: bun tests/storage-browser-runner.ts chromium firefox webkit
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BUN_INSTALL_CACHE_DIR }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'site/bun.lock') }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
+      - run: bunx playwright install --with-deps chromium firefox webkit
+      - run: bun run test:browser
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-      - run: bun tests/storage-lock-browser-runner.ts chromium firefox webkit
-        env:
-          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-      - run: bun tests/process-recycling-browser-runner.ts chromium firefox webkit
-        env:
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
   site:
     runs-on: ubuntu-latest
@@ -74,6 +126,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.BUN_INSTALL_CACHE_DIR }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
       - run: bun run build
