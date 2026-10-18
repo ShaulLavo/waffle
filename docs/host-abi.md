@@ -132,17 +132,37 @@ errors into the same typed result. Consumers must not duplicate that errno mappi
 A browser worker may select START_FAILED before its ordered error message reaches
 the broker. Startup queries can observe that result immediately, but consuming waits
 and inherited-descriptor release remain gated on the final error acknowledgement (or
-an observed worker failure). The supervisor emits the selected startup diagnostic once,
+an observed worker failure). The supervisor handles the selected startup failure once,
 regardless of which producer selected the result; a competing exit or signal emits none.
 The generic worker does not also emit this startup diagnostic.
+
+For a child spawned through `runtime_proc`, the typed START_FAILED outcome is the only
+Waffle report delivered to its guest parent. Waffle's generic startup fallback writes zero
+bytes to that child's stdio, pipes or terminal, including failures during registry resolution,
+lazy loading, invalid Wasm, missing `_start` and adapter entry. The full error and stack are
+reported once through the broker's host-side diagnostic channel (`onError`, or `console.error`
+by default), the same channel used for worker cleanup errors. A registered controller's
+`startFailed(error, active)` hook still runs unchanged; adapters own any output from that hook.
+The parent owns its user-facing diagnostic and may print a shell error or emit a spawn error.
+This policy applies to every generation, including grandchildren and retained orphan spawns.
+
+The broker identifies these children by **both** a nonzero immutable process-table `parentPid`
+and an admitted worker-process transport (`transportFor(pid)`). `controlParent` is not suitable:
+it can be compressed to zero when ancestors are reaped. An adopted runtime root has
+`parentPid === 0`, even though it has a transport. Embedder-controlled launches via the host
+supervisor have no admitted `runtime_proc` transport, even when they have a nonzero bookkeeping
+parent PID. Those roots keep the generic `runtime: process start failed: ...` line on stderr
+unless their controller supplies its own hook; they have no runtime_proc parent consuming it.
+There is no configuration switch.
 
 For an inherited pipe, the broker retains an independent diagnostic-only writer lifetime:
 the worker may release its imported endpoint before the final error acknowledgement. Bootstrap
 closes the diagnostic-only lifetime synchronously when executable entry commits, before guest
 code runs; normal guest stderr closure therefore produces EOF without an extra broker turn.
-A selected startup failure instead retains that lifetime through diagnostic delivery and cleanup.
+A selected startup failure instead retains that lifetime through error acknowledgement and cleanup;
+for a suppressed runtime_proc child it is released without writing any diagnostic bytes.
 
-Startup diagnostic sinks may return a promise. The supervisor retains finishing ownership
+Controller hooks and the generic fallback for embedder roots may return a promise. The supervisor retains finishing ownership
 and stderr until it settles or disposal cancels it. Sinks receive an `active()` predicate and
 must stop writing when it becomes false. Disposal reports ECANCELED and releases ownership
 even if a custom sink never settles; late settlement cannot repeat cleanup or change the result.
