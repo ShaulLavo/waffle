@@ -172,6 +172,13 @@
       "browser": "./proc/index.ts",
       "default": "./proc/index.ts"
     },
+    "./proc/control": {
+      "types": "./proc/control.ts",
+      "node": "./dist/proc/control.js",
+      "bun": "./proc/control.ts",
+      "browser": "./proc/control.ts",
+      "default": "./proc/control.ts"
+    },
     "./proc/abi": {
       "types": "./proc/abi.ts",
       "node": "./dist/proc/abi.js",
