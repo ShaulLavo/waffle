@@ -27,6 +27,10 @@
     "tests/interrupt-browser-runner-control.ts",
     "tests/process-recycling-browser-runner.ts",
     "tests/process-recycling-browser-runner.test.ts",
-    "tests/storage-browser-runner.ts"
+    "tests/storage-browser-runner.ts",
+    "scripts/test-wasi-libc.ts",
+    "tests/wasi-libc.test.ts",
+    "tests/preopen-placement.test.ts",
+    "tests/fixtures/preopen-node-host.ts"
   ]
 }

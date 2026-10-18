@@ -5,7 +5,7 @@ function uleb(value: number): number[] {
   do { const byte = value & 127; value >>>= 7; bytes.push(byte | (value ? 128 : 0)); } while (value);
   return bytes;
 }
-export function addStartSection(bytes: Uint8Array, name: string): Uint8Array {
+export function addStartSection(bytes: Uint8Array<ArrayBuffer>, name: string): Uint8Array<ArrayBuffer> {
   let offset = 8;
   const read = () => {
     let value = 0, shift = 0, byte: number;

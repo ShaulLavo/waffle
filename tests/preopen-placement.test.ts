@@ -11,7 +11,15 @@ function options(fs = new MemFS()): WasiOptions {
 function memory(wasi: Wasi) {
   const memory = new WebAssembly.Memory({ initial: 1 });
   wasi.start({ exports: { memory, _start() {} } } as unknown as WebAssembly.Instance);
-  return { bytes: new Uint8Array(memory.buffer), view: new DataView(memory.buffer), calls: wasi.functions() };
+  // Link declared imports through the same public seam as a real guest. Each tiny
+  // module declares one function; tests invoke the resulting JS wrapper directly.
+  const text = (value: string) => { const bytes = Array.from(new TextEncoder().encode(value)); return [bytes.length].concat(bytes); };
+  const calls = Object.fromEntries(["path_open", "fd_prestat_get", "fd_prestat_dir_name", "fd_read", "fd_close", "fd_write"].map(name => {
+    const payload = [1].concat(text("wasi_snapshot_preview1"), text(name), [0, 0]);
+    const module = new WebAssembly.Module(Uint8Array.from([0,97,115,109,1,0,0,0,1,4,1,96,0,0,2,payload.length].concat(payload)));
+    return [name, wasi.imports(module).wasi_snapshot_preview1![name]];
+  })) as Record<string, (...args: (number | bigint)[]) => number>;
+  return { bytes: new Uint8Array(memory.buffer), view: new DataView(memory.buffer), calls };
 }
 
 for (const reserved of [[3, 3], [3, -1], [3, 1.5], [3, NaN], [3, Infinity], [3, 0x80000000]]) {

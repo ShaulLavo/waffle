@@ -69,11 +69,11 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
 
   test("libc propagates real fdstat errors instead of treating them as gaps", async () => {
     const wasi = new Wasi({ args: ["fixture"], env: {}, fs: new MemFS(), preopens: { "/": "/" }, reservedFds: [3], stdout() {}, stderr() {}, sleep() {} });
-    const calls = wasi.functions.bind(wasi);
-    wasi.functions = () => ({ ...calls(), fd_fdstat_get: () => 29 }); // EIO, not BADF.
     try {
       const module = await guest("patched");
-      expect(wasi.start(new WebAssembly.Instance(module, wasi.imports(module)))).toBe(71);
+      const imports = wasi.imports(module);
+      imports.wasi_snapshot_preview1!.fd_fdstat_get = () => 29; // EIO, not BADF.
+      expect(wasi.start(new WebAssembly.Instance(module, imports))).toBe(71);
     } finally { wasi.descriptors.dispose(); }
   });
 
