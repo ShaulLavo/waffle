@@ -61,7 +61,7 @@ export class DescriptorTable {
   private entries = new Map<number, Descriptor>();
   private next = 0;
   private cleanupFailures: unknown[] = [];
-  /** A failed transferred-resource release still belongs to this table's teardown fence. */
+  /** Deliver a failed transferred-resource release to this table's teardown owner once. */
   recordCleanupFailure(error: unknown): void { this.cleanupFailures.push(error); }
   get(fd: number): Descriptor | undefined { return this.entries.get(fd); }
   add(description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
@@ -125,7 +125,8 @@ export class DescriptorTable {
     return true;
   }
   dispose(): void {
-    const errors: unknown[] = this.cleanupFailures.slice();
+    const errors = this.cleanupFailures;
+    this.cleanupFailures = [];
     for (const fd of this.entries.keys()) {
       try { this.close(fd); } catch (error) { errors.push(error); }
     }

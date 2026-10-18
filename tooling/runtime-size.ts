@@ -1,7 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// Transactional descriptor rollback, including start-status main: 7,393 -> 7,454 B gzip.
+// Transactional descriptor rollback, including start-status main: 7,393 -> 7,456 B gzip.
 export const CORE_BUDGET_BYTES = 7_680;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES) throw new Error(`core exceeds ${CORE_BUDGET_BYTES} B gzip budget by ${gzipBytes - CORE_BUDGET_BYTES} B`);
