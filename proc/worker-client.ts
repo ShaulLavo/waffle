@@ -1,6 +1,6 @@
 import { MAX_ACCESS_REQUESTS } from "./access.js";
-import { controlLoad, controlStore, controlCas } from "./control.js";
-import { createDirectory, directoryState, directorySlots, directoryJobs, directoryJob, reserveDirectoryProcess, confirmDirectoryProcess, collectDirectoryProcess, collectDirectoryJob, wakeDirectory } from "./directory.js";
+import { controlLoad, controlStore } from "./control.js";
+import { createDirectory, directoryState, directorySlots, directoryJob, directoryProcesses, findDirectoryJob, directoryControls, isCollectedProcess, reserveDirectoryProcess, confirmDirectoryProcess, collectDirectoryProcess, collectDirectoryJob, wakeDirectory } from "./directory.js";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor, type Resource, type Stream } from "../core/descriptors.js";
 import { ProcessIdentityAllocator } from "./identity.js";
 import { claimOutcome, readOutcome } from "./outcome.js";
@@ -170,7 +170,7 @@ export class WorkerProcessClient {
     });
     if (!Number.isInteger(request.job) || request.job < -1) throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const job = request.job > 0 ? request.job : this.identities.job();
-    const existingJob = directoryJobs(this.options.transport.directory).map(slot => directoryJob(this.options.transport.directory, slot)).find(group => group.id === job);
+    const existingJob = findDirectoryJob(this.options.transport.directory, job);
     if (request.job > 0 && !existingJob) throw new ProcessError(this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH, "unknown or collected job");
     const pid = this.identities.pid();
     const references = new Map<OpenDescription, number>();
@@ -226,9 +226,10 @@ export class WorkerProcessClient {
     return pid;
   }
   private find(pid: number, retained = false) {
-    for (const slot of workerProcessSlots(this.options.transport)) {
-      const state = workerProcessState(this.options.transport, slot);
-      if (state.pid === pid && (retained || controlLoad(state.jobPending, 0) >= 0)) return state;
+    for (const state of directoryProcesses(this.options.transport.directory)) {
+      if (state.pid !== pid) continue;
+      try { if (retained || controlLoad(state.jobPending, 0) >= 0) return state; }
+      catch (error) { if (!isCollectedProcess(error)) throw error; }
     }
     throw new ProcessError(ProcessErrno.SRCH, `unknown process ${pid}`);
   }
@@ -240,15 +241,9 @@ export class WorkerProcessClient {
   }
   private requireJob(callerPid: number, job: number) {
     this.admit();
-    const group = directoryJobs(this.options.transport.directory).map(slot => directoryJob(this.options.transport.directory, slot)).find(group => group.id === job);
+    const group = findDirectoryJob(this.options.transport.directory, job);
     if (!group) throw new ProcessError(this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH, `unknown or collected job ${job}`);
-    let owner = controlLoad(group.controlParent);
-    const seen = new Set<number>();
-    while (callerPid === this.pid && owner !== 0 && !seen.has(owner)) {
-      if (owner === callerPid) return group;
-      seen.add(owner);
-      owner = controlLoad(this.find(owner, true).controlParent);
-    }
+    if (callerPid === this.pid && directoryControls(this.options.transport.directory, () => controlLoad(group.controlParent), callerPid)) return group;
     throw new ProcessError(63, `job ${job} is outside the caller's owner chain`);
   }
   private jobIsEmpty(group: ReturnType<typeof directoryJob>): boolean {
@@ -267,19 +262,16 @@ export class WorkerProcessClient {
   jobOf(pid: number): number { return this.find(pid).job; }
   canSignal(callerPid: number, pid: number): boolean {
     if (callerPid !== this.pid) return false;
-    const seen = new Set<number>();
-    let target = this.find(pid);
-    for (;;) {
-      if (target.pid === this.pid) return true;
-      const parent = controlLoad(target.controlParent);
-      if (parent === 0 || seen.has(parent)) return false;
-      seen.add(target.pid);
-      target = this.find(parent, true);
-    }
+    const target = this.find(pid);
+    return directoryControls(this.options.transport.directory, () => {
+      // Keep the target incarnation captured even if another collector reuses its slot.
+      controlLoad(target.controlParent);
+      return target.pid;
+    }, callerPid);
   }
   canSignalJob(callerPid: number, job: number): boolean {
     if (callerPid !== this.pid) return false;
-    try { const group = this.requireJob(callerPid, job); return controlLoad(group.controlParent) === this.pid; }
+    try { const group = this.requireJob(callerPid, job); return directoryControls(this.options.transport.directory, () => controlLoad(group.controlParent), this.pid, true); }
     catch (error) { if (error instanceof ProcessError && error.errno === 63) return false; throw error; }
   }
   kill(pid: number, signal: number): void {
@@ -287,23 +279,25 @@ export class WorkerProcessClient {
     this.deliver([this.find(pid)], checkedSignal(signal));
   }
   killJob(job: number, signal: number): void {
-    const targets = workerProcessSlots(this.options.transport).map(slot => workerProcessState(this.options.transport, slot)).filter(state => state.job === job && controlLoad(state.jobPending, 0) >= 0);
     if (!this.canSignalJob(this.pid, job)) throw new ProcessError(63, "job is not owned by the caller");
-    this.deliver(targets, checkedSignal(signal));
+    const targets = Array.from(directoryProcesses(this.options.transport.directory)).filter(state => state.job === job);
+    this.deliver(targets, checkedSignal(signal), true);
   }
-  private deliver(targets: { slot: number; pid: number; parentPid: number; signals: SignalTransport }[], signal: number): void {
+  private deliver(targets: { slot: number; pid: number; parentPid: number; signals: SignalTransport }[], signal: number, collective = false): void {
     this.admit();
-    for (const target of targets) requestSignal(target.signals, signal);
+    for (const target of targets) {
+      try { requestSignal(target.signals, signal); }
+      catch (error) { if (!collective || !isCollectedProcess(error)) throw error; }
+    }
     // Select every target before resource callbacks, then freeze all canonical cursors before
-    // returning to the guest. Handled and ignored signals must not revoke endpoints.
+    // returning to the guest. A concurrently collected member cannot stop the remaining job.
     for (const target of targets) {
-      if (readOutcome(target.signals.outcome)?.kind === "signaled") this.options.revokeProcess?.(target.pid, this.options.transport);
+      try {
+        if (readOutcome(target.signals.outcome)?.kind === "signaled") this.options.revokeProcess?.(target.pid, this.options.transport);
+      } catch (error) { if (!collective || !isCollectedProcess(error)) throw error; }
     }
-    for (const target of targets) {
-      wakeWorkerProcess(this.options.transport, target.slot);
-      const parent = workerProcessSlots(this.options.transport).find(slot => workerProcessState(this.options.transport, slot).pid === target.parentPid);
-      if (parent !== undefined) wakeWorkerProcess(this.options.transport, parent);
-    }
+    // Every member and parent observes this one directory-wide sequence, not slot-local wakes.
+    wakeWorkerProcess(this.options.transport);
     this.options.postMessage({ type: "runtime-proc", operation: "signal", transport: this.options.transport, targets: targets.map(target => target.pid) });
   }
   defaultSignal(pid: number, signal: number): void {

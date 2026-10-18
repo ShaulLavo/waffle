@@ -162,7 +162,7 @@ export class ProcessSupervisor {
     } catch (error) {
       // A blocked worker can claim the shared job immediately after safe publication.
       // Public waiters see CHILD; internal wake/cleanup bookkeeping must not fail for it.
-      if (internal && error instanceof ProcessError && error.errno === ProcessErrno.CHILD) return false;
+      if (internal && error instanceof ProcessError && (error.errno === ProcessErrno.CHILD || error.errno === ProcessErrno.SRCH)) return false;
       throw error;
     }
   }
@@ -388,11 +388,16 @@ export class ProcessSupervisor {
     const targets = Array.from(job.members, pid => this.table.require(pid));
     // Record every target before callbacks: a dying process cannot spawn through an as-yet
     // unmarked sibling, or replace that sibling's SIGKILL with a handled exit.
-    for (const record of targets) this.recordSignal(record, sig);
     for (const record of targets) {
-      if ((record.signal === Signal.SIGKILL || readOutcome(record.outcome)) && this.table.get(record.pid) === record) {
-        this.finish(record.pid, { kind: "signaled", code: Signal.SIGKILL });
-      }
+      try { this.recordSignal(record, sig); }
+      catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
+    }
+    for (const record of targets) {
+      try {
+        if (this.table.get(record.pid) === record && (record.signal === Signal.SIGKILL || readOutcome(record.outcome))) {
+          this.finish(record.pid, { kind: "signaled", code: Signal.SIGKILL });
+        }
+      } catch (error) { if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error; }
     }
   }
   wait(parentPid: number, pid: number): ProcessExit | null { return this.child(parentPid, pid).result; }
@@ -410,11 +415,19 @@ export class ProcessSupervisor {
     for (const claim of this.jobReapClaims) {
       if (!claim(jobId)) throw new ProcessError(ProcessErrno.CHILD, "job was already reaped by another observer");
     }
+    this.retireJobMetadata(jobId);
+    return result;
+  }
+  /** The shared consuming claim is authoritative even when its worker never posts a receipt. */
+  reconcileCollectedJob(jobId: number): void {
+    const job = this.table.job(jobId);
+    if (job && job.pendingMembers === 0 && this.table.jobClaimed(jobId)) this.retireJobMetadata(jobId);
+  }
+  private retireJobMetadata(jobId: number): void {
     for (const record of Array.from(this.table.values())) if (record.job === jobId) this.table.remove(record.pid);
     this.table.removeJob(jobId);
     for (const listener of Array.from(this.jobReapListeners)) this.safely(() => listener(jobId));
     this.jobListeners.delete(jobId);
-    return result;
   }
   waitForExit(parentPid: number, pid: number): Promise<ProcessExit> {
     const record = this.child(parentPid, pid);

@@ -27,6 +27,7 @@ function cells(raw: BigInt64Array, id: number, offset: number, count = 1): Tagge
 function identity(raw: BigInt64Array): number { const value = Atomics.load(raw, 0); return (value & 0xffffffffn) === 1n ? Number(value >> 32n) : 0; }
 function valid(raw: BigInt64Array, id: number): boolean { return Atomics.load(raw, 0) === packedControl(id, 1); }
 function allocate(directory: SharedArrayBuffer, id: number, job = false): { slot: number; raw: BigInt64Array } {
+  helpDirectoryJobs(directory);
   for (let slot = 0; slot < directoryCapacity(directory); slot++) {
     const raw = row(directory, slot, job);
     if (!job) {
@@ -72,6 +73,67 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
   };
   if (!valid(raw, pid)) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
   return state;
+}
+/** Only generation-captured entries escape enumeration; unrelated collection is harmless. */
+export function isCollectedProcess(error: unknown): error is ProcessError {
+  return error instanceof ProcessError && (error.errno === ProcessErrno.SRCH || error.errno === ProcessErrno.CHILD);
+}
+export function* directoryProcesses(directory: SharedArrayBuffer): Generator<ReturnType<typeof directoryState>> {
+  for (let slot = 0; slot < directoryCapacity(directory); slot++) {
+    const pid = identity(row(directory, slot));
+    if (!pid) continue;
+    try { yield directoryState({ directory, slot, pid }); }
+    catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+}
+export function* directoryGroups(directory: SharedArrayBuffer): Generator<ReturnType<typeof directoryJob>> {
+  for (let slot = 0; slot < directoryCapacity(directory); slot++) {
+    const raw = row(directory, slot, true), token = Atomics.load(raw, 0), id = Number(token >> 32n);
+    if (!id) continue;
+    try {
+      if ((token & 0xffffffffn) === 3n || (token & 0xffffffffn) === 1n && controlLoad(cells(raw, id, 4)) < 0) {
+        finishDirectoryJob(directory, slot, id);
+        continue;
+      }
+      if ((token & 0xffffffffn) === 1n) yield directoryJob(directory, slot, id);
+    } catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+}
+export function findDirectoryJob(directory: SharedArrayBuffer, id: number): ReturnType<typeof directoryJob> | undefined {
+  for (const group of directoryGroups(directory)) if (group.id === id) return group;
+  return undefined;
+}
+/** Retiring ancestors remain traversable until every incoming link has been forwarded. */
+export function directoryParent(directory: SharedArrayBuffer, pid: number, retiringOnly = false): number | undefined {
+  for (let slot = 0; slot < directoryCapacity(directory); slot++) {
+    const raw = row(directory, slot), token = Atomics.load(raw, 0);
+    if (Number(token >> 32n) !== pid || (token & 0xffffffffn) !== 1n && (token & 0xffffffffn) !== 3n) continue;
+    if (retiringOnly && (token & 0xffffffffn) === 1n) return 0;
+    try {
+      const edge = controlLoad(cells(raw, pid, 73));
+      if (Atomics.load(raw, 0) !== token) return undefined;
+      return edge < 0 ? -edge - 1 : edge;
+    } catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+  return undefined;
+}
+export function directoryControls(directory: SharedArrayBuffer, first: () => number, caller: number, retiringOnly = false): boolean {
+  // A vanished intermediate row implies forwarding progress. Restart from a live source
+  // rather than treating that transient gap as failed authorization.
+  for (let attempt = 0; attempt <= directoryCapacity(directory); attempt++) {
+    let pid = first();
+    const seen = new Set<number>();
+    let missing = false;
+    while (pid !== 0 && !seen.has(pid)) {
+      if (pid === caller) return true;
+      seen.add(pid);
+      const parent = directoryParent(directory, pid, retiringOnly);
+      if (parent === undefined) { missing = true; break; }
+      pid = parent;
+    }
+    if (!missing) return false;
+  }
+  return false;
 }
 export function reserveDirectoryProcess(handle: DirectoryHandle, pid: number, parentPid: number, job: number, ownerPid: number, jobSlot?: number, foreground = true): DirectoryHandle {
   let group: ReturnType<typeof directoryJob>;
@@ -195,43 +257,125 @@ function finishCollectionStep(directory: SharedArrayBuffer, slot: number, pid: n
 }
 
 export function collectDirectoryProcess(handle: DirectoryHandle): ProcessExit {
-  const state = directoryState(handle);
-  if (!controlLoad(state.confirmed) || !controlLoad(state.jobConfirmed)) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited safely");
-  const result = readOutcome(state.signals.outcome)!;
+  // Individual collection can race an already-sealed job. Only this process's
+  // captured identity and safety fences are needed; the job header may be retiring.
   const raw = row(handle.directory, handle.slot);
+  if (!valid(raw, handle.pid)) throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
+  if (!controlLoad(cells(raw, handle.pid, 71)) || !controlLoad(cells(raw, handle.pid, 72))) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited safely");
+  const result = readOutcome(new OutcomeCell(raw.subarray(5, 6), handle.pid, () => valid(raw, handle.pid)))!;
   if (Atomics.compareExchange(raw, 0, packedControl(handle.pid, 1), packedControl(handle.pid, 3)) !== packedControl(handle.pid, 1)) throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
   finishCollection(handle.directory, handle.slot, handle.pid);
   return result;
+}
+/** Recover any sealed job, including a claimant suspended before publishing lifecycle 3. */
+export function helpDirectoryJobs(directory: SharedArrayBuffer): void {
+  for (let slot = 0; slot < directoryCapacity(directory); slot++) {
+    const raw = row(directory, slot, true), token = Atomics.load(raw, 0), phase = token & 0xffffffffn;
+    if (!token || phase !== 1n && phase !== 3n) continue;
+    const id = Number(token >> 32n);
+    try { if (phase === 3n || controlLoad(cells(raw, id, 4)) < 0) finishDirectoryJob(directory, slot, id); }
+    catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+}
+/** The negative pending count is the durable consuming claim. Every subsequent step is
+ * helpable without the original worker or its final notification to the host. */
+function finishDirectoryJob(directory: SharedArrayBuffer, slot: number, job: number): void {
+  const group = row(directory, slot, true), ready = packedControl(job, 1), retiring = packedControl(job, 3);
+  let token = Atomics.load(group, 0);
+  if (token === ready) {
+    if (controlLoad(cells(group, job, 4)) !== -1) return;
+    Atomics.compareExchange(group, 0, ready, retiring);
+    token = Atomics.load(group, 0);
+  }
+  if (token !== retiring) return;
+  const members = new Map<number, { slot: number; parent: number }>();
+  for (let processSlot = 0; processSlot < directoryCapacity(directory); processSlot++) {
+    const raw = row(directory, processSlot), identity = Atomics.load(raw, 0), pid = Number(identity >> 32n), phase = identity & 0xffffffffn;
+    if (!pid || phase !== 1n && phase !== 3n) continue;
+    try {
+      if (controlLoad(cells(raw, pid, 2)) !== job) continue;
+      if (phase === 1n && Atomics.compareExchange(raw, 0, identity, packedControl(pid, 3)) !== identity) continue;
+      const forwarding = cells(raw, pid, 73);
+      for (;;) {
+        if (Atomics.load(raw, 0) !== packedControl(pid, 3)) break;
+        const parent = controlLoad(forwarding);
+        if (parent < 0 || controlCas(forwarding, 0, parent, -(parent + 1)) === parent) {
+          members.set(pid, { slot: processSlot, parent: parent < 0 ? -parent - 1 : parent });
+          break;
+        }
+      }
+    } catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+  const forwarded = new Map<number, number>();
+  function destination(pid: number): number {
+    const trail: number[] = [];
+    while (members.has(pid) && !forwarded.has(pid)) {
+      trail.push(pid);
+      pid = members.get(pid)!.parent;
+    }
+    const parent = forwarded.get(pid) ?? pid;
+    for (const member of trail) forwarded.set(member, parent);
+    return parent;
+  }
+  // One pass forwards a whole retired job, rather than one full-directory scan per member.
+  // Outside collectors whose frozen edges pin a member are helped before freeing that row.
+  for (;;) {
+    if (Atomics.load(group, 0) !== retiring) return;
+    let changed = false;
+    for (let processSlot = 0; processSlot < directoryCapacity(directory); processSlot++) {
+      const raw = row(directory, processSlot), identity = Atomics.load(raw, 0), pid = Number(identity >> 32n), phase = identity & 0xffffffffn;
+      if (!pid || members.has(pid) || phase !== 1n && phase !== 3n) continue;
+      try {
+        const edge = cells(raw, pid, 73), parent = controlLoad(edge);
+        if (members.has(parent)) { controlCas(edge, 0, parent, destination(parent)); changed = true; }
+        else if (parent < 0 && members.has(-parent - 1) && phase === 3n) {
+          finishCollection(directory, processSlot, pid); changed = true;
+        }
+      } catch (error) { if (!isCollectedProcess(error)) throw error; }
+    }
+    for (let jobSlot = 0; jobSlot < directoryCapacity(directory); jobSlot++) {
+      const raw = row(directory, jobSlot, true), token = Atomics.load(raw, 0), id = Number(token >> 32n), phase = token & 0xffffffffn;
+      if (!id || phase !== 1n && phase !== 3n) continue;
+      try {
+        const edge = cells(raw, id, 6), parent = controlLoad(edge);
+        if (members.has(parent)) { controlCas(edge, 0, parent, destination(parent)); changed = true; }
+      } catch (error) { if (!isCollectedProcess(error)) throw error; }
+    }
+    if (!changed) break;
+  }
+  // Once no outside incoming edge can recreate a member link, collapse the frozen
+  // internal edges too. A helper resuming after partial freeing can then reconstruct
+  // the same outside destination without any history of already-freed members.
+  for (const [pid, member] of members) {
+    const parent = destination(pid);
+    if (parent === member.parent) continue;
+    try { controlCas(cells(row(directory, member.slot), pid, 73), 0, -(member.parent + 1), -(parent + 1)); }
+    catch (error) { if (!isCollectedProcess(error)) throw error; }
+  }
+  for (const [pid, member] of members) Atomics.compareExchange(row(directory, member.slot), 0, packedControl(pid, 3), 0n);
+  Atomics.compareExchange(group, 0, retiring, 0n);
+  wakeDirectory(directory);
 }
 export function collectDirectoryJob(directory: SharedArrayBuffer, slot: number, job: number): ProcessExit {
   const group = directoryJob(directory, slot, job);
   const result = readOutcome(group.outcome);
   if (!result || controlLoad(group.pending) !== 0) throw new ProcessError(ProcessErrno.AGAIN, "job has not become empty");
   if (controlCas(group.pending, 0, 0, -1) !== 0) throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
-  for (const processSlot of directorySlots(directory)) {
-    const pid = identity(row(directory, processSlot));
-    if (!pid) continue;
-    const handle = { directory, slot: processSlot, pid };
-    try {
-      const state = directoryState(handle);
-      if (state.job === job) collectDirectoryProcess(handle);
-    } catch (error) {
-      // An individual collector may have won this captured incarnation. Never reinterpret
-      // another occupant, and never abandon the winning job claim with pending == -1.
-      if (!(error instanceof ProcessError) || (error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD)) throw error;
-    }
-  }
-  Atomics.compareExchange(row(directory, slot, true), 0, packedControl(job, 1), 0n);
-  wakeDirectory(directory);
+  finishDirectoryJob(directory, slot, job);
   return result;
 }
+
 function retireOrphans(handle: DirectoryHandle): void {
-  for (const slot of directorySlots(handle.directory)) {
-    const pid = identity(row(handle.directory, slot)), child = { directory: handle.directory, slot, pid };
-    const state = directoryState(child);
-    if (!controlLoad(state.confirmed) || !controlLoad(state.jobConfirmed)) continue;
-    const parentHandle = find(handle.directory, state.parentPid);
-    const parentLive = parentHandle && !readOutcome(directoryState(parentHandle).signals.outcome);
-    if (!parentLive && state.parentPid !== 0) collectDirectoryProcess(child);
+  for (const state of directoryProcesses(handle.directory)) {
+    try {
+      if (!controlLoad(state.confirmed) || !controlLoad(state.jobConfirmed)) continue;
+      const parentHandle = find(handle.directory, state.parentPid);
+      let parentLive = false;
+      if (parentHandle) {
+        try { parentLive = !readOutcome(directoryState(parentHandle).signals.outcome); }
+        catch (error) { if (!isCollectedProcess(error)) throw error; }
+      }
+      if (!parentLive && state.parentPid !== 0) collectDirectoryProcess({ directory: handle.directory, slot: state.slot, pid: state.pid });
+    } catch (error) { if (!isCollectedProcess(error)) throw error; }
   }
 }

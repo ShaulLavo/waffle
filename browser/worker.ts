@@ -1,4 +1,4 @@
-import { directoryState } from "../proc/directory.js";
+import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import type { OutcomeWord } from "../proc/outcome.js";
 // Process bootstrap shared by preview1 commands and injected guest executors.
@@ -125,14 +125,23 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
-  const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : req.outcome ?? executor.outcome;
-  let outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+  // A delayed physical Worker can start after its process incarnation was collected.
+  // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
+  let outcome: OutcomeWord | null = null;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
-  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
-    ? claimOutcome(outcome, result)
-    : localOutcome ??= processOutcome(result);
+  const detachCollectedProcess = (error: unknown): void => {
+    if (!isCollectedProcess(error)) throw error;
+    // Shared authority can disappear during asynchronous adapter loading, too. Only local
+    // cleanup/reporting remains valid; never send an exit for the slot's new incarnation.
+    outcome = null; runtimeProcess = null; requestedSignal = undefined;
+  };
+  const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => {
+    try { if (outcome) return claimOutcome(outcome, result); }
+    catch (error) { detachCollectedProcess(error); }
+    return localOutcome ??= processOutcome(result);
+  };
   const defaultSignal = (signal: number): never => {
     if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
     const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
@@ -158,7 +167,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const finish = (result: WorkerResult) => {
     if (done) return;
     done = true;
-    const settled = outcome ? readOutcome(outcome) : localOutcome;
+    let settled = localOutcome;
+    try { if (outcome) settled = readOutcome(outcome); }
+    catch (error) { detachCollectedProcess(error); }
     const ownCode = "code" in result ? result.code : started ? 1 : 126;
     const ownSignal = "signal" in result ? result.signal : undefined;
     const startupFailure = "error" in result && !started;
@@ -226,6 +237,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (result) { event.preventDefault(); finish(result); }
   };
   try {
+    // A valid process must publish even its first adapter-import failure to shared state.
+    // Keep this synchronous, while still routing a stale incarnation through finish().
+    const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : req.outcome ?? executor.outcome;
+    outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
     const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
