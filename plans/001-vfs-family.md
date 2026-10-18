@@ -672,6 +672,24 @@ Evidence: `firefox-opfs-w1-seed-progress-r2-20261018`, source
 external machine-fleet report root. The three genuine baseline timeout rows stay
 blocked; this diagnostic is not a baseline retry.
 
+The independent W2 install trace also exceeds the fixed 600 s worker budget in
+Firefox OPFS, for both host and guest. Each first warmup (-2) records
+`Workload exceeded fixed 10-minute boundary`; each unusable next attempt was
+cancelled, with canonical teardown and actual-host scratch absence verified.
+These are not W1 seed failures: only W1 invokes the large workspace seed. The
+mutation/barrier cost within W2 remains unmeasured, so do not assign its cause
+from the W1 diagnostic. Step 5 owns that investigation on the unchanged W2 trace.
+At source `7654de7aa2ae7db83265b9d79495e5bbad2a5abd`, reproduce each cell
+separately through the canonical exclusive bench dispatcher, preserving both
+fixed fences:
+`bun tooling/vfs-benchmark.ts --campaign firefox-w2-host-cost --output "$SCRATCH/results" --browsers firefox --workloads W2 --lanes host --cells firefox/opfs-memory/W2/host`.
+For the guest diagnostic, replace the campaign suffix, lane and cell with their
+`guest` counterparts; do not put both cells behind one controller deadline.
+The original failures are line 95 of each immutable gate log:
+`waffle-vfs-continuation-firefox-opfs-memory-W2-host-20261018T140842Z-f57nula3`
+and `waffle-vfs-continuation-firefox-opfs-memory-W2-guest-20261018T142148Z-wyedt9ax`.
+This is a future diagnostic, not permission to retry the blocked baseline cells.
+
 For every implementation PR:
 
 - Run the repository’s install, prepare, both TypeScript checks, unit tests and size gate from its exclusive worktree.
@@ -818,7 +836,8 @@ There is deliberately no command-line revision label.
 
 ```sh
 bun tooling/vfs-benchmark.ts --campaign CAMPAIGN --output EXTERNAL_DIRECTORY \
-  --browsers chromium --workloads W1,W2,W3,W4,W5 --lanes host,guest
+  --browsers chromium --workloads W1,W2,W3,W4,W5 --lanes host,guest \
+  --cells chromium/indexeddb/W1/host
 bun tooling/vfs-benchmark.ts --extract DISPATCHER_GATE_LOG --output EXTERNAL_DIRECTORY
 ```
 

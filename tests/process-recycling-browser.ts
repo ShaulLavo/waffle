@@ -1,3 +1,4 @@
+import { browserPipeFilestat } from "./pipe-filestat-browser.js";
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
@@ -783,6 +784,11 @@ type BrowserCase = {
 };
 // Exercise consuming waits and recyclable shared slots across real Worker boundaries.
 const cases: BrowserCase[] = [
+  {
+    label: "pipe filestat: guest endpoints and inherited child bindings retain metadata rights",
+    standalone: true,
+    run: () => browserPipeFilestat(),
+  },
   {
     label: "startup diagnostic: normal entry never delays stderr EOF",
     standalone: true,
