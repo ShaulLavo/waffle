@@ -1,6 +1,14 @@
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
-import { assert, batch, bytes, rejects, runtimeStartupCase, storageContractCases, type BrowserStorageTest } from "./storage-browser.js";
+import {
+  assert,
+  batch,
+  bytes,
+  rejects,
+  runtimeStartupCase,
+  storageContractCases,
+  type BrowserStorageTest,
+} from "./indexeddb-storage-browser.js";
 
 type SyncAccess = {
   getSize(): number;
@@ -12,7 +20,12 @@ type SyncAccess = {
 };
 type SyncFactory = (this: FileSystemFileHandle) => Promise<SyncAccess>;
 type SyncPrototype = FileSystemFileHandle & { createSyncAccessHandle: SyncFactory };
-interface HandleCounts { active: number; peak: number; opened: number; attempts: number }
+interface HandleCounts {
+  active: number;
+  peak: number;
+  opened: number;
+  attempts: number;
+}
 
 /** Instrument the actual browser API, not resources(), so a fallback cannot hide leaked handles. */
 async function withSyncHandles<T>(
@@ -24,26 +37,34 @@ async function withSyncHandles<T>(
   const original = prototype.createSyncAccessHandle;
   assert(typeof original === "function", "OPFS sync-access tests must run in a dedicated worker");
   const counts: HandleCounts = { active: 0, peak: 0, opened: 0, attempts: 0 };
-  prototype.createSyncAccessHandle = async function() {
+  prototype.createSyncAccessHandle = async function () {
     counts.attempts++;
     before?.(this);
     const access = await original.call(this);
-    counts.active++; counts.opened++; counts.peak = Math.max(counts.peak, counts.active);
+    counts.active++;
+    counts.opened++;
+    counts.peak = Math.max(counts.peak, counts.active);
     const wrapped = wrap?.(this, access) ?? access;
     let closed = false;
     return new Proxy(wrapped, {
       get(target, key) {
-        if (key === "close") return () => {
-          if (closed) return;
-          target.close(); closed = true; counts.active--;
-        };
+        if (key === "close")
+          return () => {
+            if (closed) return;
+            target.close();
+            closed = true;
+            counts.active--;
+          };
         const value = Reflect.get(target, key, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
   };
-  try { return await run(counts); }
-  finally { prototype.createSyncAccessHandle = original; }
+  try {
+    return await run(counts);
+  } finally {
+    prototype.createSyncAccessHandle = original;
+  }
 }
 
 function replaceWrite(access: SyncAccess, write: SyncAccess["write"]): SyncAccess {
@@ -57,8 +78,9 @@ function replaceWrite(access: SyncAccess, write: SyncAccess["write"]): SyncAcces
 }
 
 async function rejectsCode(action: Promise<unknown>, code: string): Promise<void> {
-  try { await action; }
-  catch (error) {
+  try {
+    await action;
+  } catch (error) {
     assert((error as { code?: string }).code === code, `Expected ${code}, got ${String(error)}`);
     return;
   }
@@ -70,7 +92,8 @@ function manyFiles(count: number): PersistenceBatch {
   const upserts: PersistedNode[] = [{ ino: 1, kind: "dir", mtime: 1, size: 0, children }];
   const data = new Map<string, Uint8Array>();
   for (let index = 0; index < count; index++) {
-    const ino = index + 2, key = `file:${ino}`;
+    const ino = index + 2,
+      key = `file:${ino}`;
     children.push([`file${index}`, ino]);
     upserts.push({ ino, kind: "file", mtime: 1, size: 1, data: key });
     data.set(key, new Uint8Array([index & 255]));
@@ -90,12 +113,17 @@ async function workspaceDirectory(name: string): Promise<FileSystemDirectoryHand
   return root.getDirectoryHandle(`bun-wasm-${encodedTestName(name)}`);
 }
 async function metadataDirectory(name: string): Promise<Directory> {
-  return await (await workspaceDirectory(name)).getDirectoryHandle("metadata") as Directory;
+  return (await (await workspaceDirectory(name)).getDirectoryHandle("metadata")) as Directory;
 }
 async function writeRaw(handle: FileSystemFileHandle, contents: Uint8Array): Promise<void> {
   const writable = await handle.createWritable();
-  try { await writable.write(contents as Uint8Array<ArrayBuffer>); await writable.close(); }
-  catch (error) { await writable.abort().catch(() => {}); throw error; }
+  try {
+    await writable.write(contents as Uint8Array<ArrayBuffer>);
+    await writable.close();
+  } catch (error) {
+    await writable.abort().catch(() => {});
+    throw error;
+  }
 }
 
 interface OpfsCase {
@@ -107,35 +135,67 @@ function focusedCases(): OpfsCase[] {
   return [
     {
       label: "contested OPFS opens wait, then read saved data after ownership",
-      async run(name, open) {
+      async run(_name, open) {
         const owner = await open();
-        await owner.persist(batch(1, "durable marker")); await owner.flush();
+        await owner.persist(batch(1, "durable marker"));
+        await owner.flush();
         const stages: string[] = [];
         let reportWaiting!: () => void;
-        const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
-        const waiting = open({ onWaiting: reportWaiting, onStartupStage(stage) { stages.push(stage); } });
+        const reported = new Promise<void>((resolve) => {
+          reportWaiting = resolve;
+        });
+        const waiting = open({
+          onWaiting: reportWaiting,
+          onStartupStage(stage) {
+            stages.push(stage);
+          },
+        });
         await reported;
         let settled = false;
-        void waiting.then(() => { settled = true; }, () => { settled = true; });
+        void waiting.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
         const snapshot = await navigator.locks.query();
-        assert(snapshot.pending?.filter(lock => lock.name === `bun-wasm:filesystem:${name}`).length === 1, "contested open did not queue its lock");
+        assert(
+          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${name}`).length ===
+            1,
+          "contested open did not queue its lock",
+        );
         assert(!settled, "contested open acquired before the owner released its lock");
         await owner.close();
         const next = await waiting;
         try {
-          assert(stages.includes("filesystem-lock-acquired"), `waiter did not acquire after release: ${JSON.stringify(stages)}`);
-          assert((await next.load())?.generation === 1, "waiter did not recover the saved generation");
-          assert(new TextDecoder().decode(await next.read("file:1")) === "durable marker", "waiter did not recover saved bytes");
-        } finally { await next.close(); }
+          assert(
+            stages.includes("filesystem-lock-acquired"),
+            `waiter did not acquire after release: ${JSON.stringify(stages)}`,
+          );
+          assert(
+            (await next.load())?.generation === 1,
+            "waiter did not recover the saved generation",
+          );
+          assert(
+            new TextDecoder().decode(await next.read("file:1")) === "durable marker",
+            "waiter did not recover saved bytes",
+          );
+        } finally {
+          await next.close();
+        }
       },
     },
     {
       label: "cancelling a waiting OPFS open aborts its queued lock",
-      async run(name, open) {
+      async run(_name, open) {
         const owner = await open();
         const controller = new AbortController();
         let reportWaiting!: () => void;
-        const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
+        const reported = new Promise<void>((resolve) => {
+          reportWaiting = resolve;
+        });
         const waiting = open({ signal: controller.signal, onWaiting: reportWaiting });
         await reported;
         controller.abort();
@@ -147,35 +207,54 @@ function focusedCases(): OpfsCase[] {
     },
     {
       label: "several waiting OPFS opens take ownership in turn",
-      async run(name, open) {
+      async run(_name, open) {
         const owner = await open();
         const stages = [[], [], []] as string[][];
-        let waitingReported = 0, reportAllWaiting!: () => void;
-        const reported = new Promise<void>(resolve => { reportAllWaiting = resolve; });
-        const waiters = stages.map(stagesForWaiter => open({
-          onWaiting() { if (++waitingReported === stages.length) reportAllWaiting(); },
-          onStartupStage(stage) { stagesForWaiter.push(stage); },
-        }));
+        let waitingReported = 0,
+          reportAllWaiting!: () => void;
+        const reported = new Promise<void>((resolve) => {
+          reportAllWaiting = resolve;
+        });
+        const waiters = stages.map((stagesForWaiter) =>
+          open({
+            onWaiting() {
+              if (++waitingReported === stages.length) reportAllWaiting();
+            },
+            onStartupStage(stage) {
+              stagesForWaiter.push(stage);
+            },
+          }),
+        );
         await reported;
         const snapshot = await navigator.locks.query();
-        assert(snapshot.pending?.filter(lock => lock.name === `bun-wasm:filesystem:${name}`).length === stages.length, "not every waiter queued its lock");
+        assert(
+          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${name}`).length ===
+            stages.length,
+          "not every waiter queued its lock",
+        );
         await owner.close();
         for (const [index, waiter] of waiters.entries()) {
           const storage = await waiter;
           try {
-            assert(stages[index]!.includes("filesystem-lock-acquired"), `waiter ${index} did not acquire: ${JSON.stringify(stages[index])}`);
-          } finally { await storage.close(); }
+            assert(
+              stages[index]!.includes("filesystem-lock-acquired"),
+              `waiter ${index} did not acquire: ${JSON.stringify(stages[index])}`,
+            );
+          } finally {
+            await storage.close();
+          }
         }
       },
     },
     {
       label: "more than 253 payload reads use a genuinely bounded sync-handle cache",
       async run(_name, open) {
-        await withSyncHandles(async counts => {
+        await withSyncHandles(async (counts) => {
           const storage = await open();
           try {
             const count = 320;
-            await storage.persist(manyFiles(count)); await storage.flush();
+            await storage.persist(manyFiles(count));
+            await storage.flush();
             // Reopen to prove startup stays lazy and all reads go through the real worker-only API.
             await storage.close();
             const reopened = await open();
@@ -183,22 +262,45 @@ function focusedCases(): OpfsCase[] {
               await reopened.load();
               assert(counts.active === 0, "opening metadata must not pre-open payload handles");
               const before = counts.opened;
-              for (let round = 0; round < 2; round++) for (let index = 0; index < count; index++) {
-                const value = await reopened.read(`file:${index + 2}`);
-                assert(value.length === 1 && value[0] === (index & 255), "payload bytes survive cache churn");
-              }
-              assert(counts.opened - before >= count * 2, "all churn reads must acquire real sync handles, not silently fall back");
+              for (let round = 0; round < 2; round++)
+                for (let index = 0; index < count; index++) {
+                  const value = await reopened.read(`file:${index + 2}`);
+                  assert(
+                    value.length === 1 && value[0] === (index & 255),
+                    "payload bytes survive cache churn",
+                  );
+                }
+              assert(
+                counts.opened - before >= count * 2,
+                "all churn reads must acquire real sync handles, not silently fall back",
+              );
               const opened = counts.opened;
               await reopened.read(`file:${count + 1}`);
               assert(counts.opened === opened, "a hot payload must reuse its cached handle");
               const resources = reopened.resources();
-              assert(resources.opfsCachedHandles! <= 64, "the retained read cache stays within its default bound");
-              assert(counts.peak <= resources.opfsHandleLimit!, `real sync-handle peak ${counts.peak} exceeds declared total bound ${resources.opfsHandleLimit}`);
-              assert(counts.peak < 253, "actual live handles must stay below Safari's sync-access cap, including transient handles");
-              assert(counts.active === resources.opfsHandles, "resource accounting matches actual live handles");
-            } finally { await reopened.close(); }
+              assert(
+                resources.opfsCachedHandles! <= 64,
+                "the retained read cache stays within its default bound",
+              );
+              assert(
+                counts.peak <= resources.opfsHandleLimit!,
+                `real sync-handle peak ${counts.peak} exceeds declared total bound ${resources.opfsHandleLimit}`,
+              );
+              assert(
+                counts.peak < 253,
+                "actual live handles must stay below Safari's sync-access cap, including transient handles",
+              );
+              assert(
+                counts.active === resources.opfsHandles,
+                "resource accounting matches actual live handles",
+              );
+            } finally {
+              await reopened.close();
+            }
             assert(counts.active === 0, "close releases every actual sync access handle");
-          } finally { await storage.close(); }
+          } finally {
+            await storage.close();
+          }
         });
       },
     },
@@ -206,214 +308,383 @@ function focusedCases(): OpfsCase[] {
       label: "transient sync-access creation failures retry before opening a real handle",
       async run(_name, open) {
         const failures = ["NotReadableError", "NoModificationAllowedError", "InvalidStateError"];
-        let remaining = 0, failure = "", attempts = 0;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await storage.persist(manyFiles(failures.length));
-            for (let index = 0; index < failures.length; index++) {
-              failure = failures[index]!; remaining = 2; attempts = 0;
-              const opened = counts.opened;
-              assert((await storage.read(`file:${index + 2}`))[0] === index, "read succeeds after transient sync failure");
-              assert(Number(attempts) === 3 && remaining === 0, `${failure} must retry twice then acquire a handle`);
-              assert(counts.opened === opened + 1, "successful retry must use a real sync handle");
+        let remaining = 0,
+          failure = "",
+          attempts = 0;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await storage.persist(manyFiles(failures.length));
+              for (let index = 0; index < failures.length; index++) {
+                failure = failures[index]!;
+                remaining = 2;
+                attempts = 0;
+                const opened = counts.opened;
+                assert(
+                  (await storage.read(`file:${index + 2}`))[0] === index,
+                  "read succeeds after transient sync failure",
+                );
+                assert(
+                  Number(attempts) === 3 && remaining === 0,
+                  `${failure} must retry twice then acquire a handle`,
+                );
+                assert(
+                  counts.opened === opened + 1,
+                  "successful retry must use a real sync handle",
+                );
+              }
+            } finally {
+              await storage.close();
             }
-          } finally { await storage.close(); }
-          assert(counts.active === 0, "retrying handle creation leaks no handles");
-        }, file => {
-          if (!file.name.startsWith("p-")) return;
-          attempts++;
-          if (remaining > 0) { remaining--; throw new DOMException("injected transient sync failure", failure); }
-        });
+            assert(counts.active === 0, "retrying handle creation leaks no handles");
+          },
+          (file) => {
+            if (!file.name.startsWith("p-")) return;
+            attempts++;
+            if (remaining > 0) {
+              remaining--;
+              throw new DOMException("injected transient sync failure", failure);
+            }
+          },
+        );
       },
     },
     {
       label: "sync-access retries are bounded, map errors, and can recover on a later read",
       async run(_name, open) {
-        let failure: string | undefined, attempts = 0;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await storage.persist(batch(1));
-            failure = "NoModificationAllowedError";
-            await rejectsCode(storage.read("file:1"), "EIO");
-            assert(Number(attempts) === 6, `expected six bounded attempts, got ${attempts}`);
-            assert(counts.active === 0, "failed sync opens do not consume the cache");
-            failure = "SecurityError"; attempts = 0;
-            await rejectsCode(storage.read("file:1"), "EIO");
-            assert(Number(attempts) === 1, "non-transient sync errors must not be retried");
-            failure = "QuotaExceededError"; attempts = 0;
-            await rejectsCode(storage.read("file:1"), "ENOSPC");
-            assert(Number(attempts) === 1, "sync-open quota maps to ENOSPC without retrying");
-            failure = undefined;
-            assert(new TextDecoder().decode(await storage.read("file:1")) === "v1", "a later read recovers after exhausted sync retries");
-            assert(storage.resources().opfsHandles === 1, "recovered read acquires a real handle");
-          } finally { await storage.close(); }
-          assert(counts.active === 0, "failed opens followed by successful retry leak no handles");
-        }, file => {
-          if (failure && file.name.startsWith("p-")) { attempts++; throw new DOMException("injected sync-open failure", failure); }
-        });
+        let failure: string | undefined,
+          attempts = 0;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await storage.persist(batch(1));
+              failure = "NoModificationAllowedError";
+              await rejectsCode(storage.read("file:1"), "EIO");
+              assert(Number(attempts) === 6, `expected six bounded attempts, got ${attempts}`);
+              assert(counts.active === 0, "failed sync opens do not consume the cache");
+              failure = "SecurityError";
+              attempts = 0;
+              await rejectsCode(storage.read("file:1"), "EIO");
+              assert(Number(attempts) === 1, "non-transient sync errors must not be retried");
+              failure = "QuotaExceededError";
+              attempts = 0;
+              await rejectsCode(storage.read("file:1"), "ENOSPC");
+              assert(Number(attempts) === 1, "sync-open quota maps to ENOSPC without retrying");
+              failure = undefined;
+              assert(
+                new TextDecoder().decode(await storage.read("file:1")) === "v1",
+                "a later read recovers after exhausted sync retries",
+              );
+              assert(
+                storage.resources().opfsHandles === 1,
+                "recovered read acquires a real handle",
+              );
+            } finally {
+              await storage.close();
+            }
+            assert(
+              counts.active === 0,
+              "failed opens followed by successful retry leak no handles",
+            );
+          },
+          (file) => {
+            if (failure && file.name.startsWith("p-")) {
+              attempts++;
+              throw new DOMException("injected sync-open failure", failure);
+            }
+          },
+        );
       },
     },
     {
       label: "payload quota maps to ENOSPC and the same failed write can be retried after reopen",
       async run(_name, open) {
-        let fail = false, injected = false;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await storage.persist(batch(1)); fail = true;
-            await rejectsCode(storage.persist(batch(2)), "ENOSPC");
-            await rejectsCode(storage.flush(), "ENOSPC");
-            assert(injected, "quota fault must hit the real sync payload write");
-            assert((await storage.load())?.generation === 1, "failed payload write leaves committed in-memory tree unchanged");
-          } finally { fail = false; await storage.close(); }
-          assert(counts.active === 0, "failed payload writes close every actual handle");
-          const reopened = await open();
-          try {
-            assert((await reopened.load())?.generation === 1, "failed payload write preserves prior snapshot after reopen");
-            await reopened.persist(batch(2)); await reopened.flush();
-          } finally { await reopened.close(); }
-          const final = await open();
-          try {
-            assert((await final.load())?.generation === 2, "same generation and immutable payload key can be retried");
-            assert(new TextDecoder().decode(await final.read("file:2")) === "v2", "retry publishes complete payload bytes");
-          } finally { await final.close(); }
-          assert(counts.active === 0, "successful retry leaks no actual handles");
-        }, undefined, (file, access) => file.name.startsWith("p-") ? replaceWrite(access, (buffer, options) => {
-          if (fail && !injected) {
-            injected = true;
-            access.write(buffer.subarray(0, 1), options);
-            throw new DOMException("injected partial payload quota", "QuotaExceededError");
-          }
-          return access.write(buffer, options);
-        }) : access);
+        let fail = false,
+          injected = false;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await storage.persist(batch(1));
+              fail = true;
+              await rejectsCode(storage.persist(batch(2)), "ENOSPC");
+              await rejectsCode(storage.flush(), "ENOSPC");
+              assert(injected, "quota fault must hit the real sync payload write");
+              assert(
+                (await storage.load())?.generation === 1,
+                "failed payload write leaves committed in-memory tree unchanged",
+              );
+            } finally {
+              fail = false;
+              await storage.close();
+            }
+            assert(counts.active === 0, "failed payload writes close every actual handle");
+            const reopened = await open();
+            try {
+              assert(
+                (await reopened.load())?.generation === 1,
+                "failed payload write preserves prior snapshot after reopen",
+              );
+              await reopened.persist(batch(2));
+              await reopened.flush();
+            } finally {
+              await reopened.close();
+            }
+            const final = await open();
+            try {
+              assert(
+                (await final.load())?.generation === 2,
+                "same generation and immutable payload key can be retried",
+              );
+              assert(
+                new TextDecoder().decode(await final.read("file:2")) === "v2",
+                "retry publishes complete payload bytes",
+              );
+            } finally {
+              await final.close();
+            }
+            assert(counts.active === 0, "successful retry leaks no actual handles");
+          },
+          undefined,
+          (file, access) =>
+            file.name.startsWith("p-")
+              ? replaceWrite(access, (buffer, options) => {
+                  if (fail && !injected) {
+                    injected = true;
+                    access.write(buffer.subarray(0, 1), options);
+                    throw new DOMException("injected partial payload quota", "QuotaExceededError");
+                  }
+                  return access.write(buffer, options);
+                })
+              : access,
+        );
       },
     },
     {
       label: "torn snapshot quota retains the previous generation and supports recovery writes",
       async run(name, open) {
-        let fail = false, injected = false;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await storage.persist(batch(1));
-            fail = true;
-            await rejectsCode(storage.persist(batch(2)), "ENOSPC");
-            await rejectsCode(storage.flush(), "ENOSPC");
-            assert(injected, "snapshot fault must hit a real sync write");
-            assert((await storage.load())?.generation === 1, "failed snapshot does not publish its in-memory index");
-          } finally { fail = false; await storage.close(); }
-          assert(counts.active === 0, "failed snapshot write closes its actual sync handle");
-          // A killed worker cannot run rollback. Leave the same torn-file shape explicitly
-          // so reopen also covers interruption, not just the synchronous error cleanup path.
-          const metadata = await metadataDirectory(name);
-          const torn = await metadata.getFileHandle("snapshot-2-interrupted.json", { create: true });
-          const writable = await torn.createWritable();
-          try { await writable.write(bytes('{"json":')); await writable.close(); }
-          catch (error) { await writable.abort().catch(() => {}); throw error; }
-          const reopened = await open();
-          try {
-            assert((await reopened.load())?.generation === 1, "torn newest snapshot must fall back, never erase the tree");
-            assert(new TextDecoder().decode(await reopened.read("file:1")) === "v1", "old snapshot payload survives failed cleanup boundary");
-            await reopened.persist(batch(2)); await reopened.flush();
-          } finally { await reopened.close(); }
-          const final = await open();
-          try {
-            assert((await final.load())?.generation === 2, "recovery can publish the formerly failed generation");
-            assert(new TextDecoder().decode(await final.read("file:2")) === "v2", "recovered generation has intact bytes");
-          } finally { await final.close(); }
-          assert(counts.active === 0, "snapshot recovery releases all real handles");
-        }, undefined, (file, access) => {
-          if (!file.name.startsWith("snapshot-")) return access;
-          return replaceWrite(access, (buffer, options) => {
-            if (fail && !injected) {
-              injected = true;
-              access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
-              throw new DOMException("injected torn snapshot quota", "QuotaExceededError");
+        let fail = false,
+          injected = false;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await storage.persist(batch(1));
+              fail = true;
+              await rejectsCode(storage.persist(batch(2)), "ENOSPC");
+              await rejectsCode(storage.flush(), "ENOSPC");
+              assert(injected, "snapshot fault must hit a real sync write");
+              assert(
+                (await storage.load())?.generation === 1,
+                "failed snapshot does not publish its in-memory index",
+              );
+            } finally {
+              fail = false;
+              await storage.close();
             }
-            return access.write(buffer, options);
-          });
-        });
+            assert(counts.active === 0, "failed snapshot write closes its actual sync handle");
+            // A killed worker cannot run rollback. Leave the same torn-file shape explicitly
+            // so reopen also covers interruption, not just the synchronous error cleanup path.
+            const metadata = await metadataDirectory(name);
+            const torn = await metadata.getFileHandle("snapshot-2-interrupted.json", {
+              create: true,
+            });
+            const writable = await torn.createWritable();
+            try {
+              await writable.write(bytes('{"json":'));
+              await writable.close();
+            } catch (error) {
+              await writable.abort().catch(() => {});
+              throw error;
+            }
+            const reopened = await open();
+            try {
+              assert(
+                (await reopened.load())?.generation === 1,
+                "torn newest snapshot must fall back, never erase the tree",
+              );
+              assert(
+                new TextDecoder().decode(await reopened.read("file:1")) === "v1",
+                "old snapshot payload survives failed cleanup boundary",
+              );
+              await reopened.persist(batch(2));
+              await reopened.flush();
+            } finally {
+              await reopened.close();
+            }
+            const final = await open();
+            try {
+              assert(
+                (await final.load())?.generation === 2,
+                "recovery can publish the formerly failed generation",
+              );
+              assert(
+                new TextDecoder().decode(await final.read("file:2")) === "v2",
+                "recovered generation has intact bytes",
+              );
+            } finally {
+              await final.close();
+            }
+            assert(counts.active === 0, "snapshot recovery releases all real handles");
+          },
+          undefined,
+          (file, access) => {
+            if (!file.name.startsWith("snapshot-")) return access;
+            return replaceWrite(access, (buffer, options) => {
+              if (fail && !injected) {
+                injected = true;
+                access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
+                throw new DOMException("injected torn snapshot quota", "QuotaExceededError");
+              }
+              return access.write(buffer, options);
+            });
+          },
+        );
       },
     },
     {
       label: "corrupt newest OPFS snapshot recovers the prior copy and can reuse its generation",
       async run(name, open) {
         const storage = await open();
-        for (let generation = 1; generation <= 3; generation++) await storage.persist(batch(generation));
-        await storage.flush(); await storage.close();
+        for (let generation = 1; generation <= 3; generation++)
+          await storage.persist(batch(generation));
+        await storage.flush();
+        await storage.close();
         const metadata = await metadataDirectory(name);
         let corrupted = 0;
         for await (const [entryName, entry] of metadata.entries()) {
           if (entry.kind !== "file" || !entryName.startsWith("snapshot-3-")) continue;
           const writable = await (entry as FileSystemFileHandle).createWritable();
-          try { await writable.write(bytes("torn newest snapshot")); await writable.close(); }
-          catch (error) { await writable.abort().catch(() => {}); throw error; }
+          try {
+            await writable.write(bytes("torn newest snapshot"));
+            await writable.close();
+          } catch (error) {
+            await writable.abort().catch(() => {});
+            throw error;
+          }
           corrupted++;
         }
         assert(corrupted === 1, "must corrupt the newest committed snapshot, not the older copy");
         const recovered = await open();
-        assert((await recovered.load())?.generation === 2, "corrupt newest snapshot recovers the retained older generation");
-        assert(new TextDecoder().decode(await recovered.read("file:2")) === "v2", "older snapshot payload survives collection");
-        await recovered.persist(batch(3, "replacement")); await recovered.flush(); await recovered.close();
+        assert(
+          (await recovered.load())?.generation === 2,
+          "corrupt newest snapshot recovers the retained older generation",
+        );
+        assert(
+          new TextDecoder().decode(await recovered.read("file:2")) === "v2",
+          "older snapshot payload survives collection",
+        );
+        await recovered.persist(batch(3, "replacement"));
+        await recovered.flush();
+        await recovered.close();
         const final = await open();
-        assert((await final.load())?.generation === 3, "recovery can reuse the corrupt generation number");
-        assert(new TextDecoder().decode(await final.read("file:3")) === "replacement", "abandoned payload bytes cannot replace the recovery edit");
+        assert(
+          (await final.load())?.generation === 3,
+          "recovery can reuse the corrupt generation number",
+        );
+        assert(
+          new TextDecoder().decode(await final.read("file:3")) === "replacement",
+          "abandoned payload bytes cannot replace the recovery edit",
+        );
       },
     },
     {
       label: "interrupted first checkpoint recovers the empty baseline and can retry the same key",
       async run(name, open) {
-        let fail = true, injected = false;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await rejectsCode(storage.persist(batch(1)), "ENOSPC");
-            assert(injected, "failure must occur after the durable empty baseline was written");
-          } finally { fail = false; await storage.close(); }
-          assert(counts.active === 0, "first-checkpoint failure closes every actual sync handle");
-          // Reproduce what a killed worker leaves, without allowing its rollback to remove it.
-          const workspace = await workspaceDirectory(name);
-          const data = await workspace.getDirectoryHandle("data");
-          await writeRaw(await data.getFileHandle(`p-${encodedTestName("file:1")}`, { create: true }), bytes("partial"));
-          const metadata = await metadataDirectory(name);
-          await writeRaw(await metadata.getFileHandle("snapshot-1-interrupted.json", { create: true }), bytes('{"json":'));
-          const recovered = await open();
-          try {
-            const index = await recovered.load();
-            assert(index?.generation === 0 && index.nodes.length === 1, "first interrupted checkpoint recovers its explicit empty baseline");
-            assert(index.nodes[0]?.kind === "dir" && index.nodes[0].children?.length === 0, "empty baseline contains no half-published namespace");
-            await rejects(recovered.read("file:1"), /Missing|ENOENT|NotFound/);
-            await recovered.persist(batch(1)); await recovered.flush();
-          } finally { await recovered.close(); }
-          const final = await open();
-          try {
-            assert((await final.load())?.generation === 1, "first generation can be retried after interruption");
-            assert(new TextDecoder().decode(await final.read("file:1")) === "v1", "uncommitted orphan bytes are replaced by the retry");
-          } finally { await final.close(); }
-          assert(counts.active === 0, "first-checkpoint recovery leaks no native handles");
-        }, undefined, (file, access) => file.name.startsWith("snapshot-") && file.name !== "snapshot-initial.json"
-          ? replaceWrite(access, (buffer, options) => {
-            if (fail && !injected) {
-              injected = true; access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
-              throw new DOMException("injected first-checkpoint interruption", "QuotaExceededError");
+        let fail = true,
+          injected = false;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await rejectsCode(storage.persist(batch(1)), "ENOSPC");
+              assert(injected, "failure must occur after the durable empty baseline was written");
+            } finally {
+              fail = false;
+              await storage.close();
             }
-            return access.write(buffer, options);
-          }) : access);
+            assert(counts.active === 0, "first-checkpoint failure closes every actual sync handle");
+            // Reproduce what a killed worker leaves, without allowing its rollback to remove it.
+            const workspace = await workspaceDirectory(name);
+            const data = await workspace.getDirectoryHandle("data");
+            await writeRaw(
+              await data.getFileHandle(`p-${encodedTestName("file:1")}`, { create: true }),
+              bytes("partial"),
+            );
+            const metadata = await metadataDirectory(name);
+            await writeRaw(
+              await metadata.getFileHandle("snapshot-1-interrupted.json", { create: true }),
+              bytes('{"json":'),
+            );
+            const recovered = await open();
+            try {
+              const index = await recovered.load();
+              assert(
+                index?.generation === 0 && index.nodes.length === 1,
+                "first interrupted checkpoint recovers its explicit empty baseline",
+              );
+              assert(
+                index.nodes[0]?.kind === "dir" && index.nodes[0].children?.length === 0,
+                "empty baseline contains no half-published namespace",
+              );
+              await rejects(recovered.read("file:1"), /Missing|ENOENT|NotFound/);
+              await recovered.persist(batch(1));
+              await recovered.flush();
+            } finally {
+              await recovered.close();
+            }
+            const final = await open();
+            try {
+              assert(
+                (await final.load())?.generation === 1,
+                "first generation can be retried after interruption",
+              );
+              assert(
+                new TextDecoder().decode(await final.read("file:1")) === "v1",
+                "uncommitted orphan bytes are replaced by the retry",
+              );
+            } finally {
+              await final.close();
+            }
+            assert(counts.active === 0, "first-checkpoint recovery leaks no native handles");
+          },
+          undefined,
+          (file, access) =>
+            file.name.startsWith("snapshot-") && file.name !== "snapshot-initial.json"
+              ? replaceWrite(access, (buffer, options) => {
+                  if (fail && !injected) {
+                    injected = true;
+                    access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
+                    throw new DOMException(
+                      "injected first-checkpoint interruption",
+                      "QuotaExceededError",
+                    );
+                  }
+                  return access.write(buffer, options);
+                })
+              : access,
+        );
       },
     },
     {
       label: "unknown crash payloads are swept once after publication, never during lazy load",
       async run(name, open) {
-        const storage = await open(); await storage.persist(batch(1)); await storage.close();
+        const storage = await open();
+        await storage.persist(batch(1));
+        await storage.close();
         const data = await (await workspaceDirectory(name)).getDirectoryHandle("data");
         const orphan = `p-${encodedTestName("crash-orphan")}`;
-        await writeRaw(await data.getFileHandle(orphan, { create: true }), bytes("uncommitted crash residue"));
+        await writeRaw(
+          await data.getFileHandle(orphan, { create: true }),
+          bytes("uncommitted crash residue"),
+        );
         const prototype = FileSystemDirectoryHandle.prototype;
         const original = prototype.entries;
-        let loading = true, sweeps = 0;
-        prototype.entries = function() {
+        let loading = true,
+          sweeps = 0;
+        prototype.entries = function () {
           if (this.name === "data") {
             assert(!loading, "lazy load must not enumerate the payload directory");
             sweeps++;
@@ -423,19 +694,42 @@ function focusedCases(): OpfsCase[] {
         try {
           const recovered = await open();
           try {
-            assert((await recovered.load())?.generation === 1, "orphan does not disturb the committed snapshot");
-            assert(Number(sweeps) === 0, "load reads only metadata, even in the presence of orphan data");
+            assert(
+              (await recovered.load())?.generation === 1,
+              "orphan does not disturb the committed snapshot",
+            );
+            assert(
+              Number(sweeps) === 0,
+              "load reads only metadata, even in the presence of orphan data",
+            );
             loading = false;
             await recovered.persist({ ...batch(2), retainedData: ["file:1"] });
-            assert(Number(sweeps) === 1, "first successful publication sweeps unknown crash remnants");
+            assert(
+              Number(sweeps) === 1,
+              "first successful publication sweeps unknown crash remnants",
+            );
             await rejects(data.getFileHandle(orphan), /NotFound/);
             await recovered.persist({ ...batch(3), retainedData: ["file:1"] });
             assert(Number(sweeps) === 1, "later checkpoints do not rescan the payload directory");
-            assert(new TextDecoder().decode(await recovered.read("file:1")) === "v1", "orphan sweep preserves runtime-pinned payloads");
-            assert(new TextDecoder().decode(await recovered.read("file:2")) === "v2", "orphan sweep preserves the older rollback snapshot");
-            assert(new TextDecoder().decode(await recovered.read("file:3")) === "v3", "orphan sweep preserves the newly published snapshot");
-          } finally { loading = false; await recovered.close(); }
-        } finally { prototype.entries = original; }
+            assert(
+              new TextDecoder().decode(await recovered.read("file:1")) === "v1",
+              "orphan sweep preserves runtime-pinned payloads",
+            );
+            assert(
+              new TextDecoder().decode(await recovered.read("file:2")) === "v2",
+              "orphan sweep preserves the older rollback snapshot",
+            );
+            assert(
+              new TextDecoder().decode(await recovered.read("file:3")) === "v3",
+              "orphan sweep preserves the newly published snapshot",
+            );
+          } finally {
+            loading = false;
+            await recovered.close();
+          }
+        } finally {
+          prototype.entries = original;
+        }
       },
     },
     {
@@ -445,8 +739,9 @@ function focusedCases(): OpfsCase[] {
         const prototype = FileSystemDirectoryHandle.prototype;
         const original = prototype.removeEntry;
         const oldPayload = `p-${encodedTestName("file:1")}`;
-        let blockRemoval = false, failures = 0;
-        prototype.removeEntry = async function(entryName, options) {
+        let blockRemoval = false,
+          failures = 0;
+        prototype.removeEntry = async function (entryName, options) {
           if (blockRemoval && this.name === "data" && entryName === oldPayload) {
             failures++;
             throw new DOMException("injected busy garbage payload", "NoModificationAllowedError");
@@ -454,108 +749,189 @@ function focusedCases(): OpfsCase[] {
           return original.call(this, entryName, options);
         };
         try {
-          await storage.persist(batch(1)); await storage.persist(batch(2));
+          await storage.persist(batch(1));
+          await storage.persist(batch(2));
           blockRemoval = true;
           await storage.persist(batch(3));
           assert(failures > 0, "third checkpoint must attempt collection of the first payload");
-          assert((await storage.load())?.generation === 3, "failed garbage deletion must not roll back publication");
+          assert(
+            (await storage.load())?.generation === 3,
+            "failed garbage deletion must not roll back publication",
+          );
           blockRemoval = false;
           const adopted = batch(4, "v1");
           adopted.upserts[1]!.data = "file:1";
           adopted.data = new Map([["file:1", bytes("v1")]]);
-          await storage.persist(adopted); await storage.flush();
-          assert(new TextDecoder().decode(await storage.read("file:1")) === "v1", "pending garbage entry must be cancelled when its key is live again");
-        } finally { prototype.removeEntry = original; await storage.close(); }
+          await storage.persist(adopted);
+          await storage.flush();
+          assert(
+            new TextDecoder().decode(await storage.read("file:1")) === "v1",
+            "pending garbage entry must be cancelled when its key is live again",
+          );
+        } finally {
+          prototype.removeEntry = original;
+          await storage.close();
+        }
         const reopened = await open();
-        assert((await reopened.load())?.generation === 4, "re-adopted generation survives reopening");
-        assert(new TextDecoder().decode(await reopened.read("file:1")) === "v1", "re-adopted payload remains on disk after queued garbage collection");
+        assert(
+          (await reopened.load())?.generation === 4,
+          "re-adopted generation survives reopening",
+        );
+        assert(
+          new TextDecoder().decode(await reopened.read("file:1")) === "v1",
+          "re-adopted payload remains on disk after queued garbage collection",
+        );
       },
     },
     {
       label: "initial empty-baseline quota maps to ENOSPC and can be retried",
       async run(_name, open) {
-        let fail = true, injected = false;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            await rejectsCode(storage.persist(batch(1)), "ENOSPC");
-            await rejectsCode(storage.flush(), "ENOSPC");
-            assert(injected, "fault must hit the durable initial baseline write");
-          } finally { fail = false; await storage.close(); }
-          assert(counts.active === 0, "baseline write failure releases its real native handle");
-          const recovered = await open();
-          try {
-            const index = await recovered.load();
-            assert(index === undefined || index.generation === 0, "a failed baseline cannot fabricate a committed namespace");
-            await recovered.persist(batch(1)); await recovered.flush();
-            assert(new TextDecoder().decode(await recovered.read("file:1")) === "v1", "baseline failure leaves the first checkpoint retryable");
-          } finally { await recovered.close(); }
-          assert(counts.active === 0, "baseline retry releases every real native handle");
-        }, undefined, (file, access) => file.name === "snapshot-initial.json" ? replaceWrite(access, (buffer, options) => {
-          if (fail && !injected) {
-            injected = true; access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
-            throw new DOMException("injected initial-baseline quota", "QuotaExceededError");
-          }
-          return access.write(buffer, options);
-        }) : access);
+        let fail = true,
+          injected = false;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              await rejectsCode(storage.persist(batch(1)), "ENOSPC");
+              await rejectsCode(storage.flush(), "ENOSPC");
+              assert(injected, "fault must hit the durable initial baseline write");
+            } finally {
+              fail = false;
+              await storage.close();
+            }
+            assert(counts.active === 0, "baseline write failure releases its real native handle");
+            const recovered = await open();
+            try {
+              const index = await recovered.load();
+              assert(
+                index === undefined || index.generation === 0,
+                "a failed baseline cannot fabricate a committed namespace",
+              );
+              await recovered.persist(batch(1));
+              await recovered.flush();
+              assert(
+                new TextDecoder().decode(await recovered.read("file:1")) === "v1",
+                "baseline failure leaves the first checkpoint retryable",
+              );
+            } finally {
+              await recovered.close();
+            }
+            assert(counts.active === 0, "baseline retry releases every real native handle");
+          },
+          undefined,
+          (file, access) =>
+            file.name === "snapshot-initial.json"
+              ? replaceWrite(access, (buffer, options) => {
+                  if (fail && !injected) {
+                    injected = true;
+                    access.write(buffer.subarray(0, Math.min(7, buffer.length)), options);
+                    throw new DOMException("injected initial-baseline quota", "QuotaExceededError");
+                  }
+                  return access.write(buffer, options);
+                })
+              : access,
+        );
       },
     },
     {
-      label: "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost",
+      label:
+        "selective fsync preserves its file and namespace when an unrelated unsynced payload is lost",
       async run(name, open) {
         let observe = false;
         const flushed: string[] = [];
-        const aName = `p-${encodedTestName("file:2")}`, bName = `p-${encodedTestName("file:3")}`;
-        await withSyncHandles(async counts => {
-          const storage = await open();
-          try {
-            // Keep a valid older namespace so recovery cannot pass by substituting that tree.
-            await storage.persist(batch(1)); await storage.flush();
-            await storage.persist({ ...manyFiles(2), generation: 2 });
-            observe = true;
-            await storage.flush(["file:2"]);
-          } finally { await storage.close(); observe = false; }
-          assert(flushed.includes(aName), "selective fsync flushes the requested real payload handle");
-          assert(!flushed.includes(bName), "selective fsync and close must not flush an unrelated dirty payload");
-          const snapshotFlush = flushed.findIndex(fileName => fileName.startsWith("snapshot-2-"));
-          assert(snapshotFlush > flushed.indexOf(aName), "selective fsync flushes the naming snapshot after the selected payload");
-          assert(counts.active === 0, "close releases both selected and unselected real handles");
-          // Explicit power-loss model: an unflushed payload may disappear independently.
-          const data = await (await workspaceDirectory(name)).getDirectoryHandle("data");
-          await data.removeEntry(bName);
-          const recovered = await open();
-          try {
-            const index = await recovered.load();
-            assert(index?.generation === 2, "loss of an unrelated unsynced payload must not erase or substitute the naming snapshot");
-            assert(index.nodes.some(node => node.data === "file:3"), "the current namespace retains the missing unrelated file rather than hiding it");
-            const a = await recovered.read("file:2");
-            assert(a.length === 1 && a[0] === 0, "fsynced payload bytes survive the modeled loss");
-            await rejectsCode(recovered.read("file:3"), "ENOENT");
-            await recovered.flush(["file:2"]);
-          } finally { await recovered.close(); }
-          assert(counts.active === 0, "selective recovery releases every real sync handle");
-        }, undefined, (file, access) => new Proxy(access, {
-          get(target, key) {
-            if (key === "flush") return () => { if (observe) flushed.push(file.name); target.flush(); };
-            const value = Reflect.get(target, key, target);
-            return typeof value === "function" ? value.bind(target) : value;
+        const aName = `p-${encodedTestName("file:2")}`,
+          bName = `p-${encodedTestName("file:3")}`;
+        await withSyncHandles(
+          async (counts) => {
+            const storage = await open();
+            try {
+              // Keep a valid older namespace so recovery cannot pass by substituting that tree.
+              await storage.persist(batch(1));
+              await storage.flush();
+              await storage.persist({ ...manyFiles(2), generation: 2 });
+              observe = true;
+              await storage.flush(["file:2"]);
+            } finally {
+              await storage.close();
+              observe = false;
+            }
+            assert(
+              flushed.includes(aName),
+              "selective fsync flushes the requested real payload handle",
+            );
+            assert(
+              !flushed.includes(bName),
+              "selective fsync and close must not flush an unrelated dirty payload",
+            );
+            const snapshotFlush = flushed.findIndex((fileName) =>
+              fileName.startsWith("snapshot-2-"),
+            );
+            assert(
+              snapshotFlush > flushed.indexOf(aName),
+              "selective fsync flushes the naming snapshot after the selected payload",
+            );
+            assert(counts.active === 0, "close releases both selected and unselected real handles");
+            // Explicit power-loss model: an unflushed payload may disappear independently.
+            const data = await (await workspaceDirectory(name)).getDirectoryHandle("data");
+            await data.removeEntry(bName);
+            const recovered = await open();
+            try {
+              const index = await recovered.load();
+              assert(
+                index?.generation === 2,
+                "loss of an unrelated unsynced payload must not erase or substitute the naming snapshot",
+              );
+              assert(
+                index.nodes.some((node) => node.data === "file:3"),
+                "the current namespace retains the missing unrelated file rather than hiding it",
+              );
+              const a = await recovered.read("file:2");
+              assert(
+                a.length === 1 && a[0] === 0,
+                "fsynced payload bytes survive the modeled loss",
+              );
+              await rejectsCode(recovered.read("file:3"), "ENOENT");
+              await recovered.flush(["file:2"]);
+            } finally {
+              await recovered.close();
+            }
+            assert(counts.active === 0, "selective recovery releases every real sync handle");
           },
-        }));
+          undefined,
+          (file, access) =>
+            new Proxy(access, {
+              get(target, key) {
+                if (key === "flush")
+                  return () => {
+                    if (observe) flushed.push(file.name);
+                    target.flush();
+                  };
+                const value = Reflect.get(target, key, target);
+                return typeof value === "function" ? value.bind(target) : value;
+              },
+            }),
+        );
       },
     },
     {
       label: "all corrupt OPFS snapshots reject instead of resetting existing storage",
       async run(name, open) {
         const storage = await open();
-        for (let generation = 1; generation <= 3; generation++) await storage.persist(batch(generation));
+        for (let generation = 1; generation <= 3; generation++)
+          await storage.persist(batch(generation));
         await storage.close();
         const metadata = await metadataDirectory(name);
         let corrupted = 0;
         for await (const [name, entry] of metadata.entries()) {
           if (entry.kind !== "file" || !name.startsWith("snapshot-")) continue;
           const writable = await (entry as FileSystemFileHandle).createWritable();
-          try { await writable.write(bytes("not a checksummed snapshot")); await writable.close(); }
-          catch (error) { await writable.abort().catch(() => {}); throw error; }
+          try {
+            await writable.write(bytes("not a checksummed snapshot"));
+            await writable.close();
+          } catch (error) {
+            await writable.abort().catch(() => {});
+            throw error;
+          }
           corrupted++;
         }
         assert(corrupted > 0, "must corrupt at least one actual snapshot");
@@ -570,12 +946,19 @@ function focusedCases(): OpfsCase[] {
 /** Shared contracts and OPFS faults; a consumer-owned worker URL opts in to runtime probes. */
 export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
   const shared: OpfsCase[] = storageContractCases().map(({ label, run }) => ({
-    label, run: (name, open) => run(name, open),
+    label,
+    run: (name, open) => run(name, open),
   }));
-  const runtime: OpfsCase[] = filesystemWorkerURL === undefined ? [] : [{
-    label: "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
-    run: name => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
-  }];
+  const runtime: OpfsCase[] =
+    filesystemWorkerURL === undefined
+      ? []
+      : [
+          {
+            label:
+              "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
+            run: (name) => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
+          },
+        ];
   return shared.concat(runtime, focusedCases()).map(({ label, run }) => ({
     label,
     async run() {
@@ -583,16 +966,25 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
       const opened: { cancel: AbortController; pending: Promise<OpfsStorage> }[] = [];
       const open = (options: OpfsStorageOptions = {}) => {
         const cancel = new AbortController();
-        const signal = options.signal ? AbortSignal.any([cancel.signal, options.signal]) : cancel.signal;
+        const signal = options.signal
+          ? AbortSignal.any([cancel.signal, options.signal])
+          : cancel.signal;
         const pending = OpfsStorage.open(name, { ...options, signal });
         opened.push({ cancel, pending });
         return pending;
       };
-      try { await run(name, open); }
-      finally {
+      try {
+        await run(name, open);
+      } finally {
         // Failure owns queued opens too: abort pending requests before closing granted owners.
         for (const entry of opened) entry.cancel.abort();
-        for (const entry of opened) await entry.pending.then(storage => storage.close(), () => {}).catch(() => {});
+        for (const entry of opened)
+          await entry.pending
+            .then(
+              (storage) => storage.close(),
+              () => {},
+            )
+            .catch(() => {});
         await OpfsStorage.delete(name);
       }
     },
@@ -601,8 +993,10 @@ export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserSto
 
 export async function runOpfsStorageTests(filter?: string): Promise<string[]> {
   const passed: string[] = [];
-  for (const test of opfsStorageTests()) if (!filter || test.label.includes(filter)) {
-    await test.run(); passed.push(test.label);
-  }
+  for (const test of opfsStorageTests())
+    if (!filter || test.label.includes(filter)) {
+      await test.run();
+      passed.push(test.label);
+    }
   return passed;
 }

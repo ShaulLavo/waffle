@@ -94,15 +94,15 @@ Host/browser `ProcessExit` keeps a named `error`, Linux-style `code`, and
 `status: null` for startup failures. The shared atomic startup tag remains 3;
 it is separate from guest WaitResult kind 2. These are the seven produced errors:
 
-| Error | Host code | Guest WASI value | Cause |
-| --- | ---: | ---: | --- |
-| ENOENT | 2 | 44 | Missing executable or missing path component |
-| EACCES | 13 | 2 | Directory or existing file without its admitted executable registration |
-| ENOTDIR | 20 | 54 | A file used as a directory, including a trailing slash on a file |
-| ENOEXEC | 8 | 45 | Invalid/unsupported Wasm at rewrite/compile, or absent/noncallable `_start` or non-memory `memory` export |
-| ENOMEM | 12 | 48 | Allocation failure during loading or host/Worker setup |
-| EAGAIN | 11 | 6 | Process/setup resource capacity exhausted after reservation |
-| EIO | 5 | 29 | Other loader or host setup failure |
+| Error   | Host code | Guest WASI value | Cause                                                                                                     |
+| ------- | --------: | ---------------: | --------------------------------------------------------------------------------------------------------- |
+| ENOENT  |         2 |               44 | Missing executable or missing path component                                                              |
+| EACCES  |        13 |                2 | Directory or existing file without its admitted executable registration                                   |
+| ENOTDIR |        20 |               54 | A file used as a directory, including a trailing slash on a file                                          |
+| ENOEXEC |         8 |               45 | Invalid/unsupported Wasm at rewrite/compile, or absent/noncallable `_start` or non-memory `memory` export |
+| ENOMEM  |        12 |               48 | Allocation failure during loading or host/Worker setup                                                    |
+| EAGAIN  |        11 |                6 | Process/setup resource capacity exhausted after reservation                                               |
+| EIO     |         5 |               29 | Other loader or host setup failure                                                                        |
 
 The current filesystem has no symlinks or name-length limits, so it does not
 produce ELOOP or ENAMETOOLONG; executing a directory uses EACCES, not EISDIR.
@@ -169,13 +169,13 @@ runtime_proc.start_status(pid: i32) -> i32
 This non-consuming query applies to retained direct children, with the same caller
 and child authority as `wait`. A reserved PID alone does not prove successful startup.
 
-| Return | Meaning |
-| --- | --- |
-| `-EAGAIN` (`-6`) | Admission, instantiation or setup is still pending |
-| `0` | Executable entry was committed successfully |
-| Positive WASI errno | START_FAILED, using the seven values in the table above |
-| `-ECANCELED` (`-11`) | Exit or a signal won before executable entry |
-| `-ECHILD` (`-12`) | Unknown PID, not a direct child, or already collected |
+| Return               | Meaning                                                 |
+| -------------------- | ------------------------------------------------------- |
+| `-EAGAIN` (`-6`)     | Admission, instantiation or setup is still pending      |
+| `0`                  | Executable entry was committed successfully             |
+| Positive WASI errno  | START_FAILED, using the seven values in the table above |
+| `-ECANCELED` (`-11`) | Exit or a signal won before executable entry            |
+| `-ECHILD` (`-12`)    | Unknown PID, not a direct child, or already collected   |
 
 Success stays observable through immediate exit, later signals and cleanup, until
 collection. Startup errors are likewise repeatedly observable without consuming a

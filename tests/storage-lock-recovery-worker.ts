@@ -7,7 +7,9 @@ const scope = globalThis as unknown as {
   postMessage(message: unknown): void;
 };
 let release!: () => void;
-const gate = new Promise<void>(resolve => { release = resolve; });
+const gate = new Promise<void>((resolve) => {
+  release = resolve;
+});
 const open = PersistentBackend.open;
 PersistentBackend.open = async (...args: Parameters<typeof PersistentBackend.open>) => {
   if (new URL(location.href).searchParams.has("recovered")) {
@@ -37,7 +39,7 @@ PersistentBackend.open = async (...args: Parameters<typeof PersistentBackend.ope
 await import("../browser/fs-worker.js");
 const receive = scope.onmessage;
 if (!receive) throw new Error("Production filesystem worker did not install a message handler");
-scope.onmessage = event => {
+scope.onmessage = (event) => {
   if (event.data?.probeReleaseRecovery === true) {
     release();
     scope.postMessage({ type: "probe-recovery-released" });

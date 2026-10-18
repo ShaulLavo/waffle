@@ -1,21 +1,37 @@
-import { chromium, firefox, webkit, type BrowserType, type Page } from 'playwright';
-import { PNG } from 'pngjs';
-import pixelmatch from 'pixelmatch';
-import { mkdir, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { chromium, firefox, webkit, type BrowserType, type Page } from "playwright";
+import { PNG } from "pngjs";
+import pixelmatch from "pixelmatch";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 
-const reference = process.env.REFERENCE_URL ?? 'http://127.0.0.1:4322/';
-const candidate = process.env.SITE_URL ?? 'http://127.0.0.1:4323/';
-const evidence = process.env.EVIDENCE_DIR ?? '/work/tmp/waffle-site-evidence';
-const engines: [string, BrowserType][] = [['chromium', chromium], ['firefox', firefox], ['webkit', webkit]];
+const reference = process.env.REFERENCE_URL ?? "http://127.0.0.1:4322/";
+const candidate = process.env.SITE_URL ?? "http://127.0.0.1:4323/";
+const evidence = process.env.EVIDENCE_DIR ?? "/work/tmp/waffle-site-evidence";
+const engines: [string, BrowserType][] = [
+  ["chromium", chromium],
+  ["firefox", firefox],
+  ["webkit", webkit],
+];
 const engineNames = engines.map(([name]) => name);
-const selectedEngines = process.env.ENGINES === undefined ? engineNames : process.env.ENGINES.split(',').map(name => name.trim());
-if (selectedEngines.some(name => !engineNames.includes(name)) || new Set(selectedEngines).size !== selectedEngines.length) {
-  throw new Error(`ENGINES must select unique names from ${engineNames.join(',')}`);
+const selectedEngines =
+  process.env.ENGINES === undefined
+    ? engineNames
+    : process.env.ENGINES.split(",").map((name) => name.trim());
+if (
+  selectedEngines.some((name) => !engineNames.includes(name)) ||
+  new Set(selectedEngines).size !== selectedEngines.length
+) {
+  throw new Error(`ENGINES must select unique names from ${engineNames.join(",")}`);
 }
-const widths = process.env.WIDTHS === undefined ? [375, 768, 1280, 1920] : process.env.WIDTHS.split(',').map(Number);
-if (widths.some(width => !Number.isInteger(width) || width < 1 || width > 3840) || new Set(widths).size !== widths.length) {
-  throw new Error('WIDTHS must select unique integer widths between 1 and 3840');
+const widths =
+  process.env.WIDTHS === undefined
+    ? [375, 768, 1280, 1920]
+    : process.env.WIDTHS.split(",").map(Number);
+if (
+  widths.some((width) => !Number.isInteger(width) || width < 1 || width > 3840) ||
+  new Set(widths).size !== widths.length
+) {
+  throw new Error("WIDTHS must select unique integer widths between 1 and 3840");
 }
 const expectedCases = selectedEngines.length * widths.length * 13;
 await mkdir(evidence, { recursive: true });
@@ -26,51 +42,69 @@ const failures: string[] = [];
 // so this cannot hide an unrelated reference change or silently alter the candidate.
 async function applyPublishedReferenceCopy(page: Page) {
   await page.evaluate(() => {
-    const github = 'https://github.com/ShaulLavo/waffle';
-    const bash = 'https://github.com/ShaulLavo/bash-web';
-    const bun = 'https://bun.sprockt.dev/';
+    const github = "https://github.com/ShaulLavo/waffle";
+    const bash = "https://github.com/ShaulLavo/bash-web";
+    const bun = "https://bun.sprockt.dev/";
     const link = (selector: string, text: string, before: string, after: string) => {
-      const matches = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))
-        .filter(anchor => anchor.textContent?.replace(/\s+/g, ' ').trim() === text);
+      const matches = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector)).filter(
+        (anchor) => anchor.textContent?.replace(/\s+/g, " ").trim() === text,
+      );
       // The original conditional removes wide-only navigation on small screens;
       // the static candidate keeps equivalent hidden markup.
-      if (selector === 'nav a' && innerWidth < 860 && matches.length === 0) return;
-      if (matches.length !== 1 || matches[0]!.getAttribute('href') !== before) {
+      if (selector === "nav a" && innerWidth < 860 && matches.length === 0) return;
+      if (matches.length !== 1 || matches[0]!.getAttribute("href") !== before) {
         throw new Error(`Original reference link changed: ${selector} / ${text}`);
       }
-      matches[0]!.setAttribute('href', after);
+      matches[0]!.setAttribute("href", after);
     };
-    link('nav a', 'Bun', '#today', bun);
-    link('nav a', 'GitHub', '#', github);
-    link('#today a', 'Open Bash Web', '#', bash);
-    link('#today a', 'Bash Web docs', '#docs', bash);
-    link('#today a', 'Read the Bun guide', '#docs', bun);
-    link('footer a', 'Bash Web', '#today', bash);
-    link('footer a', 'Bun', '#today', bun);
-    link('footer a', 'GitHub', '#', github);
-    const cards = Array.from(document.querySelectorAll<HTMLAnchorElement>('#docs a.wtile'));
+    link("nav a", "Bun", "#today", bun);
+    link("nav a", "GitHub", "#", github);
+    link("#today a", "Open Bash Web", "#", bash);
+    link("#today a", "Bash Web docs", "#docs", bash);
+    link("#today a", "Read the Bun guide", "#docs", bun);
+    link("footer a", "Bash Web", "#today", bash);
+    link("footer a", "Bun", "#today", bun);
+    link("footer a", "GitHub", "#", github);
+    const cards = Array.from(document.querySelectorAll<HTMLAnchorElement>("#docs a.wtile"));
     const destinations = [
       `${github}/blob/main/docs/getting-started.md`,
       `${github}/blob/main/docs/architecture.md`,
-      `${github}/blob/main/docs/host-abi.md`, bash, bun, github,
+      `${github}/blob/main/docs/host-abi.md`,
+      bash,
+      bun,
+      github,
     ];
-    if (cards.length !== destinations.length) throw new Error('Original reference cards changed');
+    if (cards.length !== destinations.length) throw new Error("Original reference cards changed");
     cards.forEach((card, index) => {
-      if (card.getAttribute('href') !== '#') throw new Error(`Original reference card ${index} changed`);
-      card.setAttribute('href', destinations[index]!);
+      if (card.getAttribute("href") !== "#")
+        throw new Error(`Original reference card ${index} changed`);
+      card.setAttribute("href", destinations[index]!);
     });
     const replaceText = (selector: string, before: string, after: string) => {
-      const matches = Array.from(document.querySelectorAll(selector))
-        .filter(element => element.childElementCount === 0 && element.textContent === before);
+      const matches = Array.from(document.querySelectorAll(selector)).filter(
+        (element) => element.childElementCount === 0 && element.textContent === before,
+      );
       if (matches.length !== 1) throw new Error(`Original reference text changed: ${before}`);
       matches[0]!.textContent = after;
     };
-    replaceText('#today p', 'Our shell and our browser build of Bun are built on Waffle. Open one and you are running on it.', 'Our shell and our browser build of Bun are built on Waffle. Explore the shell source or try Bun in your browser.');
-    replaceText('#today a.wbtn', 'Open Bash Web', 'Explore Bash Web');
-    replaceText('#today a.wbtn', 'Read the Bun guide', 'Try Bun in the browser');
-    replaceText('#docs a.wtile span', 'Run your first program on Waffle →', 'Set up your first Waffle page →');
-    replaceText('#docs a.wtile span', 'Every interface, in detail →', 'The guest and host contract →');
-    replaceText('footer span', '© [YEAR] Waffle', '© 2026 Waffle');
+    replaceText(
+      "#today p",
+      "Our shell and our browser build of Bun are built on Waffle. Open one and you are running on it.",
+      "Our shell and our browser build of Bun are built on Waffle. Explore the shell source or try Bun in your browser.",
+    );
+    replaceText("#today a.wbtn", "Open Bash Web", "Explore Bash Web");
+    replaceText("#today a.wbtn", "Read the Bun guide", "Try Bun in the browser");
+    replaceText(
+      "#docs a.wtile span",
+      "Run your first program on Waffle →",
+      "Set up your first Waffle page →",
+    );
+    replaceText(
+      "#docs a.wtile span",
+      "Every interface, in detail →",
+      "The guest and host contract →",
+    );
+    replaceText("footer span", "© [YEAR] Waffle", "© 2026 Waffle");
   });
 }
 
@@ -78,7 +112,7 @@ async function prepare(page: Page, url: string, originalReference: boolean) {
   await page.addInitScript(() => {
     if ((window as any).__advance) return;
     let api: any;
-    Object.defineProperty(window, 'WaffleScene', {
+    Object.defineProperty(window, "WaffleScene", {
       configurable: true,
       get: () => api,
       set: (value) => {
@@ -97,23 +131,39 @@ async function prepare(page: Page, url: string, originalReference: boolean) {
     const observers = new Map<Element, (entries: { isIntersecting: boolean }[]) => void>();
     (window as any).IntersectionObserver = class {
       constructor(private callback: (entries: { isIntersecting: boolean }[]) => void) {}
-      observe(target: Element) { observers.set(target, this.callback); }
-      unobserve(target: Element) { observers.delete(target); }
+      observe(target: Element) {
+        observers.set(target, this.callback);
+      }
+      unobserve(target: Element) {
+        observers.delete(target);
+      }
       disconnect() {
-        for (const [target, callback] of observers) if (callback === this.callback) observers.delete(target);
+        for (const [target, callback] of observers)
+          if (callback === this.callback) observers.delete(target);
       }
     };
     const callbacks = new Map<number, FrameRequestCallback>();
     let next = 1;
     let time = 0;
-    Object.defineProperty(performance, 'now', { value: () => time });
+    Object.defineProperty(performance, "now", { value: () => time });
     Date.now = () => 1_800_000_000_000;
-    window.requestAnimationFrame = (fn) => { const id = next++; callbacks.set(id, fn); return id; };
-    window.cancelAnimationFrame = (id) => { callbacks.delete(id); };
+    window.requestAnimationFrame = (fn) => {
+      const id = next++;
+      callbacks.set(id, fn);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => {
+      callbacks.delete(id);
+    };
     (window as any).__advance = (ms = 1000 / 60) => {
       for (const [target, callback] of observers) {
         const rect = target.getBoundingClientRect();
-        callback([{ isIntersecting: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth }]);
+        callback([
+          {
+            isIntersecting:
+              rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth,
+          },
+        ]);
       }
       time += ms;
       const pending = Array.from(callbacks.values());
@@ -122,7 +172,7 @@ async function prepare(page: Page, url: string, originalReference: boolean) {
     };
   });
   await page.mouse.move(0, 0);
-  await page.goto(url, { waitUntil: 'networkidle' });
+  await page.goto(url, { waitUntil: "networkidle" });
   for (let i = 0; i < 10; i++) {
     await page.evaluate(() => (window as any).__advance(0));
     await page.waitForTimeout(30);
@@ -131,13 +181,19 @@ async function prepare(page: Page, url: string, originalReference: boolean) {
   // default waitForFunction RAF poller would stop polling after the fixed
   // startup pumps. A wall-clock poll observes async scene imports without
   // advancing synthetic time or changing the readiness condition.
-  await page.waitForFunction(() => !!document.querySelector('canvas') && !!(window as any).__scene, undefined, { polling: 100 });
-  await page.evaluate(async () => { await document.fonts.ready; });
+  await page.waitForFunction(
+    () => !!document.querySelector("canvas") && !!(window as any).__scene,
+    undefined,
+    { polling: 100 },
+  );
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
   if (originalReference) await applyPublishedReferenceCopy(page);
   // Give original React and the Astro controller equal deterministic frame time.
   for (let i = 0; i < 3; i++) {
     await page.evaluate(() => {
-      document.querySelector('canvas')?.dispatchEvent(new PointerEvent('pointerleave'));
+      document.querySelector("canvas")?.dispatchEvent(new PointerEvent("pointerleave"));
       (window as any).__advance();
     });
     await page.waitForTimeout(0);
@@ -146,9 +202,14 @@ async function prepare(page: Page, url: string, originalReference: boolean) {
 
 async function settle(page: Page, progress: number) {
   await page.evaluate((p) => {
-    document.querySelector('canvas')?.dispatchEvent(new PointerEvent('pointerleave'));
-    const hero = document.querySelector('[data-scrolly]')!;
-    window.scrollTo(0, hero.getBoundingClientRect().top + scrollY + (hero.getBoundingClientRect().height - innerHeight) * p);
+    document.querySelector("canvas")?.dispatchEvent(new PointerEvent("pointerleave"));
+    const hero = document.querySelector("[data-scrolly]")!;
+    window.scrollTo(
+      0,
+      hero.getBoundingClientRect().top +
+        scrollY +
+        (hero.getBoundingClientRect().height - innerHeight) * p,
+    );
   }, progress);
   // Both implementations receive the same settled scroll value before stepping
   // time. This isolates the visuals from React's different scheduling phase.
@@ -165,94 +226,173 @@ async function settle(page: Page, progress: number) {
 
 for (const [engine, type] of engines) {
   if (!selectedEngines.includes(engine)) continue;
-  const browser = await type.launch({ headless: process.env.HEADFUL !== '1' });
+  const browser = await type.launch({ headless: process.env.HEADFUL !== "1" });
   try {
     for (const width of widths) {
-      const pages = await Promise.all([reference, candidate].map(async (url, index) => {
-        const page = await browser.newPage({ viewport: { width, height: 800 }, deviceScaleFactor: 1, colorScheme: 'light' });
-        page.on('pageerror', error => failures.push(`${engine}/${width}: ${error.message}`));
-        page.on('requestfailed', request => failures.push(`${engine}/${width}: ${request.url()}: ${request.failure()?.errorText}`));
-        page.on('response', response => {
-          if (response.status() >= 400) failures.push(`${engine}/${width}: ${response.status()} ${response.url()}`);
-        });
-        await prepare(page, url, index === 0);
-        return page;
-      }));
-      const inventory = async (page: Page) => page.evaluate(() => ({
-        text: document.body.innerText,
-        links: Array.from(document.querySelectorAll('a')).filter(a => a.getClientRects().length > 0).map(a => ({ text: a.innerText.replace(/\s+/g, ' ').trim(), href: a.getAttribute('href') })),
-      }));
+      const pages = await Promise.all(
+        [reference, candidate].map(async (url, index) => {
+          const page = await browser.newPage({
+            viewport: { width, height: 800 },
+            deviceScaleFactor: 1,
+            colorScheme: "light",
+          });
+          page.on("pageerror", (error) => failures.push(`${engine}/${width}: ${error.message}`));
+          page.on("requestfailed", (request) =>
+            failures.push(`${engine}/${width}: ${request.url()}: ${request.failure()?.errorText}`),
+          );
+          page.on("response", (response) => {
+            if (response.status() >= 400)
+              failures.push(`${engine}/${width}: ${response.status()} ${response.url()}`);
+          });
+          await prepare(page, url, index === 0);
+          return page;
+        }),
+      );
+      const inventory = async (page: Page) =>
+        page.evaluate(() => ({
+          text: document.body.innerText,
+          links: Array.from(document.querySelectorAll("a"))
+            .filter((a) => a.getClientRects().length > 0)
+            .map((a) => ({
+              text: a.innerText.replace(/\s+/g, " ").trim(),
+              href: a.getAttribute("href"),
+            })),
+        }));
       const [before, after] = await Promise.all(pages.map(inventory));
-      await writeFile(path.join(evidence, `${engine}-${width}-inventory.json`), JSON.stringify({before,after},null,2));
+      await writeFile(
+        path.join(evidence, `${engine}-${width}-inventory.json`),
+        JSON.stringify({ before, after }, null, 2),
+      );
       const textEqual = before!.text === after!.text;
       const linksEqual = JSON.stringify(before!.links) === JSON.stringify(after!.links);
       const capture = async (state: string, fullPage = false) => {
         const file = `${engine}-${width}-${state}`;
-        await Promise.all(pages.map(async page => {
-          await page.locator('canvas').evaluate(canvas => {
-            const gl = (canvas as HTMLCanvasElement).getContext('webgl2') ?? (canvas as HTMLCanvasElement).getContext('webgl');
-            gl?.finish();
-          });
-          // WebGL submission and browser composition are separate. Allow both
-          // pages to commit the already-stepped frame without advancing time.
-          await page.waitForTimeout(80);
-        }));
-        const [a, b] = await Promise.all(pages.map((page, i) => page.screenshot({ path: path.join(evidence, `${file}-${i === 0 ? 'before' : 'after'}.png`), fullPage, animations: 'disabled' })));
-        const aa = PNG.sync.read(a!); const bb = PNG.sync.read(b!);
+        await Promise.all(
+          pages.map(async (page) => {
+            await page.locator("canvas").evaluate((canvas) => {
+              const gl =
+                (canvas as HTMLCanvasElement).getContext("webgl2") ??
+                (canvas as HTMLCanvasElement).getContext("webgl");
+              gl?.finish();
+            });
+            // WebGL submission and browser composition are separate. Allow both
+            // pages to commit the already-stepped frame without advancing time.
+            await page.waitForTimeout(80);
+          }),
+        );
+        const [a, b] = await Promise.all(
+          pages.map((page, i) =>
+            page.screenshot({
+              path: path.join(evidence, `${file}-${i === 0 ? "before" : "after"}.png`),
+              fullPage,
+              animations: "disabled",
+            }),
+          ),
+        );
+        const aa = PNG.sync.read(a!);
+        const bb = PNG.sync.read(b!);
         let pixels: number | null = null;
         if (aa.width === bb.width && aa.height === bb.height) {
           const diff = new PNG({ width: aa.width, height: aa.height });
-          pixels = pixelmatch(aa.data, bb.data, diff.data, aa.width, aa.height, { threshold: 0.1, includeAA: false });
+          pixels = pixelmatch(aa.data, bb.data, diff.data, aa.width, aa.height, {
+            threshold: 0.1,
+            includeAA: false,
+          });
           await writeFile(path.join(evidence, `${file}-diff.png`), PNG.sync.write(diff));
         }
-        const sceneCursors = await Promise.all(pages.map(page => page.locator('canvas').evaluate(canvas => canvas.style.cursor)));
-        const row = { engine, width, state, textEqual, linksEqual, sceneCursors, before: [aa.width, aa.height], after: [bb.width, bb.height], diffPixels: pixels, diffRatio: pixels === null ? null : pixels / (aa.width * aa.height) };
+        const sceneCursors = await Promise.all(
+          pages.map((page) => page.locator("canvas").evaluate((canvas) => canvas.style.cursor)),
+        );
+        const row = {
+          engine,
+          width,
+          state,
+          textEqual,
+          linksEqual,
+          sceneCursors,
+          before: [aa.width, aa.height],
+          after: [bb.width, bb.height],
+          diffPixels: pixels,
+          diffRatio: pixels === null ? null : pixels / (aa.width * aa.height),
+        };
         results.push(row);
-        await writeFile(path.join(evidence, 'visual-diff.json'), JSON.stringify({ reference, candidate, threshold: 0.1, includeAA: false, failures, results }, null, 2));
+        await writeFile(
+          path.join(evidence, "visual-diff.json"),
+          JSON.stringify(
+            { reference, candidate, threshold: 0.1, includeAA: false, failures, results },
+            null,
+            2,
+          ),
+        );
         console.log(JSON.stringify(row));
       };
       for (const progress of [0, 0.25, 0.5, 0.75, 1]) {
-        await Promise.all(pages.map(page => settle(page, progress)));
+        await Promise.all(pages.map((page) => settle(page, progress)));
         await capture(`p${Math.round(progress * 100)}`, progress === 0);
       }
       // CSS states: real hover/focus on both kinds of clickable surface.
-      for (const selector of ['#today a.wbtn', 'a.wtile']) {
-        const label = selector.includes('wtile') ? 'tile' : 'button';
-        await Promise.all(pages.map(async page => {
-          const target = page.locator(selector).filter({ visible: true }).first();
-          await target.scrollIntoViewIfNeeded();
-          await target.hover();
-        }));
+      for (const selector of ["#today a.wbtn", "a.wtile"]) {
+        const label = selector.includes("wtile") ? "tile" : "button";
+        await Promise.all(
+          pages.map(async (page) => {
+            const target = page.locator(selector).filter({ visible: true }).first();
+            await target.scrollIntoViewIfNeeded();
+            await target.hover();
+          }),
+        );
         await capture(`${label}-hover`);
-        await Promise.all(pages.map(async page => {
-          await page.mouse.move(0, 0);
-          await page.locator(selector).filter({ visible: true }).first().focus();
-        }));
+        await Promise.all(
+          pages.map(async (page) => {
+            await page.mouse.move(0, 0);
+            await page.locator(selector).filter({ visible: true }).first().focus();
+          }),
+        );
         await capture(`${label}-focus`);
       }
       // Start pointer/click tests from fresh scenes: scrolling offscreen for
       // link tests intentionally pauses each renderer at observer delivery time.
-      await Promise.all(pages.map((page, i) => prepare(page, i === 0 ? reference : candidate, i === 0)));
-      await Promise.all(pages.map(page => settle(page, 1)));
+      await Promise.all(
+        pages.map((page, i) => prepare(page, i === 0 ? reference : candidate, i === 0)),
+      );
+      await Promise.all(pages.map((page) => settle(page, 1)));
       const pointer = { x: Math.round(width * (width < 860 ? 0.5 : 0.75)), y: 590 };
-      await Promise.all(pages.map(async page => {
-        await page.mouse.move(pointer.x, pointer.y);
-        await page.waitForTimeout(30);
-        for (let i = 0; i < 10; i++) await page.evaluate(() => (window as any).__advance());
-      }));
-      await capture('scene-pointer');
-      await Promise.all(pages.map(page => page.mouse.click(pointer.x, pointer.y)));
-      await capture('scene-click-0ms');
-      for (const [frames, label] of [[15, '250ms'], [45, '1000ms']] as const) {
-        for (let i = 0; i < frames; i++) await Promise.all(pages.map(page => page.evaluate(() => (window as any).__advance())));
+      await Promise.all(
+        pages.map(async (page) => {
+          await page.mouse.move(pointer.x, pointer.y);
+          await page.waitForTimeout(30);
+          for (let i = 0; i < 10; i++) await page.evaluate(() => (window as any).__advance());
+        }),
+      );
+      await capture("scene-pointer");
+      await Promise.all(pages.map((page) => page.mouse.click(pointer.x, pointer.y)));
+      await capture("scene-click-0ms");
+      for (const [frames, label] of [
+        [15, "250ms"],
+        [45, "1000ms"],
+      ] as const) {
+        for (let i = 0; i < frames; i++)
+          await Promise.all(pages.map((page) => page.evaluate(() => (window as any).__advance())));
         await capture(`scene-click-${label}`);
       }
-      await Promise.all(pages.map(page => page.close()));
+      await Promise.all(pages.map((page) => page.close()));
     }
-  } finally { await browser.close(); }
+  } finally {
+    await browser.close();
+  }
 }
-await writeFile(path.join(evidence, 'visual-diff.json'), JSON.stringify({ reference, candidate, threshold: 0.1, includeAA: false, failures, results }, null, 2));
+await writeFile(
+  path.join(evidence, "visual-diff.json"),
+  JSON.stringify(
+    { reference, candidate, threshold: 0.1, includeAA: false, failures, results },
+    null,
+    2,
+  ),
+);
 
-if (results.length !== expectedCases || failures.length || results.some(row => row.diffPixels !== 0 || !row.textEqual || !row.linksEqual)) {
-  throw new Error('Visual or content parity failed; inspect visual-diff.json');
+if (
+  results.length !== expectedCases ||
+  failures.length ||
+  results.some((row) => row.diffPixels !== 0 || !row.textEqual || !row.linksEqual)
+) {
+  throw new Error("Visual or content parity failed; inspect visual-diff.json");
 }

@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import {
+  attachPipeEndpoint,
+  attachPipePublicationRegistry,
+  PipeController,
+  PipeErrno,
+  PipePublicationRegistry,
+} from "../proc/pipes.js";
 import { createWorkerProcessTransport } from "../proc/worker-client.js";
 import { WorkerPipeBroker, WorkerPipeHost } from "../proc/worker-pipes.js";
 
@@ -14,7 +20,11 @@ function ownerWords(registry: PipePublicationRegistry): BigInt64Array {
 }
 
 test("3001 pipe-backed child lifetimes reuse two owner slots and root exit leaves no owners or relays", () => {
-  const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1, maxCells: 1 << 16 });
+  const registry = new PipePublicationRegistry({
+    processCapacity: 2,
+    cellsPerProcess: 1,
+    maxCells: 1 << 16,
+  });
   const cloned = attachPipePublicationRegistry(structuredClone(registry.handle()));
   const broker = new WorkerPipeBroker({ relay: "manual" });
   registry.registerProcess(1);
@@ -23,9 +33,16 @@ test("3001 pipe-backed child lifetimes reuse two owner slots and root exit leave
   try {
     for (let pid = 2; pid <= 3002; pid++) {
       registry.registerProcess(pid);
-      const controller = new PipeController({ capacity: 8, maxWriters: 1, maxReaders: 1, registry: cloned, relay: "manual" });
+      const controller = new PipeController({
+        capacity: 8,
+        maxWriters: 1,
+        maxReaders: 1,
+        registry: cloned,
+        relay: "manual",
+      });
       try {
-        const reader = controller.retain(pid, "read"), writer = controller.retain(pid, "write");
+        const reader = controller.retain(pid, "read"),
+          writer = controller.retain(pid, "write");
         if (pid === 2) stale = attachPipeEndpoint(structuredClone(writer.handle()));
         broker.attach(structuredClone(reader.handle()));
         expect(writer.tryWrite([bytes])).toBe(1);
@@ -39,17 +56,28 @@ test("3001 pipe-backed child lifetimes reuse two owner slots and root exit leave
         expect(registry.processCount).toBe(1);
         expect(broker.size).toBe(0);
         completed++;
-      } finally { registry.collectProcess(pid); controller.dispose(); }
+      } finally {
+        registry.collectProcess(pid);
+        controller.dispose();
+      }
     }
     expect(completed).toBe(3001);
     expect(stale!.tryWrite([bytes])).toBe(-PipeErrno.BADF);
     expect(() => cloned.allocate(2)).toThrow("revoked");
-    cloned.revoke(2); cloned.collectProcess(2);
+    cloned.revoke(2);
+    cloned.collectProcess(2);
     expect(registry.processCount).toBe(1);
     // An older still-live owner can create its FIRST pipe after thousands of newer PIDs.
-    const root = new PipeController({ capacity: 8, maxWriters: 1, maxReaders: 1, registry, relay: "manual" });
+    const root = new PipeController({
+      capacity: 8,
+      maxWriters: 1,
+      maxReaders: 1,
+      registry,
+      relay: "manual",
+    });
     try {
-      const reader = root.retain(1, "read"), writer = root.retain(1, "write");
+      const reader = root.retain(1, "read"),
+        writer = root.retain(1, "write");
       broker.attach(reader.handle());
       expect(writer.tryWrite([bytes])).toBe(1);
       expect(reader.tryRead([new Uint8Array(1)])).toBe(1);
@@ -58,18 +86,29 @@ test("3001 pipe-backed child lifetimes reuse two owner slots and root exit leave
       expect(root.closed).toBe(true);
       expect(registry.processCount).toBe(0);
       expect(broker.size).toBe(0);
-    } finally { root.dispose(); }
+    } finally {
+      root.dispose();
+    }
     // Owner metadata is fixed at two 8-byte words. Four permanent cells per pipe grow
     // geometrically; this workload needs less than 512 KiB and never the arena's 1 MiB cap.
     expect(ownerWords(registry).byteLength).toBe(16);
     expect(registry.handle().buffer.byteLength).toBeLessThan(512 * 1024);
-  } finally { registry.collectProcess(1); broker.dispose(); stale?.close(); }
+  } finally {
+    registry.collectProcess(1);
+    broker.dispose();
+    stale?.close();
+  }
 });
 
 test("collected canonical views never alias the next occupant and unknown revoke creates no owner", () => {
-  const registry = new PipePublicationRegistry({ processCapacity: 1, cellsPerProcess: 1, maxCells: 8 });
+  const registry = new PipePublicationRegistry({
+    processCapacity: 1,
+    cellsPerProcess: 1,
+    maxCells: 8,
+  });
   const retained = attachPipePublicationRegistry(structuredClone(registry.handle()));
-  registry.revoke(99); registry.collectProcess(99);
+  registry.revoke(99);
+  registry.collectProcess(99);
   expect(registry.processCount).toBe(0);
   registry.registerProcess(1);
   registry.registerProcess(1);
@@ -83,7 +122,8 @@ test("collected canonical views never alias the next occupant and unknown revoke
   Atomics.store(old, 0, 123n);
   expect(Atomics.load(fresh, 0)).toBe(value);
   expect(() => retained.allocate(1)).toThrow("revoked");
-  retained.revoke(1); retained.collectProcess(1);
+  retained.revoke(1);
+  retained.collectProcess(1);
   expect(registry.processCount).toBe(1);
   expect(registry.isRevoked(2)).toBe(false);
   expect(Atomics.load(fresh, 0)).toBe(value);
@@ -93,20 +133,37 @@ test("collected canonical views never alias the next occupant and unknown revoke
 
 for (const phase of ["before-link", "after-link", "after-final-check"] as const) {
   test(`an allocator paused ${phase} cannot modify a recycled owner`, () => {
-    const registry = new PipePublicationRegistry({ processCapacity: 1, cellsPerProcess: 1, maxCells: 8 });
+    const registry = new PipePublicationRegistry({
+      processCapacity: 1,
+      cellsPerProcess: 1,
+      maxCells: 8,
+    });
     registry.registerProcess(1);
     const buffer = registry.handle().buffer;
-    const compareExchange = Atomics.compareExchange, load = Atomics.load;
-    let raced = false, ownerLoads = 0, fresh = -1;
+    const compareExchange = Atomics.compareExchange,
+      load = Atomics.load;
+    let raced = false,
+      ownerLoads = 0,
+      fresh = -1;
     function recycle(): void {
       raced = true;
       registry.collectProcess(1);
       registry.registerProcess(2);
       fresh = registry.allocate(2);
     }
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      const link = array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16 &&
-        expected >> 32n === 1n && (replacement & HEAD) !== 0n && !(replacement & REVOKED);
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      const link =
+        array instanceof BigInt64Array &&
+        array.buffer === buffer &&
+        array.byteOffset === 16 &&
+        expected >> 32n === 1n &&
+        (replacement & HEAD) !== 0n &&
+        !(replacement & REVOKED);
       if (!raced && link && phase === "before-link") recycle();
       const value = compareExchange(array, index, expected, replacement);
       if (!raced && link && phase === "after-link") recycle();
@@ -114,7 +171,12 @@ for (const phase of ["before-link", "after-link", "after-final-check"] as const)
     }) as typeof Atomics.compareExchange;
     Atomics.load = ((array: BigInt64Array, index: number) => {
       const value = load(array, index);
-      if (!raced && array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16) {
+      if (
+        !raced &&
+        array instanceof BigInt64Array &&
+        array.buffer === buffer &&
+        array.byteOffset === 16
+      ) {
         ownerLoads++;
         if (phase === "after-final-check" && ownerLoads === 3) recycle();
       }
@@ -123,7 +185,10 @@ for (const phase of ["before-link", "after-link", "after-final-check"] as const)
     try {
       if (phase === "after-final-check") expect(registry.allocate(1)).toBe(0);
       else expect(() => registry.allocate(1)).toThrow("revoked");
-    } finally { Atomics.compareExchange = compareExchange; Atomics.load = load; }
+    } finally {
+      Atomics.compareExchange = compareExchange;
+      Atomics.load = load;
+    }
     expect(raced).toBe(true);
     expect(registry.processCount).toBe(1);
     expect(registry.isRevoked(2)).toBe(false);
@@ -135,14 +200,27 @@ for (const phase of ["before-link", "after-link", "after-final-check"] as const)
 
 for (const operation of ["revoke", "collectProcess"] as const) {
   test(`a delayed ${operation} cannot freeze or clear the new owner`, () => {
-    const registry = new PipePublicationRegistry({ processCapacity: 1, cellsPerProcess: 1, maxCells: 8 });
+    const registry = new PipePublicationRegistry({
+      processCapacity: 1,
+      cellsPerProcess: 1,
+      maxCells: 8,
+    });
     registry.registerProcess(1);
     registry.allocate(1);
-    const buffer = registry.handle().buffer, compareExchange = Atomics.compareExchange;
-    let raced = false, fresh = -1;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      const owner = array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16;
-      const point = owner && (operation === "revoke" ? (replacement & REVOKED) !== 0n : replacement === 0n);
+    const buffer = registry.handle().buffer,
+      compareExchange = Atomics.compareExchange;
+    let raced = false,
+      fresh = -1;
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      const owner =
+        array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16;
+      const point =
+        owner && (operation === "revoke" ? (replacement & REVOKED) !== 0n : replacement === 0n);
       if (!raced && owner && point) {
         raced = true;
         registry.collectProcess(1);
@@ -151,8 +229,11 @@ for (const operation of ["revoke", "collectProcess"] as const) {
       }
       return compareExchange(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
-    try { registry[operation](1); }
-    finally { Atomics.compareExchange = compareExchange; }
+    try {
+      registry[operation](1);
+    } finally {
+      Atomics.compareExchange = compareExchange;
+    }
     expect(raced).toBe(true);
     expect(registry.processCount).toBe(1);
     expect(registry.isRevoked(2)).toBe(false);
@@ -168,7 +249,9 @@ test("late attached worker startup cannot recreate an already collected enrollme
   const handle = structuredClone(registry.handle());
   registry.collectProcess(transport.pid);
   registry.registerProcess(2);
-  expect(() => new WorkerPipeHost({ transport, registry: handle, postMessage() {} })).toThrow("revoked");
+  expect(() => new WorkerPipeHost({ transport, registry: handle, postMessage() {} })).toThrow(
+    "revoked",
+  );
   expect(registry.processCount).toBe(1);
   expect(registry.isRevoked(2)).toBe(false);
   registry.collectProcess(2);
@@ -183,7 +266,8 @@ function message<T>(worker: Worker): Promise<T> {
       clearTimeout(timer);
       worker.removeEventListener("message", onMessage);
       worker.removeEventListener("error", onError);
-      if (error) reject(error); else resolve(value!);
+      if (error) reject(error);
+      else resolve(value!);
     }
     worker.addEventListener("message", onMessage);
     worker.addEventListener("error", onError);
@@ -191,7 +275,11 @@ function message<T>(worker: Worker): Promise<T> {
 }
 
 test("a physically running worker paused at owner CAS loses to collection without touching its successor", async () => {
-  const registry = new PipePublicationRegistry({ processCapacity: 1, cellsPerProcess: 1, maxCells: 8 });
+  const registry = new PipePublicationRegistry({
+    processCapacity: 1,
+    cellsPerProcess: 1,
+    maxCells: 8,
+  });
   registry.registerProcess(1);
   const gate = new Int32Array(new SharedArrayBuffer(4));
   const module = new URL("../proc/pipes.ts", import.meta.url).href;
@@ -222,14 +310,16 @@ test("a physically running worker paused at owner CAS loses to collection withou
     registry.registerProcess(2);
     const fresh = registry.allocate(2);
     const result = message<string>(worker);
-    Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
     expect(await result).toBe("pipe process is revoked");
     expect(registry.processCount).toBe(1);
     expect(registry.isRevoked(2)).toBe(false);
     expect(Atomics.load(registry.canonical(0), 0) & STOP).toBe(STOP);
     expect(Atomics.load(registry.canonical(fresh), 0) & STOP).toBe(0n);
   } finally {
-    Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
     await worker.terminate();
     registry.collectProcess(2);
   }

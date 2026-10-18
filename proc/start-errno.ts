@@ -14,7 +14,10 @@ export class ExecutableFormatError extends Error {
   readonly code = "ENOEXEC";
 }
 export function startFailureName(code: number): StartFailure {
-  for (const name of Object.keys(failures) as StartFailure[]) if (failures[name].code === code) return name;
+  for (const name of Object.keys(failures) as StartFailure[])
+    if (failures[name].code === code) return name;
   throw new RangeError("unknown process startup errno");
 }
-export function startFailureErrno(error: StartFailure): number { return failures[error].wasi; }
+export function startFailureErrno(error: StartFailure): number {
+  return failures[error].wasi;
+}

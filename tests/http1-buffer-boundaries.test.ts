@@ -4,12 +4,25 @@ import { ResponseParser, type ResponseHead } from "../browser/net/http1";
 
 const encode = (text: string) => new TextEncoder().encode(text);
 function fixture() {
-  const out = { head: null as ResponseHead | null, body: [] as number[], ended: 0, errors: [] as string[] };
+  const out = {
+    head: null as ResponseHead | null,
+    body: [] as number[],
+    ended: 0,
+    errors: [] as string[],
+  };
   const parser = new ResponseParser({
-    head: head => { out.head = head; },
-    data: bytes => { out.body = out.body.concat(Array.from(bytes)); },
-    end: () => { out.ended++; },
-    error: message => { out.errors.push(message); },
+    head: (head) => {
+      out.head = head;
+    },
+    data: (bytes) => {
+      out.body = out.body.concat(Array.from(bytes));
+    },
+    end: () => {
+      out.ended++;
+    },
+    error: (message) => {
+      out.errors.push(message);
+    },
   });
   return { parser, out };
 }
@@ -17,11 +30,21 @@ function fixture() {
 for (const kind of bufferKinds) {
   test(`response parser decodes a full header from a selected ${kind} buffer span`, () => {
     const { parser, out } = fixture();
-    const span = callerSpan(encode("HTTP/1.1 201 Créé\r\nX-Name: 日本語\r\nContent-Length: 6\r\n\r\né🌍"), kind);
-    withStrictDecoder(backings => {
+    const span = callerSpan(
+      encode("HTTP/1.1 201 Créé\r\nX-Name: 日本語\r\nContent-Length: 6\r\n\r\né🌍"),
+      kind,
+    );
+    withStrictDecoder((backings) => {
       parser.push(span);
       expect(out.errors).toEqual([]);
-      expect(out.head).toEqual({ status: 201, statusText: "Créé", headers: [["x-name", "日本語"], ["content-length", "6"]] });
+      expect(out.head).toEqual({
+        status: 201,
+        statusText: "Créé",
+        headers: [
+          ["x-name", "日本語"],
+          ["content-length", "6"],
+        ],
+      });
       expect(out.body).toEqual(Array.from(encode("é🌍")));
       expect(out.ended).toBe(1);
       expect(parser.done).toBe(true);
@@ -40,14 +63,21 @@ for (const kind of bufferKinds) {
       if (!kind.startsWith("fixed")) span.fill(0xff);
       expect(out.errors).toEqual([]);
     };
-    withStrictDecoder(backings => {
+    withStrictDecoder((backings) => {
       push("HTTP/1.1 20");
       expect(out.head).toBeNull();
       expect(parser.done).toBe(false);
       push("1 Créé\r\nX-Name: 日");
       expect(out.head).toBeNull();
       push("本語\r\nTransfer-Encoding: chunked\r\n\r\n");
-      expect(out.head).toEqual({ status: 201, statusText: "Créé", headers: [["x-name", "日本語"], ["transfer-encoding", "chunked"]] });
+      expect(out.head).toEqual({
+        status: 201,
+        statusText: "Créé",
+        headers: [
+          ["x-name", "日本語"],
+          ["transfer-encoding", "chunked"],
+        ],
+      });
       expect(out.body).toEqual([]);
       push("6;note=é\r\n"); // Empty pending: exercise the chunk-size decoder directly.
       push("é");

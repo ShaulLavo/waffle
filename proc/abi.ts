@@ -1,6 +1,12 @@
 import { ExecutionUnwind } from "../core/unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "./control.js";
-import { MAX_DESCRIPTOR, type Descriptor, type DescriptorTable, type Readiness, type Stream } from "../core/descriptors.js";
+import {
+  MAX_DESCRIPTOR,
+  type Descriptor,
+  type DescriptorTable,
+  type Readiness,
+  type Stream,
+} from "../core/descriptors.js";
 import type { FileSystem } from "../core/filesystem.js";
 import { withFileOffset } from "../core/open-file.js";
 import { PipeController } from "./pipes.js";
@@ -9,8 +15,22 @@ import { WasiExit } from "../core/wasi.js";
 import { waitStatus } from "./wait-status.js";
 import { spawnError, startFailureErrno } from "./start-failure.js";
 import { FilesystemError } from "../fs/protocol.js";
-import { checkedSignalNumber, defaultSignalTerminates, requestSignal, setSignalDisposition, signalPending, takeSignal, type SignalTransport } from "./signals.js";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit, type SpawnRequest } from "./types.js";
+import {
+  checkedSignalNumber,
+  defaultSignalTerminates,
+  requestSignal,
+  setSignalDisposition,
+  signalPending,
+  takeSignal,
+  type SignalTransport,
+} from "./signals.js";
+import {
+  ProcessErrno,
+  ProcessError,
+  Signal,
+  type ProcessExit,
+  type SpawnRequest,
+} from "./types.js";
 
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
  * module loading and guest startup happen elsewhere, never on this import's stack. */
@@ -43,7 +63,10 @@ export interface ProcessService {
 interface NonblockingFileSystem extends FileSystem {
   tryRead?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
   tryWrite?(handle: number, chunks: readonly Uint8Array[], offset: number): number;
-  tryAppend?(handle: number, chunks: readonly Uint8Array[]): { written: number; offset: number } | number;
+  tryAppend?(
+    handle: number,
+    chunks: readonly Uint8Array[],
+  ): { written: number; offset: number } | number;
   ioReadiness?(handle: number, writing: boolean): Readiness;
   readiness?(request: number): { ready: boolean } | undefined;
 }
@@ -80,8 +103,13 @@ export class ProcessSignalExit extends ExecutionUnwind {
   }
 }
 
-const READ = 1n << 1n, WRITE = 1n << 6n, POLL = 1n << 27n;
-const FAULT = 21, ISDIR = 31, NOSYS = 52, NOTCAPABLE = 76;
+const READ = 1n << 1n,
+  WRITE = 1n << 6n,
+  POLL = 1n << 27n;
+const FAULT = 21,
+  ISDIR = 31,
+  NOSYS = 52,
+  NOTCAPABLE = 76;
 const decode = new TextDecoder("utf-8", { fatal: true });
 // A leading BOM is a filename character, not a byte-order marker to strip.
 const pathDecode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -95,44 +123,60 @@ export class ProcessABI {
   readonly imports: Record<string, (...args: number[]) => number>;
   private readonly now: () => number;
   constructor(private readonly options: ProcessABIOptions) {
-    if (options.wake && (!(options.wake.buffer instanceof SharedArrayBuffer) || options.wake.length !== 1)) {
+    if (
+      options.wake &&
+      (!(options.wake.buffer instanceof SharedArrayBuffer) || options.wake.length !== 1)
+    ) {
       throw new TypeError("poll wake must be one shared int32");
     }
     this.now = options.now ?? clock;
     this.imports = {
       getpid: () => options.pid,
-      access_start: (ptr, length, cwdPtr, cwdLength, mode) => this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
-      access_take: request => this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
-      access_cancel: request => this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
-      spawn: (ptr, length) => this.result(() => {
-        try { return options.service.spawn(options.pid, this.spawnRequest(ptr!, length!)); }
-        catch (error) { throw spawnError(error); }
-      }),
-      job_of: pid => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
-      pipe: ptr => this.result(() => this.pipe(ptr!)),
-      dup: fd => options.descriptors.dup(fd! >>> 0),
+      access_start: (ptr, length, cwdPtr, cwdLength, mode) =>
+        this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
+      access_take: (request) =>
+        this.result(() => options.service.accessTake?.(options.pid, request!) ?? -NOSYS),
+      access_cancel: (request) =>
+        this.result(() => options.service.accessCancel?.(options.pid, request!) ?? -NOSYS),
+      spawn: (ptr, length) =>
+        this.result(() => {
+          try {
+            return options.service.spawn(options.pid, this.spawnRequest(ptr!, length!));
+          } catch (error) {
+            throw spawnError(error);
+          }
+        }),
+      job_of: (pid) => this.result(() => options.service.jobOf(pid === 0 ? options.pid : pid!)),
+      pipe: (ptr) => this.result(() => this.pipe(ptr!)),
+      dup: (fd) => options.descriptors.dup(fd! >>> 0),
       read: (fd, ptr, length) => this.result(() => this.io(false, fd!, ptr!, length!)),
       write: (fd, ptr, length) => this.result(() => this.io(true, fd!, ptr!, length!)),
       wait: (pid, ptr) => this.result(() => this.wait(pid!, ptr!)),
       wait_job: (job, flags, ptr) => this.result(() => this.waitJob(job!, flags!, ptr!)),
-      kill: (pid, signal) => this.result(() => {
-        if (options.service.canSignal?.(options.pid, pid!) === false) return -63;
-        options.service.kill(pid!, signal!); return 0;
-      }),
-      kill_job: (job, signal) => this.result(() => {
-        if (options.service.canSignalJob?.(options.pid, job!) === false) return -63;
-        options.service.killJob(job!, signal!); return 0;
-      }),
-      start_status: pid => this.result(() => options.service.startStatus(options.pid, pid!)),
-      poll: (ptr, count, timeout, out) => this.result(() => this.poll(ptr!, count!, timeout!, out!)),
+      kill: (pid, signal) =>
+        this.result(() => {
+          if (options.service.canSignal?.(options.pid, pid!) === false) return -63;
+          options.service.kill(pid!, signal!);
+          return 0;
+        }),
+      kill_job: (job, signal) =>
+        this.result(() => {
+          if (options.service.canSignalJob?.(options.pid, job!) === false) return -63;
+          options.service.killJob(job!, signal!);
+          return 0;
+        }),
+      start_status: (pid) => this.result(() => options.service.startStatus(options.pid, pid!)),
+      poll: (ptr, count, timeout, out) =>
+        this.result(() => this.poll(ptr!, count!, timeout!, out!)),
       interrupted: () => this.interrupted(),
       signal: (signal, mode) => this.signal(signal!, mode!),
-      default_signal: signal => this.result(() => this.defaultSignal(signal!)),
+      default_signal: (signal) => this.result(() => this.defaultSignal(signal!)),
     };
   }
   private result(operation: () => number): number {
-    try { return operation(); }
-    catch (error) {
+    try {
+      return operation();
+    } catch (error) {
       if (error instanceof ProcessError || error instanceof FilesystemError) return -error.errno;
       if (error instanceof RangeError) return -48; // ENOMEM, including host buffer allocation.
       throw error;
@@ -142,9 +186,11 @@ export class ProcessABI {
     return typeof this.options.memory === "function" ? this.options.memory() : this.options.memory;
   }
   private span(ptr: number, length: number): Uint8Array {
-    ptr >>>= 0; length >>>= 0;
+    ptr >>>= 0;
+    length >>>= 0;
     const memory = this.memory();
-    if (length > memory.buffer.byteLength - ptr) throw new ProcessError(FAULT, "guest memory out of bounds");
+    if (length > memory.buffer.byteLength - ptr)
+      throw new ProcessError(FAULT, "guest memory out of bounds");
     return new Uint8Array(memory.buffer, ptr, length);
   }
   private view(ptr: number, length: number): DataView {
@@ -154,30 +200,62 @@ export class ProcessABI {
   private accessPath(ptr: number, length: number): string {
     const bytes = this.span(ptr, length).slice();
     let path: string;
-    try { path = pathDecode.decode(bytes); }
-    catch { throw new ProcessError(ProcessErrno.INVAL, "invalid path encoding"); }
+    try {
+      path = pathDecode.decode(bytes);
+    } catch {
+      throw new ProcessError(ProcessErrno.INVAL, "invalid path encoding");
+    }
     if (!path || path.includes("\0")) throw new ProcessError(ProcessErrno.INVAL, "invalid path");
     return path;
   }
-  private accessStart(ptr: number, length: number, cwdPtr: number, cwdLength: number, mode: number): number {
+  private accessStart(
+    ptr: number,
+    length: number,
+    cwdPtr: number,
+    cwdLength: number,
+    mode: number,
+  ): number {
     if (mode !== 1) return -ProcessErrno.INVAL;
-    const path = this.accessPath(ptr, length), cwd = this.accessPath(cwdPtr, cwdLength);
+    const path = this.accessPath(ptr, length),
+      cwd = this.accessPath(cwdPtr, cwdLength);
     if (!cwd.startsWith("/")) return -ProcessErrno.INVAL;
-    return this.options.service.accessStart?.(this.options.pid, path, cwd, this.options.wake) ?? -NOSYS;
+    return (
+      this.options.service.accessStart?.(this.options.pid, path, cwd, this.options.wake) ?? -NOSYS
+    );
   }
   private spawnRequest(ptr: number, length: number): SpawnRequest {
     // Guest memory may be resizable; TextDecoder's WebIDL input requires a fixed buffer.
     const bytes = this.span(ptr, length).slice();
     let request: unknown;
-    try { request = JSON.parse(decode.decode(bytes)); }
-    catch { throw new ProcessError(ProcessErrno.INVAL, "invalid spawn JSON"); }
+    try {
+      request = JSON.parse(decode.decode(bytes));
+    } catch {
+      throw new ProcessError(ProcessErrno.INVAL, "invalid spawn JSON");
+    }
     const object = request as Partial<SpawnRequest> | null;
-    const fd = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_DESCRIPTOR;
-    if (!object || typeof object !== "object" || typeof object.executable !== "string" || !object.executable ||
-      !Array.isArray(object.argv) || !object.argv.every(value => typeof value === "string") ||
-      !object.env || typeof object.env !== "object" || Array.isArray(object.env) || !Object.values(object.env).every(value => typeof value === "string") ||
-      typeof object.cwd !== "string" || !object.cwd || !Number.isInteger(object.job) || object.job! < -1 ||
-      !Array.isArray(object.fds) || !object.fds.every(binding => binding && typeof binding === "object" && fd(binding.child) && fd(binding.parent))) {
+    const fd = (value: unknown): value is number =>
+      typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_DESCRIPTOR;
+    if (
+      !object ||
+      typeof object !== "object" ||
+      typeof object.executable !== "string" ||
+      !object.executable ||
+      !Array.isArray(object.argv) ||
+      !object.argv.every((value) => typeof value === "string") ||
+      !object.env ||
+      typeof object.env !== "object" ||
+      Array.isArray(object.env) ||
+      !Object.values(object.env).every((value) => typeof value === "string") ||
+      typeof object.cwd !== "string" ||
+      !object.cwd ||
+      !Number.isInteger(object.job) ||
+      object.job! < -1 ||
+      !Array.isArray(object.fds) ||
+      !object.fds.every(
+        (binding) =>
+          binding && typeof binding === "object" && fd(binding.child) && fd(binding.parent),
+      )
+    ) {
       throw new ProcessError(ProcessErrno.INVAL, "invalid spawn description");
     }
     return object as SpawnRequest;
@@ -191,21 +269,33 @@ export class ProcessABI {
       read = this.options.descriptors.open(endpoints[0], READ | POLL, 0n);
       write = this.options.descriptors.open(endpoints[1], WRITE | POLL, 0n);
       const output = this.view(ptr, 8);
-      output.setUint32(0, read, true); output.setUint32(4, write, true);
+      output.setUint32(0, read, true);
+      output.setUint32(4, write, true);
       return 0;
     } catch (error) {
-      if (read !== undefined) this.options.descriptors.close(read); else endpoints[0].close?.();
-      if (write !== undefined) this.options.descriptors.close(write); else endpoints[1].close?.();
+      if (read !== undefined) this.options.descriptors.close(read);
+      else endpoints[0].close?.();
+      if (write !== undefined) this.options.descriptors.close(write);
+      else endpoints[1].close?.();
       throw error;
     }
   }
   private localPipe(): readonly [Stream, Stream] {
-    const controller = new PipeController({ capacity: this.options.pipeCapacity, wake: this.options.wake });
+    const controller = new PipeController({
+      capacity: this.options.pipeCapacity,
+      wake: this.options.wake,
+    });
     const read = controller.retain(this.options.pid, "read");
     let write: Stream;
-    try { write = controller.retain(this.options.pid, "write"); }
-    catch (error) { read.close?.(); throw error; }
-    const unregister = this.options.service.registerRevocation?.(this.options.pid, () => controller.revoke(this.options.pid));
+    try {
+      write = controller.retain(this.options.pid, "write");
+    } catch (error) {
+      read.close?.();
+      throw error;
+    }
+    const unregister = this.options.service.registerRevocation?.(this.options.pid, () =>
+      controller.revoke(this.options.pid),
+    );
     if (unregister) {
       let remaining = 2;
       for (const endpoint of [read, write]) {
@@ -214,7 +304,11 @@ export class ProcessABI {
         endpoint.close = () => {
           if (closed) return;
           closed = true;
-          try { close?.(); } finally { if (--remaining === 0) unregister(); }
+          try {
+            close?.();
+          } finally {
+            if (--remaining === 0) unregister();
+          }
         };
       }
     }
@@ -223,30 +317,42 @@ export class ProcessABI {
   private descriptor(fd: number, rights: bigint): Descriptor {
     const entry = this.options.descriptors.get(fd >>> 0);
     if (!entry) throw new ProcessError(ProcessErrno.BADF, `missing descriptor ${fd}`);
-    if ((entry.rightsBase & rights) !== rights) throw new ProcessError(NOTCAPABLE, "descriptor rights denied");
+    if ((entry.rightsBase & rights) !== rights)
+      throw new ProcessError(NOTCAPABLE, "descriptor rights denied");
     return entry;
   }
   private io(write: boolean, fd: number, ptr: number, length: number): number {
-    const entry = this.descriptor(fd, write ? WRITE : READ), resource = entry.resource;
+    const entry = this.descriptor(fd, write ? WRITE : READ),
+      resource = entry.resource;
     if (resource.kind === "directory") return -ISDIR;
     const bytes = this.span(ptr, length);
     if (bytes.length === 0) return 0;
     if (resource.kind === "file") {
       const fs: NonblockingFileSystem = this.options.fs;
-      return withFileOffset(resource, () => {
-        if (write && resource.append) {
-          const result = fs.tryAppend ? fs.tryAppend(resource.handle, [bytes]) : fs.append(resource.handle, [bytes]);
-          if (typeof result === "number") return result;
-          resource.offset = result.offset;
-          return result.written;
-        }
-        const position = resource.offset;
-        const count = write
-          ? fs.tryWrite ? fs.tryWrite(resource.handle, [bytes], position) : fs.write(resource.handle, [bytes], position)
-          : fs.tryRead ? fs.tryRead(resource.handle, [bytes], position) : fs.read(resource.handle, [bytes], position);
-        if (count >= 0) resource.offset = position + count;
-        return count;
-      }, true);
+      return withFileOffset(
+        resource,
+        () => {
+          if (write && resource.append) {
+            const result = fs.tryAppend
+              ? fs.tryAppend(resource.handle, [bytes])
+              : fs.append(resource.handle, [bytes]);
+            if (typeof result === "number") return result;
+            resource.offset = result.offset;
+            return result.written;
+          }
+          const position = resource.offset;
+          const count = write
+            ? fs.tryWrite
+              ? fs.tryWrite(resource.handle, [bytes], position)
+              : fs.write(resource.handle, [bytes], position)
+            : fs.tryRead
+              ? fs.tryRead(resource.handle, [bytes], position)
+              : fs.read(resource.handle, [bytes], position);
+          if (count >= 0) resource.offset = position + count;
+          return count;
+        },
+        true,
+      );
     }
     const stream: NonblockingStream = resource;
     if (write && stream.tryWrite) return stream.tryWrite([bytes]);
@@ -265,13 +371,19 @@ export class ProcessABI {
   private writeWaitResult(ptr: number, result: ProcessExit): void {
     const output = this.view(ptr, 8);
     output.setUint32(0, result.kind === "exited" ? 0 : result.kind === "signaled" ? 1 : 2, true);
-    output.setInt32(4, result.kind === "start-failed" ? startFailureErrno(result.error) : result.code, true);
+    output.setInt32(
+      4,
+      result.kind === "start-failed" ? startFailureErrno(result.error) : result.code,
+      true,
+    );
   }
   private waitJob(job: number, flags: number, ptr: number): number {
     if (flags !== 0 && flags !== 1) return -ProcessErrno.INVAL;
     this.span(ptr, 8); // Faults must not consume a completed job.
     const wake = this.options.wake;
-    const release = wake ? this.options.service.registerJobWake?.(this.options.pid, job, wake) : undefined;
+    const release = wake
+      ? this.options.service.registerJobWake?.(this.options.pid, job, wake)
+      : undefined;
     try {
       for (;;) {
         const word = wake ?? this.options.signals.interrupt;
@@ -281,14 +393,19 @@ export class ProcessABI {
         if (this.options.service.jobEmpty(this.options.pid, job)) {
           this.span(ptr, 8);
           const result = this.options.service.waitJob(this.options.pid, job);
-          if (result) { this.writeWaitResult(ptr, result); return 0; }
+          if (result) {
+            this.writeWaitResult(ptr, result);
+            return 0;
+          }
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
         if (this.pending()) return -27; // EINTR; no signal consumed.
         if (this.options.wait) this.options.wait(10, word, sequence);
         else controlWait(word, 0, sequence, 10);
       }
-    } finally { release?.(); }
+    } finally {
+      release?.();
+    }
   }
   private pending(): boolean {
     return signalPending(this.options.signals);
@@ -311,11 +428,26 @@ export class ProcessABI {
     }
     try {
       checkedSignalNumber(signal);
-      if (!Number.isInteger(mode) || mode < 0 || mode > 3 || (signal === Signal.SIGKILL && mode !== 3)) return -ProcessErrno.INVAL;
+      if (
+        !Number.isInteger(mode) ||
+        mode < 0 ||
+        mode > 3 ||
+        (signal === Signal.SIGKILL && mode !== 3)
+      )
+        return -ProcessErrno.INVAL;
       if (mode === 3) {
         const result = requestSignal(this.options.signals, signal);
-        if (result.action === "default" && result.outcome?.kind === "signaled") this.defaultSignal(result.outcome.code);
-      } else if (setSignalDisposition(this.options.signals.signalState, signal, mode, this.options.signals.interrupt)) this.defaultSignal(signal);
+        if (result.action === "default" && result.outcome?.kind === "signaled")
+          this.defaultSignal(result.outcome.code);
+      } else if (
+        setSignalDisposition(
+          this.options.signals.signalState,
+          signal,
+          mode,
+          this.options.signals.interrupt,
+        )
+      )
+        this.defaultSignal(signal);
       return 0;
     } catch (error) {
       if (error instanceof ProcessError || error instanceof FilesystemError) return -error.errno;
@@ -329,7 +461,10 @@ export class ProcessABI {
     const killed = controlLoad(this.options.signals.requestedSignal, 0) === Signal.SIGKILL;
     if (!winner && !killed && !defaultSignalTerminates(signal)) return 0;
     if (!winner || winner.kind === "signaled") {
-      this.options.service.defaultSignal(this.options.pid, winner?.code ?? (killed ? Signal.SIGKILL : signal));
+      this.options.service.defaultSignal(
+        this.options.pid,
+        winner?.code ?? (killed ? Signal.SIGKILL : signal),
+      );
       winner = readOutcome(this.options.signals.outcome);
     }
     if (!winner) throw new Error("default signal action did not publish a terminal outcome");
@@ -337,30 +472,48 @@ export class ProcessABI {
     throw new ProcessSignalExit(winner.code);
   }
   private readiness(sub: Subscription): Readiness | null {
-    if (sub.kind === 6) return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN
-      ? { readable: true, writable: false, hangup: false } : null;
+    if (sub.kind === 6)
+      return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN
+        ? { readable: true, writable: false, hangup: false }
+        : null;
     if (sub.kind === 5) {
       const ready = this.options.service.accessReady?.(this.options.pid, sub.id);
-      if (ready === undefined) throw new ProcessError(NOSYS, "executable query service is unavailable");
+      if (ready === undefined)
+        throw new ProcessError(NOSYS, "executable query service is unavailable");
       return ready ? { readable: true, writable: false, hangup: false } : null;
     }
-    if (sub.kind === 4) return this.options.service.jobEmpty(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
-    if (sub.kind === 2) return this.options.service.childExited(this.options.pid, sub.id) ? { readable: true, writable: false, hangup: false } : null;
+    if (sub.kind === 4)
+      return this.options.service.jobEmpty(this.options.pid, sub.id)
+        ? { readable: true, writable: false, hangup: false }
+        : null;
+    if (sub.kind === 2)
+      return this.options.service.childExited(this.options.pid, sub.id)
+        ? { readable: true, writable: false, hangup: false }
+        : null;
     const fs: NonblockingFileSystem = this.options.fs;
     if (sub.kind === 3) {
       const ready = this.options.service.filesystemReady
         ? this.options.service.filesystemReady(this.options.pid, sub.id)
         : fs.readiness?.(sub.id)?.ready;
-      if (ready === undefined) throw new ProcessError(NOSYS, "filesystem completion service is unavailable");
+      if (ready === undefined)
+        throw new ProcessError(NOSYS, "filesystem completion service is unavailable");
       return ready ? { readable: true, writable: false, hangup: false } : null;
     }
     const resource = this.descriptor(sub.id, POLL).resource;
     if (resource.kind === "file") {
       let state: Readiness = { readable: false, writable: false, hangup: false };
-      const result = withFileOffset(resource, () => {
-        state = fs.ioReadiness?.(resource.handle, sub.kind === 1) ?? { readable: true, writable: true, hangup: false };
-        return 0;
-      }, true);
+      const result = withFileOffset(
+        resource,
+        () => {
+          state = fs.ioReadiness?.(resource.handle, sub.kind === 1) ?? {
+            readable: true,
+            writable: true,
+            hangup: false,
+          };
+          return 0;
+        },
+        true,
+      );
       return result < 0 && result !== -ProcessErrno.AGAIN ? { ...state, hangup: true } : state;
     }
     if (resource.kind === "directory") return { readable: true, writable: true, hangup: false };
@@ -380,7 +533,11 @@ export class ProcessABI {
     const subscriptions: Subscription[] = [];
     for (let index = 0; index < count; index++) {
       const at = index * 16;
-      const sub = { kind: input.getUint32(at, true), id: input.getUint32(at + 4, true), userdata: input.getBigUint64(at + 8, true) };
+      const sub = {
+        kind: input.getUint32(at, true),
+        id: input.getUint32(at + 4, true),
+        userdata: input.getBigUint64(at + 8, true),
+      };
       if (sub.kind > 6) return -ProcessErrno.INVAL;
       subscriptions.push(sub);
     }
@@ -392,7 +549,11 @@ export class ProcessABI {
         const resources = new Set<Stream>();
         for (const sub of subscriptions) {
           if (sub.kind === 6) {
-            const release = this.options.service.registerChildStartWake?.(this.options.pid, sub.id, wake);
+            const release = this.options.service.registerChildStartWake?.(
+              this.options.pid,
+              sub.id,
+              wake,
+            );
             if (release) unregister.push(release);
           }
           if (sub.kind === 4) {
@@ -419,7 +580,8 @@ export class ProcessABI {
         const ready: { sub: Subscription; flags: number }[] = [];
         for (const sub of subscriptions) {
           const state = this.readiness(sub);
-          if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup)) ready.push({ sub, flags: state.hangup ? 1 : 0 });
+          if (state && ((sub.kind === 1 ? state.writable : state.readable) || state.hangup))
+            ready.push({ sub, flags: state.hangup ? 1 : 0 });
         }
         if (ready.length) {
           // Waiting/host services can grow memory; never retain a DataView across them.
@@ -443,6 +605,8 @@ export class ProcessABI {
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
         else controlWait(word, 0, expected, milliseconds);
       }
-    } finally { for (const release of unregister.reverse()) release(); }
+    } finally {
+      for (const release of unregister.reverse()) release();
+    }
   }
 }

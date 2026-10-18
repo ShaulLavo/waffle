@@ -2,10 +2,15 @@ import { FilesystemClient, type FilesystemConnection } from "../../fs";
 import { atomicHost } from "./wasi-atomic-host";
 
 let held: { fs: FilesystemClient; host: ReturnType<typeof atomicHost>; handle: number } | undefined;
-self.onmessage = ({ data }: MessageEvent<{ connection?: FilesystemConnection; scenario: string }>) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<{ connection?: FilesystemConnection; scenario: string }>) => {
   if (data.scenario === "stat") {
-    try { self.postMessage({ stat: held!.fs.stat(held!.handle) }); }
-    catch (error) { self.postMessage({ errno: (error as { errno: number }).errno }); }
+    try {
+      self.postMessage({ stat: held!.fs.stat(held!.handle) });
+    } catch (error) {
+      self.postMessage({ errno: (error as { errno: number }).errno });
+    }
     return;
   }
   const fs = new FilesystemClient(data.connection!);
@@ -27,16 +32,21 @@ self.onmessage = ({ data }: MessageEvent<{ connection?: FilesystemConnection; sc
         }
         return completion;
       };
-      const before = fs.readdir(root).map(entry => entry.name);
-      const after = fs.readdir(root).map(entry => entry.name);
+      const before = fs.readdir(root).map((entry) => entry.name);
+      const after = fs.readdir(root).map((entry) => entry.name);
       self.postMessage({ before, after });
-    } finally { fs.dispose(); }
+    } finally {
+      fs.dispose();
+    }
     return;
   }
   const host = atomicHost(fs);
   const operations: string[] = [];
   const submit = fs.submit.bind(fs);
-  fs.submit = (...args) => { operations.push(args[0]); return submit(...args); };
+  fs.submit = (...args) => {
+    operations.push(args[0]);
+    return submit(...args);
+  };
   const first = host.open("shared");
   if (first.error) throw new Error(`initial path_open failed: ${first.error}`);
   if (data.scenario === "held") {
@@ -58,5 +68,8 @@ self.onmessage = ({ data }: MessageEvent<{ connection?: FilesystemConnection; sc
       if (!opened.error) host.wasi.descriptors.close(opened.fd);
     }
     self.postMessage({ operations, errors, stderr: host.errors });
-  } finally { host.wasi.descriptors.dispose(); fs.dispose(); }
+  } finally {
+    host.wasi.descriptors.dispose();
+    fs.dispose();
+  }
 };

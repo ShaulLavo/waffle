@@ -1,8 +1,40 @@
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
-import { CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, TRANSIENT_HANDLES, State, FilesystemError, errno, isRevoked, pack, revokeFilesystem, waitForFilesystemQuiescence, unpack, wake, type FilesystemConnection, type RequestMessage } from "./protocol.js";
+import {
+  CAPABILITY_HEADER,
+  CAPABILITY_SLOTS,
+  CAPABILITY_WORDS,
+  HEADER,
+  TRANSIENT_HANDLES,
+  State,
+  FilesystemError,
+  errno,
+  isRevoked,
+  pack,
+  revokeFilesystem,
+  waitForFilesystemQuiescence,
+  unpack,
+  wake,
+  type FilesystemConnection,
+  type RequestMessage,
+} from "./protocol.js";
 
-const mutations = new Set(["preopen", "release", "write", "append", "resize", "setMtime", "create", "link", "removePath", "rename", "writeFile", "mkdirp", "remove", "move"]);
+const mutations = new Set([
+  "preopen",
+  "release",
+  "write",
+  "append",
+  "resize",
+  "setMtime",
+  "create",
+  "link",
+  "removePath",
+  "rename",
+  "writeFile",
+  "mkdirp",
+  "remove",
+  "move",
+]);
 interface Session {
   connection: FilesystemConnection;
   handles: Map<number, number>;
@@ -32,7 +64,21 @@ export class FilesystemService {
       this.backend.attachShared(connection.shared, connection.maxBytes, connection.segments);
       this.backend.shared.onContention = () => this.sweep();
     }
-    const session: Session = { connection, handles: new Map(), capabilities: new Int32Array(connection.capabilities), freeEntries: Array.from({ length: CAPABILITY_SLOTS }, (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS), preopens: new Set(), transient: new Map(), references: new Map(), responses: new Map(), pending: new Map(), preparingHandles: new Map() };
+    const session: Session = {
+      connection,
+      handles: new Map(),
+      capabilities: new Int32Array(connection.capabilities),
+      freeEntries: Array.from(
+        { length: CAPABILITY_SLOTS },
+        (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS,
+      ),
+      preopens: new Set(),
+      transient: new Map(),
+      references: new Map(),
+      responses: new Map(),
+      pending: new Map(),
+      preparingHandles: new Map(),
+    };
     this.sessions.add(session);
     for (const reservation of connection.reservations) {
       const state = new Int32Array(reservation.state);
@@ -49,14 +95,18 @@ export class FilesystemService {
           session.transient.set(reservation.handle, true);
           const index = session.freeEntries.indexOf(reservation.targetKey);
           if (index >= 0) session.freeEntries.splice(index, 1);
-        } else if (isRevoked(connection)) Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
-      } finally { Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1); }
+        } else if (isRevoked(connection))
+          Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
+      } finally {
+        Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
+      }
     }
     Atomics.store(session.capabilities, 0, session.transient.size);
     this.sweep();
     // Adopting a child pin can make the live parent's final detached pin collectible.
     for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
-    for (const segment of this.backend.sharedSegments?.() ?? []) connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+    for (const segment of this.backend.sharedSegments?.() ?? [])
+      connection.port.postMessage({ segment: segment.buffer, index: segment.index });
     connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
       if ("connect" in data) {
         if (!isRevoked(connection)) this.connect(data.connect);
@@ -70,9 +120,10 @@ export class FilesystemService {
           for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
         });
       } else if ("discard" in data) session.responses.delete(data.discard);
-      else if ("trim" in data) this.queue = this.queue.then(() => {
-        if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
-      });
+      else if ("trim" in data)
+        this.queue = this.queue.then(() => {
+          if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
+        });
       else {
         session.pending.set(data.id, data.buffer);
         this.enqueue(session, data.id, data.buffer);
@@ -80,7 +131,12 @@ export class FilesystemService {
     };
     connection.port.start();
   }
-  private enqueue(session: Session, id: number, buffer: SharedArrayBuffer, prepared?: PreparedRequest): void {
+  private enqueue(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    prepared?: PreparedRequest,
+  ): void {
     // Barriers capture their checkpoint in queue order without holding the mutation lock
     // while storage commits. Cold preparation likewise rejoins the queue only when ready.
     let barrier = false;
@@ -88,7 +144,9 @@ export class FilesystemService {
       const cells = new Int32Array(buffer, 0, HEADER / 4);
       const input = unpack(new Uint8Array(buffer, HEADER, cells[1]!));
       barrier = input.operation === "flush" || input.operation === "sync";
-    } catch { /* request() reports malformed input through its completion */ }
+    } catch {
+      /* request() reports malformed input through its completion */
+    }
     this.queue = this.queue.then(() => {
       const request = this.request(session, id, buffer, prepared);
       if (!barrier) return request;
@@ -107,7 +165,10 @@ export class FilesystemService {
           this.backend.release(handle);
           throw new FilesystemError(11);
         }
-      } catch (error) { session.freeEntries.push(key); throw error; }
+      } catch (error) {
+        session.freeEntries.push(key);
+        throw error;
+      }
       session.handles.set(handle, key);
       Atomics.store(session.capabilities, key, handle);
       Atomics.store(session.capabilities, key + 2, 0);
@@ -131,17 +192,25 @@ export class FilesystemService {
     this.backend.release(handle);
   }
   private trim(session: Session): void {
-    let idle = 0, detached = false;
+    let idle = 0,
+      detached = false;
     const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
-    for (const handle of session.transient.keys()) if (!session.preparingHandles.has(handle) && Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0) {
-      idle++;
-      if (shared?.isUnlinked(handle)) detached = true;
-    }
+    for (const handle of session.transient.keys())
+      if (
+        !session.preparingHandles.has(handle) &&
+        Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0
+      ) {
+        idle++;
+        if (shared?.isUnlinked(handle)) detached = true;
+      }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
     // Eviction is a capability mutation, serialized against direct guest mutations too.
     const epoch = new Int32Array(session.connection.epoch);
     const invalidate = !shared?.ownsServiceMutation;
-    if (invalidate) { if (shared) shared.beginServiceMutation(epoch); else Atomics.add(epoch, 0, 1); }
+    if (invalidate) {
+      if (shared) shared.beginServiceMutation(epoch);
+      else Atomics.add(epoch, 0, 1);
+    }
     try {
       for (const handle of session.transient.keys()) {
         if (session.preparingHandles.has(handle)) continue;
@@ -149,11 +218,19 @@ export class FilesystemService {
         const key = session.handles.get(handle)!;
         // A local retain racing this CAS either owns a live pin or sees a revoked entry.
         if (Atomics.compareExchange(session.capabilities, key + 1, 0, -1) !== 0) continue;
-        if (Atomics.load(session.capabilities, key + 2) > 0) { Atomics.store(session.capabilities, key + 1, 0); continue; }
+        if (Atomics.load(session.capabilities, key + 2) > 0) {
+          Atomics.store(session.capabilities, key + 1, 0);
+          continue;
+        }
         this.forget(session, handle, key);
         idle--;
       }
-    } finally { if (invalidate) { if (shared) shared.endServiceMutation(epoch); else Atomics.add(epoch, 0, 1); } }
+    } finally {
+      if (invalidate) {
+        if (shared) shared.endServiceMutation(epoch);
+        else Atomics.add(epoch, 0, 1);
+      }
+    }
   }
   private check(session: Session, handle: number | undefined, held?: number[]): void {
     if (handle === undefined) return;
@@ -166,10 +243,30 @@ export class FilesystemService {
   }
   private checkRequest(session: Session, operation: string, args: any[], held?: number[]): void {
     const [a, b] = args;
-    if (["retain", "release", "sync", "stat", "read", "write", "append", "grow", "resize", "setMtime", "readdir", "resolve"].includes(operation)) this.check(session, a, held);
+    if (
+      [
+        "retain",
+        "release",
+        "sync",
+        "stat",
+        "read",
+        "write",
+        "append",
+        "grow",
+        "resize",
+        "setMtime",
+        "readdir",
+        "resolve",
+      ].includes(operation)
+    )
+      this.check(session, a, held);
     if (["create", "link", "removePath", "rename"].includes(operation)) {
-      this.check(session, a.parent, held); this.check(session, a.node, held);
-      if (operation === "link" || operation === "rename") { this.check(session, b.parent, held); this.check(session, b.node, held); }
+      this.check(session, a.parent, held);
+      this.check(session, a.node, held);
+      if (operation === "link" || operation === "rename") {
+        this.check(session, b.parent, held);
+        this.check(session, b.node, held);
+      }
     }
   }
   private releasePrepared(session: Session, prepared: PreparedRequest | undefined): void {
@@ -180,7 +277,13 @@ export class FilesystemService {
     }
     if (prepared) prepared.handles.length = 0;
   }
-  private async execute(session: Session, id: number, operation: string, args: any[], data: Uint8Array): Promise<unknown> {
+  private async execute(
+    session: Session,
+    id: number,
+    operation: string,
+    args: any[],
+    data: Uint8Array,
+  ): Promise<unknown> {
     const [a, b, c] = args;
     if (operation === "take") {
       const response = session.responses.get(a);
@@ -195,7 +298,8 @@ export class FilesystemService {
         const count = Atomics.load(session.capabilities, key + 1);
         if (count < 0) throw new FilesystemError(8);
         if (count === 0x7fffffff) throw new FilesystemError(33);
-        if (Atomics.compareExchange(session.capabilities, key + 1, count, count + 1) === count) break;
+        if (Atomics.compareExchange(session.capabilities, key + 1, count, count + 1) === count)
+          break;
       }
       session.references.set(a, (session.references.get(a) ?? 0) + 1);
       return;
@@ -208,12 +312,19 @@ export class FilesystemService {
         const count = Atomics.load(session.capabilities, key + 1);
         if (count <= 0) throw new FilesystemError(8);
         const forget = count === 1 && Atomics.load(session.capabilities, key + 2) === 0;
-        if (Atomics.compareExchange(session.capabilities, key + 1, count, forget ? -1 : count - 1) !== count) continue;
+        if (
+          Atomics.compareExchange(session.capabilities, key + 1, count, forget ? -1 : count - 1) !==
+          count
+        )
+          continue;
         // A synchronous reservation publishes while holding a temporary ordinary reference.
         // Recheck after revocation before dropping the backend's last pin.
-        if (forget && Atomics.load(session.capabilities, key + 2) > 0) Atomics.store(session.capabilities, key + 1, 0);
-        if (owned > 1) session.references.set(a, owned - 1); else session.references.delete(a);
-        if (forget && Atomics.load(session.capabilities, key + 1) === -1) this.forget(session, a, key);
+        if (forget && Atomics.load(session.capabilities, key + 2) > 0)
+          Atomics.store(session.capabilities, key + 1, 0);
+        if (owned > 1) session.references.set(a, owned - 1);
+        else session.references.delete(a);
+        if (forget && Atomics.load(session.capabilities, key + 1) === -1)
+          this.forget(session, a, key);
         break;
       }
       return;
@@ -224,17 +335,32 @@ export class FilesystemService {
       result = operation === "sync" ? 0 : undefined;
     } else result = await this.backend.execute(operation, args, data);
     const pending = session.pending.get(id);
-    if (isRevoked(session.connection) || !this.sessions.has(session) || !pending || Atomics.load(new Int32Array(pending, 0, HEADER / 4), 6)) throw new FilesystemError(11);
-    if (operation === "preopen" || operation === "create" && typeof result === "number") this.pin(session, result, operation === "preopen");
+    if (
+      isRevoked(session.connection) ||
+      !this.sessions.has(session) ||
+      !pending ||
+      Atomics.load(new Int32Array(pending, 0, HEADER / 4), 6)
+    )
+      throw new FilesystemError(11);
+    if (operation === "preopen" || (operation === "create" && typeof result === "number"))
+      this.pin(session, result, operation === "preopen");
     // Touch every returned identity before choosing an eviction victim: a new parent may point
     // to a hard-linked node that was previously the oldest transient capability.
-    if (operation === "resolve" && typeof result !== "number") { this.pin(session, result.parent); this.pin(session, result.node); }
+    if (operation === "resolve" && typeof result !== "number") {
+      this.pin(session, result.parent);
+      this.pin(session, result.node);
+    }
     if (mutations.has(operation)) {
       for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
     } else this.trim(session);
     return result;
   }
-  private async request(session: Session, id: number, buffer: SharedArrayBuffer, prepared?: PreparedRequest): Promise<void> {
+  private async request(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    prepared?: PreparedRequest,
+  ): Promise<void> {
     const cells = new Int32Array(buffer, 0, HEADER / 4);
     const bytes = new Uint8Array(buffer, HEADER);
     let state = State.Complete;
@@ -242,14 +368,19 @@ export class FilesystemService {
     let preparing = false;
     const epoch = new Int32Array(session.connection.epoch);
     try {
-      if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6)) throw new FilesystemError(11);
+      if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
+        throw new FilesystemError(11);
       const inputLength = cells[1]!;
       const dataLength = cells[2]!;
       const { operation, args } = unpack(bytes.subarray(0, inputLength));
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
       if (operation !== "flush" && operation !== "sync") {
-        const preparation = this.backend.prepare?.(operation, args, bytes.subarray(inputLength, inputLength + dataLength));
+        const preparation = this.backend.prepare?.(
+          operation,
+          args,
+          bytes.subarray(inputLength, inputLength + dataLength),
+        );
         if (preparation) {
           // Storage waits never own the serial execute queue. Re-enter through prepare:
           // the path, capability or resident data may have changed while this read waited.
@@ -258,10 +389,13 @@ export class FilesystemService {
           this.checkRequest(session, operation, args, continuation.handles);
           prepared = continuation;
           preparing = true;
-          void preparation.then(() => this.enqueue(session, id, buffer, continuation), error => {
-            continuation.failure = { error };
-            this.enqueue(session, id, buffer, continuation);
-          });
+          void preparation.then(
+            () => this.enqueue(session, id, buffer, continuation),
+            (error) => {
+              continuation.failure = { error };
+              this.enqueue(session, id, buffer, continuation);
+            },
+          );
           return;
         }
       }
@@ -272,9 +406,17 @@ export class FilesystemService {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
       }
-      const value = await this.execute(session, id, operation, args, bytes.subarray(inputLength, inputLength + dataLength));
+      const value = await this.execute(
+        session,
+        id,
+        operation,
+        args,
+        bytes.subarray(inputLength, inputLength + dataLength),
+      );
       const segments = this.backend.takeSharedSegments?.() ?? [];
-      for (const segment of segments) for (const peer of this.sessions) peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+      for (const segment of segments)
+        for (const peer of this.sessions)
+          peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
       const binary = value instanceof Uint8Array;
       const result = binary ? value : pack(value);
       cells[2] = result.length;
@@ -289,8 +431,9 @@ export class FilesystemService {
     } finally {
       // Allocation may complete before cancellation/failure. Publish every allocated segment,
       // indexed so a newly connected peer can receive both its snapshot and this broadcast.
-      for (const segment of this.backend.takeSharedSegments?.() ?? []) for (const peer of this.sessions)
-        peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
+      for (const segment of this.backend.takeSharedSegments?.() ?? [])
+        for (const peer of this.sessions)
+          peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
       if (!preparing) {
         this.releasePrepared(session, prepared);
         if (mutation) {
@@ -316,10 +459,16 @@ export class FilesystemService {
     this.sweeping = true;
     try {
       // Recover all proven-dead lock owners before any close can need the allocator lock.
-      for (const session of this.sessions) if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) === 2)
-        this.backend.revokeOwner?.(session.connection.owner, new Int32Array(session.connection.epoch));
+      for (const session of this.sessions)
+        if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) === 2)
+          this.backend.revokeOwner?.(
+            session.connection.owner,
+            new Int32Array(session.connection.epoch),
+          );
       for (const session of this.sessions) if (isRevoked(session.connection)) this.close(session);
-    } finally { this.sweeping = false; }
+    } finally {
+      this.sweeping = false;
+    }
   }
   private close(session: Session): void {
     revokeFilesystem(session.connection);
@@ -335,7 +484,11 @@ export class FilesystemService {
       });
       return;
     }
-    if (ownRevocation === 2) this.backend.revokeOwner?.(session.connection.owner, new Int32Array(session.connection.epoch));
+    if (ownRevocation === 2)
+      this.backend.revokeOwner?.(
+        session.connection.owner,
+        new Int32Array(session.connection.epoch),
+      );
     for (const [id, buffer] of session.pending) {
       const cells = new Int32Array(buffer, 0, HEADER / 4);
       Atomics.store(cells, 6, 1);
@@ -352,28 +505,45 @@ export class FilesystemService {
       this.backend.release(handle);
     }
     Atomics.store(session.capabilities, 0, 0);
-    session.preopens.clear(); session.transient.clear(); session.references.clear(); session.responses.clear(); session.preparingHandles.clear();
+    session.preopens.clear();
+    session.transient.clear();
+    session.references.clear();
+    session.responses.clear();
+    session.preparingHandles.clear();
     session.connection.port.close();
     session.closed = true;
     if (!session.handles.size) this.sessions.delete(session);
   }
   resources() {
     const backend = this.backend.resources?.() ?? {};
-    let retained = 0, transient = 0, responses = 0, capabilityBytes = 0;
+    let retained = 0,
+      transient = 0,
+      responses = 0,
+      capabilityBytes = 0;
     for (const session of this.sessions) {
       retained += session.handles.size;
       responses += session.responses.size;
       capabilityBytes += session.connection.capabilities.byteLength;
-      for (const handle of session.transient.keys()) if (Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0) transient++;
+      for (const handle of session.transient.keys())
+        if (Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0) transient++;
     }
-    const ownerStateBytes = this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
+    const ownerStateBytes =
+      this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
     return {
-      ...backend, ownerStateBytes, clients: this.sessions.size, retained, transient, responses, capabilityBytes,
+      ...backend,
+      ownerStateBytes,
+      clients: this.sessions.size,
+      retained,
+      transient,
+      responses,
+      capabilityBytes,
       metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
       bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
     };
   }
-  dispose(): void { for (const session of this.sessions) this.close(session); }
+  dispose(): void {
+    for (const session of this.sessions) this.close(session);
+  }
   async shutdown(): Promise<void> {
     await this.queue;
     this.dispose();
@@ -383,17 +553,31 @@ export class FilesystemService {
 function failureDiagnostic(error: unknown) {
   let message = "Unknown filesystem worker error";
   let stack: string | undefined;
-  try { message = String(error); } catch { /* Rejection reasons need not be printable. */ }
+  try {
+    message = String(error);
+  } catch {
+    /* Rejection reasons need not be printable. */
+  }
   try {
     const value = error && typeof error === "object" && "stack" in error ? error.stack : undefined;
     if (typeof value === "string") stack = value;
-  } catch { /* A stack getter can throw too. */ }
+  } catch {
+    /* A stack getter can throw too. */
+  }
   return { type: "filesystem-error", message, stack };
 }
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
-  scope: { onmessage: ((event: MessageEvent<any>) => void) | null; postMessage: (message: unknown) => void; },
-  backendFactory: (options: any, onStartupStage?: RuntimeStartupObserver, signal?: AbortSignal, onWaiting?: () => void) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
+  scope: {
+    onmessage: ((event: MessageEvent<any>) => void) | null;
+    postMessage: (message: unknown) => void;
+  },
+  backendFactory: (
+    options: any,
+    onStartupStage?: RuntimeStartupObserver,
+    signal?: AbortSignal,
+    onWaiting?: () => void,
+  ) => FilesystemBackend | Promise<FilesystemBackend> = () => new MemoryBackend(),
 ): void {
   // Selection belongs to the controller, never to guest filesystem requests.
   let service: Promise<FilesystemService> | undefined;
@@ -406,41 +590,67 @@ export function installFilesystemWorker(
       if (disposing) return;
       disposing = true;
       startupAbort.abort();
-      void (service ?? Promise.resolve(undefined)).then(owner => owner?.shutdown(), () => {}).then(
-        () => scope.postMessage({ type: "filesystem-disposed" }),
-        error => scope.postMessage({ type: "filesystem-disposed", error: failureDiagnostic(error).message }),
-      );
+      void (service ?? Promise.resolve(undefined))
+        .then(
+          (owner) => owner?.shutdown(),
+          () => {},
+        )
+        .then(
+          () => scope.postMessage({ type: "filesystem-disposed" }),
+          (error) =>
+            scope.postMessage({
+              type: "filesystem-disposed",
+              error: failureDiagnostic(error).message,
+            }),
+        );
       return;
     }
-    if (disposing) { data.connect?.port.close(); return; }
-    service ??= Promise.resolve().then(() => {
-      if (data.connect && data.observeStartup === true) {
-        onStartupStage = (stage, timestamp) => scope.postMessage({ type: "filesystem-startup", stage, timestamp });
-        reportRuntimeStartup(onStartupStage, "filesystem-connected");
-      }
-      return backendFactory(data, onStartupStage, startupAbort.signal, () => {
-        if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
+    if (disposing) {
+      data.connect?.port.close();
+      return;
+    }
+    service ??= Promise.resolve()
+      .then(() => {
+        if (data.connect && data.observeStartup === true) {
+          onStartupStage = (stage, timestamp) =>
+            scope.postMessage({ type: "filesystem-startup", stage, timestamp });
+          reportRuntimeStartup(onStartupStage, "filesystem-connected");
+        }
+        return backendFactory(data, onStartupStage, startupAbort.signal, () => {
+          if (!disposing) scope.postMessage({ type: "filesystem-state", status: "waiting" });
+        });
+      })
+      .then((backend) => new FilesystemService(backend));
+    void service
+      .then((owner) => {
+        if (disposing) {
+          data.connect?.port.close();
+          return;
+        }
+        if (data.connect) {
+          owner.connect(data.connect);
+          scope.postMessage({ type: "filesystem-state", status: "ready" });
+          reportRuntimeStartup(onStartupStage, "filesystem-ready");
+          onStartupStage = undefined;
+        } else if (data.sweep) owner.sweep();
+      })
+      .catch((error) => {
+        if (disposing) {
+          data.connect?.port.close();
+          return;
+        }
+        if (errorReported) return;
+        errorReported = true;
+        try {
+          scope.postMessage(failureDiagnostic(error));
+        } catch {
+          /* The worker error below also covers a failed diagnostic transfer. */
+        } finally {
+          // A rejected async message handler alone does not dispatch a worker error event.
+          setTimeout(() => {
+            throw error;
+          }, 0);
+        }
       });
-    }).then(backend => new FilesystemService(backend));
-    void service.then(owner => {
-      if (disposing) { data.connect?.port.close(); return; }
-      if (data.connect) {
-        owner.connect(data.connect);
-        scope.postMessage({ type: "filesystem-state", status: "ready" });
-        reportRuntimeStartup(onStartupStage, "filesystem-ready");
-        onStartupStage = undefined;
-      }
-      else if (data.sweep) owner.sweep();
-    }).catch(error => {
-      if (disposing) { data.connect?.port.close(); return; }
-      if (errorReported) return;
-      errorReported = true;
-      try { scope.postMessage(failureDiagnostic(error)); }
-      catch { /* The worker error below also covers a failed diagnostic transfer. */ }
-      finally {
-        // A rejected async message handler alone does not dispatch a worker error event.
-        setTimeout(() => { throw error; }, 0);
-      }
-    });
   };
 }

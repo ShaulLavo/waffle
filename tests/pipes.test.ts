@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessError } from "../proc/types.js";
-import { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import {
+  attachPipeController,
+  attachPipeEndpoint,
+  attachPipePublicationRegistry,
+  PipeController,
+  PipeErrno,
+  PipePublicationRegistry,
+} from "../proc/pipes.js";
 
 const encode = new TextEncoder();
 const decode = new TextDecoder();
@@ -18,7 +25,9 @@ function output(endpoint: ReturnType<PipeController["retain"]>, capacity = 64) {
   const count = endpoint.tryRead([bytes]);
   return count < 0 ? count : decode.decode(bytes.subarray(0, count));
 }
-afterEach(() => { for (const controller of controllers.splice(0)) controller.dispose(); });
+afterEach(() => {
+  for (const controller of controllers.splice(0)) controller.dispose();
+});
 
 describe("process pipe endpoints", () => {
   test("zero-length IO succeeds without waiting, including closed opposite ends", () => {
@@ -38,7 +47,8 @@ describe("process pipe endpoints", () => {
     expect(writer.tryWrite([encode.encode("x")])).toBe(-PipeErrno.AGAIN);
     expect(output(reader, 3)).toBe("abc");
     expect(writer.tryWrite([encode.encode("XYZ")])).toBe(3);
-    const first = new Uint8Array(2), second = new Uint8Array(6);
+    const first = new Uint8Array(2),
+      second = new Uint8Array(6);
     expect(reader.tryRead([first, second])).toBe(5);
     expect(decode.decode(first) + decode.decode(second.subarray(0, 3))).toBe("defgh");
     expect(output(reader)).toBe("XYZ");
@@ -55,7 +65,8 @@ describe("process pipe endpoints", () => {
 
   test("a process's duplicate writers share one ring, other processes have independent capacity", () => {
     const { controller, reader, writer } = pipe();
-    const duplicate = controller.duplicate(writer), inherited = writer.forProcess(3);
+    const duplicate = controller.duplicate(writer),
+      inherited = writer.forProcess(3);
     expect(duplicate.handle().slot).toBe(writer.handle().slot);
     expect(inherited.handle().slot).not.toBe(writer.handle().slot);
     expect(writer.tryWrite([encode.encode("12345678")])).toBe(8);
@@ -142,7 +153,10 @@ describe("process pipe endpoints", () => {
     writer.tryWrite([encode.encode("good")]);
     const source = encode.encode("evil");
     const original = source.subarray.bind(source);
-    source.subarray = (begin, end) => { controller.revoke(2); return original(begin, end); };
+    source.subarray = (begin, end) => {
+      controller.revoke(2);
+      return original(begin, end);
+    };
     expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
     expect(output(reader)).toBe("good");
     expect(output(reader)).toBe("");
@@ -193,16 +207,25 @@ describe("process pipe endpoints", () => {
     const wake = new Int32Array(new SharedArrayBuffer(4));
     const controller = new PipeController({ capacity: 8, wake });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     const changed = (operation: () => void) => {
       const before = Atomics.load(wake, 0);
       operation();
       expect(Atomics.load(wake, 0)).not.toBe(before);
     };
-    changed(() => { writer.tryWrite([encode.encode("x")]); });
-    changed(() => { output(reader); });
-    changed(() => { writer.close(); });
-    changed(() => { controller.revoke(1); });
+    changed(() => {
+      writer.tryWrite([encode.encode("x")]);
+    });
+    changed(() => {
+      output(reader);
+    });
+    changed(() => {
+      writer.close();
+    });
+    changed(() => {
+      controller.revoke(1);
+    });
     const attachedWake = attachPipeEndpoint(structuredClone(reader.handle())).notification;
     Atomics.add(attachedWake, 0, 1);
     expect(Atomics.load(attachedWake, 0)).toBe(Atomics.load(wake, 0));
@@ -247,11 +270,13 @@ describe("supervisor-owned multi-reader relay", () => {
   test("relay is serviced automatically for async readers and closes after every producer drains", async () => {
     const { reader, writer } = pipe();
     const inherited = reader.forProcess(4);
-    const firstReady = reader.waitReadable(), secondReady = inherited.waitReadable();
+    const firstReady = reader.waitReadable(),
+      secondReady = inherited.waitReadable();
     writer.tryWrite([encode.encode("abc")]);
     writer.close();
     await Promise.all([firstReady, secondReady]);
-    const first = await asynchronousOutput(reader), second = await asynchronousOutput(inherited);
+    const first = await asynchronousOutput(reader),
+      second = await asynchronousOutput(inherited);
     expect(first + second).toBe("abc");
     expect(output(reader)).toBe("");
     expect(output(inherited)).toBe("");
@@ -264,7 +289,8 @@ describe("supervisor-owned multi-reader relay", () => {
     for (let round = 0; round < 8; round++) {
       const value = String(round).repeat(8);
       expect(writer.tryWrite([encode.encode(value)])).toBe(8);
-      output(reader); output(inherited);
+      output(reader);
+      output(inherited);
       controller.pumpRelay();
       for (const endpoint of [reader, inherited]) {
         const chunk = output(endpoint);
@@ -272,7 +298,8 @@ describe("supervisor-owned multi-reader relay", () => {
       }
     }
     expect(received.length).toBe(64);
-    for (let round = 0; round < 8; round++) expect(received.split(String(round)).length - 1).toBe(8);
+    for (let round = 0; round < 8; round++)
+      expect(received.split(String(round)).length - 1).toBe(8);
   });
 });
 
@@ -288,10 +315,12 @@ function publication(endpoint: ReturnType<PipeController["retain"]>): BigInt64Ar
 describe("canonical publication revocation", () => {
   test("registry-only kill freezes an unknown pipe and preserves precisely its committed prefix", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 16, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("accepted")]);
     attachPipePublicationRegistry(structuredClone(registry.handle())).revoke(2);
     expect(Atomics.load(publication(writer), 0) & 0xffffffffn).toBe(8n);
@@ -303,7 +332,8 @@ describe("canonical publication revocation", () => {
 
   test("registry revokes enrolled processes without cells and rejects unknown owners", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 4, cellsPerProcess: 4 });
-    registry.registerProcess(99); registry.registerProcess(103);
+    registry.registerProcess(99);
+    registry.registerProcess(103);
     registry.revoke(99);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
@@ -316,22 +346,32 @@ describe("canonical publication revocation", () => {
 
   test("kill after the final liveness check still defeats the producer CAS", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("old")]);
     const original = Atomics.compareExchange;
     let intercepted = false;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
       if (!intercepted && array instanceof BigInt64Array && (replacement & 0xffffffffn) === 6n) {
         intercepted = true;
         registry.revoke(2);
       }
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
-    try { expect(writer.tryWrite([encode.encode("new")])).toBe(-PipeErrno.BADF); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      expect(writer.tryWrite([encode.encode("new")])).toBe(-PipeErrno.BADF);
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(intercepted).toBe(true);
     expect(output(reader)).toBe("old");
     expect(output(reader)).toBe("");
@@ -342,27 +382,41 @@ describe("canonical publication revocation", () => {
     writer.tryWrite([encode.encode("safe")]);
     const original = Atomics.compareExchange;
     let inherited: typeof reader | undefined;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      if (!inherited && array instanceof BigInt64Array && (replacement & 0xffffffffn) === 4n) inherited = reader.forProcess(4);
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      if (!inherited && array instanceof BigInt64Array && (replacement & 0xffffffffn) === 4n)
+        inherited = reader.forProcess(4);
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
     const bytes = new Uint8Array(8);
-    try { expect(reader.tryRead([bytes])).toBe(-PipeErrno.AGAIN); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      expect(reader.tryRead([bytes])).toBe(-PipeErrno.AGAIN);
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(inherited).toBeDefined();
     expect(bytes).toEqual(new Uint8Array(8));
-    output(reader); output(inherited!);
+    output(reader);
+    output(inherited!);
     controller.pumpRelay();
-    const values = [output(reader), output(inherited!)].filter(value => typeof value === "string");
+    const values = [output(reader), output(inherited!)].filter(
+      (value) => typeof value === "string",
+    );
     expect(values.join("")).toBe("safe");
   });
 
   test("registry-only reader kill freezes its lease and wakes writers with EPIPE", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("12345678")]);
     const ready = writer.waitWritable();
     registry.revoke(1);
@@ -373,13 +427,18 @@ describe("canonical publication revocation", () => {
 
   test("registry-only writer kill wakes supervisor relay and delivers EOF to inherited readers", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
+    registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), second = reader.forProcess(4);
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write"),
+      second = reader.forProcess(4);
     // Let the relay enter its asynchronous wait first, then revoke from a registry-only client.
     await Promise.resolve();
-    const firstReady = reader.waitReadable(), secondReady = second.waitReadable();
+    const firstReady = reader.waitReadable(),
+      secondReady = second.waitReadable();
     registry.revoke(2);
     await Promise.all([firstReady, secondReady]);
     expect(output(reader)).toBe("");
@@ -389,11 +448,15 @@ describe("canonical publication revocation", () => {
 
   test("disposing one pipe does not revoke unrelated endpoints of the same live process", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-    registry.registerProcess(1); registry.registerProcess(2);
-    const first = new PipeController({ capacity: 8, registry }), second = new PipeController({ capacity: 8, registry });
+    registry.registerProcess(1);
+    registry.registerProcess(2);
+    const first = new PipeController({ capacity: 8, registry }),
+      second = new PipeController({ capacity: 8, registry });
     controllers.push(first, second);
-    first.retain(1, "read"); first.retain(2, "write");
-    const reader = second.retain(1, "read"), writer = second.retain(2, "write");
+    first.retain(1, "read");
+    first.retain(2, "write");
+    const reader = second.retain(1, "read"),
+      writer = second.retain(2, "write");
     first.dispose();
     expect(registry.isRevoked(2)).toBe(false);
     expect(writer.tryWrite([encode.encode("alive")])).toBe(5);
@@ -402,13 +465,17 @@ describe("canonical publication revocation", () => {
 
   test("32-bit counters wrap while canonical allocation and close bits survive", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
-    const handle = writer.handle(), at = ringOffset(handle);
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
+    const handle = writer.handle(),
+      at = ringOffset(handle);
     const readIndex = Atomics.load(new Int32Array(handle.buffer, at + 28, 1), 0) - 1;
-    const consumed = registry.canonical(readIndex), published = publication(writer);
+    const consumed = registry.canonical(readIndex),
+      published = publication(writer);
     Atomics.or(published, 0, 0xfffffffcn);
     Atomics.or(consumed, 0, 0xfffffffcn);
     expect(writer.tryWrite([encode.encode("abcdefgh")])).toBe(8);
@@ -433,12 +500,18 @@ describe("canonical publication revocation", () => {
 
 function pipeWorker(source: string): Worker {
   const module = new URL("../proc/pipes.ts", import.meta.url).href;
-  return new Worker(new URL(`data:application/typescript,${encodeURIComponent(`import {attachPipeEndpoint} from ${JSON.stringify(module)};\n${source}`)}`));
+  return new Worker(
+    new URL(
+      `data:application/typescript,${encodeURIComponent(`import {attachPipeEndpoint} from ${JSON.stringify(module)};\n${source}`)}`,
+    ),
+  );
 }
 function message<T>(worker: Worker): Promise<T> {
   return new Promise((resolve, reject) => {
-    worker.addEventListener("message", event => resolve(event.data), { once: true });
-    worker.addEventListener("error", event => reject(event.error ?? new Error(event.message)), { once: true });
+    worker.addEventListener("message", (event) => resolve(event.data), { once: true });
+    worker.addEventListener("error", (event) => reject(event.error ?? new Error(event.message)), {
+      once: true,
+    });
   });
 }
 
@@ -459,15 +532,19 @@ describe("worker-backed synchronous pipe waits", () => {
       const result = message(worker);
       writer.tryWrite([encode.encode("awake")]);
       expect(await result).toEqual({ count: 5, text: "awake" });
-    } finally { await worker.terminate(); }
+    } finally {
+      await worker.terminate();
+    }
   });
 
   test("a spinning producer cannot publish one byte past the frozen kill watermark", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-    registry.registerProcess(1); registry.registerProcess(2);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 1024, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     const worker = pipeWorker(`self.onmessage = ({data}) => {
       const endpoint = attachPipeEndpoint(data);
       const bytes = new Uint8Array(16).fill(42);
@@ -490,7 +567,10 @@ describe("worker-backed synchronous pipe waits", () => {
       for (let turn = 0; turn < 32; turn++) {
         await reader.waitReadable();
         const count = reader.tryRead([chunk]);
-        if (count > 0) { drained += count; expect(chunk.subarray(0, count).every(byte => byte === 42)).toBe(true); }
+        if (count > 0) {
+          drained += count;
+          expect(chunk.subarray(0, count).every((byte) => byte === 42)).toBe(true);
+        }
       }
       const completed = message<number>(worker);
       registry.revoke(2);
@@ -500,35 +580,54 @@ describe("worker-backed synchronous pipe waits", () => {
         if (!count) break;
         expect(count).toBeGreaterThan(0);
         drained += count;
-        expect(chunk.subarray(0, count).every(byte => byte === 42)).toBe(true);
+        expect(chunk.subarray(0, count).every((byte) => byte === 42)).toBe(true);
       }
       expect(await completed).toBe(watermark);
       expect(drained).toBe(watermark);
       expect(Atomics.load(publication(writer), 0) & 0xffffffffn).toBe(BigInt(watermark));
       expect(output(reader)).toBe("");
-    } finally { await worker.terminate(); }
+    } finally {
+      await worker.terminate();
+    }
   });
 });
 
 test("relay redirects a chunk when its selected reader is killed at the source claim CAS", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-  registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+  registry.registerProcess(1);
+  registry.registerProcess(2);
+  registry.registerProcess(4);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
-  const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), inherited = reader.forProcess(4);
+  const reader = controller.retain(1, "read"),
+    writer = controller.retain(2, "write"),
+    inherited = reader.forProcess(4);
   writer.tryWrite([encode.encode("safe")]);
   expect(output(reader)).toBe(-PipeErrno.AGAIN);
   const original = Atomics.compareExchange;
   let killed = false;
-  Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-    if (!killed && array instanceof BigInt64Array && (expected & (1n << 32n)) !== 0n && (replacement & 0xffffffffn) === 4n) {
+  Atomics.compareExchange = ((
+    array: BigInt64Array,
+    index: number,
+    expected: bigint,
+    replacement: bigint,
+  ) => {
+    if (
+      !killed &&
+      array instanceof BigInt64Array &&
+      (expected & (1n << 32n)) !== 0n &&
+      (replacement & 0xffffffffn) === 4n
+    ) {
       killed = true;
       registry.revoke(1);
     }
     return original(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
-  try { controller.pumpRelay(); }
-  finally { Atomics.compareExchange = original; }
+  try {
+    controller.pumpRelay();
+  } finally {
+    Atomics.compareExchange = original;
+  }
   expect(killed).toBe(true);
   expect(output(reader)).toBe(-PipeErrno.BADF);
   expect(output(inherited)).toBe(-PipeErrno.AGAIN);
@@ -538,7 +637,8 @@ test("relay redirects a chunk when its selected reader is killed at the source c
 
 test("a registry-only kill wakes fd_read blocked in another worker with EOF", async () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-  registry.registerProcess(1); registry.registerProcess(2);
+  registry.registerProcess(1);
+  registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const reader = controller.retain(1, "read");
@@ -555,25 +655,33 @@ test("a registry-only kill wakes fd_read blocked in another worker with EOF", as
     const result = message(worker);
     registry.revoke(2);
     expect(await result).toBe(0);
-  } finally { await worker.terminate(); }
+  } finally {
+    await worker.terminate();
+  }
 });
 
 test("concurrent first reader and writer reservation cannot omit the canonical reader lease", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 16 });
-  registry.registerProcess(1); registry.registerProcess(2);
+  registry.registerProcess(1);
+  registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
   const original = Atomics.store;
   let reader: ReturnType<PipeController["retain"]> | undefined;
   Atomics.store = ((array: Int32Array, index: number, value: number) => {
-    if (!reader && array instanceof Int32Array && value === 2 && Atomics.load(array, index) === -2) reader = controller.retain(1, "read");
+    if (!reader && array instanceof Int32Array && value === 2 && Atomics.load(array, index) === -2)
+      reader = controller.retain(1, "read");
     return original(array, index, value);
   }) as typeof Atomics.store;
   let writer: ReturnType<PipeController["retain"]>;
-  try { writer = controller.retain(2, "write"); }
-  finally { Atomics.store = original; }
+  try {
+    writer = controller.retain(2, "write");
+  } finally {
+    Atomics.store = original;
+  }
   expect(reader).toBeDefined();
-  const handle = writer!.handle(), at = ringOffset(handle);
+  const handle = writer!.handle(),
+    at = ringOffset(handle);
   const readIndex = Atomics.load(new Int32Array(handle.buffer, at + 28, 1), 0) - 1;
   expect(readIndex).toBeGreaterThanOrEqual(0);
   registry.revoke(1);
@@ -583,16 +691,21 @@ test("concurrent first reader and writer reservation cannot omit the canonical r
 
 test("failed canonical lease allocation does not leave an unpublished writer holding EOF open", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 2 });
-  registry.registerProcess(1); registry.registerProcess(2);
+  registry.registerProcess(1);
+  registry.registerProcess(2);
   const controller = new PipeController({ capacity: 8, registry });
   controllers.push(controller);
-  const reader = controller.retain(1, "read"), allocate = PipePublicationRegistry.prototype.allocate;
-  PipePublicationRegistry.prototype.allocate = function(pid: number) {
+  const reader = controller.retain(1, "read"),
+    allocate = PipePublicationRegistry.prototype.allocate;
+  PipePublicationRegistry.prototype.allocate = function (pid: number) {
     if (pid === 1) throw new Error("injected cursor allocation failure");
     return allocate.call(this, pid);
   };
-  try { expect(() => controller.retain(2, "write")).toThrow("allocation failure"); }
-  finally { PipePublicationRegistry.prototype.allocate = allocate; }
+  try {
+    expect(() => controller.retain(2, "write")).toThrow("allocation failure");
+  } finally {
+    PipePublicationRegistry.prototype.allocate = allocate;
+  }
   expect(output(reader)).toBe("");
 });
 
@@ -600,7 +713,9 @@ describe("relay shared-queue regressions", () => {
   test("an idle reader and readiness observers do not reserve another reader's bytes", () => {
     const controller = new PipeController({ capacity: 8, relay: "manual" });
     controllers.push(controller);
-    const idle = controller.retain(1, "read"), active = idle.forProcess(4), writer = controller.retain(2, "write");
+    const idle = controller.retain(1, "read"),
+      active = idle.forProcess(4),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("abc")]);
     expect(idle.readiness().readable).toBe(true);
     controller.pumpRelay();
@@ -608,21 +723,28 @@ describe("relay shared-queue regressions", () => {
     controller.pumpRelay();
     expect(output(active)).toBe("abc");
     expect(idle.readiness().nbytes).toBe(0);
-    idle.close(); writer.close(); controller.pumpRelay();
+    idle.close();
+    writer.close();
+    controller.pumpRelay();
     expect(output(active)).toBe("");
   });
 
   for (const death of ["close", "registry"] as const) {
     test(`unconsumed delivery survives reader ${death} and precedes later source bytes`, () => {
       const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-      registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+      registry.registerProcess(1);
+      registry.registerProcess(2);
+      registry.registerProcess(4);
       const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
       controllers.push(controller);
-      const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
+      const first = controller.retain(1, "read"),
+        active = first.forProcess(4),
+        writer = controller.retain(2, "write");
       writer.tryWrite([encode.encode("abc")]);
       expect(output(first, 3)).toBe(-PipeErrno.AGAIN);
       controller.pumpRelay();
-      if (death === "close") first.close(); else registry.revoke(1);
+      if (death === "close") first.close();
+      else registry.revoke(1);
       writer.tryWrite([encode.encode("def")]);
       writer.close();
       expect(output(active)).toBe(-PipeErrno.AGAIN);
@@ -642,7 +764,9 @@ describe("relay shared-queue regressions", () => {
   test("a one-byte read cannot reserve the rest of the pipe", () => {
     const controller = new PipeController({ capacity: 8, relay: "manual" });
     controllers.push(controller);
-    const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
+    const first = controller.retain(1, "read"),
+      active = first.forProcess(4),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("abcdef")]);
     expect(output(first, 1)).toBe(-PipeErrno.AGAIN);
     controller.pumpRelay();
@@ -655,11 +779,18 @@ describe("relay shared-queue regressions", () => {
   test("a pending inherited writer prevents irreversible relay EOF", () => {
     const controller = new PipeController({ capacity: 8, relay: "manual" });
     controllers.push(controller);
-    const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
+    const first = controller.retain(1, "read"),
+      active = first.forProcess(4),
+      writer = controller.retain(2, "write");
     const original = Atomics.store;
     let interleaved = false;
     Atomics.store = ((array: Int32Array, index: number, value: number) => {
-      if (!interleaved && array instanceof Int32Array && value === 3 && Atomics.load(array, index) === -3) {
+      if (
+        !interleaved &&
+        array instanceof Int32Array &&
+        value === 3 &&
+        Atomics.load(array, index) === -3
+      ) {
         interleaved = true;
         writer.close();
         controller.pumpRelay();
@@ -667,8 +798,11 @@ describe("relay shared-queue regressions", () => {
       return original(array, index, value);
     }) as typeof Atomics.store;
     let inherited: typeof writer;
-    try { inherited = writer.forProcess(3); }
-    finally { Atomics.store = original; }
+    try {
+      inherited = writer.forProcess(3);
+    } finally {
+      Atomics.store = original;
+    }
     expect(interleaved).toBe(true);
     expect(inherited!.tryWrite([encode.encode("later")])).toBe(5);
     expect(output(active)).toBe(-PipeErrno.AGAIN);
@@ -681,7 +815,9 @@ describe("causal write ordering and small-write atomicity", () => {
   test("a later lower-pid writer cannot overtake a completed write", () => {
     const controller = new PipeController({ capacity: 16 });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), later = controller.retain(2, "write"), first = later.forProcess(3);
+    const reader = controller.retain(1, "read"),
+      later = controller.retain(2, "write"),
+      first = later.forProcess(3);
     first.tryWrite([encode.encode("first")]);
     later.tryWrite([encode.encode("second")]);
     expect(output(reader)).toBe("first");
@@ -703,7 +839,12 @@ describe("causal write ordering and small-write atomicity", () => {
     const second = writer.forProcess(3);
     writer.tryWrite([encode.encode("AAAA")]);
     second.tryWrite([encode.encode("BBBB")]);
-    expect([output(reader, 2), output(reader, 2), output(reader, 2), output(reader, 2)]).toEqual(["AA", "AA", "BB", "BB"]);
+    expect([output(reader, 2), output(reader, 2), output(reader, 2), output(reader, 2)]).toEqual([
+      "AA",
+      "AA",
+      "BB",
+      "BB",
+    ]);
   });
 
   test("small writes are all-or-EAGAIN when configured ring space is insufficient", () => {
@@ -718,7 +859,9 @@ describe("causal write ordering and small-write atomicity", () => {
   test("an abandoned EAGAIN request cannot hide bytes from another live reader", () => {
     const controller = new PipeController({ capacity: 8, relay: "manual" });
     controllers.push(controller);
-    const abandoned = controller.retain(1, "read"), active = abandoned.forProcess(4), writer = controller.retain(2, "write");
+    const abandoned = controller.retain(1, "read"),
+      active = abandoned.forProcess(4),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("abc")]);
     expect(output(abandoned)).toBe(-PipeErrno.AGAIN);
     controller.pumpRelay();
@@ -731,7 +874,11 @@ describe("causal write ordering and small-write atomicity", () => {
 });
 
 function ringOffset(handle: ReturnType<ReturnType<PipeController["retain"]>["handle"]>): number {
-  return 40 + (handle.slot + (handle.mode === "read" ? handle.maxWriters : 0)) * (40 + handle.capacity + Math.min(handle.capacity, 1024) * 16);
+  return (
+    40 +
+    (handle.slot + (handle.mode === "read" ? handle.maxWriters : 0)) *
+      (40 + handle.capacity + Math.min(handle.capacity, 1024) * 16)
+  );
 }
 async function asynchronousOutput(endpoint: ReturnType<PipeController["retain"]>): Promise<string> {
   for (;;) {
@@ -745,12 +892,18 @@ async function asynchronousOutput(endpoint: ReturnType<PipeController["retain"]>
 describe("ordered record adversarial boundaries", () => {
   test("a write issued during a source scan cannot overtake the earlier slot already scanned empty", () => {
     const { reader, writer } = pipe();
-    const later = writer.forProcess(3), commit = publication(writer);
+    const later = writer.forProcess(3),
+      commit = publication(writer);
     const original = Atomics.load;
     let inserted = false;
     Atomics.load = ((array: BigInt64Array, index: number) => {
       const value = original(array, index);
-      if (!inserted && array instanceof BigInt64Array && array.buffer === commit.buffer && array.byteOffset === commit.byteOffset) {
+      if (
+        !inserted &&
+        array instanceof BigInt64Array &&
+        array.buffer === commit.buffer &&
+        array.byteOffset === commit.byteOffset
+      ) {
         inserted = true;
         writer.tryWrite([encode.encode("first")]);
         later.tryWrite([encode.encode("second")]);
@@ -758,8 +911,11 @@ describe("ordered record adversarial boundaries", () => {
       return value;
     }) as typeof Atomics.load;
     let first: string | number;
-    try { first = output(reader); }
-    finally { Atomics.load = original; }
+    try {
+      first = output(reader);
+    } finally {
+      Atomics.load = original;
+    }
     expect(inserted).toBe(true);
     expect(first!).toBe(-PipeErrno.AGAIN);
     expect(output(reader)).toBe("first");
@@ -769,19 +925,36 @@ describe("ordered record adversarial boundaries", () => {
   test("another observer can release a record pin abandoned after the final consumption CAS", () => {
     const { reader, writer } = pipe();
     const later = writer.forProcess(3);
-    writer.tryWrite([encode.encode("AAAA")]); later.tryWrite([encode.encode("BBBB")]);
-    const original = Atomics.compareExchange, handle = writer.handle();
+    writer.tryWrite([encode.encode("AAAA")]);
+    later.tryWrite([encode.encode("BBBB")]);
+    const original = Atomics.compareExchange,
+      handle = writer.handle();
     let abandoned = false;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      if (!abandoned && array instanceof BigInt64Array && array.buffer === handle.buffer && array.byteOffset === 32 && expected !== 0n && replacement === 0n) {
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      if (
+        !abandoned &&
+        array instanceof BigInt64Array &&
+        array.buffer === handle.buffer &&
+        array.byteOffset === 32 &&
+        expected !== 0n &&
+        replacement === 0n
+      ) {
         abandoned = true;
         throw new Error("reader paused before releasing pin");
       }
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
     const bytes = new Uint8Array(4);
-    try { expect(() => reader.tryRead([bytes])).toThrow("paused"); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      expect(() => reader.tryRead([bytes])).toThrow("paused");
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(abandoned).toBe(true);
     expect(decode.decode(bytes)).toBe("AAAA");
     expect(output(reader)).toBe("BBBB");
@@ -791,13 +964,17 @@ describe("ordered record adversarial boundaries", () => {
     const { reader, writer } = pipe();
     const first = writer.forProcess(3);
     Atomics.store(new BigInt64Array(writer.handle().buffer, 24, 1), 0, (1n << 63n) - 2n);
-    first.tryWrite([encode.encode("a")]); writer.tryWrite([encode.encode("b")]); first.tryWrite([encode.encode("c")]);
+    first.tryWrite([encode.encode("a")]);
+    writer.tryWrite([encode.encode("b")]);
+    first.tryWrite([encode.encode("c")]);
     expect([output(reader), output(reader), output(reader)].join("")).toBe("abc");
   });
 
   test("record counters wrap without dropping their final metadata slot", () => {
     const { reader, writer } = pipe();
-    const handle = writer.handle(), at = ringOffset(handle), before = ((1n << 29n) - 1n) << 34n;
+    const handle = writer.handle(),
+      at = ringOffset(handle),
+      before = ((1n << 29n) - 1n) << 34n;
     Atomics.store(new BigInt64Array(handle.buffer, at + 8, 1), 0, before);
     Atomics.store(new BigInt64Array(handle.buffer, at + 16, 1), 0, before);
     expect(writer.tryWrite([encode.encode("a")])).toBe(1);
@@ -832,7 +1009,9 @@ describe("ordered record adversarial boundaries", () => {
 
   test("an uncommitted ticket left by a killed writer never blocks later committed writers", () => {
     const { controller, reader, writer } = pipe();
-    const survivor = writer.forProcess(3), source = encode.encode("lost"), subarray = source.subarray.bind(source);
+    const survivor = writer.forProcess(3),
+      source = encode.encode("lost"),
+      subarray = source.subarray.bind(source);
     source.subarray = ((start?: number, end?: number) => {
       const chunk = subarray(start, end);
       controller.revoke(2);
@@ -847,37 +1026,63 @@ describe("ordered record adversarial boundaries", () => {
 describe("relay recovery exactness and scheduling", () => {
   test("only the exact unread suffix of a partially consumed dead delivery is recovered", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
+    registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
-    const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
+    const first = controller.retain(1, "read"),
+      active = first.forProcess(4),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("abcdef")]);
-    expect(output(first)).toBe(-PipeErrno.AGAIN); controller.pumpRelay();
+    expect(output(first)).toBe(-PipeErrno.AGAIN);
+    controller.pumpRelay();
     expect(output(first, 2)).toBe("ab");
     registry.revoke(1);
-    writer.tryWrite([encode.encode("XYZ")]); writer.close();
-    expect(output(active)).toBe(-PipeErrno.AGAIN); controller.pumpRelay();
+    writer.tryWrite([encode.encode("XYZ")]);
+    writer.close();
+    expect(output(active)).toBe(-PipeErrno.AGAIN);
+    controller.pumpRelay();
     expect(output(active)).toBe("cdef");
-    expect(output(active)).toBe(-PipeErrno.AGAIN); controller.pumpRelay();
+    expect(output(active)).toBe(-PipeErrno.AGAIN);
+    controller.pumpRelay();
     expect(output(active)).toBe("XYZ");
-    controller.pumpRelay(); expect(output(active)).toBe("");
+    controller.pumpRelay();
+    expect(output(active)).toBe("");
   });
 
   test("guest and dead-delivery reclaimer compete on the same canonical consumed CAS", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
+    registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
-    const first = controller.retain(1, "read"), active = first.forProcess(4), writer = controller.retain(2, "write");
+    const first = controller.retain(1, "read"),
+      active = first.forProcess(4),
+      writer = controller.retain(2, "write");
     writer.tryWrite([encode.encode("abcdef")]);
-    expect(output(first)).toBe(-PipeErrno.AGAIN); controller.pumpRelay();
+    expect(output(first)).toBe(-PipeErrno.AGAIN);
+    controller.pumpRelay();
     expect(output(active)).toBe(-PipeErrno.AGAIN);
-    const handle = first.handle(), at = ringOffset(handle);
-    const mapped = Atomics.load(new Int32Array(handle.buffer, at + 28, 1), 0) - 1, cursor = registry.canonical(mapped);
+    const handle = first.handle(),
+      at = ringOffset(handle);
+    const mapped = Atomics.load(new Int32Array(handle.buffer, at + 28, 1), 0) - 1,
+      cursor = registry.canonical(mapped);
     const original = Atomics.compareExchange;
     let killed = false;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      if (!killed && array instanceof BigInt64Array && array.buffer === cursor.buffer && array.byteOffset === cursor.byteOffset) {
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      if (
+        !killed &&
+        array instanceof BigInt64Array &&
+        array.buffer === cursor.buffer &&
+        array.byteOffset === cursor.byteOffset
+      ) {
         killed = true;
         registry.revoke(1);
         controller.pumpRelay();
@@ -885,8 +1090,11 @@ describe("relay recovery exactness and scheduling", () => {
       return original(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
     const bytes = new Uint8Array(2).fill(90);
-    try { expect(first.tryRead([bytes])).toBe(-PipeErrno.AGAIN); }
-    finally { Atomics.compareExchange = original; }
+    try {
+      expect(first.tryRead([bytes])).toBe(-PipeErrno.AGAIN);
+    } finally {
+      Atomics.compareExchange = original;
+    }
     expect(killed).toBe(true);
     expect(Array.from(bytes)).toEqual([90, 90]);
     expect(output(active)).toBe("abcdef");
@@ -896,7 +1104,8 @@ describe("relay recovery exactness and scheduling", () => {
   test("async read/readiness retry loops yield tasks and still complete relay reads", async () => {
     const { reader, writer } = pipe();
     const inherited = reader.forProcess(4);
-    writer.tryWrite([encode.encode("abc")]); writer.close();
+    writer.tryWrite([encode.encode("abc")]);
+    writer.close();
     const first = await asynchronousOutput(inherited);
     expect(first).toBe("abc");
     expect(await asynchronousOutput(reader)).toBe("");
@@ -904,10 +1113,13 @@ describe("relay recovery exactness and scheduling", () => {
 
   test("continuous real-worker relay traffic cannot starve a timer kill task", async () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-    registry.registerProcess(1); registry.registerProcess(2); registry.registerProcess(4);
+    registry.registerProcess(1);
+    registry.registerProcess(2);
+    registry.registerProcess(4);
     const controller = new PipeController({ capacity: 8, registry });
     controllers.push(controller);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write");
     reader.forProcess(4);
     const stop = new Int32Array(new SharedArrayBuffer(4));
     const worker = pipeWorker(`self.onmessage = ({data}) => {
@@ -925,11 +1137,16 @@ describe("relay recovery exactness and scheduling", () => {
     };`);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const started = message(worker), began = performance.now();
+      const started = message(worker),
+        began = performance.now();
       worker.postMessage({ reader: reader.handle(), writer: writer.handle(), stop: stop.buffer });
       expect(await started).toBe("started");
       const completed = message<number>(worker);
-      timer = setTimeout(() => { Atomics.store(stop, 0, 1); registry.revoke(1); registry.revoke(2); }, 60);
+      timer = setTimeout(() => {
+        Atomics.store(stop, 0, 1);
+        registry.revoke(1);
+        registry.revoke(2);
+      }, 60);
       expect(await completed).toBeGreaterThan(0);
       expect(performance.now() - began).toBeLessThan(500);
     } finally {
@@ -945,76 +1162,117 @@ describe("terminal controller lifecycle", () => {
     const controller = new PipeController({ capacity: 8, relay: "manual" });
     controllers.push(controller);
     expect(controller.closed).toBe(false);
-    const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), child = writer.forProcess(3);
-    writer.close(); expect(controller.closed).toBe(false);
-    child.close(); expect(output(reader)).toBe(""); expect(controller.closed).toBe(false);
-    reader.close(); expect(controller.closed).toBe(true);
+    const reader = controller.retain(1, "read"),
+      writer = controller.retain(2, "write"),
+      child = writer.forProcess(3);
+    writer.close();
+    expect(controller.closed).toBe(false);
+    child.close();
+    expect(output(reader)).toBe("");
+    expect(controller.closed).toBe(false);
+    reader.close();
+    expect(controller.closed).toBe(true);
     expect(() => controller.retain(4, "read")).toThrow();
   });
 
   test("automatic terminal observation fires once after fd close or registry-only revoke", async () => {
     for (const registryDeath of [false, true]) {
       const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 32 });
-      registry.registerProcess(1); registry.registerProcess(2);
+      registry.registerProcess(1);
+      registry.registerProcess(2);
       let calls = 0;
-      const controller = new PipeController({ capacity: 8, registry, onClosed: () => { calls++; } });
+      const controller = new PipeController({
+        capacity: 8,
+        registry,
+        onClosed: () => {
+          calls++;
+        },
+      });
       controllers.push(controller);
-      const reader = controller.retain(1, "read"), writer = controller.retain(2, "write");
-      if (registryDeath) { registry.revoke(1); registry.revoke(2); }
-      else { reader.close(); writer.close(); }
-      await new Promise<void>(resolve => setTimeout(resolve, 10));
+      const reader = controller.retain(1, "read"),
+        writer = controller.retain(2, "write");
+      if (registryDeath) {
+        registry.revoke(1);
+        registry.revoke(2);
+      } else {
+        reader.close();
+        writer.close();
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
       expect(controller.closed).toBe(true);
       expect(calls).toBe(1);
-      controller.dispose(); controller.dispose();
+      controller.dispose();
+      controller.dispose();
       expect(calls).toBe(1);
     }
   });
 });
 
-for (const check of ["read", "readiness"] as const) for (const closeChild of [false, true]) test(`EOF ${check} rejects a writer handoff during its scan${closeChild ? " even when the child closes immediately" : ""}`, () => {
-  const controller = new PipeController({ capacity: 8, relay: "manual" });
-  controllers.push(controller);
-  const reader = controller.retain(1, "read"), writer = controller.retain(15, "write");
-  const handle = writer.handle(), pidOffset = ringOffset(handle), original = Atomics.load;
-  let visits = 0, handoffWake = 0, child: ReturnType<PipeController["retain"]> | undefined;
-  Atomics.load = ((array: Int32Array, index: number) => {
-    if (array instanceof Int32Array && array.buffer === handle.buffer && array.byteOffset === pidOffset && ++visits === 2) {
-      // source()/queued() scans first, then EOF. EOF has already passed slot 0 when it
-      // reaches the parent's slot 15. Complete spawn's synchronous writer reservation
-      // in slot 0 and parent exit here, before the child's worker has started.
-      Atomics.load = original;
-      child = writer.forProcess(16);
-      writer.close();
-      if (closeChild) child.close();
-      handoffWake = original(controller.notification, 0);
-    }
-    return original(array, index);
-  }) as typeof Atomics.load;
-  try {
-    if (check === "read") expect(output(reader)).toBe(-PipeErrno.AGAIN);
-    else expect(reader.readiness()).toMatchObject({ readable: false, hangup: false });
-  } finally { Atomics.load = original; }
-  expect(child).toBeDefined();
-  // The conservative AGAIN must publish its own wake even if the handoff (including
-  // the final close) already published all of its notifications during the scan.
-  expect(Atomics.load(controller.notification, 0)).toBeGreaterThan(handoffWake);
-  if (!closeChild) {
-    expect(output(reader)).toBe(-PipeErrno.AGAIN);
-    expect(child!.tryWrite([encode.encode("child")])).toBe(5);
-    child!.close();
-    expect(output(reader)).toBe("child");
-  }
-  expect(output(reader)).toBe("");
-});
+for (const check of ["read", "readiness"] as const)
+  for (const closeChild of [false, true])
+    test(`EOF ${check} rejects a writer handoff during its scan${closeChild ? " even when the child closes immediately" : ""}`, () => {
+      const controller = new PipeController({ capacity: 8, relay: "manual" });
+      controllers.push(controller);
+      const reader = controller.retain(1, "read"),
+        writer = controller.retain(15, "write");
+      const handle = writer.handle(),
+        pidOffset = ringOffset(handle),
+        original = Atomics.load;
+      let visits = 0,
+        handoffWake = 0,
+        child: ReturnType<PipeController["retain"]> | undefined;
+      Atomics.load = ((array: Int32Array, index: number) => {
+        if (
+          array instanceof Int32Array &&
+          array.buffer === handle.buffer &&
+          array.byteOffset === pidOffset &&
+          ++visits === 2
+        ) {
+          // source()/queued() scans first, then EOF. EOF has already passed slot 0 when it
+          // reaches the parent's slot 15. Complete spawn's synchronous writer reservation
+          // in slot 0 and parent exit here, before the child's worker has started.
+          Atomics.load = original;
+          child = writer.forProcess(16);
+          writer.close();
+          if (closeChild) child.close();
+          handoffWake = original(controller.notification, 0);
+        }
+        return original(array, index);
+      }) as typeof Atomics.load;
+      try {
+        if (check === "read") expect(output(reader)).toBe(-PipeErrno.AGAIN);
+        else expect(reader.readiness()).toMatchObject({ readable: false, hangup: false });
+      } finally {
+        Atomics.load = original;
+      }
+      expect(child).toBeDefined();
+      // The conservative AGAIN must publish its own wake even if the handoff (including
+      // the final close) already published all of its notifications during the scan.
+      expect(Atomics.load(controller.notification, 0)).toBeGreaterThan(handoffWake);
+      if (!closeChild) {
+        expect(output(reader)).toBe(-PipeErrno.AGAIN);
+        expect(child!.tryWrite([encode.encode("child")])).toBe(5);
+        child!.close();
+        expect(output(reader)).toBe("child");
+      }
+      expect(output(reader)).toBe("");
+    });
 
 test("terminal lifecycle commit loses to a newly admitted writer after its scan passed writer slots", () => {
   const controller = new PipeController({ capacity: 8, relay: "manual" });
   controllers.push(controller);
-  const reader = controller.retain(15, "read"), handle = reader.handle();
-  const pidOffset = ringOffset(handle), original = Atomics.load;
+  const reader = controller.retain(15, "read"),
+    handle = reader.handle();
+  const pidOffset = ringOffset(handle),
+    original = Atomics.load;
   let writer: ReturnType<PipeController["retain"]> | undefined;
   Atomics.load = ((array: Int32Array, index: number) => {
-    if (!writer && array instanceof Int32Array && array.buffer === handle.buffer && array.byteOffset === pidOffset) {
+    if (
+      !writer &&
+      array instanceof Int32Array &&
+      array.buffer === handle.buffer &&
+      array.byteOffset === pidOffset
+    ) {
       // Avoid recursively intercepting the nested retain's own liveness scan.
       Atomics.load = original;
       writer = controller.retain(2, "write");
@@ -1023,8 +1281,11 @@ test("terminal lifecycle commit loses to a newly admitted writer after its scan 
     return original(array, index);
   }) as typeof Atomics.load;
   let terminal: boolean;
-  try { terminal = controller.closed; }
-  finally { Atomics.load = original; }
+  try {
+    terminal = controller.closed;
+  } finally {
+    Atomics.load = original;
+  }
   expect(writer).toBeDefined();
   expect(terminal!).toBe(false);
   expect(controller.closed).toBe(false);
@@ -1036,24 +1297,44 @@ test("terminal lifecycle commit loses to a newly admitted writer after its scan 
 test("standalone reservation cannot overwrite a concurrent revocation tombstone", () => {
   const controller = new PipeController({ capacity: 8, relay: "manual" });
   controllers.push(controller);
-  const reader = controller.retain(1, "read"), writer = controller.retain(2, "write"), handle = reader.handle();
+  const reader = controller.retain(1, "read"),
+    writer = controller.retain(2, "write"),
+    handle = reader.handle();
   const refsOffset = ringOffset({ ...handle, slot: 4 % handle.maxReaders }) + 4;
-  const store = Atomics.store, compareExchange = Atomics.compareExchange;
+  const store = Atomics.store,
+    compareExchange = Atomics.compareExchange;
   let killed = false;
   function kill(array: Int32Array, replacement: number): void {
-    if (!killed && array instanceof Int32Array && array.buffer === handle.buffer && array.byteOffset === refsOffset && replacement === 1) {
+    if (
+      !killed &&
+      array instanceof Int32Array &&
+      array.buffer === handle.buffer &&
+      array.byteOffset === refsOffset &&
+      replacement === 1
+    ) {
       killed = true;
       controller.revoke(4);
     }
   }
   Atomics.store = ((array: Int32Array, index: number, value: number) => {
-    kill(array, value); return store(array, index, value);
+    kill(array, value);
+    return store(array, index, value);
   }) as typeof Atomics.store;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
-    kill(array, replacement); return compareExchange(array, index, expected, replacement);
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
+    kill(array, replacement);
+    return compareExchange(array, index, expected, replacement);
   }) as typeof Atomics.compareExchange;
-  try { expect(() => reader.forProcess(4)).toThrow("revoked"); }
-  finally { Atomics.store = store; Atomics.compareExchange = compareExchange; }
+  try {
+    expect(() => reader.forProcess(4)).toThrow("revoked");
+  } finally {
+    Atomics.store = store;
+    Atomics.compareExchange = compareExchange;
+  }
   expect(killed).toBe(true);
   reader.close();
   expect(writer.tryWrite([encode.encode("x")])).toBe(-PipeErrno.PIPE);
@@ -1062,13 +1343,27 @@ test("standalone reservation cannot overwrite a concurrent revocation tombstone"
 test("a reservation paused after claiming its negative owner cannot publish after terminal commit", () => {
   const controller = new PipeController({ capacity: 8, relay: "manual" });
   controllers.push(controller);
-  const reader = controller.retain(15, "read"), handle = reader.handle(), lifecycle = new Int32Array(handle.buffer, 20, 1);
+  const reader = controller.retain(15, "read"),
+    handle = reader.handle(),
+    lifecycle = new Int32Array(handle.buffer, 20, 1);
   const writerPid = ringOffset({ ...handle, mode: "write", slot: 2 % handle.maxWriters });
   const original = Atomics.compareExchange;
   let terminalized = false;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
     const value = original(array, index, expected, replacement);
-    if (!terminalized && array instanceof Int32Array && array.buffer === handle.buffer && array.byteOffset === writerPid && replacement === -2 && value === 0) {
+    if (
+      !terminalized &&
+      array instanceof Int32Array &&
+      array.buffer === handle.buffer &&
+      array.byteOffset === writerPid &&
+      replacement === -2 &&
+      value === 0
+    ) {
       terminalized = true;
       reader.close();
       // Complete a scan whose generation was captured before this reservation existed.
@@ -1076,8 +1371,11 @@ test("a reservation paused after claiming its negative owner cannot publish afte
     }
     return value;
   }) as typeof Atomics.compareExchange;
-  try { expect(() => controller.retain(2, "write")).toThrow("closed"); }
-  finally { Atomics.compareExchange = original; }
+  try {
+    expect(() => controller.retain(2, "write")).toThrow("closed");
+  } finally {
+    Atomics.compareExchange = original;
+  }
   expect(terminalized).toBe(true);
   expect(controller.closed).toBe(true);
   expect(Atomics.load(new Int32Array(handle.buffer, writerPid + 4, 1), 0)).toBe(-1);
@@ -1086,20 +1384,34 @@ test("a reservation paused after claiming its negative owner cannot publish afte
 describe("growable canonical registry", () => {
   test("10000 sequential pipes grow a shared registry without reusing old canonical cells", () => {
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
-    registry.registerProcess(1); registry.registerProcess(7);
-    const initial = registry.handle().buffer.byteLength, cloned = attachPipePublicationRegistry(structuredClone(registry.handle()));
-    const old = registry.allocate(7), oldCursor = registry.canonical(old);
+    registry.registerProcess(1);
+    registry.registerProcess(7);
+    const initial = registry.handle().buffer.byteLength,
+      cloned = attachPipePublicationRegistry(structuredClone(registry.handle()));
+    const old = registry.allocate(7),
+      oldCursor = registry.canonical(old);
     Atomics.or(oldCursor, 0, 1n << 32n);
     let completed = 0;
     for (let index = 0; index < 10000; index++) {
-      const controller = new PipeController({ capacity: 8, maxWriters: 2, maxReaders: 2, registry: index % 2 ? registry : cloned, relay: "manual" });
+      const controller = new PipeController({
+        capacity: 8,
+        maxWriters: 2,
+        maxReaders: 2,
+        registry: index % 2 ? registry : cloned,
+        relay: "manual",
+      });
       try {
-        const reader = controller.retain(1, "read"), writer = controller.retain(1, "write");
-        if (writer.tryWrite([encode.encode("x")]) !== 1 || output(reader) !== "x") throw new Error(`pipe ${index} failed`);
-        reader.close(); writer.close();
+        const reader = controller.retain(1, "read"),
+          writer = controller.retain(1, "write");
+        if (writer.tryWrite([encode.encode("x")]) !== 1 || output(reader) !== "x")
+          throw new Error(`pipe ${index} failed`);
+        reader.close();
+        writer.close();
         if (!controller.closed) throw new Error(`pipe ${index} leaked`);
         completed++;
-      } finally { controller.dispose(); }
+      } finally {
+        controller.dispose();
+      }
     }
     expect(completed).toBe(10000);
     expect(registry.handle().buffer.byteLength).toBeGreaterThan(initial);
@@ -1117,28 +1429,58 @@ for (const killAt of ["before-link", "after-link", "after-final-check"] as const
     const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1 });
     registry.registerProcess(2);
     const buffer = registry.handle().buffer;
-    const compareExchange = Atomics.compareExchange, load = Atomics.load;
-    let killed = false, ownerLoads = 0;
-    Atomics.compareExchange = ((array: BigInt64Array, index: number, expected: bigint, replacement: bigint) => {
-      const link = array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16 && index === 2 &&
-        expected >> 32n === 2n && (replacement & 0x7fffffffn) !== 0n && !(replacement & (1n << 31n));
-      if (!killed && link && killAt === "before-link") { killed = true; registry.revoke(2); }
+    const compareExchange = Atomics.compareExchange,
+      load = Atomics.load;
+    let killed = false,
+      ownerLoads = 0;
+    Atomics.compareExchange = ((
+      array: BigInt64Array,
+      index: number,
+      expected: bigint,
+      replacement: bigint,
+    ) => {
+      const link =
+        array instanceof BigInt64Array &&
+        array.buffer === buffer &&
+        array.byteOffset === 16 &&
+        index === 2 &&
+        expected >> 32n === 2n &&
+        (replacement & 0x7fffffffn) !== 0n &&
+        !(replacement & (1n << 31n));
+      if (!killed && link && killAt === "before-link") {
+        killed = true;
+        registry.revoke(2);
+      }
       const result = compareExchange(array, index, expected, replacement);
-      if (!killed && link && killAt === "after-link") { killed = true; registry.revoke(2); }
+      if (!killed && link && killAt === "after-link") {
+        killed = true;
+        registry.revoke(2);
+      }
       return result;
     }) as typeof Atomics.compareExchange;
     Atomics.load = ((array: BigInt64Array, index: number) => {
       const result = load(array, index);
-      if (array instanceof BigInt64Array && array.buffer === buffer && array.byteOffset === 16 && index === 2) {
+      if (
+        array instanceof BigInt64Array &&
+        array.buffer === buffer &&
+        array.byteOffset === 16 &&
+        index === 2
+      ) {
         ownerLoads++;
-        if (!killed && killAt === "after-final-check" && ownerLoads === 3) { killed = true; registry.revoke(2); }
+        if (!killed && killAt === "after-final-check" && ownerLoads === 3) {
+          killed = true;
+          registry.revoke(2);
+        }
       }
       return result;
     }) as typeof Atomics.load;
     try {
       if (killAt === "after-final-check") expect(registry.allocate(2)).toBe(0);
       else expect(() => registry.allocate(2)).toThrow("revoked");
-    } finally { Atomics.compareExchange = compareExchange; Atomics.load = load; }
+    } finally {
+      Atomics.compareExchange = compareExchange;
+      Atomics.load = load;
+    }
     expect(killed).toBe(true);
     expect(Atomics.load(registry.canonical(0), 0) & (1n << 32n)).toBe(1n << 32n);
     expect(() => registry.allocate(2)).toThrow("revoked");
@@ -1146,18 +1488,26 @@ for (const killAt of ["before-link", "after-link", "after-final-check"] as const
 }
 
 test("a competing larger SAB growth makes a smaller stale grow target harmless", () => {
-  const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1 }), buffer = registry.handle().buffer;
+  const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1 }),
+    buffer = registry.handle().buffer;
   registry.registerProcess(1);
-  registry.allocate(1); registry.allocate(1);
-  const prototype = SharedArrayBuffer.prototype as SharedArrayBuffer & { grow(length: number): void };
+  registry.allocate(1);
+  registry.allocate(1);
+  const prototype = SharedArrayBuffer.prototype;
   const grow = prototype.grow;
   let raced = false;
-  prototype.grow = function(length: number) {
-    if (this === buffer && !raced) { raced = true; grow.call(this, length + 16); }
+  prototype.grow = function (length: number) {
+    if (this === buffer && !raced) {
+      raced = true;
+      grow.call(this, length + 16);
+    }
     return grow.call(this, length);
   };
-  try { expect(registry.allocate(1)).toBe(2); }
-  finally { prototype.grow = grow; }
+  try {
+    expect(registry.allocate(1)).toBe(2);
+  } finally {
+    prototype.grow = grow;
+  }
   expect(raced).toBe(true);
   registry.revoke(1);
   expect(Atomics.load(registry.canonical(2), 0) & (1n << 32n)).toBe(1n << 32n);
@@ -1165,7 +1515,8 @@ test("a competing larger SAB growth makes a smaller stale grow target harmless",
 
 test("concurrent same-pid workers grow and contend on one registry list through pre-growth handles", async () => {
   const registry = new PipePublicationRegistry({ processCapacity: 4, cellsPerProcess: 1 });
-  registry.registerProcess(2); registry.registerProcess(3);
+  registry.registerProcess(2);
+  registry.registerProcess(3);
   const module = new URL("../proc/pipes.ts", import.meta.url).href;
   const source = `import {attachPipePublicationRegistry} from ${JSON.stringify(module)};
     self.onmessage = ({data}) => {
@@ -1173,45 +1524,77 @@ test("concurrent same-pid workers grow and contend on one registry list through 
       for (let index = 0; index < 256; index++) indices.push(registry.allocate(data.pid));
       self.postMessage(indices);
     };`;
-  const first = pipeWorker(source), second = pipeWorker(source);
+  const first = pipeWorker(source),
+    second = pipeWorker(source);
   try {
-    const left = message<number[]>(first), right = message<number[]>(second), handle = structuredClone(registry.handle());
-    first.postMessage({ registry: handle, pid: 2 }); second.postMessage({ registry: handle, pid: 2 });
+    const left = message<number[]>(first),
+      right = message<number[]>(second),
+      handle = structuredClone(registry.handle());
+    first.postMessage({ registry: handle, pid: 2 });
+    second.postMessage({ registry: handle, pid: 2 });
     const [a, b] = await Promise.all([left, right]);
     expect(new Set(a.concat(b)).size).toBe(512);
     const unrelated = registry.allocate(3);
     registry.revoke(2);
-    expect(a.concat(b).every(index => (Atomics.load(registry.canonical(index), 0) & (1n << 32n)) !== 0n)).toBe(true);
+    expect(
+      a
+        .concat(b)
+        .every((index) => (Atomics.load(registry.canonical(index), 0) & (1n << 32n)) !== 0n),
+    ).toBe(true);
     expect(Atomics.load(registry.canonical(unrelated), 0) & (1n << 32n)).toBe(0n);
-  } finally { await Promise.all([first.terminate(), second.terminate()]); }
+  } finally {
+    await Promise.all([first.terminate(), second.terminate()]);
+  }
 });
-
 
 test("registry lifetime budgets fail with ENFILE rather than an untyped host exception", () => {
   const registry = new PipePublicationRegistry({ processCapacity: 2, cellsPerProcess: 1 });
-  registry.registerProcess(1); registry.registerProcess(2);
-  registry.allocate(1); registry.allocate(2);
-  try { registry.registerProcess(3); throw new Error("unexpected enrollment"); }
-  catch (error) { expect(error).toBeInstanceOf(ProcessError); expect((error as ProcessError).errno).toBe(41); }
+  registry.registerProcess(1);
+  registry.registerProcess(2);
+  registry.allocate(1);
+  registry.allocate(2);
+  try {
+    registry.registerProcess(3);
+    throw new Error("unexpected enrollment");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProcessError);
+    expect((error as ProcessError).errno).toBe(41);
+  }
   Atomics.store(new Int32Array(registry.handle().buffer, 0, 1), 0, 1 << 24);
-  try { registry.allocate(1); throw new Error("unexpected allocation"); }
-  catch (error) { expect(error).toBeInstanceOf(ProcessError); expect((error as ProcessError).errno).toBe(41); }
+  try {
+    registry.allocate(1);
+    throw new Error("unexpected allocation");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProcessError);
+    expect((error as ProcessError).errno).toBe(41);
+  }
 });
-
 
 for (const maxCells of [2, 3]) {
   test(`typed global budget exhaustion at ${maxCells} cells leaves no unpublished writer or open EOF`, () => {
-    const registry = new PipePublicationRegistry({ processCapacity: 8, cellsPerProcess: 1, maxCells });
-    registry.registerProcess(1); registry.registerProcess(2);
+    const registry = new PipePublicationRegistry({
+      processCapacity: 8,
+      cellsPerProcess: 1,
+      maxCells,
+    });
+    registry.registerProcess(1);
+    registry.registerProcess(2);
     const controller = new PipeController({ capacity: 8, registry, relay: "manual" });
     controllers.push(controller);
     const reader = controller.retain(1, "read");
-    try { controller.retain(2, "write"); throw new Error("unexpected admission"); }
-    catch (error) { expect(error).toBeInstanceOf(ProcessError); expect((error as ProcessError).errno).toBe(PipeErrno.NFILE); }
+    try {
+      controller.retain(2, "write");
+      throw new Error("unexpected admission");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ProcessError);
+      expect((error as ProcessError).errno).toBe(PipeErrno.NFILE);
+    }
     expect(output(reader)).toBe("");
     expect(controller.closed).toBe(false);
-    reader.close(); expect(controller.closed).toBe(true);
-    if (maxCells === 3) expect(Atomics.load(registry.canonical(2), 0) & (1n << 32n)).toBe(1n << 32n);
+    reader.close();
+    expect(controller.closed).toBe(true);
+    if (maxCells === 3)
+      expect(Atomics.load(registry.canonical(2), 0) & (1n << 32n)).toBe(1n << 32n);
   });
 }
 
@@ -1219,9 +1602,15 @@ test("endpoint lifetime allocation failure does not retain an invisible writer",
   const { controller, reader, writer } = pipe();
   const previous = globalThis.SharedArrayBuffer;
   try {
-    globalThis.SharedArrayBuffer = new Proxy(previous, { construct() { throw new RangeError("injected lifetime allocation"); } });
+    globalThis.SharedArrayBuffer = new Proxy(previous, {
+      construct() {
+        throw new RangeError("injected lifetime allocation");
+      },
+    });
     expect(() => controller.duplicate(writer)).toThrow(RangeError);
-  } finally { globalThis.SharedArrayBuffer = previous; }
+  } finally {
+    globalThis.SharedArrayBuffer = previous;
+  }
   writer.close();
   expect(output(reader)).toBe("");
   reader.close();

@@ -3,8 +3,23 @@
 // worker's NetRequests, performs real `fetch`es, runs virtual preview connections, and writes every
 // result into the worker's ring.
 
-import { type ResponseHead, type ResponseSink, ResponseParser, type PreviewRequest, serializeRequest } from "./http1.js";
-import { CONN_BASE, FETCH_WINDOW, type FetchHead, Kind, MAX_RECORD, type NetError, type NetRequest, type NewConn } from "./protocol.js";
+import {
+  type ResponseHead,
+  type ResponseSink,
+  ResponseParser,
+  type PreviewRequest,
+  serializeRequest,
+} from "./http1.js";
+import {
+  CONN_BASE,
+  FETCH_WINDOW,
+  type FetchHead,
+  Kind,
+  MAX_RECORD,
+  type NetError,
+  type NetRequest,
+  type NewConn,
+} from "./protocol.js";
 import { RingWriter } from "./ring.js";
 
 const encoder = new TextEncoder();
@@ -111,13 +126,23 @@ export class NetHelper {
     return this.requestConnection(port, req, sink) !== null;
   }
 
-  private requestConnection(port: number, req: PreviewRequest, sink: PreviewSink): PreviewConnection | null {
+  private requestConnection(
+    port: number,
+    req: PreviewRequest,
+    sink: PreviewSink,
+  ): PreviewConnection | null {
     let connection: PreviewConnection | null = null;
     const finish: PreviewSink = {
       head: (head: ResponseHead) => sink.head(head),
       data: (chunk) => sink.data(chunk),
-      end: () => { connection?.close(); sink.end(); },
-      error: (message) => { connection?.close(); sink.error(message); },
+      end: () => {
+        connection?.close();
+        sink.end();
+      },
+      error: (message) => {
+        connection?.close();
+        sink.error(message);
+      },
     };
     const parser = new ResponseParser(finish, req.method === "HEAD");
     connection = this.connect(port, {
@@ -134,7 +159,8 @@ export class NetHelper {
    * an older notification must not overwrite a newer save already visible to the guest.
    */
   notifyFileChanged(path: string): Promise<void> {
-    if (!path.startsWith("/") || path.includes("\0")) return Promise.reject(new TypeError("Expected an absolute guest path"));
+    if (!path.startsWith("/") || path.includes("\0"))
+      return Promise.reject(new TypeError("Expected an absolute guest path"));
     this.fileWrites = this.fileWrites.then(async () => {
       if (this.disposed) throw new Error("The server stopped");
       await this.ring.write(0, Kind.FileChanged, json({ path }));
@@ -147,7 +173,8 @@ export class NetHelper {
    * have not already written to its shared filesystem; editor saves use notifyFileChanged instead.
    */
   changeFile(path: string, contents: string | Uint8Array): Promise<void> {
-    if (!path.startsWith("/") || path.includes("\0")) return Promise.reject(new TypeError("Expected an absolute guest path"));
+    if (!path.startsWith("/") || path.includes("\0"))
+      return Promise.reject(new TypeError("Expected an absolute guest path"));
     const bytes = typeof contents === "string" ? encoder.encode(contents) : contents.slice();
     this.fileWrites = this.fileWrites.then(() => this.sendFile(path, bytes));
     return this.fileWrites;
@@ -170,7 +197,10 @@ export class NetHelper {
     if (listener === undefined || this.disposed) return null;
     const conn = this.nextConn++;
     this.connections.set(conn, sink);
-    const announce: NewConn = { conn, peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" } };
+    const announce: NewConn = {
+      conn,
+      peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" },
+    };
     let sending = this.ring.write(listener, Kind.Conn, json(announce));
     return {
       write: (bytes) => {
@@ -222,7 +252,11 @@ export class NetHelper {
     await this.pumpBody(req.id, job, response.body);
   }
 
-  private async pumpBody(id: number, job: FetchJob, body: ReadableStream<Uint8Array> | null): Promise<void> {
+  private async pumpBody(
+    id: number,
+    job: FetchJob,
+    body: ReadableStream<Uint8Array> | null,
+  ): Promise<void> {
     const reader = body?.getReader();
     try {
       for (;;) {
@@ -267,25 +301,36 @@ export class NetHelper {
     // chunk must finish before the next chunk or terminal record can overtake it.
     let sending: Promise<void> = Promise.resolve();
     const enqueue = (operation: () => Promise<void>) => {
-      sending = sending.then(() => live() ? operation() : undefined);
+      sending = sending.then(() => (live() ? operation() : undefined));
     };
-    const finish = (kind: number, payload?: Uint8Array) => enqueue(async () => {
-      await this.ring.write(id, kind, payload);
-      if (live()) this.fetches.delete(id);
-    });
+    const finish = (kind: number, payload?: Uint8Array) =>
+      enqueue(async () => {
+        await this.ring.write(id, kind, payload);
+        if (live()) this.fetches.delete(id);
+      });
     const url = new URL(req.url);
-    const connection = this.requestConnection(port, { method: req.method, target: url.pathname + url.search, headers: req.headers, body: req.body }, {
-      head: (head) => {
-        const payload = json({ ...head, url: req.url, redirected: false } satisfies FetchHead);
-        enqueue(() => this.ring.write(id, Kind.Head, payload));
+    const connection = this.requestConnection(
+      port,
+      {
+        method: req.method,
+        target: url.pathname + url.search,
+        headers: req.headers,
+        body: req.body,
       },
-      data: (chunk) => {
-        const owned = chunk.slice();
-        enqueue(() => this.writeChunks(id, owned, live));
+      {
+        head: (head) => {
+          const payload = json({ ...head, url: req.url, redirected: false } satisfies FetchHead);
+          enqueue(() => this.ring.write(id, Kind.Head, payload));
+        },
+        data: (chunk) => {
+          const owned = chunk.slice();
+          enqueue(() => this.writeChunks(id, owned, live));
+        },
+        end: () => finish(Kind.End),
+        error: (message) =>
+          finish(Kind.Error, json({ name: "TypeError", message } satisfies NetError)),
       },
-      end: () => finish(Kind.End),
-      error: (message) => finish(Kind.Error, json({ name: "TypeError", message } satisfies NetError)),
-    });
+    );
     // A cancelled fetch owns the other end of this virtual connection, not just its job entry.
     job.controller.signal.addEventListener("abort", () => connection?.close(), { once: true });
   }
@@ -311,7 +356,9 @@ export class NetHelper {
     this.fetches.delete(id);
     // Pass the engine's own wording through ("Failed to fetch" in Chromium, "Load failed" in WebKit).
     const error: NetError =
-      err instanceof Error ? { name: err.name || "TypeError", message: err.message } : { name: "TypeError", message: String(err) };
+      err instanceof Error
+        ? { name: err.name || "TypeError", message: err.message }
+        : { name: "TypeError", message: String(err) };
     await this.ring.write(id, Kind.Error, json(error));
   }
 
@@ -339,7 +386,11 @@ export class NetHelper {
   }
 
   /** Data records for `bytes`, split to fit the ring's record size. */
-  private async writeChunks(handle: number, bytes: Uint8Array, live?: () => boolean): Promise<void> {
+  private async writeChunks(
+    handle: number,
+    bytes: Uint8Array,
+    live?: () => boolean,
+  ): Promise<void> {
     for (let at = 0; at < bytes.length; at += MAX_RECORD) {
       if (live && !live()) return;
       await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD));

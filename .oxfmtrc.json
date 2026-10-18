@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "astro": true,
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.astro/**",
+    "**/.wrangler/**",
+    "**/bun.lock",
+    "LICENSE*",
+    "AGENTS.md",
+    "README.md",
+    "site/README.md",
+    "patches/**",
+    "docs/benchmarks/**",
+    "site/src/scripts/waffle-scene.ts"
+  ]
+}

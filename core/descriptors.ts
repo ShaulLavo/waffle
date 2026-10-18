@@ -33,9 +33,14 @@ export type Resource =
 /** POSIX open description: offset, flags and lifetime shared by all descriptor references. */
 export class OpenDescription {
   private count = 0;
-  get references(): number { return this.count; }
+  get references(): number {
+    return this.count;
+  }
   private released = false;
-  constructor(public readonly resource: Resource, private readonly release?: () => void) {}
+  constructor(
+    public readonly resource: Resource,
+    private readonly release?: () => void,
+  ) {}
   retain(): void {
     if (this.released) throw new Error("open description is closed");
     this.count++;
@@ -62,17 +67,29 @@ export class DescriptorTable {
   private next = 0;
   private cleanupFailures: unknown[] = [];
   /** Deliver a failed transferred-resource release to this table's teardown owner once. */
-  recordCleanupFailure(error: unknown): void { this.cleanupFailures.push(error); }
-  get(fd: number): Descriptor | undefined { return this.entries.get(fd); }
-  add(description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
+  recordCleanupFailure(error: unknown): void {
+    this.cleanupFailures.push(error);
+  }
+  get(fd: number): Descriptor | undefined {
+    return this.entries.get(fd);
+  }
+  add(
+    description: OpenDescription,
+    rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string },
+  ): number {
     if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     let fd = this.next;
     while (this.entries.has(fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     return this.addAt(fd, description, rights);
   }
   /** Add a descriptor at an exact number without replacing an existing entry. */
-  addAt(fd: number, description: OpenDescription, rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string }): number {
-    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
+  addAt(
+    fd: number,
+    description: OpenDescription,
+    rights: { rightsBase: bigint; rightsInheriting: bigint; preopen?: string },
+  ): number {
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR)
+      throw new RangeError("invalid descriptor number");
     if (this.entries.has(fd)) throw new Error(`descriptor ${fd} is already open`);
     if (this.entries.size > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     description.retain();
@@ -80,29 +97,71 @@ export class DescriptorTable {
     this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     return fd;
   }
-  open(resource: Resource, rightsBase: bigint, rightsInheriting: bigint, release?: () => void, preopen?: string): number {
-    return this.add(new OpenDescription(resource, release ?? (resource.kind === "pipe" || resource.kind === "terminal" ? () => resource.close?.() : undefined)), { rightsBase, rightsInheriting, preopen });
+  open(
+    resource: Resource,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    release?: () => void,
+    preopen?: string,
+  ): number {
+    return this.add(
+      new OpenDescription(
+        resource,
+        release ??
+          (resource.kind === "pipe" || resource.kind === "terminal"
+            ? () => resource.close?.()
+            : undefined),
+      ),
+      { rightsBase, rightsInheriting, preopen },
+    );
   }
-  openAt(fd: number, resource: Resource, rightsBase: bigint, rightsInheriting: bigint, release?: () => void, preopen?: string): number {
-    return this.addAt(fd, new OpenDescription(resource, release ?? (resource.kind === "pipe" || resource.kind === "terminal" ? () => resource.close?.() : undefined)), { rightsBase, rightsInheriting, preopen });
+  openAt(
+    fd: number,
+    resource: Resource,
+    rightsBase: bigint,
+    rightsInheriting: bigint,
+    release?: () => void,
+    preopen?: string,
+  ): number {
+    return this.addAt(
+      fd,
+      new OpenDescription(
+        resource,
+        release ??
+          (resource.kind === "pipe" || resource.kind === "terminal"
+            ? () => resource.close?.()
+            : undefined),
+      ),
+      { rightsBase, rightsInheriting, preopen },
+    );
   }
   dup(fd: number): number {
     const entry = this.entries.get(fd);
     if (!entry) return -8;
     // Preopen discovery belongs to the binding, not the shared description.
-    return this.add(entry.description, { rightsBase: entry.rightsBase, rightsInheriting: entry.rightsInheriting });
+    return this.add(entry.description, {
+      rightsBase: entry.rightsBase,
+      rightsInheriting: entry.rightsInheriting,
+    });
   }
   /** Retain before replacing, including when both bindings already share the description. */
   inherit(fd: number, source: Descriptor): void {
-    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR)
+      throw new RangeError("invalid descriptor number");
     source.description.retain();
     this.close(fd);
-    this.entries.set(fd, { description: source.description, resource: source.resource, rightsBase: source.rightsBase, rightsInheriting: source.rightsInheriting });
+    this.entries.set(fd, {
+      description: source.description,
+      resource: source.resource,
+      rightsBase: source.rightsBase,
+      rightsInheriting: source.rightsInheriting,
+    });
     if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
   }
   /** Restore a complete descriptor binding, including preopen metadata, after a failed transaction. */
   restore(fd: number, source: Descriptor): void {
-    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR) throw new RangeError("invalid descriptor number");
+    if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR)
+      throw new RangeError("invalid descriptor number");
     source.description.retain();
     this.close(fd);
     this.entries.set(fd, { ...source, resource: source.description.resource });
@@ -128,7 +187,11 @@ export class DescriptorTable {
     const errors = this.cleanupFailures;
     this.cleanupFailures = [];
     for (const fd of this.entries.keys()) {
-      try { this.close(fd); } catch (error) { errors.push(error); }
+      try {
+        this.close(fd);
+      } catch (error) {
+        errors.push(error);
+      }
     }
     if (errors.length) throw new AggregateError(errors, "descriptor release failed");
   }

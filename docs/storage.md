@@ -4,10 +4,10 @@ Storage backends are bundles of performance, browser-support and durability trad
 small behaviours such as cross-tab contention are initialization settings, not new VFSs.
 `createRuntime({ filesystem: { storage, name, whenBusy } })` chooses the behaviour:
 
-| Storage | Default `whenBusy` | Other supported behaviour |
-| --- | --- | --- |
-| `opfs` | `"wait"` | None. `"takeover"` is rejected at the option type and at construction: stealing a Web Lock cannot safely displace another worker's exclusive sync-access handles. |
-| `indexeddb` | `"takeover"` | `"wait"` queues instead of stealing. Takeover still uses both lock stealing and epoch fencing to stop the displaced writer. |
+| Storage     | Default `whenBusy` | Other supported behaviour                                                                                                                                         |
+| ----------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `opfs`      | `"wait"`           | None. `"takeover"` is rejected at the option type and at construction: stealing a Web Lock cannot safely displace another worker's exclusive sync-access handles. |
+| `indexeddb` | `"takeover"`       | `"wait"` queues instead of stealing. Takeover still uses both lock stealing and epoch fencing to stop the displaced writer.                                       |
 
 A wait-policy instance queues one exclusive Web Lock request, with no stealing or repeated
 attempts. `runtime.filesystem.state.status` is `"opening"`, `"waiting"`, `"ready"`, `"failed"`
@@ -34,4 +34,3 @@ upgrade closes and cancels a waiting connection, rather than leaving the databas
 selects isolated storage for tests/workspaces. The worker is not a power-loss-safe host
 filesystem beyond the browser's storage guarantees; closing a page without a completed flush
 may lose its uncommitted edits.
-

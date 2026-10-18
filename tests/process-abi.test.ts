@@ -1,4 +1,5 @@
-import { controlLoad, controlStore, controlCas, controlExchange, controlAdd } from "../proc/control.js";
+import { controlWait, controlLoad, controlStore, controlExchange } from "../proc/control.js";
+
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Worker } from "node:worker_threads";
 import type { PipeEndpointHandle } from "../proc/pipes.js";
@@ -13,39 +14,99 @@ import { ProcessSupervisor } from "../proc/supervisor.js";
 import { Signal } from "../proc/types.js";
 
 const ALL = (1n << 29n) - 1n;
-const encoder = new TextEncoder(), decoder = new TextDecoder();
+const encoder = new TextEncoder(),
+  decoder = new TextDecoder();
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
 function fixture(overrides: Partial<ProcessABIOptions> = {}) {
-  const fs = new MemFS(), descriptors = new DescriptorTable();
-  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched by synchronous tests"); } });
+  const fs = new MemFS(),
+    descriptors = new DescriptorTable();
+  const supervisor = new ProcessSupervisor({
+    registry: new ExecutableRegistry(),
+    launch() {
+      throw new Error("not launched by synchronous tests");
+    },
+  });
   const pid = supervisor.createRoot({ descriptors });
   const signals = supervisor.get(pid)!;
   const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
   let waits = 0;
-  const abi = new ProcessABI({ memory, descriptors, fs, pid, service: supervisor, signals,
-    wait() { waits++; throw new Error("nonblocking call slept"); }, ...overrides });
+  const abi = new ProcessABI({
+    memory,
+    descriptors,
+    fs,
+    pid,
+    service: supervisor,
+    signals,
+    wait() {
+      waits++;
+      throw new Error("nonblocking call slept");
+    },
+    ...overrides,
+  });
   cleanups.push(() => supervisor.dispose());
-  const bytes = () => new Uint8Array(memory.buffer), view = () => new DataView(memory.buffer);
-  const put = (text: string, at = 2048) => { const data = encoder.encode(text); bytes().set(data, at); return data.length; };
+  const bytes = () => new Uint8Array(memory.buffer),
+    view = () => new DataView(memory.buffer);
+  const put = (text: string, at = 2048) => {
+    const data = encoder.encode(text);
+    bytes().set(data, at);
+    return data.length;
+  };
   const spawn = (fds: { child: number; parent: number }[] = [], job = 0) => {
-    const length = put(JSON.stringify({ executable: "fixture", argv: ["fixture", "a b"], env: { A: "b" }, cwd: "/tmp", job, fds }));
+    const length = put(
+      JSON.stringify({
+        executable: "fixture",
+        argv: ["fixture", "a b"],
+        env: { A: "b" },
+        cwd: "/tmp",
+        job,
+        fds,
+      }),
+    );
     return abi.imports.spawn!(2048, length);
   };
-  const pipe = () => { expect(abi.imports.pipe!(32)).toBe(0); return [view().getUint32(32, true), view().getUint32(36, true)] as const; };
+  const pipe = () => {
+    expect(abi.imports.pipe!(32)).toBe(0);
+    return [view().getUint32(32, true), view().getUint32(36, true)] as const;
+  };
   const sub = (index: number, kind: number, id: number, userdata = BigInt(index + 1)) => {
     const at = 256 + index * 16;
-    view().setUint32(at, kind, true); view().setUint32(at + 4, id, true); view().setBigUint64(at + 8, userdata, true);
+    view().setUint32(at, kind, true);
+    view().setUint32(at + 4, id, true);
+    view().setBigUint64(at + 8, userdata, true);
   };
-  return { fs, descriptors, supervisor, pid, signals, memory, abi, bytes, view, put, spawn, pipe, sub, waits: () => waits };
+  return {
+    fs,
+    descriptors,
+    supervisor,
+    pid,
+    signals,
+    memory,
+    abi,
+    bytes,
+    view,
+    put,
+    spawn,
+    pipe,
+    sub,
+    waits: () => waits,
+  };
 }
 
 test("getpid returns each caller's own runtime identity, not its parent or job", () => {
   const f = fixture();
   const child = f.spawn();
   const record = f.supervisor.get(child)!;
-  const childABI = new ProcessABI({ memory: f.memory, descriptors: record.descriptors, fs: f.fs,
-    pid: child, service: f.supervisor, signals: record });
+  const childABI = new ProcessABI({
+    memory: f.memory,
+    descriptors: record.descriptors,
+    fs: f.fs,
+    pid: child,
+    service: f.supervisor,
+    signals: record,
+  });
   expect(f.abi.imports.getpid!()).toBe(f.pid);
   expect(childABI.imports.getpid!()).toBe(child);
   expect(child).toBeGreaterThan(0);
@@ -53,23 +114,42 @@ test("getpid returns each caller's own runtime identity, not its parent or job",
   expect(f.waits()).toBe(0);
 });
 
-for (const pid of [37, 0x7fffffff]) test(`Wasm getpid returns positive i32 ${pid} without memory, service or wait access`, () => {
-  const f = fixture();
-  const unused = (): never => { throw new Error("getpid must remain local and nonblocking"); };
-  const abi = new ProcessABI({ memory: unused, descriptors: f.descriptors, fs: f.fs, pid,
-    service: new Proxy(f.supervisor, { get: unused }), signals: f.signals, wait: unused });
-  const guest = new WebAssembly.Instance(guestModule(), { env: { memory: f.memory }, runtime_proc: abi.imports });
-  expect((guest.exports.getpid as () => number)()).toBe(pid);
-  expect(f.waits()).toBe(0);
-});
+for (const pid of [37, 0x7fffffff])
+  test(`Wasm getpid returns positive i32 ${pid} without memory, service or wait access`, () => {
+    const f = fixture();
+    const unused = (): never => {
+      throw new Error("getpid must remain local and nonblocking");
+    };
+    const abi = new ProcessABI({
+      memory: unused,
+      descriptors: f.descriptors,
+      fs: f.fs,
+      pid,
+      service: new Proxy(f.supervisor, { get: unused }),
+      signals: f.signals,
+      wait: unused,
+    });
+    const guest = new WebAssembly.Instance(guestModule(), {
+      env: { memory: f.memory },
+      runtime_proc: abi.imports,
+    });
+    expect((guest.exports.getpid as () => number)()).toBe(pid);
+    expect(f.waits()).toBe(0);
+  });
 
 test("spawn snapshots JSON and retains arbitrary fd bindings before returning", () => {
   const f = fixture();
   const [read, write] = f.pipe();
-  const child = f.spawn([{ child: 0, parent: read }, { child: 1, parent: write }, { child: 2, parent: write }, { child: 19, parent: write }]);
+  const child = f.spawn([
+    { child: 0, parent: read },
+    { child: 1, parent: write },
+    { child: 2, parent: write },
+    { child: 19, parent: write },
+  ]);
   expect(child).toBeGreaterThan(0);
   f.bytes().fill(0, 2048);
-  f.descriptors.close(read); f.descriptors.close(write);
+  f.descriptors.close(read);
+  f.descriptors.close(write);
   const childTable = f.supervisor.get(child)!.descriptors;
   expect(childTable.get(0)!.resource.kind).toBe("pipe");
   expect(childTable.get(19)!.resource.kind).toBe("pipe");
@@ -87,14 +167,28 @@ test("spawn decodes resizable guest memory through a fixed WebIDL buffer", () =>
   const nativeDecode = TextDecoder.prototype.decode;
   // TextDecoder's BufferSource does not permit resizable buffers. Enforce that WebIDL
   // contract even on hosts whose decoder currently accepts them.
-  const strictDecode = spyOn(TextDecoder.prototype, "decode").mockImplementation(function (this: TextDecoder, input, options) {
+  const strictDecode = spyOn(TextDecoder.prototype, "decode").mockImplementation(function (
+    this: TextDecoder,
+    input,
+    options,
+  ) {
     const storage = ArrayBuffer.isView(input) ? input.buffer : input;
-    if (storage instanceof ArrayBuffer && storage.resizable) throw new TypeError("resizable BufferSource is not allowed");
+    if (storage instanceof ArrayBuffer && storage.resizable)
+      throw new TypeError("resizable BufferSource is not allowed");
     return nativeDecode.call(this, input, options);
   });
   try {
-    expect(() => decoder.decode(new Uint8Array(buffer, 2048, 1))).toThrow("resizable BufferSource is not allowed");
-    const request = { executable: "fixture", argv: ["fixture", "日本語"], env: { A: "é" }, cwd: "/tmp", job: 0, fds: [] };
+    expect(() => decoder.decode(new Uint8Array(buffer, 2048, 1))).toThrow(
+      "resizable BufferSource is not allowed",
+    );
+    const request = {
+      executable: "fixture",
+      argv: ["fixture", "日本語"],
+      env: { A: "é" },
+      cwd: "/tmp",
+      job: 0,
+      fds: [],
+    };
     const child = f.abi.imports.spawn!(2048, f.put(JSON.stringify(request)));
     expect(child).toBeGreaterThan(0);
     expect(f.supervisor.get(child)!.request!.argv).toEqual(request.argv);
@@ -104,17 +198,29 @@ test("spawn decodes resizable guest memory through a fixed WebIDL buffer", () =>
     expect(f.abi.imports.spawn!(2048, f.put("not json"))).toBe(-28);
     f.bytes()[2048] = 0xff;
     expect(f.abi.imports.spawn!(2048, 1)).toBe(-28);
-  } finally { strictDecode.mockRestore(); }
+  } finally {
+    strictDecode.mockRestore();
+  }
 });
 
 test("spawn rejects malformed descriptions, invalid bindings and out-of-bounds memory", () => {
   const f = fixture();
-  for (const value of ["not json", "null", "{}", JSON.stringify({ executable: "x", argv: [4], env: {}, cwd: "/", job: 0, fds: [] })]) {
+  for (const value of [
+    "not json",
+    "null",
+    "{}",
+    JSON.stringify({ executable: "x", argv: [4], env: {}, cwd: "/", job: 0, fds: [] }),
+  ]) {
     expect(f.abi.imports.spawn!(2048, f.put(value))).toBe(-28);
   }
   expect(f.spawn([{ child: 3, parent: 9999 }])).toBe(-8);
   const [, write] = f.pipe();
-  expect(f.spawn([{ child: 3, parent: write }, { child: 3, parent: write }])).toBe(-28);
+  expect(
+    f.spawn([
+      { child: 3, parent: write },
+      { child: 3, parent: write },
+    ]),
+  ).toBe(-28);
   expect(f.abi.imports.spawn!(65535, 2)).toBe(-21);
   expect(f.abi.imports.pipe!(65532)).toBe(-21);
   expect(f.abi.imports.dup!(9999)).toBe(-8);
@@ -146,21 +252,36 @@ test("pipe reads and writes are nonblocking, partial, zero-length, EOF and EPIPE
 
 test("dup preserves write order for 2>&1 and shares the ordinary preview1 fd path", () => {
   const f = fixture();
-  const [read, stdout] = f.pipe(), stderr = f.abi.imports.dup!(stdout);
+  const [read, stdout] = f.pipe(),
+    stderr = f.abi.imports.dup!(stdout);
   f.put("one-two");
   expect(f.abi.imports.write!(stdout, 2048, 4)).toBe(4);
-  const wasi = new Wasi({ args: [], env: {}, fs: f.fs, preopens: {}, stdout() {}, stderr() {}, sleep() { throw new Error("ready pipe blocked"); } });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs: f.fs,
+    preopens: {},
+    stdout() {},
+    stderr() {},
+    sleep() {
+      throw new Error("ready pipe blocked");
+    },
+  });
   wasi.start({ exports: { memory: f.memory, _start() {} } } as unknown as WebAssembly.Instance);
   wasi.descriptors.inherit(9, f.descriptors.get(stderr)!);
   wasi.descriptors.inherit(10, f.descriptors.get(read)!);
   cleanups.push(() => wasi.descriptors.dispose());
-  f.view().setUint32(64, 2052, true); f.view().setUint32(68, 3, true);
-  const functions = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions();
+  f.view().setUint32(64, 2052, true);
+  f.view().setUint32(68, 3, true);
+  const functions = (
+    wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }
+  ).functions();
   expect(functions.fd_write!(9, 64, 1, 80)).toBe(0);
   expect(f.view().getUint32(80, true)).toBe(3);
   let received = 0;
   while (received < 7) {
-    f.view().setUint32(64, 4096 + received, true); f.view().setUint32(68, 7 - received, true);
+    f.view().setUint32(64, 4096 + received, true);
+    f.view().setUint32(68, 7 - received, true);
     expect(functions.fd_read!(10, 64, 1, 80)).toBe(0);
     const count = f.view().getUint32(80, true);
     expect(count).toBeGreaterThan(0);
@@ -178,7 +299,9 @@ test("runtime_proc handles files in the existing fd namespace and shares offsets
   const handle = f.fs.create(resolved, "file");
   if (typeof handle !== "number") throw new Error("create failed");
   f.fs.retain(handle);
-  const fd = f.descriptors.open({ kind: "file", handle, offset: 0, append: false }, ALL, ALL, () => f.fs.release(handle));
+  const fd = f.descriptors.open({ kind: "file", handle, offset: 0, append: false }, ALL, ALL, () =>
+    f.fs.release(handle),
+  );
   f.put("abcdef");
   expect(f.abi.imports.write!(fd, 2048, 6)).toBe(6);
   const file = f.descriptors.get(fd)!.resource;
@@ -190,10 +313,12 @@ test("runtime_proc handles files in the existing fd namespace and shares offsets
   expect(decoder.decode(f.bytes().subarray(4096, 4102))).toBe("abcdef");
   expect(file.offset).toBe(6);
   expect(f.abi.imports.read!(duplicate, 4096, 2)).toBe(0);
-  file.append = true; file.offset = 0;
+  file.append = true;
+  file.offset = 0;
   expect(f.abi.imports.write!(duplicate, 2048, 2)).toBe(2);
   expect(file.offset).toBe(8);
-  f.sub(0, 0, fd); f.sub(1, 1, duplicate);
+  f.sub(0, 0, fd);
+  f.sub(1, 1, duplicate);
   expect(f.abi.imports.poll!(256, 2, 0, 512)).toBe(2);
 });
 
@@ -201,7 +326,20 @@ test("file errors and capability checks do not advance offsets or write guest bu
   const f = fixture();
   const directory = f.descriptors.open({ kind: "directory", handle: f.fs.preopen("/") }, ALL, ALL);
   expect(f.abi.imports.read!(directory, 4096, 1)).toBe(-31);
-  const denied = f.descriptors.open({ kind: "terminal", read() { throw new Error("denied read"); }, write() { throw new Error("denied write"); }, readiness: () => ({ readable: true, writable: true, hangup: false }) }, 0n, 0n);
+  const denied = f.descriptors.open(
+    {
+      kind: "terminal",
+      read() {
+        throw new Error("denied read");
+      },
+      write() {
+        throw new Error("denied write");
+      },
+      readiness: () => ({ readable: true, writable: true, hangup: false }),
+    },
+    0n,
+    0n,
+  );
   expect(f.abi.imports.read!(denied, 4096, 1)).toBe(-76);
   expect(f.abi.imports.write!(denied, 2048, 1)).toBe(-76);
   const [read, write] = f.pipe();
@@ -213,7 +351,8 @@ test("file errors and capability checks do not advance offsets or write guest bu
 
 test("wait emits little-endian exit/signal records and consumes each child once", () => {
   const f = fixture();
-  const normal = f.spawn(), signaled = f.spawn();
+  const normal = f.spawn(),
+    signaled = f.spawn();
   f.supervisor.exit(normal, 23);
   expect(f.abi.imports.wait!(normal, 64)).toBe(0);
   expect(Array.from(f.bytes().subarray(64, 72))).toEqual([0, 0, 0, 0, 23, 0, 0, 0]);
@@ -229,8 +368,10 @@ test("wait emits little-endian exit/signal records and consumes each child once"
 
 test("kill_job terminates joined descendants while preserving independent background jobs", () => {
   const f = fixture();
-  const child = f.spawn(), job = f.abi.imports.job_of!(child);
-  const sibling = f.spawn([], job), background = f.spawn([], -1);
+  const child = f.spawn(),
+    job = f.abi.imports.job_of!(child);
+  const sibling = f.spawn([], job),
+    background = f.spawn([], -1);
   expect(f.abi.imports.kill_job!(job, Signal.SIGKILL)).toBe(0);
   for (const pid of [child, sibling]) {
     expect(f.abi.imports.wait!(pid, 64)).toBe(0);
@@ -244,10 +385,14 @@ test("kill_job terminates joined descendants while preserving independent backgr
 test("poll uses exact 16-byte subscription/event layouts with opaque u64 userdata", () => {
   const f = fixture();
   const [read, write] = f.pipe();
-  f.put("x"); f.abi.imports.write!(write, 2048, 1);
-  const child = f.spawn(); f.supervisor.exit(child, 0);
+  f.put("x");
+  f.abi.imports.write!(write, 2048, 1);
+  const child = f.spawn();
+  f.supervisor.exit(child, 0);
   const tag = 0xfedcba9876543210n;
-  f.sub(0, 0, read, tag); f.sub(1, 1, write, 0x1020304050607080n); f.sub(2, 2, child, 9n);
+  f.sub(0, 0, read, tag);
+  f.sub(1, 1, write, 0x1020304050607080n);
+  f.sub(2, 2, child, 9n);
   f.bytes().fill(0xaa, 512, 576);
   expect(f.abi.imports.poll!(256, 3, 0, 512)).toBe(3);
   expect(f.view().getBigUint64(512, true)).toBe(tag);
@@ -263,20 +408,31 @@ test("poll uses exact 16-byte subscription/event layouts with opaque u64 userdat
 });
 
 test("poll waits for readiness, hangup, child exit or interrupt, not read/write/wait", () => {
-  let tick = 0, action: () => void = () => {};
-  const f = fixture({ now: () => tick, wait(ms) { tick += ms; action(); } });
+  let tick = 0,
+    action: () => void = () => {};
+  const f = fixture({
+    now: () => tick,
+    wait(ms) {
+      tick += ms;
+      action();
+    },
+  });
   const [read, write] = f.pipe();
   f.sub(0, 0, read);
   expect(f.abi.imports.read!(read, 4096, 1)).toBe(-6);
   expect(tick).toBe(0);
-  action = () => { f.put("x"); f.abi.imports.write!(write, 2048, 1); };
+  action = () => {
+    f.put("x");
+    f.abi.imports.write!(write, 2048, 1);
+  };
   expect(f.abi.imports.poll!(256, 1, 100, 512)).toBe(1);
   expect(tick).toBeGreaterThan(0);
   f.abi.imports.read!(read, 4096, 1);
   action = () => f.descriptors.close(write);
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
   expect(f.view().getUint32(524, true)).toBe(1);
-  const child = f.spawn(); f.sub(0, 2, child);
+  const child = f.spawn();
+  f.sub(0, 2, child);
   action = () => f.supervisor.exit(child, 0);
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
   f.sub(0, 0, f.pipe()[0]);
@@ -287,8 +443,15 @@ test("poll waits for readiness, hangup, child exit or interrupt, not read/write/
 });
 
 test("poll timeout, invalid subscriptions and filesystem completion do not corrupt output", () => {
-  let tick = 0, complete = false;
-  const f = fixture({ now: () => tick, wait(ms) { tick += ms; complete = true; } });
+  let tick = 0,
+    complete = false;
+  const f = fixture({
+    now: () => tick,
+    wait(ms) {
+      tick += ms;
+      complete = true;
+    },
+  });
   f.sub(0, 0, f.pipe()[0]);
   expect(f.abi.imports.poll!(256, 1, 7, 512)).toBe(0);
   expect(tick).toBe(7);
@@ -299,8 +462,27 @@ test("poll timeout, invalid subscriptions and filesystem completion do not corru
   expect(f.abi.imports.poll!(65528, 1, 0, 512)).toBe(-21);
   expect(f.abi.imports.poll!(256, -1, 0, 512)).toBe(-21);
   expect(f.abi.imports.poll!(256, 1, 0, 65528)).toBe(-21);
-  const service = { waitJob: f.supervisor.waitJob.bind(f.supervisor), jobEmpty: f.supervisor.jobEmpty.bind(f.supervisor), spawn: f.supervisor.spawn.bind(f.supervisor), wait: f.supervisor.wait.bind(f.supervisor), childExited: f.supervisor.childExited.bind(f.supervisor), kill: f.supervisor.kill.bind(f.supervisor), killJob: f.supervisor.killJob.bind(f.supervisor), jobOf: f.supervisor.jobOf.bind(f.supervisor), defaultSignal: f.supervisor.defaultSignal.bind(f.supervisor), filesystemReady: (_pid: number, request: number) => request === 77 && complete };
-  const other = new ProcessABI({ memory: f.memory, descriptors: f.descriptors, fs: f.fs, pid: f.pid, signals: f.signals, service });
+  const service = {
+    startStatus: f.supervisor.startStatus.bind(f.supervisor),
+    waitJob: f.supervisor.waitJob.bind(f.supervisor),
+    jobEmpty: f.supervisor.jobEmpty.bind(f.supervisor),
+    spawn: f.supervisor.spawn.bind(f.supervisor),
+    wait: f.supervisor.wait.bind(f.supervisor),
+    childExited: f.supervisor.childExited.bind(f.supervisor),
+    kill: f.supervisor.kill.bind(f.supervisor),
+    killJob: f.supervisor.killJob.bind(f.supervisor),
+    jobOf: f.supervisor.jobOf.bind(f.supervisor),
+    defaultSignal: f.supervisor.defaultSignal.bind(f.supervisor),
+    filesystemReady: (_pid: number, request: number) => request === 77 && complete,
+  };
+  const other = new ProcessABI({
+    memory: f.memory,
+    descriptors: f.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    signals: f.signals,
+    service,
+  });
   f.sub(0, 3, 77);
   expect(other.imports.poll!(256, 1, 0, 512)).toBe(1);
   expect(f.view().getUint32(520, true)).toBe(3);
@@ -313,7 +495,8 @@ test("signal registration, shared dequeue, ignored delivery and explicit default
   expect(f.abi.imports.signal!(2, 4)).toBe(-28);
   expect(f.abi.imports.signal!(2, 2)).toBe(0);
   expect(f.abi.imports.signal!(15, 2)).toBe(0);
-  f.supervisor.kill(f.pid, 2); f.supervisor.kill(f.pid, 15);
+  f.supervisor.kill(f.pid, 2);
+  f.supervisor.kill(f.pid, 15);
   expect(f.abi.imports.interrupted!()).toBe(2);
   expect(f.abi.imports.signal!(0, 0)).toBe(15);
   expect(f.abi.imports.interrupted!()).toBe(0);
@@ -323,14 +506,19 @@ test("signal registration, shared dequeue, ignored delivery and explicit default
   expect(f.abi.imports.interrupted!()).toBe(0);
   expect(f.supervisor.get(f.pid)!.result).toBeNull();
   let error: unknown;
-  try { f.abi.imports.default_signal!(15); } catch (value) { error = value; }
+  try {
+    f.abi.imports.default_signal!(15);
+  } catch (value) {
+    error = value;
+  }
   expect(error).toBeInstanceOf(ProcessSignalExit);
   expect(f.supervisor.get(f.pid)!.result).toEqual({ kind: "signaled", code: 15, status: 143 });
 });
 
 test("restoring default with a pending signal and raising a default signal terminate synchronously", () => {
   const f = fixture();
-  f.abi.imports.signal!(2, 2); f.supervisor.kill(f.pid, 2);
+  f.abi.imports.signal!(2, 2);
+  f.supervisor.kill(f.pid, 2);
   expect(() => f.abi.imports.signal!(2, 0)).toThrow(ProcessSignalExit);
   expect(f.supervisor.get(f.pid)!.result!.status).toBe(130);
   const other = fixture();
@@ -339,8 +527,13 @@ test("restoring default with a pending signal and raising a default signal termi
 });
 
 test("guest memory growth does not leave stale IO or poll output views", () => {
-  let f: ReturnType<typeof fixture>;
-  f = fixture({ wait() { f.memory.grow(1); f.put("x"); f.abi.imports.write!(write, 2048, 1); } });
+  const f: ReturnType<typeof fixture> = fixture({
+    wait() {
+      f.memory.grow(1);
+      f.put("x");
+      f.abi.imports.write!(write, 2048, 1);
+    },
+  });
   const [read, write] = f.pipe();
   f.sub(0, 0, read);
   expect(f.abi.imports.poll!(256, 1, 100, 512)).toBe(1);
@@ -351,9 +544,17 @@ test("guest memory growth does not leave stale IO or poll output views", () => {
 
 test("guest kill authority rejects siblings and foreign jobs while allowing descendants", () => {
   const f = fixture();
-  const first = f.spawn(), sibling = f.spawn();
+  const first = f.spawn(),
+    sibling = f.spawn();
   const record = f.supervisor.get(first)!;
-  const child = new ProcessABI({ memory: f.memory, descriptors: record.descriptors, fs: f.fs, pid: first, service: f.supervisor, signals: record });
+  const child = new ProcessABI({
+    memory: f.memory,
+    descriptors: record.descriptors,
+    fs: f.fs,
+    pid: first,
+    service: f.supervisor,
+    signals: record,
+  });
   expect(child.imports.kill!(sibling, 9)).toBe(-63);
   expect(child.imports.kill!(f.pid, 9)).toBe(-63);
   expect(child.imports.kill_job!(f.supervisor.jobOf(sibling), 9)).toBe(-63);
@@ -365,39 +566,64 @@ test("guest kill authority rejects siblings and foreign jobs while allowing desc
 });
 
 test("cold file I/O uses nonblocking hooks and commits only the successful retry", () => {
-  let ready = false, commits = 0, text = "";
+  let ready = false,
+    commits = 0,
+    text = "";
   class AsyncFiles extends MemFS {
-    override read(): never { throw new Error("blocking file read"); }
-    override write(): never { throw new Error("blocking file write"); }
-    override append(): never { throw new Error("blocking file append"); }
+    override read(): never {
+      throw new Error("blocking file read");
+    }
+    override write(): never {
+      throw new Error("blocking file write");
+    }
+    override append(): never {
+      throw new Error("blocking file append");
+    }
     tryRead(_handle: number, chunks: readonly Uint8Array[]): number {
       if (!ready) return -6;
-      chunks[0]!.set([120]); return 1;
+      chunks[0]!.set([120]);
+      return 1;
     }
     tryWrite(_handle: number, chunks: readonly Uint8Array[]): number {
       if (!ready) return -6;
-      commits++; text = decoder.decode(chunks[0]); return chunks[0]!.length;
+      commits++;
+      text = decoder.decode(chunks[0]);
+      return chunks[0]!.length;
     }
     tryAppend(handle: number, chunks: readonly Uint8Array[]) {
       const written = this.tryWrite(handle, chunks);
       return written < 0 ? written : { written, offset: 20 + written };
     }
-    ioReadiness() { return { readable: ready, writable: ready, hangup: false }; }
-    readiness(id: number) { return id === 8 ? { ready } : undefined; }
+    ioReadiness() {
+      return { readable: ready, writable: ready, hangup: false };
+    }
+    readiness(id: number) {
+      return id === 8 ? { ready } : undefined;
+    }
   }
-  const f = fixture({ fs: new AsyncFiles(), wait() { ready = true; } });
+  const f = fixture({
+    fs: new AsyncFiles(),
+    wait() {
+      ready = true;
+    },
+  });
   const resource = { kind: "file" as const, handle: 42, offset: 3, append: false };
   const fd = f.descriptors.open(resource, ALL, ALL);
   f.put("first");
   expect(f.abi.imports.write!(fd, 2048, 5)).toBe(-6);
-  expect(resource.offset).toBe(3); expect(commits).toBe(0);
-  f.sub(0, 1, fd); f.sub(1, 3, 8);
+  expect(resource.offset).toBe(3);
+  expect(commits).toBe(0);
+  f.sub(0, 1, fd);
+  f.sub(1, 3, 8);
   expect(f.abi.imports.poll!(256, 2, 100, 512)).toBe(2);
   f.put("later");
   expect(f.abi.imports.write!(fd, 2048, 5)).toBe(5);
-  expect(text).toBe("later"); expect(commits).toBe(1); expect(resource.offset).toBe(8);
+  expect(text).toBe("later");
+  expect(commits).toBe(1);
+  expect(resource.offset).toBe(8);
   expect(f.abi.imports.read!(fd, 4096, 1)).toBe(1);
-  expect(f.bytes()[4096]).toBe(120); expect(resource.offset).toBe(9);
+  expect(f.bytes()[4096]).toBe(120);
+  expect(resource.offset).toBe(9);
   resource.append = true;
   expect(f.abi.imports.write!(fd, 2048, 5)).toBe(5);
   expect(resource.offset).toBe(25);
@@ -406,11 +632,14 @@ test("cold file I/O uses nonblocking hooks and commits only the successful retry
 test("shared file-offset contention returns EAGAIN until poll can observe the lock release", () => {
   const identity = createFilesystemIdentity(undefined, 16 * 1024 * 1024);
   cleanups.push(() => reapFilesystem(identity));
-  let cells!: Int32Array;
-  const f = fixture({ wait() { controlStore(cells, 0, 0); } });
+  const f = fixture({
+    wait() {
+      controlStore(cells, 0, 0);
+    },
+  });
   const resource = { kind: "file" as const, handle: 0, offset: 0, append: false };
   const buffer = shareFileResource(resource, identity);
-  cells = new Int32Array(buffer);
+  const cells = new Int32Array(buffer);
   const otherOwner = identity.owner + 1;
   controlStore(cells, 0, otherOwner);
   const fd = f.descriptors.open(resource, ALL, ALL);
@@ -423,9 +652,12 @@ test("shared file-offset contention returns EAGAIN until poll can observe the lo
 
 test("poll observes remaining handled signals after a wake hint is consumed and returns on fatal interrupts", () => {
   const f = fixture();
-  const [read] = f.pipe(); f.sub(0, 0, read);
-  f.abi.imports.signal!(2, 2); f.abi.imports.signal!(15, 2);
-  f.supervisor.kill(f.pid, 2); f.supervisor.kill(f.pid, 15);
+  const [read] = f.pipe();
+  f.sub(0, 0, read);
+  f.abi.imports.signal!(2, 2);
+  f.abi.imports.signal!(15, 2);
+  f.supervisor.kill(f.pid, 2);
+  f.supervisor.kill(f.pid, 15);
   expect(f.abi.imports.interrupted!()).toBe(2);
   // Dequeue keeps the WASI hint armed for remaining signals. Generic poll must also
   // observe authoritative pending state if an independent checkpoint consumed that hint.
@@ -442,7 +674,8 @@ test("local pipe revocation registrations end with the last endpoint reference",
   const [read, write] = f.pipe();
   expect(f.supervisor.get(f.pid)!.revocations.size).toBe(1);
   const duplicate = f.abi.imports.dup!(write);
-  f.descriptors.close(read); f.descriptors.close(write);
+  f.descriptors.close(read);
+  f.descriptors.close(write);
   expect(f.supervisor.get(f.pid)!.revocations.size).toBe(1);
   f.descriptors.close(duplicate);
   expect(f.supervisor.get(f.pid)!.revocations.size).toBe(0);
@@ -450,20 +683,47 @@ test("local pipe revocation registrations end with the last endpoint reference",
 
 test("ABI never invokes a pipe's potentially blocking preview1 methods", () => {
   const f = fixture();
-  const stream: Stream = { kind: "pipe", read() { throw new Error("blocking preview1 read"); }, write() { throw new Error("blocking preview1 write"); }, readiness: () => ({ readable: true, writable: true, hangup: false }) };
+  const stream: Stream = {
+    kind: "pipe",
+    read() {
+      throw new Error("blocking preview1 read");
+    },
+    write() {
+      throw new Error("blocking preview1 write");
+    },
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+  };
   const fd = f.descriptors.open(stream, ALL, ALL);
   expect(f.abi.imports.read!(fd, 4096, 1)).toBe(-52);
   expect(f.abi.imports.write!(fd, 2048, 1)).toBe(-52);
 });
 
 test("runtime_proc never calls the preview1 terminal's blocking stdin callback", () => {
-  const f = fixture(); let calls = 0;
-  const wasi = new Wasi({ args: [], env: {}, fs: f.fs, preopens: {}, stdout() {}, stderr() {}, sleep() {},
-    stdin() { calls++; throw new Error("BLOCKING_STDIN_INVOKED"); },
+  const f = fixture();
+  let calls = 0;
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs: f.fs,
+    preopens: {},
+    stdout() {},
+    stderr() {},
+    sleep() {},
+    stdin() {
+      calls++;
+      throw new Error("BLOCKING_STDIN_INVOKED");
+    },
   });
   cleanups.push(() => wasi.descriptors.dispose());
   wasi.start({ exports: { memory: f.memory, _start() {} } } as unknown as WebAssembly.Instance);
-  const abi = new ProcessABI({ memory: f.memory, descriptors: wasi.descriptors, fs: f.fs, pid: f.pid, service: f.supervisor, signals: f.signals });
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: wasi.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+  });
   expect(abi.imports.read!(0, 4096, 1)).toBe(-6);
   expect(calls).toBe(0);
   f.put("output");
@@ -471,19 +731,44 @@ test("runtime_proc never calls the preview1 terminal's blocking stdin callback",
 });
 
 test("blocking terminal stdin does not turn async read-poll-read into a hot loop", () => {
-  const f = fixture(); let calls = 0, waits = 0;
-  const wasi = new Wasi({ args: [], env: {}, fs: f.fs, preopens: {}, stdout() {}, stderr() {},
-    sleep() { throw new Error("preview1 stdin poll changed its existing immediate semantics"); },
-    stdin() { calls++; return new Uint8Array([122]); },
+  const f = fixture();
+  let calls = 0,
+    waits = 0;
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs: f.fs,
+    preopens: {},
+    stdout() {},
+    stderr() {},
+    sleep() {
+      throw new Error("preview1 stdin poll changed its existing immediate semantics");
+    },
+    stdin() {
+      calls++;
+      return new Uint8Array([122]);
+    },
   });
   cleanups.push(() => wasi.descriptors.dispose());
   wasi.start({ exports: { memory: f.memory, _start() {} } } as unknown as WebAssembly.Instance);
-  const functions = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions();
-  f.view().setUint8(8, 1); f.view().setUint32(16, 0, true);
+  const functions = (
+    wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }
+  ).functions();
+  f.view().setUint8(8, 1);
+  f.view().setUint32(16, 0, true);
   expect(functions.poll_oneoff!(0, 1024, 1, 2048)).toBe(0);
   expect(f.view().getUint32(2048, true)).toBe(1);
-  const abi = new ProcessABI({ memory: f.memory, descriptors: wasi.descriptors, fs: f.fs, pid: f.pid, service: f.supervisor, signals: f.signals,
-    wait() { waits++; f.supervisor.kill(f.pid, 2); },
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: wasi.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wait() {
+      waits++;
+      f.supervisor.kill(f.pid, 2);
+    },
   });
   abi.imports.signal!(2, 2);
   expect(abi.imports.read!(0, 4096, 1)).toBe(-6);
@@ -493,7 +778,8 @@ test("blocking terminal stdin does not turn async read-poll-read into a hot loop
   expect(abi.imports.interrupted!()).toBe(2);
   expect(abi.imports.read!(0, 4096, 1)).toBe(-6);
   expect(calls).toBe(0);
-  f.view().setUint32(64, 4096, true); f.view().setUint32(68, 1, true);
+  f.view().setUint32(64, 4096, true);
+  f.view().setUint32(68, 1, true);
   expect(functions.fd_read!(0, 64, 1, 80)).toBe(0);
   expect(f.view().getUint32(80, true)).toBe(1);
   expect(f.bytes()[4096]).toBe(122);
@@ -502,16 +788,36 @@ test("blocking terminal stdin does not turn async read-poll-read into a hot loop
 
 test("async terminal EOF remains ready and unsupported hangup does not mask a supported direction", () => {
   const f = fixture();
-  const wasi = new Wasi({ args: [], env: {}, fs: f.fs, preopens: {}, stdout() {}, stderr() {}, sleep() {} });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs: f.fs,
+    preopens: {},
+    stdout() {},
+    stderr() {},
+    sleep() {},
+  });
   cleanups.push(() => wasi.descriptors.dispose());
-  const abi = new ProcessABI({ memory: f.memory, descriptors: wasi.descriptors, fs: f.fs, pid: f.pid, service: f.supervisor, signals: f.signals,
-    wait() { throw new Error("EOF terminal must not wait"); },
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: wasi.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wait() {
+      throw new Error("EOF terminal must not wait");
+    },
   });
   f.sub(0, 0, 0);
   expect(abi.imports.poll!(256, 1, -1, 512)).toBe(1);
   expect(f.view().getUint32(524, true)).toBe(1);
   expect(abi.imports.read!(0, 4096, 1)).toBe(0);
-  const terminal: Stream = { kind: "terminal", read: () => 0, write: () => 0, tryWrite: chunks => chunks[0]!.length,
+  const terminal: Stream = {
+    kind: "terminal",
+    read: () => 0,
+    write: () => 0,
+    tryWrite: (chunks) => chunks[0]!.length,
     readiness: () => ({ readable: true, writable: true, hangup: true }),
   };
   const fd = wasi.descriptors.open(terminal, ALL, ALL);
@@ -523,15 +829,45 @@ test("async terminal EOF remains ready and unsupported hangup does not mask a su
 });
 
 test("custom terminal immediate I/O keeps its explicit async readiness contract", () => {
-  const f = fixture(); let ready = false, waits = 0;
-  const stdin: Stream = { kind: "terminal", read() { throw new Error("blocking read entered"); }, write: () => 0,
-    tryRead(chunks) { if (!ready) return -6; chunks[0]![0] = 120; ready = false; return 1; },
+  const f = fixture();
+  let ready = false,
+    waits = 0;
+  const stdin: Stream = {
+    kind: "terminal",
+    read() {
+      throw new Error("blocking read entered");
+    },
+    write: () => 0,
+    tryRead(chunks) {
+      if (!ready) return -6;
+      chunks[0]![0] = 120;
+      ready = false;
+      return 1;
+    },
     readiness: () => ({ readable: ready, writable: false, hangup: false }),
   };
-  const wasi = new Wasi({ args: [], env: {}, fs: f.fs, preopens: {}, stdout() {}, stderr() {}, sleep() {}, stdio: { 0: stdin } });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs: f.fs,
+    preopens: {},
+    stdout() {},
+    stderr() {},
+    sleep() {},
+    stdio: { 0: stdin },
+  });
   cleanups.push(() => wasi.descriptors.dispose());
-  const abi = new ProcessABI({ memory: f.memory, descriptors: wasi.descriptors, fs: f.fs, pid: f.pid, service: f.supervisor, signals: f.signals,
-    wait() { waits++; ready = true; },
+  const abi = new ProcessABI({
+    memory: f.memory,
+    descriptors: wasi.descriptors,
+    fs: f.fs,
+    pid: f.pid,
+    service: f.supervisor,
+    signals: f.signals,
+    wait() {
+      waits++;
+      ready = true;
+    },
   });
   expect(abi.imports.read!(0, 4096, 1)).toBe(-6);
   f.sub(0, 0, 0);
@@ -542,12 +878,20 @@ test("custom terminal immediate I/O keeps its explicit async readiness contract"
 });
 
 test("spawn rejects unrepresentable fd bindings and high valid fd allocation stays positive and resolvable", () => {
-  const endpoint = (): Stream => ({ kind: "pipe", read: () => 0, write: () => 0, readiness: () => ({ readable: true, writable: true, hangup: false }) });
+  const endpoint = (): Stream => ({
+    kind: "pipe",
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+  });
   const f = fixture({ createPipe: () => [endpoint(), endpoint()] });
   const fd = f.descriptors.open({ kind: "directory", handle: 42 }, ALL, ALL);
   expect(f.spawn([{ child: 0xffffffff, parent: fd }])).toBe(-28);
   f.descriptors.inherit(0x7fffffff, f.descriptors.get(fd)!);
-  const guest = new WebAssembly.Instance(guestModule(), { env: { memory: f.memory }, runtime_proc: f.abi.imports });
+  const guest = new WebAssembly.Instance(guestModule(), {
+    env: { memory: f.memory },
+    runtime_proc: f.abi.imports,
+  });
   const dup = guest.exports.dup as (fd: number) => number;
   const duplicate = dup(fd);
   expect(duplicate).toBeGreaterThanOrEqual(0);
@@ -561,48 +905,91 @@ test("spawn rejects unrepresentable fd bindings and high valid fd allocation sta
 });
 
 test("the wait hook receives the sequence captured before a racing ready publication", () => {
-  const wake = new Int32Array(new SharedArrayBuffer(4)); let ready = false;
-  const f = fixture({ wake, wait(milliseconds, word, expected) {
-    ready = true; Atomics.add(wake, 0, 1); Atomics.notify(wake, 0);
-    expect(word).toBe(wake); expect(expected).toBe(0);
-    expect(Atomics.wait(word, 0, expected, milliseconds)).toBe("not-equal");
-  } });
-  const stream: Stream = { kind: "pipe", notification: wake, read: () => 0, write: () => 0,
-    readiness: () => ({ readable: ready, writable: false, hangup: false }) };
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  let ready = false;
+  const f = fixture({
+    wake,
+    wait(milliseconds, word, expected) {
+      ready = true;
+      Atomics.add(wake, 0, 1);
+      Atomics.notify(wake, 0);
+      expect(word).toBe(wake);
+      expect(expected).toBe(0);
+      expect(controlWait(word, 0, expected, milliseconds)).toBe("not-equal");
+    },
+  });
+  const stream: Stream = {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: ready, writable: false, hangup: false }),
+  };
   f.sub(0, 0, f.descriptors.open(stream, ALL, ALL));
   expect(f.abi.imports.poll!(256, 1, -1, 512)).toBe(1);
 });
 
 for (const mode of ["signal", "child"] as const) {
   test(`native worker poll wakes for a ${mode} change without any common-wake notification`, async () => {
-    const f = fixture(), wake = new Int32Array(new SharedArrayBuffer(4));
+    const f = fixture(),
+      wake = new Int32Array(new SharedArrayBuffer(4));
     f.abi.imports.signal!(2, 2);
-    const child = f.supervisor.reserveSpawn(f.pid, { executable: "fixture", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
-    const worker = new Worker(new URL("./fixtures/process-abi-poll-guest.ts", import.meta.url), { workerData: { mode, pid: f.pid, child, childOutcome: f.supervisor.get(child)!.outcome, wake,
-      signals: { signalState: f.signals.signalState, interrupt: f.signals.interrupt, requestedSignal: f.signals.requestedSignal, outcome: f.signals.outcome },
-    } });
+    const child = f.supervisor.reserveSpawn(f.pid, {
+      executable: "fixture",
+      argv: [],
+      env: {},
+      cwd: "/",
+      job: 0,
+      fds: [],
+    });
+    const worker = new Worker(new URL("./fixtures/process-abi-poll-guest.ts", import.meta.url), {
+      workerData: {
+        mode,
+        pid: f.pid,
+        child,
+        childOutcome: f.supervisor.get(child)!.outcome,
+        wake,
+        signals: {
+          signalState: f.signals.signalState,
+          interrupt: f.signals.interrupt,
+          requestedSignal: f.signals.requestedSignal,
+          outcome: f.signals.outcome,
+        },
+      },
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
         timer = setTimeout(() => {
           reject(new Error(`poll missed ${mode} publication on an independent source`));
           // Release a regressed unbounded waiter before teardown; do not mistake this for success.
-          Atomics.add(wake, 0, 1); Atomics.notify(wake, 0);
+          Atomics.add(wake, 0, 1);
+          Atomics.notify(wake, 0);
         }, 1000);
         worker.once("error", reject);
-        worker.once("exit", code => { if (code !== 0) reject(new Error(`native poll worker exited ${code}`)); });
+        worker.once("exit", (code) => {
+          if (code !== 0) reject(new Error(`native poll worker exited ${code}`));
+        });
         let published = false;
-        worker.on("message", message => {
+        worker.on("message", (message) => {
           if (message.phase === "waiting") {
             if (published) return;
             published = true;
-            if (mode === "signal") f.supervisor.kill(f.pid, 2); else f.supervisor.exit(child, 23);
+            if (mode === "signal") f.supervisor.kill(f.pid, 2);
+            else f.supervisor.exit(child, 23);
           } else resolve(message);
         });
       });
-      expect(result).toEqual(mode === "signal" ? { phase: "done", ready: 0, interrupt: 2, code: 0 } : { phase: "done", ready: 1, interrupt: 0, code: 23 });
+      expect(result).toEqual(
+        mode === "signal"
+          ? { phase: "done", ready: 0, interrupt: 2, code: 0 }
+          : { phase: "done", ready: 1, interrupt: 0, code: 23 },
+      );
       expect(controlLoad(wake, 0)).toBe(0);
-    } finally { clearTimeout(timer); await worker.terminate(); }
+    } finally {
+      clearTimeout(timer);
+      await worker.terminate();
+    }
   });
 }
 
@@ -612,49 +999,99 @@ function guestModule(): WebAssembly.Module {
   const text = (value: string) => Array.from(encoder.encode(value));
   const str = (value: string) => [text(value).length].concat(text(value));
   const section = (id: number, payload: number[]) => [id, payload.length].concat(payload);
-  const type = [4, 0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f, 0x60, 0, 1, 0x7f];
-  const imports = [6].concat(str("env"), str("memory"), [2, 0, 1], names.flatMap((name, index) => str("runtime_proc").concat(str(name), [0, index === 4 ? 3 : index === 3 ? 2 : index === 2 ? 1 : 0])));
-  const exports = [5].concat(names.flatMap((name, index) => str(name).concat([0, index === 3 ? 5 : index])));
+  const type = [
+    4, 0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 1, 0x7f,
+    1, 0x7f, 0x60, 0, 1, 0x7f,
+  ];
+  const imports = [6].concat(
+    str("env"),
+    str("memory"),
+    [2, 0, 1],
+    names.flatMap((name, index) =>
+      str("runtime_proc").concat(str(name), [
+        0,
+        index === 4 ? 3 : index === 3 ? 2 : index === 2 ? 1 : 0,
+      ]),
+    ),
+  );
+  const exports = [5].concat(
+    names.flatMap((name, index) => str(name).concat([0, index === 3 ? 5 : index])),
+  );
   // dup goes through a defined WASM function so its host result crosses the actual i32 boundary.
-  const functions = [1, 2], code = [1, 6, 0, 0x20, 0, 0x10, 3, 0x0b];
-  const binary = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0].concat(section(1, type), section(2, imports), section(3, functions), section(7, exports), section(10, code)));
+  const functions = [1, 2],
+    code = [1, 6, 0, 0x20, 0, 0x10, 3, 0x0b];
+  const binary = new Uint8Array(
+    [0, 97, 115, 109, 1, 0, 0, 0].concat(
+      section(1, type),
+      section(2, imports),
+      section(3, functions),
+      section(7, exports),
+      section(10, code),
+    ),
+  );
   return new WebAssembly.Module(binary);
 }
 
 test("async-style WASM guest imports return synchronously and block only in poll", () => {
   const f = fixture();
-  const guest = new WebAssembly.Instance(guestModule(), { env: { memory: f.memory }, runtime_proc: f.abi.imports });
+  const guest = new WebAssembly.Instance(guestModule(), {
+    env: { memory: f.memory },
+    runtime_proc: f.abi.imports,
+  });
   const funcs = guest.exports as Record<string, (...args: number[]) => number>;
   const [read, write] = f.pipe();
   expect(funcs.read!(read, 4096, 1)).toBe(-6);
-  f.put("x"); expect(funcs.write!(write, 2048, 1)).toBe(1);
-  f.sub(0, 0, read); expect(funcs.poll!(256, 1, 0, 512)).toBe(1);
+  f.put("x");
+  expect(funcs.write!(write, 2048, 1)).toBe(1);
+  f.sub(0, 0, read);
+  expect(funcs.poll!(256, 1, 0, 512)).toBe(1);
   expect(f.waits()).toBe(0);
 });
 
 test("a worker-hosted WASM guest returns EAGAIN before poll blocks and wakes on a pipe publish", async () => {
-  const f = fixture(), [read, write] = f.pipe();
+  const f = fixture(),
+    [read, write] = f.pipe();
   const endpoint = f.descriptors.get(read)!.resource as Stream & { handle(): PipeEndpointHandle };
-  const worker = new Worker(new URL("./fixtures/process-abi-guest.ts", import.meta.url), { workerData: {
-    endpoint: endpoint.handle(), module: guestModule(), pid: f.pid,
-    signals: { interrupt: f.signals.interrupt, requestedSignal: f.signals.requestedSignal, signalState: f.signals.signalState, outcome: f.signals.outcome },
-  } });
+  const worker = new Worker(new URL("./fixtures/process-abi-guest.ts", import.meta.url), {
+    workerData: {
+      endpoint: endpoint.handle(),
+      module: guestModule(),
+      pid: f.pid,
+      signals: {
+        interrupt: f.signals.interrupt,
+        requestedSignal: f.signals.requestedSignal,
+        signalState: f.signals.signalState,
+        outcome: f.signals.outcome,
+      },
+    },
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
       timer = setTimeout(() => reject(new Error("worker guest poll did not wake")), 5000);
       worker.once("error", reject);
-      worker.once("exit", code => { if (code !== 0) reject(new Error(`worker exited ${code}`)); });
-      worker.on("message", message => {
+      worker.once("exit", (code) => {
+        if (code !== 0) reject(new Error(`worker exited ${code}`));
+      });
+      worker.on("message", (message) => {
         if (message.phase === "before-poll") {
-          if (message.read !== -6) reject(new Error("guest read blocked or failed to report EAGAIN"));
+          if (message.read !== -6)
+            reject(new Error("guest read blocked or failed to report EAGAIN"));
         } else if (message.phase === "blocked") {
           f.put("x");
-          if (f.abi.imports.write!(write, 2048, 1) !== 1) reject(new Error("parent pipe publish failed"));
+          if (f.abi.imports.write!(write, 2048, 1) !== 1)
+            reject(new Error("parent pipe publish failed"));
         } else resolve(message);
       });
     });
-    expect(result).toEqual({ phase: "done", pid: f.pid, ready: 1, count: 1, byte: 120, userdata: 77n });
+    expect(result).toEqual({
+      phase: "done",
+      pid: f.pid,
+      ready: 1,
+      count: 1,
+      byte: 120,
+      userdata: 77n,
+    });
   } finally {
     clearTimeout(timer);
     await worker.terminate();
@@ -662,7 +1099,8 @@ test("a worker-hosted WASM guest returns EAGAIN before poll blocks and wakes on 
 });
 
 test("repeated child readiness polling does not collect the later consuming wait", () => {
-  const f = fixture(), pid = f.spawn();
+  const f = fixture(),
+    pid = f.spawn();
   f.sub(0, 2, pid);
   expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(0);
   f.supervisor.exit(pid, 37);

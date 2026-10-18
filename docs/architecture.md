@@ -17,8 +17,13 @@ The [package export map](../package.json) lists the supported entry points.
 import { Wasi } from "waffle/core";
 
 const wasi = new Wasi({
-  args: ["program"], env: {}, fs, preopens: { "/": "/" },
-  stdout: bytes => output(bytes), stderr: bytes => errors(bytes), sleep,
+  args: ["program"],
+  env: {},
+  fs,
+  preopens: { "/": "/" },
+  stdout: (bytes) => output(bytes),
+  stderr: (bytes) => errors(bytes),
+  sleep,
 });
 const instance = new WebAssembly.Instance(module, wasi.imports(module));
 const status = wasi.start(instance);
@@ -41,6 +46,7 @@ the resulting description offset. `create` carries exclusivity so competing none
 open the same current entry instead of replacing it or failing spuriously.
 `readdir` produces one entry list per call. The blocking worker adapter implements this interface
 with `Atomics.wait`, without changing preview1.
+
 ## Process service
 
 `ProcessSupervisor` from `./proc` owns process records and separate foreground/background job
@@ -142,7 +148,9 @@ program loading still comes from the registered source or module, not the marker
 ```ts
 await runtime.filesystem.writeFile("/bin/bun", "registered executable\n");
 const unregister = runtime.registerProgram("/bin/bun", {
-  adapter: "bun:quickjs", module, cooperative: true,
+  adapter: "bun:quickjs",
+  module,
+  cooperative: true,
 });
 ```
 
@@ -331,22 +339,22 @@ Every guest ABI call is nonblocking except `poll` and blocking `wait_job`. See
 zero-length I/O, or a negative WASI errno; a partial write is permitted. EAGAIN is -6 and EPIPE
 is -64. Spawn reserves inherited capabilities before returning the child PID.
 
-| Import | Contract |
-| --- | --- |
-| `spawn(ptr, len)` | UTF-8 JSON `{ executable, argv, env, cwd, job, fds: [{ child, parent }] }`; job 0 creates a foreground job, -1 creates a background job, and a positive value joins an existing job. Returns PID or negative errno. |
-| `access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` | Copies a UTF-8 executable name and absolute cwd synchronously. `mode` must be X_OK (`1`). Returns a positive process-owned request ID, or a negative errno; it never loads a module or allocates descriptors. |
-| `access_take(request)` | Returns `-EAGAIN` (`-6`) while the query is pending, then consumes it and returns `0` when the live registered file is runnable, or `-ENOENT` (`-44`), `-EACCES` (`-2`), or `-ENOTDIR` (`-54`). A consumed or unknown request returns `-EBADF` (`-8`). |
-| `access_cancel(request)` | Retires the request and discards any late filesystem/registry completion. Returns `0`, or `-EBADF` for an already retired request. |
-| `pipe(out)` | Writes two little-endian u32 fds, reader then writer; returns 0. |
-| `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
-| `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
-| `start_status(pid)` | Returns 0 once executable entry is committed, `-EAGAIN` while startup is pending, a positive WASI startup errno on failure, or `-ECANCELED` if cancellation prevented entry. Does not consume the child. |
-| `wait(pid, out)` | Returns 0 and writes u32 kind (0 exited, 1 signaled, 2 start-failed), then i32 exit code, signal number or positive WASI startup errno respectively; returns `-EAGAIN` before confirmed cleanup. |
-| `wait_job(job, flags, out)` | Writes the same eight-byte typed result as `wait`; flags 0 blocks until completion, flags 1 returns `-EAGAIN` while pending. |
-| `kill(pid, sig)`, `kill_job(job, sig)` | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner. |
-| `job_of(pid)` | Returns the job ID or negative errno. PID 0 selects the caller. Ordinary Bun children explicitly join `job_of(0)`; detached children create a new job with selector 0. |
-| `poll(subs, count, timeout_ms, out)` | Returns event count; 0 on timeout or a pending signal. Timeout -1 has no deadline. |
-| `interrupted()`, `signal(sig, mode)`, `default_signal(sig)` | Share the signal queue and dispositions. Errors use negative WASI errno: EINVAL -28, ENOTSUP -58, unavailable adapter ENOSYS -52. Terminating defaults unwind with `ProcessSignalExit`; ignored defaults return 0. |
+| Import                                                      | Contract                                                                                                                                                                                                                                               |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `spawn(ptr, len)`                                           | UTF-8 JSON `{ executable, argv, env, cwd, job, fds: [{ child, parent }] }`; job 0 creates a foreground job, -1 creates a background job, and a positive value joins an existing job. Returns PID or negative errno.                                    |
+| `access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)`  | Copies a UTF-8 executable name and absolute cwd synchronously. `mode` must be X_OK (`1`). Returns a positive process-owned request ID, or a negative errno; it never loads a module or allocates descriptors.                                          |
+| `access_take(request)`                                      | Returns `-EAGAIN` (`-6`) while the query is pending, then consumes it and returns `0` when the live registered file is runnable, or `-ENOENT` (`-44`), `-EACCES` (`-2`), or `-ENOTDIR` (`-54`). A consumed or unknown request returns `-EBADF` (`-8`). |
+| `access_cancel(request)`                                    | Retires the request and discards any late filesystem/registry completion. Returns `0`, or `-EBADF` for an already retired request.                                                                                                                     |
+| `pipe(out)`                                                 | Writes two little-endian u32 fds, reader then writer; returns 0.                                                                                                                                                                                       |
+| `dup(fd)`                                                   | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding.                                                                                                                                             |
+| `read(fd, ptr, len)`, `write(fd, ptr, len)`                 | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset.                                                                                   |
+| `start_status(pid)`                                         | Returns 0 once executable entry is committed, `-EAGAIN` while startup is pending, a positive WASI startup errno on failure, or `-ECANCELED` if cancellation prevented entry. Does not consume the child.                                               |
+| `wait(pid, out)`                                            | Returns 0 and writes u32 kind (0 exited, 1 signaled, 2 start-failed), then i32 exit code, signal number or positive WASI startup errno respectively; returns `-EAGAIN` before confirmed cleanup.                                                       |
+| `wait_job(job, flags, out)`                                 | Writes the same eight-byte typed result as `wait`; flags 0 blocks until completion, flags 1 returns `-EAGAIN` while pending.                                                                                                                           |
+| `kill(pid, sig)`, `kill_job(job, sig)`                      | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner.                                                                                                                                               |
+| `job_of(pid)`                                               | Returns the job ID or negative errno. PID 0 selects the caller. Ordinary Bun children explicitly join `job_of(0)`; detached children create a new job with selector 0.                                                                                 |
+| `poll(subs, count, timeout_ms, out)`                        | Returns event count; 0 on timeout or a pending signal. Timeout -1 has no deadline.                                                                                                                                                                     |
+| `interrupted()`, `signal(sig, mode)`, `default_signal(sig)` | Share the signal queue and dispositions. Errors use negative WASI errno: EINVAL -28, ENOTSUP -58, unavailable adapter ENOSYS -52. Terminating defaults unwind with `ProcessSignalExit`; ignored defaults return 0.                                     |
 
 Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
 u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),

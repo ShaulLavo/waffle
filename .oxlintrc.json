@@ -1,0 +1,218 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "error",
+      {
+        "args": "all",
+        "argsIgnorePattern": "^_",
+        "caughtErrors": "all",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ],
+    "eqeqeq": ["error", "always"],
+    "no-var": "error",
+    "prefer-const": "error",
+    "no-duplicate-imports": "error",
+    "import/no-cycle": "error",
+    "complexity": [
+      "error",
+      {
+        "max": 30,
+        "variant": "modified"
+      }
+    ],
+    "max-nested-callbacks": ["error", 3],
+    "max-depth": ["error", 3]
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/.astro/**",
+    "**/.wrangler/**",
+    "site/src/scripts/waffle-scene.ts"
+  ],
+  "overrides": [
+    {
+      "files": ["interrupt/rewriter.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 72,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["browser/worker.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 66,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["fs/backend.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 55,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["core/wasi.ts", "proc/worker-client.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 45,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["proc/directory.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 44,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["fs/service.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 41,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["fs/indexeddb.ts", "proc/supervisor.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 40,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["browser/process-broker.ts", "fs/opfs.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 38,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["proc/abi.ts", "proc/pipes.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 36,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": ["proc/worker-access.ts"],
+      "rules": {
+        "complexity": [
+          "error",
+          {
+            "max": 31,
+            "variant": "modified"
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "browser/process-broker.ts",
+        "fs/client.ts",
+        "proc/abi.ts",
+        "proc/directory.ts",
+        "proc/pipes.ts",
+        "proc/supervisor.ts",
+        "proc/worker-broker.ts",
+        "site/scripts/verify.ts",
+        "tests/process-recycling-browser-runner.ts"
+      ],
+      "rules": {
+        "max-depth": ["error", 5]
+      }
+    },
+    {
+      "files": [
+        "browser/net/helper.ts",
+        "browser/worker.ts",
+        "build.ts",
+        "fs/backend.ts",
+        "fs/indexeddb.ts",
+        "fs/memory.ts",
+        "fs/opfs.ts",
+        "fs/persistent.ts",
+        "fs/service.ts",
+        "fs/shared.ts",
+        "interrupt/rewriter.ts",
+        "proc/worker-client.ts",
+        "scripts/test-wasi-libc.ts",
+        "site/scripts/performance.ts",
+        "tests/fixtures/process-cell-clone.ts",
+        "tests/fixtures/wasm-start-section.ts",
+        "tests/fixtures/worker-pipe-transfer-guest.ts",
+        "tests/interrupt-browser.ts",
+        "tests/interrupt-rewriter.test.ts",
+        "tests/opfs-storage-browser.ts",
+        "tests/process-core.test.ts",
+        "tests/process-pipe-recycling.test.ts",
+        "tests/process-recycling-browser.ts",
+        "tests/startup-diagnostic-browser.ts",
+        "tests/storage-browser-runner.ts",
+        "tests/storage-lock-browser-runner.ts",
+        "tests/worker-pipes.test.ts"
+      ],
+      "rules": {
+        "max-depth": ["error", 4]
+      }
+    },
+    {
+      "files": ["tooling/quality*.ts"],
+      "rules": {
+        "max-depth": ["error", 3],
+        "complexity": ["error", 15],
+        "typescript/no-explicit-any": "error"
+      }
+    }
+  ]
+}

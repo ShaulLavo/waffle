@@ -58,9 +58,11 @@ Add a `public/index.html` that loads the page entry:
 ```html
 <!doctype html>
 <html lang="en">
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
   <title>Waffle example</title>
-  <body><script type="module" src="/app.js"></script></body>
+  <body>
+    <script type="module" src="/app.js"></script>
+  </body>
 </html>
 ```
 

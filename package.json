@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.44",
+  "version": "0.0.45",
   "private": true,
   "type": "module",
   "exports": {
@@ -445,12 +445,24 @@
     "test:libc": "bun scripts/test-wasi-libc.ts",
     "check": "tsc -p .",
     "size": "bun tooling/runtime-size.ts",
-    "check:nodenext": "tsc -p tsconfig.nodenext.json"
+    "check:nodenext": "tsc -p tsconfig.nodenext.json",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check:tooling": "tsc -p tsconfig.tooling.json",
+    "unused": "knip --no-progress",
+    "duplicates": "jscpd --fail-on-new-clones 0",
+    "quality": "bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:tooling && bun run --cwd site typecheck && bun run unused && bun run duplicates && bun tooling/quality-probes.ts"
   },
+  "dependencies": {},
   "devDependencies": {
+    "@astrojs/compiler-rs": "0.5.2",
     "@types/bun": "^1.4.3",
-    "typescript": "^7.0.2",
-    "playwright": "^1.64.1"
-  },
-  "dependencies": {}
+    "jscpd": "5.4.1",
+    "knip": "6.41.0",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "playwright": "^1.64.1",
+    "typescript": "^7.0.2"
+  }
 }
