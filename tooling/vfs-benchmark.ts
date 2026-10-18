@@ -7,8 +7,10 @@ import { BROWSERS, WORKLOADS, LANES, SAMPLING, SCORE_PROTOCOL, FIXTURE_SEED, pai
 import { score, type Sample } from "./vfs-score.js";
 import type { BrowserRequest, BrowserResult } from "./vfs-browser.js";
 
+import { parseCells, assertSelectionScope, compareContinuation } from "./vfs-continuation.js";
+
 const PREFIX = "VFS_EVIDENCE ";
-interface Options { output: string; campaign: string; revision: string; browsers: BrowserName[]; workloads: Workload[]; lanes: Lane[]; mode: "screening" | "promotion"; candidateRoot?: string; candidateRevision?: string; initialBaseline?: string; acceptedSummary?: string; extract?: string; }
+interface Options { output: string; campaign: string; revision: string; browsers: BrowserName[]; workloads: Workload[]; lanes: Lane[]; cells?: Set<string>; continuationOf?: string; mode: "screening" | "promotion"; candidateRoot?: string; candidateRevision?: string; initialBaseline?: string; acceptedSummary?: string; extract?: string; }
 function argumentsFor(args: string[]): Options {
   const options: Options = { output: "", campaign: "", revision: "", browsers: Array.from(BROWSERS), workloads: Array.from(WORKLOADS), lanes: Array.from(LANES), mode: "screening" };
   const list = <T extends string>(value: string, allowed: readonly T[]): T[] => {
@@ -21,6 +23,8 @@ function argumentsFor(args: string[]): Options {
     else if (flag === "--browsers") options.browsers = list(value, BROWSERS);
     else if (flag === "--workloads") options.workloads = list(value, WORKLOADS);
     else if (flag === "--lanes") options.lanes = list(value, LANES);
+    else if (flag === "--cells") options.cells = parseCells(value);
+    else if (flag === "--continuation-of") options.continuationOf = value;
     else if (flag === "--mode" && (value === "screening" || value === "promotion")) options.mode = value;
     else if (flag === "--candidate-root") options.candidateRoot = resolve(value);
     else if (flag === "--initial-baseline") options.initialBaseline = resolve(value);
@@ -34,6 +38,8 @@ function argumentsFor(args: string[]): Options {
   if (!options.extract && (!/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(options.campaign))) throw new Error("Need --campaign ID");
   if (!options.extract && options.mode === "promotion" && !options.candidateRoot) throw new Error("Promotion requires --candidate-root");
   if (!options.extract && options.candidateRoot && (!options.initialBaseline || !options.acceptedSummary)) throw new Error("Promotion requires --initial-baseline and --accepted-summary; neither initial normalization nor the accepted ratchet may reset");
+  if (options.cells) assertSelectionScope(options.cells, options.browsers, options.workloads, options.lanes);
+  if (options.continuationOf && !options.cells) throw new Error("Continuation requires an explicit --cells selection");
   return options;
 }
 /** Labels come from the immutable source, never CLI text. The remote dispatcher
@@ -128,12 +134,13 @@ async function campaign(options: Options): Promise<void> {
   const manifest = manifestPath && await Bun.file(manifestPath).exists() ? await Bun.file(manifestPath).json() : undefined;
   options.revision = sourceRevision(resolve(import.meta.dir, ".."), manifest);
   if (options.candidateRoot) options.candidateRevision = sourceRevision(options.candidateRoot);
+  const continuation = options.continuationOf ? compareContinuation(resolve(import.meta.dir, ".."), options.continuationOf, options.revision) : undefined;
   const lifecycle = new BrowserRunnerLifecycle(3_500_000); const samples: Sample[] = [];
   const emit = (value: unknown) => console.log(PREFIX + JSON.stringify(value));
   await mkdir(options.output, { recursive: true });
   if (await Bun.file(resolve(options.output, "samples.json")).exists()) throw new Error("Campaign output already exists; baselines are immutable");
   const root = resolve(import.meta.dir, "..");
-  const metadata = { protocol: SCORE_PROTOCOL, campaign: options.campaign, revision: options.revision, candidateRevision: options.candidateRevision, seed: FIXTURE_SEED, runner: hostname(), platform: process.platform, kernel: release(), cpu: cpus(), ram: totalmem(), bun: Bun.version, sampling: SAMPLING[options.mode], selections: { browsers: options.browsers, workloads: options.workloads, lanes: options.lanes }, intervals: { W1: "controller launch -> metadata ready; browser first stat/read; fixed 128 reads; new process/app cache, not cold device", W2: "first staging mkdir -> final global flush; fixed verification in trace; full final verification outside time", W3: "first 64KiB write -> last write; final file flush; new process -> sequential verified reads, hash comparison after clock", W4: "first 4KiB mutation -> final namespace barrier; includes per-save fsync", W5: "four real pages, same origin and workspace; exclusive ownership, not four-tab throughput" }, rss: "sampled process-tree RSS at 100ms (lower bound, shared mappings may be double-counted)", storage: "closed profile stat size and allocated blocks, not exact storage-device bytes", environmentRules: "CPU steal >1%, available RAM <512MiB, memory full PSI avg10 >1%; failures retained even under jitter", preexisting: await environment() };
+  const metadata = { protocol: SCORE_PROTOCOL, campaign: options.campaign, revision: options.revision, candidateRevision: options.candidateRevision, seed: FIXTURE_SEED, runner: hostname(), platform: process.platform, kernel: release(), cpu: cpus(), ram: totalmem(), bun: Bun.version, sampling: SAMPLING[options.mode], selections: { browsers: options.browsers, workloads: options.workloads, lanes: options.lanes, cells: options.cells ? Array.from(options.cells) : undefined }, continuation, intervals: { W1: "controller launch -> metadata ready; browser first stat/read; fixed 128 reads; new process/app cache, not cold device", W2: "first staging mkdir -> final global flush; fixed verification in trace; full final verification outside time", W3: "first 64KiB write -> last write; final file flush; new process -> sequential verified reads, hash comparison after clock", W4: "first 4KiB mutation -> final namespace barrier; includes per-save fsync", W5: "four real pages, same origin and workspace; exclusive ownership, not four-tab throughput" }, rss: "sampled process-tree RSS at 100ms (lower bound, shared mappings may be double-counted)", storage: "closed profile stat size and allocated blocks, not exact storage-device bytes", environmentRules: "CPU steal >1%, available RAM <512MiB, memory full PSI avg10 >1%; failures retained even under jitter", preexisting: await environment() };
   let rssPeak = 0, rssBusy = false;
   const rssTimer = setInterval(() => { if (!rssBusy) { rssBusy = true; void controllerRss().then(value => { rssPeak = Math.max(rssPeak, value); }).finally(() => { rssBusy = false; }); } }, 100);
   try {
@@ -143,7 +150,7 @@ async function campaign(options: Options): Promise<void> {
     const compressedBytes: Record<string, unknown> = {};
     for (const role of options.candidateRoot ? ["baseline", "candidate"] : ["baseline"]) {
       const source = role === "candidate" ? options.candidateRoot! : root;
-      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts", "vfs-browser.ts", "vfs-benchmark.ts"]) {
+      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts", "vfs-browser.ts", "vfs-benchmark.ts", "vfs-continuation.ts"]) {
         if (await readFile(resolve(root, "tooling", name), "utf8") !== await readFile(resolve(source, "tooling", name), "utf8")) throw new Error(`Paired workload protocol differs: ${name}`);
       }
       if (role === "candidate" && await readFile(resolve(root, "tests/browser-runner-lifecycle.ts"), "utf8") !== await readFile(resolve(source, "tests/browser-runner-lifecycle.ts"), "utf8")) throw new Error("Paired lifecycle protocol differs");
@@ -160,6 +167,7 @@ async function campaign(options: Options): Promise<void> {
       // The Firefox VDO workaround is needed only on the PC, not the fixed ext4 runner.
       const profileRoot = process.env.VFS_FIREFOX_PROFILE_ROOT && browser === "firefox" ? process.env.VFS_FIREFOX_PROFILE_ROOT : lifecycle.scratch;
       for (const workload of options.workloads) for (const lane of options.lanes) {
+        if (options.cells && !options.cells.has(`${browser}/${vfs}/${workload}/${lane}`)) continue;
         const templates = new Map<string, string>();
         for (let repetition = -sampling.warmups; repetition < sampling.repetitions; repetition++) {
           for (const role of options.candidateRoot ? pairOrder(Math.max(0, repetition)) : ["baseline"] as const) {
