@@ -39,7 +39,7 @@ test("Node hosts can use the bounded diagnostic drain through its public entry",
     const chunks = [];
     const bytes = new TextEncoder().encode("node diagnostic λ");
     assert.equal(drainDiagnostic(bytes, part => { const chunk = part.slice(0, 2); chunks.push(chunk); return chunk.length; }), undefined);
-    assert.deepEqual([...new Uint8Array(chunks.reduce((all, chunk) => all.concat([...chunk]), []))], [...bytes]);
+    assert.deepEqual(chunks.reduce((all, chunk) => all.concat(Array.from(chunk)), []), Array.from(bytes));
   `;
   expect(() => execFileSync("node", ["--input-type=module", "--eval", script], {
     cwd: resolve(import.meta.dir, ".."), stdio: "pipe",
