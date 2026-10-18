@@ -68,6 +68,7 @@ function groups(rows: readonly Sample[], revision: string): Map<string, Sample[]
   const result = new Map<string, Sample[]>();
   for (const row of rows) {
     if (row.protocol !== SCORE_PROTOCOL || row.revision !== revision || !BASELINE_CELLS.includes(cellKey(row))) throw new Error("Unexpected baseline sample identity");
+    if (!((row.warmup === true && [-2, -1].includes(row.repetition)) || (row.warmup === false && [0, 1, 2, 3, 4].includes(row.repetition)))) throw new Error("Invalid screening repetition/warmup identity");
     const key = cellKey(row), values = result.get(key) ?? [];
     if (values.some(value => value.repetition === row.repetition && value.warmup === row.warmup)) throw new Error(`Duplicate repetition in ${key}`);
     values.push(row); result.set(key, values);

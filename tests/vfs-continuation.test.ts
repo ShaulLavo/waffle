@@ -115,6 +115,11 @@ test("assembly retains complete original cells and never pools their partial suc
     expect(() => assembleBaseline(fixture.root, fixture.baseline, fixture.revision, original, continued.map(row => ({ ...row, runner: "other" })))).toThrow("runner");
     expect(() => assembleBaseline(fixture.root, fixture.baseline, fixture.revision, original, continued.map(row => ({ ...row, browserVersion: "other" })))).toThrow("version");
     expect(() => assembleBaseline(fixture.root, fixture.baseline, fixture.revision, original, continued.map((row, i) => ({ ...row, campaign: `continuation-${i}` })))).toThrow("campaign");
+    for (const malformed of [{ repetition: 99, warmup: false }, { repetition: -3, warmup: true }, { repetition: 0, warmup: true }, { repetition: -1, warmup: false }]) {
+      const history = [{ ...rows(fixture.baseline, "W2")[0]!, ...malformed }];
+      expect(() => missingBaselineCells(history, fixture.baseline)).toThrow("repetition/warmup");
+      expect(() => assembleBaseline(fixture.root, fixture.baseline, fixture.revision, history, continued)).toThrow("repetition/warmup");
+    }
     const partial = assembleBaseline(fixture.root, fixture.baseline, fixture.revision, original, continued.slice(0, 3));
     expect(partial.completedCells.length).toBe(1); expect(partial.campaignState).toBe("incomplete");
   } finally { await fixture.close(); }
