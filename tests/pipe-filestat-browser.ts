@@ -17,12 +17,24 @@ import {
 } from "./fixtures/pipe-filestat-guest.js";
 import type { RuntimeWorkerMessage } from "../browser/worker.js";
 
+function childMessage(
+  message: RuntimeWorkerMessage,
+  done: { resolve(): void; reject(reason: Error): void },
+): void {
+  if (message.type === "error") done.reject(new Error(message.message));
+  if (message.type !== "exit") return;
+  if (message.code !== 0) {
+    done.reject(new Error(`pipe filestat child exited ${message.code}`));
+    return;
+  }
+  done.resolve();
+}
+
 /** Same guest and real child Worker run on Bun and all three browser engines. */
 export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"): Promise<void> {
   const fs = new MemFS(),
     transport = createWorkerProcessTransport(),
-    codec = createWorkerPipeCodec(),
-    connection = createFilesystemConnection();
+    codec = createWorkerPipeCodec();
   const processImports: Record<string, (...args: number[]) => number> = {};
   const wasi = new Wasi({
     args: [],
@@ -57,7 +69,9 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
   const instance = new WebAssembly.Instance(module, imports);
   const guest = instance.exports as unknown as PipeFilestatGuest;
   let worker: Worker | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  let connection: ReturnType<typeof createFilesystemConnection> | undefined;
   try {
+    connection = createFilesystemConnection();
     wasi.start(instance);
     if (guest.pipe(32) !== 0) throw new Error("guest pipe creation failed");
     const view = new DataView(guest.memory.buffer),
@@ -89,13 +103,7 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
       10_000,
     );
     worker.onerror = (event) => done.reject(event.error ?? new Error(event.message));
-    worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => {
-      if (data.type === "error") done.reject(new Error(data.message));
-      if (data.type === "exit") {
-        if (data.code === 0) done.resolve();
-        else done.reject(new Error(`pipe filestat child exited ${data.code}`));
-      }
-    };
+    worker.onmessage = ({ data }: MessageEvent<RuntimeWorkerMessage>) => childMessage(data, done);
     worker.postMessage(
       { module, args: [], env: {}, filesystem: connection.client, runtimeProcess: child },
       [connection.client.port],
@@ -106,7 +114,7 @@ export async function browserPipeFilestat(workerUrl = "/pipe-filestat-worker.js"
     worker?.terminate();
     wasi.descriptors.dispose();
     for (const token of child?.resources ?? []) codec.discard(token);
-    connection.client.port.close();
-    connection.server.port.close();
+    connection?.client.port.close();
+    connection?.server.port.close();
   }
 }
