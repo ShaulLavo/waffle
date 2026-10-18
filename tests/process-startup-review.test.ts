@@ -164,6 +164,7 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       expect(beforeCollection).toEqual(expectedFailure);
       expect(Object.isFrozen(beforeCollection)).toBe(true);
       expect(() => readOutcome(f.state.signals.outcome)).toThrow("collected");
+      expect(() => f.worker.onerror?.({ preventDefault() {}, message: "late collected worker error" } as ErrorEvent)).not.toThrow();
     } finally { await f.dispose(); }
   });
 }

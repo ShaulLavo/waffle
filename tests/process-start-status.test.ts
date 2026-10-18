@@ -159,6 +159,13 @@ test("Wasi entry callback runs after memory setup, directly before _start", () =
     expect(order).toEqual(["commit","entry"]);
     const invalid = {exports:{_start() { throw new Error("must not run"); }}} as unknown as WebAssembly.Instance;
     expect(() => wasi.start(invalid,() => order.push("bad commit"))).toThrow("memory");
+    const missingStart = {exports:{memory}} as unknown as WebAssembly.Instance;
+    expect(() => wasi.start(missingStart,() => order.push("bad commit"))).toThrow("_start");
+    class BrokenMemory extends WebAssembly.Memory {
+      override get buffer(): ArrayBuffer { throw new RangeError("memory view setup failed"); }
+    }
+    const brokenViews = {exports:{memory:new BrokenMemory({initial:1}),_start() {}}} as unknown as WebAssembly.Instance;
+    expect(() => wasi.start(brokenViews,() => order.push("bad commit"))).toThrow("memory view setup failed");
     expect(order).toEqual(["commit","entry"]);
   } finally { wasi.descriptors.dispose(); }
 });

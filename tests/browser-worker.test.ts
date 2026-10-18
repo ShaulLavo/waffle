@@ -740,15 +740,17 @@ for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 },
     const { waitStatus } = await import("../proc/wait-status.js");
     const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
     let signalCalls = 0;
+    const preserve = (context: import("../browser/worker.js").WorkerExecutionContext) => {
+      const selected = claimOutcome(state.signals.outcome, winner);
+      let thrown: unknown;
+      try { context.defaultSignal(18); } catch (error) { thrown = error; }
+      expect(thrown).toBeInstanceOf(WasiExit);
+      expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
+    };
     const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },
-      run(context) {
-        const selected = claimOutcome(state.signals.outcome, winner);
-        let thrown: unknown;
-        try { context.defaultSignal(18); } catch (error) { thrown = error; }
-        expect(thrown).toBeInstanceOf(WasiExit);
-        expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
-        return 0;
-      },
+      // START_FAILED can only be selected before entry, not from an executing guest.
+      instantiated: winner.kind === "start-failed" ? preserve : undefined,
+      run(context) { if (winner.kind !== "start-failed") preserve(context); return 0; },
     }, { runtimeProcess });
     expect(signalCalls).toBe(0);
     expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: winner.kind === "start-failed" ? 126 : winner.code, signal: undefined });

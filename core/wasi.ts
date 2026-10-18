@@ -223,11 +223,13 @@ export class Wasi {
   launch(instance: WebAssembly.Instance, beforeStart?: () => void): number | null {
     const memory = instance.exports.memory ?? this.importedMemory;
     if (!(memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no exported or supplied memory");
+    const start = instance.exports._start;
+    if (typeof start !== "function") throw new TypeError("guest has no _start entry point");
     this.memory = memoryViews(memory);
     // Hosts commit entry after all fallible setup, with no user hook before the call.
     beforeStart?.();
     try {
-      (instance.exports._start as () => void)();
+      start();
       return null;
     } catch (err) {
       if (err instanceof WasiExit) return err.code;

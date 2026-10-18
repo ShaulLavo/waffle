@@ -10,7 +10,7 @@ import type { ProcessTable } from "../proc/table.js";
 import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types.js";
 import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types.js";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals.js";
-import { claimOutcome, outcomeWord, readOutcome, serializeOutcome } from "../proc/outcome.js";
+import { claimOutcome, outcomeWord, readOutcome, serializeOutcome, startStatus } from "../proc/outcome.js";
 import { WorkerProcessBroker } from "../proc/worker-broker.js";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission.js";
 import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
@@ -487,8 +487,11 @@ export class BrowserProcessBroker {
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       if (data.type === "phase" && data.name === "instantiate") child.started = true;
-      let selected: ReturnType<typeof readOutcome>;
-      try { selected = readOutcome(context.outcome); }
+      let selected: ReturnType<typeof readOutcome>, entered = false;
+      try {
+        selected = readOutcome(context.outcome);
+        if (data.type === "error") entered = startStatus(context.outcome) === 0;
+      }
       catch (error) {
         if (!(error instanceof ProcessError) || error.errno !== ProcessErrno.SRCH && error.errno !== ProcessErrno.CHILD) throw error;
         if (data.type !== "runtime-proc") return;
