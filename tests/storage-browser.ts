@@ -56,6 +56,8 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
     await client.asyncCall("mkdirp", ["/directory"]);
     await rejects(client.asyncCall("writeFile", ["/directory", false, true], bytes("not a directory")), "20");
     await rejects(client.asyncCall("writeFile", ["/new/", false, true], bytes("not a file")), "54");
+    await rejects(client.asyncCall("writeFile", ["/fresh/file/", false, true], bytes("not a file")), "54");
+    assert(await client.asyncCall("lookup", ["/fresh"]) === undefined, "failed trailing slash does not create parents");
     await rejects(client.asyncCall("writeFile", ["/directory/.", false, true], bytes("not a directory")), "20");
     await rejects(client.asyncCall("writeFile", ["/", false, true], bytes("not root")), "20");
     await rejects(client.asyncCall("writeFile", ["/created/child", false, true], bytes("not nested")), "54");
@@ -64,6 +66,13 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
     await client.asyncCall("writeFile", ["/a/../canonical", false, true], bytes("canonical"));
     assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/canonical"])) === "canonical", "canonical target receives bytes");
     assert(await client.asyncCall("lookup", ["/a/../canonical"]) === undefined, "raw dot path is not a duplicate entry");
+    await client.asyncCall("writeFile", ["/a/./nested/file", false, true], bytes("nested"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/nested/file"])) === "nested", "dot path writes its canonical target");
+    await client.asyncCall("writeFile", ["/a/./nested/file", false, false], bytes("ordinary"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/nested/file"])) === "ordinary", "ordinary write uses the canonical target");
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/a/./nested/file"])) === "ordinary", "canonical target is readable through dot path");
+    await client.asyncCall("writeFile", ["/a/../other/file", false, true], bytes("other"));
+    assert(new TextDecoder().decode(await client.asyncCall("readFile", ["/other/file"])) === "other", "parent traversal writes its canonical target");
     await rejects(client.asyncCall("writeFile", ["/new/.", false, true], bytes("not a file")), "44");
     assert(await client.asyncCall("lookup", ["/new"]) === undefined, "failed dot path does not create parents");
     await rejects(client.asyncCall("writeFile", ["/missing/../x", false, true], bytes("not a file")), "44");

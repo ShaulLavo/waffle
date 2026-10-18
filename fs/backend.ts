@@ -66,7 +66,11 @@ export class MemoryBackend implements FilesystemBackend {
     if (current.node !== path.node) throw new FilesystemError(current.node === undefined ? 44 : 20);
   }
   private existing(path: string): { handle: FileHandle; node: Extract<Node, { kind: "file" }> } | undefined {
-    const node = this.fs.lookup(path);
+    let node = this.fs.lookup(path);
+    if (!node && path.startsWith("/")) {
+      const resolved = this.fs.resolveAbsolute(path);
+      if (typeof resolved !== "number" && resolved.node !== undefined) node = this.fs.nodeForHandle(resolved.node);
+    }
     if (!node || node.kind !== "file") return undefined;
     const handle = this.fs.handleForNode(node);
     this.sync(handle);
@@ -154,18 +158,31 @@ export class MemoryBackend implements FilesystemBackend {
           // The service queue is the namespace lock. Resolve before creating parents so a
           // malformed or impossible path cannot leave directories behind. Once the actual tree
           // has validated dot segments, write through the same canonical target used by create.
-          const hasDotSegment = a.split("/").some((part: string) => part === "." || part === "..");
+          const target = normalize(a);
           let path = this.fs.resolveAbsolute(a);
           if (typeof path === "number") {
-            if (path !== 44 || hasDotSegment) throw new FilesystemError(path);
-            try { this.fs.mkdirp(dirname(a)); }
+            if (path !== 44) throw new FilesystemError(path);
+            if (a.endsWith("/")) throw new FilesystemError(54);
+            const parts = a.split("/").filter((part: string) => part.length > 0);
+            let missing = false;
+            for (let index = 0; index < parts.length; index++) {
+              const prefix = `/${parts.slice(0, index + 1).join("/")}`;
+              const resolved = this.fs.resolveAbsolute(prefix);
+              if (typeof resolved === "number") throw new FilesystemError(resolved);
+              if (resolved.node === undefined) {
+                if (parts.slice(index + 1).some((part: string) => part === "." || part === "..")) throw new FilesystemError(44);
+                missing = true;
+                break;
+              }
+            }
+            if (!missing) throw new FilesystemError(44);
+            try { this.fs.mkdirp(dirname(target)); }
             catch { throw new FilesystemError(54); }
-            path = this.fs.resolveAbsolute(a);
+            path = this.fs.resolveAbsolute(target);
             if (typeof path === "number") throw new FilesystemError(path);
           }
           if (path.node !== undefined) throw new FilesystemError(20);
           if (path.trailingSlash) throw new FilesystemError(54);
-          const target = normalize(a);
           const result = this.fs.create(path, "file", true);
           if (typeof result !== "number") throw new FilesystemError(result.error);
           try {

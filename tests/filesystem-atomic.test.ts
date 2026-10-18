@@ -62,6 +62,8 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   try { await client.asyncCall("writeFile", ["/directory", false, true], encode("not a directory")); throw new Error("exclusive directory create unexpectedly succeeded"); }
   catch (error) { expect(error).toMatchObject({ errno: 20 }); }
   await expectErrno(client.asyncCall("writeFile", ["/new/", false, true], encode("not a file")), 54);
+  await expectErrno(client.asyncCall("writeFile", ["/fresh/file/", false, true], encode("not a file")), 54);
+  expect(await client.asyncCall("lookup", ["/fresh"])).toBeUndefined();
   await expectErrno(client.asyncCall("writeFile", ["/directory/.", false, true], encode("not a directory")), 20);
   await expectErrno(client.asyncCall("writeFile", ["/", false, true], encode("not root")), 20);
   await expectErrno(client.asyncCall("writeFile", ["/created/child", false, true], encode("not nested")), 54);
@@ -70,6 +72,13 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   await client.asyncCall("writeFile", ["/a/../canonical", false, true], encode("canonical"));
   expect(decode(await client.asyncCall("readFile", ["/canonical"]))).toBe("canonical");
   expect(await client.asyncCall("lookup", ["/a/../canonical"])).toBeUndefined();
+  await client.asyncCall("writeFile", ["/a/./nested/file", false, true], encode("nested"));
+  expect(decode(await client.asyncCall("readFile", ["/a/nested/file"]))).toBe("nested");
+  await client.asyncCall("writeFile", ["/a/./nested/file", false, false], encode("ordinary"));
+  expect(decode(await client.asyncCall("readFile", ["/a/nested/file"]))).toBe("ordinary");
+  expect(decode(await client.asyncCall("readFile", ["/a/./nested/file"]))).toBe("ordinary");
+  await client.asyncCall("writeFile", ["/a/../other/file", false, true], encode("other"));
+  expect(decode(await client.asyncCall("readFile", ["/other/file"]))).toBe("other");
   await expectErrno(client.asyncCall("writeFile", ["/new/.", false, true], encode("not a file")), 44);
   expect(await client.asyncCall("lookup", ["/new"])).toBeUndefined();
   await expectErrno(client.asyncCall("writeFile", ["/missing/../x", false, true], encode("not a file")), 44);
