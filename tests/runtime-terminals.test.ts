@@ -156,3 +156,30 @@ for (const cause of ["fatal outcome", "filesystem revocation"] as const) test(`r
     expect(closed).toBe(2);
   } finally { table.dispose(); }
 });
+
+for (const operation of ["read", "close"] as const) test(`frozen resolved streams preserve own ${operation} methods without proxy invariant errors`, () => {
+  let active = true, closed = 0;
+  const endpoint = Object.freeze({ kind: "pipe" as const,
+    read() { expect(this).toBe(endpoint); return 7; },
+    write() { expect(this).toBe(endpoint); return 7; },
+    readiness() { return { readable: true, writable: true, hangup: false }; },
+    close() { expect(this).toBe(endpoint); closed++; } });
+  const codec = createRuntimeTerminalCodec({ fallback: { export() { throw new Error("unexpected fallback"); },
+    import() { throw new Error("unexpected fallback"); }, discard() { throw new Error("unexpected fallback"); } },
+    resolveTerminal: () => endpoint, checkActive() { if (!active) throw new Error("revoked"); } });
+  const table = new DescriptorTable();
+  const description = codec.import({ kind: "web-terminal", target: 0 }, 2);
+  const fd = table.add(description, { rightsBase: 0n, rightsInheriting: 0n });
+  try {
+    const stream = description.resource as Stream;
+    if (operation === "read") {
+      expect(stream.read([])).toBe(7);
+      active = false;
+      expect(() => stream.read([])).toThrow("revoked");
+    } else active = false;
+    table.close(fd);
+    expect(closed).toBe(1);
+  } finally {
+    try { table.dispose(); } finally { if (!closed) endpoint.close(); }
+  }
+});

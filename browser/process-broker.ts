@@ -98,6 +98,7 @@ export class BrowserProcessBroker {
   private revokedControllers?: Set<number>;
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
   private launches?: Set<number>;
+  private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
   private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
@@ -124,35 +125,53 @@ export class BrowserProcessBroker {
           let launched: ProcessHandle | Promise<ProcessHandle>;
           try { launched = this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context); }
           catch (error) { this.launches.delete(context.pid); throw error; }
+          let acquireLaunch: (() => void) | undefined, settleLaunch: (() => void) | undefined;
+          const retainLaunch = () => {
+            (this.pendingLaunches ??= new Map()).set(context.pid, {
+              acquired: new Promise<void>(resolve => { acquireLaunch = resolve; }),
+              settled: new Promise<void>(resolve => { settleLaunch = resolve; }),
+            });
+          };
+          const settled = () => { this.pendingLaunches?.delete(context.pid); acquireLaunch?.(); settleLaunch?.(); };
           const track = (handle: ProcessHandle): ProcessHandle => {
             this.traceProcess(context, "launched");
             if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
               this.launches?.delete(context.pid);
+              settled();
               return handle;
             }
+            if (!settleLaunch) retainLaunch();
+            acquireLaunch?.();
             // External launchers own their physical handle. Keep controller authority until
             // that handle's asynchronous cleanup settles, not merely its child-exit event.
             return { terminate: () => {
-              const pending = handle.terminate();
+              let pending: void | Promise<void>;
+              try { pending = handle.terminate(); } catch (error) { settled(); throw error; }
               if (pending) {
                 const stopping = pending.then(() => {
                   this.controllerStops?.delete(context.pid);
                   this.launches?.delete(context.pid);
                   this.retireChildController(context.pid);
-                });
+                }).finally(settled);
                 (this.controllerStops ??= new Map()).set(context.pid, { pending: stopping, controllerStop: false });
                 return stopping;
               }
               this.launches?.delete(context.pid);
               this.retireChildController(context.pid);
+              settled();
             } };
           };
-          return "then" in launched ? Promise.resolve(launched).then(track, error => {
+          if (!("then" in launched)) return track(launched);
+          // Disposal owns late external handles too. Settlement follows physical cleanup,
+          // not just promise resolution, so retirement cannot outrun a pending launcher.
+          retainLaunch();
+          return Promise.resolve(launched).then(track, error => {
             this.launches?.delete(context.pid);
+            settled();
             // A terminal outcome can win while this external launcher is still pending.
-            if (readOutcome(context.outcome)) this.stopControllerSafely(context.pid);
+            if (readOutcome(context.outcome)) void this.stopController(context.pid)?.catch(error => this.report(error));
             throw error;
-          }) : track(launched);
+          });
         },
         canConfirmExit: pid => {
           const child = this.children.get(pid);
@@ -177,13 +196,18 @@ export class BrowserProcessBroker {
         this.revokeRuntimeProcess(event.pid);
         const transport = this.transport.get(event.pid);
         if (transport && !this.children.get(event.pid)?.acknowledged) this.options.filesystem.revoke(this.filesystem(transport));
-        this.controllers.get(event.pid)?.exited?.(event);
-        // Failed construction has no supervisor handle; its recorded resources still use
-        // the same fenced stop path. External handles retire only after their own cleanup.
-        const child = this.children.get(event.pid);
-        if (child) this.stopSafely(child);
-        else if (!this.launches?.has(event.pid)) this.stopControllerSafely(event.pid);
-        this.retireRoots();
+        void (async () => {
+          try { this.controllers.get(event.pid)?.exited?.(event); }
+          finally {
+            // Notification failures cannot skip failed-start cleanup. Report them only
+            // after the same fenced physical stop used by successful notifications.
+            const child = this.children.get(event.pid);
+            if (child) await this.stop(child);
+            else if (!this.launches?.has(event.pid)) await this.stopController(event.pid);
+            else await this.pendingLaunches?.get(event.pid)?.settled;
+            this.retireRoots();
+          }
+        })().catch(error => this.report(error));
       });
       supervisor.onJobReap(() => this.retireRoots());
       for (const root of this.reservedRoots.values()) if (!supervisor.get(root.pid)) {
@@ -518,8 +542,10 @@ export class BrowserProcessBroker {
     this.fences.delete(pid);
     try { controller?.retired?.(); } catch (error) { this.report(error); }
   }
-  private stopControllerSafely(pid: number): void {
-    if (this.suspended || this.reservedRoots.has(pid) || this.controllerStops?.has(pid)) return;
+  private stopController(pid: number): Promise<void> | undefined {
+    if (this.suspended || this.reservedRoots.has(pid)) return;
+    const pending = this.controllerStops?.get(pid);
+    if (pending) return pending.pending;
     const controller = this.controllers.get(pid);
     if (!controller) return;
     const stopping = Promise.resolve(this.quiesceProcess(pid)).then(() => controller.stop?.()).then(() => {
@@ -527,7 +553,7 @@ export class BrowserProcessBroker {
       this.retireChildController(pid);
     });
     (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
-    void stopping.catch(error => this.report(error));
+    return stopping;
   }
   private stopSafely(child: RuntimeChild): void { try { const pending = this.stop(child); if (pending) void pending.catch(error => this.report(error)); } catch (error) { this.report(error); } }
   private states() { return Array.from(this.roots.values()).flatMap(root => workerProcessSlots(root).map(slot => workerProcessState(root, slot))); }
@@ -632,13 +658,17 @@ export class BrowserProcessBroker {
         this.supervisor?.dispose();
       }
       await this.quiesce();
+      // A controller stop may release a physical handle, but cannot consume authority
+      // before a pending launcher acquires it. Then settle both stops before retirement.
+      await Promise.all(Array.from(this.pendingLaunches?.values() ?? [], launch => launch.acquired));
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
       const stops = Array.from(this.children.values(), child => Promise.resolve().then(() => this.stop(child)))
         .concat(Array.from(this.controllers, ([pid, controller]) => {
           const stopping = this.controllerStops?.get(pid);
           return stopping?.controllerStop ? stopping.pending : Promise.resolve().then(() => controller.stop?.());
-        }), Array.from(this.controllerStops?.values() ?? [], stopping => stopping.pending));
+        }), Array.from(this.controllerStops?.values() ?? [], stopping => stopping.pending),
+          Array.from(this.pendingLaunches?.values() ?? [], launch => launch.settled));
       const errors: unknown[] = [];
       for (const result of await Promise.allSettled(stops)) if (result.status === "rejected") errors.push(result.reason);
       try { this.pipes.dispose(); } catch (error) { errors.push(error); }
@@ -646,7 +676,7 @@ export class BrowserProcessBroker {
         try { controller.retired?.(); } catch (error) { errors.push(error); }
       }
       this.reservedRoots.clear(); this.completedRoots.clear(); this.rootLeases.clear();
-      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.revokedControllers?.clear(); this.controllerStops?.clear(); this.launches?.clear(); this.fences.clear();
+      this.roots.clear(); this.outputs.clear(); this.registries.clear(); this.controllers.clear(); this.revokedControllers?.clear(); this.controllerStops?.clear(); this.launches?.clear(); this.pendingLaunches?.clear(); this.fences.clear();
       if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
     })().then(resolve, reject);
     return disposal;

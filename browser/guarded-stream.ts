@@ -4,16 +4,19 @@ import type { Stream } from "../core/descriptors";
  * every admission operation. Cleanup remains available after logical death. */
 export function guardedStream(stream: Stream, checkActive: () => void, owned?: (stream: Stream) => void): Stream {
   const methods = new Map<PropertyKey, unknown>();
-  const guarded = new Proxy(stream, {
-    get(target, key) {
-      const value = Reflect.get(target, key, target);
+  // Keep instanceof identity without proxying frozen own properties: wrapped methods must
+  // differ from their originals, which a non-configurable target property would forbid.
+  const target: Stream = Object.create(Object.getPrototypeOf(stream));
+  const guarded = new Proxy(target, {
+    get(_target, key) {
+      const value = Reflect.get(stream, key, stream);
       if (typeof value !== "function") return value;
       if (methods.has(key)) return methods.get(key);
       const method = key === "forProcess"
-        ? (pid: number) => { checkActive(); return guardedStream(value.call(target, pid), checkActive, owned); }
+        ? (pid: number) => { checkActive(); return guardedStream(value.call(stream, pid), checkActive, owned); }
         : key === "read" || key === "write" || key === "tryRead" || key === "tryWrite" || key === "readiness"
-          ? (...args: unknown[]) => { checkActive(); return value.apply(target, args); }
-          : value.bind(target);
+          ? (...args: unknown[]) => { checkActive(); return value.apply(stream, args); }
+          : value.bind(stream);
       methods.set(key, method);
       return method;
     },

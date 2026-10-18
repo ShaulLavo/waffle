@@ -914,3 +914,102 @@ test("a pending external launcher retains authority until its late rejection the
     expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(false);
   } finally { rejectLaunch(new Error("test cleanup")); await starting; await broker.dispose(); }
 });
+
+test("a throwing exited notification still settles failed-start cleanup before reporting its error", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("rejected", { adapter: "external", async module() { throw new Error("module rejected"); }, interruptible: true });
+  const failure = new Error("exited notification failed"), errors: unknown[] = [], events: string[] = [];
+  let release!: () => void, releaseStop!: () => void;
+  const fence = new Promise<void>(resolve => { release = resolve; });
+  const physical = new Promise<void>(resolve => { releaseStop = resolve; });
+  const broker = new BrowserProcessBroker({ identities, table, registry,
+    onError(error) { errors.push(error); events.push("error"); },
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("must not launch"); } });
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    const pid = supervisor.reserveSpawn(root, { executable: "rejected", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    broker.registerController(pid, { revoke() { events.push("revoke"); }, quiesce() { events.push("fence"); return fence; },
+      exited() { events.push("exited"); throw failure; }, stop() { events.push("stop"); return physical; },
+      retired() { events.push("retired"); } });
+    await supervisor.start(pid);
+    expect(events).toEqual(["revoke", "fence"]);
+    release(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(supervisor.get(pid)!.result?.kind).toBe("start-failed");
+    expect(events).toEqual(["revoke", "fence", "exited", "stop"]);
+    expect(errors).toEqual([]);
+    releaseStop(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(events).toEqual(["revoke", "fence", "exited", "stop", "retired", "error"]);
+    expect(errors).toEqual([failure]);
+    expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(false);
+  } finally { release(); releaseStop(); await broker.dispose(); }
+});
+
+for (const settlement of ["resolve", "reject"] as const) test(`disposal retains a pending external launcher through late ${settlement} and physical cleanup`, async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("pending", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
+  const events: string[] = [];
+  let resolveLaunch!: (handle: import("../proc/types").ProcessHandle) => void, rejectLaunch!: (error: unknown) => void;
+  let entered!: () => void, releaseStop!: () => void;
+  const launching = new Promise<void>(resolve => { entered = resolve; });
+  const pending = new Promise<import("../proc/types").ProcessHandle>((resolve, reject) => { resolveLaunch = resolve; rejectLaunch = reject; });
+  const physical = new Promise<void>(resolve => { releaseStop = resolve; });
+  const handle = { terminate() { events.push("terminate"); return physical; } };
+  const broker = new BrowserProcessBroker({ identities, table, registry, onError() {},
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { entered(); return pending; } });
+  let starting: Promise<void> | undefined, disposal: Promise<void> | undefined;
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    const pid = supervisor.reserveSpawn(root, { executable: "pending", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    broker.registerController(pid, { revoke() { events.push("revoke"); },
+      stop() { events.push("stop"); }, retired() { events.push("retired"); } });
+    starting = supervisor.start(pid); await launching;
+    let disposed = false;
+    disposal = broker.dispose().then(() => { disposed = true; });
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    // No controller stop or retirement may consume authority a late launcher still needs.
+    expect(events).not.toContain("retired");
+    expect(disposed).toBe(false);
+    expect(events).toEqual(["revoke"]);
+    expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
+    if (settlement === "resolve") resolveLaunch(handle); else rejectLaunch(new Error("late launcher rejection"));
+    await starting; await new Promise<void>(resolve => setTimeout(resolve, 0));
+    if (settlement === "resolve") {
+      expect(events[0]).toBe("revoke");
+      expect(events.slice(1).sort()).toEqual(["stop", "terminate"]);
+      expect(disposed).toBe(false);
+      expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
+    }
+    releaseStop(); await disposal;
+    expect(events.at(-1)).toBe("retired");
+    expect(events.filter(event => event === "stop")).toHaveLength(1);
+    expect(events.filter(event => event === "retired")).toHaveLength(1);
+    expect(events.filter(event => event === "terminate")).toHaveLength(settlement === "resolve" ? 1 : 0);
+    expect((Reflect.get(broker, "controllers") as Map<number, unknown>).size).toBe(0);
+  } finally { resolveLaunch(handle); releaseStop(); await starting; await (disposal ?? broker.dispose()); }
+});
+
+test("a throwing exited notification waits for an acquired external handle's physical cleanup", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("external", { adapter: "external", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), interruptible: true });
+  const failure = new Error("exited notification failed"), errors: unknown[] = [], events: string[] = [];
+  let release!: () => void, context!: import("../proc/types").ProcessContext;
+  const physical = new Promise<void>(resolve => { release = resolve; });
+  const broker = new BrowserProcessBroker({ identities, table, registry,
+    onError(error) { errors.push(error); events.push("error"); },
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch(value) { context = value; return { terminate() { events.push("terminate"); return physical; } }; } });
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    const pid = supervisor.reserveSpawn(root, { executable: "external", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    broker.registerController(pid, { exited() { events.push("exited"); throw failure; }, retired() { events.push("retired"); } });
+    await supervisor.start(pid); context.exit(0);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(events).toEqual(["exited", "terminate"]);
+    expect(errors).toEqual([]);
+    release(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(events).toEqual(["exited", "terminate", "retired", "error"]);
+    expect(errors).toEqual([failure]);
+  } finally { release(); await broker.dispose(); }
+});
