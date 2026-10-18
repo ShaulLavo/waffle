@@ -2788,3 +2788,40 @@ for (const snapshot of ["authorization", "readiness", "outcome", "collection-rea
     await f.flush();
   });
 }
+
+test("a sealed pending job reports ECHILD while its header remains live", async () => {
+  const f = fixture({ capacity: 2 });
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const view = new DataView(memory.buffer);
+  view.setInt32(64, -99, true); view.setInt32(68, -99, true);
+  const abi = new ProcessABI({ memory, descriptors: f.root.options.descriptors, fs: new MemFS(),
+    pid: f.root.pid, service: f.root, signals: f.root.signals });
+  const pid = f.root.spawn(1, request()); await f.flush();
+  const state = workerProcessState(f.broker.get(pid)!);
+  const group = directoryJob(f.transport.directory, state.jobSlot, state.job);
+  f.supervisor.exit(pid, 23);
+  const original = Atomics.load;
+  let sealed = false;
+  Atomics.load = ((array: BigInt64Array, index: number) => {
+    const target = !sealed && array instanceof BigInt64Array && array.buffer === f.transport.directory &&
+      array.byteOffset + index * 8 === group.outcome.byteOffset;
+    if (target) {
+      sealed = true;
+      const pending = new BigInt64Array(f.transport.directory, group.pending.byteOffset, 1);
+      expect(Atomics.compareExchange(pending, 0, packedControl(group.id, 0), packedControl(group.id, -1))).toBe(packedControl(group.id, 0));
+      const header = new BigInt64Array(f.transport.directory, group.outcome.byteOffset - 24, 1);
+      expect(Atomics.load(header, 0)).toBe(packedControl(group.id, 1));
+    }
+    return original(array, index);
+  }) as typeof Atomics.load;
+  try {
+    expect(abi.imports.wait_job!(group.id, 1, 64)).toBe(-ProcessErrno.CHILD);
+  } finally { Atomics.load = original; }
+  expect(sealed).toBe(true);
+  expect(view.getInt32(64, true)).toBe(-99);
+  expect(view.getInt32(68, true)).toBe(-99);
+  expect(controlLoad(group.pending)).toBe(-1);
+  expect(readOutcome(group.outcome)).toMatchObject({ kind: "exited", code: 23 });
+  helpDirectoryJobs(f.transport.directory);
+  await f.flush();
+});
