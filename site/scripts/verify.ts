@@ -32,6 +32,9 @@ async function applyPublishedReferenceCopy(page: Page) {
     const link = (selector: string, text: string, before: string, after: string) => {
       const matches = Array.from(document.querySelectorAll<HTMLAnchorElement>(selector))
         .filter(anchor => anchor.textContent?.replace(/\s+/g, ' ').trim() === text);
+      // The original conditional removes wide-only navigation on small screens;
+      // the static candidate keeps equivalent hidden markup.
+      if (selector === 'nav a' && innerWidth < 860 && matches.length === 0) return;
       if (matches.length !== 1 || matches[0]!.getAttribute('href') !== before) {
         throw new Error(`Original reference link changed: ${selector} / ${text}`);
       }
