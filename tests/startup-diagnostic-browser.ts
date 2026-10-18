@@ -146,76 +146,35 @@ export async function browserStartupDiagnostic(
       assert(closed === 1 && errors.length === 0, "normal stderr cleanup reported an error");
       return;
     }
-    // Deterministically exercise the same shared-word observation as the broker's timer pump.
+    // A worker-selected outcome alone must not release inherited stderr before the ordered
+    // error acknowledgement. Its eventual diagnostic belongs solely to the host, not fd 2.
     supervisor.exit(pid, 126);
     assert(supervisor.startStatus(parent.pid, pid) > 0, "worker must have selected START_FAILED");
-    assert(
-      supervisor.wait(parent.pid, pid) === null,
-      "startup wait became collectible before diagnostic acknowledgement",
-    );
+    assert(supervisor.wait(parent.pid, pid) === null, "wait preceded error acknowledgement");
     assert(
       !closed && !supervisor.get(pid)!.revoked,
-      "stderr released before the diagnostic-bearing error",
+      "stderr released before error acknowledgement",
     );
-    const empty = new Uint8Array(1);
-    assert(reader.tryRead([empty]) === -6, "diagnostic emitted without its error message");
+    assert(reader.tryRead([new Uint8Array(1)]) === -6, "diagnostic emitted before acknowledgement");
     if (mode === "closed") reader.close();
     Atomics.store(gate, 0, 1);
-    if (mode !== "drain") {
-      if (mode === "dispose") {
-        // Let the diagnostic fill the tiny ring, then cancel while a live reader is stalled.
-        while ((reader.readiness().nbytes ?? 0) < 64)
-          await new Promise((resolve) => setTimeout(resolve, 1));
-        await broker.dispose();
-        assert(closed === 1, "disposal must release stderr while its reader is stalled");
-        return;
-      }
-      const result = await supervisor.waitForExit(parent.pid, pid);
-      assert(
-        result.kind === "start-failed" && result.error === "EIO",
-        "failed delivery changed startup outcome",
-      );
-      assert(closed === 1, "undeliverable diagnostic retained stderr");
-      assert(
-        errors.length === 1 &&
-          (errors[0] as { errno?: number }).errno === (mode === "closed" ? 64 : 6),
-        `expected one typed ${mode} delivery failure: ${errors.join("; ")}`,
-      );
-      return;
-    }
-    const chunks: Uint8Array[] = [];
-    const exited = supervisor.waitForExit(parent.pid, pid);
-    await Promise.all([
-      exited,
-      (async () => {
-        for (;;) {
-          const buffer = new Uint8Array(31),
-            count = reader.tryRead([buffer]);
-          if (count === 0) break;
-          if (count > 0) chunks.push(buffer.slice(0, count));
-          else await new Promise((resolve) => setTimeout(resolve, 1));
-        }
-      })(),
-    ]);
-    const actual = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
-    let offset = 0;
-    for (const chunk of chunks) {
-      actual.set(chunk, offset);
-      offset += chunk.length;
-    }
+    const result = await supervisor.waitForExit(parent.pid, pid);
     assert(
-      new TextDecoder().decode(actual) ===
-        `runtime: process start failed: Error: Error: ${diagnostic}\n`,
-      "startup diagnostic must be complete and emitted exactly once",
+      result.kind === "start-failed" && result.error === "EIO",
+      "host reporting changed startup outcome",
     );
-    assert(!duplicate, "worker and broker both emitted the startup diagnostic");
-    assert(closed === 1, "stderr must close once after diagnostic drain");
-    const result = parent.wait(parent.pid, pid);
+    assert(closed === 1, "suppressed diagnostic retained stderr");
+    assert(!duplicate, "legacy worker emitted a duplicate startup diagnostic");
+    if (mode !== "closed")
+      assert(
+        reader.tryRead([new Uint8Array(1)]) === 0,
+        "runtime_proc child received Waffle diagnostic bytes",
+      );
     assert(
-      result?.kind === "start-failed" && result.error === "EIO",
-      "diagnostic changed startup outcome",
+      errors.length === 1 && String(errors[0]).includes(diagnostic),
+      "full startup error must reach host once",
     );
-    assert(errors.length === 0, `broker errors: ${errors.join("; ")}`);
+    if (mode === "dispose") await broker.dispose();
   } finally {
     Atomics.store(gate, 0, 1);
     clearTimeout(timer);

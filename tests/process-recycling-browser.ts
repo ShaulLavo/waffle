@@ -1,3 +1,9 @@
+import {
+  browserQuietStartFailure,
+  hostRootStartFailure,
+  type QuietFailureStage,
+  type QuietFailureSink,
+} from "./start-failure-quiet-browser.js";
 import { browserPipeFilestat } from "./pipe-filestat-browser.js";
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
@@ -783,7 +789,28 @@ type BrowserCase = {
   run(fixture: ProcessFixture): Promise<void>;
 };
 // Exercise consuming waits and recyclable shared slots across real Worker boundaries.
-const cases: BrowserCase[] = [
+const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap(
+  (sink: QuietFailureSink) =>
+    (["lazy-loader", "invalid-module", "missing-start", "adapter-entry", "nested"] as const).map(
+      (stage: QuietFailureStage) => ({
+        label: `startup diagnostic: quiet ${stage} (${sink})`,
+        standalone: true,
+        run: () => browserQuietStartFailure(stage, sink),
+      }),
+    ),
+);
+const cases: BrowserCase[] = quietFailureCases.concat([
+  {
+    label: "startup diagnostic: embedder root keeps generic stderr",
+    standalone: true,
+    run: hostRootStartFailure,
+  },
+  {
+    label: "startup diagnostic: registered child controller still runs",
+    standalone: true,
+    run: () => browserQuietStartFailure("adapter-entry", "pipe", undefined, true),
+  },
+
   {
     label: "pipe filestat: guest endpoints and inherited child bindings retain metadata rights",
     standalone: true,
@@ -795,7 +822,7 @@ const cases: BrowserCase[] = [
     run: () => browserStartupDiagnostic(undefined, "normal"),
   },
   {
-    label: "startup diagnostic: worker-selected failure drains before stderr closes",
+    label: "startup diagnostic: worker-selected failure reports to host after acknowledgement",
     standalone: true,
     run: () => browserStartupDiagnostic(),
   },
@@ -815,7 +842,7 @@ const cases: BrowserCase[] = [
     run: () => browserStartupDiagnostic(undefined, "closed"),
   },
   {
-    label: "startup diagnostic: disposal cancels a stalled reader",
+    label: "startup diagnostic: disposal releases a suppressed diagnostic writer",
     standalone: true,
     run: () => browserStartupDiagnostic(undefined, "dispose"),
   },
@@ -1396,7 +1423,7 @@ const cases: BrowserCase[] = [
       );
     },
   },
-];
+]);
 
 async function restoreAndAuditIntrinsics(
   fixture: ProcessFixture,
