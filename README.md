@@ -19,7 +19,7 @@ In a cross-origin isolated page, with [the filesystem worker bundled](docs/getti
 
 ```ts
 import { createRuntime } from "waffle";
-const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", vfs: "memory" } });
+const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: "memory" } });
 try {
   await runtime.filesystem.writeFile("/hello.txt", "hello from Waffle");
   console.log(new TextDecoder().decode(await runtime.filesystem.readFile("/hello.txt")));

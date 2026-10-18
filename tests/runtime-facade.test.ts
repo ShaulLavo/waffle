@@ -56,7 +56,7 @@ afterEach(async () => {
 });
 function create(options: RuntimeOptions = {}): Runtime {
   const runtime = createRuntime({
-    filesystem: { workerURL: "https://example.test/filesystem.js", vfs: "memory" },
+    filesystem: { workerURL: "https://example.test/filesystem.js", mode: "memory" },
     ...options,
   });
   runtimes.push(runtime);
@@ -795,7 +795,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     const filesystem = new FilesystemService(backend);
     let filesystemStops = 0, consumerStops = 0, relayStops = 0;
     globalThis.Worker = class { addEventListener() {} postMessage(message) { filesystem.connect(message.connect); } terminate() { filesystem.dispose(); filesystemStops++; } };
-    const runtime = createRuntime({ filesystem: { vfs: "memory", workerURL: "https://example.test/fs.js" }, processHost: options => {
+    const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" }, processHost: options => {
       const supervisor = new ProcessSupervisor({ registry: options.registry, table: options.table, launch: options.launch });
       return { ready: async () => supervisor, suspend: () => supervisor.dispose(),
         quiesce: async () => { throw new Error("fence failed"); }, dispose: async () => { relayStops++; } };
@@ -1083,7 +1083,7 @@ test("a rejected retained-consumer fence fails closed even without process activ
     let filesystemStops = 0, consumerStops = 0, cancels = 0;
     const ports = [];
     globalThis.Worker = class { addEventListener() {} postMessage(message) { ports.push(message.connect.port); } terminate() { filesystemStops++; } };
-    const runtime = createRuntime({ filesystem: { vfs: "memory", workerURL: "https://example.test/fs.js" } });
+    const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" } });
     const release = runtime.retainConsumer({ filesystem: { ...runtime.filesystem.createIdentity(), sections: new SharedArrayBuffer(0) },
       revoke() { cancels++; }, stop() { consumerStops++; } });
     const disposal = runtime.dispose();

@@ -1,134 +1,123 @@
-# VFS selection
+# Filesystem modes
 
-A VFS is a bundle of durability, concurrency and browser requirements. Small behaviours
-such as contention are initialization settings, not separate VFSs.
+Choose guarantees, not a browser storage API.
 
 ```ts
 import { createRuntime, getVfsDescriptor, VfsError } from "waffle";
 
 const runtime = createRuntime({
-  filesystem: { name: "workspace", vfs: "indexeddb", whenBusy: "wait" },
+  filesystem: { name: "workspace", mode: "fast", whenBusy: "wait" },
 });
 const selected = runtime.filesystem.vfs;
-const defaultContract = getVfsDescriptor(); // indexeddb, without opening storage
+const defaultContract = getVfsDescriptor(); // FAST, without opening storage
 ```
 
 The same exports are available from `waffle/runtime`, `waffle/fs` and
-`waffle/browser/shared-fs`. `SharedFilesystem` accepts the same selection. `VfsSelection`
-is a discriminated union: IndexedDB accepts `"takeover" | "wait"`; OPFS accepts only
-`"wait"`; memory accepts no `whenBusy`. The `storage` and `persistence` options are
-removed, not translated. A host that needs volatile storage selects `vfs: "memory"`.
+`waffle/browser/shared-fs`. `SharedFilesystem` accepts the same `VfsSelection`.
+`mode` is `"fast" | "safe" | "memory"`; omitted means FAST. Memory is nonpersistent
+and accepts no `whenBusy`. The removed `vfs`, `storage` and `persistence` selectors
+are rejected, not translated. Backend names are not accepted modes.
 
-## Available implementations
+## Guarantees and current availability
 
-| VFS                   | Default contention | Ordinary successful mutation                  | Durability barrier               | Other tabs                                                           |
-| --------------------- | ------------------ | --------------------------------------------- | -------------------------------- | -------------------------------------------------------------------- |
-| `indexeddb` (default) | `takeover`         | Memory updated; strict storage commits follow | `flush` / guest `fsync`          | One owner; takeover revokes/fences the prior owner, or `wait` queues |
-| `opfs-memory`         | `wait`             | Memory updated; OPFS checkpoint follows       | `flush` / guest `fsync`          | One owner; other tabs wait                                           |
-| `memory`              | Not applicable     | Memory updated                                | Ordering only, never persistence | Independent volatile trees                                           |
+| Mode   | Contract                                                                                                                                                                                                         | Available now                                                                                        |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| FAST   | Memory acknowledgement; mutations after the last completed durable checkpoint may be lost. Recovery must be a consistent committed filesystem.                                                                   | Existing IndexedDB checkpoint engine; internal OPFS checkpoint implementation for conformance tests. |
+| SAFE   | Every successful mutation is durably recoverable before success, including namespace effects. A complete strict IndexedDB transaction or durable redo record is sufficient; final-page checkpointing may follow. | No. `mode: "safe"` throws typed `UNSUPPORTED_VFS`, with no fallback.                                 |
+| Memory | Isolated volatile tree; flush is ordering only.                                                                                                                                                                  | Yes, for tests and explicitly nonpersistent uses.                                                    |
 
-The OPFS selection is the existing OPFS implementation under an explicit name, not a
-new layout. `opfs-safe` and `opfs-wal` are not selectable until certified. Unknown
-names, including `opfs`, fail with `VfsError` code `UNSUPPORTED_VFS`; there is no
-fallback. `whenBusy` never changes the descriptor's identity.
+The approved engine work also requires bounded pending data with backpressure,
+coherent multi-tab writers, partial large-file access and a combined memory budget.
+**Those requirements are not implemented by the current checkpoint engines.** Their
+descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
+`multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine;
+see [the approved execution plan](../plans/001-vfs-family.md).
 
-All current implementations require a dedicated filesystem worker, SharedArrayBuffer
-and cross-origin isolation. Persistent implementations additionally require Web Locks
-and either IndexedDB or standard OPFS sync access handles. Capability validation does
-not create files, probe unsafe handles or change storage. No new persistence algorithm,
-format marker or format conversion is introduced here.
+FAST currently uses IndexedDB in every browser to preserve saved workspace identity.
+Browser-specific adapters may win later experiments; changing adapters must include
+an explicit reopen/migration/export story, never silently start an empty workspace.
+Implementation overrides are internal Symbol-keyed test controls, not exported
+product options. An override cannot make SAFE run on a FAST engine.
 
-## Inspecting the contract
+## Inspecting the mounted implementation
 
-`getVfsDescriptor(name?)` returns a deeply frozen `VfsDescriptor`. It describes the
-stable `id` and `displayName`, persistence, mutation acknowledgement, global `flush`,
-guest file `fsync`, targeted flush, ownership, supported/default contention settings,
-required capabilities, worker execution, direct shared-memory access, format/location,
-unsupported settings and possible lifecycle states. The mounted runtime exposes that
-same object as `runtime.filesystem.vfs`; mutable startup state remains separate in
-`runtime.filesystem.state` and `onStateChange`.
+`getVfsDescriptor(mode?)` returns a deeply frozen descriptor of the current default
+implementation for that mode. `runtime.filesystem.vfs` reports the actual mounted
+implementation. It contains `mode`, `implementation`, persistence, mutation ACK,
+`durabilityPoint`, `lossBound`, pending-data limits, flush/fsync semantics, multi-tab
+behavior, supported/default contention, browser requirements, format identity and
+location, direct shared-memory capabilities and lifecycle states. Mutable startup
+state remains in `runtime.filesystem.state` and `onStateChange`.
 
-Memory acknowledgement is not durable acknowledgement. Strict IndexedDB transactions
-do not retroactively make earlier memory-only writes durable. Global flush checkpoints
-ordered data and metadata; targeted flush checkpoints the selected payloads and the
-namespace needed to recover them. It does not promise durability for unselected dirty
-payloads. Guest `fsync` is a file-targeted barrier. To durably save then notify HMR,
-await `writeFile`, then `flush(path)`, and only then notify. Closing a page before a
-completed barrier may lose ordinary acknowledged writes. A checkpoint interval is a
-scheduling target, not a maximum loss window.
+Ordinary memory ACK is not durable ACK, even when later IndexedDB transactions use
+strict durability. Await `writeFile`, then `flush(path)`, then notify HMR. Targeted
+flush and guest `fsync` checkpoint selected payloads plus their recovery namespace;
+they do not promise durability for unrelated dirty payloads. A global flush is the
+whole-tree barrier. Checkpoint interval is a scheduling target, not a maximum loss
+window. Browser close/reload cannot guarantee saving memory-only changes. A future
+Waffle-controlled reload must order/pause mutations, await flush, then reload.
 
-Durability means the browser storage APIs and recovery protocol completed. It does not
-protect against site-data deletion, eviction, private-session destruction, device
-failure or browser violations of those APIs. Both persistent implementations retain
-lazy payload loading and direct shared-memory reads/mutations.
+The SAFE target covers tab/worker death, browser crashes and OS/power loss within
+the browser's durable-storage contract. Neither mode protects against hardware
+failure, browser bugs, eviction or user deletion. A browser-accepted storage barrier
+is not a physical power-cut measurement.
 
-## Storage identity and errors
+Current implementations require a dedicated worker, SharedArrayBuffer and cross-origin
+isolation. Persistent implementations additionally require Web Locks and their storage
+API. IndexedDB defaults to takeover (epoch fencing), with wait supported. Internal
+OPFS supports wait only. Neither provides simultaneous coherent writers today. A
+frozen owner can retain its lock indefinitely; see [storage.md](storage.md) for
+waiting, ownership loss, cancellation and asynchronous disposal.
 
-The default workspace name remains `waffle-workspace`. IndexedDB still uses the exact
-workspace name as its database name, version 1, with metadata, journal and data stores.
-Its descriptor format ID is `waffle-indexeddb-v1`. OPFS still uses
-`bun-wasm-<base64url(UTF-8(JSON.stringify(name)))>` with `data` and `metadata` directories,
-two checksummed snapshots and immutable payload revisions; descriptor format ID
-`waffle-opfs-snapshots-v1`. These IDs describe existing layouts, not newly written markers.
-The OPFS workspace lock remains `bun-wasm:filesystem:<name>`, without a VFS ID.
-IndexedDB retains its existing `bun-wasm:filesystem:indexeddb:<name>` lock.
+## Persisted identity and startup errors
 
-Selecting another store does not migrate files. Existing saved IndexedDB and OPFS
-workspaces keep their names and bytes. Established invalid/unrecoverable metadata or
-an incompatible IndexedDB database version fails without resetting the workspace.
+Default workspace: `waffle-workspace`. IndexedDB uses the exact workspace name,
+database version 1, and metadata/journal/data stores. Its persisted metadata key
+`format` is `waffle-indexeddb-v1`. OPFS keeps
+`bun-wasm-<base64url(UTF-8(JSON.stringify(name)))>/{data,metadata}` and adds
+`metadata/format-waffle-opfs-snapshots-v1`. Identity is in the OPFS directory-entry
+name, so an interrupted empty marker payload cannot change it. Existing unmarked
+layouts are adopted only after recovery validates their established format.
 
-`VfsError` carries `name: "VfsError"`, `code` and `vfs` across worker startup:
+The existing checksummed journals/snapshots, immutable payloads and lock names remain:
+`bun-wasm:filesystem:indexeddb:<name>` and `bun-wasm:filesystem:<name>`. A mismatched
+identity, incompatible database version/schema, or unrecoverable established metadata
+fails without resetting or replacing the saved filesystem. No automatic format
+conversion or adapter migration is provided by this step.
 
-- `UNSUPPORTED_VFS`: the requested implementation is unavailable or unknown.
-- `INVALID_VFS_SETTINGS`: a supplied setting is not supported by the selection.
-- `UNSUPPORTED_VFS_CAPABILITY`: required browser APIs are absent.
-- `INVALID_VFS_FORMAT`: established persisted metadata is invalid/unrecoverable or
-  its database version is incompatible.
+`VfsError` preserves class, `name`, `code`, `vfs` and diagnostic stack across startup:
 
-Selection/settings errors reject synchronously before a worker is allocated. Worker
-failures appear in the existing failed state and reject queued operations with the
-same typed error, not an unclassifiable startup string. Other storage failures retain
-their original error name/code and diagnostic stack. See [storage.md](storage.md) for
-waiting, recovery, ownership loss and asynchronous disposal.
+- `UNSUPPORTED_VFS`: unavailable/unknown mode (including SAFE today).
+- `INVALID_VFS_SETTINGS`: invalid settings for the selected mode/implementation.
+- `UNSUPPORTED_VFS_CAPABILITY`: required browser APIs absent.
+- `INVALID_VFS_FORMAT`: persisted identity/schema/version mismatch or unrecoverable metadata.
 
-## Prepared consumer selector changes (not delivered)
+`vfs` is a diagnostic identity: `safe` for unavailable SAFE, or the physical
+implementation for storage errors. Selection/settings errors occur before worker
+allocation. Worker startup failure enters the existing failed state and rejects
+queued operations with the typed error. Other storage errors retain their original
+diagnostics; no blanket fallback conceals failure.
 
-These are the matching source changes for the later consumer-delivery PRs. No consumer
-pin or implementation is changed by this step. Install exact merged Waffle commits;
-update the package pin, lockfile, source lock and trusted installation policy together.
+## Prepared consumer changes (not delivered here)
 
-### bun-wasm `web/src/main.ts`
+Consumer delivery updates exact merged Waffle pins, lockfiles, source locks and trusted
+installation together. This step changes no bun-wasm/bash-web source or dependency pin.
 
-Replace the current `storage` query's two-way fallback with explicit validated selection:
-
-```ts
-const vfs = getVfsDescriptor(params.get("vfs") ?? "indexeddb").id;
-const runtime = createRuntime({ filesystem: { vfs, name: "bun-wasm-workspace" } });
-```
-
-Import `getVfsDescriptor` with `createRuntime`. Handle `VfsError` at this initialization
-boundary with a visible diagnostic; do not turn an unsupported name into IndexedDB.
-Keep the workspace name and omitted-query default. Display opening/waiting separately
-from failure, resume on ready, preserve unsaved-text and ownership-loss handling, and
-await owner disposal before replacement. Update `web/tests/browser-filesystem-lifecycle.ts`
-for waiting and automatic readiness after release. Preserve sandbox template workspace
-names and write → targeted flush → HMR order in `sandbox/src/main.ts`.
-
-### bash-web `src/browser/main.tsx`
-
-Fetched `origin/main` already waits for storage after acquiring a runtime lease. Only
-the standalone-owned creation branch should add selection; add a typed `vfs?: VfsName`
-option to its owned-host options and pass it when creating the runtime:
+For bun-wasm `web/src/main.ts`, replace its storage-query fallback with an explicitly
+validated mode. Preserve workspace names and omitted-query FAST behavior:
 
 ```ts
-const owned = createRuntime({
-  filesystem: { workerURL: filesystemWorkerUrl, vfs: options.vfs },
-  onStartupStage,
-});
+const mode = getVfsDescriptor(params.get("mode") ?? "fast").mode;
+const runtime = createRuntime({ filesystem: { mode, name: "bun-wasm-workspace" } });
 ```
 
-Reject or exclude a selector from the borrowed `runtime` and `acquireRuntime` branches.
-They must not override the supplied runtime, create another one or dispose its owner.
-Preserve idempotent lease cleanup, `waitForStorage`, waiting UI, and start the shell's
-active startup timeout only after readiness. Parse any standalone query through
-`getVfsDescriptor`, showing typed errors rather than defaulting an unknown name.
+Show typed unsupported errors, including SAFE; never convert them into FAST. Preserve
+waiting/ready UI, unsaved-text and ownership-loss handling, disposal before replacement,
+and sandbox write → targeted flush → HMR ordering. Implement ordered reload in the
+consumer delivery, not an unload durability promise.
+
+For bash-web `src/browser/main.tsx`, add `mode?: VfsMode` only to standalone-owned
+host options and pass it to `createRuntime`. Borrowed runtime/acquireRuntime branches
+must not override selection, create a second runtime or dispose its owner. Preserve
+idempotent lease cleanup and storage readiness; start the shell's active startup
+timeout after ready. Validate standalone queries and display typed failures.

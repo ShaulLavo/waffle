@@ -20,6 +20,7 @@ import {
 
 export type { WriteFileOptions, WriteFileMode } from "../fs/index.js";
 
+import { vfsImplementation } from "../fs/vfs-internal.js";
 import {
   resolveVfs,
   VfsError,
@@ -28,7 +29,7 @@ import {
   type VfsSelection,
 } from "../fs/vfs.js";
 export { getVfsDescriptor, VfsError } from "../fs/vfs.js";
-export type { VfsName, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
+export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
 
 export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
 export interface SharedFilesystemState {
@@ -103,7 +104,7 @@ export class SharedFilesystem {
   onOwnershipLost?: () => void;
   onStateChange?: SharedFilesystemStateObserver;
   constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
-    const selection = resolveVfs(options);
+    const selection = resolveVfs(options, Reflect.get(options, vfsImplementation));
     this.vfs = selection.descriptor;
     this.onStateChange = options.onStateChange;
     this.cancellableStartup = this.vfs.persistent;
@@ -161,13 +162,15 @@ export class SharedFilesystem {
       const message: {
         connect: FilesystemConnection;
         name?: string;
-        vfs: VfsDescriptor["id"];
+        mode: VfsDescriptor["mode"];
+        implementation: VfsDescriptor["implementation"];
         whenBusy?: "takeover" | "wait";
         observeStartup?: true;
       } = {
         connect: connection.server,
         name: options.name,
-        vfs: this.vfs.id,
+        mode: this.vfs.mode,
+        implementation: this.vfs.implementation,
         whenBusy: selection.whenBusy,
       };
       if (onStartupStage) message.observeStartup = true;

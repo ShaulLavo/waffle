@@ -1,3 +1,4 @@
+import { withVfsImplementation } from "../fs/vfs-internal.js";
 import { expect, test } from "bun:test";
 import { VfsError } from "../fs/vfs.js";
 import { SharedFilesystem } from "../browser/shared-fs";
@@ -29,15 +30,18 @@ test("page filesystem accepts a consumer-owned worker URL and storage namespace"
   } as unknown as typeof Worker;
   let fs: SharedFilesystem | undefined;
   try {
-    fs = new SharedFilesystem({
-      workerURL: "https://example.test/assets/filesystem.js",
-      name: "editor-workspace",
-      vfs: "opfs-memory",
-    });
+    fs = new SharedFilesystem(
+      withVfsImplementation("opfs-memory", {
+        workerURL: "https://example.test/assets/filesystem.js",
+        name: "editor-workspace",
+        mode: "fast",
+      }),
+    );
     expect(script).toBe("https://example.test/assets/filesystem.js");
     expect(messages[0]).toMatchObject({
       name: "editor-workspace",
-      vfs: "opfs-memory",
+      mode: "fast",
+      implementation: "opfs-memory",
       whenBusy: "wait",
     });
   } finally {
@@ -62,13 +66,15 @@ test("page filesystem exposes typed waiting and ready state transitions", () => 
   } as unknown as typeof Worker;
   let fs: SharedFilesystem | undefined;
   try {
-    fs = new SharedFilesystem({
-      workerURL: "https://example.test/fs.js",
-      vfs: "opfs-memory",
-      onStateChange: (state) => {
-        states.push(state.status);
-      },
-    });
+    fs = new SharedFilesystem(
+      withVfsImplementation("opfs-memory", {
+        workerURL: "https://example.test/fs.js",
+        mode: "fast",
+        onStateChange: (state: SharedFilesystem["state"]) => {
+          states.push(state.status);
+        },
+      }),
+    );
     message!({ data: { type: "filesystem-state", status: "waiting" } } as MessageEvent);
     expect(fs.state.status).toBe("waiting");
     message!({ data: { type: "filesystem-state", status: "ready" } } as MessageEvent);

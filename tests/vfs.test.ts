@@ -1,39 +1,43 @@
 import { expect, test } from "bun:test";
 import { getVfsDescriptor, VfsError, type VfsSelection } from "../index.js";
 import { resolveVfs } from "../fs/vfs.js";
+import { withVfsImplementation } from "../fs/vfs-internal.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
 
-const selections: VfsSelection[] = [
-  {},
-  { vfs: "indexeddb", whenBusy: "wait" },
-  { vfs: "opfs-memory", whenBusy: "wait" },
-  { vfs: "memory" },
-];
-// @ts-expect-error A future, uncertified implementation is not selectable.
-const future: VfsSelection = { vfs: "opfs-wal" };
+const selections: VfsSelection[] = [{}, { mode: "fast", whenBusy: "wait" }, { mode: "memory" }];
+const safe: VfsSelection = { mode: "safe" };
+// @ts-expect-error Backend names are not product modes.
+const backend: VfsSelection = { mode: "indexeddb" };
 // @ts-expect-error Memory has no ownership contention setting.
-const irrelevant: VfsSelection = { vfs: "memory", whenBusy: "wait" };
-// @ts-expect-error The old storage selector is not an accepted request shape.
-const old: VfsSelection = { storage: "opfs" };
-void [future, irrelevant, old];
+const irrelevant: VfsSelection = { mode: "memory", whenBusy: "wait" };
+// @ts-expect-error The old selector is not an accepted request shape.
+const old: VfsSelection = { vfs: "opfs-memory" };
+// @ts-expect-error Implementation overrides are not public settings.
+const override: VfsSelection = { mode: "fast", implementation: "opfs-memory" };
+void [safe, backend, irrelevant, old, override];
 
-test("VFS selection preserves default ownership and separates settings from identity", () => {
+test("mode selection preserves the existing workspace and separates implementation from mode", () => {
   expect(resolveVfs({})).toEqual({ descriptor: getVfsDescriptor(), whenBusy: "takeover" });
-  for (const selection of selections) {
-    const resolved = resolveVfs(selection);
-    expect(resolved.descriptor).toBe(getVfsDescriptor(selection.vfs));
-  }
-  expect(resolveVfs({ vfs: "opfs-memory" }).whenBusy).toBe("wait");
-  expect(resolveVfs({ vfs: "memory" }).whenBusy).toBeUndefined();
+  for (const selection of selections)
+    expect(resolveVfs(selection).descriptor).toBe(getVfsDescriptor(selection.mode));
+  expect(resolveVfs({ mode: "memory" }).whenBusy).toBeUndefined();
   expect(resolveVfs({ whenBusy: "wait" }).descriptor).toBe(getVfsDescriptor());
+  const opfs = resolveVfs({ mode: "fast" }, "opfs-memory");
+  expect(opfs.descriptor.mode).toBe("fast");
+  expect(opfs.descriptor.implementation).toBe("opfs-memory");
+  expect(opfs.whenBusy).toBe("wait");
 });
 
-test("descriptors distinguish relaxed ACKs, barriers, ownership, format and lifecycle", () => {
+test("descriptors report actual ACKs, loss boundary, ownership, format and lifecycle", () => {
   const idb = getVfsDescriptor();
   expect(idb).toMatchObject({
-    id: "indexeddb",
+    mode: "fast",
+    implementation: "indexeddb",
     persistent: true,
     mutationAcknowledgement: "memory",
+    durabilityPoint: "completed-durable-checkpoint",
+    lossBound: "changes-after-last-completed-durable-checkpoint",
+    pendingDataBound: "not-yet-enforced",
     multiTab: "exclusive-owner",
     defaultWhenBusy: "takeover",
     worker: "dedicated",
@@ -48,7 +52,7 @@ test("descriptors distinguish relaxed ACKs, barriers, ownership, format and life
   });
   expect(idb.requirements).toContain("IndexedDB");
   expect(idb.lifecycle).toEqual(["opening", "waiting", "ready", "failed", "disposed"]);
-  const opfs = getVfsDescriptor("opfs-memory");
+  const opfs = resolveVfs({ mode: "fast" }, "opfs-memory").descriptor;
   expect(opfs.format?.id).toBe("waffle-opfs-snapshots-v1");
   expect(opfs.supportedWhenBusy).toEqual(["wait"]);
   expect(opfs.unsupportedSettings).toEqual(["whenBusy:takeover"]);
@@ -57,42 +61,69 @@ test("descriptors distinguish relaxed ACKs, barriers, ownership, format and life
   expect(memory.persistent).toBe(false);
   expect(memory.format).toBeNull();
   expect(memory.multiTab).toBe("isolated");
+  expect(memory.durabilityPoint).toBe("none");
+  expect(memory.lossBound).toBe("all-changes");
   expect(memory.durability.flush).toBe("volatile-ordering-only");
-  for (const name of ["indexeddb", "opfs-memory", "memory"]) {
-    const descriptor = getVfsDescriptor(name);
+  for (const descriptor of [idb, opfs, memory]) {
     expect(Object.isFrozen(descriptor)).toBe(true);
     const objects = Object.values(descriptor).filter((value) => value && typeof value === "object");
     expect(objects.every(Object.isFrozen)).toBe(true);
   }
 });
 
-for (const name of ["opfs", "opfs-safe", "opfs-wal", "indexeddb-wait", "", "unknown"])
-  test(`unsupported selection ${JSON.stringify(name)} has no fallback`, () => {
-    expect(() => getVfsDescriptor(name)).toThrow(VfsError);
-    expect(caught(() => resolveVfs({ vfs: name }))).toMatchObject({
+for (const mode of ["safe", "indexeddb", "opfs-memory", "opfs-safe", "opfs-wal", "", "unknown"])
+  test(`unsupported mode ${JSON.stringify(mode)} never falls back`, () => {
+    expect(() => getVfsDescriptor(mode)).toThrow(VfsError);
+    expect(caught(() => resolveVfs({ mode }))).toMatchObject({
       name: "VfsError",
       code: "UNSUPPORTED_VFS",
-      vfs: name,
+      vfs: mode,
     });
-    expect(caught(() => new SharedFilesystem({ vfs: name } as VfsSelection))).toMatchObject({
+    expect(caught(() => new SharedFilesystem({ mode } as VfsSelection))).toMatchObject({
       code: "UNSUPPORTED_VFS",
-      vfs: name,
+      vfs: mode,
     });
   });
 
+test("SAFE cannot be forced onto a FAST implementation by an internal override", () => {
+  expect(caught(() => resolveVfs({ mode: "safe" }, "indexeddb"))).toMatchObject({
+    code: "UNSUPPORTED_VFS",
+    vfs: "safe",
+  });
+  expect(caught(() => resolveVfs({ mode: "fast" }, "memory"))).toMatchObject({
+    code: "INVALID_VFS_SETTINGS",
+  });
+});
+
 for (const options of [
   { whenBusy: "invalid" },
-  { vfs: "opfs-memory", whenBusy: "takeover" },
-  { vfs: "memory", whenBusy: "wait" },
-  { vfs: "memory", whenBusy: "takeover" },
+  { mode: "memory", whenBusy: "wait" },
+  { mode: "memory", whenBusy: "takeover" },
 ])
-  test(`invalid settings reject without allocating a worker: ${JSON.stringify(options)}`, () => {
+  test(`invalid settings reject before worker allocation: ${JSON.stringify(options)}`, () => {
     expect(caught(() => new SharedFilesystem(options as VfsSelection))).toMatchObject({
       name: "VfsError",
       code: "INVALID_VFS_SETTINGS",
-      vfs: options.vfs ?? "indexeddb",
     });
   });
+
+test("obsolete selectors reject rather than silently selecting FAST", () => {
+  for (const options of [{ vfs: "opfs-memory" }, { storage: "opfs" }, { persistence: false }])
+    expect(caught(() => new SharedFilesystem(options as VfsSelection))).toMatchObject({
+      code: "INVALID_VFS_SETTINGS",
+    });
+});
+
+test("internal implementation settings are validated before transport allocation", () => {
+  const options = withVfsImplementation("opfs-memory", {
+    mode: "fast",
+    whenBusy: "takeover",
+  } as const);
+  expect(caught(() => new SharedFilesystem(options))).toMatchObject({
+    code: "INVALID_VFS_SETTINGS",
+    vfs: "opfs-memory",
+  });
+});
 
 function caught(action: () => unknown): unknown {
   try {
@@ -103,10 +134,14 @@ function caught(action: () => unknown): unknown {
   throw new Error("Expected an error");
 }
 
-for (const [options, code] of [
-  [{ vfs: "opfs-wal" }, "UNSUPPORTED_VFS"],
-  [{ vfs: "opfs-memory", whenBusy: "takeover" }, "INVALID_VFS_SETTINGS"],
-  [{ vfs: "indexeddb" }, "UNSUPPORTED_VFS_CAPABILITY"],
+for (const [options, code, identity] of [
+  [{ mode: "safe" }, "UNSUPPORTED_VFS", "safe"],
+  [
+    { mode: "fast", implementation: "opfs-memory", whenBusy: "takeover" },
+    "INVALID_VFS_SETTINGS",
+    "opfs-memory",
+  ],
+  [{ mode: "fast" }, "UNSUPPORTED_VFS_CAPABILITY", "indexeddb"],
 ] as const)
   test(`production worker preserves typed ${code} diagnostics`, async () => {
     const worker = new Worker(new URL("../browser/fs-worker.ts", import.meta.url).href);
@@ -123,7 +158,7 @@ for (const [options, code] of [
         type: "filesystem-error",
         name: "VfsError",
         code,
-        vfs: options.vfs,
+        vfs: identity,
       });
     } finally {
       worker.terminate();

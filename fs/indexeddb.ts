@@ -1,3 +1,4 @@
+import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
@@ -364,7 +365,10 @@ export class IndexedDBStorage implements StorageBackend {
       db.close();
       throw signal.reason;
     }
-    if (!["metadata", "journal", "data"].every((store) => db.objectStoreNames.contains(store))) {
+    if (
+      db.objectStoreNames.length !== 3 ||
+      !["metadata", "journal", "data"].every((store) => db.objectStoreNames.contains(store))
+    ) {
       db.close();
       throw new VfsError(
         "INVALID_VFS_FORMAT",
@@ -581,15 +585,33 @@ export class IndexedDBStorage implements StorageBackend {
     const tx = this.db.transaction(["metadata", "journal", "data"], "readonly");
     const metadata = tx.objectStore("metadata"),
       journal = tx.objectStore("journal");
-    const [first, second, metadataCount, journalValues, journalKeys, dataKeys] = await Promise.all([
-      request(metadata.get(0)),
-      request(metadata.get(1)),
-      request(metadata.count()),
-      request(journal.getAll()),
-      request(journal.getAllKeys()),
-      request(tx.objectStore("data").getAllKeys()),
-      completed(tx),
-    ]);
+    const [first, second, metadataKeys, journalValues, journalKeys, dataKeys, format] =
+      await Promise.all([
+        request(metadata.get(0)),
+        request(metadata.get(1)),
+        request(metadata.getAllKeys()),
+        request(journal.getAll()),
+        request(journal.getAllKeys()),
+        request(tx.objectStore("data").getAllKeys()),
+        request(metadata.get("format")),
+        completed(tx),
+      ]);
+    if (format !== undefined && format !== INDEXEDDB_FORMAT)
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB filesystem format identity",
+      );
+    if (
+      metadataKeys.some(
+        (key) => key !== 0 && key !== 1 && key !== "epoch" && key !== "active" && key !== "format",
+      )
+    )
+      throw new VfsError(
+        "INVALID_VFS_FORMAT",
+        "indexeddb",
+        "Incompatible IndexedDB metadata layout",
+      );
     const payloadKeys = new Set(dataKeys.filter((key): key is string => typeof key === "string"));
     const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
@@ -604,7 +626,12 @@ export class IndexedDBStorage implements StorageBackend {
       }),
     );
     const newest = recoverIndex(bases, journals, payloadKeys);
-    if (!newest && (metadataCount > 1 || journalKeys.length > 0 || dataKeys.length > 0)) {
+    if (
+      !newest &&
+      (metadataKeys.length - Number(format !== undefined) > 1 ||
+        journalKeys.length > 0 ||
+        dataKeys.length > 0)
+    ) {
       throw new VfsError(
         "INVALID_VFS_FORMAT",
         "indexeddb",
@@ -630,7 +657,31 @@ export class IndexedDBStorage implements StorageBackend {
         ).length,
       };
     }
+    if (format === undefined) await this.installFormat();
     this.initialized = true;
+  }
+
+  /** Adopt only a validated legacy layout, fenced by the same ownership epoch. */
+  private async installFormat(): Promise<void> {
+    this.assertOwner();
+    const tx = this.db.transaction("metadata", "readwrite", { durability: "strict" });
+    this.transactions.add(tx);
+    const done = completed(tx);
+    const metadata = tx.objectStore("metadata");
+    const epoch = metadata.get("epoch");
+    epoch.onsuccess = () => {
+      if (epoch.result !== this.epoch) {
+        this.loseOwnership();
+        return;
+      }
+      metadata.put(INDEXEDDB_FORMAT, "format");
+    };
+    try {
+      await done;
+      this.assertOwner();
+    } finally {
+      this.transactions.delete(tx);
+    }
   }
 
   private async commit(batch: PersistenceBatch): Promise<void> {

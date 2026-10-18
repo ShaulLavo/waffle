@@ -39,4 +39,4 @@ export { OpfsStorage, type OpfsStorageOptions } from "./opfs.js";
 export type { StorageBackend, PersistedIndex, PersistedNode, PersistenceBatch } from "./storage.js";
 
 export { getVfsDescriptor, VfsError } from "./vfs.js";
-export type { VfsName, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./vfs.js";
+export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./vfs.js";

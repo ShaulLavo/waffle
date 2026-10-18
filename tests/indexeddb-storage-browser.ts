@@ -1,11 +1,13 @@
+import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
-import { createRuntime, VfsError, type VfsName, type RuntimeStartupStage } from "../index.js";
+import { createRuntime, VfsError, type RuntimeStartupStage } from "../index.js";
 import {
   FilesystemClient,
   FilesystemService,
   PersistentBackend,
   createFilesystemConnection,
 } from "../fs/index.js";
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
@@ -355,11 +357,14 @@ export async function runtimeStartupCase(
     resolveReady = resolve;
   });
   const runtime = createRuntime({
-    filesystem: {
-      name,
-      vfs: storage === false ? "memory" : storage === "opfs" ? "opfs-memory" : "indexeddb",
-      workerURL: new URL(workerURL, location.href),
-    },
+    filesystem: withVfsImplementation(
+      storage === false ? "memory" : storage === "opfs" ? "opfs-memory" : "indexeddb",
+      {
+        name,
+        mode: storage === false ? "memory" : "fast",
+        workerURL: new URL(workerURL, location.href),
+      },
+    ),
     onStartupStage(stage, timestamp) {
       seen.push([stage, timestamp]);
       if (stage === "filesystem-ready") resolveReady();
@@ -410,7 +415,7 @@ export async function runtimeStartupCase(
 /** Verify the selector opens existing data, not a newly named/empty workspace. */
 export async function runtimeVfsCase(
   name: string,
-  vfs: VfsName,
+  vfs: VfsImplementation,
   workerURL: string | URL,
   open: () => Promise<StorageBackend>,
 ): Promise<void> {
@@ -422,10 +427,14 @@ export async function runtimeVfsCase(
     await storage.close();
   }
   const runtime = createRuntime({
-    filesystem: { name, vfs, workerURL: new URL(workerURL, location.href) },
+    filesystem: withVfsImplementation(vfs, {
+      name,
+      mode: vfs === "memory" ? "memory" : "fast",
+      workerURL: new URL(workerURL, location.href),
+    }),
   });
   try {
-    assert(runtime.filesystem.vfs.id === vfs, "selected descriptor");
+    assert(runtime.filesystem.vfs.implementation === vfs, "selected descriptor");
     assert(
       new TextDecoder().decode(await runtime.filesystem.readFile("/file")) ===
         "saved before explicit VFS selection",
@@ -457,11 +466,15 @@ export async function runtimeVfsCase(
 /** Assert an established invalid store fails through the production worker without a fallback. */
 export async function runtimeInvalidStorageCase(
   name: string,
-  vfs: VfsName,
+  vfs: VfsImplementation,
   workerURL: string | URL,
 ): Promise<void> {
   const runtime = createRuntime({
-    filesystem: { name, vfs, workerURL: new URL(workerURL, location.href) },
+    filesystem: withVfsImplementation(vfs, {
+      name,
+      mode: vfs === "memory" ? "memory" : "fast",
+      workerURL: new URL(workerURL, location.href),
+    }),
   });
   const error = await runtime.filesystem.listFiles().catch((failure) => failure);
   try {
@@ -634,6 +647,57 @@ function indexedDBCases(
   const test: Register = (label, run, compactEvery) => {
     cases.push({ label, run, compactEvery });
   };
+  test("IndexedDB persists format identity and adopts validated unmarked data", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1, "legacy data"));
+    await storage.close();
+    await raw(name, async (db) => {
+      assert(
+        (await request(db.transaction("metadata").objectStore("metadata").get("format"))) ===
+          INDEXEDDB_FORMAT,
+        "new workspace has format identity",
+      );
+    });
+    await change(name, "metadata", "format");
+    const adopted = await open();
+    assert((await adopted.load())?.generation === 1, "legacy namespace survives adoption");
+    assert(
+      new TextDecoder().decode(await adopted.read("file:1")) === "legacy data",
+      "legacy payload survives adoption",
+    );
+    await adopted.close();
+    await raw(name, async (db) => {
+      assert(
+        (await request(db.transaction("metadata").objectStore("metadata").get("format"))) ===
+          INDEXEDDB_FORMAT,
+        "validated legacy data receives identity",
+      );
+    });
+  });
+  test("IndexedDB rejects mismatched identity without replacing saved data", async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1, "preserved"));
+    await storage.close();
+    await change(name, "metadata", "format", "another-format-v9");
+    const reopened = await open();
+    await rejects(reopened.load(), "format identity");
+    await reopened.close();
+    if (filesystemWorkerURL !== undefined)
+      await runtimeInvalidStorageCase(name, "indexeddb", filesystemWorkerURL);
+    await raw(name, async (db) => {
+      assert(
+        (await request(db.transaction("metadata").objectStore("metadata").get("format"))) ===
+          "another-format-v9",
+        "foreign marker remains untouched",
+      );
+      assert(
+        new TextDecoder().decode(
+          await request(db.transaction("data").objectStore("data").get("file:1")),
+        ) === "preserved",
+        "foreign workspace payload remains untouched",
+      );
+    });
+  });
   // Backend-suite consumers need not serve a Waffle runtime worker. Its URL opts in to runtime probes.
   if (filesystemWorkerURL !== undefined) {
     test("runtime VFS selection preserves existing IndexedDB workspaces", (name, open) =>
@@ -653,7 +717,7 @@ function indexedDBCases(
       const owner = createRuntime({
         filesystem: {
           name,
-          vfs: "memory",
+          mode: "memory",
           workerURL: new URL(filesystemWorkerURL, location.href),
         },
       });

@@ -1,10 +1,12 @@
-/** Only certified, existing implementations are selectable. Settings do not name VFSs. */
-export type VfsName = "indexeddb" | "opfs-memory" | "memory";
+import { INDEXEDDB_FORMAT, OPFS_FORMAT } from "./vfs-format.js";
+import type { VfsImplementation } from "./vfs-internal.js";
+
+/** @public Product guarantees, independent of the browser's physical storage adapter. */
+export type VfsMode = "fast" | "safe" | "memory";
 export type VfsWhenBusy = "takeover" | "wait";
 export type VfsSelection =
-  | { vfs?: "indexeddb"; whenBusy?: VfsWhenBusy }
-  | { vfs: "opfs-memory"; whenBusy?: "wait" }
-  | { vfs: "memory"; whenBusy?: never };
+  | { mode?: "fast" | "safe"; whenBusy?: VfsWhenBusy }
+  | { mode: "memory"; whenBusy?: never };
 
 export type VfsErrorCode =
   | "UNSUPPORTED_VFS"
@@ -25,11 +27,16 @@ export class VfsError extends Error {
 }
 
 export interface VfsDescriptor {
-  readonly id: VfsName;
+  readonly mode: VfsMode;
+  /** Inspectable result, not a public selector. No automatic store switch or migration. */
+  readonly implementation: VfsImplementation;
   readonly displayName: string;
   readonly persistent: boolean;
   readonly mutationAcknowledgement: "memory";
-  /** Browser storage completion, not protection from eviction or site-data deletion. */
+  readonly durabilityPoint: "completed-durable-checkpoint" | "none";
+  readonly lossBound: "changes-after-last-completed-durable-checkpoint" | "all-changes";
+  /** Current engines do not yet implement the approved bounded multi-writer engine. */
+  readonly pendingDataBound: "not-yet-enforced" | "runtime-memory";
   readonly durability: {
     readonly flush: "checkpoint-data-and-metadata" | "volatile-ordering-only";
     readonly fsync: "targeted-file-checkpoint" | "volatile-ordering-only";
@@ -44,13 +51,16 @@ export interface VfsDescriptor {
   readonly directSharedMemory: { readonly reads: true; readonly mutations: true };
   readonly format: { readonly id: string; readonly location: string } | null;
   readonly unsupportedSettings: readonly string[];
-  /** Capability description only; live state is filesystem.state. */
   readonly lifecycle: readonly ("opening" | "waiting" | "ready" | "failed" | "disposed")[];
 }
 
 const requirements = ["SharedArrayBuffer", "cross-origin-isolation", "dedicated-worker"];
 const persistent = {
+  mode: "fast",
   mutationAcknowledgement: "memory",
+  durabilityPoint: "completed-durable-checkpoint",
+  lossBound: "changes-after-last-completed-durable-checkpoint",
+  pendingDataBound: "not-yet-enforced",
   durability: Object.freeze({
     flush: "checkpoint-data-and-metadata",
     fsync: "targeted-file-checkpoint",
@@ -64,38 +74,42 @@ const persistent = {
   lifecycle: Object.freeze(["opening", "waiting", "ready", "failed", "disposed"] as const),
 } as const;
 
-const descriptors: Record<VfsName, VfsDescriptor> = {
+const descriptors: Record<VfsImplementation, VfsDescriptor> = {
   indexeddb: Object.freeze({
     ...persistent,
-    id: "indexeddb",
-    displayName: "IndexedDB",
+    implementation: "indexeddb",
+    displayName: "FAST (IndexedDB checkpoints)",
     supportedWhenBusy: Object.freeze(["takeover", "wait"] as const),
     defaultWhenBusy: "takeover",
     requirements: Object.freeze(requirements.concat(["IndexedDB", "Web Locks"])),
     format: Object.freeze({
-      id: "waffle-indexeddb-v1",
+      id: INDEXEDDB_FORMAT,
       location: "IndexedDB database named by filesystem.name (default waffle-workspace)",
     }),
     unsupportedSettings: Object.freeze([]),
   }),
   "opfs-memory": Object.freeze({
     ...persistent,
-    id: "opfs-memory",
-    displayName: "OPFS (memory-first)",
+    implementation: "opfs-memory",
+    displayName: "FAST (OPFS checkpoints)",
     supportedWhenBusy: Object.freeze(["wait"] as const),
     defaultWhenBusy: "wait",
     requirements: Object.freeze(requirements.concat(["OPFS", "sync-access-handles", "Web Locks"])),
     format: Object.freeze({
-      id: "waffle-opfs-snapshots-v1",
+      id: OPFS_FORMAT,
       location: "OPFS bun-wasm-<base64url(JSON(workspace name))>/{data,metadata}",
     }),
     unsupportedSettings: Object.freeze(["whenBusy:takeover"]),
   }),
   memory: Object.freeze({
     ...persistent,
-    id: "memory",
+    mode: "memory",
+    implementation: "memory",
     displayName: "Memory (nonpersistent)",
     persistent: false,
+    durabilityPoint: "none",
+    lossBound: "all-changes",
+    pendingDataBound: "runtime-memory",
     durability: Object.freeze({
       flush: "volatile-ordering-only",
       fsync: "volatile-ordering-only",
@@ -110,20 +124,26 @@ const descriptors: Record<VfsName, VfsDescriptor> = {
   }),
 };
 
-/** Unknown names, including future VFSs, are errors, never fallbacks. */
-export function getVfsDescriptor(name: string = "indexeddb"): VfsDescriptor {
-  if (name === "indexeddb" || name === "opfs-memory" || name === "memory") return descriptors[name];
-  throw new VfsError("UNSUPPORTED_VFS", String(name), `Unsupported VFS: ${String(name)}`);
+/** FAST preserves the existing IndexedDB workspace in every browser until a migration wins. */
+export function getVfsDescriptor(mode: string = "fast"): VfsDescriptor {
+  if (mode === "fast") return descriptors.indexeddb;
+  if (mode === "memory") return descriptors.memory;
+  throw new VfsError("UNSUPPORTED_VFS", String(mode), `Unsupported VFS mode: ${String(mode)}`);
 }
 
-/** Validate on both sides of worker startup; JavaScript callers are not constrained by TS. */
-export function resolveVfs(options: { vfs?: unknown; whenBusy?: unknown }): {
-  descriptor: VfsDescriptor;
-  whenBusy?: VfsWhenBusy;
-} {
-  const descriptor = getVfsDescriptor(
-    options.vfs === undefined ? "indexeddb" : String(options.vfs),
-  );
+/** The second argument is an internal conformance override, never a public product setting. */
+export function resolveVfs(
+  options: { mode?: unknown; whenBusy?: unknown },
+  implementation?: unknown,
+): { descriptor: VfsDescriptor; whenBusy?: VfsWhenBusy } {
+  if ("vfs" in options || "storage" in options || "persistence" in options)
+    throw new VfsError(
+      "INVALID_VFS_SETTINGS",
+      String(options.mode ?? "fast"),
+      "Select a filesystem mode, not a backend",
+    );
+  const selected = getVfsDescriptor(options.mode === undefined ? "fast" : String(options.mode));
+  const descriptor = overrideDescriptor(selected, implementation);
   const whenBusy = options.whenBusy;
   if (whenBusy === undefined) return { descriptor, whenBusy: descriptor.defaultWhenBusy };
   if (
@@ -133,13 +153,35 @@ export function resolveVfs(options: { vfs?: unknown; whenBusy?: unknown }): {
     return { descriptor, whenBusy };
   throw new VfsError(
     "INVALID_VFS_SETTINGS",
-    descriptor.id,
-    `${descriptor.id} does not support whenBusy: ${String(whenBusy)}`,
+    descriptor.implementation,
+    `${descriptor.implementation} does not support whenBusy: ${String(whenBusy)}`,
   );
 }
 
+function overrideDescriptor(selected: VfsDescriptor, implementation: unknown): VfsDescriptor {
+  if (implementation === undefined) return selected;
+  if (
+    implementation !== "indexeddb" &&
+    implementation !== "opfs-memory" &&
+    implementation !== "memory"
+  )
+    throw new VfsError(
+      "UNSUPPORTED_VFS",
+      String(implementation),
+      `Unsupported VFS implementation: ${String(implementation)}`,
+    );
+  const descriptor = descriptors[implementation];
+  if (descriptor.mode !== selected.mode)
+    throw new VfsError(
+      "INVALID_VFS_SETTINGS",
+      implementation,
+      "Implementation does not implement the selected mode",
+    );
+  return descriptor;
+}
+
 /** No probe or storage mutation: only verify the APIs needed by the existing implementation. */
-export function requireVfsCapabilities(name: VfsName): void {
+export function requireVfsCapabilities(name: VfsImplementation): void {
   if (name === "memory") return;
   const locks = globalThis.navigator?.locks;
   const hasStorage = name === "indexeddb" ? !!globalThis.indexedDB : hasOpfs();

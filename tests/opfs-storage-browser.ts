@@ -1,3 +1,4 @@
+import { OPFS_FORMAT } from "../fs/vfs-format.js";
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs.js";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage.js";
 import {
@@ -913,6 +914,52 @@ function focusedCases(filesystemWorkerURL?: string | URL): OpfsCase[] {
               },
             }),
         );
+      },
+    },
+    {
+      label: "OPFS persists format identity and adopts validated unmarked data",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1, "legacy data"));
+        await storage.flush();
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.getFileHandle(`format-${OPFS_FORMAT}`);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        const adopted = await open();
+        assert((await adopted.load())?.generation === 1, "legacy namespace survives adoption");
+        assert(
+          new TextDecoder().decode(await adopted.read("file:1")) === "legacy data",
+          "legacy payload survives adoption",
+        );
+        await adopted.close();
+        await metadata.getFileHandle(`format-${OPFS_FORMAT}`);
+      },
+    },
+    {
+      label: "OPFS rejects mismatched identity without replacing saved data",
+      async run(name, open) {
+        const storage = await open();
+        await storage.persist(batch(1, "preserved"));
+        await storage.flush();
+        await storage.close();
+        const metadata = await metadataDirectory(name);
+        await metadata.removeEntry(`format-${OPFS_FORMAT}`);
+        await metadata.getFileHandle("format-another-v9", { create: true });
+        const reopened = await open();
+        await rejects(reopened.load(), "format identity");
+        await reopened.close();
+        if (filesystemWorkerURL !== undefined)
+          await runtimeInvalidStorageCase(name, "opfs-memory", filesystemWorkerURL);
+        await metadata.getFileHandle("format-another-v9");
+        await metadata.removeEntry("format-another-v9");
+        const restored = await open();
+        assert((await restored.load())?.generation === 1, "failed open preserves namespace");
+        assert(
+          new TextDecoder().decode(await restored.read("file:1")) === "preserved",
+          "failed open preserves payload",
+        );
+        await restored.close();
       },
     },
     {

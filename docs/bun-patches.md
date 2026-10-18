@@ -9,7 +9,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `browser/process-broker.ts`, `browser/worker.ts`                                                | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned.                                                                                                                                                                     |
 | `fs/opfs.ts`                                                                                    | Adaptation       | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation, queued lock ownership/cancellation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                         | Original adapter | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                    |
-| `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts` | Original adapter | Explicit VFS selection/descriptors and typed startup diagnostics; existing layouts, locks and persistence algorithms remain unchanged.                                                                                                                                                                                                       |
+| `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts` | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                |
 | `core/memory-views.js`                                                                          | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity.                                                                                                                                                                                                                      |
 | `patches/wasi-libc/preopen-scan.patch`                                                          | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.    |
 
@@ -83,8 +83,14 @@ No new upstream code was copied for the quality tools or failure probes.
 ## VFS selection contract
 
 The descriptor/selection API in `fs/vfs.ts` and its browser/runtime wiring are original
-Waffle adapters. Startup diagnostics now retain typed error names/codes, including
-invalid established metadata and incompatible IndexedDB database versions. The OPFS
+Waffle adapters, including `fs/vfs-internal.ts` and `fs/vfs-format.ts`. Public selection
+uses FAST/SAFE semantics; backend overrides remain internal conformance controls. SAFE
+is unsupported until a durable-ACK engine exists. Startup diagnostics retain typed
+error names/codes, including invalid established metadata, incompatible database versions
+and mismatched format identities. IndexedDB stores its format record in metadata;
+OPFS uses a format-named metadata entry. Validated unmarked existing layouts gain an
+identity without changing payloads, namespace, database version or lock names. The OPFS
 snapshot error is outside the adapted sync-handle retry fragment from SLICC-kernel
-`src/fs/opfs.ts` at `88c5bb3` (Apache-2.0); that fragment is unchanged. No upstream code,
-new format or storage migration was introduced.
+`src/fs/opfs.ts` at `88c5bb3` (Apache-2.0); that fragment is unchanged. No upstream
+code was copied for this revision. Format-marker adoption is original Waffle glue,
+not a new storage engine or an automatic implementation migration.
