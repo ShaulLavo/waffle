@@ -14,6 +14,8 @@ let terminations = 0;
 let clientDisposals = 0;
 let filesystemWorker: Worker | undefined;
 const probes: string[] = [];
+let holdOwnershipLoss = false;
+let heldOwnershipLoss: MessageEvent | undefined;
 let disposal: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = { status: "idle" };
 // Instrument calls without replacing the actual browser worker or storage implementation.
 globalThis.Worker = class extends NativeWorker {
@@ -21,7 +23,14 @@ globalThis.Worker = class extends NativeWorker {
     super(url, options);
     filesystemWorker = this;
     this.addEventListener("message", event => {
-      if (typeof event.data?.type === "string") probes.push(event.data.type);
+      if (typeof event.data?.type === "string") {
+        probes.push(event.data.type);
+        if (typeof event.data.status === "string") probes.push(`${event.data.type}:${event.data.status}`);
+      }
+      if (holdOwnershipLoss && event.data?.type === "filesystem-ownership-lost") {
+        heldOwnershipLoss = event;
+        event.stopImmediatePropagation();
+      }
     });
   }
   terminate(): void { terminations++; super.terminate(); }
@@ -61,10 +70,11 @@ function lockName(backend: Backend, name: string): string {
   return backend === "indexeddb" ? `bun-wasm:filesystem:indexeddb:${name}` : `bun-wasm:filesystem:${name}`;
 }
 
-async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecovery = false): Promise<void> {
+async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecovery: boolean | "recovered" = false): Promise<void> {
   if (fs) throw new Error("filesystem already started");
+  holdOwnershipLoss = gatedRecovery === "recovered";
   const options: SharedFilesystemOptions = {
-    workerURL: gatedRecovery ? "/recovery-fs-worker.js" : "/fs-worker.js",
+    workerURL: gatedRecovery === "recovered" ? "/recovery-fs-worker.js?recovered" : gatedRecovery ? "/recovery-fs-worker.js" : "/fs-worker.js",
     name,
     storage: backend,
     onStateChange: record,
@@ -97,6 +107,12 @@ async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecov
   releaseRecovery(): void {
     if (!filesystemWorker) throw new Error("filesystem worker has not been created");
     filesystemWorker.postMessage({ probeReleaseRecovery: true });
+  },
+  releaseOwnershipLoss(): void {
+    if (!filesystemWorker || !heldOwnershipLoss) throw new Error("no held ownership-loss message");
+    holdOwnershipLoss = false;
+    filesystemWorker.dispatchEvent(new MessageEvent("message", { data: heldOwnershipLoss.data }));
+    heldOwnershipLoss = undefined;
   },
   async seed(): Promise<string> {
     const filesystem = requireFilesystem();

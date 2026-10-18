@@ -51,10 +51,10 @@ async function pageFixture(context: BrowserContext, baseURL: string): Promise<Pa
   await page.waitForFunction(() => (globalThis as any).lockTest !== undefined);
   return page;
 }
-async function startPage(page: Page, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery = false): Promise<void> {
+async function startPage(page: Page, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery: boolean | "recovered" = false): Promise<void> {
   await page.evaluate(({ backend, name, whenBusy, gatedRecovery }) => (globalThis as any).lockTest.start(backend, name, whenBusy, gatedRecovery), { backend, name, whenBusy, gatedRecovery });
 }
-async function openFilesystem(context: BrowserContext, baseURL: string, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery = false): Promise<Page> {
+async function openFilesystem(context: BrowserContext, baseURL: string, backend: Backend, name: string, whenBusy?: "wait" | "takeover", gatedRecovery: boolean | "recovered" = false): Promise<Page> {
   const page = await pageFixture(context, baseURL);
   await startPage(page, backend, name, whenBusy, gatedRecovery);
   return page;
@@ -243,7 +243,8 @@ async function recoveryOwnershipLoss(context: BrowserContext, baseURL: string, n
     await waitProbe(owner, "probe-recovery");
     const snapshot = await query(owner);
     assert(snapshot.held?.some((lock: any) => lock.name === lockName("indexeddb", name)), "recovery gate entered without owning the workspace lock");
-    assert((await state(owner)).status === "opening", "gated owner became ready before recovery finished");
+    const gatedState = await state(owner);
+    assert(gatedState.status === "opening" || gatedState.status === "waiting", `gated owner left startup before recovery finished: ${JSON.stringify(gatedState)}`);
     if (timing === "ready") {
       await owner.evaluate(() => (globalThis as any).lockTest.releaseRecovery());
       await assertReady(owner, "owner after gated recovery");
@@ -295,6 +296,37 @@ async function recoveryOwnershipLoss(context: BrowserContext, baseURL: string, n
   } finally { await closePages(pages); }
 }
 
+async function lateRecoveryPublication(context: BrowserContext, baseURL: string, name: string): Promise<void> {
+  const pages: Page[] = [];
+  try {
+    const owner = await openFilesystem(context, baseURL, "indexeddb", name, "wait", "recovered"); pages.push(owner);
+    await waitProbe(owner, "probe-recovered");
+    await owner.evaluate(() => (globalThis as any).lockTest.beginWrite("stale recovered mutation"));
+    const successor = await openFilesystem(context, baseURL, "indexeddb", name); pages.push(successor);
+    await waitProbe(owner, "filesystem-ownership-lost");
+    const beforeRelease = await state(owner);
+    assert(beforeRelease.status === "opening" || beforeRelease.status === "waiting", `held ownership-loss message reached page: ${JSON.stringify(beforeRelease)}`);
+    await owner.evaluate(() => (globalThis as any).lockTest.releaseRecovery());
+    // A terminal startup message is the barrier: merely observing recovery's
+    // return would race the production factory's continuation and publication.
+    await owner.waitForFunction(() => {
+      const probes = (globalThis as any).lockTest.probes();
+      return probes.includes("filesystem-error") || probes.includes("filesystem-state:ready");
+    });
+    const probes = await owner.evaluate(() => (globalThis as any).lockTest.probes());
+    assert(!probes.includes("filesystem-state:ready"), "worker published a recovered backend after ownership was lost");
+    assert(probes.includes("probe-backend-disposed"), "worker did not dispose the backend returned after ownership loss");
+    await waitState(owner, "failed");
+    await owner.evaluate(() => (globalThis as any).lockTest.releaseOwnershipLoss());
+    await dispose(owner);
+    await owner.waitForFunction(() => (globalThis as any).lockTest.operation().status === "rejected");
+    const resources = await owner.evaluate(() => (globalThis as any).lockTest.resources());
+    assert(resources.terminations === 1 && resources.clientDisposals === 1, `late recovery cleanup was not exactly once: ${JSON.stringify(resources)}`);
+    await assertReady(successor, "late-recovery takeover successor");
+    assert(await successor.evaluate(() => (globalThis as any).lockTest.readQueued()) === undefined, "late recovered backend replayed revoked work");
+  } finally { await closePages(pages); }
+}
+
 async function opfsTakeoverRejected(context: BrowserContext, baseURL: string, name: string): Promise<void> {
   const page = await pageFixture(context, baseURL);
   try {
@@ -324,6 +356,7 @@ function cases(): TestCase[] {
     { backend: "indexeddb", label: "ownership loss during gated recovery acknowledges disposal", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "disposing") },
     { backend: "indexeddb", label: "ownership loss during gated recovery fails without disposal", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "recovering") },
     { backend: "indexeddb", label: "ownership loss after gated recovery cleans up once", run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "ready") },
+    { backend: "indexeddb", label: "ownership loss before recovered backend publication rejects startup", run: (context, url, name) => lateRecoveryPublication(context, url, name) },
   );
   return result;
 }

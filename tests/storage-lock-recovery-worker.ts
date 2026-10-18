@@ -10,6 +10,19 @@ let release!: () => void;
 const gate = new Promise<void>(resolve => { release = resolve; });
 const open = PersistentBackend.open;
 PersistentBackend.open = async (...args: Parameters<typeof PersistentBackend.open>) => {
+  if (new URL(location.href).searchParams.has("recovered")) {
+    // Also cover successful recovery returning after ownership loss: storage I/O
+    // has already finished, so its epoch fence cannot stand in for worker cleanup.
+    const backend = await open.apply(PersistentBackend, args);
+    const dispose = backend.dispose.bind(backend);
+    backend.dispose = () => {
+      dispose();
+      scope.postMessage({ type: "probe-backend-disposed" });
+    };
+    scope.postMessage({ type: "probe-recovered" });
+    await gate;
+    return backend;
+  }
   scope.postMessage({ type: "probe-recovery" });
   await gate;
   return open.apply(PersistentBackend, args);
