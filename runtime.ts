@@ -306,11 +306,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
       };
-      // Startup may own a queued storage lock indefinitely. Cancel it before drain or
-      // process activation waits for requests that cannot finish without ownership.
-      const cancelledStartup = filesystem.state.status !== "ready" && options.filesystem?.persistence !== false
-        && (options.filesystem?.storage === "opfs" || options.filesystem?.whenBusy === "wait")
-        ? filesystem.dispose() : undefined;
+      let cancelledStartup: Promise<void> | undefined;
       disposal = Promise.resolve().then(async () => {
         const attempt = async (operation: () => unknown) => {
           try { await operation(); } catch (error) { failures.push(error); }
@@ -347,7 +343,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (owners[ownerKey] === token) delete owners[ownerKey];
         throwFailures();
       });
-      // Publish the memoized promise before suspension invokes external revocation callbacks.
+      // Publish before disposal state observers or suspension can reenter this method.
+      // Startup can own a queued storage lock indefinitely: cancel it before drain or
+      // process activation waits for requests that cannot finish without ownership.
+      cancelledStartup = filesystem.state.status !== "ready" && options.filesystem?.persistence !== false
+        && (options.filesystem?.storage === "opfs" || options.filesystem?.whenBusy === "wait")
+        ? filesystem.dispose() : undefined;
       // Suspension itself remains synchronous so no new work can race teardown admission.
       for (const consumer of consumers) {
         try { filesystem.revoke(consumer.filesystem); } catch (error) { failures.push(error); }

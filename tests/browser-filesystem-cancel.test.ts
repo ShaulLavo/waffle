@@ -83,6 +83,22 @@ test("runtime cancels pending startup before draining queued mutations", async (
   expect(worker.terminations).toBe(1);
 });
 
+test("a disposed state observer reenters the same runtime disposal", async () => {
+  globalThis.Worker = TestWorker as unknown as typeof Worker;
+  let reentered: Promise<void> | undefined;
+  const runtime = createRuntime({ filesystem: {
+    storage: "opfs", workerURL: "https://example.test/fs.js",
+    onStateChange(state) { if (state.status === "disposed") reentered = runtime.dispose(); },
+  } });
+  const worker = workers[0]!;
+  worker.state("waiting");
+  const disposal = runtime.dispose();
+  worker.acknowledge();
+  await Promise.all([disposal, reentered]);
+  expect(reentered).toBe(disposal);
+  expect(worker.terminations).toBe(1);
+});
+
 test("OPFS takeover is excluded by type and rejected before creating a worker", () => {
   // @ts-expect-error OPFS exclusive sync-access handles cannot be taken over safely.
   const options: SharedFilesystemOptions = { storage: "opfs", whenBusy: "takeover" };
