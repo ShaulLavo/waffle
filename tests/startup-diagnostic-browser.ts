@@ -1,3 +1,4 @@
+import type { StartupDiagnosticRequest } from "./fixtures/startup-diagnostic-request.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { connectFilesystemIdentity, createFilesystemIdentity } from "../fs/protocol.js";
@@ -30,9 +31,9 @@ export async function browserStartupDiagnostic(workerUrl = "/startup-diagnostic-
     launch(context) {
       const writer = pipe.retain(context.pid, "write");
       context.descriptors.openAt(2, writer, 1n << 6n, 0n, () => { closed++; writer.close(); });
-      return broker.launchWorker(context, { workerUrl,
+      return broker.launchWorker<StartupDiagnosticRequest>(context, { workerUrl,
         request: { module, args: [], env: {}, diagnostic, diagnosticGate: gate.buffer, legacy },
-        onMessage(message) { if (message.type === "startup-diagnostic-pending") ready(); if (message.type === "legacy-startup-diagnostic") duplicate = true; },
+        onMessage(message) { if (typeof message !== "object" || message === null || !("type" in message)) return; if (message.type === "startup-diagnostic-pending") ready(); if (message.type === "legacy-startup-diagnostic") duplicate = true; },
       });
     },
   });

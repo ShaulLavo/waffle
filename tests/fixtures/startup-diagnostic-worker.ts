@@ -1,8 +1,9 @@
+import type { StartupDiagnosticRequest } from "./startup-diagnostic-request.js";
 import { claimOutcome, type OutcomeWord } from "../../proc/outcome.js";
-import { bootstrap, type RuntimeWorkerRequest } from "../../browser/worker.js";
+import { bootstrap } from "../../browser/worker.js";
 
 declare const self: DedicatedWorkerGlobalScope;
-self.onmessage = ({ data }: MessageEvent<RuntimeWorkerRequest & { diagnostic: string; diagnosticGate: SharedArrayBuffer; legacy: boolean }>) => {
+self.onmessage = ({ data }: MessageEvent<StartupDiagnosticRequest>) => {
   const gate = new Int32Array(data.diagnosticGate);
   const error = new Error(data.diagnostic); error.stack = "";
   let outcome: OutcomeWord | null = null;
