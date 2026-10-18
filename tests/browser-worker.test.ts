@@ -740,15 +740,17 @@ for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 },
     const { waitStatus } = await import("../proc/wait-status.js");
     const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
     let signalCalls = 0;
+    const preserve = (context: import("../browser/worker.js").WorkerExecutionContext) => {
+      const selected = claimOutcome(state.signals.outcome, winner);
+      let thrown: unknown;
+      try { context.defaultSignal(18); } catch (error) { thrown = error; }
+      expect(thrown).toBeInstanceOf(WasiExit);
+      expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
+    };
     const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },
-      run(context) {
-        const selected = claimOutcome(state.signals.outcome, winner);
-        let thrown: unknown;
-        try { context.defaultSignal(18); } catch (error) { thrown = error; }
-        expect(thrown).toBeInstanceOf(WasiExit);
-        expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
-        return 0;
-      },
+      // START_FAILED can only be selected before entry, not from an executing guest.
+      instantiated: winner.kind === "start-failed" ? preserve : undefined,
+      run(context) { if (winner.kind !== "start-failed") preserve(context); return 0; },
     }, { runtimeProcess });
     expect(signalCalls).toBe(0);
     expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: winner.kind === "start-failed" ? 126 : winner.code, signal: undefined });
@@ -832,3 +834,42 @@ for (const transport of ["interrupt", "requestedSignal", "signal"] as const) {
     ]);
   });
 }
+
+for (const phase of ["entry", "start-section", "trap"] as const) test(`startup observation distinguishes ${phase} at the actual guest boundary`, async () => {
+  const { startStatus } = await import("../proc/outcome.js");
+  const transport = createWorkerProcessTransport(), state = workerProcessState(transport);
+  let entered = false, ready = false;
+  const guest = guestModule(phase === "start-section"
+    ? { namespace: "wasi_snapshot_preview1", name: "proc_exit", params: [127], body: [65,23,16,0,26], startSection: true }
+    : { namespace: "extension", name: "observe", params: [], body: phase === "trap" ? [0] : [16,0,26] });
+  const result = await fixture({
+    setup() { expect(startStatus(state.signals.outcome)).toBe(-6); },
+    namespaces() { return { extension: { observe() {
+      entered = true;
+      expect(startStatus(state.signals.outcome)).toBe(0);
+      expect(readOutcome(state.signals.outcome)).toBeNull();
+      return 0;
+    } } }; },
+    instantiated() { ready = true; expect(startStatus(state.signals.outcome)).toBe(-6); },
+    run() { return 127; },
+  }, { module: guest, runtimeProcess: transport });
+  expect(startStatus(state.signals.outcome)).toBe(phase === "start-section" ? -11 : 0);
+  expect(readOutcome(state.signals.outcome)).toEqual({ kind: "exited", code: phase === "entry" ? 127 : phase === "start-section" ? 23 : 1, status: phase === "entry" ? 127 : phase === "start-section" ? 23 : 1 });
+  expect(ready).toBe(phase !== "start-section");
+  expect(entered).toBe(phase === "entry");
+  expect(result.messages.some(message => message.type === "error")).toBe(phase === "trap");
+});
+
+test("a kill after the ready hook but before entry prevents every guest instruction", async () => {
+  const { startStatus } = await import("../proc/outcome.js");
+  const transport = createWorkerProcessTransport(), state = workerProcessState(transport);
+  let entered = false;
+  await fixture({
+    instantiated() { claimOutcome(state.signals.outcome, { kind: "signaled", code: 9 }); },
+    namespaces() { return { extension: { observe() { entered = true; return 0; } } }; },
+    run() { throw new Error("must not run after pre-entry kill"); },
+  }, { runtimeProcess: transport, module: guestModule({namespace:"extension",name:"observe",params:[],body:[16,0,26]}) });
+  expect(entered).toBe(false);
+  expect(startStatus(state.signals.outcome)).toBe(-11);
+  expect(readOutcome(state.signals.outcome)).toEqual({kind:"signaled",code:9,status:137});
+});

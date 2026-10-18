@@ -14,7 +14,7 @@ import { collectDirectoryJob, collectDirectoryProcess, confirmDirectoryProcess, 
 // package imports select prepared dist modules, just as a Node consumer does.
 type Cells = { outcome: outcome.OutcomeCell; controls: control.TaggedCells[] };
 type Transfer = { outcome: outcome.OutcomeTransfer; controls: control.TaggedCellsTransfer[] };
-type Command = Transfer & { command: "stale" | "exit" };
+type Command = Transfer & { command: "stale" | "exit" | "terminal" };
 const unused = (): never => { throw new Error("unexpected descriptor transfer"); };
 const codec: WorkerDescriptorCodec = { export: unused, import: unused, discard: unused };
 const exited = { kind: "exited", code: 23, status: 23 } as const;
@@ -46,6 +46,8 @@ function checkLive(cells: Cells): void {
 function checkStale(cells: Cells): void {
   const srch = (error: unknown) => error instanceof ProcessError && error.errno === ProcessErrno.SRCH;
   assert.throws(() => outcome.readOutcome(cells.outcome), srch, "stale outcome read must reject SRCH");
+  assert.throws(() => outcome.startStatus(cells.outcome), srch, "stale startup read must reject SRCH");
+  assert.throws(() => outcome.markStarted(cells.outcome), srch, "stale startup commit must reject SRCH");
   assert.throws(() => outcome.claimOutcome(cells.outcome, { kind: "signaled", code: 9 }), srch, "stale outcome claim must reject SRCH");
   for (const word of cells.controls) {
     for (let index = 0; index < word.length; index++) {
@@ -128,9 +130,15 @@ async function stale(mode: "process" | "job"): Promise<void> {
   assert.ok(cells.outcome.byteOffset > 0);
   let guest: Guest | undefined;
   try {
+    assert.equal(outcome.markStarted(cells.outcome), true);
     guest = new Guest({ role: "stale", cells: serialize(cells) });
     assert.deepEqual(await guest.next(), { phase: "live" });
     assert.equal(outcome.readOutcome(cells.outcome), null);
+    assert.equal(outcome.startStatus(cells.outcome), 0);
+    assert.deepEqual(outcome.claimOutcome(cells.outcome, exited), exited);
+    assert.deepEqual(outcome.claimOutcome(cells.outcome, { kind: "exited", code: 99 }), exited);
+    guest.post({ command: "terminal", ...serialize(cells) });
+    assert.deepEqual(await guest.next(), { phase: "terminal" });
     outcome.claimOutcome(state.signals.outcome, exited);
     confirmDirectoryProcess(child);
     assert.deepEqual(collectDirectoryProcess(child), exited);
@@ -248,6 +256,10 @@ async function runWorker(): Promise<void> {
     }
     const cells = revive(workerData.cells);
     checkLive(cells);
+    if (workerData.role === "stale") {
+      assert.equal(outcome.startStatus(cells.outcome), 0);
+      assert.equal(outcome.markStarted(cells.outcome), true);
+    }
     const client = workerData.role === "broker" ? new WorkerProcessClient({ transport: workerData.transport, descriptors, codec, postMessage: message => port.postMessage(message) }) : undefined;
     if (client) {
       assert.equal(cells.outcome.byteOffset, (client.signals.outcome as outcome.OutcomeCell).byteOffset);
@@ -260,6 +272,16 @@ async function runWorker(): Promise<void> {
     for (;;) {
       const command = commands.shift() ?? await new Promise<Command>(resolve => { waiting = resolve; });
       if (command.command === "exit") { client!.exit(23); return; }
+      if (command.command === "terminal") {
+        for (const copy of [cells, revive(command)]) {
+          assert.equal(outcome.startStatus(copy.outcome), 0);
+          assert.deepEqual(outcome.readOutcome(copy.outcome), exited);
+          assert.deepEqual(outcome.claimOutcome(copy.outcome, { kind: "signaled", code: 9 }), exited);
+          assert.equal(outcome.markStarted(copy.outcome), false);
+        }
+        port.postMessage({ phase: "terminal" });
+        continue;
+      }
       // Both the views retained from workerData and newly received MessagePort
       // payloads must keep the original lifecycle guard after collection/reuse.
       checkStale(cells);

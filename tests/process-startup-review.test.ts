@@ -164,6 +164,7 @@ for (const origin of ["first-import", "after-binding"] as const) for (const orde
       expect(beforeCollection).toEqual(expectedFailure);
       expect(Object.isFrozen(beforeCollection)).toBe(true);
       expect(() => readOutcome(f.state.signals.outcome)).toThrow("collected");
+      expect(() => f.worker.onerror?.({ preventDefault() {}, message: "late collected worker error" } as ErrorEvent)).not.toThrow();
     } finally { await f.dispose(); }
   });
 }
@@ -198,4 +199,23 @@ test("allocation failure during Wasm instantiation stays typed ENOMEM", async ()
     }
     expect(await f.supervisor.waitForExit(f.parent.pid, f.pid)).toEqual({ kind: "start-failed", error: "ENOMEM", code: 12, status: null });
   } finally { WebAssembly.Instance = previous; await f.dispose(); }
+});
+
+test("late worker error collection between message reads cannot escape its handler", async () => {
+  const f = await fixture(guest("valid"));
+  try {
+    f.supervisor.kill(f.pid,9);
+    await f.supervisor.waitForExit(f.parent.pid,f.pid);
+    const filesystem = (f.broker as unknown as {options:{filesystem:{reap(identity:unknown):void}}}).options.filesystem;
+    const reap = filesystem.reap;
+    let collected = false;
+    filesystem.reap = identity => {
+      reap(identity);
+      expect(f.parent.wait(f.parent.pid,f.pid)).toMatchObject({kind:"signaled",code:9});
+      collected = true;
+    };
+    try { expect(() => f.worker.emit({type:"error",code:126,message:"late worker error"})).not.toThrow(); }
+    finally { filesystem.reap = reap; }
+    expect(collected).toBe(true);
+  } finally { await f.dispose(); }
 });

@@ -75,7 +75,7 @@ test("start-failed tag is 3 and rejects unsupported errno values", () => {
   expect(() => claimOutcome(word, { kind: "start-failed", code: 126 })).toThrow(RangeError);
   expect(readOutcome(word)).toBeNull();
   claimOutcome(word, { kind: "start-failed", code: 13 });
-  expect(Atomics.load(word, 0)).toBe((13n << 2n) | 3n);
+  expect(Atomics.load(word, 0)).toBe((13n << 3n) | 3n);
 });
 
 test("typed startup failure becomes observable only after descriptor release and the filesystem fence", async () => {
