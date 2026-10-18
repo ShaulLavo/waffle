@@ -1,4 +1,5 @@
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
+import { createRuntime, type RuntimeStartupStage } from "../index";
 import { IndexedDBStorage } from "../fs/indexeddb";
 import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage";
 export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser";
@@ -117,6 +118,28 @@ export function storageContractCases(): StorageContractCase[] {
 function indexedDBCases(): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
+  test("runtime startup milestones cross the actual filesystem worker boundary", async name => {
+    const seen: [RuntimeStartupStage, number][] = [];
+    let resolveReady!: () => void;
+    const ready = new Promise<void>(resolve => { resolveReady = resolve; });
+    const runtime = createRuntime({ filesystem: { name, workerURL: new URL("/filesystem-worker.js", location.href) },
+      onStartupStage(stage, timestamp) {
+        seen.push([stage, timestamp]);
+        if (stage === "filesystem-ready") resolveReady();
+        return Promise.reject(new Error("ignored observer rejection"));
+      } });
+    try {
+      assert((await runtime.filesystem.listFiles()).length === 0, "filesystem works despite rejected observers");
+      // The diagnostic and filesystem response use different ports.
+      await ready;
+      assert(JSON.stringify(seen.map(([stage]) => stage)) === JSON.stringify([
+        "filesystem-worker-created", "filesystem-connect-requested", "filesystem-connected",
+        "indexeddb-open-requested", "indexeddb-open-resolved", "filesystem-lock-requested",
+        "filesystem-lock-acquired", "filesystem-epoch-requested", "filesystem-epoch-resolved", "filesystem-ready",
+      ]), `unexpected startup sequence: ${JSON.stringify(seen)}`);
+      assert(seen.every(([, timestamp]) => Number.isFinite(timestamp) && timestamp >= performance.timeOrigin), "comparable epoch clocks");
+    } finally { await runtime.dispose(); }
+  });
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };

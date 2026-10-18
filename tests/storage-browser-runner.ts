@@ -137,14 +137,18 @@ try {
   if (cleaning) throw new Error("Storage runner stopped before server setup");
   if (!build.success) throw new AggregateError(build.logs, "Storage test bundle failed");
   const script = build.outputs[0]!;
+  const fsWorkerBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "../browser/fs-worker.ts")], target: "browser" });
+  if (!fsWorkerBuild.success) throw new AggregateError(fsWorkerBuild.logs, "Filesystem worker bundle failed");
+  const fsWorkerScript = fsWorkerBuild.outputs[0]!;
   const workerScript = `(${storageWorker.toString()})();`;
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+  server = Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.STORAGE_TEST_PORT ?? 0), fetch(request) {
     const path = new URL(request.url).pathname;
     // Match the existing persistence harness's document and worker isolation policy.
     const headers = {
       "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp",
-      "content-type": path === "/tests.js" || path === "/worker.js" ? "text/javascript" : "text/html",
+      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/filesystem-worker.js" ? "text/javascript" : "text/html",
     };
+    if (path === "/filesystem-worker.js") return new Response(fsWorkerScript, { headers });
     if (path === "/tests.js") return new Response(script, { headers });
     if (path === "/worker.js") return new Response(workerScript, { headers });
     return new Response("<!doctype html><title>Storage tests</title>", { headers });

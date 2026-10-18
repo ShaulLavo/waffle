@@ -6,6 +6,8 @@ import type { ProcessSupervisor } from "./proc/supervisor";
 import type { ProcessContext, ProcessHandle } from "./proc/types";
 import type { FilesystemIdentity } from "./fs/protocol";
 import type { ProcessAdmissionObserver } from "./proc/admission";
+import type { RuntimeStartupObserver } from "./fs/startup";
+export type { RuntimeStartupStage, RuntimeStartupObserver } from "./fs/startup";
 export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
@@ -35,6 +37,8 @@ export interface RuntimeOptions {
   /** Optional admission metadata; retain a bounded history in the consumer if needed.
    * Observers must not reenter process control. Throws and rejected async returns are ignored. */
   onProcessAdmission?: ProcessAdmissionObserver;
+  /** Optional filesystem startup milestones, never awaited. See docs/runtime-startup.md. */
+  onStartupStage?: RuntimeStartupObserver;
 }
 export interface Runtime {
   readonly filesystem: RuntimeFilesystem;
@@ -127,7 +131,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   try {
     if (typeof SharedArrayBuffer !== "function") throw new Error("Page runtime requires SharedArrayBuffer and cross-origin isolation");
     identities = new ProcessIdentityAllocator();
-    filesystem = new SharedFilesystem(options.filesystem);
+    filesystem = new SharedFilesystem(options.filesystem, options.onStartupStage);
   } catch (error) {
     if (owners[ownerKey] === token) delete owners[ownerKey];
     throw error;

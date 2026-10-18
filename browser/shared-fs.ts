@@ -1,3 +1,4 @@
+import { reportRuntimeStartup, isWorkerStartupMessage, type RuntimeStartupObserver } from "../fs/startup";
 import { FilesystemClient, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystemService, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence, type FilesystemIdentity, type FilesystemConnection } from "../fs/index";
 
 export interface SharedFilesystemOptions {
@@ -29,15 +30,20 @@ export class SharedFilesystem {
   private fatal: Error | undefined;
   ownershipLost = false;
   onOwnershipLost?: () => void;
-  constructor(options: SharedFilesystemOptions = {}) {
+  constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
     const connection = createFilesystemConnection();
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
     try {
       this.worker = worker = new Worker(options.workerURL ?? new URL("./fs-worker.js", location.href), { type: "module" });
+      reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
       this.client = client = new FilesystemClient(connection.client);
       worker.addEventListener("message", event => {
+        if (onStartupStage && isWorkerStartupMessage(event.data)) {
+          reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
+          return;
+        }
         if (event.data?.type === "filesystem-ownership-lost") {
           this.ownershipLost = true;
           this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
@@ -52,7 +58,12 @@ export class SharedFilesystem {
         this.fail(new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`));
       });
       worker.addEventListener("messageerror", () => this.fail(new Error("Filesystem worker message could not be decoded")));
-      worker.postMessage({ connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb" }, [connection.server.port]);
+      const message: { connect: FilesystemConnection; persistence: boolean; name?: string; storage: "indexeddb" | "opfs"; observeStartup?: true } = {
+        connect: connection.server, persistence: options.persistence ?? true, name: options.name, storage: options.storage ?? "indexeddb",
+      };
+      if (onStartupStage) message.observeStartup = true;
+      reportRuntimeStartup(onStartupStage, "filesystem-connect-requested");
+      worker.postMessage(message, [connection.server.port]);
     } catch (error) {
       // Constructor failure must not escape an ownerless worker or untransferred channel.
       // Cleanup failures cannot replace the startup error or prevent subsequent cleanup.
