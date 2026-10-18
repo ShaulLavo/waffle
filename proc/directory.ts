@@ -375,7 +375,9 @@ export function collectDirectoryJob(directory: SharedArrayBuffer, slot: number, 
   try {
     const group = directoryJob(directory, slot, job);
     const outcome = readOutcome(group.outcome);
-    if (!outcome || controlLoad(group.pending) !== 0) throw new ProcessError(ProcessErrno.AGAIN, "job has not become empty");
+    const pending = controlLoad(group.pending);
+    if (pending < 0) throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
+    if (!outcome || pending !== 0) throw new ProcessError(ProcessErrno.AGAIN, "job has not become empty");
     result = outcome;
   } catch (error) {
     if (isCollectedProcess(error)) throw new ProcessError(ProcessErrno.CHILD, "job was already collected");
