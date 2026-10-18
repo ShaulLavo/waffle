@@ -357,6 +357,25 @@ a delayed Worker cannot reenroll a collected identity. Cursor cells themselves
 are not reused: retained endpoint views have no cursor-incarnation field, and the
 separate cursor arena remains bounded at 16,777,216 cells (256 MiB).
 
+## Runtime-authored error diagnostics
+
+After an executor fails, the runtime writes its diagnostic to the inherited stderr
+before closing descriptors and acknowledging completion. Unlike a live program's
+blocking writes, this drain uses only immediate `tryWrite` stream operations. Short
+writes preserve byte order; `EAGAIN` yields to the event loop. Every positive write
+resets a five-second no-progress deadline, so a reader that keeps draining receives
+the complete diagnostic even when delivery takes longer than five seconds overall.
+The startup broker and post-entry worker use the same `drainDiagnostic` helper and
+`DIAGNOSTIC_STALL_TIMEOUT_MS` constant.
+
+If the reader is closed, the stream lacks immediate writes, the process is revoked,
+or no bytes can be written for five seconds, delivery stops and the unwritten tail
+is discarded. The failure records its error and unwritten byte count on the
+host diagnostic/cleanup path; descriptor and filesystem teardown still run and the
+original terminal outcome is published. A stalled stderr reader must not retain a
+dead child forever. This bounded policy applies only to runtime-authored diagnostics,
+not to ordinary guest I/O or application-selected blocking pipe semantics.
+
 ## Network and preview
 
 The network helper performs injected `fetch` operations and writes responses to a shared ring. The host side exposes nonblocking handles and preview HTTP framing. Preview routing and service-worker registration are consumer policies; Waffle exports the routing and protocol services without choosing a URL scope.

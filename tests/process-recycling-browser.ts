@@ -1,5 +1,6 @@
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
+import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
 import { DescriptorTable } from "../core/descriptors.js";
 import { createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
@@ -342,6 +343,10 @@ const cases: BrowserCase[] = [
   { label: "startup diagnostic: stalled reader cannot retain teardown", standalone: true, run: () => browserStartupDiagnostic(undefined, "stalled") },
   { label: "startup diagnostic: closed reader cannot retain teardown", standalone: true, run: () => browserStartupDiagnostic(undefined, "closed") },
   { label: "startup diagnostic: disposal cancels a stalled reader", standalone: true, run: () => browserStartupDiagnostic(undefined, "dispose") },
+  { label: "runtime diagnostic: draining reader receives all bytes", standalone: true, run: () => browserRuntimeDiagnostic() },
+  { label: "runtime diagnostic: slow reader resets five-second deadline", standalone: true, run: () => browserRuntimeDiagnostic(undefined, "slow") },
+  { label: "runtime diagnostic: stalled reader releases after deadline", standalone: true, run: () => browserRuntimeDiagnostic(undefined, "stalled") },
+  { label: "runtime diagnostic: closed reader releases immediately", standalone: true, run: () => browserRuntimeDiagnostic(undefined, "closed") },
   { label: "cell clone: browser broker spawns and waits after slot recycling", standalone: true, run: browserBrokerCellClone },
   { label: "cell clone: Worker rejects stale process cells after collection and recycling", standalone: true, run: () => browserStaleCellClone(false) },
   { label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id", standalone: true, run: () => browserStaleCellClone(true) },

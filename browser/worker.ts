@@ -8,6 +8,7 @@ import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
 import { FilesystemClient, revokeFilesystem, reapFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
+import { drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
 import { claimOutcome, outcomeWord, processOutcome, readOutcome, markStarted } from "../proc/outcome.js";
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
@@ -175,10 +176,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
-  let writeOutput: ((type: "stdout" | "stderr", data: Uint8Array) => number) | undefined;
-  const finish = (result: WorkerResult) => {
+  let writeDiagnostic: ((data: Uint8Array) => number) | undefined;
+  let pendingFinish: Promise<void> | undefined;
+  const finish = (result: WorkerResult): void => {
     if (done) return;
     done = true;
+    pendingFinish = finishOwned(result);
+  };
+  const finishOwned = async (result: WorkerResult): Promise<void> => {
     let settled = localOutcome;
     try { if (outcome) settled = readOutcome(outcome); }
     catch (error) { detachCollectedProcess(error); }
@@ -199,16 +204,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       try { cleanup(); return true; } catch (error) { collect(error); return false; }
     };
     if (runtimeDiagnostic && "error" in result) {
-      attempt(() => {
+      try {
         const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
-        for (let offset = 0; offset < bytes.length;) {
-          const written = writeOutput!("stderr", bytes.subarray(offset));
-          if (!Number.isInteger(written) || written <= 0 || written > bytes.length - offset) {
-            throw new Error(`stderr diagnostic write failed: ${written}`);
-          }
-          offset += written;
-        }
-      });
+        const pending = drainDiagnostic(bytes, data => writeDiagnostic!(data));
+        if (pending) await pending;
+      } catch (error) { collect(error); }
       winner = claim(ownResult);
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
@@ -294,12 +294,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       checkActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
     };
-    const write = (type: "stdout" | "stderr", data: Uint8Array): number => {
+    const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
       checkActive();
       const fd = type === "stderr" ? 2 : 1;
       if (!wasi) {
         const stream = stdio?.[fd];
-        if (stream) return stream.write([data]);
+        if (stream) return immediate ? stream.tryWrite?.([data]) ?? -58 : stream.write([data]);
         output(type, data);
         return data.length;
       }
@@ -309,7 +309,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       if (resource.kind === "directory") return -31;
       // Like preview1, an empty write neither appends nor moves the shared file cursor.
       if (!data.length) return 0;
-      if (resource.kind !== "file") return resource.write([data]);
+      if (resource.kind !== "file") return immediate ? resource.tryWrite?.([data]) ?? -58 : resource.write([data]);
       const written = withFileOffset(resource, () => {
         if (resource.append) {
           const result = fs.append(resource.handle, [data]);
@@ -323,7 +323,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       });
       return written;
     };
-    writeOutput = write;
+    writeDiagnostic = data => write("stderr", data, true);
     const post = (type: "stdout" | "stderr", data: Uint8Array) => write(type, data) === data.length;
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
@@ -457,8 +457,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   } catch (error) {
     finish(terminalResult(error) ?? { error });
   } finally {
-    host.removeEventListener?.("error", onError);
-    host.removeEventListener?.("unhandledrejection", onRejection);
+    try { await pendingFinish; }
+    finally {
+      host.removeEventListener?.("error", onError);
+      host.removeEventListener?.("unhandledrejection", onRejection);
+    }
   }
 }
 
