@@ -71,6 +71,9 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   outcome?: SharedArrayBuffer | BigInt64Array;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
+  /** Nonconsuming handled/fatal readiness. Required for executor-owned signal transports
+   * (interrupt, requestedSignal or signal) when request.runtimeProcess is absent. */
+  interruptPending?(): boolean;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   setup?(context: WorkerSetupContext<R>): void;
   /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
@@ -229,6 +232,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   try {
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
+    if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
+      throw new TypeError("WorkerExecutor.interruptPending is required for executor-owned signal transports");
+    }
     const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
     if (runtimeState) {
       outcome = runtimeState.signals.outcome;
@@ -304,7 +310,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         checkActive();
       },
       interrupt,
-      interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : undefined,
+      interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : executor.interruptPending ? () => executor.interruptPending!() : undefined,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,

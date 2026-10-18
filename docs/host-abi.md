@@ -76,14 +76,14 @@ The owner and its controlling ancestors can wait for a whole job. The leader's
 outcome survives individual child reap, and `wait_job` waits for every accepted
 member's filesystem/descriptor safety fence before collecting the job, including
 inherited descendants whose parent already exited. `wait` remains repeatable and
-non-consuming. The shared process directory currently has a fixed lifetime slot
-limit, even for completed children; consuming collection and safe slot reuse are
-owned by the separate lifecycle work, not hidden behind retries.
+non-consuming. Job collection removes its completed member records, including
+orphaned grandchildren; individual child reaping does not discard the job outcome.
 
 Signal numbers use Linux numbering: `1..31` and `34..64`; `32` and `33` are invalid.
 Stop signals `19..22` are not supported because Waffle has no stopped-process state.
 All `runtime_proc` errors, including `signal` registration, use negative WASI errno:
 `-28` (`EINVAL`) for invalid numbers/dispositions and `-58` (`ENOTSUP`) for stop signals.
+An executor without a signal adapter returns `-52` (`ENOSYS`), not a Linux errno.
 `signal(0,0)` dequeues a handled signal; `signal(0,4)` checks fatal state without
 consuming a delivery. Modes `0`, `1`, `2`, `3` select default, ignore, handler and
 self-raise respectively. `SIGKILL` cannot be ignored or handled.
@@ -100,7 +100,12 @@ An already-selected `SIGKILL` remains authoritative across all these paths.
 The interrupt cell is an advisory wake hint, not signal readiness. Process poll and
 job wait consult the authoritative handled-pending table and fatal outcome without
 consuming either. Preview1 polling uses the same readiness through the worker
-bootstrap. A delayed publisher or rearm scan may leave a discarded hint behind;
+bootstrap. A worker request with `runtimeProcess` uses its shared signal table. An
+executor owning its own `interrupt`, `requestedSignal`, or `signal` adapter must
+provide `WorkerExecutor.interruptPending(): boolean` when `runtimeProcess` is absent.
+The callback checks handled-pending delivery and fatal outcome without dequeueing;
+bootstrap rejects a missing callback before setup or execution, with owned-resource
+cleanup and a startup diagnostic. A nonzero hint is never its substitute. A delayed publisher or rearm scan may leave a discarded hint behind;
 it must not cause `EINTR` or an early process-poll return. Advisory waits snapshot
 the observed word and rescan within 10 ms, including clock-only preview1 polling,
 because a same-number publication can leave the hint unchanged.

@@ -3,7 +3,7 @@ import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type Runtime
 import { createFilesystemConnection, FilesystemService, MemoryBackend } from "../fs";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client";
-import { requestSignal, SIGNAL_PENDING } from "../proc/signals";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
 const module = new WebAssembly.Module(new Uint8Array([
@@ -695,3 +695,62 @@ test("generic bootstrap preview1 polling treats stale process wake hints as advi
   expect(polled).toBe(true);
   expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ type: "exit", code: 0 }]);
 });
+
+
+test("executor-only bootstrap polls authoritative signal readiness without consuming delivery", async () => {
+  const interrupt = new SharedArrayBuffer(4), requestedSignal = new SharedArrayBuffer(4), outcome = outcomeWord();
+  const signals = { interrupt: new Int32Array(interrupt), requestedSignal: new Int32Array(requestedSignal),
+    outcome, signalState: createSignalState() };
+  let checks = 0;
+  const result = await fixture({ interrupt, requestedSignal, outcome,
+    interruptPending: () => signalPending(signals),
+    run({ wasi, instance, runtimeState }) {
+      expect(runtimeState).toBeNull();
+      const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
+      view.setUint8(8, 0);
+      view.setUint32(16, 1, true);
+      view.setBigUint64(24, 0n, true); // Expired clock.
+      const poll = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions().poll_oneoff!;
+      const clockReady = () => {
+        expect(poll(0, 1024, 1, 2048)).toBe(0);
+        expect(view.getUint32(2048, true)).toBe(1);
+        checks++;
+      };
+      // A delayed publisher can leave a hint after registration discards delivery.
+      Atomics.store(signals.interrupt, 0, 17);
+      clockReady(); clockReady();
+      setSignalDisposition(signals.signalState, 17, 2, signals.interrupt);
+      requestSignal(signals, 17);
+      expect(poll(0, 1024, 1, 2048)).toBe(27);
+      expect(poll(0, 1024, 1, 2048)).toBe(27); // Readiness must not dequeue it.
+      expect(takeSignal(signals.signalState, signals.interrupt)).toBe(17);
+      clockReady();
+      requestSignal(signals, 17);
+      setSignalDisposition(signals.signalState, 17, 0, signals.interrupt);
+      Atomics.store(signals.interrupt, 0, 17); // A late advisory rearm is not readiness.
+      clockReady();
+      return 0;
+    },
+  });
+  expect(checks).toBe(4);
+  expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ type: "exit", code: 0 }]);
+});
+
+for (const transport of ["interrupt", "requestedSignal", "signal"] as const) {
+  test(`executor-owned ${transport} without authoritative readiness fails before setup or guest execution`, async () => {
+    let setup = false, ran = false, closed = 0;
+    const result = await fixture({
+      [transport]: transport === "signal" ? () => 0 : new SharedArrayBuffer(4),
+      stdio: { 1: { kind: "terminal", read: () => 0, write: () => 0,
+        readiness: () => ({ readable: false, writable: true, hangup: false }), close() { closed++; } } },
+      setup() { setup = true; },
+      run() { ran = true; return 0; },
+    });
+    expect(setup).toBe(false);
+    expect(ran).toBe(false);
+    expect(closed).toBe(1);
+    expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("WorkerExecutor.interruptPending is required for executor-owned signal transports") },
+    ]);
+  });
+}

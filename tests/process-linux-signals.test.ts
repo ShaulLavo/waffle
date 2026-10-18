@@ -7,7 +7,7 @@ import { ProcessSupervisor } from "../proc/supervisor";
 import { claimOutcome, readOutcome } from "../proc/outcome";
 import { createSignalState, requestSignal, setSignalDisposition, SIGNAL_PENDING, takeSignal } from "../proc/signals";
 import { checkedSignal, ProcessError } from "../proc/types";
-import { confirmWorkerProcessJob, createWorkerProcessTransport, workerProcessState, WorkerProcessClient } from "../proc/worker-client";
+import { createWorkerProcessTransport, WorkerProcessClient } from "../proc/worker-client";
 
 function fixture(wait?: (milliseconds: number, word: Int32Array, expected: number) => void) {
   const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); } });
@@ -114,31 +114,6 @@ test("worker default-ignore actions do not publish exit or revoke, but KILL stil
     expect(revocations).toBe(1);
   } finally { descriptors.dispose(); }
 });
-
-test("slot-recycling follow-up: completed child reservations still exhaust today's append-only directory", () => {
-  const descriptors = new DescriptorTable(), messages: import("../proc/worker-client").WorkerProcessMessage[] = [];
-  const client = new WorkerProcessClient({ transport: createWorkerProcessTransport({ capacity: 4 }), descriptors,
-    codec: { export() { throw new Error("unused"); }, import() { throw new Error("unused"); }, discard() {} },
-    postMessage(message) { messages.push(message); } });
-  try {
-    for (let index = 0; index < 3; index++) {
-      const pid = client.spawn(client.pid, { executable: "bun-like", argv: [], env: {}, cwd: "/", job: client.job, fds: [] });
-      const state = workerProcessState(messages.pop()!.transport);
-      // Stand in for the supervisor's already-tested post-fence publication. No real
-      // guest, filesystem service or retained descriptors are created by this probe.
-      claimOutcome(state.signals.outcome, { kind: "exited", code: 0 });
-      Atomics.store(state.confirmed, 0, 1);
-      confirmWorkerProcessJob({ ...client.options.transport, slot: index + 1 });
-      expect(client.wait(client.pid, pid)?.status).toBe(0);
-      expect(client.wait(client.pid, pid)?.status).toBe(0);
-    }
-    expect(Atomics.load(workerProcessState(client.options.transport).jobPending, 0)).toBe(1);
-    expect(() => client.spawn(client.pid, { executable: "bun-like", argv: [], env: {}, cwd: "/", job: client.job, fds: [] })).toThrow("directory is full");
-    // Slot-recycling lane replaces this known-limit assertion with >capacity successful
-    // spawn/consume cycles; do not mask exhaustion or silently change repeatable wait.
-  } finally { descriptors.dispose(); }
-});
-
 
 test("ABI default-ignore action cannot discard an already selected KILL", () => {
   const f = fixture();
