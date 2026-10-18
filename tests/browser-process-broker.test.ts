@@ -11,7 +11,7 @@ import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, 
 import { DescriptorTable } from "../core/descriptors.js";
 import { connectFilesystemIdentity, createFilesystemIdentity, revokeFilesystem } from "../fs/protocol.js";
 import { createSignalState, type SignalTransport } from "../proc/signals.js";
-import { OutcomeCell, claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+import { OutcomeCell, claimOutcome, markStarted, outcomeWord, readOutcome } from "../proc/outcome.js";
 import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes.js";
 
@@ -797,7 +797,11 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
     const worker = workers[0]!;
     if (failure === "first-import") await failFirstWorkerImport(worker.request!, data => worker.emit(data));
     else {
-      if (failure === "running-error") worker.emit({ type: "phase", name: "instantiate", duration: 0 });
+      if (failure === "running-error") {
+        // An instantiate message is not the entry boundary; the executing host commits it.
+        expect(markStarted(workerProcessState(worker.request!.runtimeProcess!).signals.outcome)).toBe(true);
+        worker.emit({ type: "phase", name: "instantiate", duration: 0 });
+      }
       worker.onerror!({ preventDefault() {}, message: "worker rejected" } as ErrorEvent);
     }
     const result = await supervisor.waitForExit(client.pid, pid);
