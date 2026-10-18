@@ -38,7 +38,7 @@ OPFS defaults to waiting; IndexedDB defaults to takeover and supports opting int
 Operations issued before readiness remain pending until ownership and recovery. Await
 `SharedFilesystem.dispose()` (or `runtime.dispose()` for a runtime owner) to cancel startup
 through its worker's `AbortSignal`, with abort acknowledgement before worker termination.
-See the [filesystem ownership settings](../README.md#persistence-and-durability) for defaults,
+See the [filesystem ownership settings](storage.md) for defaults,
 unsupported OPFS takeover, operation ordering and cancellation.
 
 Observation does not add an initialization wait, storage operation, retry, timeout,

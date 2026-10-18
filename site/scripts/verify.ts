@@ -65,6 +65,8 @@ async function applyPublishedReferenceCopy(page: Page) {
       if (matches.length !== 1) throw new Error(`Original reference text changed: ${before}`);
       matches[0]!.textContent = after;
     };
+    replaceText('#today a.wbtn', 'Open Bash Web', 'Explore Bash Web');
+    replaceText('#today a.wbtn', 'Read the Bun guide', 'Try Bun in the browser');
     replaceText('#docs a.wtile span', 'Run your first program on Waffle →', 'Set up your first Waffle page →');
     replaceText('#docs a.wtile span', 'Every interface, in detail →', 'The guest and host contract →');
     replaceText('footer span', '© [YEAR] Waffle', '© 2026 Waffle');

@@ -50,7 +50,7 @@ try {
 Bundle both entries with Bun:
 
 ```sh
-bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser
+bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting
 ```
 
 Add a `public/index.html` that loads the page entry:

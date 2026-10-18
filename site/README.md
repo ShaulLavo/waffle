@@ -103,7 +103,7 @@ bun /work/platform-production/heavy/current/run.js --class browser waffle-site-p
 1920. It compares visible text/links, scroll states, hover/focus, and scene
 pointer/click states with synchronized animation time, writing screenshots and
 `visual-diff.json`. Before comparison, it applies the exact published link destinations,
-two documentation-caption corrections and `© 2026 Waffle` to the original reference;
+two action-label and two documentation-caption corrections and `© 2026 Waffle` to the original reference;
 [the provenance ledger](../docs/bun-patches.md#waffle-landing-page) records these intentional
 departures. It validates the original values before replacing them, does not modify the
 candidate, and still fails on any remaining pixel/content mismatch. `ENGINES=chromium`

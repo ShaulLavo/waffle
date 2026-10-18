@@ -264,8 +264,8 @@ Registry cells are append-only, 16 bytes each, in a growable shared buffer. A si
 pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
 Defaults allocate about 2 MiB initially and allow 16,777,216 cells (256 MiB plus the header),
 roughly 4,194,304 simple pipes per service; additional process endpoints consume more cells.
-The separate process directory has 1,024 permanent PID rows. Exhausting either bound returns
-WASI ENFILE (41), not a silent reuse. `cellsPerProcess` is an initial-size hint, not a lifetime cap.
+The separate process directory supports 1,024 simultaneously enrolled processes; collected
+process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
 
 A completed write precedes any write that begins later in another process. Writes of at most
 4 KiB remain contiguous across short reads; deliberately tiny pipes use their capacity as the
