@@ -8,7 +8,8 @@ installFilesystemWorker(self, async (options, onStartupStage, signal, onWaiting)
     : await IndexedDBStorage.open(options.name ?? "waffle-workspace", { onStartupStage, signal, onWaiting, whenBusy: options.whenBusy, onOwnershipLost() {
       backend?.dispose();
       self.postMessage({ type: "filesystem-ownership-lost" });
-      self.close();
+      // The page owns worker termination. During startup disposal it retains this
+      // worker until recovery settles and the acquired backend has acknowledged cleanup.
     } });
   try {
     backend = await PersistentBackend.open(storage);

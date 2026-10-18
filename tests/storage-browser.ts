@@ -233,6 +233,33 @@ function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase
     }
   });
 
+  test("IndexedDB waiters close on versionchange instead of blocking database deletion", async name => {
+    const owner = await IndexedDBStorage.open(name);
+    const controller = new AbortController();
+    let result: Promise<{ storage?: IndexedDBStorage; error?: unknown }> | undefined;
+    try {
+      let reportWaiting!: () => void;
+      const reported = new Promise<void>(resolve => { reportWaiting = resolve; });
+      let ownershipLost = false;
+      result = IndexedDBStorage.open(name, {
+        whenBusy: "wait", signal: controller.signal, onWaiting: reportWaiting,
+        onOwnershipLost() { ownershipLost = true; },
+      }).then(storage => ({ storage }), error => ({ error }));
+      await reported;
+      // onversionchange must release both connections without manually closing the waiter.
+      await request(indexedDB.deleteDatabase(name));
+      const outcome = await result;
+      assert(outcome.storage === undefined && String(outcome.error).includes("database changed"), "waiting connection did not reject versionchange");
+      assert(!ownershipLost, "database deletion was misreported as a takeover");
+      const snapshot = await navigator.locks.query();
+      assert(!snapshot.pending?.some(lock => lock.name === `bun-wasm:filesystem:indexeddb:${name}`), "versionchange left an abandoned lock request");
+    } finally {
+      controller.abort();
+      await owner.close();
+      await result?.then(outcome => outcome.storage?.close());
+    }
+  });
+
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };
