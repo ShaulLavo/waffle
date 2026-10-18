@@ -91,7 +91,12 @@ jobs:
         id: fixtures
         with:
           path: ${{ runner.temp }}/libc-fixtures
-          key: ${{ runner.os }}-libc-sdk34-${{ hashFiles('scripts/build-wasi-libc.sh', 'scripts/test-wasi-libc.ts', 'scripts/owned-command.ts', 'patches/wasi-libc/**', 'tests/fixtures/preopen-guest.c', 'tests/fixtures/wasm-start-section.ts') }}
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('scripts/build-wasi-libc.sh', 'scripts/test-wasi-libc.ts', 'scripts/owned-command.ts', 'patches/wasi-libc/**', 'tests/fixtures/preopen-guest.c', 'tests/fixtures/wasm-start-section.ts') }}
+      - uses: actions/cache@v4
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/libc-sysroot
+          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('scripts/build-wasi-libc.sh', 'patches/wasi-libc/**') }}
       - uses: actions/cache@v4
         if: steps.fixtures.outputs.cache-hit != 'true'
         id: sdk
@@ -112,6 +117,7 @@ jobs:
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
           WASMTIME: wasmtime
           WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
+          WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
   browser:
     runs-on: ubuntu-latest
     steps:

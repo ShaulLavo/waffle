@@ -30,8 +30,8 @@ async function run(command: string[], env: NodeJS.ProcessEnv = process.env): Pro
   }
 }
 async function buildFixtures(): Promise<void> {
-  const sysroot = join(root, "sysroot");
-  await run(["bash", join(repo, "scripts/build-wasi-libc.sh"), sysroot]);
+  const sysroot = process.env.WASI_LIBC_SYSROOT_CACHE ?? join(root, "sysroot");
+  if (!existsSync(sysroot)) await run(["bash", join(repo, "scripts/build-wasi-libc.sh"), sysroot]);
   for (const flavor of ["patched", "stock"]) {
     for (const start of [false, true]) {
       const file = join(root, `${flavor}${start ? "-start" : ""}.wasm`);
