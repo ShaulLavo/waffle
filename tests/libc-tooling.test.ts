@@ -24,7 +24,7 @@ function fixture() {
   const marker = `waffle-tmp-probe-${root.split("/").at(-1)}`;
   writeFileSync(join(sdk, "VERSION"), "34.0\nwasi-libc: 2e6fb9d8ee0c\n");
   script(join(sdk, "bin/clang"), 'printf "%s" "${TMPDIR:-/tmp}" > "$PROBE/tmpdir"; touch "${TMPDIR:-/tmp}/$MARKER"');
-  script(join(bin, "curl"), ":"); script(join(bin, "tar"), ":"); script(join(bin, "ninja"), ":");
+  script(join(bin, "curl"), 'if [[ -n "${SETUP_DELAY:-}" ]]; then sleep "$SETUP_DELAY"; fi'); script(join(bin, "tar"), ":"); script(join(bin, "ninja"), ":");
   script(join(bin, "patch"), 'test -n "$(cat)"'); script(join(bin, "sha256sum"), "cat >/dev/null");
   script(join(bin, "cmake"), `
 if [[ "\${HANG:-0}" == 1 ]]; then
@@ -77,11 +77,12 @@ for (const mode of ["signal", "timeout"] as const) toolingTest(`owned test comma
   const f = fixture(), controller = new AbortController();
   // The direct shell waits for a real grandchild, rather than sleeping itself.
   const command = ["bash", "-c", 'sleep 60 & printf "%s %s" "$$" "$!" > "$PROBE/pids"; ps -o pgid= -p $$ | tr -d " " > "$PROBE/group"; touch "$PROBE/ready"; wait'];
-  const running = runOwned(command, { cwd: repo, env: f.env, signal: controller.signal, timeoutMs: mode === "timeout" ? 200 : 5000 });
+  const started = ready(join(f.root, "ready"));
+  const running = runOwned(command, { cwd: repo, env: f.env, signal: controller.signal, timeoutMs: mode === "timeout" ? 200 : 5000, timeoutStartsAfter: started });
   // Attach rejection handling before waiting for the stub's readiness.
   const result = running.then(() => null, error => error);
   try {
-    await ready(join(f.root, "ready"));
+    await started;
     if (mode === "signal") controller.abort();
     expect(await result).toBeInstanceOf(Error);
     for (const pid of readFileSync(join(f.root, "pids"), "utf8").split(" ").map(Number)) expect(alive(pid)).toBe(false);
@@ -90,10 +91,12 @@ for (const mode of ["signal", "timeout"] as const) toolingTest(`owned test comma
 
 for (const mode of ["signal", "timeout"] as const) toolingTest(`test runner ${mode} also retires the standalone build's nested group`, async () => {
   const f = fixture(), controller = new AbortController();
-  const result = runOwned(f.command, { cwd: repo, env: { ...f.env, HANG: "1" }, signal: controller.signal,
-    timeoutMs: mode === "timeout" ? 200 : 5000 }).then(() => null, error => error);
+  // Setup deliberately exceeds the deadline: only time after CMake readiness counts.
+  const started = ready(join(f.root, "ready"));
+  const result = runOwned(f.command, { cwd: repo, env: { ...f.env, HANG: "1", SETUP_DELAY: "0.35" }, signal: controller.signal,
+    timeoutMs: mode === "timeout" ? 200 : 5000, timeoutStartsAfter: started }).then(() => null, error => error);
   try {
-    await ready(join(f.root, "ready"));
+    await started;
     if (mode === "signal") controller.abort();
     expect(await result).toBeInstanceOf(Error);
     for (const pid of readFileSync(join(f.root, "pids"), "utf8").split(" ").map(Number)) expect(alive(pid)).toBe(false);
@@ -103,8 +106,9 @@ for (const mode of ["signal", "timeout"] as const) toolingTest(`test runner ${mo
 
 toolingTest("owned command escalates when its process group ignores TERM", async () => {
   const f = fixture();
-  const result = runOwned(["bash", "-c", 'trap "" TERM; sleep 60 & printf "%s %s" "$$" "$!" > "$PROBE/pids"; ps -o pgid= -p $$ | tr -d " " > "$PROBE/group"; wait'],
-    { cwd: repo, env: f.env, timeoutMs: 100 }).then(() => null, error => error);
+  const started = ready(join(f.root, "ready"));
+  const result = runOwned(["bash", "-c", 'trap "" TERM; sleep 60 & printf "%s %s" "$$" "$!" > "$PROBE/pids"; ps -o pgid= -p $$ | tr -d " " > "$PROBE/group"; touch "$PROBE/ready"; wait'],
+    { cwd: repo, env: f.env, timeoutMs: 100, timeoutStartsAfter: started }).then(() => null, error => error);
   try {
     expect(await result).toBeInstanceOf(Error);
     for (const pid of readFileSync(join(f.root, "pids"), "utf8").split(" ").map(Number)) expect(alive(pid)).toBe(false);
