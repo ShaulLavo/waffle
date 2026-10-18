@@ -440,6 +440,7 @@ export async function runtimeVfsCase(
   try {
     const backend = await PersistentBackend.open(reopened, { intervalMs: 0 });
     try {
+      await backend.prepare("readFile", ["/selected"]);
       const value = await backend.execute("readFile", ["/selected"], new Uint8Array());
       assert(
         new TextDecoder().decode(value as Uint8Array) === "same format",
@@ -462,15 +463,19 @@ export async function runtimeInvalidStorageCase(
   const runtime = createRuntime({
     filesystem: { name, vfs, workerURL: new URL(workerURL, location.href) },
   });
+  const error = await runtime.filesystem.listFiles().catch((failure) => failure);
   try {
-    const error = await runtime.filesystem.listFiles().catch((failure) => failure);
     assert(
       error instanceof VfsError && error.code === "INVALID_VFS_FORMAT" && error.vfs === vfs,
       "typed invalid format and VFS identity survive startup",
     );
     assert(runtime.filesystem.state.status === "failed", "invalid format never becomes ready");
   } finally {
-    await runtime.dispose();
+    await runtime
+      .dispose()
+      .catch((failure) =>
+        assert(failure === error, "failed-runtime disposal reports the original startup failure"),
+      );
   }
 }
 
