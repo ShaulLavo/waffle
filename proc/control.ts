@@ -5,19 +5,35 @@ const MASK = 0xffffffffn;
 // must keep using the host's monotonic clock, independently of guest time.
 const clock = performance.now.bind(performance);
 export function packedControl(id: number, value: number): bigint { return BigInt(id) << 32n | BigInt(value >>> 0); }
+export interface CellValidity {
+  buffer: SharedArrayBuffer;
+  byteOffset: number;
+  id: number;
+}
+export interface TaggedCellsTransfer {
+  type: "tagged-cells";
+  buffer: SharedArrayBuffer;
+  byteOffset: number;
+  length: number;
+  id: number;
+  validity?: CellValidity;
+}
 /** Captures an incarnation once. Every mutation compares the complete tagged word; a
  * suspended writer can never adopt the identity of a replacement row. */
 export class TaggedCells {
   readonly cells: BigInt64Array;
   readonly id: number;
-  private readonly valid: () => boolean;
-  constructor(cells: BigInt64Array, id: number, valid: () => boolean = () => true) { this.cells = cells; this.id = id; this.valid = valid; }
+  readonly validity?: CellValidity;
+  private readonly identity?: BigInt64Array;
+  constructor(cells: BigInt64Array, id: number, validity?: CellValidity) {
+    this.cells = cells; this.id = id; this.validity = validity;
+    if (validity) this.identity = new BigInt64Array(validity.buffer, validity.byteOffset, 1);
+  }
   get buffer(): SharedArrayBuffer { return this.cells.buffer as SharedArrayBuffer; }
   get byteOffset(): number { return this.cells.byteOffset; }
   get length(): number { return this.cells.length; }
-  check(): void {
-    if (!this.valid()) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
-  }
+  valid(): boolean { return this.identity === undefined || Atomics.load(this.identity, 0) === packedControl(this.validity!.id, 1); }
+  check(): void { if (!this.valid()) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected"); }
   private checked(value: bigint): number {
     this.check();
     if (value >> 32n !== BigInt(this.id)) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
@@ -37,6 +53,15 @@ export class TaggedCells {
   exchange(index: number, value: number): number {
     for (;;) { const previous = this.load(index); if (this.compareExchange(index, previous, value) === previous) return previous; }
   }
+}
+export function serializeTaggedCells(cells: TaggedCells): TaggedCellsTransfer {
+  return { type: "tagged-cells", buffer: cells.buffer, byteOffset: cells.byteOffset, length: cells.length, id: cells.id, validity: cells.validity };
+}
+export function reviveTaggedCells(source: TaggedCellsTransfer): TaggedCells {
+  if (source.type !== "tagged-cells" || !Number.isInteger(source.byteOffset) || !Number.isInteger(source.length) || source.length < 1) {
+    throw new TypeError("invalid tagged cells transfer");
+  }
+  return new TaggedCells(new BigInt64Array(source.buffer, source.byteOffset, source.length), source.id, source.validity);
 }
 /** Standalone host words are never recycled. Directory words always use TaggedCells. */
 export type ControlCells = Int32Array | TaggedCells;
