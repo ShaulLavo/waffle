@@ -336,6 +336,7 @@ class ProcessFixture {
 type BrowserCase = { label: string; standalone?: boolean; run(fixture: ProcessFixture): Promise<void> };
 // Exercise consuming waits and recyclable shared slots across real Worker boundaries.
 const cases: BrowserCase[] = [
+  { label: "startup diagnostic: normal entry never delays stderr EOF", standalone: true, run: () => browserStartupDiagnostic(undefined, "normal") },
   { label: "startup diagnostic: worker-selected failure drains before stderr closes", standalone: true, run: () => browserStartupDiagnostic() },
   { label: "startup diagnostic: executor completion cannot duplicate broker output", standalone: true, run: () => browserStartupDiagnostic(undefined, "drain", true) },
   { label: "startup diagnostic: stalled reader cannot retain teardown", standalone: true, run: () => browserStartupDiagnostic(undefined, "stalled") },

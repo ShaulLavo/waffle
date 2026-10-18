@@ -14,8 +14,9 @@ interface ProcessAccesses { next: number; requests: Map<number, AccessRequest>; 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
-  /** Emit a startup diagnostic while this process still owns its inherited output descriptors. */
-  startFailed?(pid: number, error: unknown): void | Promise<void>;
+  /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
+   * Disposal cancels this ownership even if a custom sink never settles its promise. */
+  startFailed?(pid: number, error: unknown, active: () => boolean): void | Promise<void>;
   table?: ProcessTable;
   /** Message-bearing hosts defer exits and startup failures until ordered output/error messages drain.
    * Signals and explicit disposal never wait for this acknowledgement.
@@ -63,6 +64,7 @@ export class ProcessSupervisor {
   /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
   private readonly finishing = new Map<number, ProcessRecord>();
   private readonly startFailures = new WeakSet<ProcessRecord>();
+  private readonly startupDrains = new Map<ProcessRecord, () => void>();
   constructor(options: SupervisorOptions) { this.options = options; this.table = options.table ?? new ProcessTable(); }
   get(pid: number): ProcessRecord | undefined { return this.table.get(pid); }
   job(id: number) { return this.table.job(id); }
@@ -506,6 +508,7 @@ export class ProcessSupervisor {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const cancel of Array.from(this.startupDrains.values())) cancel();
     const records = Array.from(this.table.values());
     for (const record of records) this.recordSignal(record, Signal.SIGKILL);
     for (const record of records) {
@@ -564,16 +567,31 @@ export class ProcessSupervisor {
       // Any producer can win the terminal CAS. Ordered acknowledgement supplies the error;
       // this supervisor alone owns its diagnostic, before revocation or descriptor release.
       this.startFailures.add(record);
+      let active = true;
+      const complete = () => {
+        if (!active) return;
+        active = false;
+        this.startupDrains.delete(record);
+        this.complete(record, winner);
+      };
+      const cancel = () => {
+        if (!active) return;
+        this.report(new ProcessError(ProcessErrno.CANCELED, "startup diagnostic delivery cancelled by supervisor disposal"));
+        complete();
+      };
+      this.startupDrains.set(record, cancel);
+      if (this.disposed) { cancel(); return; }
       let pending: void | Promise<void> = undefined;
-      try { pending = this.options.startFailed?.(pid, startError ?? winner.error); }
-      catch (error) { this.report(error); }
+      try { pending = this.options.startFailed?.(pid, startError ?? winner.error, () => active && !this.disposed); }
+      catch (error) { if (active) this.report(error); }
       if (pending) {
-        void pending.then(() => this.complete(record, winner), error => {
+        void pending.then(complete, error => {
+          if (!active) return;
           this.report(error);
-          this.complete(record, winner);
+          complete();
         });
-        return;
-      }
+      } else complete();
+      return;
     }
     this.complete(record, winner);
   }

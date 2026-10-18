@@ -762,6 +762,32 @@ for (const diagnostic of ["inherited", "controller"] as const) test(`startup fai
   } finally { source.dispose(); await broker.dispose(); }
 });
 
+test("broker disposal does not await a controller startup diagnostic that never settles", async () => {
+  const identities = new ProcessIdentityAllocator(), table = new ProcessTable(identities), registry = new ExecutableRegistry();
+  registry.register("fixture", { adapter: "fixture", module() { throw new Error("fixture compiler failed"); } });
+  let active!: () => boolean, closed = 0, stopped = 0;
+  const errors: unknown[] = [];
+  const broker = new BrowserProcessBroker({ identities, table, registry, onError: error => errors.push(error),
+    filesystem: { connect() { throw new Error("unused"); }, revoke() {}, reap() {}, async quiesce() {} },
+    launch() { throw new Error("must not launch failed source"); } });
+  try {
+    const root = await broker.adoptRoot({}), supervisor = await broker.ready();
+    const pid = supervisor.reserveSpawn(root, { executable: "fixture", argv: [], env: {}, cwd: "/", job: -1, fds: [] });
+    supervisor.get(pid)!.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
+      readiness: () => ({ readable: false, writable: true, hangup: false }), close() { closed++; } }, 0n, 0n);
+    broker.registerController(pid, { startFailed(_error, current) { active = current; return new Promise<void>(() => {}); }, stop() { stopped++; } });
+    await supervisor.start(pid);
+    expect(active()).toBe(true);
+    await broker.dispose();
+    expect(active()).toBe(false);
+    expect(closed).toBe(1);
+    expect(stopped).toBe(1);
+    expect(Array.from(table.values())).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ errno: ProcessErrno.CANCELED });
+  } finally { await broker.dispose(); }
+});
+
 for (const failure of ["first-import", "error-event", "running-error"] as const) test(`generic child ${failure} preserves startup versus execution failure`, async () => {
   const { failFirstWorkerImport } = await import("./first-worker-import.js");
   const previousWorker = globalThis.Worker;

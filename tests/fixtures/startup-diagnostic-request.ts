@@ -4,4 +4,5 @@ export interface StartupDiagnosticRequest extends RuntimeWorkerRequest {
   diagnostic: string;
   diagnosticGate: SharedArrayBuffer;
   legacy: boolean;
+  normal: boolean;
 }

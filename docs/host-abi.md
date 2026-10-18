@@ -136,14 +136,23 @@ an observed worker failure). The supervisor emits the selected startup diagnosti
 regardless of which producer selected the result; a competing exit or signal emits none.
 The generic worker does not also emit this startup diagnostic.
 
+For an inherited pipe, the broker retains an independent diagnostic-only writer lifetime:
+the worker may release its imported endpoint before the final error acknowledgement. Bootstrap
+closes the diagnostic-only lifetime synchronously when executable entry commits, before guest
+code runs; normal guest stderr closure therefore produces EOF without an extra broker turn.
+A selected startup failure instead retains that lifetime through diagnostic delivery and cleanup.
+
 Startup diagnostic sinks may return a promise. The supervisor retains finishing ownership
-and stderr until it settles. The browser broker uses only `tryWrite` (missing immediate I/O reports ENOTSUP),
-draining partial writes without blocking its page or pipe relay. A closed reader fails immediately; a live reader that never drains is
-bounded to **five seconds without write progress** (each positive write resets the deadline),
-and broker disposal cancels the drain on its next task turn.
-Undelivered bytes are reported to the host error sink as a `ProcessError` (the stream's
-errno, EAGAIN at the deadline, or ECANCELED on disposal), with the unwritten byte count.
-Delivery failure never replaces the selected child outcome or prevents descriptor cleanup.
+and stderr until it settles or disposal cancels it. Sinks receive an `active()` predicate and
+must stop writing when it becomes false. Disposal reports ECANCELED and releases ownership
+even if a custom sink never settles; late settlement cannot repeat cleanup or change the result.
+The browser broker uses only `tryWrite` (missing immediate I/O reports ENOTSUP), draining partial
+writes without blocking its page or pipe relay. A closed reader fails immediately; a live reader
+that never drains is bounded to **five seconds without write progress** (each positive write
+resets the deadline), and cancellation stops the drain on its next task turn.
+Undelivered bytes are reported to the host error sink as a `ProcessError` (the stream's errno
+or EAGAIN at the deadline), with the unwritten byte count when known. Delivery failure never
+replaces the selected child outcome or prevents descriptor cleanup.
 
 A shell maps START_FAILED ENOENT (WASI 44) to status 127, other startup errors to
 126, signals to 128 + signal, and actual exit codes unchanged. A Node/Bun-style

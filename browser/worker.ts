@@ -15,6 +15,7 @@ import { waitStatus } from "../proc/wait-status.js";
 import type { ProcessExit } from "../proc/types.js";
 import { fatalInterrupt } from "../interrupt/check.js";
 import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
+import type { PipeEndpointHandle } from "../proc/pipes.js";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -22,6 +23,8 @@ export interface RuntimeWorkerRequest {
   env: Record<string, string>;
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
+  /** Broker-owned diagnostic lifetime. Close synchronously at entry, not on startup failure. */
+  startupStderr?: PipeEndpointHandle;
   /** Authoritative terminal word available before loading process adapters. */
   outcome?: OutcomeTransfer;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
@@ -169,6 +172,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // Ownership begins before setup/namespaces can fail or finish the process.
   const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
+  let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
   const finish = (result: WorkerResult) => {
@@ -193,6 +197,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const attempt = (cleanup: () => void): boolean => {
       try { cleanup(); return true; } catch (error) { collect(error); return false; }
     };
+    if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
     if (executor.complete && "error" in result && (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)) {
@@ -249,6 +254,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const requestOutcome = req.outcome === undefined ? undefined : reviveOutcome(req.outcome);
     const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : requestOutcome ?? executor.outcome;
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (req.startupStderr) {
+      const { attachPipeEndpoint } = await import("../proc/pipes.js");
+      const endpoint = attachPipeEndpoint(req.startupStderr);
+      releaseStartupStderr = () => endpoint.close();
+    }
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
     if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
@@ -420,6 +430,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       checkActive();
       const committed = runtimeProcess ? runtimeProcess.started() : outcome ? markStarted(outcome) : true;
       if (!committed) checkActive();
+      releaseStartupStderr?.();
       started = true;
     });
     host.addEventListener?.("error", onError);

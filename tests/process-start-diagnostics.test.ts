@@ -112,3 +112,39 @@ test("a worker-selected startup error waits for acknowledgement and an asynchron
     expect(closed).toBe(1);
   } finally { resolve(); supervisor.dispose(); }
 });
+
+for (const settlement of ["never", "resolve", "reject"] as const) test(`disposal cancels a ${settlement}-settling startup diagnostic without retaining resources`, async () => {
+  const registry = new ExecutableRegistry();
+  registry.register("custom", { module, adapter: "custom" });
+  let resolve!: () => void, reject!: (error: unknown) => void, active!: () => boolean, closed = 0, stopped = 0;
+  const pending = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+  const errors: unknown[] = [];
+  const supervisor = new ProcessSupervisor({ registry, launch: () => ({ terminate() { stopped++; } }),
+    startFailed(_pid, _error, current) { active = current; return pending; }, onError: error => errors.push(error) });
+  const root = supervisor.createRoot(), child = supervisor.reserveSpawn(root, request);
+  const record = supervisor.get(child)!;
+  record.descriptors.open({ kind: "terminal", read: () => 0, write: () => 0,
+    readiness: () => ({ readable: false, writable: true, hangup: false }), close() { closed++; } }, 0n, 0n);
+  try {
+    await supervisor.start(child);
+    const exited = supervisor.waitForExit(root, child);
+    supervisor.failStart(child, new Error("startup failed"));
+    expect(active()).toBe(true);
+    expect(closed).toBe(0);
+    supervisor.dispose();
+    expect(active()).toBe(false);
+    expect(closed).toBe(1);
+    expect(stopped).toBe(1);
+    expect(record.revoked).toBe(true);
+    expect(record.result).toMatchObject({ kind: "start-failed", error: "EIO" });
+    expect(await exited).toBe(record.result);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ errno: 11, message: expect.stringContaining("diagnostic delivery cancelled") });
+    if (settlement === "resolve") resolve();
+    else if (settlement === "reject") reject(new Error("late diagnostic rejection"));
+    await Promise.resolve();
+    expect(closed).toBe(1);
+    expect(stopped).toBe(1);
+    expect(errors).toHaveLength(1);
+  } finally { supervisor.dispose(); }
+});

@@ -9,10 +9,16 @@ self.onmessage = ({ data }: MessageEvent<StartupDiagnosticRequest>) => {
   let outcome: OutcomeWord | null = null;
   void bootstrap(data, {
     setup(context) { outcome = context.outcome; const { fs } = context; fs.preopen = () => 1; fs.retain = () => {}; fs.release = () => {}; },
-    instantiated() { throw error; },
+    instantiated() { if (!data.normal) throw error; },
     complete: data.legacy ? (code, signal) => claimOutcome(outcome!, signal === undefined ? { kind: "exited", code } : { kind: "signaled", code: signal }) : undefined,
     diagnostic(message) { self.postMessage({ type: "legacy-startup-diagnostic", message }); },
-    run() { throw new Error("unreachable executable entry"); },
+    async run({ wasi }) {
+      if (!data.normal) throw new Error("unreachable executable entry");
+      wasi.descriptors.close(2);
+      self.postMessage({ type: "startup-stderr-closed" });
+      while (!Atomics.load(gate, 0)) await new Promise(resolve => setTimeout(resolve, 1));
+      return 0;
+    },
   }, {
     crossOriginIsolated: true,
     postMessage(message) {
