@@ -95,7 +95,9 @@ async function waitState(page: Page, expected: string): Promise<void> {
   const current = await state(page);
   assert(current.status === expected, `Expected ${expected}, got ${JSON.stringify(current)}`);
 }
-async function state(page: Page): Promise<{ status: string; error?: string }> {
+async function state(
+  page: Page,
+): Promise<{ status: string; error?: string; code?: string; vfs?: string }> {
   return await page.evaluate(() => (globalThis as any).lockTest.state());
 }
 async function assertWaiting(page: Page, label: string): Promise<void> {
@@ -615,7 +617,7 @@ async function opfsTakeoverRejected(
     await waitState(page, "failed");
     const current = await state(page);
     assert(
-      current.error === "opfs-memory does not support whenBusy: takeover",
+      current.code === "INVALID_VFS_SETTINGS" && current.vfs === "opfs-memory",
       `OPFS takeover was not rejected clearly: ${JSON.stringify(current)}`,
     );
   } finally {

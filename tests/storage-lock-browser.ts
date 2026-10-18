@@ -1,5 +1,6 @@
 import {
   SharedFilesystem,
+  VfsError,
   type SharedFilesystemOptions,
   type SharedFilesystemState,
 } from "../browser/shared-fs.js";
@@ -10,6 +11,8 @@ type Busy = "wait" | "takeover";
 type StateRecord = {
   status: SharedFilesystemState["status"];
   error?: string;
+  code?: string;
+  vfs?: string;
 };
 
 const NativeWorker = globalThis.Worker;
@@ -66,7 +69,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 function record(next: SharedFilesystemState): void {
-  state = { status: next.status, error: next.error?.message };
+  state = {
+    status: next.status,
+    error: next.error?.message,
+    ...(next.error instanceof VfsError ? { code: next.error.code, vfs: next.error.vfs } : {}),
+  };
   states.push(state);
 }
 function requireFilesystem(): SharedFilesystem {
