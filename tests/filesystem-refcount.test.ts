@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import * as protocol from "../fs/protocol.ts";
+import * as shared from "../fs/shared.ts";
+import * as native from "../proc/intrinsics.ts";
 import { CAPABILITY_HEADER, CAPABILITY_WORDS } from "../fs/protocol";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -28,12 +32,38 @@ class TrackingBackend extends MemoryBackend {
     else this.pins.set(handle, count - 1);
   }
 }
-function fixture() {
+/** Interleave the actual client at its captured CAS, without replacing production globals. */
+function isolatedClient() {
+  const hooks = { compareExchange: native.atomicsCompareExchange };
+  const bindings = {
+    ...protocol,
+    ...shared,
+    ...native,
+    atomicsCompareExchange: ((...args: unknown[]) =>
+      Reflect.apply(
+        hooks.compareExchange,
+        undefined,
+        args,
+      )) as typeof native.atomicsCompareExchange,
+  };
+  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
+    readFileSync(new URL("../fs/client.ts", import.meta.url), "utf8")
+      .replace(/^import .*;\n/gm, "")
+      .replace(/^export /gm, "")
+      .concat("\nreturn FilesystemClient;\n"),
+  );
+  const names = Object.keys(bindings);
+  const Client = new Function(...names.concat([source]))(
+    ...names.map((name) => bindings[name as keyof typeof bindings]),
+  ) as typeof FilesystemClient;
+  return { hooks, Client };
+}
+function fixture(Client = FilesystemClient) {
   const backend = new TrackingBackend();
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection();
   service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
+  const client = new Client(connection.client);
   cleanups.push(() => {
     client.dispose();
     service.dispose();
@@ -182,13 +212,14 @@ test("a retain winning exactly at trim's CAS prevents eviction", async () => {
 });
 
 test("reused capability entries cannot make a stale retain acquire a different handle", async () => {
-  const { client } = fixture();
+  const { hooks, Client } = isolatedClient();
+  const { client } = fixture(Client);
   const { handle } = await file(client);
   const cells = table(client.connection);
   const index = refIndex(cells, handle);
-  const compareExchange = Atomics.compareExchange;
+  const compareExchange = hooks.compareExchange;
   let raced = false;
-  Atomics.compareExchange = ((
+  hooks.compareExchange = ((
     array: Int32Array,
     at: number,
     expected: number,
@@ -207,13 +238,13 @@ test("reused capability entries cannot make a stale retain acquire a different h
       Atomics.store(cells, index, 0);
     }
     return compareExchange(array, at, expected, replacement);
-  }) as typeof Atomics.compareExchange;
+  }) as typeof hooks.compareExchange;
   try {
     expect(() => client.retain(handle)).toThrow();
     expect(raced).toBe(true);
     expect(Atomics.load(cells, index)).toBe(0);
   } finally {
-    Atomics.compareExchange = compareExchange;
+    hooks.compareExchange = compareExchange;
     Atomics.store(cells, index - 1, handle);
     Atomics.store(cells, index, 0);
   }

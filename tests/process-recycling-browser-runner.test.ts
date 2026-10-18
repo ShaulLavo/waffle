@@ -2,8 +2,17 @@ import { expect, test } from "bun:test";
 import {
   installClientWorker,
   ProcessWorker,
+  processBrowserCases,
   type ProcessWorkerBootstrapHost,
 } from "./process-recycling-browser.js";
+
+test("process browser suite retains process, bootstrap and pipe intrinsic authority regressions", () => {
+  const labels = processBrowserCases().filter((label) => label.startsWith("intrinsics:"));
+  expect(labels.length).toBeGreaterThanOrEqual(3);
+  expect(labels.some((label) => label.includes("recycled rows"))).toBe(true);
+  expect(labels.some((label) => label.includes("bootstrap checkActive"))).toBe(true);
+  expect(labels.some((label) => label.includes("pipe registry"))).toBe(true);
+});
 import {
   closeBrowserResources,
   stopBrowserResource,

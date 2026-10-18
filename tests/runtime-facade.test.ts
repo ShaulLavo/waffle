@@ -1153,7 +1153,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
   const processInputs = inputs.filter(
     (path) =>
       /(?:^|\/)proc\//.test(path) &&
-      !/(?:^|\/)(identity|stub|outcome|signals|control|types)\.ts$/.test(path),
+      !/(?:^|\/)(identity|stub|outcome|signals|control|types|intrinsics)\.ts$/.test(path),
   );
   expect(processInputs).toEqual([]);
   expect(inputs.filter((path) => /(?:^|\/)interrupt\//.test(path))).toEqual([]);

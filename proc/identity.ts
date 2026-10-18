@@ -1,3 +1,10 @@
+import {
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsCompareExchange,
+  atomicsLoad,
+  sharedArrayBufferByteLength,
+} from "./intrinsics.ts";
 import { ProcessError, ProcessErrno } from "./types.ts";
 /** Two independent, monotonic namespaces shared by synchronous guest spawn stubs.
  * This module has no supervisor/worker imports, so a guest can reserve before proc loads.
@@ -5,11 +12,11 @@ import { ProcessError, ProcessErrno } from "./types.ts";
 export class ProcessIdentityAllocator {
   readonly buffer: SharedArrayBuffer;
   private readonly counters: Int32Array;
-  constructor(buffer = new SharedArrayBuffer(8)) {
-    if (buffer.byteLength !== 8)
+  constructor(buffer = new SharedArrayBufferConstructor(8)) {
+    if (sharedArrayBufferByteLength(buffer) !== 8)
       throw new RangeError("process identity buffer must contain two words");
     this.buffer = buffer;
-    this.counters = new Int32Array(buffer);
+    this.counters = new Int32ArrayConstructor(buffer);
   }
   pid(): number {
     return this.allocate(0);
@@ -18,7 +25,7 @@ export class ProcessIdentityAllocator {
     return this.allocate(1);
   }
   hasJob(id: number): boolean {
-    return Number.isInteger(id) && id > 0 && id <= Atomics.load(this.counters, 1);
+    return Number.isInteger(id) && id > 0 && id <= atomicsLoad(this.counters, 1);
   }
   observePid(id: number): void {
     this.observe(0, id);
@@ -28,10 +35,10 @@ export class ProcessIdentityAllocator {
   }
   private allocate(index: number): number {
     for (;;) {
-      const current = Atomics.load(this.counters, index);
+      const current = atomicsLoad(this.counters, index);
       if (current < 0 || current === 0x7fffffff)
         throw new ProcessError(ProcessErrno.AGAIN, "process identity namespace exhausted");
-      if (Atomics.compareExchange(this.counters, index, current, current + 1) === current)
+      if (atomicsCompareExchange(this.counters, index, current, current + 1) === current)
         return current + 1;
     }
   }
@@ -39,9 +46,9 @@ export class ProcessIdentityAllocator {
     if (!Number.isInteger(id) || id <= 0 || id > 0x7fffffff)
       throw new RangeError("invalid process identity");
     for (;;) {
-      const current = Atomics.load(this.counters, index);
+      const current = atomicsLoad(this.counters, index);
       if (current < 0) throw new RangeError("invalid process identity counter");
-      if (current >= id || Atomics.compareExchange(this.counters, index, current, id) === current)
+      if (current >= id || atomicsCompareExchange(this.counters, index, current, id) === current)
         return;
     }
   }

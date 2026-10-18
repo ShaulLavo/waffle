@@ -1,9 +1,10 @@
+import { objectFreeze } from "./intrinsics.ts";
 import type { StartFailure } from "./start-errno.ts";
 import type { ControlCells } from "./control.js";
 import type { OutcomeWord } from "./outcome.js";
 import type { DescriptorTable } from "../core/descriptors.js";
 
-export const Signal = Object.freeze({
+export const Signal = objectFreeze({
   SIGHUP: 1,
   SIGINT: 2,
   SIGQUIT: 3,
@@ -120,7 +121,7 @@ export class ProcessError extends Error {
     this.name = "ProcessError";
   }
 }
-export const ProcessErrno = Object.freeze({
+export const ProcessErrno = objectFreeze({
   AGAIN: 6,
   BADF: 8,
   CANCELED: 11,

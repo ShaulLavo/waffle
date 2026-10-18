@@ -1,3 +1,12 @@
+import {
+  isSharedArrayBuffer,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsCompareExchange,
+  atomicsLoad,
+  atomicsStore,
+  sharedArrayBufferByteLength,
+} from "./intrinsics.ts";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { readOutcome } from "./outcome.js";
 import { ProcessErrno, ProcessError } from "./types.js";
@@ -37,7 +46,7 @@ export class WorkerExecutableAccess {
     if (!requests) return;
     for (const [id, request] of requests)
       if (directory === undefined || directory === request.directory) {
-        Atomics.store(request.cells, 0, 2);
+        atomicsStore(request.cells, 0, 2);
         requests.delete(id);
         request.cancel?.();
       }
@@ -52,11 +61,11 @@ export class WorkerExecutableAccess {
       !Number.isInteger(id) ||
       id < 1 ||
       id > 0x7fffffff ||
-      !(completion instanceof SharedArrayBuffer) ||
-      completion.byteLength !== 8
+      !isSharedArrayBuffer(completion) ||
+      sharedArrayBufferByteLength(completion) !== 8
     )
       return;
-    const cells = new Int32Array(completion),
+    const cells = new Int32ArrayConstructor(completion),
       state = workerProcessState(sender),
       directory = workerProcessDirectoryId(sender);
     let requests = this.owners?.get(state.pid);
@@ -64,17 +73,17 @@ export class WorkerExecutableAccess {
       const request = requests?.get(id);
       // Structured-clone SAB wrappers differ: ownership is caller/directory/id.
       if (request?.directory === directory) {
-        Atomics.store(request.cells, 0, 2);
+        atomicsStore(request.cells, 0, 2);
         requests!.delete(id);
         request.cancel?.();
         if (!requests!.size) this.owners!.delete(state.pid);
       }
       return;
     }
-    if (Atomics.load(cells, 0) !== 0) return;
+    if (atomicsLoad(cells, 0) !== 0) return;
     const publish = (result: number) => {
-      Atomics.store(cells, 1, result);
-      if (Atomics.compareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(sender);
+      atomicsStore(cells, 1, result);
+      if (atomicsCompareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(sender);
     };
     if (requests?.has(id)) return;
     if ((requests?.size ?? 0) >= MAX_ACCESS_REQUESTS) {
@@ -96,7 +105,7 @@ export class WorkerExecutableAccess {
     const active = () => {
       if (
         requests!.get(id) !== request ||
-        Atomics.load(cells, 0) !== 0 ||
+        atomicsLoad(cells, 0) !== 0 ||
         readOutcome(state.signals.outcome) ||
         !this.options.active(sender)
       ) {
@@ -118,7 +127,7 @@ export class WorkerExecutableAccess {
       if (!requests.size) this.owners!.delete(state.pid);
       if (!readOutcome(state.signals.outcome) && this.options.active(sender)) publish(result);
       else {
-        Atomics.store(cells, 0, 2);
+        atomicsStore(cells, 0, 2);
         request.cancel?.();
       }
     }
@@ -127,9 +136,9 @@ export class WorkerExecutableAccess {
 
 export function rejectWorkerAccess(message: AccessMessage): void {
   const completion = message.request.completion;
-  if (!(completion instanceof SharedArrayBuffer) || completion.byteLength !== 8) return;
-  const cells = new Int32Array(completion);
-  if (Atomics.load(cells, 0) !== 0) return;
-  Atomics.store(cells, 1, -ProcessErrno.SRCH);
-  if (Atomics.compareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(message.transport);
+  if (!isSharedArrayBuffer(completion) || sharedArrayBufferByteLength(completion) !== 8) return;
+  const cells = new Int32ArrayConstructor(completion);
+  if (atomicsLoad(cells, 0) !== 0) return;
+  atomicsStore(cells, 1, -ProcessErrno.SRCH);
+  if (atomicsCompareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(message.transport);
 }

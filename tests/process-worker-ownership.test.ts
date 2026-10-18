@@ -1,6 +1,6 @@
-import { ProcessABI } from "../proc/abi.js";
+import type { ProcessABI } from "../proc/abi.js";
 import { MemFS } from "../fs/memory.js";
-import {
+import type {
   collectDirectoryProcess,
   collectDirectoryJob,
   directorySlots,
@@ -12,7 +12,7 @@ import {
   helpDirectoryJobs,
   reserveDirectoryProcess,
 } from "../proc/directory.js";
-import {
+import type {
   packedControl,
   controlLoad,
   controlStore,
@@ -30,29 +30,73 @@ import {
   type Resource,
   type Stream,
 } from "../core/descriptors.js";
-import { ExecutableRegistry } from "../proc/registry.js";
-import { ProcessSupervisor } from "../proc/supervisor.js";
-import { SignalDisposition, setSignalDisposition } from "../proc/signals.js";
-import { claimOutcome, readOutcome } from "../proc/outcome.js";
-import { WorkerProcessBroker } from "../proc/worker-broker.js";
-import {
+import type { ExecutableRegistry } from "../proc/registry.js";
+import type { ProcessSupervisor } from "../proc/supervisor.js";
+import type { SignalDisposition, setSignalDisposition } from "../proc/signals.js";
+import type { claimOutcome, readOutcome } from "../proc/outcome.js";
+import type { WorkerProcessBroker } from "../proc/worker-broker.js";
+import type {
   createWorkerProcessTransport,
   confirmWorkerProcessJob,
   installWorkerBindings,
   WorkerProcessClient,
   workerProcessState,
-  type WorkerDescriptorCodec,
-  type WorkerProcessMessage,
-  type WorkerProcessTransport,
+  WorkerDescriptorCodec,
+  WorkerProcessMessage,
+  WorkerProcessTransport,
 } from "../proc/worker-client.js";
-import { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes.js";
-import {
+import type { WorkerPipeHost, createWorkerPipeCodec } from "../proc/worker-pipes.js";
+import type {
   ProcessErrno,
   ProcessError,
-  type ProcessContext,
-  type ProcessHandle,
-  type SpawnRequest,
+  ProcessContext,
+  ProcessHandle,
+  SpawnRequest,
 } from "../proc/types.js";
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { ProcessABI } = isolated.load<typeof import("../proc/abi.js")>("abi");
+const {
+  collectDirectoryProcess,
+  collectDirectoryJob,
+  directorySlots,
+  directoryJobs,
+  directoryJob,
+  directoryProcesses,
+  directoryGroups,
+  findDirectoryJob,
+  helpDirectoryJobs,
+  reserveDirectoryProcess,
+} = isolated.load<typeof import("../proc/directory.js")>("directory");
+const {
+  packedControl,
+  controlLoad,
+  controlStore,
+  controlCas,
+  controlExchange,
+  controlAdd,
+  controlWait,
+  controlNotify,
+} = isolated.load<typeof import("../proc/control.js")>("control");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry.js")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor.js")>("supervisor");
+const { SignalDisposition, setSignalDisposition } =
+  isolated.load<typeof import("../proc/signals.js")>("signals");
+const { claimOutcome, readOutcome } = isolated.load<typeof import("../proc/outcome.js")>("outcome");
+const { WorkerProcessBroker } =
+  isolated.load<typeof import("../proc/worker-broker.js")>("worker-broker");
+const {
+  createWorkerProcessTransport,
+  confirmWorkerProcessJob,
+  installWorkerBindings,
+  WorkerProcessClient,
+  workerProcessState,
+} = isolated.load<typeof import("../proc/worker-client.js")>("worker-client");
+const { WorkerPipeHost, createWorkerPipeCodec } =
+  isolated.load<typeof import("../proc/worker-pipes.js")>("worker-pipes");
+const { ProcessErrno, ProcessError } = isolated.load<typeof import("../proc/types.js")>("types");
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {

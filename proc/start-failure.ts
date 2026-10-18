@@ -1,3 +1,4 @@
+import { objectHasOwn, objectKeys } from "./intrinsics.ts";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { FilesystemError } from "../fs/protocol.ts";
 import { ProcessError, type ProcessExit } from "./types.ts";
@@ -10,7 +11,7 @@ export function startFailure(error: unknown): Extract<ProcessExit, { kind: "star
   const name = (error as { code?: unknown } | null)?.code;
   const wasi =
     error instanceof ProcessError || error instanceof FilesystemError ? error.errno : undefined;
-  const known = (Object.keys(failures) as StartFailure[]).find(
+  const known = (objectKeys(failures) as StartFailure[]).find(
     (name) => failures[name].wasi === wasi,
   );
   const failure: StartFailure =
@@ -19,7 +20,7 @@ export function startFailure(error: unknown): Extract<ProcessExit, { kind: "star
       : wasi === 6 || wasi === 33 || wasi === 41 || wasi === 51
         ? "EAGAIN"
         : (known ??
-          (typeof name === "string" && Object.hasOwn(failures, name)
+          (typeof name === "string" && objectHasOwn(failures, name)
             ? (name as StartFailure)
             : "EIO"));
   return { kind: "start-failed", code: failures[failure].code, error: failure, status: null };

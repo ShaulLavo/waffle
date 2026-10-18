@@ -1,3 +1,9 @@
+import {
+  isInstance,
+  sharedArrayBufferByteLength,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+} from "./intrinsics.ts";
 import type { ControlCells } from "./control.js";
 import { type OutcomeWord, OutcomeCell, outcomeWord, readOutcome } from "./outcome.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -58,6 +64,22 @@ interface MutableProcessJob extends Omit<
   members: Set<number>;
   leaderOutcome: OutcomeWord | null;
 }
+function sameOutcomeLocation(left: OutcomeWord, right: OutcomeWord): boolean {
+  const leftOffset = isInstance(left, OutcomeCell) ? left.byteOffset : typedArrayByteOffset(left);
+  const rightOffset = isInstance(right, OutcomeCell)
+    ? right.byteOffset
+    : typedArrayByteOffset(right);
+  const leftBuffer = isInstance(left, OutcomeCell)
+    ? left.buffer
+    : (typedArrayBuffer(left) as SharedArrayBuffer);
+  const rightBuffer = isInstance(right, OutcomeCell)
+    ? right.buffer
+    : (typedArrayBuffer(right) as SharedArrayBuffer);
+  return (
+    leftOffset === rightOffset &&
+    sharedArrayBufferByteLength(leftBuffer) === sharedArrayBufferByteLength(rightBuffer)
+  );
+}
 /** Host-owned records. Neither guest workers nor their blocked WASM own this table. */
 export class ProcessTable {
   readonly identities: ProcessIdentityAllocator;
@@ -90,7 +112,7 @@ export class ProcessTable {
   }
   jobClaimed(id: number): boolean {
     const outcome = this.jobs.get(id)?.leaderOutcome;
-    return outcome instanceof OutcomeCell && !outcome.valid();
+    return isInstance(outcome, OutcomeCell) && !outcome.valid();
   }
   values(): IterableIterator<ProcessRecord> {
     return this.records.values();
@@ -109,8 +131,8 @@ export class ProcessTable {
     id = this.identities.job(),
     identity?: SharedJobIdentity,
   ): ProcessJob {
-    if (identity?.outcome instanceof OutcomeCell) identity.outcome.check();
-    const captured = identity?.outcome instanceof OutcomeCell;
+    if (isInstance(identity?.outcome, OutcomeCell)) identity.outcome.check();
+    const captured = isInstance(identity?.outcome, OutcomeCell);
     if (this.jobs.has(id) || (!captured && id <= this.highestJob))
       throw new ProcessError(ProcessErrno.INVAL, `job ${id} was already reserved`);
     this.identities.observeJob(id);
@@ -143,8 +165,8 @@ export class ProcessTable {
     const rootSource =
       leader?.parentPid === 0 &&
       previous === leader.outcome &&
-      previous instanceof OutcomeCell &&
-      outcome instanceof OutcomeCell &&
+      isInstance(previous, OutcomeCell) &&
+      isInstance(outcome, OutcomeCell) &&
       previous.pid === outcome.pid &&
       previous.valid() &&
       outcome.valid();
@@ -153,10 +175,7 @@ export class ProcessTable {
       job.ownerPid !== identity.ownerPid ||
       job.foreground !== identity.foreground ||
       (job.leaderPid !== undefined && job.leaderPid !== identity.leaderPid) ||
-      (previous &&
-        !rootSource &&
-        (previous.byteOffset !== outcome.byteOffset ||
-          previous.buffer.byteLength !== outcome.buffer.byteLength))
+      (previous && !rootSource && !sameOutcomeLocation(previous, outcome))
     ) {
       throw new ProcessError(ProcessErrno.INVAL, `job ${id} identity changed`);
     }
@@ -175,12 +194,12 @@ export class ProcessTable {
     if (this.jobs.get(id)?.members.size === 0) this.jobs.delete(id);
   }
   checkPid(pid: number, authority?: OutcomeWord | SharedArrayBuffer): void {
-    if (authority instanceof OutcomeCell) {
+    if (isInstance(authority, OutcomeCell)) {
       authority.check();
       if (authority.pid !== pid)
         throw new ProcessError(ProcessErrno.INVAL, "process outcome identity differs from pid");
     }
-    const captured = authority instanceof OutcomeCell;
+    const captured = isInstance(authority, OutcomeCell);
     if (
       !Number.isInteger(pid) ||
       pid <= 0 ||

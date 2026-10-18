@@ -1,3 +1,4 @@
+import { objectKeys } from "./intrinsics.ts";
 /** Host outcomes retain Linux errno numbers; only the guest ABI uses WASI numbers. */
 export const failures = {
   ENOENT: { code: 2, wasi: 44 },
@@ -14,7 +15,7 @@ export class ExecutableFormatError extends Error {
   readonly code = "ENOEXEC";
 }
 export function startFailureName(code: number): StartFailure {
-  for (const name of Object.keys(failures) as StartFailure[])
+  for (const name of objectKeys(failures) as StartFailure[])
     if (failures[name].code === code) return name;
   throw new RangeError("unknown process startup errno");
 }

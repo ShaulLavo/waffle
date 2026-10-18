@@ -1,5 +1,6 @@
 import { ExecutionUnwind } from "../core/unwind.js";
-import { directoryState } from "../proc/directory.js";
+import { directoryState, isCollectedProcess } from "../proc/directory.js";
+import * as processIntrinsics from "../proc/intrinsics.ts";
 import { controlLoad, controlWait } from "../proc/control.js";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
@@ -34,6 +35,7 @@ export async function failFirstWorkerImport(
   postMessage: (message: RuntimeWorkerMessage) => void,
 ) {
   const context = {
+    ...processIntrinsics,
     performance,
     Error,
     SharedArrayBuffer,
@@ -42,6 +44,7 @@ export async function failFirstWorkerImport(
     Atomics,
     TextEncoder,
     directoryState,
+    isCollectedProcess,
     controlLoad,
     controlWait,
     ExecutionUnwind,

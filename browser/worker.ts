@@ -37,6 +37,12 @@ import type {
   workerProcessState,
 } from "../proc/worker-client.js";
 import type { PipeEndpointHandle } from "../proc/pipes.js";
+import {
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsWait,
+  objectEntries,
+} from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -190,15 +196,17 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
-  const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
-  const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
+  const isolated = host.crossOriginIsolated && typeof SharedArrayBufferConstructor === "function";
+  const sleepCell = isolated
+    ? new Int32ArrayConstructor(new SharedArrayBufferConstructor!(4))
+    : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
   let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal
-    ? new Int32Array(executor.requestedSignal)
+    ? new Int32ArrayConstructor(executor.requestedSignal)
     : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -426,7 +434,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const interrupt =
       runtimeState?.signals.interrupt ??
-      (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
+      (executor.interrupt ? new Int32ArrayConstructor(executor.interrupt) : undefined);
     if (runtimeState) {
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
@@ -533,13 +541,20 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         }
       },
     };
+    let reservedFds: number[] | undefined;
+    if (req.runtimeProcess) {
+      reservedFds = [];
+      for (let index = 0; index < req.runtimeProcess.bindings.length; index++) {
+        reservedFds[index] = req.runtimeProcess.bindings[index]!.fd;
+      }
+    }
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
       args: req.args,
       env,
       fs,
       preopens: { "/": "/" },
-      reservedFds: req.runtimeProcess?.bindings.map((binding) => binding.fd),
+      reservedFds,
       stdio,
       stdout: (data) => {
         output("stdout", data);
@@ -553,7 +568,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       sleep: (ms) => {
         checkActive();
         if (ms > 0) {
-          if (sleepCell) Atomics.wait(sleepCell, 0, 0, ms);
+          if (sleepCell) atomicsWait(sleepCell, 0, 0, ms);
           else {
             const end = perfNow() + ms;
             while (perfNow() < end) {
@@ -603,7 +618,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         codec: createRuntimeTerminalCodec({
           fallback: pipes.codec(),
           descriptors: wasi.descriptors,
-          resolveTerminal: executor.resolveTerminal?.bind(executor),
+          resolveTerminal: executor.resolveTerminal
+            ? (...args) => executor.resolveTerminal!(...args)
+            : undefined,
           output: (fd, data) => {
             output(fd === 2 ? "stderr" : "stdout", data);
           },
@@ -670,7 +687,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           checkActive();
         },
       });
-      for (const [name, call] of Object.entries(abi.imports)) {
+      const entries = objectEntries(abi.imports);
+      for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index]!,
+          name = entry[0],
+          call = entry[1];
         // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.
         if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => {

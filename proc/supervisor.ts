@@ -1,3 +1,15 @@
+import {
+  isInstance,
+  isSharedArrayBuffer,
+  isInt32Array,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsAdd,
+  atomicsNotify,
+  objectFreeze,
+  typedArrayBuffer,
+  typedArrayLength,
+} from "./intrinsics.ts";
 import { spawnError, startFailure } from "./start-failure.js";
 import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
 import { TaggedCells, type ControlCells, controlLoad } from "./control.js";
@@ -69,13 +81,15 @@ export interface RootProcessOptions extends SpawnReservation {
   foreground?: boolean;
 }
 function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
-  const word =
-    source instanceof TaggedCells
+  const word = isInstance(source, TaggedCells)
+    ? source
+    : isInt32Array(source)
       ? source
-      : source instanceof Int32Array
-        ? source
-        : new Int32Array(source ?? new SharedArrayBuffer(4));
-  if (!(word.buffer instanceof SharedArrayBuffer) || word.length !== 1)
+      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(4));
+  if (
+    !isSharedArrayBuffer(isInstance(word, TaggedCells) ? word.buffer : typedArrayBuffer(word)) ||
+    (isInstance(word, TaggedCells) ? word.length : typedArrayLength(word)) !== 1
+  )
     throw new TypeError("signal word must be one shared int32");
   return word;
 }
@@ -136,7 +150,7 @@ export class ProcessSupervisor {
     this.accessOwner(pid);
     if (!path || path.includes("\0") || !cwd.startsWith("/") || cwd.includes("\0"))
       throw new ProcessError(ProcessErrno.INVAL, "invalid executable query");
-    if (wake && (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1))
+    if (wake && (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1))
       throw new TypeError("access wake must be one shared int32");
     let owner = this.accesses?.get(pid);
     if (!owner) {
@@ -185,8 +199,8 @@ export class ProcessSupervisor {
     }
     request.result = result;
     if (request.wake) {
-      Atomics.add(request.wake, 0, 1);
-      Atomics.notify(request.wake, 0);
+      atomicsAdd(request.wake, 0, 1);
+      atomicsNotify(request.wake, 0);
     }
   }
   private access(pid: number, id: number): { owner: ProcessAccesses; request: AccessRequest } {
@@ -310,14 +324,14 @@ export class ProcessSupervisor {
     return this.jobIsEmpty(job);
   }
   registerJobWake(callerPid: number, jobId: number, wake: Int32Array): () => void {
-    if (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1)
+    if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
       throw new TypeError("job wake must be one shared int32");
     this.requireWaitJob(callerPid, jobId);
     let listeners = this.jobListeners.get(jobId);
     if (!listeners) this.jobListeners.set(jobId, (listeners = new Set()));
     const listener = () => {
-      Atomics.add(wake, 0, 1);
-      Atomics.notify(wake, 0);
+      atomicsAdd(wake, 0, 1);
+      atomicsNotify(wake, 0);
     };
     listeners.add(listener);
     return () => {
@@ -341,7 +355,7 @@ export class ProcessSupervisor {
             pid,
             options.foreground ?? true,
             options.job,
-            options.outcome instanceof OutcomeCell
+            isInstance(options.outcome, OutcomeCell)
               ? {
                   ownerPid: pid,
                   leaderPid: pid,
@@ -369,7 +383,7 @@ export class ProcessSupervisor {
         revocations: new Set(),
         waiters: new Set(),
       },
-      options.outcome instanceof OutcomeCell,
+      isInstance(options.outcome, OutcomeCell),
     );
     return pid;
   }
@@ -604,14 +618,14 @@ export class ProcessSupervisor {
     }
   }
   registerChildStartWake(parentPid: number, pid: number, wake: Int32Array): () => void {
-    if (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1)
+    if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
       throw new TypeError("startup wake must be one shared int32");
     this.child(parentPid, pid);
     let listeners = this.startListeners.get(pid);
     if (!listeners) this.startListeners.set(pid, (listeners = new Set()));
     const listener = () => {
-      Atomics.add(wake, 0, 1);
-      Atomics.notify(wake, 0);
+      atomicsAdd(wake, 0, 1);
+      atomicsNotify(wake, 0);
     };
     listeners.add(listener);
     return () => {
@@ -948,7 +962,7 @@ export class ProcessSupervisor {
       this.report(error);
     }
     const safe = () => {
-      const event = Object.freeze({
+      const event = objectFreeze({
         pid,
         parentPid: record.parentPid,
         job: record.job,

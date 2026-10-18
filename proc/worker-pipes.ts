@@ -1,4 +1,5 @@
 import { OpenDescription } from "../core/descriptors.js";
+import { isInstance } from "./intrinsics.ts";
 import {
   PipeController,
   PipeEndpoint,
@@ -37,7 +38,7 @@ export interface WorkerPipeCodecOptions {
 export function createWorkerPipeCodec(options: WorkerPipeCodecOptions = {}): WorkerDescriptorCodec {
   return {
     export(descriptor, pid): unknown {
-      if (!(descriptor.resource instanceof PipeEndpoint)) {
+      if (!isInstance(descriptor.resource, PipeEndpoint)) {
         if (options.fallback) return options.fallback.export(descriptor, pid);
         throw new TypeError(`unsupported worker descriptor: ${descriptor.resource.kind}`);
       }
@@ -84,12 +85,11 @@ export class WorkerPipeHost {
   constructor(private readonly options: WorkerPipeHostOptions) {
     const state = workerProcessState(options.transport);
     this.pid = state.pid;
-    this.registry =
-      options.registry instanceof PipePublicationRegistry
-        ? options.registry
-        : options.registry
-          ? attachPipePublicationRegistry(options.registry)
-          : new PipePublicationRegistry({ wake: state.wake });
+    this.registry = isInstance(options.registry, PipePublicationRegistry)
+      ? options.registry
+      : options.registry
+        ? attachPipePublicationRegistry(options.registry)
+        : new PipePublicationRegistry({ wake: state.wake });
     if (!options.registry) this.registry.registerProcess(this.pid);
     else if (this.registry.isRevoked(this.pid)) throw new Error("pipe process is revoked");
   }

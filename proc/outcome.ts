@@ -1,6 +1,19 @@
 import { startFailureName, startFailureErrno } from "./start-errno.ts";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.ts";
 import { packedControl, type CellValidity } from "./control.ts";
+import {
+  atomicsCompareExchange,
+  atomicsLoad,
+  BigInt64ArrayConstructor,
+  SharedArrayBufferConstructor,
+  objectFreeze,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayLength,
+  isSharedArrayBuffer,
+  isBigInt64Array,
+  isInstance,
+} from "./intrinsics.ts";
 
 export interface OutcomeCellTransfer {
   type: "outcome-cell";
@@ -30,16 +43,16 @@ export class OutcomeCell {
     this.pid = pid;
     this.validity = validity;
     this.running = BigInt(pid) << 3n;
-    this.identity = new BigInt64Array(validity.buffer, validity.byteOffset, 1);
+    this.identity = new BigInt64ArrayConstructor(validity.buffer, validity.byteOffset, 1);
   }
   get buffer(): SharedArrayBuffer {
-    return this.cells.buffer as SharedArrayBuffer;
+    return typedArrayBuffer(this.cells) as SharedArrayBuffer;
   }
   get byteOffset(): number {
-    return this.cells.byteOffset;
+    return typedArrayByteOffset(this.cells);
   }
   valid(): boolean {
-    return Atomics.load(this.identity, 0) === packedControl(this.validity.id, 1);
+    return atomicsLoad(this.identity, 0) === packedControl(this.validity.id, 1);
   }
   check(): void {
     if (!this.valid())
@@ -49,17 +62,16 @@ export class OutcomeCell {
 export type OutcomeWord = BigInt64Array | OutcomeCell;
 /** Standalone outcomes do not recycle and use the zero running sentinel. */
 export function outcomeWord(source?: OutcomeWord | SharedArrayBuffer): OutcomeWord {
-  if (source instanceof OutcomeCell) return source;
-  const word =
-    source instanceof BigInt64Array
-      ? source
-      : new BigInt64Array(source ?? new SharedArrayBuffer(8));
-  if (!(word.buffer instanceof SharedArrayBuffer) || word.length !== 1)
+  if (isInstance(source, OutcomeCell)) return source;
+  const word = isBigInt64Array(source)
+    ? source
+    : new BigInt64ArrayConstructor(source ?? new SharedArrayBufferConstructor(8));
+  if (!isSharedArrayBuffer(typedArrayBuffer(word)) || typedArrayLength(word) !== 1)
     throw new TypeError("outcome word must be one shared int64");
   return word;
 }
 export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
-  if (source instanceof OutcomeCell)
+  if (isInstance(source, OutcomeCell))
     return {
       type: "outcome-cell",
       buffer: source.buffer,
@@ -68,19 +80,23 @@ export function serializeOutcome(source: OutcomeWord): OutcomeTransfer {
       running: source.running,
       validity: source.validity,
     };
-  if (!(source.buffer instanceof SharedArrayBuffer) || source.length !== 1)
+  if (!isSharedArrayBuffer(typedArrayBuffer(source)) || typedArrayLength(source) !== 1)
     throw new TypeError("outcome word must be one shared int64");
-  return { type: "outcome-word", buffer: source.buffer, byteOffset: source.byteOffset };
+  return {
+    type: "outcome-word",
+    buffer: typedArrayBuffer(source) as SharedArrayBuffer,
+    byteOffset: typedArrayByteOffset(source),
+  };
 }
 export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
-  if (source instanceof SharedArrayBuffer) return outcomeWord(source);
+  if (isSharedArrayBuffer(source)) return outcomeWord(source);
   if (source.type === "outcome-word")
-    return outcomeWord(new BigInt64Array(source.buffer, source.byteOffset, 1));
+    return outcomeWord(new BigInt64ArrayConstructor(source.buffer, source.byteOffset, 1));
   if (source.type === "outcome-cell") {
     if (source.running !== BigInt(source.pid) << 3n)
       throw new TypeError("invalid outcome running sentinel");
     return new OutcomeCell(
-      new BigInt64Array(source.buffer, source.byteOffset, 1),
+      new BigInt64ArrayConstructor(source.buffer, source.byteOffset, 1),
       source.pid,
       source.validity,
     );
@@ -90,8 +106,8 @@ export function reviveOutcome(source: OutcomeTransfer): OutcomeWord {
 export function processOutcome(result: Pick<ProcessExit, "kind" | "code">): ProcessExit {
   const { kind, code } = result;
   if (kind === "start-failed")
-    return Object.freeze({ kind, code, error: startFailureName(code), status: null });
-  return Object.freeze({ kind, code, status: kind === "signaled" ? 128 + code : code });
+    return objectFreeze({ kind, code, error: startFailureName(code), status: null });
+  return objectFreeze({ kind, code, status: kind === "signaled" ? 128 + code : code });
 }
 function decode(encoded: bigint): ProcessExit {
   const tag = encoded & 3n;
@@ -102,15 +118,15 @@ function decode(encoded: bigint): ProcessExit {
   });
 }
 function cells(word: OutcomeWord): BigInt64Array {
-  return word instanceof OutcomeCell ? word.cells : word;
+  return isInstance(word, OutcomeCell) ? word.cells : word;
 }
 function running(word: OutcomeWord): bigint {
-  return word instanceof OutcomeCell ? word.running : 0n;
+  return isInstance(word, OutcomeCell) ? word.running : 0n;
 }
 function load(word: OutcomeWord): bigint {
-  if (word instanceof OutcomeCell) word.check();
-  const encoded = Atomics.load(cells(word), 0);
-  if (word instanceof OutcomeCell) word.check();
+  if (isInstance(word, OutcomeCell)) word.check();
+  const encoded = atomicsLoad(cells(word), 0);
+  if (isInstance(word, OutcomeCell)) word.check();
   // Neither an old pending nor an old started producer may adopt a recycled row.
   if ((encoded & 3n) === 0n && (encoded & ~STARTED) !== running(word))
     throw new ProcessError(ProcessErrno.SRCH, "outcome incarnation changed");
@@ -136,8 +152,8 @@ export function markStarted(word: OutcomeWord): boolean {
     const previous = load(word);
     if ((previous & 3n) !== 0n) return false;
     if (previous & STARTED) return true;
-    const observed = Atomics.compareExchange(cells(word), 0, previous, previous | STARTED);
-    if (word instanceof OutcomeCell) word.check();
+    const observed = atomicsCompareExchange(cells(word), 0, previous, previous | STARTED);
+    if (isInstance(word, OutcomeCell)) word.check();
     if (observed === previous) return true;
   }
 }
@@ -161,8 +177,8 @@ export function claimOutcome(
     if (result.kind === "start-failed" && previous & STARTED)
       throw new ProcessError(ProcessErrno.INVAL, "startup failure after executable entry");
     const encoded = value | (previous & STARTED);
-    const observed = Atomics.compareExchange(cells(word), 0, previous, encoded);
-    if (word instanceof OutcomeCell) word.check();
+    const observed = atomicsCompareExchange(cells(word), 0, previous, encoded);
+    if (isInstance(word, OutcomeCell)) word.check();
     if (observed === previous) {
       onClaim?.();
       return decode(encoded);
