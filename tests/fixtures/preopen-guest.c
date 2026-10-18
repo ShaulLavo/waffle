@@ -42,5 +42,3 @@ int main(void) {
   }
   return 0;
 }
-
-/* CI cache invalidation probe. */

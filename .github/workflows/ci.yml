@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -64,7 +65,7 @@ jobs:
       - run: test -z "$(git ls-files dist)"
   libc:
     needs: changes
-    if: needs.changes.outputs.libc == 'true'
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
