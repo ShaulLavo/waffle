@@ -1,6 +1,6 @@
 import { OpfsStorage, type OpfsStorageOptions } from "../fs/opfs";
 import type { PersistenceBatch, PersistedNode } from "../fs/storage";
-import { assert, batch, bytes, rejects, storageContractCases, type BrowserStorageTest } from "./storage-browser";
+import { assert, batch, bytes, rejects, runtimeStartupCase, storageContractCases, type BrowserStorageTest } from "./storage-browser";
 
 type SyncAccess = {
   getSize(): number;
@@ -105,6 +105,19 @@ interface OpfsCase {
 
 function focusedCases(): OpfsCase[] {
   return [
+    {
+      label: "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
+      run: name => runtimeStartupCase(name, "opfs"),
+    },
+    {
+      label: "refused writer lock emits no acquired startup milestone",
+      async run(name, open) {
+        await open();
+        const stages: string[] = [];
+        await rejects(OpfsStorage.open(name, { onStartupStage(stage) { stages.push(stage); } }), "already has a writer");
+        assert(JSON.stringify(stages) === JSON.stringify(["filesystem-lock-requested"]), `unexpected refused-lock stages: ${JSON.stringify(stages)}`);
+      },
+    },
     {
       label: "more than 253 payload reads use a genuinely bounded sync-handle cache",
       async run(_name, open) {

@@ -129,7 +129,8 @@ async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent 
 try {
   const scratchRoot = process.env.STORAGE_SCRATCH_ROOT ?? (process.platform === "darwin" ? resolve(homedir(), "tmp") : tmpdir());
   await mkdir(scratchRoot, { recursive: true });
-  scratchCreation = mkdtemp(resolve(scratchRoot, "waffle-storage-"));
+  // Leave room for Chromium's Unix socket suffix even under a task-specific scratch root.
+  scratchCreation = mkdtemp(resolve(scratchRoot, "w-"));
   scratch = await scratchCreation;
   if (cleaning) throw new Error("Storage runner stopped during scratch creation");
   process.env.TMPDIR = scratch;

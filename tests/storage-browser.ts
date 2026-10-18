@@ -115,31 +115,42 @@ export function storageContractCases(): StorageContractCase[] {
   return cases;
 }
 
+export async function runtimeStartupCase(name: string, storage: "indexeddb" | "opfs" | false): Promise<void> {
+  const seen: [RuntimeStartupStage, number][] = [];
+  let resolveReady!: () => void;
+  const ready = new Promise<void>(resolve => { resolveReady = resolve; });
+  const runtime = createRuntime({ filesystem: { name, persistence: storage !== false,
+    storage: storage === false ? undefined : storage, workerURL: new URL("/filesystem-worker.js", location.href) },
+    onStartupStage(stage, timestamp) {
+      seen.push([stage, timestamp]);
+      if (stage === "filesystem-ready") resolveReady();
+      return Promise.reject(new Error("ignored observer rejection"));
+    } });
+  try {
+    assert((await runtime.filesystem.listFiles()).length === 0, "filesystem works despite rejected observers");
+    // The diagnostic and filesystem response use different ports.
+    await ready;
+    const expected: RuntimeStartupStage[] = ["filesystem-worker-created", "filesystem-connect-requested", "filesystem-connected"];
+    if (storage === "indexeddb") expected.push("indexeddb-open-requested", "indexeddb-open-resolved");
+    if (storage !== false) expected.push("filesystem-lock-requested", "filesystem-lock-acquired");
+    if (storage === "indexeddb") expected.push("filesystem-epoch-requested", "filesystem-epoch-resolved");
+    expected.push("filesystem-ready");
+    assert(JSON.stringify(seen.map(([stage]) => stage)) === JSON.stringify(expected), `unexpected startup sequence: ${JSON.stringify(seen)}`);
+    assert(seen.every(([, timestamp]) => Number.isFinite(timestamp) && timestamp >= performance.timeOrigin), "comparable epoch clocks");
+    assert(seen.every(([, timestamp], index) => index === 0 || timestamp >= seen[index - 1]![1]), "milestone clocks follow operation order");
+  } finally {
+    await runtime.dispose();
+    // Worker.terminate() returns before Chromium releases that worker's Web Locks.
+    // Fence test cleanup before the outer fixture uses OPFS's non-waiting delete path.
+    if (storage === "opfs") await navigator.locks.request(`bun-wasm:filesystem:${name}`, { mode: "exclusive" }, () => {});
+  }
+}
+
 function indexedDBCases(): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
-  test("runtime startup milestones cross the actual filesystem worker boundary", async name => {
-    const seen: [RuntimeStartupStage, number][] = [];
-    let resolveReady!: () => void;
-    const ready = new Promise<void>(resolve => { resolveReady = resolve; });
-    const runtime = createRuntime({ filesystem: { name, workerURL: new URL("/filesystem-worker.js", location.href) },
-      onStartupStage(stage, timestamp) {
-        seen.push([stage, timestamp]);
-        if (stage === "filesystem-ready") resolveReady();
-        return Promise.reject(new Error("ignored observer rejection"));
-      } });
-    try {
-      assert((await runtime.filesystem.listFiles()).length === 0, "filesystem works despite rejected observers");
-      // The diagnostic and filesystem response use different ports.
-      await ready;
-      assert(JSON.stringify(seen.map(([stage]) => stage)) === JSON.stringify([
-        "filesystem-worker-created", "filesystem-connect-requested", "filesystem-connected",
-        "indexeddb-open-requested", "indexeddb-open-resolved", "filesystem-lock-requested",
-        "filesystem-lock-acquired", "filesystem-epoch-requested", "filesystem-epoch-resolved", "filesystem-ready",
-      ]), `unexpected startup sequence: ${JSON.stringify(seen)}`);
-      assert(seen.every(([, timestamp]) => Number.isFinite(timestamp) && timestamp >= performance.timeOrigin), "comparable epoch clocks");
-    } finally { await runtime.dispose(); }
-  });
+  test("runtime startup milestones cross the actual filesystem worker boundary", name => runtimeStartupCase(name, "indexeddb"));
+  test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", name => runtimeStartupCase(name, false));
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };
