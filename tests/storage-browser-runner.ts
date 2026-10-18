@@ -14,7 +14,7 @@ function storageWorker(): void {
       const modulePath = "/tests.js";
       const tests = await import(modulePath) as typeof import("./storage-browser");
       // The runner owns this route; imported backend suites do not assume one exists.
-      const suites = { indexeddb: tests.storageTests("/fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
+      const suites = { indexeddb: tests.storageTests("/fs-worker.js", "/open-fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
       if (event.data.kind === "list") {
         globalThis.postMessage({ result: {
           indexeddb: suites.indexeddb.map(test => test.label), opfs: suites.opfs.map(test => test.label),
@@ -142,14 +142,18 @@ try {
   const fsWorkerBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "../browser/fs-worker.ts")], target: "browser" });
   if (!fsWorkerBuild.success) throw new AggregateError(fsWorkerBuild.logs, "Filesystem worker bundle failed");
   const fsWorkerScript = fsWorkerBuild.outputs[0]!;
+  const openWorkerBuild = await Bun.build({ entrypoints: [resolve(import.meta.dir, "storage-open-worker.ts")], target: "browser" });
+  if (!openWorkerBuild.success) throw new AggregateError(openWorkerBuild.logs, "Gated open worker bundle failed");
+  const openWorkerScript = openWorkerBuild.outputs[0]!;
   const workerScript = `(${storageWorker.toString()})();`;
   server = Bun.serve({ hostname: "127.0.0.1", port: Number(process.env.STORAGE_TEST_PORT ?? 0), fetch(request) {
     const path = new URL(request.url).pathname;
     // Match the existing persistence harness's document and worker isolation policy.
     const headers = {
       "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp",
-      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/fs-worker.js" ? "text/javascript" : "text/html",
+      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/fs-worker.js" || path === "/open-fs-worker.js" ? "text/javascript" : "text/html",
     };
+    if (path === "/open-fs-worker.js") return new Response(openWorkerScript, { headers });
     if (path === "/fs-worker.js") return new Response(fsWorkerScript, { headers });
     if (path === "/tests.js") return new Response(script, { headers });
     if (path === "/worker.js") return new Response(workerScript, { headers });

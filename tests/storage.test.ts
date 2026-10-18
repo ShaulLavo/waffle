@@ -96,3 +96,79 @@ describe("single-writer acquisition", () => {
     expect(held).toBe(false);
   });
 });
+
+for (const whenBusy of ["takeover", "wait"] as const) {
+  test(`IndexedDB ${whenBusy} aborts a hanging open and closes a late success without acquiring ownership`, async () => {
+    const controller = new AbortController();
+    let opening!: IDBOpenDBRequest;
+    let closed = 0, locksRequested = 0;
+    const database = { close() { closed++; } } as unknown as IDBDatabase;
+    const factory = { open() { return opening = { result: database } as IDBOpenDBRequest; } } as unknown as IDBFactory;
+    const locks: StorageLockManager = { async request() { locksRequested++; throw new Error("late open requested ownership"); } };
+    const aborted = new DOMException("test cancellation", "AbortError");
+    const result = IndexedDBStorage.open("hanging", { indexedDB: factory, locks, signal: controller.signal, whenBusy }).catch(error => error);
+    controller.abort(aborted);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve("still pending"), 250); })]);
+      expect(outcome).toBe(aborted);
+      expect(locksRequested).toBe(0);
+    } finally {
+      clearTimeout(timeout);
+      opening.onsuccess!(new Event("success"));
+      await result;
+    }
+    expect(closed).toBe(1);
+    expect(locksRequested).toBe(0);
+  });
+}
+
+for (const whenBusy of ["takeover", "wait"] as const) for (const abortAt of ["allocation", "epoch-resolved", "publication"] as const) {
+  test(`IndexedDB ${whenBusy} cancellation at ${abortAt} never publishes acquired storage`, async () => {
+    const controller = new AbortController();
+    const aborted = new DOMException("cancel granted startup", "AbortError");
+    const opening = {} as IDBOpenDBRequest;
+    let requested!: () => void;
+    const allocating = new Promise<void>(resolve => { requested = resolve; });
+    let closeCount = 0, abortCount = 0, lockHeld = false;
+    let acknowledgeAbort!: () => void;
+    const transaction = {
+      objectStore: () => ({}),
+      abort() { abortCount++; acknowledgeAbort = () => transaction.onabort!(new Event("abort")); },
+      onabort: null as IDBTransaction["onabort"], oncomplete: null as IDBTransaction["oncomplete"],
+    } as unknown as IDBTransaction;
+    // Epoch data is irrelevant: hold completion, not the ownership protocol.
+    const get = {} as IDBRequest;
+    transaction.objectStore = (() => ({ get: () => { requested(); return get; }, put() {} })) as IDBTransaction["objectStore"];
+    const database = { close() { closeCount++; }, transaction: () => transaction } as unknown as IDBDatabase;
+    const factory = { open: () => opening } as unknown as IDBFactory;
+    const locks: StorageLockManager = { async request(_name, _options, callback) {
+      lockHeld = true;
+      try { return await callback({}); } finally { lockHeld = false; }
+    } };
+    const pending = IndexedDBStorage.open("granted", {
+      indexedDB: factory, locks, whenBusy, signal: controller.signal,
+      onStartupStage(stage) {
+        if (stage !== "filesystem-epoch-resolved") return;
+        if (abortAt === "epoch-resolved") controller.abort(aborted);
+        if (abortAt === "publication") queueMicrotask(() => controller.abort(aborted));
+      },
+    }).catch(error => error);
+    Object.defineProperty(opening, "result", { value: database });
+    opening.onsuccess!(new Event("success"));
+    await allocating;
+    if (abortAt === "allocation") {
+      controller.abort(aborted);
+      expect(abortCount).toBe(1);
+      expect(lockHeld).toBe(true);
+      expect(closeCount).toBe(0);
+      acknowledgeAbort();
+    } else transaction.oncomplete!(new Event("complete"));
+    const result = await pending;
+    // Always release a pre-fix owner, so this regression is safe as a negative control.
+    if (result instanceof IndexedDBStorage) await result.close();
+    expect(result).toBe(aborted);
+    expect(closeCount).toBe(1);
+    expect(lockHeld).toBe(false);
+  });
+}

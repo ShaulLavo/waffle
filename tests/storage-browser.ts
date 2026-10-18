@@ -2,6 +2,8 @@
 import { createRuntime, type RuntimeStartupStage } from "../index.js";
 import { FilesystemClient, FilesystemService, PersistentBackend, createFilesystemConnection } from "../fs/index.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
+import { FilesystemError } from "../fs/protocol.js";
+import { gatedIndexedDB } from "./gated-indexeddb.js";
 import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
 export { opfsStorageTests, runOpfsStorageTests } from "./opfs-storage-browser.js";
 
@@ -204,13 +206,123 @@ export async function runtimeStartupCase(name: string, storage: "indexeddb" | "o
   }
 }
 
-function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase[] {
+async function promptly<T>(pending: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error("IndexedDB startup cancellation did not finish promptly")), 2000);
+    })]);
+  } finally { clearTimeout(timeout); }
+}
+
+async function pendingRuntimeOpenCase(name: string, whenBusy: "takeover" | "wait", workerURL: string | URL,
+  gatedWorkerURL: string | URL): Promise<void> {
+  const NativeWorker = globalThis.Worker;
+  let worker: Worker | undefined;
+  let opened!: () => void, failed!: (error: Error) => void, closed!: () => void;
+  const opening = new Promise<void>((resolve, reject) => { opened = resolve; failed = reject; });
+  const lateClosed = new Promise<void>(resolve => { closed = resolve; });
+  const messages: string[] = [];
+  let terminations = 0;
+  // Keep the cancelled worker alive only for the late-success probe. Count the production
+  // terminate call, then physically terminate in finally after proving it cannot publish.
+  globalThis.Worker = class extends NativeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      worker = this;
+      this.addEventListener("message", event => {
+        if (typeof event.data?.type === "string") messages.push(event.data.type);
+        if (event.data?.type === "probe-open-pending") opened();
+        if (event.data?.type === "probe-open-error" || event.data?.type === "filesystem-error") failed(new Error(event.data.message));
+        if (event.data?.type === "probe-late-database-closed") closed();
+      });
+    }
+    terminate(): void { terminations++; }
+  };
+  let runtime: ReturnType<typeof createRuntime> | undefined;
+  let disposal: Promise<void> | undefined;
+  let restarted: ReturnType<typeof createRuntime> | undefined;
+  try {
+    runtime = createRuntime({ filesystem: { name, whenBusy, workerURL: new URL(gatedWorkerURL, location.href) } });
+    globalThis.Worker = NativeWorker;
+    const operation = runtime.filesystem.mkdirp("/cancelled").catch(error => error);
+    await opening;
+    disposal = runtime.dispose();
+    await promptly(disposal);
+    const error = await operation;
+    assert(error instanceof FilesystemError && error.errno === 11, "queued host mkdirp must reject with typed ECANCELED");
+    assert(terminations === 1, "startup acknowledgement must terminate exactly once");
+    assert(messages.includes("filesystem-disposed"), "worker must acknowledge cancellation before termination");
+    assert(runtime.filesystem.state.status === "disposed", "cancelled filesystem must stay disposed");
+    // Restart before the first open is released: neither a lock nor an epoch may escape.
+    restarted = createRuntime({ filesystem: { name, whenBusy, workerURL: new URL(workerURL, location.href) } });
+    await promptly(restarted.filesystem.writeFile("/restarted", "new owner"));
+    await restarted.filesystem.flush();
+    worker!.postMessage({ probeReleaseOpen: true });
+    await promptly(lateClosed);
+    assert(messages.filter(message => message === "probe-late-database-closed").length === 1, "late database must close once");
+    assert(!messages.includes("filesystem-state"), "cancelled worker must never publish a ready backend");
+    assert(await restarted.filesystem.lookup("/cancelled") === undefined, "cancelled mkdirp must never replay");
+    assert(new TextDecoder().decode(await restarted.filesystem.readFile("/restarted")) === "new owner", "late open must not displace the restarted owner");
+  } finally {
+    globalThis.Worker = NativeWorker;
+    try {
+      worker?.postMessage({ probeReleaseOpen: true });
+      await (disposal ?? runtime?.dispose())?.catch(() => {});
+    } finally {
+      if (worker) NativeWorker.prototype.terminate.call(worker);
+      await restarted?.dispose();
+    }
+  }
+}
+
+function indexedDBCases(filesystemWorkerURL?: string | URL, gatedWorkerURL?: string | URL): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
   // Backend-suite consumers need not serve a Waffle runtime worker. Its URL opts in to runtime probes.
   if (filesystemWorkerURL !== undefined) {
     test("runtime startup milestones cross the actual filesystem worker boundary", name => runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
     test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", name => runtimeStartupCase(name, false, filesystemWorkerURL));
+  }
+  if (filesystemWorkerURL !== undefined && gatedWorkerURL !== undefined) {
+    test("pending IndexedDB constructor failure restores the native Worker", async name => {
+      const NativeWorker = globalThis.Worker;
+      const owner = createRuntime({ filesystem: { name, persistence: false, workerURL: new URL(filesystemWorkerURL, location.href) } });
+      try {
+        await rejects(pendingRuntimeOpenCase(name, "takeover", filesystemWorkerURL, gatedWorkerURL), "live page runtime");
+        assert(globalThis.Worker === NativeWorker, "constructor failure must restore the Worker override");
+      } finally { await owner.dispose(); }
+    });
+  }
+  for (const whenBusy of ["takeover", "wait"] as const) {
+    test(`pending IndexedDB ${whenBusy} open cancels before a late success`, async name => {
+      const gate = gatedIndexedDB(indexedDB);
+      const controller = new AbortController();
+      let lockRequests = 0;
+      const pending = IndexedDBStorage.open(name, {
+        indexedDB: gate.factory, whenBusy, signal: controller.signal,
+        locks: { request(...args) { lockRequests++; return navigator.locks.request(...args); } },
+      }).catch(error => error);
+      try {
+        await gate.ready;
+        controller.abort();
+        const outcome = await promptly(pending);
+        assert(outcome instanceof DOMException && outcome.name === "AbortError", "pending open must reject with its abort reason");
+        gate.release();
+        assert(gate.closed === 1, "late open success must close its database");
+        assert(lockRequests === 0, "cancelled open must never request ownership or publish storage");
+        const restarted = await IndexedDBStorage.open(name, { whenBusy });
+        await restarted.close();
+      } finally {
+        gate.release();
+        const result = await pending;
+        if (result instanceof IndexedDBStorage) await result.close();
+      }
+    });
+    if (filesystemWorkerURL !== undefined && gatedWorkerURL !== undefined) {
+      test(`runtime pending IndexedDB ${whenBusy} open cancels and restarts`, name =>
+        pendingRuntimeOpenCase(name, whenBusy, filesystemWorkerURL, gatedWorkerURL));
+    }
   }
   test("IndexedDB whenBusy wait queues ownership without takeover", async (name) => {
     const owner = await IndexedDBStorage.open(name);
@@ -457,8 +569,8 @@ function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase
 }
 
 /** Pass the consumer-owned worker URL to include runtime startup probes. Omit it for backend-only tests. */
-export function storageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
-  return storageContractCases().concat(indexedDBCases(filesystemWorkerURL)).map(({ label, run, compactEvery = 2 }) => ({
+export function storageTests(filesystemWorkerURL?: string | URL, gatedWorkerURL?: string | URL): BrowserStorageTest[] {
+  return storageContractCases().concat(indexedDBCases(filesystemWorkerURL, gatedWorkerURL)).map(({ label, run, compactEvery = 2 }) => ({
     label,
     async run() {
       const name = `bun-wasm-storage-test-${crypto.randomUUID()}`;

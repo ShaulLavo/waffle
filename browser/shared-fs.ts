@@ -59,7 +59,7 @@ export class SharedFilesystem {
       throw new TypeError('OPFS storage only supports whenBusy: "wait"');
     }
     this.onStateChange = options.onStateChange;
-    this.cancellableStartup = options.persistence !== false && (options.storage === "opfs" || options.whenBusy === "wait");
+    this.cancellableStartup = options.persistence !== false;
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
     const connection = createFilesystemConnection();
     let worker: Worker | undefined;
