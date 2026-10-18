@@ -18,7 +18,8 @@ the separate site build remain blocking jobs. Quality checks do not replace them
 - `lint` runs pinned Oxlint correctness rules, unused bindings/parameters, strict
   equality, constant bindings, duplicate imports and import cycles across authored
   JS/TS, including tests, workers, tooling and site scripts. Warnings and stale
-  suppression comments fail the command.
+  suppression comments fail the command. Unqualified browser-global `name` references
+  are forbidden so a misspelled local parameter cannot silently read a worker/window name.
 - `format:check` runs pinned Oxfmt across owned supported formats, including Astro.
   `bun run format` applies the same configuration.
 - `check` and `check:nodenext` retain the strict bundler and NodeNext configurations.
@@ -92,11 +93,11 @@ same PR. Do not increase thresholds or refresh a baseline simply to clear CI.
 ## Gate regression probes
 
 `tooling/quality-probes.ts` creates fresh synthetic files and verifies actual gate
-failures for lint, formatting, strict TypeScript, checked JavaScript, site types,
-unused files, unused exports in test entries, exact clones, structural clones and
-empty duplicate scans. It checks diagnostic evidence as well as exit status, so a
+failures for lint, accidental browser-global `name` references, formatting, strict
+TypeScript, checked JavaScript, site types, unused files, unused exports in test
+entries, exact clones, structural clones and empty duplicate scans. It checks diagnostic evidence as well as exit status, so a
 missing tool or an unrelated failure cannot satisfy a probe. Child timeouts and
 interrupt signals reach cleanup. Each command owns a process group, and cleanup
 retires descendants even after their command leader exits. `finally` removes every
-synthetic file. Run it alone with `bun tooling/quality-probes.ts`; do not run it alongside other checks in
-the same worktree because its failing sources are intentional.
+synthetic file. Run it alone with `bun tooling/quality-probes.ts`; do not run it
+alongside other checks in the same worktree because its failing sources are intentional.

@@ -46,6 +46,8 @@ const site = join(root, "site", "scripts", `${basename(directory)}.ts`);
 try {
   await writeFile(probe, "var qualityProbe = 1;\nconsole.log(qualityProbe);\n");
   await mustFail("lint", ["lint"], "no-var");
+  await writeFile(probe, "console.log(name);\n");
+  await mustFail("accidental browser-global name", ["lint"], "no-restricted-globals");
   await writeFile(probe, "export const qualityProbe: number = 'not a number';\n");
   await mustFail("strict tooling type check", ["check:tooling"], "TS2322");
   await rm(probe);

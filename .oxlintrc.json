@@ -27,7 +27,14 @@
       }
     ],
     "max-nested-callbacks": ["error", 3],
-    "max-depth": ["error", 3]
+    "max-depth": ["error", 3],
+    "no-restricted-globals": [
+      "error",
+      {
+        "name": "name",
+        "message": "Use an explicit local name, not the browser worker/window global."
+      }
+    ]
   },
   "ignorePatterns": [
     "**/dist/**",

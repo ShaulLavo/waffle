@@ -135,7 +135,7 @@ function focusedCases(): OpfsCase[] {
   return [
     {
       label: "contested OPFS opens wait, then read saved data after ownership",
-      async run(_name, open) {
+      async run(workspaceName, open) {
         const owner = await open();
         await owner.persist(batch(1, "durable marker"));
         await owner.flush();
@@ -162,8 +162,8 @@ function focusedCases(): OpfsCase[] {
         );
         const snapshot = await navigator.locks.query();
         assert(
-          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${name}`).length ===
-            1,
+          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${workspaceName}`)
+            .length === 1,
           "contested open did not queue its lock",
         );
         assert(!settled, "contested open acquired before the owner released its lock");
@@ -207,7 +207,7 @@ function focusedCases(): OpfsCase[] {
     },
     {
       label: "several waiting OPFS opens take ownership in turn",
-      async run(_name, open) {
+      async run(workspaceName, open) {
         const owner = await open();
         const stages = [[], [], []] as string[][];
         let waitingReported = 0,
@@ -228,8 +228,8 @@ function focusedCases(): OpfsCase[] {
         await reported;
         const snapshot = await navigator.locks.query();
         assert(
-          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${name}`).length ===
-            stages.length,
+          snapshot.pending?.filter((lock) => lock.name === `bun-wasm:filesystem:${workspaceName}`)
+            .length === stages.length,
           "not every waiter queued its lock",
         );
         await owner.close();
