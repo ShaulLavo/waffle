@@ -141,6 +141,14 @@ export class MemFS implements FileSystem {
   }
   resolve(directory: FileHandle, path: string): ResolvedPath | number {
     if (path.startsWith("/")) return 63;
+    return this.walk(directory, path, false);
+  }
+  /** Page paths are absolute: parent-of-root stays at root, unlike WASI capabilities. */
+  resolveAbsolute(path: string): ResolvedPath | number {
+    if (!path.startsWith("/")) return 28;
+    return this.walk(this.handle(this.root), path.replace(/^\/+/, "") || ".", true);
+  }
+  private walk(directory: FileHandle, path: string, clampRoot: boolean): ResolvedPath | number {
     if (path.length === 0) return 44;
     const dirs = this.pathDirs;
     dirs.length = 0;
@@ -159,8 +167,8 @@ export class MemFS implements FileSystem {
       if (node.kind !== "dir") return 54;
       if (part === ".") continue;
       if (part === "..") {
-        if (dirs.length === 0) return 63;
-        node = dirs.pop()!;
+        if (dirs.length === 0) { if (!clampRoot) return 63; }
+        else node = dirs.pop()!;
         parent = undefined;
         name = "";
         continue;

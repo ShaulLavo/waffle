@@ -1,3 +1,4 @@
+import { executableAccessResult } from "../proc/access";
 import type { FilesystemConnection, FilesystemIdentity } from "../fs/protocol";
 import { isRevoked } from "../fs/protocol";
 import type { ProcessSupervisor, RootProcessOptions } from "../proc/supervisor";
@@ -5,12 +6,12 @@ import type { ExecutableRegistry } from "../proc/registry";
 import type { ProcessIdentityAllocator } from "../proc/identity";
 import type { ProcessTable } from "../proc/table";
 import type { ChildExitEvent, ProcessContext, ProcessHandle } from "../proc/types";
-import { checkedSignal } from "../proc/types";
+import { checkedSignal, ProcessErrno, ProcessError } from "../proc/types";
 import { requestSignal, createSignalState, type SignalTransport } from "../proc/signals";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 import { WorkerProcessBroker } from "../proc/worker-broker";
 import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissionObserver } from "../proc/admission";
-import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
+import { MAX_ACCESS_REQUESTS, confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessSlots, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
 import { WorkerPipeBroker } from "../proc/worker-pipes";
 import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes";
@@ -103,6 +104,7 @@ export class BrowserProcessBroker {
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
+  private accesses?: Map<number, Map<number, { cells: Int32Array; directory: string }>>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
@@ -344,6 +346,13 @@ export class BrowserProcessBroker {
     }
   }
   revokeRuntimeProcess(pid: number, directoryId?: string): void {
+    const requests = this.accesses?.get(pid);
+    if (requests) {
+      for (const [id, request] of requests) if (directoryId === undefined || request.directory === directoryId) {
+        Atomics.store(request.cells, 0, 2); requests.delete(id);
+      }
+      if (!requests.size) this.accesses!.delete(pid);
+    }
     // A root directory owns its publication registry. Rejected foreign identities cannot
     // revoke an admitted or still-pending process that happens to use the same numeric PID.
     for (const [rootPid, transport] of this.roots) {
@@ -361,9 +370,65 @@ export class BrowserProcessBroker {
     if (!sender || this.suspended || (message.operation !== "reap-job" && (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)))))) {
       this.rejectMessage(message, senderPid, this.suspended ? "broker-disposed" : !sender ? "unknown-sender" : result?.kind === "signaled" ? "sender-signaled" : "sender-revoked"); return;
     }
+    if (message.operation === "access" || message.operation === "access-cancel") {
+      if (result || workerProcessState(message.transport).pid !== senderPid ||
+        workerProcessDirectoryId(sender) !== workerProcessDirectoryId(message.transport)) {
+        this.rejectMessage(message, senderPid, "wrong-sender"); return;
+      }
+      await this.accessMessage(message, sender);
+      return;
+    }
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
+  }
+  private async accessMessage(message: Extract<WorkerProcessMessage, { operation: "access" | "access-cancel" }>, sender: WorkerProcessTransport): Promise<void> {
+    const { id, completion } = message.request;
+    if (!Number.isInteger(id) || id < 1 || id > 0x7fffffff || !(completion instanceof SharedArrayBuffer) || completion.byteLength !== 8) return;
+    const cells = new Int32Array(completion), state = workerProcessState(sender), directory = workerProcessDirectoryId(sender);
+    let requests = this.accesses?.get(state.pid);
+    if (message.operation === "access-cancel") {
+      const request = requests?.get(id);
+      // The authenticated caller owns monotonically allocated IDs. SAB wrappers differ
+      // across structured clones, so identity is the caller/directory/id, never JS equality.
+      if (request?.directory === directory) {
+        Atomics.store(request.cells, 0, 2); requests!.delete(id);
+        if (!requests!.size) this.accesses!.delete(state.pid);
+      }
+      return;
+    }
+    if (Atomics.load(cells, 0) !== 0) return;
+    const publish = (result: number) => {
+      Atomics.store(cells, 1, result);
+      if (Atomics.compareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(sender);
+    };
+    if (requests?.has(id)) return;
+    if ((requests?.size ?? 0) >= MAX_ACCESS_REQUESTS) { publish(-ProcessErrno.AGAIN); return; }
+    if (!message.path || message.path.includes("\0") || !message.cwd.startsWith("/") || message.cwd.includes("\0")) {
+      publish(-ProcessErrno.INVAL); return;
+    }
+    if (!requests) (this.accesses ??= new Map()).set(state.pid, requests = new Map());
+    const request = { cells, directory };
+    requests.set(id, request);
+    const active = () => {
+      if (this.suspended || requests!.get(id) !== request || Atomics.load(cells, 0) !== 0 ||
+        readOutcome(state.signals.outcome) || isRevoked(this.filesystem(sender))) {
+        throw new ProcessError(ProcessErrno.SRCH, "querying process has exited or cancelled");
+      }
+    };
+    let result = 0;
+    try { active(); await this.options.registry.check(message.path, message.cwd, active); active(); }
+    catch (error) {
+      result = executableAccessResult(error);
+    }
+    // Retired requests can never publish a late result or wake a future request.
+    const owned = requests.get(id) === request;
+    if (owned) {
+      requests.delete(id);
+      if (!requests.size) this.accesses!.delete(state.pid);
+      if (!this.suspended && !readOutcome(state.signals.outcome) && !isRevoked(this.filesystem(sender))) publish(result);
+      else Atomics.store(cells, 0, 2);
+    }
   }
   rejectRuntimeMessage(message: WorkerProcessMessage, senderPid?: number, reason: ProcessAdmissionEvent["reason"] = "external-rejection"): void {
     this.traceSpawn(message, "received");
@@ -378,6 +443,15 @@ export class BrowserProcessBroker {
     if (message.operation === "spawn" && this.options.onProcessAdmission) reportProcessAdmission(this.options.onProcessAdmission, workerProcessState(message.transport), stage, reason, workerProcessDirectoryId(message.transport));
   }
   private rejectMessage(message: WorkerProcessMessage, senderPid: number | undefined, reason: ProcessAdmissionEvent["reason"]): void {
+    if (message.operation === "access" || message.operation === "access-cancel") {
+      const completion = message.request.completion;
+      if (completion instanceof SharedArrayBuffer && completion.byteLength === 8) {
+        const cells = new Int32Array(completion);
+        Atomics.store(cells, 1, -ProcessErrno.SRCH);
+        if (Atomics.compareExchange(cells, 0, 0, 1) === 0) wakeWorkerProcess(message.transport);
+      }
+      return;
+    }
     if (message.operation === "reap-job") {
       if (!this.suspended && senderPid !== undefined && this.transport.getIdentity(senderPid)) void this.transport.handle(message, senderPid).catch(error => this.report(error));
       return;

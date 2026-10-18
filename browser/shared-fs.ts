@@ -7,6 +7,7 @@ export interface SharedFilesystemOptions {
   storage?: "indexeddb" | "opfs";
 }
 
+export interface ResolvedEntry { readonly path: string; readonly kind: "file" | "dir"; }
 export interface Entry { kind: "file" | "dir"; ino: number; mtime: number; children: Map<string, Entry>; }
 export const WORKSPACE_TAKEN_OVER = "This workspace was opened in another tab. Reload to continue here.";
 export const UNSAVED_CHANGES_LOST = "Unsaved changes in this tab weren't kept. Copy them before reloading.";
@@ -112,6 +113,12 @@ export class SharedFilesystem {
   async drain(): Promise<void> { await this.writes; this.assertLive(); if (this.failure !== undefined) { const error = this.failure; this.failure = undefined; throw error; } }
   /** A save is durable only once both data and metadata have reached storage. */
   async flush(path?: string): Promise<void> { await this.drain(); await this.request("flush", path === undefined ? [] : [path]); }
+  /** Walk the actual tree before canonicalizing; metadata only, without reading file contents. */
+  async resolvePath(path: string): Promise<ResolvedEntry | undefined> {
+    // Order earlier mutations without consuming the failure owned by an explicit drain.
+    await this.writes;
+    return this.request("resolvePath", [path]);
+  }
   async lookup(path: string): Promise<Entry | undefined> { await this.drain(); return this.request("lookup", [path]); }
   async readFile(path: string): Promise<Uint8Array | undefined> { await this.drain(); return this.request("readFile", [path]); }
   async listFiles(path = "/"): Promise<string[]> { await this.drain(); return this.request("listFiles", [path]); }

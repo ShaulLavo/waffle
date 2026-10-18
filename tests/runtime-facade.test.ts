@@ -2,7 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { posix } from "node:path";
 import { createRuntime, type Runtime, type RuntimeOptions, type RuntimeConsumer } from "../index";
 import { ProcessSupervisor } from "../proc/supervisor";
-import { FilesystemSection } from "../fs/protocol";
+import { FilesystemSection, type FilesystemConnection } from "../fs/protocol";
+import { MemoryBackend } from "../fs/backend";
+import { FilesystemService } from "../fs/service";
 import type { ProcessContext } from "../proc/types";
 
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
@@ -19,14 +21,20 @@ beforeEach(() => {
   ports = [];
   workerListeners = new Map();
   globalThis.Worker = class {
-    constructor() { events.push("filesystem:start"); }
+    private service: FilesystemService;
+    constructor() {
+      events.push("filesystem:start");
+      const backend = new MemoryBackend();
+      for (const path of ["/app", "/first", "/later", "/snapshot"]) backend.fs.writeFile(path, bytes);
+      this.service = new FilesystemService(backend);
+    }
     addEventListener(type: string, listener: EventListener) {
       let listeners = workerListeners.get(type);
       if (!listeners) workerListeners.set(type, listeners = []);
       listeners.push(listener);
     }
-    postMessage(message: { connect: { port: MessagePort } }) { ports.push(message.connect.port); }
-    terminate() { events.push("filesystem:stop"); }
+    postMessage(message: { connect: FilesystemConnection }) { ports.push(message.connect.port); this.service.connect(message.connect); }
+    terminate() { this.service.dispose(); events.push("filesystem:stop"); }
   } as unknown as typeof Worker;
 });
 afterEach(async () => {
@@ -144,7 +152,7 @@ test("process activation is lazy, shared, and adopts the runtime identity alloca
   const factory = processHost();
   const runtime = create({ processHost: options => { calls++; expect(options.table.identities).toBe(runtime.identities); return factory(options); } });
   runtime.registerAdapter("test", () => ({ terminate() {} }));
-  runtime.registerProgram("before", { adapter: "test", module: emptyModule, cooperative: true });
+  runtime.registerProgram("/before", { adapter: "test", module: emptyModule, cooperative: true });
   expect(calls).toBe(0);
   const first = runtime.processes();
   expect(runtime.processes()).toBe(first);
@@ -236,16 +244,16 @@ test("program registration stays lazy and accepts new programs after activation"
   const contexts: ProcessContext[] = [];
   const runtime = create({ processHost: processHost() });
   runtime.registerAdapter("test", context => { contexts.push(context); return { terminate() {} }; });
-  runtime.registerProgram("first", { adapter: "test", source: () => { loads++; return bytes; } });
+  runtime.registerProgram("/first", { adapter: "test", source: () => { loads++; return bytes; } });
   expect(loads).toBe(0);
   const service = await runtime.processes();
-  runtime.registerProgram("later", { adapter: "test", module: emptyModule, cooperative: true });
+  runtime.registerProgram("/later", { adapter: "test", module: emptyModule, cooperative: true });
   const supervisor = await service.ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "later", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/later", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   await supervisor.start(child);
   expect(contexts[0]?.module).toBe(emptyModule);
-  const sourced = supervisor.reserveSpawn(root, { executable: "first", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const sourced = supervisor.reserveSpawn(root, { executable: "/first", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   await supervisor.start(sourced);
   expect(loads).toBe(1);
   expect(contexts[1]?.module).toBeInstanceOf(WebAssembly.Module);
@@ -256,12 +264,12 @@ test.each(["source", "cooperative"] as const)("program admission preserves %s in
   const runtime = create({ processHost: processHost() });
   runtime.registerAdapter("test", context => { contexts.push(context); return { terminate() {} }; });
   // The same executable name in successive runtimes must not carry another admission's policy.
-  runtime.registerProgram("app", admission === "source"
+  runtime.registerProgram("/app", admission === "source"
     ? { adapter: "test", source: bytes }
     : { adapter: "test", module: emptyModule, cooperative: true });
   const supervisor = await (await runtime.processes()).ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   await supervisor.start(child);
   expect(contexts).toHaveLength(1);
   expect(contexts[0]!.interruptible).toBe(admission === "source");
@@ -271,18 +279,18 @@ test("duplicate program and adapter names and unknown adapters reject", () => {
   const runtime = create();
   runtime.registerAdapter("test", () => ({ terminate() {} }));
   expect(() => runtime.registerAdapter("test", () => ({ terminate() {} }))).toThrow(/duplicate|already/i);
-  runtime.registerProgram("app", { adapter: "test", source: bytes });
-  expect(() => runtime.registerProgram("app", { adapter: "test", source: bytes })).toThrow(/duplicate|already/i);
-  expect(() => runtime.registerProgram("missing", { adapter: "missing", source: bytes })).toThrow(/adapter/i);
+  runtime.registerProgram("/app", { adapter: "test", source: bytes });
+  expect(() => runtime.registerProgram("/app", { adapter: "test", source: bytes })).toThrow(/duplicate|already/i);
+  expect(() => runtime.registerProgram("/missing", { adapter: "missing", source: bytes })).toThrow(/adapter/i);
 });
 
 test("compiled modules require explicit cooperative trust and ambiguous admission rejects", () => {
   const runtime = create();
   runtime.registerAdapter("test", () => ({ terminate() {} }));
   const register = runtime.registerProgram as (name: string, program: unknown) => void;
-  expect(() => register("unsafe", { adapter: "test", module: emptyModule })).toThrow(/cooperative/i);
-  expect(() => register("false", { adapter: "test", module: emptyModule, cooperative: false })).toThrow(/cooperative/i);
-  expect(() => register("both", { adapter: "test", module: emptyModule, source: bytes, cooperative: true })).toThrow(/source|module|ambiguous/i);
+  expect(() => register("/unsafe", { adapter: "test", module: emptyModule })).toThrow(/cooperative/i);
+  expect(() => register("/false", { adapter: "test", module: emptyModule, cooperative: false })).toThrow(/cooperative/i);
+  expect(() => register("/both", { adapter: "test", module: emptyModule, source: bytes, cooperative: true })).toThrow(/source|module|ambiguous/i);
 });
 
 test("source admission snapshots borrowed bytes before the lazy loader starts", async () => {
@@ -291,10 +299,10 @@ test("source admission snapshots borrowed bytes before the lazy loader starts", 
   const runtime = create({ processHost: options => { registry = options.registry; return factory(options); } });
   runtime.registerAdapter("test", () => ({ terminate() {} }));
   const source = bytes.slice();
-  runtime.registerProgram("snapshot", { adapter: "test", source });
+  runtime.registerProgram("/snapshot", { adapter: "test", source });
   source.fill(255);
   await runtime.processes();
-  expect((await registry!.resolve("snapshot")).module).toBeInstanceOf(WebAssembly.Module);
+  expect((await registry!.resolve("/snapshot")).module).toBeInstanceOf(WebAssembly.Module);
 });
 
 test("disposal blocks previously borrowed capabilities and never activates unused processes", async () => {
@@ -303,7 +311,7 @@ test("disposal blocks previously borrowed capabilities and never activates unuse
   await runtime.dispose();
   expect(events).toEqual(["filesystem:start", "filesystem:stop"]);
   expect(() => runtime.registerAdapter("late", () => ({ terminate() {} }))).toThrow(/disposed/i);
-  expect(() => runtime.registerProgram("late", { adapter: "test", source: bytes })).toThrow(/disposed/i);
+  expect(() => runtime.registerProgram("/late", { adapter: "test", source: bytes })).toThrow(/disposed/i);
   await expect(runtime.processes()).rejects.toThrow(/disposed/i);
   expect(() => filesystem.fork()).toThrow(/disposed/i);
   await expect(filesystem.writeFile("/late", "no")).rejects.toThrow(/disposed/i);
@@ -361,11 +369,11 @@ test("disposal owns late adapter launch completion and asynchronous handle termi
     await launchGate;
     return { terminate: async () => { stops++; enteredStop(); await stopGate; } };
   });
-  runtime.registerProgram("app", { adapter: "delayed", module: emptyModule, cooperative: true });
+  runtime.registerProgram("/app", { adapter: "delayed", module: emptyModule, cooperative: true });
   const service = await runtime.processes();
   const supervisor = await service.ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   const starting = supervisor.start(child);
   await launching;
   const disposal = runtime.dispose();
@@ -402,10 +410,10 @@ test.each(["running", "late"] as const)("disposal fences default-host filesystem
     if (timing === "late") await launchGate;
     return { terminate() { stops++; stoppedDuringSection ||= active; } };
   });
-  runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   const supervisor = await (await runtime.processes()).ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   const starting = supervisor.start(child);
   await admitted;
   if (timing === "running") await starting;
@@ -432,10 +440,10 @@ test("a custom adapter can stop normally before page disposal without a disposal
   let stops = 0;
   const runtime = create({ processHost: processHost() });
   runtime.registerAdapter("test", () => ({ terminate() { stops++; } }));
-  runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   const supervisor = await (await runtime.processes()).ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   await supervisor.start(child);
   supervisor.exit(child, 0);
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -461,18 +469,23 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
   const script = `
     import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
     import { ProcessSupervisor } from ${JSON.stringify(new URL("../proc/supervisor.ts", import.meta.url).href)};
+    import { MemoryBackend } from ${JSON.stringify(new URL("../fs/backend.ts", import.meta.url).href)};
+    import { FilesystemService } from ${JSON.stringify(new URL("../fs/service.ts", import.meta.url).href)};
+    const backend = new MemoryBackend();
+    backend.fs.writeFile("/app", new Uint8Array());
+    const filesystem = new FilesystemService(backend);
     let filesystemStops = 0, consumerStops = 0, relayStops = 0;
-    globalThis.Worker = class { addEventListener() {} postMessage() {} terminate() { filesystemStops++; } };
+    globalThis.Worker = class { addEventListener() {} postMessage(message) { filesystem.connect(message.connect); } terminate() { filesystem.dispose(); filesystemStops++; } };
     const runtime = createRuntime({ filesystem: { persistence: false, workerURL: "https://example.test/fs.js" }, processHost: options => {
       const supervisor = new ProcessSupervisor({ registry: options.registry, table: options.table, launch: options.launch });
       return { ready: async () => supervisor, suspend: () => supervisor.dispose(),
         quiesce: async () => { throw new Error("fence failed"); }, dispose: async () => { relayStops++; } };
     } });
     runtime.registerAdapter("test", () => ({ terminate() { consumerStops++; } }));
-    runtime.registerProgram("app", { adapter: "test", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), cooperative: true });
+    runtime.registerProgram("/app", { adapter: "test", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), cooperative: true });
     const supervisor = await (await runtime.processes()).ready();
     const root = supervisor.createRoot();
-    const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+    const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
     await supervisor.start(child);
     const disposal = runtime.dispose();
     let error;
@@ -700,7 +713,7 @@ test("registration leases remove unused programs and adapters without activating
   let registry: Parameters<NonNullable<RuntimeOptions["processHost"]>>[0]["registry"] | undefined;
   const runtime = create({ processHost: options => { activations++; registry = options.registry; return factory(options); } });
   const unregisterAdapter = runtime.registerAdapter("test", () => ({ terminate() {} }));
-  const unregisterProgram = runtime.registerProgram("app", { adapter: "test", source: () => { loads++; return bytes; } });
+  const unregisterProgram = runtime.registerProgram("/app", { adapter: "test", source: () => { loads++; return bytes; } });
   expect(typeof unregisterAdapter).toBe("function");
   expect(typeof unregisterProgram).toBe("function");
   unregisterProgram(); unregisterProgram();
@@ -708,9 +721,9 @@ test("registration leases remove unused programs and adapters without activating
   expect(activations).toBe(0);
   expect(loads).toBe(0);
   expect(events).toEqual(["filesystem:start"]);
-  expect(() => runtime.registerProgram("unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
+  expect(() => runtime.registerProgram("/unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
   await runtime.processes();
-  expect(registry!.has("app")).toBe(false);
+  expect(registry!.has("/app")).toBe(false);
   expect(loads).toBe(0);
 });
 
@@ -722,23 +735,23 @@ for (const reuseDefinition of [false, true]) test(`old leases never remove repla
   const runtime = create({ processHost: options => { registry = options.registry; return factory(options); } });
   const removeAdapter = runtime.registerAdapter("test", launcher);
   const definition = { adapter: "test", module: emptyModule, cooperative: true } as const;
-  const removeProgram = runtime.registerProgram("app", definition);
+  const removeProgram = runtime.registerProgram("/app", definition);
   const service = await runtime.processes();
   removeProgram(); removeAdapter();
-  expect(registry!.has("app")).toBe(false);
+  expect(registry!.has("/app")).toBe(false);
   const replacement = reuseDefinition ? emptyModule : new WebAssembly.Module(bytes);
   const removeNewAdapter = runtime.registerAdapter("test", launcher);
-  const removeNewProgram = runtime.registerProgram("app", reuseDefinition ? definition : { ...definition, module: replacement });
+  const removeNewProgram = runtime.registerProgram("/app", reuseDefinition ? definition : { ...definition, module: replacement });
   removeAdapter(); removeProgram();
-  expect((await registry!.resolve("app")).module).toBe(replacement);
+  expect((await registry!.resolve("/app")).module).toBe(replacement);
   const supervisor = await service.ready();
   const root = supervisor.createRoot();
-  const child = supervisor.reserveSpawn(root, { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  const child = supervisor.reserveSpawn(root, { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
   await supervisor.start(child);
   expect(launches).toBe(1);
   removeNewProgram(); removeNewAdapter();
-  expect(registry!.has("app")).toBe(false);
-  expect(() => runtime.registerProgram("unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
+  expect(registry!.has("/app")).toBe(false);
+  expect(() => runtime.registerProgram("/unknown", { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/adapter/i);
 });
 
 test("unregistering programs and adapters leaves running and accepted launch handles with their original launcher", async () => {
@@ -752,17 +765,17 @@ test("unregistering programs and adapters leaves running and accepted launch han
     contexts.push(context); entered(); await admission;
     return { terminate() { stops.push("original"); } };
   });
-  const removeProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  const removeProgram = runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   const supervisor = await (await runtime.processes()).ready();
   const root = supervisor.createRoot();
-  const request = { executable: "app", argv: [], env: {}, cwd: "/", job: 0, fds: [] };
+  const request = { executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [] };
   const original = supervisor.reserveSpawn(root, request);
   const starting = supervisor.start(original);
   try {
     await launched;
     removeProgram(); removeAdapter();
     const removeReplacementAdapter = runtime.registerAdapter("test", context => { contexts.push(context); return { terminate() { stops.push("replacement"); } }; });
-    const removeReplacementProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+    const removeReplacementProgram = runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
     const replacement = supervisor.reserveSpawn(root, request);
     await supervisor.start(replacement);
     removeProgram(); removeAdapter();
@@ -784,9 +797,83 @@ test("unregistering programs and adapters leaves running and accepted launch han
 test("registration lease release is harmless after disposal, including leases not released earlier", async () => {
   const runtime = create();
   const unregisterAdapter = runtime.registerAdapter("test", () => ({ terminate() {} }));
-  const unregisterProgram = runtime.registerProgram("app", { adapter: "test", module: emptyModule, cooperative: true });
+  const unregisterProgram = runtime.registerProgram("/app", { adapter: "test", module: emptyModule, cooperative: true });
   await runtime.dispose();
   const before = events.slice();
   expect(() => { unregisterProgram(); unregisterAdapter(); unregisterProgram(); unregisterAdapter(); }).not.toThrow();
   expect(events).toEqual(before);
+});
+
+
+test.each(["bun", "bin/bun", "/", "/bin/../bun", "/bin/./bun", "/bin//bun", "/bin/bun/"])("program registration rejects noncanonical path %s clearly", name => {
+  const runtime = create();
+  runtime.registerAdapter("test", () => ({ terminate() {} }));
+  expect(() => runtime.registerProgram(name, { adapter: "test", module: emptyModule, cooperative: true })).toThrow(/absolute canonical file path/);
+});
+
+test("runtime spawn and PATH metadata agree on live canonical executable files", async () => {
+  const runtime = create();
+  let launches = 0, loads = 0;
+  runtime.registerAdapter("test", context => { launches++; context.exit(17); return { terminate() {} }; });
+  await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
+  runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  async function spawn(executable: string, cwd = "/") {
+    const child = supervisor.reserveSpawn(root, { executable, argv: [], env: {}, cwd, job: 0, fds: [] });
+    await supervisor.start(child);
+    return supervisor.waitForExit(root, child);
+  }
+  expect((await runtime.filesystem.lookup("/bin"))?.children.get("test-guest")?.kind).toBe("file");
+  expect(await spawn("./test-guest", "/bin")).toEqual({ kind: "exited", code: 17, status: 17 });
+  expect(await spawn("/bin/../bin/./test-guest")).toEqual({ kind: "exited", code: 17, status: 17 });
+  await runtime.filesystem.remove("/bin/test-guest");
+  expect(await spawn("/bin/test-guest")).toEqual({ kind: "start-failed", code: 2, error: "ENOENT", status: null });
+  await runtime.filesystem.mkdirp("/bin/test-guest");
+  expect(await spawn("/bin/test-guest")).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  await runtime.filesystem.writeFile("/bin/unregistered", "not executable");
+  expect(await spawn("/bin/unregistered")).toEqual({ kind: "start-failed", code: 13, error: "EACCES", status: null });
+  expect(launches).toBe(2);
+  expect(loads).toBe(1);
+});
+
+
+for (const [executable, error, code] of [
+  ["/bin/test-guest/", "EACCES", 13],
+  ["/missing/../bin/test-guest", "ENOENT", 2],
+  ["/bin/test-guest/../test-guest", "EACCES", 13],
+] as const) test(`runtime preserves real filesystem traversal constraints for ${executable}`, async () => {
+  const runtime = create();
+  let loads = 0, launches = 0;
+  runtime.registerAdapter("test", context => { launches++; context.exit(0); return { terminate() {} }; });
+  await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
+  runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const pid = supervisor.reserveSpawn(root, { executable, argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(pid);
+  expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "start-failed", code, error, status: null });
+  expect(loads).toBe(0);
+  expect(launches).toBe(0);
+});
+
+test("an unrelated failed mutation cannot reject a later valid executable admission", async () => {
+  const runtime = create({ processHost: processHost() });
+  let loads = 0;
+  runtime.registerAdapter("test", context => { context.exit(23); return { terminate() {} }; });
+  await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
+  runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  // Explicit catch avoids an unexplained Bun matcher hang in this full-runtime context.
+  let failure: unknown;
+  try { await runtime.filesystem.writeFile("/bin", "cannot replace directory"); } catch (error) { failure = error; }
+  expect(failure).toBeDefined();
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const pid = supervisor.reserveSpawn(root, { executable: "/bin/test-guest", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(pid);
+  expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
+  expect(loads).toBe(1);
+  // Admission orders writes but must not consume errors owned by the explicit drain API.
+  await expect(runtime.filesystem.drain()).rejects.toThrow();
+  await runtime.filesystem.drain();
 });

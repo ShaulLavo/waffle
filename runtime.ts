@@ -41,7 +41,8 @@ export interface Runtime {
   /** Shared before process activation so synchronous worker stubs can reserve identities. */
   readonly identities: ProcessIdentityAllocator;
   readonly disposed: boolean;
-  /** Releasing the lease removes only this registration, never running processes. */
+  /** Register an absolute canonical path; the caller creates its regular file before spawn.
+   * Releasing the lease removes only this registration, never files or running processes. */
   registerProgram(name: string, program: ProgramDefinition): () => void;
   /** Releasing the lease removes only this registration, never running processes. */
   registerAdapter(name: string, launch: GuestLauncher): () => void;
@@ -59,7 +60,7 @@ type CapabilityKind = "method" | "async" | "readonly" | "callback";
 // decision here. TypeScript-private owner fields and future implementation details never leak.
 const filesystemCapabilities = {
   createIdentity: "method", fork: "method", connect: "method", revoke: "method", reap: "method",
-  quiesce: "async", drain: "async", flush: "async", lookup: "async", readFile: "async", listFiles: "async",
+  quiesce: "async", drain: "async", flush: "async", resolvePath: "async", lookup: "async", readFile: "async", listFiles: "async",
   mkdirp: "async", writeFile: "async", remove: "async", move: "async",
   ownershipLost: "readonly", onOwnershipLost: "callback",
 } satisfies Record<keyof RuntimeFilesystem, CapabilityKind>;
@@ -70,6 +71,7 @@ const processCapabilities = {
 } satisfies Record<keyof ProcessService, CapabilityKind>;
 const supervisorCapabilities = {
   table: "readonly", get: "method", job: "method", jobOf: "method", canSignal: "method", canSignalJob: "method", canWaitJob: "method",
+  accessStart: "method", accessTake: "method", accessCancel: "method", accessReady: "method",
   registerJobReadiness: "method", registerJobReapClaim: "method", onJobReap: "method", jobEmpty: "method", registerJobWake: "method",
   createRoot: "method", reserveSpawn: "method", reserveAdmittedSpawn: "method", spawn: "method", start: "async",
   failStart: "method", exit: "method", kill: "method", observeSignal: "method", defaultSignal: "method", killJob: "method",
@@ -167,6 +169,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     registerProgram(name, program) {
       assertLive();
       if (!name || !program || !program.adapter) throw new TypeError("Program and adapter names are required");
+      if (!name.startsWith("/") || name === "/" || name.slice(1).split("/").some(part => !part || part === "." || part === "..")) {
+        throw new TypeError("Program name must be an absolute canonical file path, for example /bin/bun; create its file with runtime.filesystem.writeFile before spawning");
+      }
       if (programs.has(name)) throw new Error(`Program already registered: ${name}`);
       if (!adapters.has(program.adapter)) throw new Error(`Unknown adapter: ${program.adapter}`);
       const source = program.source;
@@ -224,7 +229,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (activation) return activation;
       const pendingHost = Promise.resolve().then(async (): Promise<BrowserProcessBroker> => {
         const [{ ExecutableRegistry }, { ProcessTable }] = await Promise.all([import("./proc/registry"), import("./proc/table")]);
-        registry = new ExecutableRegistry();
+        registry = new ExecutableRegistry(path => filesystem.resolvePath(path));
         for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {

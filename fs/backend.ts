@@ -1,4 +1,4 @@
-import type { FileHandle, ResolvedPath } from "../core";
+import { normalize, type FileHandle, type ResolvedPath } from "../core";
 import { MemFS, type Node } from "./memory";
 import { FilesystemError } from "./protocol";
 import { SharedFilesystemState, type SharedSegment } from "./shared";
@@ -120,6 +120,15 @@ export class MemoryBackend implements FilesystemBackend {
         const result = this.fs.rename(a, b);
         if (!result && target !== undefined && target !== a.node && replaced && !this.isLinked(replaced)) this.shared.unlink(target);
         return result;
+      }
+      case "resolvePath": {
+        if (!a.startsWith("/")) throw new FilesystemError(28, "path resolution requires an absolute path");
+        const resolved = this.fs.resolveAbsolute(a);
+        if (typeof resolved === "number") throw new FilesystemError(resolved);
+        if (resolved.node === undefined) return undefined;
+        // This tree has no symlinks: normalize only after the real walk has validated
+        // every intermediate component, including those followed by dot segments.
+        return { path: normalize(a), kind: this.fs.nodeForHandle(resolved.node).kind };
       }
       case "lookup": {
         const node = this.fs.lookup(a);

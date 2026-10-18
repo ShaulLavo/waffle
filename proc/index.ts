@@ -4,8 +4,8 @@ export { SignalDisposition, SIGNAL_PENDING, createSignalState, signalDisposition
 export { ProcessIdentityAllocator } from "./identity";
 export { outcomeWord, readOutcome, claimOutcome } from "./outcome";
 export { waitStatus } from "./wait-status";
-export { ExecutableRegistry, ExecutableNotFound } from "./registry";
-export type { Executable, ResolvedExecutable } from "./registry";
+export { ExecutableRegistry, ExecutableNotFound, ExecutableNotRunnable } from "./registry";
+export type { Executable, ResolvedExecutable, ExecutableLookup } from "./registry";
 export { ProcessTable } from "./table";
 export type { ProcessRecord, ProcessJob } from "./table";
 export { ProcessSupervisor } from "./supervisor";

@@ -1,9 +1,13 @@
+import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access";
 import { checkedSignalNumber, createSignalState, requestSignal } from "./signals";
 import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors";
 import { ExecutableNotFound, ExecutableRegistry } from "./registry";
 import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table";
 import { claimOutcome, outcomeWord, readOutcome } from "./outcome";
 import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types";
+
+interface AccessRequest { result?: number; wake?: Int32Array; }
+interface ProcessAccesses { next: number; requests: Map<number, AccessRequest>; }
 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
@@ -53,6 +57,7 @@ export class ProcessSupervisor {
   private readonly quiescentListeners = new Set<(event: ChildExitEvent) => void>();
   private readonly jobListeners = new Map<number, Set<() => void>>();
   private disposed = false;
+  private accesses?: Map<number, ProcessAccesses>;
   /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
   private readonly finishing = new Map<number, ProcessRecord>();
   private readonly startFailures = new WeakSet<ProcessRecord>();
@@ -60,6 +65,56 @@ export class ProcessSupervisor {
   get(pid: number): ProcessRecord | undefined { return this.table.get(pid); }
   job(id: number) { return this.table.job(id); }
   jobOf(pid: number): number { return this.table.require(pid).job; }
+  private accessOwner(pid: number): ProcessRecord {
+    const record = this.table.get(pid);
+    if (this.disposed || !record || record.revoked || readOutcome(record.outcome)) throw new ProcessError(ProcessErrno.SRCH, "querying process has exited");
+    return record;
+  }
+  /** Submission owns only metadata, never descriptors, workers or compiled modules. */
+  accessStart(pid: number, path: string, cwd: string, wake?: Int32Array): number {
+    this.accessOwner(pid);
+    if (!path || path.includes("\0") || !cwd.startsWith("/") || cwd.includes("\0")) throw new ProcessError(ProcessErrno.INVAL, "invalid executable query");
+    if (wake && (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1)) throw new TypeError("access wake must be one shared int32");
+    let owner = this.accesses?.get(pid);
+    if (!owner) {
+      (this.accesses ??= new Map()).set(pid, owner = { next: 1, requests: new Map() });
+      this.registerRevocation(pid, () => { owner!.requests.clear(); this.accesses!.delete(pid); });
+    }
+    if (owner.requests.size >= MAX_ACCESS_REQUESTS || owner.next > 0x7fffffff) return -ProcessErrno.AGAIN;
+    const id = owner.next++, request: AccessRequest = { wake };
+    owner.requests.set(id, request);
+    void this.checkAccess(pid, id, path, cwd, owner, request);
+    return id;
+  }
+  private async checkAccess(pid: number, id: number, path: string, cwd: string, owner: ProcessAccesses, request: AccessRequest): Promise<void> {
+    const active = () => {
+      this.accessOwner(pid);
+      if (owner.requests.get(id) !== request) throw new ProcessError(ProcessErrno.BADF, "executable query was cancelled");
+    };
+    let result = 0;
+    try { active(); await this.options.registry.check(path, cwd, active); active(); }
+    catch (error) { result = executableAccessResult(error); }
+    // Revocation/cancel removes the exact request before a late lookup can publish.
+    if (owner.requests.get(id) !== request) return;
+    const record = this.table.get(pid);
+    if (!record || record.revoked || readOutcome(record.outcome)) { owner.requests.clear(); this.accesses?.delete(pid); return; }
+    request.result = result;
+    if (request.wake) { Atomics.add(request.wake, 0, 1); Atomics.notify(request.wake, 0); }
+  }
+  private access(pid: number, id: number): { owner: ProcessAccesses; request: AccessRequest } {
+    this.accessOwner(pid);
+    const owner = this.accesses?.get(pid), request = owner?.requests.get(id);
+    if (!owner || !request) throw new ProcessError(ProcessErrno.BADF, "unknown executable query");
+    return { owner, request };
+  }
+  accessReady(pid: number, id: number): boolean { return this.access(pid, id).request.result !== undefined; }
+  accessTake(pid: number, id: number): number {
+    const { owner, request } = this.access(pid, id);
+    if (request.result === undefined) return -ProcessErrno.AGAIN;
+    owner.requests.delete(id);
+    return request.result;
+  }
+  accessCancel(pid: number, id: number): number { this.access(pid, id).owner.requests.delete(id); return 0; }
   /** Guest adapters may signal themselves and descendants, never a sibling or ancestor. */
   canSignal(callerPid: number, pid: number): boolean {
     this.table.require(callerPid);
@@ -249,7 +304,9 @@ export class ProcessSupervisor {
   }
   private async launch(record: ProcessRecord): Promise<void> {
     try {
-      const executable = await this.options.registry.resolve(record.request!.executable);
+      const executable = await this.options.registry.resolve(record.request!.executable, record.request!.cwd, () => {
+        if (record.result || record.revoked || readOutcome(record.outcome)) throw new Error("process exited before executable admission completed");
+      });
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
       if (settled) { this.finish(record.pid, settled); return; }

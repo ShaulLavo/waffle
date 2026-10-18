@@ -27,5 +27,5 @@ const read = imports.read!(0, 4096, 1);
 parentPort!.postMessage({ phase: "before-poll", read });
 const ready = imports.poll!(256, 1, -1, 512);
 const count = imports.read!(0, 4096, 1);
-parentPort!.postMessage({ phase: "done", ready, count, byte: new Uint8Array(memory.buffer)[4096], userdata: view.getBigUint64(512, true) });
+parentPort!.postMessage({ phase: "done", pid: imports.getpid!(), ready, count, byte: new Uint8Array(memory.buffer)[4096], userdata: view.getBigUint64(512, true) });
 // Borrowed transfer of the parent's one endpoint reference: parent owns close after worker exit.

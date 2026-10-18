@@ -39,6 +39,29 @@ function fixture(overrides: Partial<ProcessABIOptions> = {}) {
   return { fs, descriptors, supervisor, pid, signals, memory, abi, bytes, view, put, spawn, pipe, sub, waits: () => waits };
 }
 
+test("getpid returns each caller's own runtime identity, not its parent or job", () => {
+  const f = fixture();
+  const child = f.spawn();
+  const record = f.supervisor.get(child)!;
+  const childABI = new ProcessABI({ memory: f.memory, descriptors: record.descriptors, fs: f.fs,
+    pid: child, service: f.supervisor, signals: record });
+  expect(f.abi.imports.getpid!()).toBe(f.pid);
+  expect(childABI.imports.getpid!()).toBe(child);
+  expect(child).toBeGreaterThan(0);
+  expect(child).not.toBe(f.pid);
+  expect(f.waits()).toBe(0);
+});
+
+for (const pid of [37, 0x7fffffff]) test(`Wasm getpid returns positive i32 ${pid} without memory, service or wait access`, () => {
+  const f = fixture();
+  const unused = (): never => { throw new Error("getpid must remain local and nonblocking"); };
+  const abi = new ProcessABI({ memory: unused, descriptors: f.descriptors, fs: f.fs, pid,
+    service: new Proxy(f.supervisor, { get: unused }), signals: f.signals, wait: unused });
+  const guest = new WebAssembly.Instance(guestModule(), { env: { memory: f.memory }, runtime_proc: abi.imports });
+  expect((guest.exports.getpid as () => number)()).toBe(pid);
+  expect(f.waits()).toBe(0);
+});
+
 test("spawn snapshots JSON and retains arbitrary fd bindings before returning", () => {
   const f = fixture();
   const [read, write] = f.pipe();
@@ -584,13 +607,13 @@ for (const mode of ["signal", "child"] as const) {
 
 function guestModule(): WebAssembly.Module {
   // Import/re-export the ABI through a real WASM boundary, plus the same linear memory.
-  const names = ["read", "write", "poll", "dup"];
+  const names = ["read", "write", "poll", "dup", "getpid"];
   const text = (value: string) => Array.from(encoder.encode(value));
   const str = (value: string) => [text(value).length].concat(text(value));
   const section = (id: number, payload: number[]) => [id, payload.length].concat(payload);
-  const type = [3, 0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f];
-  const imports = [5].concat(str("env"), str("memory"), [2, 0, 1], names.flatMap((name, index) => str("runtime_proc").concat(str(name), [0, index === 3 ? 2 : index === 2 ? 1 : 0])));
-  const exports = [4].concat(names.flatMap((name, index) => str(name).concat([0, index === 3 ? 4 : index])));
+  const type = [4, 0x60, 3, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 4, 0x7f, 0x7f, 0x7f, 0x7f, 1, 0x7f, 0x60, 1, 0x7f, 1, 0x7f, 0x60, 0, 1, 0x7f];
+  const imports = [6].concat(str("env"), str("memory"), [2, 0, 1], names.flatMap((name, index) => str("runtime_proc").concat(str(name), [0, index === 4 ? 3 : index === 3 ? 2 : index === 2 ? 1 : 0])));
+  const exports = [5].concat(names.flatMap((name, index) => str(name).concat([0, index === 3 ? 5 : index])));
   // dup goes through a defined WASM function so its host result crosses the actual i32 boundary.
   const functions = [1, 2], code = [1, 6, 0, 0x20, 0, 0x10, 3, 0x0b];
   const binary = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0].concat(section(1, type), section(2, imports), section(3, functions), section(7, exports), section(10, code)));
@@ -630,7 +653,7 @@ test("a worker-hosted WASM guest returns EAGAIN before poll blocks and wakes on 
         } else resolve(message);
       });
     });
-    expect(result).toEqual({ phase: "done", ready: 1, count: 1, byte: 120, userdata: 77n });
+    expect(result).toEqual({ phase: "done", pid: f.pid, ready: 1, count: 1, byte: 120, userdata: 77n });
   } finally {
     clearTimeout(timer);
     await worker.terminate();

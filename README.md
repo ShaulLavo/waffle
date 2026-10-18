@@ -114,6 +114,43 @@ lookups; removing an adapter prevents future launches through that name. Neither
 stops running processes or changes a launcher already accepted for an in-flight process.
 Registration and removal do not activate the process service or load program sources.
 
+### Executable paths and filesystem visibility
+
+The page runtime requires an absolute, canonical program path, such as `/bin/bun`.
+Bare names (`bun`), dot segments and repeated or trailing slashes reject immediately with
+an explanatory `TypeError`. Registrants create the corresponding regular file separately;
+registration does not write, replace or remove filesystem entries. A small marker file is enough:
+program loading still comes from the registered source or module, not the marker's contents.
+
+```ts
+await runtime.filesystem.writeFile("/bin/bun", "registered executable\n");
+const unregister = runtime.registerProgram("/bin/bun", {
+  adapter: "bun:quickjs", module, cooperative: true,
+});
+```
+
+This makes filesystem inspection, a shell's `$PATH` search and process admission agree on the
+same path. The shell searches `$PATH`; Waffle's spawn does not. Spawn resolves its executable
+relative to the request's snapshotted `cwd` and walks the actual filesystem tree before
+canonicalizing the registration key, even for a cached module. A missing intermediate cannot
+be canceled by a later `..`; a regular file used as a directory or given a trailing slash
+produces `ENOTDIR` (shell status 126). Absolute page paths treat the parent of `/` as `/`,
+without weakening the separate capability-relative WASI resolver. A missing file produces
+`ENOENT` (shell status 127).
+A directory or an existing regular file without a registered program produces `EACCES`
+(shell status 126); directory diagnostics explicitly identify the directory. Deleting a registered
+file or replacing it with a directory therefore prevents future execution. Releasing a registration
+leaves its file untouched, so an existing unregistered marker is non-runnable rather than missing.
+
+The low-level `ExecutableRegistry` remains usable with opaque names when constructed without a
+filesystem lookup. Supplying a lookup enables the same canonical path and live-file admission
+used by the page runtime; registration keys in that mode must be canonical absolute paths.
+The lookup receives the original absolute path and returns `{ path, kind }`, where `path` is
+canonical only after a successful real-tree walk. `check(name, cwd)` applies these same live
+admission rules without loading or compiling a module; `resolve` checks again on each spawn.
+Executable admission orders earlier queued filesystem mutations without consuming unrelated
+mutation failures reserved for an explicit filesystem `drain()`.
+
 ## Guest executor extensions
 
 `bootstrap(request, executor, host?)` from `waffle/browser/worker` creates a worker-local
@@ -270,6 +307,9 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | Import | Contract |
 | --- | --- |
 | `spawn(ptr, len)` | UTF-8 JSON `{ executable, argv, env, cwd, job, fds: [{ child, parent }] }`; job 0 creates a foreground job, -1 creates a background job, and a positive value joins an existing job. Returns PID or negative errno. |
+| `access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` | Copies a UTF-8 executable name and absolute cwd synchronously. `mode` must be X_OK (`1`). Returns a positive process-owned request ID, or a negative errno; it never loads a module or allocates descriptors. |
+| `access_take(request)` | Returns `-EAGAIN` (`-6`) while the query is pending, then consumes it and returns `0` when the live registered file is runnable, or `-ENOENT` (`-44`), `-EACCES` (`-2`), or `-ENOTDIR` (`-54`). A consumed or unknown request returns `-EBADF` (`-8`). |
+| `access_cancel(request)` | Retires the request and discards any late filesystem/registry completion. Returns `0`, or `-EBADF` for an already retired request. |
 | `pipe(out)` | Writes two little-endian u32 fds, reader then writer; returns 0. |
 | `dup(fd)` | Returns a new fd sharing the open description and offset. Use preview1 `fd_close` to close either binding. |
 | `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
@@ -281,7 +321,9 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 
 Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
 u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),
-writable fd (1), child exit (2), and filesystem completion (3); flag bit 0 means hangup.
+writable fd (1), child exit (2), filesystem completion (3), job completion (4), and executable
+query completion (5); flag bit 0 means hangup. Executable query requests are bounded to 64 live
+requests per process and are retired automatically when the process exits.
 Signals wake poll without being consumed. Pipe publication notifies a shared readiness sequence;
 independent signal, local child and filesystem sources are also rescanned within 10 ms until
 all publishers guarantee the same wake address. The wait hook receives the sequence observed
