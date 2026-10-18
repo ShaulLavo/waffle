@@ -137,7 +137,7 @@ async function campaign(options: Options): Promise<void> {
             const revision = role === "candidate" ? options.candidateRevision! : options.revision;
             const sample: Sample = { protocol: SCORE_PROTOCOL, campaign: options.campaign, runner: hostname(), browser, browserVersion: "unavailable", vfs, workload, lane, repetition, warmup: repetition < 0, state: "eligible", metrics: {}, role, revision, ...(options.mode === "promotion" ? { pair: repetition } : {}) };
             const before = await environment(); rssPeak = 0;
-            const profile = await lifecycle.directory(profileRoot, "vfs-"); let context: BrowserContext | undefined;
+            let profile = await lifecycle.directory(profileRoot, "vfs-"); let context: BrowserContext | undefined;
             const input: BrowserRequest = { action: "run", backend, workload, lane, name: "waffle-vfs-fixture" };
             const pageFor = async (active: BrowserContext) => {
               const page = await active.newPage(); await page.exposeBinding("vfsAck", (_source, value) => emit({ kind: "acknowledgement", cell: `${browser}/${vfs}/${workload}/${lane}`, repetition, role, value }));
@@ -148,15 +148,21 @@ async function campaign(options: Options): Promise<void> {
                 let template = templates.get(role);
                 if (!template) {
                   template = await lifecycle.directory(profileRoot, "vfs-seed-"); context = await lifecycle.persistent(browser, template);
-                  const page = await pageFor(context); const emptyStart = performance.now();
-                  await worker(page, { ...input, action: "open", name: "waffle-vfs-empty" });
-                  const emptyMs = performance.now() - emptyStart;
-                  // Seed in a separate worker: it owns no live facade for this workspace.
-                  await page.evaluate(() => { const g = globalThis as typeof globalThis & { benchmarkWorker?: Worker }; g.benchmarkWorker?.terminate(); g.benchmarkWorker = undefined; });
+                  const page = await pageFor(context);
                   await worker(page, { ...input, action: "seed" });
                   await lifecycle.closeContext(context); context = undefined; templates.set(role, template);
-                  emit({ kind: "fixture", browser, backend, role, firstEmptyOpenControllerMs: emptyMs, seedMethod: "production StorageBackend.persist + global flush + close, no resident facade seeding", profileBytes: await treeSize(template) });
+                  emit({ kind: "fixture", browser, backend, role, seedMethod: "production StorageBackend.persist + global flush + close, no resident facade seeding", profileBytes: await treeSize(template) });
                 }
+                // First-ever empty open has the same two warmups/five samples, in
+                // its own new process/profile. Never reuse it as the seeded profile.
+                const emptyStart = performance.now(); context = await lifecycle.persistent(browser, profile);
+                const emptyPage = await pageFor(context);
+                const empty = await worker(emptyPage, { ...input, action: "open", name: "waffle-vfs-empty" });
+                sample.metrics.emptyOpenControllerMs = performance.now() - emptyStart;
+                sample.metrics.emptyMetadataReadinessMs = empty.metrics.readinessMs!;
+                await worker(emptyPage, { ...input, action: "dispose", name: "waffle-vfs-empty" });
+                await lifecycle.closeContext(context); context = undefined;
+                await lifecycle.removeDirectory(profile); profile = await lifecycle.directory(profileRoot, "vfs-");
                 await cp(template, profile, { recursive: true });
               }
               const launchStart = performance.now(); context = await lifecycle.persistent(browser, profile);
@@ -184,16 +190,22 @@ async function campaign(options: Options): Promise<void> {
                 sample.latencies = { takeover: takeovers, revocation: revocations };
                 sample.state = "deferred/not measured"; sample.reason = "Current backend has no queued whenBusy wait/orderly handoff contract (#21); takeover/refusal diagnostics are not W5 eligibility or simultaneous throughput";
               } else {
-                const result = await worker(page, input); sample.metrics = result.metrics; sample.latencies = result.latencies; sample.acknowledgements = result.acknowledgements; sample.observations = result.observations;
+                const opened = await worker(page, { ...input, action: "open" });
+                const launchToReadyMs = performance.now() - launchStart;
+                const storageBefore = await treeSize(profile);
+                const result = await worker(page, input);
+                sample.metrics = { ...sample.metrics, ...result.metrics, metadataReadinessMs: opened.metrics.readinessMs!, readinessMs: launchToReadyMs, launchToReadyMs }; sample.latencies = result.latencies; sample.acknowledgements = result.acknowledgements; sample.observations = result.observations;
                 sample.metrics.launchThroughWorkloadControllerMs = performance.now() - launchStart;
-                if (workload === "W1") sample.metrics.launchToReadyMs = sample.metrics.launchThroughWorkloadControllerMs - result.metrics.firstUseMs! - result.metrics.readSetMs!; // controller boundary includes launch/navigation/worker compile, reported separately
+                sample.observations.storageBefore = storageBefore;
                 await worker(page, { ...input, action: "dispose" });
               }
               await lifecycle.closeContext(context); context = undefined;
               const storage = await treeSize(profile); sample.metrics.profileLogicalBytes = storage.logical; sample.metrics.profileAllocatedBytes = storage.physical;
+              const storageBefore = sample.observations?.storageBefore as { logical: number; physical: number } | undefined;
+              if (storageBefore) { sample.metrics.profileLogicalGrowthBytes = storage.logical - storageBefore.logical; sample.metrics.profileAllocatedGrowthBytes = storage.physical - storageBefore.physical; }
               if (workload === "W3") {
                 context = await lifecycle.persistent(browser, profile); const page = await pageFor(context);
-                const read = await worker(page, { ...input, action: "read" }); Object.assign(sample.metrics, read.metrics, { readinessMs: sample.metrics.readinessMs });
+                const read = await worker(page, { ...input, action: "read" }); Object.assign(sample.metrics, read.metrics, { readinessMs: sample.metrics.readinessMs, peakResidentPayloadBytes: Math.max(sample.metrics.peakResidentPayloadBytes ?? 0, read.metrics.peakResidentPayloadBytes ?? 0) });
                 await worker(page, { ...input, action: "dispose" }); await lifecycle.closeContext(context); context = undefined;
               }
             } catch (error) {
