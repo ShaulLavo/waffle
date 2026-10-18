@@ -2,13 +2,14 @@ import { test, expect } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { BASELINE_CELLS, CONTROLLER_EDITS, parseCells, assertSelectionScope, controllerWithSelection, compareContinuation, assembleBaseline, missingBaselineCells } from "../tooling/vfs-continuation.js";
 import type { Sample } from "../tooling/vfs-score.js";
 import { SCORE_PROTOCOL } from "../tooling/vfs-score-config.js";
 
 function git(root: string, ...args: string[]): string { return execFileSync("git", ["-C", root].concat(args), { encoding: "utf8", stdio: "pipe" }).trim(); }
 async function repository() {
-  const root = await mkdtemp(resolve(process.env.TMPDIR ?? "/work/tmp", "vfs-continuation-"));
+  const root = await mkdtemp(resolve(tmpdir(), "vfs-continuation-"));
   try {
     git(root, "init", "-q"); git(root, "config", "user.name", "VFS fixture"); git(root, "config", "user.email", "fixture@example.test");
     await mkdir(resolve(root, "tooling")); await mkdir(resolve(root, "fs"));
