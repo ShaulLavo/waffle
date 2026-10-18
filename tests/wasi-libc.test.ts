@@ -6,6 +6,10 @@ import { MemFS } from "../fs/memory.ts";
 import { bootstrap, type RuntimeWorkerMessage } from "../browser/worker.ts";
 import { createFilesystemConnection } from "../fs/protocol.ts";
 import { createWorkerProcessTransport } from "../proc/worker-client.ts";
+import { ProcessABI } from "../proc/abi.ts";
+import { ProcessSupervisor } from "../proc/supervisor.ts";
+import { ExecutableRegistry } from "../proc/registry.ts";
+import { pipeWriteRights } from "./fixtures/pipe-filestat-guest.ts";
 
 const fixtures = process.env.WAFFLE_LIBC_FIXTURES;
 const all = (1n << 29n) - 1n;
@@ -26,6 +30,16 @@ function sink(output: string[]): Stream {
     },
     readiness: () => ({ readable: true, writable: true, hangup: false }),
   };
+}
+
+function readPipeToEnd(stream: Stream): string {
+  const output = new Uint8Array(32);
+  let text = "";
+  for (;;) {
+    const length = stream.read([output]);
+    if (length === 0) return text;
+    text += decoder.decode(output.subarray(0, length));
+  }
 }
 
 describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run test:libc)", () => {
@@ -87,6 +101,59 @@ describe.skipIf(!fixtures)("real wasi-sdk 34 libc preopen discovery (bun run tes
         }
         expect(retained).toBe(released);
       });
+
+  for (const start of [false, true])
+    test(`libc fstat accepts an ABI-created inherited pipe, start=${start}`, async () => {
+      const fs = new MemFS();
+      fs.writeFile("/fixture", "fixture");
+      const parents = new DescriptorTable();
+      const supervisor = new ProcessSupervisor({
+        registry: new ExecutableRegistry(),
+        launch() {
+          throw new Error("not started");
+        },
+      });
+      const wasi = new Wasi({
+        args: ["fixture"],
+        env: {},
+        fs,
+        preopens: { "/": "/" },
+        reservedFds: [3],
+        namespaces: { env: { memory: new WebAssembly.Memory({ initial: 4, maximum: 256 }) } },
+        stdout() {},
+        stderr() {},
+        sleep() {},
+      });
+      try {
+        const memory = new WebAssembly.Memory({ initial: 1 });
+        const pid = supervisor.createRoot({ descriptors: parents });
+        const abi = new ProcessABI({
+          memory,
+          descriptors: parents,
+          fs,
+          pid,
+          service: supervisor,
+          signals: supervisor.get(pid)!,
+        });
+        expect(abi.imports.pipe!(32)).toBe(0);
+        const view = new DataView(memory.buffer);
+        const reader = view.getUint32(32, true),
+          writer = view.getUint32(36, true);
+        wasi.descriptors.inherit(3, parents.get(writer)!);
+        parents.close(writer);
+        const module = await guest("patched", start);
+        const instance = new WebAssembly.Instance(module, wasi.imports(module));
+        expect(wasi.start(instance)).toBe(0);
+        expect(wasi.descriptors.get(3)!.rightsBase).toBe(pipeWriteRights);
+        expect(wasi.descriptors.get(3)!.rightsInheriting).toBe(0n);
+        wasi.descriptors.close(3);
+        expect(readPipeToEnd(parents.get(reader)!.resource as Stream)).toBe("early\nmain\n");
+      } finally {
+        wasi.descriptors.dispose();
+        supervisor.dispose();
+        parents.dispose();
+      }
+    });
 
   test("unchanged third-party libc works ordinarily but cannot discover root behind inherited fd3", async () => {
     for (const reserved of [[], [3]]) {

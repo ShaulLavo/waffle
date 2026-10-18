@@ -177,6 +177,12 @@ try {
   });
   if (!diagnosticWorkerBuild.success)
     throw new AggregateError(diagnosticWorkerBuild.logs, "Runtime diagnostic Worker bundle failed");
+  const pipeFilestatBuild = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "fixtures/pipe-filestat-worker.ts")],
+    target: "browser",
+  });
+  if (!pipeFilestatBuild.success)
+    throw new AggregateError(pipeFilestatBuild.logs, "Pipe filestat Worker bundle failed");
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -187,6 +193,8 @@ try {
         "Cross-Origin-Embedder-Policy": "require-corp",
         "Content-Type": path === "/" ? "text/html" : "text/javascript",
       };
+      if (path === "/pipe-filestat-worker.js")
+        return new Response(pipeFilestatBuild.outputs[0]!, { headers });
       if (path === "/startup-diagnostic-worker.js")
         return new Response(startupWorkerBuild.outputs[0]!, { headers });
       if (path === "/child-diagnostic-worker.js")
