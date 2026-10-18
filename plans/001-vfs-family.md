@@ -818,3 +818,14 @@ and rejection of operations from each revoked owner. No exclusive-backend number
 is labeled simultaneous throughput. The future WAL trace remains unmeasured until
 its protocol exists. Capacity failures retain the unchanged exact workload rather
 than shrinking it or changing storage limits in this measurement-only step.
+
+W1 retains three IndexedDB profile states separately: a fresh browser profile
+with no database, an existing browser profile with its empty diagnostic database
+deleted before relaunch (first visit), and a preserved seeded profile with an
+existing database. Each sample records its state and raw production startup
+milestones. `indexeddbOpenMs` is requested-to-resolved database open;
+`treeReadyAfterIndexeddbMs` is the later ownership/recovery/tree-ready interval.
+Fresh and first-visit fields are separately prefixed and are never averaged into
+the seeded-reopen primary score. If added after an immutable screening campaign
+has begun, capture this decomposition in a separately identified W1 campaign and
+retain the earlier evidence unchanged; do not infer missing timings from totals.

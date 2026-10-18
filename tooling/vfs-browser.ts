@@ -1,3 +1,5 @@
+import { indexeddbStartupIntervals } from "./vfs-startup.js";
+import type { RuntimeStartupStage } from "../fs/startup.js";
 import { SharedFilesystem } from "../browser/shared-fs.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { OpfsStorage } from "../fs/opfs.js";
@@ -6,7 +8,7 @@ import { GuestIO, guestFixture } from "./vfs-guest.js";
 import { content, verify, w1Fixture, executeWorkload, executeSequentialRead, type WorkloadIO, type WorkloadResult } from "./vfs-workloads.js";
 import type { Lane, Workload } from "./vfs-score-config.js";
 
-export interface BrowserRequest { action: "seed" | "run" | "read" | "open" | "start" | "dispose" | "ownership" | "await-revocation" | "marker" | "probe" | "fence"; backend: "indexeddb" | "opfs"; lane: Lane; workload: Workload; name: string; whenBusy?: "wait"; }
+export interface BrowserRequest { action: "seed" | "delete-empty" | "run" | "read" | "open" | "start" | "dispose" | "ownership" | "await-revocation" | "marker" | "probe" | "fence"; backend: "indexeddb" | "opfs"; lane: Lane; workload: Workload; name: string; whenBusy?: "wait"; }
 export interface BrowserResult extends WorkloadResult { ready?: boolean; ownershipLost?: boolean; status?: string; }
 class HostIO implements WorkloadIO {
   constructor(private fs: SharedFilesystem) {}
@@ -42,11 +44,21 @@ class HostIO implements WorkloadIO {
   barrier(path?: string): Promise<void> { return this.fs.flush(path); }
 }
 let fs: SharedFilesystem | undefined;
+let startup: Partial<Record<RuntimeStartupStage, number>> = {};
+let startupReady: Promise<void> = Promise.resolve();
 // Compile before browser filesystem/first-use clocks. Controller readiness
 // deliberately includes this worker startup and compilation.
 const guest = new WebAssembly.Module(guestFixture());
 export async function request(input: BrowserRequest): Promise<BrowserResult> {
   const empty = (): BrowserResult => ({ metrics: {}, latencies: {}, acknowledgements: [], observations: {} });
+  if (input.action === "delete-empty") {
+    if (fs || input.backend !== "indexeddb") throw new Error("Delete only a closed diagnostic IndexedDB workspace");
+    await new Promise<void>((resolve, reject) => {
+      const deletion = indexedDB.deleteDatabase(input.name);
+      deletion.onsuccess = () => resolve(); deletion.onerror = () => reject(deletion.error);
+    });
+    return empty();
+  }
   if (input.action === "seed") {
     const storage = input.backend === "indexeddb" ? await IndexedDBStorage.open(input.name) : await OpfsStorage.open(input.name);
     try { const batch = w1Fixture(); await storage.persist(batch); await storage.flush(); } finally { await storage.close(); }
@@ -67,7 +79,13 @@ export async function request(input: BrowserRequest): Promise<BrowserResult> {
     return empty();
   }
   const start = performance.now();
-  if (!fs) fs = new SharedFilesystem({ workerURL: "/fs-worker.js", name: input.name, storage: input.backend, ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}) });
+  if (!fs) {
+    startup = {}; let ready!: () => void;
+    startupReady = new Promise(resolve => { ready = resolve; });
+    fs = new SharedFilesystem({ workerURL: "/fs-worker.js", name: input.name, storage: input.backend, ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}) }, (stage, timestamp) => {
+      startup[stage] = timestamp; if (stage === "filesystem-ready") ready();
+    });
+  }
   if (input.action === "start") return { ...empty(), status: fs.state.status };
   if (input.action === "fence") {
     if (!fs.ownershipLost) throw new Error("Old owner has not observed revocation");
@@ -80,8 +98,15 @@ export async function request(input: BrowserRequest): Promise<BrowserResult> {
     throw new Error("Revoked owner still served a filesystem operation");
   }
   await fs.resolvePath("/"); // Metadata readiness, without hydrating payloads.
+  await startupReady; // Observe the existing ready milestone across message ports.
   const readyAt = performance.now();
-  if (input.action === "open") return { ...empty(), ready: true, metrics: { readinessMs: readyAt - start } };
+  if (input.action === "open") {
+    const metrics: Record<string, number> = { readinessMs: readyAt - start };
+    if (input.backend === "indexeddb") {
+      Object.assign(metrics, indexeddbStartupIntervals(startup));
+    }
+    return { ...empty(), ready: true, metrics, observations: { startupMilestones: { ...startup } } };
+  }
   const facade = fs;
   const guestIO = input.lane === "guest" ? new GuestIO(facade.client, guest) : undefined;
   const io = guestIO ?? new HostIO(facade);

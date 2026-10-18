@@ -125,3 +125,11 @@ test("source labels are derived, clean, and bound to the dispatcher manifest", a
     expect(() => sourceRevision(root)).toThrow("clean and committed");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("IndexedDB open and later tree readiness are independent startup intervals", async () => {
+  const { indexeddbStartupIntervals } = await import("../tooling/vfs-startup.ts");
+  expect(indexeddbStartupIntervals({ "indexeddb-open-requested": 100, "indexeddb-open-resolved": 1240, "filesystem-ready": 1265 })).toEqual({ indexeddbOpenMs: 1140, treeReadyAfterIndexeddbMs: 25 });
+  expect(indexeddbStartupIntervals({ "indexeddb-open-requested": 0, "indexeddb-open-resolved": 0, "filesystem-ready": 0 })).toEqual({ indexeddbOpenMs: 0, treeReadyAfterIndexeddbMs: 0 });
+  expect(() => indexeddbStartupIntervals({})).toThrow("Missing");
+  expect(() => indexeddbStartupIntervals({ "indexeddb-open-requested": 10, "indexeddb-open-resolved": 5, "filesystem-ready": 12 })).toThrow("Non-monotonic");
+});

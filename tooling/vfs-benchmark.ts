@@ -143,7 +143,7 @@ async function campaign(options: Options): Promise<void> {
     const compressedBytes: Record<string, unknown> = {};
     for (const role of options.candidateRoot ? ["baseline", "candidate"] : ["baseline"]) {
       const source = role === "candidate" ? options.candidateRoot! : root;
-      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts", "vfs-browser.ts", "vfs-benchmark.ts"]) {
+      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts", "vfs-startup.ts", "vfs-browser.ts", "vfs-benchmark.ts"]) {
         if (await readFile(resolve(root, "tooling", name), "utf8") !== await readFile(resolve(source, "tooling", name), "utf8")) throw new Error(`Paired workload protocol differs: ${name}`);
       }
       if (role === "candidate" && await readFile(resolve(root, "tests/browser-runner-lifecycle.ts"), "utf8") !== await readFile(resolve(source, "tests/browser-runner-lifecycle.ts"), "utf8")) throw new Error("Paired lifecycle protocol differs");
@@ -190,12 +190,34 @@ async function campaign(options: Options): Promise<void> {
                 const empty = await worker(emptyPage, { ...input, action: "open", name: "waffle-vfs-empty" });
                 sample.metrics.emptyOpenControllerMs = performance.now() - emptyStart;
                 sample.metrics.emptyMetadataReadinessMs = empty.metrics.readinessMs!;
+                sample.observations = { freshEmptyProfile: { profile: "fresh", database: "absent", startup: empty.observations.startupMilestones } };
+                if (backend === "indexeddb") {
+                  sample.metrics.freshIndexeddbOpenMs = empty.metrics.indexeddbOpenMs!;
+                  sample.metrics.freshTreeReadyAfterIndexeddbMs = empty.metrics.treeReadyAfterIndexeddbMs!;
+                }
                 await worker(emptyPage, { ...input, action: "dispose", name: "waffle-vfs-empty" });
                 await lifecycle.closeContext(context); context = undefined;
+                if (backend === "indexeddb") {
+                  // Delete only the empty diagnostic DB in its own process, then
+                  // relaunch the preserved profile for a genuine first visit.
+                  context = await lifecycle.persistent(browser, profile);
+                  const deleting = await pageFor(context);
+                  await worker(deleting, { ...input, action: "delete-empty", name: "waffle-vfs-empty" });
+                  await lifecycle.closeContext(context); context = undefined;
+                  const firstVisitStart = performance.now(); context = await lifecycle.persistent(browser, profile);
+                  const firstVisitPage = await pageFor(context);
+                  const firstVisit = await worker(firstVisitPage, { ...input, action: "open", name: "waffle-vfs-empty" });
+                  sample.metrics.firstVisitOpenControllerMs = performance.now() - firstVisitStart;
+                  sample.metrics.firstVisitIndexeddbOpenMs = firstVisit.metrics.indexeddbOpenMs!;
+                  sample.metrics.firstVisitTreeReadyAfterIndexeddbMs = firstVisit.metrics.treeReadyAfterIndexeddbMs!;
+                  sample.observations.firstVisitProfile = { profile: "existing", database: "deleted before process launch", startup: firstVisit.observations.startupMilestones };
+                  await worker(firstVisitPage, { ...input, action: "dispose", name: "waffle-vfs-empty" });
+                  await lifecycle.closeContext(context); context = undefined;
+                }
                 await lifecycle.removeDirectory(profile); profile = await lifecycle.directory(profileRoot, "vfs-");
                 await cp(template, profile, { recursive: true });
               }
-              const storageBefore = await treeSize(profile); sample.observations = { storageBefore };
+              const storageBefore = await treeSize(profile); sample.observations = { ...sample.observations, storageBefore };
               const launchStart = performance.now(); context = await lifecycle.persistent(browser, profile);
               sample.browserVersion = context.browser()?.version() ?? `${browser}-persistent`;
               const page = await pageFor(context);
@@ -257,6 +279,13 @@ async function campaign(options: Options): Promise<void> {
               } else {
                 const opened = await worker(page, { ...input, action: "open" });
                 const launchToReadyMs = performance.now() - launchStart;
+                if (workload === "W1") {
+                  sample.observations!.seededReopenProfile = { profile: "existing, copied preserved seed profile", database: "existing seeded tree", startup: opened.observations.startupMilestones };
+                  if (backend === "indexeddb") {
+                    sample.metrics.indexeddbOpenMs = opened.metrics.indexeddbOpenMs!;
+                    sample.metrics.treeReadyAfterIndexeddbMs = opened.metrics.treeReadyAfterIndexeddbMs!;
+                  }
+                }
                 const result = await worker(page, input);
                 sample.metrics = { ...sample.metrics, ...result.metrics, metadataReadinessMs: opened.metrics.readinessMs!, readinessMs: launchToReadyMs, launchToReadyMs }; sample.latencies = result.latencies; sample.acknowledgements = result.acknowledgements; sample.observations = { ...sample.observations, ...result.observations };
                 sample.metrics.launchThroughWorkloadControllerMs = performance.now() - launchStart;
