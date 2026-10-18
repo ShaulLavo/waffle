@@ -71,6 +71,9 @@ export interface CellScore { key: string; state: Eligibility; reason?: string; s
  * Missing/failed cells are visible and make the fixed-mask score incomplete, never faster. */
 export function score(initial: readonly Sample[], candidate: readonly Sample[], accepted?: readonly Sample[], acceptedBest: Partial<Record<VfsName, number>> = {}) {
   const bases = group(initial, true), next = group(candidate), ratchet = accepted ? group(accepted) : undefined;
+  return evaluateGrouped(bases, next, ratchet, acceptedBest);
+}
+function evaluateGrouped(bases: ReadonlyMap<string, Sample[]>, next: ReadonlyMap<string, Sample[]>, ratchet?: ReadonlyMap<string, Sample[]>, acceptedBest: Partial<Record<VfsName, number>> = {}) {
   const cells: CellScore[] = [];
   for (const vfs of VFS_NAMES) for (const browser of BROWSERS) for (const workload of WORKLOADS) for (const lane of LANES) {
     const key = cellKey({ browser, vfs, workload, lane });
@@ -135,9 +138,22 @@ export function score(initial: readonly Sample[], candidate: readonly Sample[], 
   return { protocol: SCORE_PROTOCOL, cells, perVfs, family: { complete, score: familyScore }, guardrailsPass, scoreImprovesFivePercent: VFS_NAMES.some(vfs => perVfs[vfs]!.scoreImprovesFivePercent), decision: "Score alone does not certify correctness, required capabilities or maintenance cost. An incomplete score cannot promote a candidate." };
 }
 
+/** Normalize a provenance-validated initial archive, not a promotion candidate.
+ * Cell identities may differ across this archive, never within one cell. */
+export function summarizeInitialBaseline(initial: readonly Sample[]) {
+  const archive = group(initial, true);
+  return { ...evaluateGrouped(archive, archive), kind: "initial-baseline summary" as const, decision: "Initial normalization only. This summary cannot promote a candidate or certify paired guardrails; source-equivalence assembly is a separate prerequisite." };
+}
+
 if (import.meta.main) {
-  const [baseline, candidate, accepted, best] = process.argv.slice(2);
-  if (!baseline || !candidate) throw new Error("Usage: bun tooling/vfs-score.ts INITIAL.json CANDIDATE.json [ACCEPTED-PAIRED.json] [ACCEPTED-SUMMARY.json]");
+  const args = process.argv.slice(2);
   const load = async (path: string): Promise<Sample[]> => { const data = await Bun.file(path).json(); return Array.isArray(data) ? data : data.samples; };
-  console.log(JSON.stringify(score(await load(baseline), await load(candidate), accepted ? await load(accepted) : undefined, best ? Object.fromEntries(Object.entries((await Bun.file(best).json()).perVfs).flatMap(([name, value]) => { const score = (value as { score: number | null }).score; return score === null ? [] : [[name, score]]; })) : undefined), null, 2));
+  if (args[0] === "--initial-summary") {
+    if (args.length !== 2 || !args[1]) throw new Error("Usage: bun tooling/vfs-score.ts --initial-summary INITIAL.json (no comparison or ratchet arguments)");
+    console.log(JSON.stringify(summarizeInitialBaseline(await load(args[1])), null, 2));
+  } else {
+    const [baseline, candidate, accepted, best] = args;
+    if (!baseline || !candidate || args.length > 4) throw new Error("Usage: bun tooling/vfs-score.ts INITIAL.json CANDIDATE.json [ACCEPTED-PAIRED.json] [ACCEPTED-SUMMARY.json]");
+    console.log(JSON.stringify(score(await load(baseline), await load(candidate), accepted ? await load(accepted) : undefined, best ? Object.fromEntries(Object.entries((await Bun.file(best).json()).perVfs).flatMap(([name, value]) => { const score = (value as { score: number | null }).score; return score === null ? [] : [[name, score]]; })) : undefined), null, 2));
+  }
 }

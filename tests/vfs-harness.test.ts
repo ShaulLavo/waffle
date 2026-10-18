@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { MemFS } from "../fs/memory.ts";
 import { GuestIO, guestFixture } from "../tooling/vfs-guest.ts";
 import { content, hash, random, SIZES, w2Trace, w4Trace, w5Trace, W1_READ_SET } from "../tooling/vfs-workloads.ts";
-import { pairedInterval, geometric, median, score, type Sample } from "../tooling/vfs-score.ts";
+import { pairedInterval, geometric, median, score, summarizeInitialBaseline, type Sample } from "../tooling/vfs-score.ts";
 import { SCORE_PROTOCOL, BROWSERS, LANES, WORKLOADS, primaryMetrics, pairOrder } from "../tooling/vfs-score-config.ts";
 
 test("seeded content has stable random-access chunks and trace counts", () => {
@@ -102,6 +102,46 @@ test("WAL unsupported assertions are mandatory for family completeness", () => {
   const missing = all.filter(row => row.vfs !== "opfs-wal" || row.browser === "chromium");
   expect(score(missing, missing).family.complete).toBe(false);
   expect(score(all, all.map((row, i) => i === all.length - 1 ? { ...row, state: "failed correctness" } : row)).family.complete).toBe(false);
+});
+
+test("composed initial summaries normalize without relaxing candidate or ratchet identity", () => {
+  const initial = fixtures().map(row => row.browser === "firefox" ? { ...row, revision: "b".repeat(40), campaign: "missing-cell-continuation" } : row);
+  const result = summarizeInitialBaseline(initial);
+  expect(result.kind).toBe("initial-baseline summary");
+  expect(result.perVfs.indexeddb!.complete).toBe(true); expect(result.perVfs.indexeddb!.score).toBeCloseTo(100);
+  expect(result.cells[0]!.raw.readinessMs).toEqual({ baseline: 100, candidate: 100, unit: "ms" });
+  expect(result.family.score).toBeNull(); expect(result.perVfs["opfs-safe"]!.score).toBeNull();
+  expect(result.guardrailsPass).toBe(false); expect(result.scoreImprovesFivePercent).toBe(false);
+  for (const value of Object.values(result.perVfs)) { expect(value.acceptedScore).toBeNull(); expect(value.ratchetScore).toBeNull(); expect(value.scoreImprovesFivePercent).toBe(false); }
+  expect(() => score(initial, initial)).toThrow("mixes revisions");
+  expect(() => score(initial, fixtures(), initial)).toThrow("mixes revisions");
+  expect(() => summarizeInitialBaseline(initial.concat([initial[0]!]))).toThrow("Duplicate");
+  expect(() => summarizeInitialBaseline(initial.map((row, i) => i === 0 ? { ...row, revision: "c".repeat(40) } : row))).toThrow("mixes revisions");
+  expect(() => summarizeInitialBaseline(initial.map((row, i) => i === 0 ? { ...row, campaign: "other" } : row))).toThrow("campaigns");
+  expect(() => summarizeInitialBaseline(initial.map(row => ({ ...row, protocol: "wrong" as typeof SCORE_PROTOCOL })))).toThrow("protocol");
+});
+test("initial summary retains correctness, sample-count, metric and unsupported gates", () => {
+  const initial = fixtures();
+  for (const state of ["failed correctness", "invalid environment"] as const) for (const warmup of [true, false]) {
+    const row = { ...initial[0]!, state, warmup, repetition: warmup ? -1 : 0 };
+    const input = warmup ? initial.concat([row]) : initial.map((r, i) => i ? r : row);
+    expect(summarizeInitialBaseline(input).perVfs.indexeddb!.complete).toBe(false);
+  }
+  expect(summarizeInitialBaseline(initial.filter(row => row.repetition < 4)).perVfs.indexeddb!.complete).toBe(false);
+  for (const value of [0, -1, NaN, Infinity, undefined]) {
+    const input = initial.map((row, i) => i ? row : { ...row, metrics: value === undefined ? {} : { ...row.metrics, readinessMs: value } });
+    expect(summarizeInitialBaseline(input).perVfs.indexeddb!.complete).toBe(false);
+  }
+  const wal = initial.map(row => ({ ...row, vfs: "opfs-wal" as const, state: row.browser === "chromium" ? "eligible" as const : "unsupported as specified" as const, metrics: Object.fromEntries(primaryMetrics(row.workload, "opfs-wal").map(metric => [metric.name, 100])) }));
+  expect(summarizeInitialBaseline(wal).perVfs["opfs-wal"]!.complete).toBe(true);
+  expect(summarizeInitialBaseline(wal.filter(row => row.browser === "chromium")).perVfs["opfs-wal"]!.complete).toBe(false);
+  for (const state of ["failed correctness", "eligible"] as const) expect(summarizeInitialBaseline(wal.map(row => row.browser === "firefox" ? { ...row, state } : row)).perVfs["opfs-wal"]!.complete).toBe(false);
+});
+test("initial-summary CLI rejects comparison arguments before loading input", () => {
+  for (const args of [["--initial-summary"], ["--initial-summary", "/missing-baseline.json", "extra"]]) {
+    const result = Bun.spawnSync([process.execPath, `${import.meta.dir}/../tooling/vfs-score.ts`].concat(args));
+    expect(result.exitCode).not.toBe(0); expect(result.stderr.toString()).toContain("no comparison or ratchet arguments");
+  }
 });
 
 test("source labels are derived, clean, and bound to the dispatcher manifest", async () => {
