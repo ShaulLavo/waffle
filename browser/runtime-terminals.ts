@@ -5,7 +5,10 @@ import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
 
 type TerminalTarget = 0 | 1 | 2;
-interface TerminalToken { kind: "web-terminal"; target: TerminalTarget }
+interface TerminalToken {
+  kind: "web-terminal";
+  target: TerminalTarget;
+}
 // A remapped fd is not a new destination. Imported terminals retain their provenance across
 // codec instances and later generations; WeakMap entries disappear with their local streams.
 const targets = new WeakMap<Stream, TerminalTarget>();
@@ -21,11 +24,20 @@ export interface RuntimeTerminalCodecOptions {
   checkActive?(): void;
 }
 function terminalToken(value: unknown): TerminalToken | undefined {
-  if (typeof value !== "object" || value === null || !("kind" in value) || value.kind !== "web-terminal") return;
-  if (!("target" in value) || (value.target !== 0 && value.target !== 1 && value.target !== 2)) throw new TypeError("invalid browser terminal target");
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("kind" in value) ||
+    value.kind !== "web-terminal"
+  )
+    return;
+  if (!("target" in value) || (value.target !== 0 && value.target !== 1 && value.target !== 2))
+    throw new TypeError("invalid browser terminal target");
   return value as TerminalToken;
 }
-export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions): WorkerDescriptorCodec {
+export function createRuntimeTerminalCodec(
+  options: RuntimeTerminalCodecOptions,
+): WorkerDescriptorCodec {
   for (const fd of [0, 1, 2] as const) {
     const resource = options.descriptors?.get(fd)?.resource;
     if (resource?.kind === "terminal" && !targets.has(resource)) targets.set(resource, fd);
@@ -33,12 +45,15 @@ export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions)
   return {
     export(descriptor, pid) {
       const resource = descriptor.resource;
-      if (resource.kind !== "terminal" && resource.kind !== "pipe") return options.fallback.export(descriptor, pid);
+      if (resource.kind !== "terminal" && resource.kind !== "pipe")
+        return options.fallback.export(descriptor, pid);
       const target = targets.get(resource);
-      if (target === undefined && resource.kind === "pipe") return options.fallback.export(descriptor, pid);
+      if (target === undefined && resource.kind === "pipe")
+        return options.fallback.export(descriptor, pid);
       // Arbitrary callback terminals cannot be cloned: only known destination provenance
       // transfers. A receiving executor may resolve that destination to an interactive stream.
-      if (target === undefined) throw new ProcessError(NOSYS, "terminal has no transferable browser destination");
+      if (target === undefined)
+        throw new ProcessError(NOSYS, "terminal has no transferable browser destination");
       return { kind: "web-terminal", target } satisfies TerminalToken;
     },
     import(value, pid) {
@@ -47,13 +62,25 @@ export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions)
       if (options.resolveTerminal) {
         options.checkActive?.();
         const resolved = options.resolveTerminal(token.target);
-        try { options.checkActive?.(); } catch (error) { resolved.close?.(); throw error; }
-        const remember = (stream: Stream) => { targets.set(stream, token.target); };
-        const stream = options.checkActive ? guardedStream(resolved, options.checkActive, remember) : resolved;
+        try {
+          options.checkActive?.();
+        } catch (error) {
+          resolved.close?.();
+          throw error;
+        }
+        const remember = (stream: Stream) => {
+          targets.set(stream, token.target);
+        };
+        const stream = options.checkActive
+          ? guardedStream(resolved, options.checkActive, remember)
+          : resolved;
         remember(stream);
         return new OpenDescription(stream, () => stream.close?.());
       }
-      const read = () => { options.checkActive?.(); return 0; };
+      const read = () => {
+        options.checkActive?.();
+        return 0;
+      };
       const write = (chunks: readonly Uint8Array[]) => {
         options.checkActive?.();
         const total = chunks.reduce((size, bytes) => size + bytes.length, 0);
@@ -62,12 +89,24 @@ export function createRuntimeTerminalCodec(options: RuntimeTerminalCodecOptions)
         // Copy guest memory before posting/transferring; WASM memory is never transferable.
         const data = new Uint8Array(total);
         let offset = 0;
-        for (const bytes of chunks) { data.set(bytes, offset); offset += bytes.length; }
+        for (const bytes of chunks) {
+          data.set(bytes, offset);
+          offset += bytes.length;
+        }
         options.output(token.target === 2 ? 2 : 1, data);
         return total;
       };
-      const stream: Stream = { kind: "terminal", read, tryRead: read, write, tryWrite: write,
-        readiness() { options.checkActive?.(); return { readable: true, writable: true, hangup: token.target === 0 }; } };
+      const stream: Stream = {
+        kind: "terminal",
+        read,
+        tryRead: read,
+        write,
+        tryWrite: write,
+        readiness() {
+          options.checkActive?.();
+          return { readable: true, writable: true, hangup: token.target === 0 };
+        },
+      };
       targets.set(stream, token.target);
       return new OpenDescription(stream);
     },

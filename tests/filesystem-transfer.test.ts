@@ -1,15 +1,29 @@
 import { afterEach, expect, test } from "bun:test";
-import { FilesystemClient, FilesystemService, MemoryBackend, connectFilesystemIdentity, createFilesystemConnection, createProcessFilesystemIdentity, reapFilesystem } from "../fs";
+import {
+  FilesystemClient,
+  FilesystemService,
+  MemoryBackend,
+  connectFilesystemIdentity,
+  createFilesystemConnection,
+  createProcessFilesystemIdentity,
+  reapFilesystem,
+} from "../fs";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
 class TrackingBackend extends MemoryBackend {
   readonly pins = new Map<number, number>();
-  retain(handle: number): void { super.retain(handle); this.pins.set(handle, (this.pins.get(handle) ?? 0) + 1); }
+  retain(handle: number): void {
+    super.retain(handle);
+    this.pins.set(handle, (this.pins.get(handle) ?? 0) + 1);
+  }
   release(handle: number): void {
     super.release(handle);
     const count = this.pins.get(handle)! - 1;
-    if (count) this.pins.set(handle, count); else this.pins.delete(handle);
+    if (count) this.pins.set(handle, count);
+    else this.pins.delete(handle);
   }
 }
 async function fixture() {
@@ -18,7 +32,10 @@ async function fixture() {
   const root = createFilesystemConnection();
   service.connect(root.server);
   const client = new FilesystemClient(root.client);
-  cleanups.push(() => { client.dispose(); service.dispose(); });
+  cleanups.push(() => {
+    client.dispose();
+    service.dispose();
+  });
   await client.asyncCall("writeFile", ["/file"], new TextEncoder().encode("inherited"));
   const directory = await client.asyncCall("preopen", ["/"]);
   const path = await client.asyncCall("resolve", [directory, "file"]);
@@ -72,10 +89,11 @@ test("directory reservation transfers identity rather than reopening its old pat
   cleanups.push(() => child.dispose());
   child.adopt(reservation);
   expect(child.shared.stat(directory)?.kind).toBe("directory");
-  expect(await child.asyncCall("resolve", [directory, "file"])).toMatchObject({ node: expect.any(Number) });
+  expect(await child.asyncCall("resolve", [directory, "file"])).toMatchObject({
+    node: expect.any(Number),
+  });
   child.releaseReservation(reservation);
 });
-
 
 test("adoption trims the live source's final detached transfer pin", async () => {
   const { backend, service, client, handle, path } = await fixture();

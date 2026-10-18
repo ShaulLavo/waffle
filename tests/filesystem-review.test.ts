@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { FilesystemClient, FilesystemService, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystem, MemoryBackend, SharedFilesystemState } from "../fs";
+import {
+  FilesystemClient,
+  FilesystemService,
+  createFilesystemConnection,
+  createFilesystemIdentity,
+  connectFilesystemIdentity,
+  revokeFilesystem,
+  MemoryBackend,
+  SharedFilesystemState,
+} from "../fs";
 import { PAGE } from "../fs/protocol";
 
 const empty = new Uint8Array();
@@ -51,7 +60,6 @@ test("geometric growth falls back to the final available page", () => {
   expect(state.resources().usedBytes).toBe(PAGE * 256);
 });
 
-
 function directFixture() {
   const pair = createFilesystemConnection();
   const client = new FilesystemClient(pair.client);
@@ -61,7 +69,13 @@ function directFixture() {
   Atomics.store(capabilities, 1, 0);
   Atomics.store(capabilities, 2, 0);
   client.retain(0);
-  return { client, cleanup: () => { client.dispose(); pair.server.port.close(); } };
+  return {
+    client,
+    cleanup: () => {
+      client.dispose();
+      pair.server.port.close();
+    },
+  };
 }
 
 test("an append after a coherent prefix read does not invent EOF", () => {
@@ -70,19 +84,27 @@ test("an append after a coherent prefix read does not invent EOF", () => {
     const original = client.shared.read.bind(client.shared);
     client.shared.read = (...args) => {
       const count = original(...args);
-      client.shared.mutate(new Int32Array(client.connection.epoch), undefined, () => client.shared.write(0, [new Uint8Array([66])], 1));
+      client.shared.mutate(new Int32Array(client.connection.epoch), undefined, () =>
+        client.shared.write(0, [new Uint8Array([66])], 1),
+      );
       return count;
     };
     const out = new Uint8Array(1);
     expect(client.read(0, [out], 0)).toBe(1);
     expect(out[0]).toBe(65);
-  } finally { cleanup(); }
+  } finally {
+    cleanup();
+  }
 });
 
 test("retained direct stat rejects a revoked connection", () => {
   const { client, cleanup } = directFixture();
-  try { revokeFilesystem(client.connection); expect(() => client.stat(0)).toThrow(); }
-  finally { cleanup(); }
+  try {
+    revokeFilesystem(client.connection);
+    expect(() => client.stat(0)).toThrow();
+  } finally {
+    cleanup();
+  }
 });
 
 test("cancelled allocation followed by connect installs each segment once", async () => {
@@ -95,20 +117,28 @@ test("cancelled allocation followed by connect installs each segment once", asyn
   try {
     await client.asyncCall("writeFile", ["/full"], new Uint8Array(PAGE * 256));
     const original = backend.execute.bind(backend);
-    let completion!: ReturnType<FilesystemClient["submit"]>;
     backend.execute = (operation, args, data) => {
       const result = original(operation, args, data);
       if (operation === "writeFile" && args[0] === "/extra") completion.cancel();
       return result;
     };
-    completion = client.submit("writeFile", ["/extra"], new Uint8Array([65]));
-    try { await completion.value(); } catch {} finally { completion.release(); }
+    const completion = client.submit("writeFile", ["/extra"], new Uint8Array([65]));
+    try {
+      await completion.value();
+    } catch {
+    } finally {
+      completion.release();
+    }
     const pair = createFilesystemConnection(root.client);
     sibling = new FilesystemClient(pair.client);
     service.connect(pair.server);
     await sibling.asyncCall("listFiles");
     expect(sibling.shared.segments.length).toBe(backend.shared.segments.length);
-  } finally { sibling?.dispose(); client.dispose(); service.dispose(); }
+  } finally {
+    sibling?.dispose();
+    client.dispose();
+    service.dispose();
+  }
 });
 
 test("revoking a live in-flight writer keeps its locks and pages until it exits", async () => {
@@ -125,7 +155,7 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
     const handle = path.node as number;
     const epoch = new Int32Array(pair.client.epoch);
     class InterruptedBytes extends Uint8Array {
-      subarray(start?: number, end?: number): Uint8Array {
+      subarray(start?: number, end?: number): Uint8Array<ArrayBuffer> {
         revokeFilesystem(pair.client);
         backend.shared.unlink(handle);
         service.sweep();
@@ -136,14 +166,18 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
       }
     }
     // Exercise the guest's admitted state, not the service state with an impersonated owner.
-    client.shared.mutate(epoch, undefined,
-      () => client.shared.write(handle, [new InterruptedBytes([90])], 0));
+    client.shared.mutate(epoch, undefined, () =>
+      client.shared.write(handle, [new InterruptedBytes([90])], 0),
+    );
     service.sweep();
     expect(Atomics.load(epoch, 0) & 1).toBe(0);
     expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
     expect(service.resources().retained).toBe(0);
     expect(backend.shared.resources().usedBytes).toBe(0);
-  } finally { client.dispose(); service.dispose(); }
+  } finally {
+    client.dispose();
+    service.dispose();
+  }
 });
 
 test("zero-byte positioned writes do not grow or timestamp a file", () => {
@@ -172,9 +206,12 @@ test("a failed SAB allocation rolls back all uncommitted page owners", () => {
   state.register(0, { kind: "file", ino: 1, size: PAGE * 255, mtime: 1 });
   const allocator = state as unknown as { ensureSegment(index: number): void };
   const original = allocator.ensureSegment.bind(state);
-  allocator.ensureSegment = index => { if (index === 1) throw new RangeError("injected SAB allocation failure"); original(index); };
+  allocator.ensureSegment = (index) => {
+    if (index === 1) throw new RangeError("injected SAB allocation failure");
+    original(index);
+  };
   expect(() => state.register(1, { kind: "file", ino: 2, size: PAGE * 2, mtime: 1 })).toThrow();
-  expect(Array.from(state.owners).filter(owner => owner !== 0).length).toBe(255);
+  expect(Array.from(state.owners).filter((owner) => owner !== 0).length).toBe(255);
   allocator.ensureSegment = original;
   state.register(2, { kind: "file", ino: 3, size: PAGE, mtime: 1 });
   expect(state.resources().usedBytes).toBe(PAGE * 256);
@@ -196,6 +233,9 @@ test("shared stat cannot observe a torn two-word timestamp", () => {
     }
     return value;
   }) as typeof Atomics.load;
-  try { expect([oldTime, newTime]).toContain(state.stat(0)!.mtime); }
-  finally { Atomics.load = originalLoad; }
+  try {
+    expect([oldTime, newTime]).toContain(state.stat(0)!.mtime);
+  } finally {
+    Atomics.load = originalLoad;
+  }
 });

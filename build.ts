@@ -20,7 +20,15 @@ function decodeString(source: string, start: number, quote: string): StringLiter
     }
     const escaped = source[++index];
     if (escaped === undefined) break;
-    const simple: Record<string, string> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "0": "\0" };
+    const simple: Record<string, string> = {
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      v: "\v",
+      "0": "\0",
+    };
     if (simple[escaped] !== undefined) {
       value += simple[escaped];
       continue;
@@ -34,7 +42,10 @@ function decodeString(source: string, start: number, quote: string): StringLiter
       }
     }
     if (escaped === "u") {
-      const hex = source[index + 1] === "{" ? source.slice(index + 2, source.indexOf("}", index + 2)) : source.slice(index + 1, index + 5);
+      const hex =
+        source[index + 1] === "{"
+          ? source.slice(index + 2, source.indexOf("}", index + 2))
+          : source.slice(index + 1, index + 5);
       if (/^[0-9a-fA-F]+$/.test(hex)) {
         value += String.fromCodePoint(Number.parseInt(hex, 16));
         index += source[index + 1] === "{" ? hex.length + 2 : 4;
@@ -110,7 +121,43 @@ function identifier(code: string, index: number): { value: string; end: number }
 function nextString(code: string, index: number): StringLiteral | undefined {
   index = trivia(code, index);
   const quote = code[index];
-  return quote === "\"" || quote === "'" ? decodeString(code, index, quote) : undefined;
+  return quote === '"' || quote === "'" ? decodeString(code, index, quote) : undefined;
+}
+
+function fromSpecifier(code: string, at: number): StringLiteral | undefined {
+  while (at < code.length && code[at] !== ";") {
+    const quote = code[at];
+    if (quote === '"' || quote === "'") {
+      at = decodeString(code, at, quote).end;
+      continue;
+    }
+    const commentEnd = skipComment(code, at);
+    if (commentEnd !== at) {
+      at = commentEnd;
+      continue;
+    }
+    const word = identifier(code, at);
+    const literal = word?.value === "from" ? nextString(code, word.end) : undefined;
+    if (literal) return literal;
+    at = word ? word.end : at + 1;
+  }
+  return undefined;
+}
+
+function moduleSpecifier(
+  code: string,
+  token: { value: string; end: number },
+  index: number,
+): StringLiteral | undefined {
+  const after = trivia(code, token.end);
+  if (token.value === "import" && !code.slice(0, index).trimEnd().endsWith(".")) {
+    if (code[after] === "(") return nextString(code, after + 1);
+    return nextString(code, after) ?? fromSpecifier(code, after);
+  }
+  if (token.value === "export" && (code[after] === "{" || code[after] === "*")) {
+    return fromSpecifier(code, after + 1);
+  }
+  return undefined;
 }
 
 /** Rewrite relative module specifiers without treating strings, comments or regexes as imports. */
@@ -129,7 +176,7 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
       index = commentEnd;
       continue;
     }
-    if (character === "\"" || character === "'") {
+    if (character === '"' || character === "'") {
       index = decodeString(code, index, character).end;
       canStartRegex = false;
       continue;
@@ -149,71 +196,37 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
     }
     const token = identifier(code, index);
     if (token) {
-      if (token.value === "import" && !/\.$/.test(code.slice(0, index).trimEnd())) {
-        const after = trivia(code, token.end);
-        const literal = code[after] === "(" ? nextString(code, after + 1) : nextString(code, after) ?? (() => {
-          let at = after;
-          while (at < code.length && code[at] !== ";") {
-            const quote = code[at];
-            if (quote === "\"" || quote === "'") {
-              at = decodeString(code, at, quote).end;
-              continue;
-            }
-            const commentEnd = skipComment(code, at);
-            if (commentEnd !== at) {
-              at = commentEnd;
-              continue;
-            }
-            const word = identifier(code, at);
-            if (word?.value === "from") {
-              const literal = nextString(code, word.end);
-              if (literal) return literal;
-            }
-            at = word ? word.end : at + 1;
-          }
-          return undefined;
-        })();
-        if (literal?.value.startsWith(".")) edits.push(literal);
-      } else if (token.value === "export") {
-        const after = trivia(code, token.end);
-        if (code[after] === "{" || code[after] === "*") {
-          let at = after + 1;
-          while (at < code.length && code[at] !== ";") {
-            const quote = code[at];
-            if (quote === "\"" || quote === "'") {
-              at = decodeString(code, at, quote).end;
-              continue;
-            }
-            const commentEnd = skipComment(code, at);
-            if (commentEnd !== at) {
-              at = commentEnd;
-              continue;
-            }
-            const word = identifier(code, at);
-            if (word?.value === "from") {
-              const literal = nextString(code, word.end);
-              if (literal?.value.startsWith(".")) edits.push(literal);
-              if (literal) break;
-            }
-            at = word ? word.end : at + 1;
-          }
-        }
-      }
-      canStartRegex = ["return", "throw", "case", "delete", "void", "typeof", "new", "in", "of", "instanceof", "yield", "await"].includes(token.value);
+      const literal = moduleSpecifier(code, token, index);
+      if (literal?.value.startsWith(".")) edits.push(literal);
+      canStartRegex = [
+        "return",
+        "throw",
+        "case",
+        "delete",
+        "void",
+        "typeof",
+        "new",
+        "in",
+        "of",
+        "instanceof",
+        "yield",
+        "await",
+      ].includes(token.value);
       index = token.end;
       continue;
     }
     canStartRegex = "([{,:;!?=+*%&|^~<>-".includes(character);
     index++;
   }
-  const expected = new Bun.Transpiler({ loader: "ts" }).scanImports(code)
-    .map(entry => entry.path)
-    .filter(path => path.startsWith("."));
-  const actual = edits.map(literal => literal.value);
+  const expected = new Bun.Transpiler({ loader: "ts" })
+    .scanImports(code)
+    .map((entry) => entry.path)
+    .filter((path) => path.startsWith("."));
+  const actual = edits.map((literal) => literal.value);
   if (expected.length !== actual.length || expected.some((path, index) => path !== actual[index])) {
     throw new Error(`Bun import scanner disagrees with Waffle's syntax scanner in ${source}`);
   }
-  const resolved = edits.map(literal => {
+  const resolved = edits.map((literal) => {
     const specifier = literal.value;
     const base = resolve(dirname(source), specifier);
     if (!inside(root, base)) throw new Error(`Import outside package: ${specifier} in ${source}`);

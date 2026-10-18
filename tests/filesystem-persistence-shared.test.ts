@@ -11,7 +11,11 @@ function fixture() {
 test("shared persistence snapshots own coherent content, metadata and revision", () => {
   const state = fixture();
   const snapshot = state.snapshot(0)!;
-  expect(snapshot).toEqual({ stat: { kind: "file", ino: 1, size: 4, mtime: 1 }, data: new Uint8Array([65, 66, 67, 68]), revision: 1 });
+  expect(snapshot).toEqual({
+    stat: { kind: "file", ino: 1, size: 4, mtime: 1 },
+    data: new Uint8Array([65, 66, 67, 68]),
+    revision: 1,
+  });
   state.write(0, [new Uint8Array([90])], 0);
   expect(snapshot.data).toEqual(new Uint8Array([65, 66, 67, 68]));
   expect(state.revision(0)).toBe(2);
@@ -46,7 +50,10 @@ test("direct guest writes and appends are visible to persistence without an RPC"
   const epoch = new Int32Array(new SharedArrayBuffer(4));
   expect(guest.directWrite(slot, 0, [new Uint8Array([90])], 0, 1, epoch, () => false, 42)).toBe(1);
   expect(state.snapshot(0)!.revision).toBe(2);
-  expect(guest.directAppend(slot, 0, [new Uint8Array([69])], 1, epoch, () => false, 42)).toEqual({ written: 1, offset: 5 });
+  expect(guest.directAppend(slot, 0, [new Uint8Array([69])], 1, epoch, () => false, 42)).toEqual({
+    written: 1,
+    offset: 5,
+  });
   const snapshot = state.snapshot(0)!;
   expect(snapshot.revision).toBe(3);
   expect(snapshot.data).toEqual(new Uint8Array([90, 66, 67, 68, 69]));
@@ -56,7 +63,8 @@ test("direct guest writes and appends are visible to persistence without an RPC"
 
 test("shared revisions remain monotonic across low-word overflow on slow and direct writes", () => {
   const state = fixture();
-  const slot = state.fileSlot(0), base = slot * 12;
+  const slot = state.fileSlot(0),
+    base = slot * 12;
   Atomics.store(state.slots, base + 10, -1);
   expect(state.revision(0)).toBe(0xffffffff);
   state.write(0, [new Uint8Array([90])], 0);
@@ -90,8 +98,12 @@ test("failed growth, empty I/O, reads and capacity growth do not dirty shared co
   const epoch = new Int32Array(new SharedArrayBuffer(4));
   expect(state.tryWrite(0, [new Uint8Array([1])], PAGE, 1)).toBeUndefined();
   expect(state.tryAppend(0, [new Uint8Array(PAGE)], PAGE)).toBe(PAGE + 4);
-  expect(state.directWrite(slot, 0, [new Uint8Array([1])], PAGE, 1, epoch, () => false, 42)).toBeUndefined();
-  expect(state.directAppend(slot, 0, [new Uint8Array(PAGE)], PAGE, epoch, () => false, 42)).toBe(PAGE + 4);
+  expect(
+    state.directWrite(slot, 0, [new Uint8Array([1])], PAGE, 1, epoch, () => false, 42),
+  ).toBeUndefined();
+  expect(state.directAppend(slot, 0, [new Uint8Array(PAGE)], PAGE, epoch, () => false, 42)).toBe(
+    PAGE + 4,
+  );
   state.write(0, [], 0);
   state.append(0, []);
   state.directWrite(slot, 0, [], 0, 0, epoch, () => false, 42);
@@ -108,18 +120,30 @@ test("snapshot retains matching bytes, metadata and revision when a writer follo
   let changed = false;
   Atomics.compareExchange = ((...args: any[]) => {
     const result = Reflect.apply(compare, Atomics, args);
-    if (!changed && args[0] === state.slots && args[1] === lock && args[2] === state.lockOwner && args[3] === 0) {
+    if (
+      !changed &&
+      args[0] === state.slots &&
+      args[1] === lock &&
+      args[2] === state.lockOwner &&
+      args[3] === 0
+    ) {
       changed = true;
       state.resize(0, 0, true);
     }
     return result;
   }) as typeof Atomics.compareExchange;
   try {
-    expect(state.snapshot(0)).toEqual({ stat: { kind: "file", ino: 1, size: 4, mtime: 1 }, data: new Uint8Array([65, 66, 67, 68]), revision: 1 });
+    expect(state.snapshot(0)).toEqual({
+      stat: { kind: "file", ino: 1, size: 4, mtime: 1 },
+      data: new Uint8Array([65, 66, 67, 68]),
+      revision: 1,
+    });
     expect(changed).toBe(true);
     expect(state.snapshot(0)!.data).toHaveLength(0);
     expect(state.revision(0)).toBe(2);
-  } finally { Atomics.compareExchange = compare; }
+  } finally {
+    Atomics.compareExchange = compare;
+  }
 });
 
 test("changed revisions and shared references block eviction of linked files", () => {
@@ -175,7 +199,8 @@ test("evicting a collision preserves lookup for the remaining files", () => {
 
 test("eviction checks references and revision only after acquiring the file lock", () => {
   const state = fixture();
-  const slot = state.fileSlot(0), lock = slot * 12 + 8;
+  const slot = state.fileSlot(0),
+    lock = slot * 12 + 8;
   const revision = state.revision(0)!;
   Atomics.store(state.slots, lock, 42);
   let contended = false;
@@ -216,7 +241,9 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
     expect(state.snapshot(0)).toBeUndefined();
     expect(intercepted).toBe(true);
     expect(state.snapshot(4095)!.data).toEqual(new Uint8Array([90]));
-  } finally { Atomics.compareExchange = compare; }
+  } finally {
+    Atomics.compareExchange = compare;
+  }
 });
 
 test("unreferenced directory slots can also be evicted without losing collision lookups", () => {
@@ -232,7 +259,11 @@ test("unreferenced directory slots can also be evicted without losing collision 
 test("linked eviction supports a corpus larger than the identity table", () => {
   const state = new shared.SharedFilesystemState();
   for (let handle = 0; handle < 10_000; handle++) {
-    state.register(handle, { kind: "file", ino: handle + 1, size: 1, mtime: 1 }, new Uint8Array([handle % 256]));
+    state.register(
+      handle,
+      { kind: "file", ino: handle + 1, size: 1, mtime: 1 },
+      new Uint8Array([handle % 256]),
+    );
     expect(state.evict(handle, state.revision(handle)!)).toBe(true);
   }
   expect(state.resources()).toMatchObject({ usedBytes: 0, files: 0 });
@@ -248,12 +279,18 @@ test("metadata-only registration preserves stat without allocating or exposing z
   expect(state.resources().usedBytes).toBe(0);
   expect(state.registeredHandles()).toEqual([0]);
   expect(() => state.read(0, [new Uint8Array(4)], 0)).toThrow(shared.MissingDataError);
-  expect(() => state.directRead(state.fileSlot(0), 0, [new Uint8Array(4)], 0, () => false, 42)).toThrow(shared.MissingDataError);
+  expect(() =>
+    state.directRead(state.fileSlot(0), 0, [new Uint8Array(4)], 0, () => false, 42),
+  ).toThrow(shared.MissingDataError);
   expect(state.tryWrite(0, [new Uint8Array([90])], 0, 1)).toBeUndefined();
   expect(state.tryAppend(0, [new Uint8Array([90])], 1)).toBe(5);
   const epoch = new Int32Array(new SharedArrayBuffer(4));
-  expect(state.directWrite(state.fileSlot(0), 0, [new Uint8Array([90])], 0, 1, epoch, () => false, 42)).toBeUndefined();
-  expect(state.directAppend(state.fileSlot(0), 0, [new Uint8Array([90])], 1, epoch, () => false, 42)).toBe(5);
+  expect(
+    state.directWrite(state.fileSlot(0), 0, [new Uint8Array([90])], 0, 1, epoch, () => false, 42),
+  ).toBeUndefined();
+  expect(
+    state.directAppend(state.fileSlot(0), 0, [new Uint8Array([90])], 1, epoch, () => false, 42),
+  ).toBe(5);
   expect(state.revision(0)).toBe(1);
   state.hydrate(0, new Uint8Array([65, 66, 67, 68]));
   expect(state.isResident(0)).toBe(true);
@@ -291,9 +328,11 @@ test("clean pinned payloads can unload and hydrate without changing their cached
   expect(state.revision(0)).toBe(saved.revision);
   expect(state.isResident(0)).toBe(false);
   expect(state.resources().usedBytes).toBe(0);
-  expect(() => state.directRead(slot, 0, [new Uint8Array(4)], 0, () => false, 42)).toThrow(shared.MissingDataError);
+  expect(() => state.directRead(slot, 0, [new Uint8Array(4)], 0, () => false, 42)).toThrow(
+    shared.MissingDataError,
+  );
   state.hydrate(0, saved.data);
-  const out = new Uint8Array(4);
+  const out: Uint8Array = new Uint8Array(4);
   expect(state.directRead(slot, 0, [out], 0, () => false, 42)).toBe(4);
   expect(out).toEqual(saved.data);
   expect(state.evict(0, saved.revision)).toBe(false);

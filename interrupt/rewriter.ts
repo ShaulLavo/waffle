@@ -32,7 +32,9 @@ function fail(reason: string): never {
 class Reader {
   position = 0;
   readonly bytes: Uint8Array;
-  constructor(bytes: Uint8Array) { this.bytes = bytes; }
+  constructor(bytes: Uint8Array) {
+    this.bytes = bytes;
+  }
   byte(): number {
     const value = this.bytes[this.position++];
     if (value === undefined) fail("truncated binary");
@@ -69,7 +71,9 @@ class Reader {
   }
   name(): string {
     const bytes = this.take(this.u32());
-    try { return decoder.decode(bytes); } catch (error) {
+    try {
+      return decoder.decode(bytes);
+    } catch (error) {
       if (!(error instanceof TypeError)) throw error;
       return fail("invalid UTF-8 name");
     }
@@ -83,7 +87,9 @@ class Reader {
 class Writer {
   private buffer: Uint8Array;
   private length = 0;
-  constructor(capacity = 128) { this.buffer = new Uint8Array(capacity); }
+  constructor(capacity = 128) {
+    this.buffer = new Uint8Array(capacity);
+  }
   bytes(bytes: Uint8Array): void {
     const required = this.length + bytes.length;
     if (required > this.buffer.length) {
@@ -123,15 +129,22 @@ class Writer {
     this.u32(bytes.length);
     this.bytes(bytes);
   }
-  finish(): Uint8Array<ArrayBuffer> { return this.buffer.slice(0, this.length); }
+  finish(): Uint8Array<ArrayBuffer> {
+    return this.buffer.slice(0, this.length);
+  }
 }
 
 function valueType(reader: Reader): void {
   switch (reader.byte()) {
-    case 0x7f: case 0x7e: case 0x7d: case 0x7c: // numeric
-    case 0x70: case 0x6f: // untyped funcref/externref
+    case 0x7f:
+    case 0x7e:
+    case 0x7d:
+    case 0x7c: // numeric
+    case 0x70:
+    case 0x6f: // untyped funcref/externref
       return;
-    default: fail("unsupported value type (SIMD, GC or typed reference)");
+    default:
+      fail("unsupported value type (SIMD, GC or typed reference)");
   }
 }
 function referenceType(reader: Reader): void {
@@ -168,7 +181,12 @@ function shifted(index: number, importedFunctions: number): number {
 }
 
 /** Parse one complete expression. Validation has already checked its typing. */
-function instructions(reader: Reader, writer: Writer, context: InstructionContext, constant: boolean): void {
+function instructions(
+  reader: Reader,
+  writer: Writer,
+  context: InstructionContext,
+  constant: boolean,
+): void {
   let depth = 0;
   let copiedFrom = reader.position;
   const flush = (end: number) => writer.bytes(reader.bytes.subarray(copiedFrom, end));
@@ -179,7 +197,9 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
       fail("unsupported constant-expression instruction");
     }
     switch (opcode) {
-      case 0x02: case 0x03: case 0x04:
+      case 0x02:
+      case 0x03:
+      case 0x04:
         blockType(reader);
         depth++;
         if (opcode === 0x03) {
@@ -195,10 +215,15 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
         }
         depth--;
         break;
-      case 0x0c: case 0x0d: // branches
-      case 0x20: case 0x21: case 0x22: // locals
-      case 0x23: case 0x24: // globals
-      case 0x25: case 0x26: // tables
+      case 0x0c:
+      case 0x0d: // branches
+      case 0x20:
+      case 0x21:
+      case 0x22: // locals
+      case 0x23:
+      case 0x24: // globals
+      case 0x25:
+      case 0x26: // tables
         reader.u32();
         break;
       case 0x0e: {
@@ -206,7 +231,10 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
         for (let i = 0; i <= count; i++) reader.u32();
         break;
       }
-      case 0x10: case 0x12: case 0xd2: { // call, return_call, ref.func
+      case 0x10:
+      case 0x12:
+      case 0xd2: {
+        // call, return_call, ref.func
         const index = reader.u32();
         flush(start);
         writer.byte(opcode);
@@ -214,37 +242,79 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
         copiedFrom = reader.position;
         break;
       }
-      case 0x11: case 0x13: // indirect calls: type index, table index
-        reader.u32(); reader.u32();
+      case 0x11:
+      case 0x13: // indirect calls: type index, table index
+        reader.u32();
+        reader.u32();
         break;
       case 0x1c: {
         const count = reader.u32();
         for (let i = 0; i < count; i++) valueType(reader);
         break;
       }
-      case 0x3f: case 0x40: memoryIndex(reader); break;
-      case 0x41: reader.signed(5); break;
-      case 0x42: reader.signed(10); break; // value unused; no lossy re-encoding
-      case 0x43: reader.take(4); break;
-      case 0x44: reader.take(8); break;
+      case 0x3f:
+      case 0x40:
+        memoryIndex(reader);
+        break;
+      case 0x41:
+        reader.signed(5);
+        break;
+      case 0x42:
+        reader.signed(10);
+        break; // value unused; no lossy re-encoding
+      case 0x43:
+        reader.take(4);
+        break;
+      case 0x44:
+        reader.take(8);
+        break;
       case 0xd0: {
         // Unlike a table's reftype byte, ref.null carries signed LEB33.
         // Accept its legal padded encodings, but never concrete/GC heap types.
         const heapType = reader.signed(5);
-        if (heapType !== -16 && heapType !== -17) fail("unsupported typed reference or GC heap type");
+        if (heapType !== -16 && heapType !== -17)
+          fail("unsupported typed reference or GC heap type");
         break;
       }
       case 0xfc: {
         const sub = reader.u32();
         switch (sub) {
-          case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: break; // trunc_sat
-          case 8: reader.u32(); memoryIndex(reader); break; // memory.init
-          case 9: case 13: reader.u32(); break; // data.drop, elem.drop
-          case 10: memoryIndex(reader); memoryIndex(reader); break;
-          case 11: memoryIndex(reader); break;
-          case 12: case 14: reader.u32(); reader.u32(); break; // table.init/copy
-          case 15: case 16: case 17: reader.u32(); break; // table.grow/size/fill
-          default: fail(`unsupported bulk/numeric opcode 0xfc:${sub}`);
+          case 0:
+          case 1:
+          case 2:
+          case 3:
+          case 4:
+          case 5:
+          case 6:
+          case 7:
+            break; // trunc_sat
+          case 8:
+            reader.u32();
+            memoryIndex(reader);
+            break; // memory.init
+          case 9:
+          case 13:
+            reader.u32();
+            break; // data.drop, elem.drop
+          case 10:
+            memoryIndex(reader);
+            memoryIndex(reader);
+            break;
+          case 11:
+            memoryIndex(reader);
+            break;
+          case 12:
+          case 14:
+            reader.u32();
+            reader.u32();
+            break; // table.init/copy
+          case 15:
+          case 16:
+          case 17:
+            reader.u32();
+            break; // table.grow/size/fill
+          default:
+            fail(`unsupported bulk/numeric opcode 0xfc:${sub}`);
         }
         break;
       }
@@ -260,12 +330,20 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
       }
       // Exact no-immediate core instructions. Numeric 0x45..0xc4 is the
       // contiguous MVP + sign-extension range; no proposal prefixes live here.
-      case 0x00: case 0x01: case 0x05: case 0x0f: case 0x1a: case 0x1b: case 0xd1:
+      case 0x00:
+      case 0x01:
+      case 0x05:
+      case 0x0f:
+      case 0x1a:
+      case 0x1b:
+      case 0xd1:
         break;
       default:
         if (opcode >= 0x28 && opcode <= 0x3e) memoryArgument(reader);
         else if (opcode < 0x45 || opcode > 0xc4) {
-          fail(`unsupported opcode 0x${opcode.toString(16)} (SIMD/GC/EH/typed calls or unknown proposal)`);
+          fail(
+            `unsupported opcode 0x${opcode.toString(16)} (SIMD/GC/EH/typed calls or unknown proposal)`,
+          );
         }
     }
   }
@@ -273,33 +351,46 @@ function instructions(reader: Reader, writer: Writer, context: InstructionContex
 
 function checkpoint(global: number, hostFunction: number, interval: number): Uint8Array {
   const writer = new Writer();
-  writer.byte(0x23); writer.u32(global); // global.get counter
-  writer.byte(0x41); writer.i32(1);
+  writer.byte(0x23);
+  writer.u32(global); // global.get counter
+  writer.byte(0x41);
+  writer.i32(1);
   writer.byte(0x6b); // i32.sub
-  writer.byte(0x24); writer.u32(global);
-  writer.byte(0x23); writer.u32(global);
+  writer.byte(0x24);
+  writer.u32(global);
+  writer.byte(0x23);
+  writer.u32(global);
   writer.byte(0x45); // i32.eqz
-  writer.byte(0x04); writer.byte(0x40); // if void
-  writer.byte(0x41); writer.i32(interval);
-  writer.byte(0x24); writer.u32(global); // reset before reentrant host call
+  writer.byte(0x04);
+  writer.byte(0x40); // if void
+  writer.byte(0x41);
+  writer.i32(interval);
+  writer.byte(0x24);
+  writer.u32(global); // reset before reentrant host call
   writer.bytes(hostCheck(hostFunction));
   writer.byte(0x0b);
   return writer.finish();
 }
 function hostCheck(hostFunction: number): Uint8Array {
   const writer = new Writer();
-  writer.byte(0x10); writer.u32(hostFunction);
-  writer.byte(0x04); writer.byte(0x40); // if returned signal != 0
+  writer.byte(0x10);
+  writer.u32(hostFunction);
+  writer.byte(0x04);
+  writer.byte(0x40); // if returned signal != 0
   writer.byte(0x00); // unreachable
   writer.byte(0x0b);
   return writer.finish();
 }
 
 /** Instrument validated source bytes; compiled modules cannot be made safe here. */
-export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOptions = {}): Uint8Array<ArrayBuffer> {
+export function rewriteInterrupts(
+  input: Uint8Array,
+  options: InterruptRewriteOptions = {},
+): Uint8Array<ArrayBuffer> {
   const interval = options.interval ?? 4096;
   const policy = options.policy ?? "countdown";
-  if (!Number.isInteger(interval) || interval < 1 || interval > 0x7fffffff) fail("interval must be a positive i32");
+  if (!Number.isInteger(interval) || interval < 1 || interval > 0x7fffffff)
+    fail("interval must be a positive i32");
   if (policy !== "countdown" && policy !== "entry") fail("unknown checkpoint policy");
   // Own the bytes: parser and validators must see the same snapshot, including
   // when the caller supplied a SharedArrayBuffer or a subarray of a larger file.
@@ -314,12 +405,18 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     const data = reader.take(reader.u32());
     if (id === 0) {
       const name = new Reader(data).name();
-      if (name === "linking" || name === "dylink" || name.startsWith("dylink.") || name.startsWith("reloc.")) {
+      if (
+        name === "linking" ||
+        name === "dylink" ||
+        name.startsWith("dylink.") ||
+        name.startsWith("reloc.")
+      ) {
         fail(`linker metadata ${name} is unsupported`);
       }
       continue;
     }
-    if (!SECTION_ORDER.includes(id) || sections.has(id)) fail(`unsupported or duplicate section ${id}`);
+    if (!SECTION_ORDER.includes(id) || sections.has(id))
+      fail(`unsupported or duplicate section ${id}`);
     sections.set(id, data);
   }
   const get = (id: number) => new Reader(sections.get(id) ?? new Uint8Array([0]));
@@ -354,23 +451,35 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     // uses fatal outcomes only. Cooperative own guests bypass this rewriter.
     if (namespace === "runtime_proc") fail("reserved import namespace runtime_proc");
     switch (importReader.byte()) {
-      case 0: importReader.u32(); importedFunctions++; break;
-      case 1: referenceType(importReader); limits(importReader, false); break;
-      case 2: limits(importReader, true); memories++; break;
+      case 0:
+        importReader.u32();
+        importedFunctions++;
+        break;
+      case 1:
+        referenceType(importReader);
+        limits(importReader, false);
+        break;
+      case 2:
+        limits(importReader, true);
+        memories++;
+        break;
       case 3:
         valueType(importReader);
         if (importReader.byte() > 1) fail("unsupported global mutability");
         globals++;
         break;
-      default: fail("unsupported import kind (tags or unknown proposal)");
+      default:
+        fail("unsupported import kind (tags or unknown proposal)");
     }
   }
   importReader.done();
   const importWriter = new Writer();
   importWriter.u32(importCount + 1);
   importWriter.bytes(importReader.bytes.subarray(importStart));
-  importWriter.name("runtime_proc"); importWriter.name("interrupted");
-  importWriter.byte(0); importWriter.u32(typeCount);
+  importWriter.name("runtime_proc");
+  importWriter.name("interrupted");
+  importWriter.byte(0);
+  importWriter.u32(typeCount);
   sections.set(2, importWriter.finish());
 
   const functionReader = get(3);
@@ -381,7 +490,8 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
   const tableReader = get(4);
   const tables = tableReader.u32();
   for (let i = 0; i < tables; i++) {
-    referenceType(tableReader); limits(tableReader, false);
+    referenceType(tableReader);
+    limits(tableReader, false);
   }
   tableReader.done();
   const memoryReader = get(5);
@@ -394,7 +504,10 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
   const globalReader = get(6);
   const definedGlobals = globalReader.u32();
   globals += definedGlobals;
-  const context: InstructionContext = { importedFunctions, checkpoint: checkpoint(globals, importedFunctions, interval) };
+  const context: InstructionContext = {
+    importedFunctions,
+    checkpoint: checkpoint(globals, importedFunctions, interval),
+  };
   const globalWriter = new Writer();
   globalWriter.u32(definedGlobals + 1);
   for (let i = 0; i < definedGlobals; i++) {
@@ -405,8 +518,11 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     instructions(globalReader, globalWriter, context, true);
   }
   globalReader.done();
-  globalWriter.byte(0x7f); globalWriter.byte(1); // private mutable i32
-  globalWriter.byte(0x41); globalWriter.i32(interval); globalWriter.byte(0x0b);
+  globalWriter.byte(0x7f);
+  globalWriter.byte(1); // private mutable i32
+  globalWriter.byte(0x41);
+  globalWriter.i32(interval);
+  globalWriter.byte(0x0b);
   sections.set(6, globalWriter.finish());
 
   const exportReader = get(7);
@@ -442,7 +558,8 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     if (flags > 7) fail("unsupported element segment flags");
     elementWriter.u32(flags);
     if (flags === 2 || flags === 6) elementWriter.u32(elementReader.u32());
-    if (flags === 0 || flags === 2 || flags === 4 || flags === 6) instructions(elementReader, elementWriter, context, true);
+    if (flags === 0 || flags === 2 || flags === 4 || flags === 6)
+      instructions(elementReader, elementWriter, context, true);
     if (flags === 1 || flags === 2 || flags === 3) {
       if (elementReader.byte() !== 0) fail("unsupported element kind");
       elementWriter.byte(0);
@@ -472,7 +589,10 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     const body = new Reader(codeReader.take(codeReader.u32()));
     const writer = new Writer(body.bytes.length + entry.length + 32);
     const locals = body.u32();
-    for (let j = 0; j < locals; j++) { body.u32(); valueType(body); }
+    for (let j = 0; j < locals; j++) {
+      body.u32();
+      valueType(body);
+    }
     writer.bytes(body.bytes.subarray(0, body.position));
     writer.bytes(entry);
     instructions(body, writer, context, false);
@@ -492,7 +612,10 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
     const flags = dataReader.u32();
     if (flags > 2) fail("unsupported data segment flags");
     dataWriter.u32(flags);
-    if (flags === 2) { memoryIndex(dataReader); dataWriter.u32(0); }
+    if (flags === 2) {
+      memoryIndex(dataReader);
+      dataWriter.u32(0);
+    }
     if (flags !== 1) instructions(dataReader, dataWriter, context, true);
     const length = dataReader.u32();
     dataWriter.u32(length);
@@ -511,7 +634,9 @@ export function rewriteInterrupts(input: Uint8Array, options: InterruptRewriteOp
   for (const id of SECTION_ORDER) {
     const data = sections.get(id);
     if (!data) continue;
-    output.byte(id); output.u32(data.length); output.bytes(data);
+    output.byte(id);
+    output.u32(data.length);
+    output.bytes(data);
   }
   const result = output.finish();
   if (!WebAssembly.validate(result)) fail("rewritten module failed validation");

@@ -59,7 +59,8 @@ export class RingWriter extends RingBase {
    * queued), so callers may fire and forget.
    */
   write(handle: number, kind: number, payload: Uint8Array = new Uint8Array()): Promise<void> {
-    if (payload.length > MAX_RECORD) return Promise.reject(new RangeError(`ring record too large: ${payload.length}`));
+    if (payload.length > MAX_RECORD)
+      return Promise.reject(new RangeError(`ring record too large: ${payload.length}`));
     this.queue = this.queue.then(() => this.append(handle, kind, payload));
     return this.queue;
   }

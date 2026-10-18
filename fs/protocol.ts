@@ -12,12 +12,18 @@ export type GrowableSharedSegment = SharedArrayBuffer & {
 };
 export function createSharedSegment(): GrowableSharedSegment {
   // The runtime supports growable SABs; ES2022's library declarations do not yet expose them.
-  const Constructor = SharedArrayBuffer as unknown as new (bytes: number, options: { maxByteLength: number }) => GrowableSharedSegment;
+  const Constructor = SharedArrayBuffer as unknown as new (
+    bytes: number,
+    options: { maxByteLength: number },
+  ) => GrowableSharedSegment;
   return new Constructor(0, { maxByteLength: SHARED_SEGMENT_BYTES });
 }
 export function normalizeSharedMaxBytes(maxBytes: number): number {
   if (Number.isNaN(maxBytes)) throw new RangeError("invalid shared filesystem storage cap");
-  return Math.max(1, Math.min(MAX_SHARED_SEGMENTS, Math.floor(maxBytes / SHARED_SEGMENT_BYTES))) * SHARED_SEGMENT_BYTES;
+  return (
+    Math.max(1, Math.min(MAX_SHARED_SEGMENTS, Math.floor(maxBytes / SHARED_SEGMENT_BYTES))) *
+    SHARED_SEGMENT_BYTES
+  );
 }
 export const HEADER = 32;
 export const PAGE = 64 * 1024;
@@ -28,9 +34,20 @@ export const CAPABILITY_SLOTS = 4096;
 export const CAPABILITY_HEADER = 1;
 export const CAPABILITY_WORDS = 3;
 const MAX_CONNECTION_OWNERS = 65536;
-export const enum State { Pending, Complete, Cancelled, Failed, Overflow }
+export const enum State {
+  Pending,
+  Complete,
+  Cancelled,
+  Failed,
+  Overflow,
+}
 export class FilesystemError extends Error {
-  constructor(public errno: number, message = `filesystem errno ${errno}`) { super(message); }
+  constructor(
+    public errno: number,
+    message = `filesystem errno ${errno}`,
+  ) {
+    super(message);
+  }
 }
 export interface FilesystemConnection {
   port: MessagePort;
@@ -67,14 +84,22 @@ export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
  */
-export function createFilesystemIdentity(parent?: FilesystemIdentity, maxBytes = DEFAULT_SHARED_MAX_BYTES): FilesystemIdentity {
+export function createFilesystemIdentity(
+  parent?: FilesystemIdentity,
+  maxBytes = DEFAULT_SHARED_MAX_BYTES,
+): FilesystemIdentity {
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared = parent?.shared ?? new SharedArrayBuffer(24 * 1024 * 1024);
-  const segments = parent?.segments ?? Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () => createSharedSegment());
+  const segments =
+    parent?.segments ??
+    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () => createSharedSegment());
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
-  if (owner >= MAX_CONNECTION_OWNERS) throw new FilesystemError(33, "filesystem identity table exhausted");
+  if (owner >= MAX_CONNECTION_OWNERS)
+    throw new FilesystemError(33, "filesystem identity table exhausted");
   const ownerStates = parent?.ownerStates ?? new SharedArrayBuffer(MAX_CONNECTION_OWNERS * 4);
-  const capabilities = new SharedArrayBuffer((CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS) * 4);
+  const capabilities = new SharedArrayBuffer(
+    (CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS) * 4,
+  );
   const entries = new Int32Array(capabilities);
   entries.fill(-1);
   entries[0] = 0;
@@ -106,21 +131,28 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
   const target = new Int32Array(reservation.target);
   for (;;) {
     const count = Atomics.load(target, reservation.targetKey + 1);
-    if (count <= 0 || Atomics.compareExchange(target, reservation.targetKey + 1, count, count - 1) === count) break;
+    if (
+      count <= 0 ||
+      Atomics.compareExchange(target, reservation.targetKey + 1, count, count - 1) === count
+    )
+      break;
   }
   if (Atomics.compareExchange(state, 1, 0, 2) === 0)
     Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
 }
 export function connectFilesystemIdentity(identity: FilesystemIdentity) {
   const channel = new NativeMessageChannel();
-  return { client: { ...identity, port: channel.port1 }, server: { ...identity, port: channel.port2 } };
+  return {
+    client: { ...identity, port: channel.port1 },
+    server: { ...identity, port: channel.port2 },
+  };
 }
 export function createFilesystemConnection(parent?: FilesystemIdentity) {
   return connectFilesystemIdentity(createFilesystemIdentity(parent));
 }
 export function isRevoked(connection: FilesystemIdentity): boolean {
   if (Atomics.load(new Int32Array(connection.ownerStates), 0)) return true;
-  return connection.revocations.some(buffer => Atomics.load(new Int32Array(buffer), 0) !== 0);
+  return connection.revocations.some((buffer) => Atomics.load(new Int32Array(buffer), 0) !== 0);
 }
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
@@ -138,7 +170,10 @@ export function revokeFilesystem(connection: FilesystemIdentity): void {
  * revoke-then-zero observation proves that any later entrant will abort before touching storage. */
 export class FilesystemSection {
   private readonly cells: Int32Array;
-  constructor(connection: FilesystemIdentity, private readonly revoked: () => boolean = () => isRevoked(connection)) {
+  constructor(
+    connection: FilesystemIdentity,
+    private readonly revoked: () => boolean = () => isRevoked(connection),
+  ) {
     this.cells = new Int32Array(connection.sections);
   }
   enter(): void {
@@ -159,7 +194,11 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
   const cells = new Int32Array(connection.sections);
   const revocation = new Int32Array(connection.revocations[0]!);
   const asyncAtomics = Atomics as typeof Atomics & {
-    waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
+    waitAsync(
+      array: Int32Array,
+      index: number,
+      value: number,
+    ): { async: boolean; value: string | Promise<string> };
   };
   for (;;) {
     const observed = Atomics.load(cells, 0);
@@ -167,7 +206,10 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
     const waiting = asyncAtomics.waitAsync(cells, 0, observed);
     // A proven-dead reap may have notified between the check and registration without
     // changing an abandoned count. Recheck after registration and release that waiter too.
-    if (Atomics.load(revocation, 0) === 2) { Atomics.notify(cells, 0); return; }
+    if (Atomics.load(revocation, 0) === 2) {
+      Atomics.notify(cells, 0);
+      return;
+    }
     if (waiting.async) await waiting.value;
   }
 }
@@ -187,16 +229,41 @@ export function wake(connection: FilesystemIdentity): void {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 export function pack(value: unknown): Uint8Array {
-  return encoder.encode(JSON.stringify(value, (_key, item) => item === undefined ? { $undefined: true } : item instanceof Map ? { $map: Array.from(item) } : item));
+  return encoder.encode(
+    JSON.stringify(value, (_key, item) =>
+      item === undefined
+        ? { $undefined: true }
+        : item instanceof Map
+          ? { $map: Array.from(item) }
+          : item,
+    ),
+  );
 }
 export function unpack(bytes: Uint8Array): any {
   // Revivers returning undefined delete object properties, which is correct for resolved paths.
-  return JSON.parse(decoder.decode(Reflect.get(bytes.buffer, "resizable") || Object.prototype.toString.call(bytes.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(bytes) : bytes), (_key, item) => item?.$undefined ? undefined : item?.$map ? new Map(item.$map) : item);
+  return JSON.parse(
+    decoder.decode(
+      Reflect.get(bytes.buffer, "resizable") ||
+        Object.prototype.toString.call(bytes.buffer) === "[object SharedArrayBuffer]"
+        ? new Uint8Array(bytes)
+        : bytes,
+    ),
+    (_key, item) => (item?.$undefined ? undefined : item?.$map ? new Map(item.$map) : item),
+  );
 }
-export type RequestMessage = { id: number; buffer: SharedArrayBuffer } | { connect: FilesystemConnection } | { sweep: true } | { trim: true } | { discard: number };
+export type RequestMessage =
+  | { id: number; buffer: SharedArrayBuffer }
+  | { connect: FilesystemConnection }
+  | { sweep: true }
+  | { trim: true }
+  | { discard: number };
 export function errno(error: unknown): number {
   if (error instanceof FilesystemError) return error.errno;
   if (error instanceof RangeError) return 22; // EFBIG
-  if ((error as { code?: unknown })?.code === "ENOSPC" || (error as { name?: unknown })?.name === "QuotaExceededError") return 51;
+  if (
+    (error as { code?: unknown })?.code === "ENOSPC" ||
+    (error as { name?: unknown })?.name === "QuotaExceededError"
+  )
+    return 51;
   return 29; // EIO, never invent ENOENT for an internal failure.
 }

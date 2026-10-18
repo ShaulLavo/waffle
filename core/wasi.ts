@@ -19,9 +19,7 @@ const EISDIR = 31;
 const ENOENT = 44;
 const ENOSYS = 52;
 const ENOTDIR = 54;
-const ENOTEMPTY = 55;
 const ENOTSUP = 58;
-const EPERM = 63;
 const ESPIPE = 70;
 const ENOTCAPABLE = 76;
 
@@ -164,7 +162,10 @@ export class Wasi {
     const total = chunks.reduce((n, chunk) => n + chunk.length, 0);
     const out = new Uint8Array(total);
     let at = 0;
-    for (const chunk of chunks) { out.set(chunk, at); at += chunk.length; }
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.length;
+    }
     if (total > 0) (which === 2 ? this.opts.stderr : this.opts.stdout)(out);
     return total;
   }
@@ -172,22 +173,31 @@ export class Wasi {
   constructor(private opts: WasiOptions) {
     const reserved = new Set<number>();
     for (const fd of opts.reservedFds ?? []) {
-      if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR || reserved.has(fd)) throw new RangeError("invalid or duplicate reserved descriptor number");
+      if (!Number.isInteger(fd) || fd < 0 || fd > MAX_DESCRIPTOR || reserved.has(fd))
+        throw new RangeError("invalid or duplicate reserved descriptor number");
       reserved.add(fd);
     }
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
     for (const which of [0, 1, 2] as const) {
-      this.descriptors.open(opts.stdio?.[which] ?? {
-        kind: "terminal",
-        read: (chunks) => which === 0 ? this.readStdin(chunks) : 0,
-        // stdin's preview1 callback may block. Async guests need an explicit nonblocking
-        // endpoint supplied through stdio; they must not enter that callback accidentally.
-        tryRead: which === 0 && opts.stdin ? undefined : () => 0,
-        write: (chunks) => this.writeTerminal(which, chunks),
-        tryWrite: (chunks) => this.writeTerminal(which, chunks),
-        readiness: () => ({ readable: true, writable: true, hangup: which === 0 && !this.opts.stdin }),
-      }, RIGHTS_TTY, RIGHTS_TTY);
+      this.descriptors.open(
+        opts.stdio?.[which] ?? {
+          kind: "terminal",
+          read: (chunks) => (which === 0 ? this.readStdin(chunks) : 0),
+          // stdin's preview1 callback may block. Async guests need an explicit nonblocking
+          // endpoint supplied through stdio; they must not enter that callback accidentally.
+          tryRead: which === 0 && opts.stdin ? undefined : () => 0,
+          write: (chunks) => this.writeTerminal(which, chunks),
+          tryWrite: (chunks) => this.writeTerminal(which, chunks),
+          readiness: () => ({
+            readable: true,
+            writable: true,
+            hangup: which === 0 && !this.opts.stdin,
+          }),
+        },
+        RIGHTS_TTY,
+        RIGHTS_TTY,
+      );
     }
     // Preopens are contiguous from fd 3 in the absence of bindings, and fill only the
     // lowest gaps that incoming child targets do not reserve. This keeps libc discovery
@@ -199,19 +209,49 @@ export class Wasi {
         fd++;
       }
       if (fd > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
-      this.openFileAt(fd, { kind: "directory", handle: opts.fs.preopen(path) }, RIGHTS_ALL, RIGHTS_ALL, name);
+      this.openFileAt(
+        fd,
+        { kind: "directory", handle: opts.fs.preopen(path) },
+        RIGHTS_ALL,
+        RIGHTS_ALL,
+        name,
+      );
       fd++;
     }
   }
 
-  private openFile(resource: Extract<Resource, { handle: number }>, base: bigint, inheriting: bigint, preopen?: string): number {
+  private openFile(
+    resource: Extract<Resource, { handle: number }>,
+    base: bigint,
+    inheriting: bigint,
+    preopen?: string,
+  ): number {
     this.opts.fs.retain(resource.handle);
-    return this.descriptors.open(resource, base, inheriting, () => this.opts.fs.release(resource.handle), preopen);
+    return this.descriptors.open(
+      resource,
+      base,
+      inheriting,
+      () => this.opts.fs.release(resource.handle),
+      preopen,
+    );
   }
 
-  private openFileAt(fd: number, resource: Extract<Resource, { handle: number }>, base: bigint, inheriting: bigint, preopen?: string): number {
+  private openFileAt(
+    fd: number,
+    resource: Extract<Resource, { handle: number }>,
+    base: bigint,
+    inheriting: bigint,
+    preopen?: string,
+  ): number {
     this.opts.fs.retain(resource.handle);
-    return this.descriptors.openAt(fd, resource, base, inheriting, () => this.opts.fs.release(resource.handle), preopen);
+    return this.descriptors.openAt(
+      fd,
+      resource,
+      base,
+      inheriting,
+      () => this.opts.fs.release(resource.handle),
+      preopen,
+    );
   }
 
   /** Runs `_start`; returns the exit code. */
@@ -222,7 +262,8 @@ export class Wasi {
   /** Runs `_start`; returns the `proc_exit` code, or null when `_start` returned without exiting. */
   launch(instance: WebAssembly.Instance, beforeStart?: () => void): number | null {
     const memory = instance.exports.memory ?? this.importedMemory;
-    if (!(memory instanceof WebAssembly.Memory)) throw new TypeError("guest has no exported or supplied memory");
+    if (!(memory instanceof WebAssembly.Memory))
+      throw new TypeError("guest has no exported or supplied memory");
     const start = instance.exports._start;
     if (typeof start !== "function") throw new TypeError("guest has no _start entry point");
     this.memory = memoryViews(memory);
@@ -239,19 +280,30 @@ export class Wasi {
 
   /** Link only preview1 and explicitly supplied adapter imports, including imported memory. */
   imports(module: WebAssembly.Module): WebAssembly.Imports {
-    const impl = this.functions();
+    const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const out: WebAssembly.Imports = Object.create(null);
     this.importedMemory = undefined;
     for (const imp of WebAssembly.Module.imports(module)) {
       const ns = (out[imp.module] ??= Object.create(null));
-      const supplied = this.opts.namespaces && Object.hasOwn(this.opts.namespaces, imp.module) ? this.opts.namespaces[imp.module] : undefined;
-      const value = imp.module === "wasi_snapshot_preview1" && imp.kind === "function"
-        ? Object.hasOwn(impl, imp.name) ? this.wrap(imp.name, impl[imp.name]!) : undefined
-        : supplied && Object.hasOwn(supplied, imp.name) ? supplied[imp.name] : undefined;
-      if (value === undefined) throw new TypeError(`unsupported import ${imp.module}.${imp.name} (${imp.kind})`);
+      const supplied =
+        this.opts.namespaces && Object.hasOwn(this.opts.namespaces, imp.module)
+          ? this.opts.namespaces[imp.module]
+          : undefined;
+      const value =
+        imp.module === "wasi_snapshot_preview1" && imp.kind === "function"
+          ? Object.hasOwn(impl, imp.name)
+            ? this.wrap(imp.name, impl[imp.name]!)
+            : undefined
+          : supplied && Object.hasOwn(supplied, imp.name)
+            ? supplied[imp.name]
+            : undefined;
+      if (value === undefined)
+        throw new TypeError(`unsupported import ${imp.module}.${imp.name} (${imp.kind})`);
       if (imp.kind === "memory") {
-        if (!(value instanceof WebAssembly.Memory)) throw new TypeError(`import ${imp.module}.${imp.name} must be WebAssembly.Memory`);
-        if (this.importedMemory && this.importedMemory !== value) throw new TypeError("multiple imported memories are unsupported");
+        if (!(value instanceof WebAssembly.Memory))
+          throw new TypeError(`import ${imp.module}.${imp.name} must be WebAssembly.Memory`);
+        if (this.importedMemory && this.importedMemory !== value)
+          throw new TypeError("multiple imported memories are unsupported");
         this.importedMemory = value;
         this.memory = memoryViews(value);
       }
@@ -274,7 +326,9 @@ export class Wasi {
         return result;
       } catch (err) {
         if (err instanceof WasiExit) throw err;
-        (this.opts.diagnostic ?? this.opts.stderr)(encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`));
+        (this.opts.diagnostic ?? this.opts.stderr)(
+          encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`),
+        );
         return EIO;
       }
     };
@@ -324,10 +378,15 @@ export class Wasi {
     view.setBigUint64(ptr + 56, times, true);
   }
 
-  private writeOut(file: Extract<Resource, { kind: "file" }>, iovs: number, count: number, at: number | null): number {
+  private writeOut(
+    file: Extract<Resource, { kind: "file" }>,
+    iovs: number,
+    count: number,
+    at: number | null,
+  ): number {
     if (count === 0) return 0;
     const chunks = this.iovecs(iovs, count);
-    if (chunks.every(chunk => chunk.length === 0)) return 0;
+    if (chunks.every((chunk) => chunk.length === 0)) return 0;
     const write = () => {
       if (at === null && file.append) {
         const result = this.opts.fs.append(file.handle, chunks);
@@ -343,7 +402,11 @@ export class Wasi {
     return at === null ? withFileOffset(file, write) : write();
   }
 
-  private readIn(file: Extract<Resource, { kind: "file" }>, chunks: Uint8Array[], at: number | null): number {
+  private readIn(
+    file: Extract<Resource, { kind: "file" }>,
+    chunks: Uint8Array[],
+    at: number | null,
+  ): number {
     const read = () => {
       const pos = at ?? file.offset;
       const count = this.opts.fs.read(file.handle, chunks, pos);
@@ -353,11 +416,15 @@ export class Wasi {
     return at === null ? withFileOffset(file, read) : read();
   }
 
-  private functions(): Record<string, (...args: never[]) => number | void> {
+  private functions() {
     const sizes = (list: Uint8Array[], countPtr: number, sizePtr: number) => {
       const view = this.view();
       view.setUint32(countPtr, list.length, true);
-      view.setUint32(sizePtr, list.reduce((n, a) => n + a.length, 0), true);
+      view.setUint32(
+        sizePtr,
+        list.reduce((n, a) => n + a.length, 0),
+        true,
+      );
       return SUCCESS;
     };
     const fill = (list: Uint8Array[], ptrs: number, buf: number) => {
@@ -403,21 +470,36 @@ export class Wasi {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
         if (!(entry.rightsBase & RIGHT_FD_DATASYNC)) return ENOTCAPABLE;
-        return entry.resource.kind === "file" || entry.resource.kind === "directory" ? this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS : SUCCESS;
+        return entry.resource.kind === "file" || entry.resource.kind === "directory"
+          ? (this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS)
+          : SUCCESS;
       },
       fd_sync: (fd: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
         if (!(entry.rightsBase & RIGHT_FD_SYNC)) return ENOTCAPABLE;
-        return entry.resource.kind === "file" || entry.resource.kind === "directory" ? this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS : SUCCESS;
+        return entry.resource.kind === "file" || entry.resource.kind === "directory"
+          ? (this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS)
+          : SUCCESS;
       },
       fd_fdstat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
         const view = this.view();
-        const filetype = entry.resource.kind === "terminal" ? FT_CHAR : entry.resource.kind === "directory" ? FT_DIR : entry.resource.kind === "pipe" ? 0 : FT_FILE;
+        const filetype =
+          entry.resource.kind === "terminal"
+            ? FT_CHAR
+            : entry.resource.kind === "directory"
+              ? FT_DIR
+              : entry.resource.kind === "pipe"
+                ? 0
+                : FT_FILE;
         view.setUint8(ptr, filetype);
-        view.setUint16(ptr + 2, entry.resource.kind === "file" && entry.resource.append ? FDFLAG_APPEND : 0, true);
+        view.setUint16(
+          ptr + 2,
+          entry.resource.kind === "file" && entry.resource.append ? FDFLAG_APPEND : 0,
+          true,
+        );
         view.setBigUint64(ptr + 8, entry.rightsBase, true);
         view.setBigUint64(ptr + 16, entry.rightsInheriting, true);
         return SUCCESS;
@@ -425,7 +507,8 @@ export class Wasi {
       fd_fdstat_set_flags: (fd: number, flags: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS) !== RIGHT_FD_FDSTAT_SET_FLAGS) return ENOTCAPABLE;
+        if ((entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS) !== RIGHT_FD_FDSTAT_SET_FLAGS)
+          return ENOTCAPABLE;
         if (entry.resource.kind === "file") entry.resource.append = (flags & FDFLAG_APPEND) !== 0;
         return SUCCESS;
       },
@@ -434,7 +517,11 @@ export class Wasi {
         if (!entry) return EBADF;
         base = BigInt.asUintN(64, base);
         inheriting = BigInt.asUintN(64, inheriting);
-        if ((base & entry.rightsBase) !== base || (inheriting & entry.rightsInheriting) !== inheriting) return ENOTCAPABLE;
+        if (
+          (base & entry.rightsBase) !== base ||
+          (inheriting & entry.rightsInheriting) !== inheriting
+        )
+          return ENOTCAPABLE;
         entry.rightsBase = base;
         entry.rightsInheriting = inheriting;
         return SUCCESS;
@@ -442,28 +529,45 @@ export class Wasi {
       fd_filestat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_GET) !== RIGHT_FD_FILESTAT_GET) return ENOTCAPABLE;
-        this.writeFilestat(ptr, entry.resource.kind === "file" || entry.resource.kind === "directory" ? this.opts.fs.stat(entry.resource.handle) : null, entry.resource.kind === "pipe" ? 0 : FT_CHAR);
+        if ((entry.rightsBase & RIGHT_FD_FILESTAT_GET) !== RIGHT_FD_FILESTAT_GET)
+          return ENOTCAPABLE;
+        this.writeFilestat(
+          ptr,
+          entry.resource.kind === "file" || entry.resource.kind === "directory"
+            ? this.opts.fs.stat(entry.resource.handle)
+            : null,
+          entry.resource.kind === "pipe" ? 0 : FT_CHAR,
+        );
         return SUCCESS;
       },
       fd_filestat_set_size: (fd: number, size: bigint) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_SIZE) !== RIGHT_FD_FILESTAT_SET_SIZE) return ENOTCAPABLE;
+        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_SIZE) !== RIGHT_FD_FILESTAT_SET_SIZE)
+          return ENOTCAPABLE;
         if (entry.resource.kind !== "file") return EINVAL;
         return this.opts.fs.resize(entry.resource.handle, Number(size), true);
       },
       fd_filestat_set_times: (fd: number, _atim: bigint, mtim: bigint, flags: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_TIMES) !== RIGHT_FD_FILESTAT_SET_TIMES) return ENOTCAPABLE;
-        if ((entry.resource.kind === "file" || entry.resource.kind === "directory") && (flags & 12)) return this.opts.fs.setMtime(entry.resource.handle, flags & 8 ? Date.now() : Number(mtim / 1_000_000n));
+        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_TIMES) !== RIGHT_FD_FILESTAT_SET_TIMES)
+          return ENOTCAPABLE;
+        if ((entry.resource.kind === "file" || entry.resource.kind === "directory") && flags & 12)
+          return this.opts.fs.setMtime(
+            entry.resource.handle,
+            flags & 8 ? Date.now() : Number(mtim / 1_000_000n),
+          );
         return SUCCESS;
       },
       fd_pread: (fd: number, iovs: number, count: number, offset: bigint, nreadPtr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & (RIGHT_FD_READ | RIGHT_FD_SEEK)) !== (RIGHT_FD_READ | RIGHT_FD_SEEK)) return ENOTCAPABLE;
+        if (
+          (entry.rightsBase & (RIGHT_FD_READ | RIGHT_FD_SEEK)) !==
+          (RIGHT_FD_READ | RIGHT_FD_SEEK)
+        )
+          return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
         if (offset < 0n) return EINVAL;
@@ -475,7 +579,11 @@ export class Wasi {
       fd_pwrite: (fd: number, iovs: number, count: number, offset: bigint, nwrittenPtr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
-        if ((entry.rightsBase & (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) !== (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) return ENOTCAPABLE;
+        if (
+          (entry.rightsBase & (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) !==
+          (RIGHT_FD_WRITE | RIGHT_FD_SEEK)
+        )
+          return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         if (entry.resource.kind !== "file") return ESPIPE;
         if (offset < 0n) return EINVAL;
@@ -486,7 +594,8 @@ export class Wasi {
       },
       fd_prestat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
-        if (!entry || entry.resource.kind !== "directory" || entry.preopen === undefined) return EBADF;
+        if (!entry || entry.resource.kind !== "directory" || entry.preopen === undefined)
+          return EBADF;
         const view = this.view();
         view.setUint8(ptr, 0);
         view.setUint32(ptr + 4, encoder.encode(entry.preopen).length, true);
@@ -494,7 +603,8 @@ export class Wasi {
       },
       fd_prestat_dir_name: (fd: number, ptr: number, len: number) => {
         const entry = this.descriptors.get(fd);
-        if (!entry || entry.resource.kind !== "directory" || entry.preopen === undefined) return EBADF;
+        if (!entry || entry.resource.kind !== "directory" || entry.preopen === undefined)
+          return EBADF;
         this.bytes().set(encoder.encode(entry.preopen).subarray(0, len), ptr);
         return SUCCESS;
       },
@@ -504,7 +614,10 @@ export class Wasi {
         if ((entry.rightsBase & RIGHT_FD_READ) !== RIGHT_FD_READ) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
         const chunks = this.iovecs(iovs, count);
-        const n = entry.resource.kind === "file" ? this.readIn(entry.resource, chunks, null) : entry.resource.read(chunks);
+        const n =
+          entry.resource.kind === "file"
+            ? this.readIn(entry.resource, chunks, null)
+            : entry.resource.read(chunks);
         if (n < 0) return -n;
         this.view().setUint32(nreadPtr, n, true);
         return SUCCESS;
@@ -547,7 +660,14 @@ export class Wasi {
         if (entry.resource.kind !== "file") return ESPIPE;
         const file = entry.resource;
         const result = withFileOffset(file, () => {
-          const base = whence === 0 ? 0 : whence === 1 ? file.offset : whence === 2 ? this.opts.fs.stat(file.handle).size : NaN;
+          const base =
+            whence === 0
+              ? 0
+              : whence === 1
+                ? file.offset
+                : whence === 2
+                  ? this.opts.fs.stat(file.handle).size
+                  : NaN;
           const pos = base + Number(offset);
           if (!(pos >= 0)) return -EINVAL;
           file.offset = pos;
@@ -569,7 +689,10 @@ export class Wasi {
         if (!entry) return EBADF;
         if ((entry.rightsBase & RIGHT_FD_WRITE) !== RIGHT_FD_WRITE) return ENOTCAPABLE;
         if (entry.resource.kind === "directory") return EISDIR;
-        const written = entry.resource.kind === "file" ? this.writeOut(entry.resource, iovs, count, null) : entry.resource.write(this.iovecs(iovs, count));
+        const written =
+          entry.resource.kind === "file"
+            ? this.writeOut(entry.resource, iovs, count, null)
+            : entry.resource.write(this.iovecs(iovs, count));
         if (written < 0) return -written;
         this.view().setUint32(nwrittenPtr, written, true);
         return SUCCESS;
@@ -590,15 +713,32 @@ export class Wasi {
         this.writeFilestat(buf, this.opts.fs.stat(node));
         return SUCCESS;
       },
-      path_filestat_set_times: (fd: number, _flags: number, ptr: number, len: number, _atim: bigint, mtim: bigint, fst: number) => {
+      path_filestat_set_times: (
+        fd: number,
+        _flags: number,
+        ptr: number,
+        len: number,
+        _atim: bigint,
+        mtim: bigint,
+        fst: number,
+      ) => {
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_SET_TIMES);
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
-        if (fst & 12) return this.opts.fs.setMtime(node, fst & 8 ? Date.now() : Number(mtim / 1_000_000n));
+        if (fst & 12)
+          return this.opts.fs.setMtime(node, fst & 8 ? Date.now() : Number(mtim / 1_000_000n));
         return SUCCESS;
       },
-      path_link: (oldFd: number, _flags: number, oldPtr: number, oldLen: number, newFd: number, newPtr: number, newLen: number) => {
+      path_link: (
+        oldFd: number,
+        _flags: number,
+        oldPtr: number,
+        oldLen: number,
+        newFd: number,
+        newPtr: number,
+        newLen: number,
+      ) => {
         const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_LINK_SOURCE);
         if (typeof from === "number") return from;
         const to = this.resolve(newFd, newPtr, newLen, RIGHT_PATH_LINK_TARGET);
@@ -621,9 +761,14 @@ export class Wasi {
         const dir = this.descriptors.get(fd)!;
         rightsBase = BigInt.asUintN(64, rightsBase);
         rightsInheriting = BigInt.asUintN(64, rightsInheriting);
-        if ((rightsBase & dir.rightsInheriting) !== rightsBase || (rightsInheriting & dir.rightsInheriting) !== rightsInheriting) return ENOTCAPABLE;
+        if (
+          (rightsBase & dir.rightsInheriting) !== rightsBase ||
+          (rightsInheriting & dir.rightsInheriting) !== rightsInheriting
+        )
+          return ENOTCAPABLE;
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
-        if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE)) return ENOTCAPABLE;
+        if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
+          return ENOTCAPABLE;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
         if (node === undefined) {
@@ -640,7 +785,10 @@ export class Wasi {
           const error = this.opts.fs.resize(node, 0, true);
           if (error) return error;
         }
-        const resource: Resource = kind === "directory" ? { kind, handle: node } : { kind, handle: node, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0 };
+        const resource: Resource =
+          kind === "directory"
+            ? { kind, handle: node }
+            : { kind, handle: node, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0 };
         const newFd = this.openFile(resource, rightsBase, rightsInheriting);
         this.view().setUint32(fdOut, newFd, true);
         return SUCCESS;
@@ -655,7 +803,14 @@ export class Wasi {
         if (typeof path === "number") return path;
         return this.opts.fs.removePath(path, true);
       },
-      path_rename: (oldFd: number, oldPtr: number, oldLen: number, newFd: number, newPtr: number, newLen: number) => {
+      path_rename: (
+        oldFd: number,
+        oldPtr: number,
+        oldLen: number,
+        newFd: number,
+        newPtr: number,
+        newLen: number,
+      ) => {
         const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_RENAME_SOURCE);
         if (typeof from === "number") return from;
         const to = this.resolve(newFd, newPtr, newLen, RIGHT_PATH_RENAME_TARGET);
@@ -674,7 +829,13 @@ export class Wasi {
         inPtr >>>= 0;
         const view = this.view();
         if (nsubs === 0 || nsubs * 48 > view.byteLength - inPtr) return EINVAL;
-        type Event = { userdata: bigint; type: number; error: number; nbytes: bigint; flags: number };
+        type Event = {
+          userdata: bigint;
+          type: number;
+          error: number;
+          nbytes: bigint;
+          flags: number;
+        };
         const ready: Event[] = [];
         const clocks: { userdata: bigint; deadline: bigint; clock: number }[] = [];
         const subscriptions: { userdata: bigint; type: number; fd: number }[] = [];
@@ -684,7 +845,10 @@ export class Wasi {
           const type = view.getUint8(sub + 8);
           if (type === EVENTTYPE_CLOCK) {
             const clock = view.getUint32(sub + 16, true);
-            if (clock > 3) { ready.push({ userdata, type, error: EINVAL, nbytes: 0n, flags: 0 }); continue; }
+            if (clock > 3) {
+              ready.push({ userdata, type, error: EINVAL, nbytes: 0n, flags: 0 });
+              continue;
+            }
             const timeout = view.getBigUint64(sub + 24, true);
             const abs = (view.getUint16(sub + 40, true) & SUBCLOCK_ABSTIME) !== 0;
             clocks.push({ userdata, clock, deadline: abs ? timeout : nowNs(clock) + timeout });
@@ -697,41 +861,93 @@ export class Wasi {
           let observed = 0;
           let mixedSources = false;
           const observe = (word?: ControlCells) => {
-            if (!word || typeof SharedArrayBuffer === "undefined" || !(word.buffer instanceof SharedArrayBuffer) || word.length !== 1) {
+            if (
+              !word ||
+              typeof SharedArrayBuffer === "undefined" ||
+              !(word.buffer instanceof SharedArrayBuffer) ||
+              word.length !== 1
+            ) {
               mixedSources = true;
             } else if (!notification) {
               notification = word;
               observed = controlLoad(word, 0);
-            } else if (notification.buffer !== word.buffer || notification.byteOffset !== word.byteOffset) mixedSources = true;
+            } else if (
+              notification.buffer !== word.buffer ||
+              notification.byteOffset !== word.byteOffset
+            )
+              mixedSources = true;
           };
           // Snapshot before checking readiness. A publisher racing the scan makes wait return
           // not-equal instead of sleeping after its only notification has already happened.
           for (const sub of subscriptions) {
             const resource = this.descriptors.get(sub.fd)?.resource;
-            observe(resource && resource.kind !== "file" && resource.kind !== "directory" ? resource.notification : undefined);
+            observe(
+              resource && resource.kind !== "file" && resource.kind !== "directory"
+                ? resource.notification
+                : undefined,
+            );
           }
           if (this.opts.interrupt) observe(this.opts.interrupt);
-          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)) return EINTR;
+          if (
+            this.opts.interruptPending?.() ??
+            (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)
+          )
+            return EINTR;
           let waitMs = Infinity;
           for (const c of clocks) {
             const remaining = c.deadline - nowNs(c.clock);
-            if (remaining <= 0n) ready.push({ userdata: c.userdata, type: EVENTTYPE_CLOCK, error: SUCCESS, nbytes: 0n, flags: 0 });
+            if (remaining <= 0n)
+              ready.push({
+                userdata: c.userdata,
+                type: EVENTTYPE_CLOCK,
+                error: SUCCESS,
+                nbytes: 0n,
+                flags: 0,
+              });
             else waitMs = Math.min(waitMs, Number(remaining) / 1e6);
           }
           for (const sub of subscriptions) {
             const entry = this.descriptors.get(sub.fd);
-            const error = !entry ? EBADF : !(entry.rightsBase & RIGHT_POLL_FD_READWRITE) ? ENOTCAPABLE : SUCCESS;
-            if (error) { ready.push({ ...sub, error, nbytes: 0n, flags: 0 }); continue; }
+            const error = !entry
+              ? EBADF
+              : !(entry.rightsBase & RIGHT_POLL_FD_READWRITE)
+                ? ENOTCAPABLE
+                : SUCCESS;
+            if (error) {
+              ready.push({ ...sub, error, nbytes: 0n, flags: 0 });
+              continue;
+            }
             const resource = entry!.resource;
-            const state = resource.kind === "file" || resource.kind === "directory"
-              ? { readable: true, writable: true, hangup: false, nbytes: resource.kind === "file" ? Math.max(0, this.opts.fs.stat(resource.handle).size - resource.offset) : 0 }
-              : resource.readiness();
-            if ((sub.type === EVENTTYPE_FD_READ ? state.readable : state.writable) || state.hangup) {
-              ready.push({ ...sub, error: SUCCESS, nbytes: BigInt(sub.type === EVENTTYPE_FD_READ ? state.nbytes ?? 0 : 0), flags: state.hangup ? EVENTRWFLAGS_HANGUP : 0 });
+            const state =
+              resource.kind === "file" || resource.kind === "directory"
+                ? {
+                    readable: true,
+                    writable: true,
+                    hangup: false,
+                    nbytes:
+                      resource.kind === "file"
+                        ? Math.max(0, this.opts.fs.stat(resource.handle).size - resource.offset)
+                        : 0,
+                  }
+                : resource.readiness();
+            if (
+              (sub.type === EVENTTYPE_FD_READ ? state.readable : state.writable) ||
+              state.hangup
+            ) {
+              ready.push({
+                ...sub,
+                error: SUCCESS,
+                nbytes: BigInt(sub.type === EVENTTYPE_FD_READ ? (state.nbytes ?? 0) : 0),
+                flags: state.hangup ? EVENTRWFLAGS_HANGUP : 0,
+              });
             }
           }
           if (ready.length > 0) break;
-          if (this.opts.interruptPending?.() ?? (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)) return EINTR;
+          if (
+            this.opts.interruptPending?.() ??
+            (this.opts.interrupt !== undefined && controlLoad(this.opts.interrupt, 0) !== 0)
+          )
+            return EINTR;
           // Advisory signal hints can repeat the same value after the readiness scan, losing
           // a notify before wait. Bound rescans for those as well as independent sources.
           if (mixedSources || this.opts.interruptPending) waitMs = Math.min(waitMs, 10);

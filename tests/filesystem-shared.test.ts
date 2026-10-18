@@ -14,7 +14,11 @@ test("revoking a killed shared-page writer releases its file lock", () => {
 
 test("the service grows into another SAB segment and preserves page data", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, size: PAGE * 256, mtime: 1 }, new Uint8Array(PAGE * 256).fill(65));
+  state.register(
+    0,
+    { kind: "file", ino: 1, size: PAGE * 256, mtime: 1 },
+    new Uint8Array(PAGE * 256).fill(65),
+  );
   state.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 }, new Uint8Array(PAGE).fill(66));
   const [segment] = state.takeNewSegments();
   expect(segment?.buffer).toBeInstanceOf(SharedArrayBuffer);
@@ -28,9 +32,19 @@ test("the service grows into another SAB segment and preserves page data", () =>
 test("storage cap reports ENOSPC while the address-space limit reports EFBIG", () => {
   const cap = new SharedFilesystemState(undefined, 16 * 1024 * 1024);
   cap.register(0, { kind: "file", ino: 1, size: PAGE * 256, mtime: 1 }, new Uint8Array(PAGE * 256));
-  try { cap.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 }, new Uint8Array(PAGE)); throw new Error("expected ENOSPC"); }
-  catch (error) { expect((error as { errno?: number }).errno).toBe(51); }
-  expect(() => cap.register(2, { kind: "file", ino: 3, size: 1024 * 1024 * 1024 + PAGE, mtime: 1 }, new Uint8Array())).toThrow(RangeError);
+  try {
+    cap.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
+    throw new Error("expected ENOSPC");
+  } catch (error) {
+    expect((error as { errno?: number }).errno).toBe(51);
+  }
+  expect(() =>
+    cap.register(
+      2,
+      { kind: "file", ino: 3, size: 1024 * 1024 * 1024 + PAGE, mtime: 1 },
+      new Uint8Array(),
+    ),
+  ).toThrow(RangeError);
 });
 
 test("a cloned root attachment preserves service-owned extra segments", () => {
@@ -108,7 +122,7 @@ test("resource snapshots include all allocated SAB bytes and the storage cap", (
   const state = new SharedFilesystemState();
   state.register(0, { kind: "file", ino: 1, size: PAGE * 256, mtime: 1 });
   state.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 });
-  const resources = state.resources() as Record<string, number>;
+  const resources = state.resources();
   expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * 256);
   expect(resources.metadataBytes! + resources.poolBytes!).toBe(resources.bytes);
   expect(resources.usedBytes! + resources.freeBytes!).toBe(resources.poolBytes);
@@ -117,19 +131,25 @@ test("resource snapshots include all allocated SAB bytes and the storage cap", (
 
 test("link, unlink and cross-directory rename refresh both affected directory timestamps", () => {
   const backend = new MemoryBackend();
-  const call = (operation: string, args: unknown[]) => backend.execute(operation, args, new Uint8Array());
+  const call = (operation: string, args: unknown[]) =>
+    backend.execute(operation, args, new Uint8Array());
   const root = call("preopen", ["/"]) as number;
   const child = call("create", [call("resolve", [root, "child"]), "directory", true]) as number;
   const file = call("create", [call("resolve", [root, "file"]), "file", true]) as number;
   backend.retain(file);
   call("setMtime", [root, 1]);
-  expect(call("link", [call("resolve", [root, "file"]), call("resolve", [root, "linked"])] )).toBe(0);
+  expect(call("link", [call("resolve", [root, "file"]), call("resolve", [root, "linked"])])).toBe(
+    0,
+  );
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
   call("setMtime", [root, 1]);
   expect(call("removePath", [call("resolve", [root, "linked"]), false])).toBe(0);
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
-  call("setMtime", [root, 1]); call("setMtime", [child, 1]);
-  expect(call("rename", [call("resolve", [root, "file"]), call("resolve", [child, "file"])] )).toBe(0);
+  call("setMtime", [root, 1]);
+  call("setMtime", [child, 1]);
+  expect(call("rename", [call("resolve", [root, "file"]), call("resolve", [child, "file"])])).toBe(
+    0,
+  );
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
   expect(backend.shared.stat(child)!.mtime).toBeGreaterThan(1);
 });

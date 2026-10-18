@@ -1,5 +1,9 @@
-import { SharedFilesystem } from "../browser/shared-fs.js";
-import type { SharedFilesystemOptions, SharedFilesystemState, SharedFilesystemStorage } from "../browser/shared-fs.js";
+import {
+  SharedFilesystem,
+  type SharedFilesystemOptions,
+  type SharedFilesystemState,
+  type SharedFilesystemStorage,
+} from "../browser/shared-fs.js";
 
 type Backend = SharedFilesystemStorage;
 type Busy = "wait" | "takeover";
@@ -16,16 +20,20 @@ let filesystemWorker: Worker | undefined;
 const probes: string[] = [];
 let holdOwnershipLoss = false;
 let heldOwnershipLoss: MessageEvent | undefined;
-let disposal: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = { status: "idle" };
+let disposal: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = {
+  status: "idle",
+};
 // Instrument calls without replacing the actual browser worker or storage implementation.
 globalThis.Worker = class extends NativeWorker {
   constructor(url: string | URL, options?: WorkerOptions) {
     super(url, options);
+    // oxlint-disable-next-line typescript/no-this-alias -- This test records the actual callback/Worker receiver.
     filesystemWorker = this;
-    this.addEventListener("message", event => {
+    this.addEventListener("message", (event) => {
       if (typeof event.data?.type === "string") {
         probes.push(event.data.type);
-        if (typeof event.data.status === "string") probes.push(`${event.data.type}:${event.data.status}`);
+        if (typeof event.data.status === "string")
+          probes.push(`${event.data.type}:${event.data.status}`);
       }
       if (holdOwnershipLoss && event.data?.type === "filesystem-ownership-lost") {
         heldOwnershipLoss = event;
@@ -33,14 +41,27 @@ globalThis.Worker = class extends NativeWorker {
       }
     });
   }
-  terminate(): void { terminations++; super.terminate(); }
+  terminate(): void {
+    terminations++;
+    super.terminate();
+  }
 };
 let fs: SharedFilesystem | undefined;
 let state: StateRecord = { status: "opening" };
 const states: StateRecord[] = [];
-type OperationRecord = { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string; errno?: number; isError?: boolean; name?: string; message?: string };
+type OperationRecord = {
+  status: "idle" | "pending" | "fulfilled" | "rejected";
+  error?: string;
+  errno?: number;
+  isError?: boolean;
+  name?: string;
+  message?: string;
+};
 let operation: OperationRecord = { status: "idle" };
-const directWrites: Record<"queued" | "new", OperationRecord> = { queued: { status: "idle" }, new: { status: "idle" } };
+const directWrites: Record<"queued" | "new", OperationRecord> = {
+  queued: { status: "idle" },
+  new: { status: "idle" },
+};
 
 function errorText(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -58,25 +79,45 @@ function requireFilesystem(): SharedFilesystem {
 // new typed waiting state and cannot pass by merely leaving a request pending.
 function observeOperationalReadiness(filesystem: SharedFilesystem): void {
   const disposeClient = filesystem.client.dispose.bind(filesystem.client);
-  filesystem.client.dispose = () => { clientDisposals++; disposeClient(); };
+  filesystem.client.dispose = () => {
+    clientDisposals++;
+    disposeClient();
+  };
   const hasTypedState = () => (filesystem as { state?: unknown }).state !== undefined;
   void filesystem.listFiles().then(
-    () => { if (!hasTypedState()) state = { status: "ready" }; },
-    error => { if (!hasTypedState()) state = { status: "failed", error: errorText(error) }; },
+    () => {
+      if (!hasTypedState()) state = { status: "ready" };
+    },
+    (error) => {
+      if (!hasTypedState()) state = { status: "failed", error: errorText(error) };
+    },
   );
   filesystem.onOwnershipLost = () => {
-    if (!hasTypedState()) state = { status: "failed", error: "This workspace was opened in another tab." };
+    if (!hasTypedState())
+      state = { status: "failed", error: "This workspace was opened in another tab." };
   };
 }
 function lockName(backend: Backend, name: string): string {
-  return backend === "indexeddb" ? `bun-wasm:filesystem:indexeddb:${name}` : `bun-wasm:filesystem:${name}`;
+  return backend === "indexeddb"
+    ? `bun-wasm:filesystem:indexeddb:${name}`
+    : `bun-wasm:filesystem:${name}`;
 }
 
-async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecovery: boolean | "recovered" = false): Promise<void> {
+async function start(
+  backend: Backend,
+  name: string,
+  whenBusy?: Busy,
+  gatedRecovery: boolean | "recovered" = false,
+): Promise<void> {
   if (fs) throw new Error("filesystem already started");
   holdOwnershipLoss = gatedRecovery === "recovered";
   const options: SharedFilesystemOptions = {
-    workerURL: gatedRecovery === "recovered" ? "/recovery-fs-worker.js?recovered" : gatedRecovery ? "/recovery-fs-worker.js" : "/fs-worker.js",
+    workerURL:
+      gatedRecovery === "recovered"
+        ? "/recovery-fs-worker.js?recovered"
+        : gatedRecovery
+          ? "/recovery-fs-worker.js"
+          : "/fs-worker.js",
     name,
     storage: backend,
     onStateChange: record,
@@ -101,10 +142,16 @@ async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecov
   beginDispose(): void {
     if (disposal.status !== "idle") throw new Error("disposal already started");
     disposal = { status: "pending" };
-    void requireFilesystem().dispose().then(
-      () => { disposal = { status: "fulfilled" }; },
-      error => { disposal = { status: "rejected", error: errorText(error) }; },
-    );
+    void requireFilesystem()
+      .dispose()
+      .then(
+        () => {
+          disposal = { status: "fulfilled" };
+        },
+        (error) => {
+          disposal = { status: "rejected", error: errorText(error) };
+        },
+      );
   },
   releaseRecovery(): void {
     if (!filesystemWorker) throw new Error("filesystem worker has not been created");
@@ -131,20 +178,47 @@ async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecov
     if (operation.status !== "idle") throw new Error("operation already started");
     operation = { status: "pending" };
     const filesystem = requireFilesystem();
-    void filesystem.writeFile("/queued", text).then(() => filesystem.flush()).then(
-      () => { operation = { status: "fulfilled" }; },
-      error => { operation = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno, isError: error instanceof Error, name: error?.name, message: error?.message }; },
-    );
+    void filesystem
+      .writeFile("/queued", text)
+      .then(() => filesystem.flush())
+      .then(
+        () => {
+          operation = { status: "fulfilled" };
+        },
+        (error) => {
+          operation = {
+            status: "rejected",
+            error: errorText(error),
+            errno: (error as { errno?: number }).errno,
+            isError: error instanceof Error,
+            name: error?.name,
+            message: error?.message,
+          };
+        },
+      );
   },
   directWrite: (label: "queued" | "new") => directWrites[label],
   beginDirectWrite(label: "queued" | "new", text: string): void {
     if (directWrites[label].status !== "idle") throw new Error("direct write already started");
     directWrites[label] = { status: "pending" };
     // Observe writeFile itself: a later flush failure must not hide an accepted write.
-    void requireFilesystem().writeFile("/queued", text).then(
-      () => { directWrites[label] = { status: "fulfilled" }; },
-      error => { directWrites[label] = { status: "rejected", error: errorText(error), errno: (error as { errno?: number }).errno, isError: error instanceof Error, name: error?.name, message: error?.message }; },
-    );
+    void requireFilesystem()
+      .writeFile("/queued", text)
+      .then(
+        () => {
+          directWrites[label] = { status: "fulfilled" };
+        },
+        (error) => {
+          directWrites[label] = {
+            status: "rejected",
+            error: errorText(error),
+            errno: (error as { errno?: number }).errno,
+            isError: error instanceof Error,
+            name: error?.name,
+            message: error?.message,
+          };
+        },
+      );
   },
   async readQueued(): Promise<string | undefined> {
     const value = await requireFilesystem().readFile("/queued");
@@ -171,7 +245,10 @@ async function start(backend: Backend, name: string, whenBusy?: Busy, gatedRecov
       fs = new SharedFilesystem(invalid);
       observeOperationalReadiness(fs);
     } catch (error) {
-      record({ status: "failed", error: error instanceof Error ? error : new Error(String(error)) });
+      record({
+        status: "failed",
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
     }
   },
 };

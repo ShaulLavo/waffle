@@ -11,7 +11,10 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
     fs.retain(path.node);
     const operations: string[] = [];
     const submit = fs.submit.bind(fs);
-    fs.submit = (...args) => { operations.push(args[0]); return submit(...args); };
+    fs.submit = (...args) => {
+      operations.push(args[0]);
+      return submit(...args);
+    };
     const written = fs.write(path.node, [new Uint8Array([65, 66])], 0);
     const appended = fs.append(path.node, [new Uint8Array([67, 68])]);
     const snapshots: number[][] = [];
@@ -22,5 +25,7 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
     }
     fs.release(path.node);
     self.postMessage({ written, appended, snapshots, operations });
-  } finally { fs.dispose(); }
+  } finally {
+    fs.dispose();
+  }
 };

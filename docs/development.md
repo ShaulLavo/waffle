@@ -10,9 +10,9 @@ Run these commands from the repository root:
 
 ```sh
 bun install --frozen-lockfile
+bun install --cwd site --frozen-lockfile
 bun run prepare
-bun run check
-bun run check:nodenext
+bun run quality
 bun test ./tests
 bun run size
 ```
@@ -28,6 +28,7 @@ scratch directory on the data drive; the runner owns its browser/profile cleanup
 
 ## More documentation
 
+- [Quality gates and duplicate baseline](quality.md)
 - [Architecture and API notes](architecture.md)
 - [Guest and host ABI](host-abi.md)
 - [Storage ownership and lifecycle](storage.md)

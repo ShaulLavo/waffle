@@ -5,7 +5,14 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** Headers the bridge sets itself (framing and connection management). */
-const HOP_BY_HOP = new Set(["host", "connection", "keep-alive", "content-length", "transfer-encoding", "upgrade"]);
+const HOP_BY_HOP = new Set([
+  "host",
+  "connection",
+  "keep-alive",
+  "content-length",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 export interface PreviewRequest {
   method: string;
@@ -22,7 +29,8 @@ export function serializeRequest(req: PreviewRequest, host: string): Uint8Array 
     if (!HOP_BY_HOP.has(name.toLowerCase())) lines.push(`${name}: ${value}`);
   }
   const body = req.body ?? new Uint8Array();
-  if (body.length > 0 || (req.method !== "GET" && req.method !== "HEAD")) lines.push(`content-length: ${body.length}`);
+  if (body.length > 0 || (req.method !== "GET" && req.method !== "HEAD"))
+    lines.push(`content-length: ${body.length}`);
   lines.push("connection: close", "", "");
   const head = encoder.encode(lines.join("\r\n"));
   const out = new Uint8Array(head.length + body.length);
@@ -44,7 +52,15 @@ export interface ResponseSink {
   error(message: string): void;
 }
 
-type State = "head" | "length" | "chunk-size" | "chunk-data" | "chunk-crlf" | "trailers" | "close" | "done";
+type State =
+  | "head"
+  | "length"
+  | "chunk-size"
+  | "chunk-data"
+  | "chunk-crlf"
+  | "trailers"
+  | "close"
+  | "done";
 
 const NO_BODY = new Set([204, 304]);
 
@@ -78,7 +94,11 @@ export class ResponseParser {
   end(): void {
     if (this.state === "done") return;
     if (this.state === "close") return this.finish();
-    this.fail(this.state === "head" ? "the server closed the connection without a response" : "the server closed the connection mid-response");
+    this.fail(
+      this.state === "head"
+        ? "the server closed the connection without a response"
+        : "the server closed the connection mid-response",
+    );
   }
 
   private process(): void {
@@ -117,7 +137,8 @@ export class ResponseParser {
     this.pending = this.pending.subarray(end + 4);
     const [statusLine = "", ...headerLines] = text.split("\r\n");
     const match = /^HTTP\/1\.[01] (\d{3})(?: (.*))?$/.exec(statusLine);
-    if (!match) throw new Error(`malformed status line: ${JSON.stringify(statusLine.slice(0, 80))}`);
+    if (!match)
+      throw new Error(`malformed status line: ${JSON.stringify(statusLine.slice(0, 80))}`);
     const status = Number(match[1]);
     // Interim responses (100 Continue, 103 Early Hints) precede the real one.
     if (status >= 100 && status < 200 && status !== 101) return true;
@@ -140,7 +161,8 @@ export class ResponseParser {
     const length = get("content-length");
     if (length === undefined) return "close";
     this.remaining = Number(length);
-    if (!Number.isSafeInteger(this.remaining) || this.remaining < 0) throw new Error(`bad content-length: ${length}`);
+    if (!Number.isSafeInteger(this.remaining) || this.remaining < 0)
+      throw new Error(`bad content-length: ${length}`);
     return this.remaining === 0 ? "done" : "length";
   }
 
@@ -199,7 +221,11 @@ export class ResponseParser {
 
 function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
   // Pending bytes must be fixed and unshared, including while waiting for a partial line.
-  if (a.length === 0) return Reflect.get(b.buffer, "resizable") || Object.prototype.toString.call(b.buffer) === "[object SharedArrayBuffer]" ? new Uint8Array(b) : b;
+  if (a.length === 0)
+    return Reflect.get(b.buffer, "resizable") ||
+      Object.prototype.toString.call(b.buffer) === "[object SharedArrayBuffer]"
+      ? new Uint8Array(b)
+      : b;
   const out = new Uint8Array(a.length + b.length);
   out.set(a);
   out.set(b, a.length);
@@ -213,7 +239,8 @@ function indexOfCrlf(bytes: Uint8Array): number {
 
 function indexOfCrlfCrlf(bytes: Uint8Array): number {
   for (let i = 0; i + 3 < bytes.length; i++) {
-    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i;
+    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10)
+      return i;
   }
   return -1;
 }

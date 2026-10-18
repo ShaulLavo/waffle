@@ -26,7 +26,12 @@ export class PersistentBackend extends MemoryBackend {
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private nonce = crypto.randomUUID();
-  private constructor(private storage: StorageBackend, fs: MemFS, index?: PersistedIndex, intervalMs = 50) {
+  private constructor(
+    private storage: StorageBackend,
+    fs: MemFS,
+    index?: PersistedIndex,
+    intervalMs = 50,
+  ) {
     super(fs);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
@@ -41,26 +46,49 @@ export class PersistentBackend extends MemoryBackend {
       this.committedKeys = new Map(this.keys);
     } else this.dirty.add(fs.root);
     fs.onLinkChange = (node, delta) => this.changeLinks(node, delta);
-    fs.onChange = node => { if (!this.detached.has(node)) { this.nodes.set(node.ino, node); this.dirty.add(node); } };
-    if (intervalMs > 0) this.timer = setInterval(() => {
-      if (!this.stopped && !this.pendingCheckpoints) void this.checkpoint().catch(() => { /* explicit flush reports/retries failures */ });
-    }, intervalMs);
+    fs.onChange = (node) => {
+      if (!this.detached.has(node)) {
+        this.nodes.set(node.ino, node);
+        this.dirty.add(node);
+      }
+    };
+    if (intervalMs > 0)
+      this.timer = setInterval(() => {
+        if (!this.stopped && !this.pendingCheckpoints)
+          void this.checkpoint().catch(() => {
+            /* explicit flush reports/retries failures */
+          });
+      }, intervalMs);
   }
-  static async open(storage: StorageBackend, options: { intervalMs?: number } = {}): Promise<PersistentBackend> {
+  static async open(
+    storage: StorageBackend,
+    options: { intervalMs?: number } = {},
+  ): Promise<PersistentBackend> {
     const index = await storage.load();
     if (!index) return new PersistentBackend(storage, new MemFS(), undefined, options.intervalMs);
     const nodes = new Map<number, Node>();
-    for (const entry of index.nodes) nodes.set(entry.ino, entry.kind === "dir"
-      ? { kind: "dir", ino: entry.ino, mtime: entry.mtime, children: new Map() }
-      : { kind: "file", ino: entry.ino, mtime: entry.mtime, size: entry.size, data: new Uint8Array() });
-    for (const entry of index.nodes) if (entry.kind === "dir") {
-      const node = nodes.get(entry.ino) as DirNode;
-      for (const [name, ino] of entry.children ?? []) {
-        const child = nodes.get(ino);
-        if (!child) throw new Error(`persisted filesystem references missing inode ${ino}`);
-        node.children.set(name, child);
+    for (const entry of index.nodes)
+      nodes.set(
+        entry.ino,
+        entry.kind === "dir"
+          ? { kind: "dir", ino: entry.ino, mtime: entry.mtime, children: new Map() }
+          : {
+              kind: "file",
+              ino: entry.ino,
+              mtime: entry.mtime,
+              size: entry.size,
+              data: new Uint8Array(),
+            },
+      );
+    for (const entry of index.nodes)
+      if (entry.kind === "dir") {
+        const node = nodes.get(entry.ino) as DirNode;
+        for (const [name, ino] of entry.children ?? []) {
+          const child = nodes.get(ino);
+          if (!child) throw new Error(`persisted filesystem references missing inode ${ino}`);
+          node.children.set(name, child);
+        }
       }
-    }
     const root = nodes.get(index.root);
     if (root?.kind !== "dir") throw new Error("persisted filesystem has no root directory");
     adoptInodes(root);
@@ -72,50 +100,69 @@ export class PersistentBackend extends MemoryBackend {
     if (count > 0) this.links.set(node.ino, count);
     else this.links.delete(node.ino);
     if (delta === 1 && previous === 0) {
-      this.nodes.set(node.ino, node); this.detached.delete(node);
+      this.nodes.set(node.ino, node);
+      this.detached.delete(node);
       const key = this.detachedKeys.get(node.ino);
       if (key) {
         // The namespace entry is new, but this payload is already durable. Restore its
         // rollback baseline too, so a failed reattachment checkpoint can retry cold.
-        this.keys.set(node.ino, key); this.committedKeys.set(node.ino, key);
+        this.keys.set(node.ino, key);
+        this.committedKeys.set(node.ino, key);
         this.detachedKeys.delete(node.ino);
       }
-      this.removed.delete(node.ino); this.dirty.add(node);
-      if (node.kind === "dir") for (const child of node.children.values()) this.changeLinks(child, 1);
+      this.removed.delete(node.ino);
+      this.dirty.add(node);
+      if (node.kind === "dir")
+        for (const child of node.children.values()) this.changeLinks(child, 1);
     } else if (delta === -1 && count === 0) {
-      this.nodes.delete(node.ino); this.dirty.delete(node); this.detached.add(node);
+      this.nodes.delete(node.ino);
+      this.dirty.delete(node);
+      this.detached.add(node);
       this.removed.add(node.ino);
-      if (node.kind === "dir") for (const child of node.children.values()) this.changeLinks(child, -1);
+      if (node.kind === "dir")
+        for (const child of node.children.values()) this.changeLinks(child, -1);
     }
   }
-  protected isLinked(node: Node): boolean { return this.nodes.has(node.ino); }
+  protected isLinked(node: Node): boolean {
+    return this.nodes.has(node.ino);
+  }
   private resolveNode(path: string): Node | undefined {
     let node = this.fs.lookup(path);
     if (!node && path.startsWith("/")) {
       const resolved = this.fs.resolveAbsolute(path);
-      if (typeof resolved !== "number" && resolved.node !== undefined) node = this.fs.nodeForHandle(resolved.node);
+      if (typeof resolved !== "number" && resolved.node !== undefined)
+        node = this.fs.nodeForHandle(resolved.node);
     }
     return node;
   }
   /** Dead handles are no longer enumerable in shared memory; prune their private owners too. */
   private pruneDetached(): void {
-    for (const [handle, node] of this.registeredNodes) if (this.shared.revision(handle) === undefined) {
-      this.registeredNodes.delete(handle); this.revisions.delete(handle);
-      if (this.detached.has(node)) { this.keys.delete(node.ino); this.detachedKeys.delete(node.ino); }
-    }
+    for (const [handle, node] of this.registeredNodes)
+      if (this.shared.revision(handle) === undefined) {
+        this.registeredNodes.delete(handle);
+        this.revisions.delete(handle);
+        if (this.detached.has(node)) {
+          this.keys.delete(node.ino);
+          this.detachedKeys.delete(node.ino);
+        }
+      }
   }
   private retainedData(): string[] {
     const keys: string[] = [];
-    for (const [handle, node] of this.registeredNodes) if (this.detached.has(node) && this.shared.revision(handle) !== undefined) {
-      const key = this.committedKeys.get(node.ino) ?? this.detachedKeys.get(node.ino);
-      if (key) keys.push(key);
-    }
+    for (const [handle, node] of this.registeredNodes)
+      if (this.detached.has(node) && this.shared.revision(handle) !== undefined) {
+        const key = this.committedKeys.get(node.ino) ?? this.detachedKeys.get(node.ino);
+        if (key) keys.push(key);
+      }
     return keys;
   }
   protected sync(handle: FileHandle): void {
     const node = this.fs.nodeForHandle(handle);
     this.registeredNodes.set(handle, node);
-    if (node.kind === "dir") { super.sync(handle); return; }
+    if (node.kind === "dir") {
+      super.sync(handle);
+      return;
+    }
     const registered = this.shared.hasFile(handle);
     const loaded = node.size === undefined;
     this.shared.register(handle, this.fs.stat(handle), node.data, loaded);
@@ -140,12 +187,21 @@ export class PersistentBackend extends MemoryBackend {
       if (!stat || revision === undefined) continue;
       const node = this.registeredNodes.get(handle);
       if (!node) continue;
-      if (node.kind === "dir") { if (this.shared.evict(handle, revision)) this.registeredNodes.delete(handle); continue; }
+      if (node.kind === "dir") {
+        if (this.shared.evict(handle, revision)) this.registeredNodes.delete(handle);
+        continue;
+      }
       if (this.revisions.get(handle) !== revision) continue;
-      if (this.shared.isResident(handle) && this.keys.get(node.ino) !== this.committedKeys.get(node.ino)) continue;
+      if (
+        this.shared.isResident(handle) &&
+        this.keys.get(node.ino) !== this.committedKeys.get(node.ino)
+      )
+        continue;
       if (this.shared.evict(handle, revision)) {
-        node.size = stat.size; node.mtime = stat.mtime;
-        this.revisions.delete(handle); this.registeredNodes.delete(handle);
+        node.size = stat.size;
+        node.mtime = stat.mtime;
+        this.revisions.delete(handle);
+        this.registeredNodes.delete(handle);
       } else this.shared.unload(handle, revision);
     }
   }
@@ -161,28 +217,48 @@ export class PersistentBackend extends MemoryBackend {
     // The asynchronous preparation owns a pin independently of the requesting capability.
     // A namespace replacement, cancellation or trim may otherwise reclaim its slot mid-read.
     this.retain(handle);
-    const load = Promise.resolve().then(async () => {
-      const data = key ? await this.storage.read(key) : new Uint8Array();
-      // A complete overwrite/truncate may have made this disk read obsolete. Never install
-      // an old payload over newer shared bytes or metadata, even for the same inode.
-      if (this.registeredNodes.get(handle) !== node || this.shared.revision(handle) !== revision || this.shared.isResident(handle)) return;
-      if (data.length !== node.size) throw new Error(`persisted filesystem payload size mismatch for inode ${node.ino}`);
-      const resources = this.shared.resources();
-      if (resources.usedBytes + data.length > resources.maxBytes) this.evictClean(handle);
-      // Registration already records the clean revision. Hydration preserves it; sampling
-      // after hydrate unlocks could misclassify another guest's immediate write as clean.
-      this.shared.hydrate(handle, data);
-    }).finally(() => { this.loading.delete(handle); this.release(handle); });
+    const load = Promise.resolve()
+      .then(async () => {
+        const data = key ? await this.storage.read(key) : new Uint8Array();
+        // A complete overwrite/truncate may have made this disk read obsolete. Never install
+        // an old payload over newer shared bytes or metadata, even for the same inode.
+        if (
+          this.registeredNodes.get(handle) !== node ||
+          this.shared.revision(handle) !== revision ||
+          this.shared.isResident(handle)
+        )
+          return;
+        if (data.length !== node.size)
+          throw new Error(`persisted filesystem payload size mismatch for inode ${node.ino}`);
+        const resources = this.shared.resources();
+        if (resources.usedBytes + data.length > resources.maxBytes) this.evictClean(handle);
+        // Registration already records the clean revision. Hydration preserves it; sampling
+        // after hydrate unlocks could misclassify another guest's immediate write as clean.
+        this.shared.hydrate(handle, data);
+      })
+      .finally(() => {
+        this.loading.delete(handle);
+        this.release(handle);
+      });
     this.loading.set(handle, load);
     return load;
   }
   prepare(operation: string, args: any[]): void | Promise<void> {
     if (this.stopped) throw new Error("filesystem persistence backend is closed");
-    const target = ["read", "write", "append", "grow", "resize"].includes(operation) ? args[0]
-      : operation === "readFile" || operation === "writeFile" ? this.resolveNode(args[0]) : undefined;
-    const handle = typeof target === "number" ? target : target?.kind === "file" ? this.fs.handleForNode(target) : undefined;
+    const target = ["read", "write", "append", "grow", "resize"].includes(operation)
+      ? args[0]
+      : operation === "readFile" || operation === "writeFile"
+        ? this.resolveNode(args[0])
+        : undefined;
+    const handle =
+      typeof target === "number"
+        ? target
+        : target?.kind === "file"
+          ? this.fs.handleForNode(target)
+          : undefined;
     const resources = this.shared.resources();
-    if (resources.files > 1024 || resources.usedBytes >= resources.maxBytes / 2) this.evictClean(handle);
+    if (resources.files > 1024 || resources.usedBytes >= resources.maxBytes / 2)
+      this.evictClean(handle);
     if (["read", "write", "append", "grow", "resize"].includes(operation)) {
       if (operation === "resize" && args[1] === 0 && args[2]) this.sync(args[0]);
       else return this.ensureLoaded(args[0]);
@@ -210,18 +286,31 @@ export class PersistentBackend extends MemoryBackend {
         const stat = this.shared.stat(handle);
         return { kind: entry.kind, ino: entry.ino, mtime: stat?.mtime ?? entry.mtime };
       };
-      return node.kind === "file" ? metadata(node) : { ...metadata(node), children: new Map(Array.from(node.children, ([name, child]) => [name, metadata(child)])) };
+      return node.kind === "file"
+        ? metadata(node)
+        : {
+            ...metadata(node),
+            children: new Map(
+              Array.from(node.children, ([name, child]) => [name, metadata(child)]),
+            ),
+          };
     }
     return super.execute(operation, args, data);
   }
   /** Capture only dirty nodes and changed resident payloads. Cost is bounded by the shared
    * slot table plus changes, not by the number of cold files in a workspace. */
-  flush(target?: FileHandle | string): Promise<void> { return this.checkpoint(true, target); }
+  flush(target?: FileHandle | string): Promise<void> {
+    return this.checkpoint(true, target);
+  }
   /** Background close-only checkpoint. Explicit saves/fsync use flush() for payload durability. */
   checkpoint(durable = false, target?: FileHandle | string): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("filesystem persistence backend is closed"));
-    const selected = typeof target === "string" ? this.resolveNode(target)
-      : target === undefined ? undefined : this.fs.nodeForHandle(target);
+    const selected =
+      typeof target === "string"
+        ? this.resolveNode(target)
+        : target === undefined
+          ? undefined
+          : this.fs.nodeForHandle(target);
     this.pruneDetached();
     const changed = new Set(this.dirty);
     const data = new Map<string, Uint8Array>();
@@ -237,7 +326,8 @@ export class PersistentBackend extends MemoryBackend {
           const snapshot = this.shared.snapshot(handle);
           if (snapshot) {
             const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
-            data.set(key, snapshot.data); detachedSnapshots.set(node, { handle, key });
+            data.set(key, snapshot.data);
+            detachedSnapshots.set(node, { handle, key });
           }
           // An unlinked fd still owns bytes, not a namespace entry. Leave its revision
           // dirty so a queued relink recaptures shared bytes rather than the old baseline.
@@ -245,55 +335,96 @@ export class PersistentBackend extends MemoryBackend {
         }
         const stat = this.shared.stat(handle);
         if (!stat) continue;
-        node.size = stat.size; node.mtime = stat.mtime;
+        node.size = stat.size;
+        node.mtime = stat.mtime;
         const snapshot = this.shared.snapshot(handle);
         if (snapshot) {
           const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
-          data.set(key, snapshot.data); this.keys.set(node.ino, key);
+          data.set(key, snapshot.data);
+          this.keys.set(node.ino, key);
         }
         this.revisions.set(handle, revision);
         changed.add(node);
       }
     });
-    const upserts: PersistedNode[] = Array.from(changed, node => node.kind === "dir"
-      ? { ino: node.ino, kind: "dir", mtime: node.mtime, size: 0, children: Array.from(node.children, ([name, child]) => [name, child.ino]) }
-      : { ino: node.ino, kind: "file", mtime: node.mtime, size: node.size ?? node.data.length, data: this.keys.get(node.ino) });
+    const upserts: PersistedNode[] = Array.from(changed, (node) =>
+      node.kind === "dir"
+        ? {
+            ino: node.ino,
+            kind: "dir",
+            mtime: node.mtime,
+            size: 0,
+            children: Array.from(node.children, ([name, child]) => [name, child.ino]),
+          }
+        : {
+            ino: node.ino,
+            kind: "file",
+            mtime: node.mtime,
+            size: node.size ?? node.data.length,
+            data: this.keys.get(node.ino),
+          },
+    );
     this.dirty.clear();
-    const removes = Array.from(this.removed); this.removed.clear();
-    const key = selected?.kind === "file" ? detachedSnapshots.get(selected)?.key ?? this.keys.get(selected.ino) ?? this.detachedKeys.get(selected.ino) : undefined;
+    const removes = Array.from(this.removed);
+    this.removed.clear();
+    const key =
+      selected?.kind === "file"
+        ? (detachedSnapshots.get(selected)?.key ??
+          this.keys.get(selected.ino) ??
+          this.detachedKeys.get(selected.ino))
+        : undefined;
     const flushKeys = target === undefined ? undefined : key ? [key] : [];
-    if (!upserts.length && !removes.length && !data.size) return this.lastCommit.then(() => durable ? this.storage.flush(flushKeys) : undefined);
+    if (!upserts.length && !removes.length && !data.size)
+      return this.lastCommit.then(() => (durable ? this.storage.flush(flushKeys) : undefined));
     const epoch = this.checkpointEpoch;
-    const batch: PersistenceBatch = { generation: 0, root: this.fs.root.ino, upserts, removes, data };
+    const batch: PersistenceBatch = {
+      generation: 0,
+      root: this.fs.root.ino,
+      upserts,
+      removes,
+      data,
+    };
     this.pendingCheckpoints++;
-    const commit = this.tail.then(async () => {
-      if (epoch !== this.checkpointEpoch) throw new Error("filesystem checkpoint invalidated by a failed commit");
-      batch.generation = this.generation + 1;
-      // A later request may have reattached an inode removed by this older checkpoint.
-      // Its next upsert still needs the durable payload even though it is no longer detached.
-      batch.retainedData = this.retainedData().concat(removes.flatMap(ino => {
-        const key = this.committedKeys.get(ino);
-        return this.nodes.has(ino) && key ? [key] : [];
-      }), Array.from(detachedSnapshots.values(), snapshot => snapshot.key));
-      await this.storage.persist(batch);
-      this.generation = batch.generation;
-      for (const entry of upserts) if (entry.data) this.committedKeys.set(entry.ino, entry.data);
-      this.pruneDetached();
-      const retained = new Set(this.retainedData());
-      for (const ino of removes) {
-        if (this.nodes.has(ino)) continue; // A later link still owns this durable baseline.
-        const key = this.committedKeys.get(ino);
-        if (key && retained.has(key)) this.detachedKeys.set(ino, key);
-        this.committedKeys.delete(ino);
-        this.keys.delete(ino);
-      }
-      for (const [node, snapshot] of detachedSnapshots) {
-        // Last close or a relink may have happened while persist waited. Never recreate
-        // a dead fd's pin or overwrite the baseline now owned by a linked checkpoint.
-        if (this.detached.has(node) && this.registeredNodes.get(snapshot.handle) === node
-          && this.shared.revision(snapshot.handle) !== undefined) this.detachedKeys.set(node.ino, snapshot.key);
-      }
-    }).finally(() => { this.pendingCheckpoints--; });
+    const commit = this.tail
+      .then(async () => {
+        if (epoch !== this.checkpointEpoch)
+          throw new Error("filesystem checkpoint invalidated by a failed commit");
+        batch.generation = this.generation + 1;
+        // A later request may have reattached an inode removed by this older checkpoint.
+        // Its next upsert still needs the durable payload even though it is no longer detached.
+        batch.retainedData = this.retainedData().concat(
+          removes.flatMap((ino) => {
+            const key = this.committedKeys.get(ino);
+            return this.nodes.has(ino) && key ? [key] : [];
+          }),
+          Array.from(detachedSnapshots.values(), (snapshot) => snapshot.key),
+        );
+        await this.storage.persist(batch);
+        this.generation = batch.generation;
+        for (const entry of upserts) if (entry.data) this.committedKeys.set(entry.ino, entry.data);
+        this.pruneDetached();
+        const retained = new Set(this.retainedData());
+        for (const ino of removes) {
+          if (this.nodes.has(ino)) continue; // A later link still owns this durable baseline.
+          const key = this.committedKeys.get(ino);
+          if (key && retained.has(key)) this.detachedKeys.set(ino, key);
+          this.committedKeys.delete(ino);
+          this.keys.delete(ino);
+        }
+        for (const [node, snapshot] of detachedSnapshots) {
+          // Last close or a relink may have happened while persist waited. Never recreate
+          // a dead fd's pin or overwrite the baseline now owned by a linked checkpoint.
+          if (
+            this.detached.has(node) &&
+            this.registeredNodes.get(snapshot.handle) === node &&
+            this.shared.revision(snapshot.handle) !== undefined
+          )
+            this.detachedKeys.set(node.ino, snapshot.key);
+        }
+      })
+      .finally(() => {
+        this.pendingCheckpoints--;
+      });
     this.lastCommit = commit;
     this.tail = commit.catch(() => {
       this.checkpointEpoch++;
@@ -306,6 +437,17 @@ export class PersistentBackend extends MemoryBackend {
     });
     return durable ? commit.then(() => this.storage.flush(flushKeys)) : commit;
   }
-  dispose(): void { this.stopped = true; this.checkpointEpoch++; if (this.timer !== undefined) clearInterval(this.timer); }
-  async close(): Promise<void> { try { await this.flush(); } finally { this.dispose(); await this.storage.close(); } }
+  dispose(): void {
+    this.stopped = true;
+    this.checkpointEpoch++;
+    if (this.timer !== undefined) clearInterval(this.timer);
+  }
+  async close(): Promise<void> {
+    try {
+      await this.flush();
+    } finally {
+      this.dispose();
+      await this.storage.close();
+    }
+  }
 }

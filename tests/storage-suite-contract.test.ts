@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { storageTests, opfsStorageTests } from "./storage-browser.js";
 
-const runtimeLabels = (tests: ReturnType<typeof storageTests>) => tests.filter(test => test.label.includes("actual filesystem worker boundary"));
+const runtimeLabels = (tests: ReturnType<typeof storageTests>) =>
+  tests.filter((test) => test.label.includes("actual filesystem worker boundary"));
 
 test("exported backend suites do not require a filesystem worker route", () => {
   expect(runtimeLabels(storageTests())).toEqual([]);

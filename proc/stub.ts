@@ -1,7 +1,9 @@
 import type { SpawnRequest } from "./types.js";
 export { ProcessIdentityAllocator } from "./identity.js";
 
-export interface ProcessStarter { start(pid: number): void | Promise<void> }
+export interface ProcessStarter {
+  start(pid: number): void | Promise<void>;
+}
 export interface FirstSpawnOptions {
   /** Synchronous reservation takes descriptor references before returning the pid. */
   reserve(parentPid: number, request: SpawnRequest): number;
@@ -14,11 +16,13 @@ export class FirstSpawnStub {
   private activation?: Promise<ProcessStarter>;
   constructor(private readonly options: FirstSpawnOptions) {}
   activated(): Promise<ProcessStarter> {
-    return this.activation ??= Promise.resolve().then(() => this.options.activate());
+    return (this.activation ??= Promise.resolve().then(() => this.options.activate()));
   }
   spawn(parentPid: number, request: SpawnRequest): number {
     const pid = this.options.reserve(parentPid, request);
-    void this.activated().then(starter => starter.start(pid)).catch(error => this.options.fail(pid, error));
+    void this.activated()
+      .then((starter) => starter.start(pid))
+      .catch((error) => this.options.fail(pid, error));
     return pid;
   }
 }

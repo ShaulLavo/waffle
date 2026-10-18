@@ -101,8 +101,7 @@ EVIDENCE_DIR=/work/tmp/waffle-site-review \
 bun /work/platform-production/heavy/current/run.js --class browser waffle-site-parity -- bun scripts/verify.ts
 ```
 
-`verify.ts` checks Chromium, Firefox, and WebKit at widths 375, 768, 1280, and
-1920. It compares visible text/links, scroll states, hover/focus, and scene
+`verify.ts` checks Chromium, Firefox, and WebKit at widths 375, 768, 1280, and 1920. It compares visible text/links, scroll states, hover/focus, and scene
 pointer/click states with synchronized animation time, writing screenshots and
 `visual-diff.json`. Before comparison, it applies the exact published link destinations,
 two action-label, one launch-description and two documentation-caption corrections and `© 2026 Waffle` to the original reference;

@@ -4,12 +4,39 @@ import type { OutcomeWord } from "./outcome.js";
 import type { DescriptorTable } from "../core/descriptors.js";
 
 export const Signal = Object.freeze({
-  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7,
-  SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13,
-  SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18,
-  SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
-  SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
-  SIGPWR: 30, SIGSYS: 31, SIGRTMIN: 34, SIGRTMAX: 64,
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGILL: 4,
+  SIGTRAP: 5,
+  SIGABRT: 6,
+  SIGBUS: 7,
+  SIGFPE: 8,
+  SIGKILL: 9,
+  SIGUSR1: 10,
+  SIGSEGV: 11,
+  SIGUSR2: 12,
+  SIGPIPE: 13,
+  SIGALRM: 14,
+  SIGTERM: 15,
+  SIGSTKFLT: 16,
+  SIGCHLD: 17,
+  SIGCONT: 18,
+  SIGSTOP: 19,
+  SIGTSTP: 20,
+  SIGTTIN: 21,
+  SIGTTOU: 22,
+  SIGURG: 23,
+  SIGXCPU: 24,
+  SIGXFSZ: 25,
+  SIGVTALRM: 26,
+  SIGPROF: 27,
+  SIGWINCH: 28,
+  SIGIO: 29,
+  SIGPWR: 30,
+  SIGSYS: 31,
+  SIGRTMIN: 34,
+  SIGRTMAX: 64,
 });
 export type ProcessSignal = number;
 export type Signal = ProcessSignal;
@@ -17,7 +44,10 @@ export type ProcessExit = Readonly<
   | { kind: "exited" | "signaled"; code: number; status: number }
   | { kind: "start-failed"; code: number; error: StartFailure; status: null }
 >;
-export interface DescriptorBinding { child: number; parent: number }
+export interface DescriptorBinding {
+  child: number;
+  parent: number;
+}
 export interface SpawnRequest {
   executable: string;
   argv: string[];
@@ -84,9 +114,21 @@ export interface ChildExitEvent {
 }
 export class ProcessError extends Error {
   readonly errno: number;
-  constructor(errno: number, message: string) { super(message); this.errno = errno; this.name = "ProcessError"; }
+  constructor(errno: number, message: string) {
+    super(message);
+    this.errno = errno;
+    this.name = "ProcessError";
+  }
 }
-export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CANCELED: 11, CHILD: 12, INVAL: 28, NOTSUP: 58, SRCH: 71 });
+export const ProcessErrno = Object.freeze({
+  AGAIN: 6,
+  BADF: 8,
+  CANCELED: 11,
+  CHILD: 12,
+  INVAL: 28,
+  NOTSUP: 58,
+  SRCH: 71,
+});
 export function checkedSignal(signal: number): ProcessSignal {
   if (!Number.isInteger(signal) || signal < 1 || signal > 64 || signal === 32 || signal === 33) {
     throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);

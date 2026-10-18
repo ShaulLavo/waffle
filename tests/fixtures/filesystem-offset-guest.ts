@@ -1,9 +1,20 @@
 import { DescriptorTable } from "../../core/descriptors";
 import { withFileOffset } from "../../core/open-file";
 import { FilesystemClient, type FilesystemConnection } from "../../fs";
-import { createFilesystemDescriptorCodec, type FilesystemDescriptorToken } from "../../proc/filesystem-codec";
+import {
+  createFilesystemDescriptorCodec,
+  type FilesystemDescriptorToken,
+} from "../../proc/filesystem-codec";
 
-self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection; token: FilesystemDescriptorToken; count: number; start: SharedArrayBuffer; crash?: boolean }>) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<{
+  connection: FilesystemConnection;
+  token: FilesystemDescriptorToken;
+  count: number;
+  start: SharedArrayBuffer;
+  crash?: boolean;
+}>) => {
   const client = new FilesystemClient(data.connection);
   const table = new DescriptorTable();
   const description = createFilesystemDescriptorCodec(client).import(data.token, 2);
@@ -11,7 +22,8 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection; tok
   const file = description.resource;
   if (file.kind !== "file") throw new Error("expected regular file");
   const start = new Int32Array(data.start);
-  Atomics.store(start, 0, 1); Atomics.notify(start, 0);
+  Atomics.store(start, 0, 1);
+  Atomics.notify(start, 0);
   if (data.crash) {
     withFileOffset(file, () => {
       self.postMessage({ locked: true });

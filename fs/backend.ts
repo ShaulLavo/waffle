@@ -19,14 +19,30 @@ export interface FilesystemBackend {
   /** Release startup resources when cancellation races backend creation. */
   close?(): Promise<void>;
 }
-const namespaceOperations = new Set(["preopen", "create", "link", "removePath", "rename", "writeFile", "mkdirp", "remove", "move"]);
+const namespaceOperations = new Set([
+  "preopen",
+  "create",
+  "link",
+  "removePath",
+  "rename",
+  "writeFile",
+  "mkdirp",
+  "remove",
+  "move",
+]);
 export class MemoryBackend implements FilesystemBackend {
   readonly fs: MemFS;
-  constructor(fs = new MemFS()) { this.fs = fs; }
+  constructor(fs = new MemFS()) {
+    this.fs = fs;
+  }
   shared = new SharedFilesystemState();
   private sharedAttached = false;
   private directoryTimes = new Map<FileHandle, number>();
-  attachShared(buffer: SharedArrayBuffer, maxBytes?: number, segments: readonly SharedArrayBuffer[] = []): void {
+  attachShared(
+    buffer: SharedArrayBuffer,
+    maxBytes?: number,
+    segments: readonly SharedArrayBuffer[] = [],
+  ): void {
     if (this.sharedAttached) {
       // SAB wrappers change identity when cloned through a port. Probe a reserved header word
       // instead; connect runs synchronously on the sole service thread and guests never use it.
@@ -51,12 +67,25 @@ export class MemoryBackend implements FilesystemBackend {
       this.directoryTimes.set(handle, stat.mtime);
     }
   }
-  protected isLinked(node: Node): boolean { return this.fs.hasNode(node); }
-  retain(handle: number): void { this.check(handle); this.fs.retain(handle); this.shared.retain(handle); }
-  release(handle: number): void { this.shared.release(handle); this.fs.release(handle); }
+  protected isLinked(node: Node): boolean {
+    return this.fs.hasNode(node);
+  }
+  retain(handle: number): void {
+    this.check(handle);
+    this.fs.retain(handle);
+    this.shared.retain(handle);
+  }
+  release(handle: number): void {
+    this.shared.release(handle);
+    this.fs.release(handle);
+  }
   private check(handle: number, kind?: "file" | "directory"): void {
     let stat;
-    try { stat = this.fs.stat(handle); } catch { throw new FilesystemError(8); }
+    try {
+      stat = this.fs.stat(handle);
+    } catch {
+      throw new FilesystemError(8);
+    }
     this.sync(handle);
     if (kind && stat.kind !== kind) throw new FilesystemError(kind === "directory" ? 54 : 31);
   }
@@ -67,11 +96,14 @@ export class MemoryBackend implements FilesystemBackend {
     if (typeof current === "number") throw new FilesystemError(current);
     if (current.node !== path.node) throw new FilesystemError(current.node === undefined ? 44 : 20);
   }
-  private existing(path: string): { handle: FileHandle; node: Extract<Node, { kind: "file" }> } | undefined {
+  private existing(
+    path: string,
+  ): { handle: FileHandle; node: Extract<Node, { kind: "file" }> } | undefined {
     let node = this.fs.lookup(path);
     if (!node && path.startsWith("/")) {
       const resolved = this.fs.resolveAbsolute(path);
-      if (typeof resolved !== "number" && resolved.node !== undefined) node = this.fs.nodeForHandle(resolved.node);
+      if (typeof resolved !== "number" && resolved.node !== undefined)
+        node = this.fs.nodeForHandle(resolved.node);
     }
     if (!node || node.kind !== "file") return undefined;
     const handle = this.fs.handleForNode(node);
@@ -79,28 +111,96 @@ export class MemoryBackend implements FilesystemBackend {
     return { handle, node };
   }
   execute(operation: string, args: any[], data: Uint8Array): unknown {
-    try { return this.executeOperation(operation, args, data); }
-    finally {
-      if (namespaceOperations.has(operation)) for (const handle of this.directoryTimes.keys()) {
-        try { this.sync(handle); } catch { this.directoryTimes.delete(handle); }
-      }
+    try {
+      return this.executeOperation(operation, args, data);
+    } finally {
+      if (namespaceOperations.has(operation))
+        for (const handle of this.directoryTimes.keys()) {
+          try {
+            this.sync(handle);
+          } catch {
+            this.directoryTimes.delete(handle);
+          }
+        }
     }
+  }
+  private checkMissingParent(path: string): void {
+    const parts = path.split("/").filter((part) => part.length > 0);
+    for (let index = 0; index < parts.length; index++) {
+      const prefix = `/${parts.slice(0, index + 1).join("/")}`;
+      const resolved = this.fs.resolveAbsolute(prefix);
+      if (typeof resolved === "number") throw new FilesystemError(resolved);
+      if (resolved.node !== undefined) continue;
+      if (parts.slice(index + 1).some((part) => part === "." || part === ".."))
+        throw new FilesystemError(44);
+      return;
+    }
+    throw new FilesystemError(44);
   }
   private executeOperation(operation: string, args: any[], data: Uint8Array): unknown {
     const [a, b, c] = args;
     switch (operation) {
-      case "flush": return;
-      case "sync": this.check(a); return 0;
-      case "preopen": { const handle = this.fs.preopen(a); this.sync(handle); return handle; }
-      case "resolve": this.check(a, "directory"); return this.fs.resolve(a, b);
-      case "stat": this.check(a); return this.shared.stat(a)!;
-      case "read": { this.check(a, "file"); const bytes = new Uint8Array(b); const count = this.shared.read(a, [bytes], c); return bytes.subarray(0, count); }
-      case "write": this.check(a, "file"); if (!data.length) return 0; return this.shared.mutate(undefined, undefined, () => { this.shared.growLocked(a, b + data.length); const result = this.shared.write(a, [data], b); this.fs.setMtime(a, Date.now()); return result; });
-      case "append": { this.check(a, "file"); if (!data.length) return { written: 0, offset: this.shared.info(a)!.size }; return this.shared.mutate(undefined, undefined, () => { const info = this.shared.info(a)!; this.shared.growLocked(a, info.size + data.length); const result = this.shared.append(a, [data]); this.fs.setMtime(a, Date.now()); return result; }); }
-      case "grow": this.check(a, "file"); this.shared.grow(a, b); return;
-      case "resize": this.check(a, "file"); return this.shared.mutate(undefined, undefined, () => { this.shared.growLocked(a, b); const result = this.shared.resize(a, b, c); if (c) this.shared.reclaimLocked(a); return result; });
-      case "setMtime": this.check(a); this.fs.setMtime(a, b); return this.shared.mutate(undefined, undefined, () => this.shared.setMtime(a, b));
-      case "readdir": this.check(a, "directory"); return this.fs.readdir(a);
+      case "flush":
+        return;
+      case "sync":
+        this.check(a);
+        return 0;
+      case "preopen": {
+        const handle = this.fs.preopen(a);
+        this.sync(handle);
+        return handle;
+      }
+      case "resolve":
+        this.check(a, "directory");
+        return this.fs.resolve(a, b);
+      case "stat":
+        this.check(a);
+        return this.shared.stat(a)!;
+      case "read": {
+        this.check(a, "file");
+        const bytes = new Uint8Array(b);
+        const count = this.shared.read(a, [bytes], c);
+        return bytes.subarray(0, count);
+      }
+      case "write":
+        this.check(a, "file");
+        if (!data.length) return 0;
+        return this.shared.mutate(undefined, undefined, () => {
+          this.shared.growLocked(a, b + data.length);
+          const result = this.shared.write(a, [data], b);
+          this.fs.setMtime(a, Date.now());
+          return result;
+        });
+      case "append": {
+        this.check(a, "file");
+        if (!data.length) return { written: 0, offset: this.shared.info(a)!.size };
+        return this.shared.mutate(undefined, undefined, () => {
+          const info = this.shared.info(a)!;
+          this.shared.growLocked(a, info.size + data.length);
+          const result = this.shared.append(a, [data]);
+          this.fs.setMtime(a, Date.now());
+          return result;
+        });
+      }
+      case "grow":
+        this.check(a, "file");
+        this.shared.grow(a, b);
+        return;
+      case "resize":
+        this.check(a, "file");
+        return this.shared.mutate(undefined, undefined, () => {
+          this.shared.growLocked(a, b);
+          const result = this.shared.resize(a, b, c);
+          if (c) this.shared.reclaimLocked(a);
+          return result;
+        });
+      case "setMtime":
+        this.check(a);
+        this.fs.setMtime(a, b);
+        return this.shared.mutate(undefined, undefined, () => this.shared.setMtime(a, b));
+      case "readdir":
+        this.check(a, "directory");
+        return this.fs.readdir(a);
       case "create": {
         if (a.parent !== undefined) this.check(a.parent, "directory");
         const result = this.fs.create(a, b, c);
@@ -108,27 +208,40 @@ export class MemoryBackend implements FilesystemBackend {
         return result;
       }
       case "link": {
-        this.path(a); this.path(b);
+        this.path(a);
+        this.path(b);
         const result = this.fs.link(a, b);
         if (!result && a.node !== undefined) this.shared.relink(a.node);
         return result;
       }
       case "removePath": {
-        this.path(a); const handle = a.node;
+        this.path(a);
+        const handle = a.node;
         const removed = handle === undefined ? undefined : this.fs.nodeForHandle(handle);
         const result = this.fs.removePath(a, b);
-        if (!result && handle !== undefined && removed && !this.isLinked(removed)) this.shared.unlink(handle);
+        if (!result && handle !== undefined && removed && !this.isLinked(removed))
+          this.shared.unlink(handle);
         return result;
       }
       case "rename": {
-        this.path(a); this.path(b); const target = b.node;
+        this.path(a);
+        this.path(b);
+        const target = b.node;
         const replaced = target === undefined ? undefined : this.fs.nodeForHandle(target);
         const result = this.fs.rename(a, b);
-        if (!result && target !== undefined && target !== a.node && replaced && !this.isLinked(replaced)) this.shared.unlink(target);
+        if (
+          !result &&
+          target !== undefined &&
+          target !== a.node &&
+          replaced &&
+          !this.isLinked(replaced)
+        )
+          this.shared.unlink(target);
         return result;
       }
       case "resolvePath": {
-        if (!a.startsWith("/")) throw new FilesystemError(28, "path resolution requires an absolute path");
+        if (!a.startsWith("/"))
+          throw new FilesystemError(28, "path resolution requires an absolute path");
         const resolved = this.fs.resolveAbsolute(a);
         if (typeof resolved === "number") throw new FilesystemError(resolved);
         if (resolved.node === undefined) return undefined;
@@ -145,7 +258,14 @@ export class MemoryBackend implements FilesystemBackend {
           const stat = this.shared.stat(handle);
           return { kind: entry.kind, ino: entry.ino, mtime: stat?.mtime ?? entry.mtime };
         };
-        return node.kind === "file" ? metadata(node) : { ...metadata(node), children: new Map(Array.from(node.children, ([name, child]) => [name, metadata(child)])) };
+        return node.kind === "file"
+          ? metadata(node)
+          : {
+              ...metadata(node),
+              children: new Map(
+                Array.from(node.children, ([name, child]) => [name, metadata(child)]),
+              ),
+            };
       }
       case "readFile": {
         const existing = this.existing(a);
@@ -165,21 +285,12 @@ export class MemoryBackend implements FilesystemBackend {
           if (typeof path === "number") {
             if (path !== 44) throw new FilesystemError(path);
             if (a.endsWith("/")) throw new FilesystemError(54);
-            const parts = a.split("/").filter((part: string) => part.length > 0);
-            let missing = false;
-            for (let index = 0; index < parts.length; index++) {
-              const prefix = `/${parts.slice(0, index + 1).join("/")}`;
-              const resolved = this.fs.resolveAbsolute(prefix);
-              if (typeof resolved === "number") throw new FilesystemError(resolved);
-              if (resolved.node === undefined) {
-                if (parts.slice(index + 1).some((part: string) => part === "." || part === "..")) throw new FilesystemError(44);
-                missing = true;
-                break;
-              }
+            this.checkMissingParent(a);
+            try {
+              this.fs.mkdirp(dirname(target));
+            } catch {
+              throw new FilesystemError(54);
             }
-            if (!missing) throw new FilesystemError(44);
-            try { this.fs.mkdirp(dirname(target)); }
-            catch { throw new FilesystemError(54); }
             path = this.fs.resolveAbsolute(target);
             if (typeof path === "number") throw new FilesystemError(path);
           }
@@ -199,16 +310,36 @@ export class MemoryBackend implements FilesystemBackend {
         const existing = this.existing(a);
         if (existing) {
           if (b && !data.length) return;
-          if (b) this.shared.mutate(undefined, undefined, () => { const info = this.shared.info(existing.handle)!; this.shared.growLocked(existing.handle, info.size + data.length); this.shared.append(existing.handle, [data]); this.fs.setMtime(existing.handle, Date.now()); });
-          else this.shared.mutate(undefined, undefined, () => { this.shared.growLocked(existing.handle, data.length); this.shared.resize(existing.handle, 0, true); this.shared.write(existing.handle, [data], 0); this.shared.reclaimLocked(existing.handle); this.fs.setMtime(existing.handle, Date.now()); });
+          if (b)
+            this.shared.mutate(undefined, undefined, () => {
+              const info = this.shared.info(existing.handle)!;
+              this.shared.growLocked(existing.handle, info.size + data.length);
+              this.shared.append(existing.handle, [data]);
+              this.fs.setMtime(existing.handle, Date.now());
+            });
+          else
+            this.shared.mutate(undefined, undefined, () => {
+              this.shared.growLocked(existing.handle, data.length);
+              this.shared.resize(existing.handle, 0, true);
+              this.shared.write(existing.handle, [data], 0);
+              this.shared.reclaimLocked(existing.handle);
+              this.fs.setMtime(existing.handle, Date.now());
+            });
           return;
         }
         this.fs.writeFile(a, data.slice(), false);
-        try { const created = this.existing(a); if (created) this.sync(created.handle); }
-        catch (error) { this.fs.remove(a); throw error; }
+        try {
+          const created = this.existing(a);
+          if (created) this.sync(created.handle);
+        } catch (error) {
+          this.fs.remove(a);
+          throw error;
+        }
         return;
       }
-      case "mkdirp": this.fs.mkdirp(a); return;
+      case "mkdirp":
+        this.fs.mkdirp(a);
+        return;
       case "remove": {
         const detached: { node: Node; handle: FileHandle }[] = [];
         const collect = (node: Node) => {
@@ -218,12 +349,16 @@ export class MemoryBackend implements FilesystemBackend {
         const node = this.fs.lookup(a);
         if (node) collect(node);
         const result = this.fs.remove(a);
-        if (result) for (const entry of detached) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
+        if (result)
+          for (const entry of detached)
+            if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
         return result;
       }
-      case "listFiles": return this.fs.listFiles(a);
+      case "listFiles":
+        return this.fs.listFiles(a);
       case "move": {
-        const root = this.fs.preopen("/"); this.sync(root);
+        const root = this.fs.preopen("/");
+        this.sync(root);
         const from = this.fs.resolve(root, a.replace(/^\//, ""));
         const to = this.fs.resolve(root, b.replace(/^\//, ""));
         if (typeof from === "number") return from;
@@ -231,14 +366,32 @@ export class MemoryBackend implements FilesystemBackend {
         const target = to.node;
         const replaced = target === undefined ? undefined : this.fs.nodeForHandle(target);
         const result = this.fs.rename(from, to);
-        if (!result && target !== undefined && target !== from.node && replaced && !this.isLinked(replaced)) this.shared.unlink(target);
+        if (
+          !result &&
+          target !== undefined &&
+          target !== from.node &&
+          replaced &&
+          !this.isLinked(replaced)
+        )
+          this.shared.unlink(target);
         return result;
       }
-      default: throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
+      default:
+        throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
     }
   }
-  revokeOwner(owner: number, epoch?: Int32Array): void { this.shared.revokeOwner(owner, epoch); }
-  takeSharedSegments(): SharedSegment[] { return this.shared.takeNewSegments(); }
-  sharedSegments(): SharedSegment[] { return this.shared.segments.slice(1).flatMap((buffer, index) => buffer.byteLength ? [{ buffer, index: index + 1 }] : []); }
-  resources(): Record<string, number> { return this.shared.resources(); }
+  revokeOwner(owner: number, epoch?: Int32Array): void {
+    this.shared.revokeOwner(owner, epoch);
+  }
+  takeSharedSegments(): SharedSegment[] {
+    return this.shared.takeNewSegments();
+  }
+  sharedSegments(): SharedSegment[] {
+    return this.shared.segments
+      .slice(1)
+      .flatMap((buffer, index) => (buffer.byteLength ? [{ buffer, index: index + 1 }] : []));
+  }
+  resources(): Record<string, number> {
+    return this.shared.resources();
+  }
 }

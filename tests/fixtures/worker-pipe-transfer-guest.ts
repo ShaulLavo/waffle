@@ -10,7 +10,10 @@ const { transport, registry, iterations } = workerData as {
   iterations: number;
 };
 const port = parentPort!;
-const host = new WorkerPipeHost({ transport, registry, postMessage: message => port.postMessage(message),
+const host = new WorkerPipeHost({
+  transport,
+  registry,
+  postMessage: (message) => port.postMessage(message),
   pipe: { capacity: 64, maxReaders: 4, maxWriters: 4 },
 });
 const codec = host.codec();
@@ -31,13 +34,19 @@ try {
       descriptors.close(fd);
       writer.close();
       const acknowledged = new Promise<void>((resolve, reject) => {
-        port.once("message", message => message.sequence === sequence ? resolve() : reject(new Error("wrong pipe acknowledgement")));
+        port.once("message", (message) =>
+          message.sequence === sequence
+            ? resolve()
+            : reject(new Error("wrong pipe acknowledgement")),
+        );
       });
       port.postMessage({ phase: "transfer", sequence, token, expected });
       published = true;
       await acknowledged;
     } finally {
-      descriptors.dispose(); reader?.close(); writer?.close();
+      descriptors.dispose();
+      reader?.close();
+      writer?.close();
       if (token && !published) codec.discard(token);
     }
   }

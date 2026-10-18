@@ -47,9 +47,9 @@ Run from the exclusive worktree:
 
 ```sh
 bun install --frozen-lockfile
+bun install --cwd site --frozen-lockfile
 bun run prepare
-bun run check
-bun run check:nodenext
+bun run quality
 bun test ./tests
 bun run size
 ```

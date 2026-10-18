@@ -1,14 +1,14 @@
 ---
-import bricolageUrl from '../assets/bricolage-grotesque.woff2?url';
-import fredokaUrl from '../assets/fredoka.woff2?url';
-import martianMonoUrl from '../assets/martian-mono.woff2?url';
-import { initialState, interpolateStyle, renderValues } from '../scripts/landing';
+import bricolageUrl from "../assets/bricolage-grotesque.woff2?url";
+import fredokaUrl from "../assets/fredoka.woff2?url";
+import martianMonoUrl from "../assets/martian-mono.woff2?url";
+import { initialState, interpolateStyle, renderValues } from "../scripts/landing";
 
 interface Props {
-  heroPreview?: 'waffle' | 'grid' | 'loop';
+  heroPreview?: "waffle" | "grid" | "loop";
   labels?: boolean;
 }
-const { heroPreview = 'waffle', labels = true } = Astro.props;
+const { heroPreview = "waffle", labels = true } = Astro.props;
 const values = renderValues(initialState);
 const fontStyles = `
 @font-face {
@@ -40,114 +40,467 @@ const fontStyles = `
 }
 `;
 ---
+
 <style is:inline set:html={fontStyles}></style>
 
 <style is:global>
-body{margin:0;background:#F4F6FC}
-a{color:#2350C7}a:hover{color:#171B33}
-.wbtn{transition:transform .12s ease, box-shadow .12s ease}
-.wbtn:hover{transform:translateY(2px);box-shadow:0 3px 0 #171B33 !important}
-.wtile{transition:transform .14s ease}
-.wtile:hover{transform:translateY(-4px)}
-a:focus-visible{outline:3px solid #F7C564;outline-offset:3px}
-[data-waffle-if][hidden]{display:none!important}
+  body {
+    margin: 0;
+    background: #f4f6fc;
+  }
+  a {
+    color: #2350c7;
+  }
+  a:hover {
+    color: #171b33;
+  }
+  .wbtn {
+    transition:
+      transform 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .wbtn:hover {
+    transform: translateY(2px);
+    box-shadow: 0 3px 0 #171b33 !important;
+  }
+  .wtile {
+    transition: transform 0.14s ease;
+  }
+  .wtile:hover {
+    transform: translateY(-4px);
+  }
+  a:focus-visible {
+    outline: 3px solid #f7c564;
+    outline-offset: 3px;
+  }
+  [data-waffle-if][hidden] {
+    display: none !important;
+  }
 </style>
 
-<div data-waffle-landing data-hero-preview={heroPreview} data-labels={String(labels)} style="font-family: 'Bricolage Grotesque', system-ui, sans-serif; color: #171B33; background: #F4F6FC; min-width: 0; overflow-x: clip">
-
+<div
+  data-waffle-landing
+  data-hero-preview={heroPreview}
+  data-labels={String(labels)}
+  style="font-family: 'Bricolage Grotesque', system-ui, sans-serif; color: #171B33; background: #F4F6FC; min-width: 0; overflow-x: clip"
+>
   <div style="position: sticky; top: 0; height: 0; z-index: 30">
-    <nav aria-label="Main" data-waffle-style="position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: center; transition: opacity 0.35s ease, transform 0.35s ease, visibility 0.35s; {{navStyle}}" style={interpolateStyle("position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: center; transition: opacity 0.35s ease, transform 0.35s ease, visibility 0.35s; {{navStyle}}", values)}>
+    <nav
+      aria-label="Main"
+      data-waffle-style="position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: center; transition: opacity 0.35s ease, transform 0.35s ease, visibility 0.35s; {{navStyle}}"
+      style={interpolateStyle(
+        "position: absolute; top: 14px; left: 16px; right: 16px; display: flex; justify-content: center; transition: opacity 0.35s ease, transform 0.35s ease, visibility 0.35s; {{navStyle}}",
+        values,
+      )}
+    >
       <div style="width: 100%; max-width: 1240px; display: flex; align-items: center; justify-content: space-between; gap: 16px">
-        <a href="#top" aria-label="Waffle home" data-waffle-style="display: flex; align-items: center; text-decoration: none; padding: 2px 4px 6px; transition: opacity 0.3s ease, transform 0.3s ease; {{logoStyle}}" style={interpolateStyle("display: flex; align-items: center; text-decoration: none; padding: 2px 4px 6px; transition: opacity 0.3s ease, transform 0.3s ease; {{logoStyle}}", values)}>
-          <span style="font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: 32px; line-height: 1; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 5px #2A1F33; paint-order: stroke fill; text-shadow: 0 3px 0 #2A1F33">waffle</span>
+        <a
+          href="#top"
+          aria-label="Waffle home"
+          data-waffle-style="display: flex; align-items: center; text-decoration: none; padding: 2px 4px 6px; transition: opacity 0.3s ease, transform 0.3s ease; {{logoStyle}}"
+          style={interpolateStyle(
+            "display: flex; align-items: center; text-decoration: none; padding: 2px 4px 6px; transition: opacity 0.3s ease, transform 0.3s ease; {{logoStyle}}",
+            values,
+          )}
+        >
+          <span style="font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: 32px; line-height: 1; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 5px #2A1F33; paint-order: stroke fill; text-shadow: 0 3px 0 #2A1F33">
+            waffle
+          </span>
         </a>
         <div style="display: flex; align-items: center; gap: 8px">
-          <div data-waffle-if="wide" hidden={!values.wide} style="display: flex; align-items: center; gap: 8px">
-              <a href="#how" class="wbtn" style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap">How it works</a>
-              <a href="#today" class="wbtn" style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap">Bash Web</a>
-              <a href="https://bun.sprockt.dev/" class="wbtn" style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap">Bun</a>
-              <a href="https://github.com/ShaulLavo/waffle" class="wbtn" style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap">GitHub</a>
-            </div>
+          <div
+            data-waffle-if="wide"
+            hidden={!values.wide}
+            style="display: flex; align-items: center; gap: 8px"
+          >
+            <a
+              href="#how"
+              class="wbtn"
+              style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap"
+            >
+              How it works
+            </a>
+            <a
+              href="#today"
+              class="wbtn"
+              style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap"
+            >
+              Bash Web
+            </a>
+            <a
+              href="https://bun.sprockt.dev/"
+              class="wbtn"
+              style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap"
+            >
+              Bun
+            </a>
+            <a
+              href="https://github.com/ShaulLavo/waffle"
+              class="wbtn"
+              style="display: inline-flex; align-items: center; min-height: 40px; padding: 0 15px; background: #FFFFFF; color: #171B33; border: 2px solid #171B33; border-radius: 999px; box-shadow: 0 3px 0 #171B33; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap"
+            >
+              GitHub
+            </a>
+          </div>
 
-          <a href="#docs" class="wbtn" style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #FFC94D; color: #171B33; border: 2.5px solid #171B33; border-radius: 999px; box-shadow: 0 4px 0 #171B33; font-weight: 800; font-size: 16px; text-decoration: none">Docs</a>
+          <a
+            href="#docs"
+            class="wbtn"
+            style="display: inline-flex; align-items: center; min-height: 44px; padding: 0 20px; background: #FFC94D; color: #171B33; border: 2.5px solid #171B33; border-radius: 999px; box-shadow: 0 4px 0 #171B33; font-weight: 800; font-size: 16px; text-decoration: none"
+          >
+            Docs
+          </a>
         </div>
       </div>
     </nav>
   </div>
 
-  <section id="top" data-scrolly="1" aria-label="Waffle, explained in one scroll" data-waffle-style="position: relative; height: {{scrollyH}}px" style={interpolateStyle("position: relative; height: {{scrollyH}}px", values)}>
-    <div data-waffle-style="position: sticky; top: 0; height: {{stageH}}px; overflow: hidden; background: {{stageBg}}" style={interpolateStyle("position: sticky; top: 0; height: {{stageH}}px; overflow: hidden; background: {{stageBg}}", values)}>
-      <canvas data-waffle-canvas="1" aria-label="A grid of connected programs tilts into a 3D waffle, with each program sitting in a pocket" role="img" data-waffle-style="position: absolute; left: 0; right: 0; top: {{canvasTop}}px; width: 100%; height: {{canvasH}}; display: block; touch-action: pan-y; opacity: {{canvasO}}; -webkit-mask-image: {{canvasMask}}; mask-image: {{canvasMask}}" style={interpolateStyle("position: absolute; left: 0; right: 0; top: {{canvasTop}}px; width: 100%; height: {{canvasH}}; display: block; touch-action: pan-y; opacity: {{canvasO}}; -webkit-mask-image: {{canvasMask}}; mask-image: {{canvasMask}}", values)}></canvas>
+  <section
+    id="top"
+    data-scrolly="1"
+    aria-label="Waffle, explained in one scroll"
+    data-waffle-style="position: relative; height: {{scrollyH}}px"
+    style={interpolateStyle("position: relative; height: {{scrollyH}}px", values)}
+  >
+    <div
+      data-waffle-style="position: sticky; top: 0; height: {{stageH}}px; overflow: hidden; background: {{stageBg}}"
+      style={interpolateStyle(
+        "position: sticky; top: 0; height: {{stageH}}px; overflow: hidden; background: {{stageBg}}",
+        values,
+      )}
+    >
+      <canvas
+        data-waffle-canvas="1"
+        aria-label="A grid of connected programs tilts into a 3D waffle, with each program sitting in a pocket"
+        role="img"
+        data-waffle-style="position: absolute; left: 0; right: 0; top: {{canvasTop}}px; width: 100%; height: {{canvasH}}; display: block; touch-action: pan-y; opacity: {{canvasO}}; -webkit-mask-image: {{canvasMask}}; mask-image: {{canvasMask}}"
+        style={interpolateStyle(
+          "position: absolute; left: 0; right: 0; top: {{canvasTop}}px; width: 100%; height: {{canvasH}}; display: block; touch-action: pan-y; opacity: {{canvasO}}; -webkit-mask-image: {{canvasMask}}; mask-image: {{canvasMask}}",
+          values,
+        )}
+      ></canvas>
 
-      <div data-waffle-style="position: absolute; {{beatBox}}" style={interpolateStyle("position: absolute; {{beatBox}}", values)}>
-        <div data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: {{b0Gap}}; {{b0}}" style={interpolateStyle("position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: {{b0Gap}}; {{b0}}", values)}>
+      <div
+        data-waffle-style="position: absolute; {{beatBox}}"
+        style={interpolateStyle("position: absolute; {{beatBox}}", values)}
+      >
+        <div
+          data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: {{b0Gap}}; {{b0}}"
+          style={interpolateStyle(
+            "position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: {{b0Gap}}; {{b0}}",
+            values,
+          )}
+        >
           <div style="display: flex; align-items: center; gap: 10px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #DCE6FF; letter-spacing: 0.02em">
             <span style="display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: #F7C564"></span>
             <span>Waffle · a WebAssembly runtime for the browser</span>
           </div>
-          <h1 data-waffle-style="margin: 0; font-size: {{h1Size}}; line-height: 0.93; letter-spacing: -0.035em; font-weight: 800; font-stretch: 82%; color: #FFFFFF; text-wrap: balance" style={interpolateStyle("margin: 0; font-size: {{h1Size}}; line-height: 0.93; letter-spacing: -0.035em; font-weight: 800; font-stretch: 82%; color: #FFFFFF; text-wrap: balance", values)}>Whole programs, running <span style="color: #F7C564">together,</span> in a browser tab.</h1>
-          <p data-waffle-style="margin: 0; max-width: 34em; font-size: {{leadSize}}; line-height: 1.5; color: #E3EAFF; text-wrap: pretty" style={interpolateStyle("margin: 0; max-width: 34em; font-size: {{leadSize}}; line-height: 1.5; color: #E3EAFF; text-wrap: pretty", values)}>Waffle is a WebAssembly (Wasm) runtime that lets programs run, and work with each other, entirely inside the browser.<span data-waffle-style="display: {{leadTail}}" style={interpolateStyle("display: {{leadTail}}", values)}> Our shell, Bash Web, and our browser build of Bun already run on it.</span></p>
+          <h1
+            data-waffle-style="margin: 0; font-size: {{h1Size}}; line-height: 0.93; letter-spacing: -0.035em; font-weight: 800; font-stretch: 82%; color: #FFFFFF; text-wrap: balance"
+            style={interpolateStyle(
+              "margin: 0; font-size: {{h1Size}}; line-height: 0.93; letter-spacing: -0.035em; font-weight: 800; font-stretch: 82%; color: #FFFFFF; text-wrap: balance",
+              values,
+            )}
+          >
+            Whole programs, running <span style="color: #F7C564">together,</span> in a browser tab.
+          </h1>
+          <p
+            data-waffle-style="margin: 0; max-width: 34em; font-size: {{leadSize}}; line-height: 1.5; color: #E3EAFF; text-wrap: pretty"
+            style={interpolateStyle(
+              "margin: 0; max-width: 34em; font-size: {{leadSize}}; line-height: 1.5; color: #E3EAFF; text-wrap: pretty",
+              values,
+            )}
+          >
+            Waffle is a WebAssembly (Wasm) runtime that lets programs run, and work with each other,
+            entirely inside the browser.
+            <span
+              data-waffle-style="display: {{leadTail}}"
+              style={interpolateStyle("display: {{leadTail}}", values)}
+            >
+              {" "}
+              Our shell, Bash Web, and our browser build of Bun already run on it.
+            </span>
+          </p>
           <div style="display: flex; flex-wrap: wrap; gap: 12px; padding-top: 4px">
-            <a href="#docs" class="wbtn" data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33" style={interpolateStyle("display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33", values)}>Read the docs <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" data-waffle-style="display: {{arrowD}}" style={interpolateStyle("display: {{arrowD}}", values)}><path d="M3 9h11M10 4l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></a>
-            <a href="#today" data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #FFFFFF; border: 2.5px solid rgba(255,255,255,0.75); border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none" style={interpolateStyle("display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #FFFFFF; border: 2.5px solid rgba(255,255,255,0.75); border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none", values)}>Try Bash Web</a>
+            <a
+              href="#docs"
+              class="wbtn"
+              data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33"
+              style={interpolateStyle(
+                "display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33",
+                values,
+              )}
+            >
+              Read the docs{" "}
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 18 18"
+                aria-hidden="true"
+                data-waffle-style="display: {{arrowD}}"
+                style={interpolateStyle("display: {{arrowD}}", values)}
+              >
+                <path
+                  d="M3 9h11M10 4l5 5-5 5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+            </a>
+            <a
+              href="#today"
+              data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #FFFFFF; border: 2.5px solid rgba(255,255,255,0.75); border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none"
+              style={interpolateStyle(
+                "display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #FFFFFF; border: 2.5px solid rgba(255,255,255,0.75); border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none",
+                values,
+              )}
+            >
+              Try Bash Web
+            </a>
           </div>
-          <div data-waffle-if="scrollCue" hidden={!values.scrollCue} style="display: flex; align-items: center; gap: 10px; padding-top: 18px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #C4D2FF">
-              <svg width="16" height="22" viewBox="0 0 16 22" aria-hidden="true"><rect x="1.5" y="1.5" width="13" height="19" rx="6.5" fill="none" stroke="currentColor" stroke-width="2"></rect><circle cx="8" cy={values.wheelY} data-wheel-dot="1" r="2" fill="currentColor"></circle></svg>
-              <span>Scroll. Watch the diagram.</span>
+          <div
+            data-waffle-if="scrollCue"
+            hidden={!values.scrollCue}
+            style="display: flex; align-items: center; gap: 10px; padding-top: 18px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #C4D2FF"
+          >
+            <svg width="16" height="22" viewBox="0 0 16 22" aria-hidden="true">
+              <rect
+                x="1.5"
+                y="1.5"
+                width="13"
+                height="19"
+                rx="6.5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              ></rect>
+              <circle
+                cx="8"
+                cy={values.wheelY}
+                data-wheel-dot="1"
+                r="2"
+                fill="currentColor"
+              ></circle>
+            </svg>
+            <span>Scroll. Watch the diagram.</span>
+          </div>
+        </div>
+
+        <div
+          data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b1}}"
+          style={interpolateStyle(
+            "position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b1}}",
+            values,
+          )}
+        >
+          <div
+            data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px"
+            style={interpolateStyle(
+              "max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px",
+              values,
+            )}
+          >
+            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">
+              01 · THE GRID
             </div>
-
-        </div>
-
-        <div data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b1}}" style={interpolateStyle("position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b1}}", values)}>
-          <div data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px" style={interpolateStyle("max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px", values)}>
-            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">01 · THE GRID</div>
-            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">Each square is a program.</h2>
-            <p data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C" style={interpolateStyle("margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C", values)}>An agent writing code. A dev server. A database taking queries, a test suite, a game server, a video job. Each one runs on its own.</p>
+            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+              Each square is a program.
+            </h2>
+            <p
+              data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C"
+              style={interpolateStyle(
+                "margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C",
+                values,
+              )}
+            >
+              An agent writing code. A dev server. A database taking queries, a test suite, a game
+              server, a video job. Each one runs on its own.
+            </p>
           </div>
         </div>
 
-        <div data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b2}}" style={interpolateStyle("position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b2}}", values)}>
-          <div data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px" style={interpolateStyle("max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px", values)}>
-            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">02 · THE LINES</div>
-            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">The lines are how they talk.</h2>
-            <p data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C" style={interpolateStyle("margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C", values)}>One program’s output is another’s input. The shell hands work to Bun, Bun refreshes the preview, the game server writes to the database.</p>
+        <div
+          data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b2}}"
+          style={interpolateStyle(
+            "position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b2}}",
+            values,
+          )}
+        >
+          <div
+            data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px"
+            style={interpolateStyle(
+              "max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px",
+              values,
+            )}
+          >
+            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">
+              02 · THE LINES
+            </div>
+            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+              The lines are how they talk.
+            </h2>
+            <p
+              data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C"
+              style={interpolateStyle(
+                "margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C",
+                values,
+              )}
+            >
+              One program’s output is another’s input. The shell hands work to Bun, Bun refreshes
+              the preview, the game server writes to the database.
+            </p>
           </div>
         </div>
 
-        <div data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b3}}" style={interpolateStyle("position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b3}}", values)}>
-          <div data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px" style={interpolateStyle("max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px", values)}>
-            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">03 · THE DEPTH</div>
-            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">Every program gets a pocket.</h2>
-            <p data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C" style={interpolateStyle("margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C", values)}>Walls keep each one in its own space. The structure between them carries the traffic. All of it inside one tab.</p>
+        <div
+          data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b3}}"
+          style={interpolateStyle(
+            "position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; {{b3}}",
+            values,
+          )}
+        >
+          <div
+            data-waffle-style="max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px"
+            style={interpolateStyle(
+              "max-width: 440px; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #171B33; padding: {{cardPad}}; display: flex; flex-direction: column; gap: 10px",
+              values,
+            )}
+          >
+            <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #2350C7; letter-spacing: 0.04em">
+              03 · THE DEPTH
+            </div>
+            <h2 style="margin: 0; font-size: clamp(28px, 2.6vw, 38px); line-height: 1.02; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+              Every program gets a pocket.
+            </h2>
+            <p
+              data-waffle-style="margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C"
+              style={interpolateStyle(
+                "margin: 0; font-size: {{cardBody}}; line-height: 1.5; color: #3A3F5C",
+                values,
+              )}
+            >
+              Walls keep each one in its own space. The structure between them carries the traffic.
+              All of it inside one tab.
+            </p>
           </div>
         </div>
 
-        <div data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: 18px; {{b4}}" style={interpolateStyle("position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: 18px; {{b4}}", values)}>
-          <div aria-label="waffle" style="display: flex; font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: clamp(76px, 10vw, 172px); line-height: 0.9; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 0.06em #2A1F33; paint-order: stroke fill; text-shadow: 0 0.06em 0 #2A1F33">
-            <span aria-hidden="true" data-waffle-letter="0" style={"display: inline-block; " + values.letters[0].style}>w</span>
-<span aria-hidden="true" data-waffle-letter="1" style={"display: inline-block; " + values.letters[1].style}>a</span>
-<span aria-hidden="true" data-waffle-letter="2" style={"display: inline-block; " + values.letters[2].style}>f</span>
-<span aria-hidden="true" data-waffle-letter="3" style={"display: inline-block; " + values.letters[3].style}>f</span>
-<span aria-hidden="true" data-waffle-letter="4" style={"display: inline-block; " + values.letters[4].style}>l</span>
-<span aria-hidden="true" data-waffle-letter="5" style={"display: inline-block; " + values.letters[5].style}>e</span>
+        <div
+          data-waffle-style="position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: 18px; {{b4}}"
+          style={interpolateStyle(
+            "position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: {{beatAlign}}; gap: 18px; {{b4}}",
+            values,
+          )}
+        >
+          <div
+            aria-label="waffle"
+            style="display: flex; font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: clamp(76px, 10vw, 172px); line-height: 0.9; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 0.06em #2A1F33; paint-order: stroke fill; text-shadow: 0 0.06em 0 #2A1F33"
+          >
+            <span
+              aria-hidden="true"
+              data-waffle-letter="0"
+              style={"display: inline-block; " + values.letters[0].style}
+            >
+              w
+            </span>
+            <span
+              aria-hidden="true"
+              data-waffle-letter="1"
+              style={"display: inline-block; " + values.letters[1].style}
+            >
+              a
+            </span>
+            <span
+              aria-hidden="true"
+              data-waffle-letter="2"
+              style={"display: inline-block; " + values.letters[2].style}
+            >
+              f
+            </span>
+            <span
+              aria-hidden="true"
+              data-waffle-letter="3"
+              style={"display: inline-block; " + values.letters[3].style}
+            >
+              f
+            </span>
+            <span
+              aria-hidden="true"
+              data-waffle-letter="4"
+              style={"display: inline-block; " + values.letters[4].style}
+            >
+              l
+            </span>
+            <span
+              aria-hidden="true"
+              data-waffle-letter="5"
+              style={"display: inline-block; " + values.letters[5].style}
+            >
+              e
+            </span>
           </div>
-          <p style="margin: 0; max-width: 26em; font-size: clamp(18px, 1.5vw, 22px); line-height: 1.45; color: #2B3052; text-wrap: pretty">A WebAssembly runtime for programs that run, and work together, in the browser.</p>
+          <p style="margin: 0; max-width: 26em; font-size: clamp(18px, 1.5vw, 22px); line-height: 1.45; color: #2B3052; text-wrap: pretty">
+            A WebAssembly runtime for programs that run, and work together, in the browser.
+          </p>
           <div style="display: flex; flex-wrap: wrap; gap: 12px">
-            <a href="#docs" class="wbtn" data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33" style={interpolateStyle("display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33", values)}>Read the docs</a>
-            <a href="#today" data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #171B33; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none" style={interpolateStyle("display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #171B33; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none", values)}>What runs today</a>
+            <a
+              href="#docs"
+              class="wbtn"
+              data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33"
+              style={interpolateStyle(
+                "display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; gap: 10px; min-height: 52px; padding: 0 {{btnPad}}; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33",
+                values,
+              )}
+            >
+              Read the docs
+            </a>
+            <a
+              href="#today"
+              data-waffle-style="display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #171B33; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none"
+              style={interpolateStyle(
+                "display: inline-flex; align-items: center; justify-content: center; flex: {{btnFlex}}; min-height: 52px; padding: 0 {{btnPad}}; color: #171B33; background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 700; font-size: 18px; text-decoration: none",
+                values,
+              )}
+            >
+              What runs today
+            </a>
           </div>
-          <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #171b33"><span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; background: rgb(243, 180, 81); border: 2px solid rgb(23, 27, 51); border-radius: 999px; font-weight: 700; color: rgb(23, 27, 51)"><span style="width: 7px; height: 7px; border-radius: 50%; background: rgb(23, 27, 51)"></span>Bash Web</span><span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 2px solid rgb(23, 27, 51); border-radius: 999px; font-weight: 700; color: rgb(23, 27, 51); background-color: #FFE3EA"><span style="width: 7px; height: 7px; border-radius: 50%; background: rgb(23, 27, 51)"></span>Bun wasm</span>
-            <span><br></span>
+          <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #171b33">
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; background: rgb(243, 180, 81); border: 2px solid rgb(23, 27, 51); border-radius: 999px; font-weight: 700; color: rgb(23, 27, 51)">
+              <span style="width: 7px; height: 7px; border-radius: 50%; background: rgb(23, 27, 51)"></span>
+              Bash Web
+            </span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 2px solid rgb(23, 27, 51); border-radius: 999px; font-weight: 700; color: rgb(23, 27, 51); background-color: #FFE3EA">
+              <span style="width: 7px; height: 7px; border-radius: 50%; background: rgb(23, 27, 51)"></span>
+              Bun wasm
+            </span>
+            <span>
+              <br />
+            </span>
           </div>
         </div>
       </div>
 
+      <div
+        aria-hidden="true"
+        data-waffle-style="position: absolute; left: 0; right: 0; bottom: 0; height: 180px; pointer-events: none; background: {{stageFade}}"
+        style={interpolateStyle(
+          "position: absolute; left: 0; right: 0; bottom: 0; height: 180px; pointer-events: none; background: {{stageFade}}",
+          values,
+        )}
+      ></div>
 
-
-      <div aria-hidden="true" data-waffle-style="position: absolute; left: 0; right: 0; bottom: 0; height: 180px; pointer-events: none; background: {{stageFade}}" style={interpolateStyle("position: absolute; left: 0; right: 0; bottom: 0; height: 180px; pointer-events: none; background: {{stageFade}}", values)}></div>
-
-      <div data-waffle-if="noGl" hidden={!values.noGl} style="position: absolute; right: 24px; bottom: 24px; max-width: 320px; padding: 14px 16px; background: #FFFFFF; border: 2px solid #171B33; border-radius: 14px; font-size: 14px; line-height: 1.4">The 3D scene needs WebGL, which this browser has turned off. Everything else on the page works.</div>
-
+      <div
+        data-waffle-if="noGl"
+        hidden={!values.noGl}
+        style="position: absolute; right: 24px; bottom: 24px; max-width: 320px; padding: 14px 16px; background: #FFFFFF; border: 2px solid #171B33; border-radius: 14px; font-size: 14px; line-height: 1.4"
+      >
+        The 3D scene needs WebGL, which this browser has turned off. Everything else on the page
+        works.
+      </div>
     </div>
   </section>
 
@@ -155,160 +508,475 @@ a:focus-visible{outline:3px solid #F7C564;outline-offset:3px}
     <div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 48px">
       <div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px">
         <div style="display: flex; flex-direction: column; gap: 14px; max-width: 720px">
-          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7; letter-spacing: 0.04em">RUNNING ON WAFFLE TODAY</div>
-          <h2 style="margin: 0; font-size: clamp(40px, 5.2vw, 76px); line-height: 0.95; letter-spacing: -0.04em; font-weight: 800; font-stretch: 82%; text-wrap: balance">Two programs are already in the pockets.</h2>
+          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7; letter-spacing: 0.04em">
+            RUNNING ON WAFFLE TODAY
+          </div>
+          <h2 style="margin: 0; font-size: clamp(40px, 5.2vw, 76px); line-height: 0.95; letter-spacing: -0.04em; font-weight: 800; font-stretch: 82%; text-wrap: balance">
+            Two programs are already in the pockets.
+          </h2>
         </div>
-        <p style="margin: 0; max-width: 24em; font-size: 18px; line-height: 1.5; color: #3A3F5C">Our shell and our browser build of Bun are built on Waffle. Explore the shell source or try Bun in your browser.</p>
+        <p style="margin: 0; max-width: 24em; font-size: 18px; line-height: 1.5; color: #3A3F5C">
+          Our shell and our browser build of Bun are built on Waffle. Explore the shell source or
+          try Bun in your browser.
+        </p>
       </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr)); gap: 28px">
         <article style="background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 28px; box-shadow: 0 8px 0 #171B33; overflow: hidden; display: flex; flex-direction: column">
           <div style="background: #0D1B16; padding: 26px 28px; min-height: 150px; box-sizing: border-box; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 15px; line-height: 1.9; color: #3FD69A; display: flex; flex-direction: column; justify-content: flex-end">
-            <div style="display: flex; gap: 7px; margin-bottom: auto"><span style="width: 11px; height: 11px; border-radius: 50%; background: #FF6B57"></span><span style="width: 11px; height: 11px; border-radius: 50%; background: #FFD23F"></span><span style="width: 11px; height: 11px; border-radius: 50%; background: #3FD69A"></span></div>
+            <div style="display: flex; gap: 7px; margin-bottom: auto">
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #FF6B57"></span>
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #FFD23F"></span>
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #3FD69A"></span>
+            </div>
             <div>$ echo "hello from a tab"</div>
             <div style="color: #A8F0CF">hello from a tab</div>
-            <div>$ <span style="display: inline-block; width: 10px; height: 18px; background: #3FD69A; vertical-align: -3px"></span></div>
+            <div>
+              ${" "}
+              <span style="display: inline-block; width: 10px; height: 18px; background: #3FD69A; vertical-align: -3px"></span>
+            </div>
           </div>
           <div style="padding: 28px; display: flex; flex-direction: column; gap: 14px; flex: 1">
             <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px">
-              <h3 style="margin: 0; font-size: 38px; line-height: 1; letter-spacing: -0.035em; font-weight: 800; font-stretch: 85%">Bash Web</h3>
-              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; background: #F3B451; border: 2px solid #171B33; border-radius: 999px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 11.5px; font-weight: 700"><span style="width: 7px; height: 7px; border-radius: 50%; background: #171B33"></span>runs on Waffle</span>
+              <h3 style="margin: 0; font-size: 38px; line-height: 1; letter-spacing: -0.035em; font-weight: 800; font-stretch: 85%">
+                Bash Web
+              </h3>
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; background: #F3B451; border: 2px solid #171B33; border-radius: 999px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 11.5px; font-weight: 700">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #171B33"></span>
+                runs on Waffle
+              </span>
             </div>
-            <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">Our shell, built on Waffle. A bash prompt that lives in a browser tab.</p>
+            <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">
+              Our shell, built on Waffle. A bash prompt that lives in a browser tab.
+            </p>
             <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: auto; padding-top: 8px">
-              <a href="https://github.com/ShaulLavo/bash-web" class="wbtn" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; background: #171B33; color: #FFFFFF; border: 2.5px solid #171B33; border-radius: 14px; font-weight: 800; font-size: 17px; text-decoration: none; box-shadow: 0 5px 0 #F3B451">Explore Bash Web</a>
-              <a href="https://github.com/ShaulLavo/bash-web" style="font-weight: 700; font-size: 17px">Bash Web docs</a>
+              <a
+                href="https://github.com/ShaulLavo/bash-web"
+                class="wbtn"
+                style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; background: #171B33; color: #FFFFFF; border: 2.5px solid #171B33; border-radius: 14px; font-weight: 800; font-size: 17px; text-decoration: none; box-shadow: 0 5px 0 #F3B451"
+              >
+                Explore Bash Web
+              </a>
+              <a
+                href="https://github.com/ShaulLavo/bash-web"
+                style="font-weight: 700; font-size: 17px"
+              >
+                Bash Web docs
+              </a>
             </div>
           </div>
         </article>
 
         <article style="background: #FFFFFF; border: 2.5px solid #171B33; border-radius: 28px; box-shadow: 0 8px 0 #171B33; overflow: hidden; display: flex; flex-direction: column">
           <div style="background: #FFE3EA; padding: 26px 28px; min-height: 150px; box-sizing: border-box; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 15px; line-height: 1.9; color: #171B33; display: flex; flex-direction: column; justify-content: flex-end">
-            <div style="display: flex; gap: 7px; margin-bottom: auto"><span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33"></span><span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33; opacity: 0.4"></span><span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33; opacity: 0.2"></span></div>
+            <div style="display: flex; gap: 7px; margin-bottom: auto">
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33"></span>
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33; opacity: 0.4"></span>
+              <span style="width: 11px; height: 11px; border-radius: 50%; background: #171B33; opacity: 0.2"></span>
+            </div>
             <div>$ bun run index.ts</div>
             <div style="color: #8A2D4A">Hello via Bun!</div>
-            <div>$ <span style="display: inline-block; width: 10px; height: 18px; background: #171B33; vertical-align: -3px"></span></div>
+            <div>
+              ${" "}
+              <span style="display: inline-block; width: 10px; height: 18px; background: #171B33; vertical-align: -3px"></span>
+            </div>
           </div>
           <div style="padding: 28px; display: flex; flex-direction: column; gap: 14px; flex: 1">
             <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px">
-              <h3 style="margin: 0; font-size: 38px; line-height: 1; letter-spacing: -0.035em; font-weight: 800; font-stretch: 85%">Bun, in the browser</h3>
-              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; background: #F3B451; border: 2px solid #171B33; border-radius: 999px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 11.5px; font-weight: 700"><span style="width: 7px; height: 7px; border-radius: 50%; background: #171B33"></span>runs on Waffle</span>
+              <h3 style="margin: 0; font-size: 38px; line-height: 1; letter-spacing: -0.035em; font-weight: 800; font-stretch: 85%">
+                Bun, in the browser
+              </h3>
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; background: #F3B451; border: 2px solid #171B33; border-radius: 999px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 11.5px; font-weight: 700">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: #171B33"></span>
+                runs on Waffle
+              </span>
             </div>
-            <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">Our browser build of Bun, running on Waffle.</p>
+            <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">
+              Our browser build of Bun, running on Waffle.
+            </p>
             <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: auto; padding-top: 8px">
-              <a href="https://bun.sprockt.dev/" class="wbtn" style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; background: #171B33; color: #FFFFFF; border: 2.5px solid #171B33; border-radius: 14px; font-weight: 800; font-size: 17px; text-decoration: none; box-shadow: 0 5px 0 #F3B451">Try Bun in the browser</a>
+              <a
+                href="https://bun.sprockt.dev/"
+                class="wbtn"
+                style="display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; background: #171B33; color: #FFFFFF; border: 2.5px solid #171B33; border-radius: 14px; font-weight: 800; font-size: 17px; text-decoration: none; box-shadow: 0 5px 0 #F3B451"
+              >
+                Try Bun in the browser
+              </a>
             </div>
           </div>
         </article>
       </div>
 
       <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 14px 20px; padding: 20px 24px; border: 2px dashed #8F98C2; border-radius: 18px; font-size: 16px; line-height: 1.5; color: #3A3F5C">
-        <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #171B33; letter-spacing: 0.04em">ABOUT THE REST OF THE WAFFLE</span>
-        <span style="flex: 1 1 420px">The agent, the game server, the database and the others are illustrations of the kind of work Waffle is built for. They are not a list of supported software.</span>
+        <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #171B33; letter-spacing: 0.04em">
+          ABOUT THE REST OF THE WAFFLE
+        </span>
+        <span style="flex: 1 1 420px">
+          The agent, the game server, the database and the others are illustrations of the kind of
+          work Waffle is built for. They are not a list of supported software.
+        </span>
       </div>
     </div>
   </section>
 
-  <section id="how" style="padding: clamp(80px, 9vw, 140px) 20px; background: #FFFFFF; border-top: 2.5px solid #171B33">
+  <section
+    id="how"
+    style="padding: clamp(80px, 9vw, 140px) 20px; background: #FFFFFF; border-top: 2.5px solid #171B33"
+  >
     <div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 44px">
       <div style="display: flex; flex-direction: column; gap: 14px; max-width: 760px">
-        <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7; letter-spacing: 0.04em">HOW IT WORKS</div>
-        <h2 style="margin: 0; font-size: clamp(40px, 5.2vw, 76px); line-height: 0.95; letter-spacing: -0.04em; font-weight: 800; font-stretch: 82%">Anatomy of a runtime.</h2>
-        <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">A cross-section, for the engineers.</p>
+        <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7; letter-spacing: 0.04em">
+          HOW IT WORKS
+        </div>
+        <h2 style="margin: 0; font-size: clamp(40px, 5.2vw, 76px); line-height: 0.95; letter-spacing: -0.04em; font-weight: 800; font-stretch: 82%">
+          Anatomy of a runtime.
+        </h2>
+        <p style="margin: 0; font-size: 18px; line-height: 1.5; color: #3A3F5C">
+          A cross-section, for the engineers.
+        </p>
       </div>
 
       <figure style="margin: 0; overflow-x: auto; background: #F4F6FC; border: 2.5px solid #171B33; border-radius: 28px">
-        <svg viewBox="0 0 1200 450" role="img" aria-label="Cross-section: programs sit in pockets, channels run along the ridges between them, and the whole thing rests on a plate labelled browser tab" style="display: block; width: 100%; min-width: 760px; height: auto">
-          <rect x="70" y="330" width="1060" height="24" rx="12" fill="#FFFFFF" stroke="#171B33" stroke-width="3"></rect>
-          <path d="M170 330 L170 182 Q170 170 182 170 L202 170 Q214 170 214 182 L214 252 L374 252 L374 182 Q374 170 386 170 L406 170 Q418 170 418 182 L418 252 L578 252 L578 182 Q578 170 590 170 L610 170 Q622 170 622 182 L622 252 L782 252 L782 182 Q782 170 794 170 L814 170 Q826 170 826 182 L826 252 L986 252 L986 182 Q986 170 998 170 L1018 170 Q1030 170 1030 182 L1030 330 Z" fill="#F3B451" stroke="#171B33" stroke-width="3" stroke-linejoin="round"></path>
-          <path d="M176 300 H1024" stroke="#C9782C" stroke-width="3" stroke-dasharray="2 14" stroke-linecap="round"></path>
-          <rect x="174" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect><rect x="378" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect><rect x="786" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect><rect x="990" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect>
-          <rect x="246" y="178" width="96" height="74" rx="10" fill="#F7F5F0" stroke="#171B33" stroke-width="3"></rect>
+        <svg
+          viewBox="0 0 1200 450"
+          role="img"
+          aria-label="Cross-section: programs sit in pockets, channels run along the ridges between them, and the whole thing rests on a plate labelled browser tab"
+          style="display: block; width: 100%; min-width: 760px; height: auto"
+        >
+          <rect
+            x="70"
+            y="330"
+            width="1060"
+            height="24"
+            rx="12"
+            fill="#FFFFFF"
+            stroke="#171B33"
+            stroke-width="3"
+          ></rect>
+          <path
+            d="M170 330 L170 182 Q170 170 182 170 L202 170 Q214 170 214 182 L214 252 L374 252 L374 182 Q374 170 386 170 L406 170 Q418 170 418 182 L418 252 L578 252 L578 182 Q578 170 590 170 L610 170 Q622 170 622 182 L622 252 L782 252 L782 182 Q782 170 794 170 L814 170 Q826 170 826 182 L826 252 L986 252 L986 182 Q986 170 998 170 L1018 170 Q1030 170 1030 182 L1030 330 Z"
+            fill="#F3B451"
+            stroke="#171B33"
+            stroke-width="3"
+            stroke-linejoin="round"
+          ></path>
+          <path
+            d="M176 300 H1024"
+            stroke="#C9782C"
+            stroke-width="3"
+            stroke-dasharray="2 14"
+            stroke-linecap="round"
+          ></path>
+          <rect x="174" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect>
+          <rect x="378" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect>
+          <rect x="786" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect>
+          <rect x="990" y="170" width="36" height="9" rx="4" fill="#C9782C"></rect>
+          <rect
+            x="246"
+            y="178"
+            width="96"
+            height="74"
+            rx="10"
+            fill="#F7F5F0"
+            stroke="#171B33"
+            stroke-width="3"
+          ></rect>
           <rect x="256" y="188" width="76" height="46" rx="5" fill="#0D1B16"></rect>
-          <path d="M266 202 l9 7 -9 7 M281 220 h14" fill="none" stroke="#3FD69A" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>
-          <path d="M452 202 v38 a46 13 0 0 0 92 0 v-38" fill="#4C7DFF" stroke="#171B33" stroke-width="3"></path>
+          <path
+            d="M266 202 l9 7 -9 7 M281 220 h14"
+            fill="none"
+            stroke="#3FD69A"
+            stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          ></path>
+          <path
+            d="M452 202 v38 a46 13 0 0 0 92 0 v-38"
+            fill="#4C7DFF"
+            stroke="#171B33"
+            stroke-width="3"
+          ></path>
           <path d="M452 221 a46 13 0 0 0 92 0" fill="none" stroke="#171B33" stroke-width="3"></path>
-          <ellipse cx="498" cy="202" rx="46" ry="13" fill="#6F96FF" stroke="#171B33" stroke-width="3"></ellipse>
-          <path d="M624 226 q20 -8 40 0 t40 0 t40 0 t36 0 V252 H624 Z" fill="#C4621D" stroke="#171B33" stroke-width="3" stroke-linejoin="round"></path>
+          <ellipse
+            cx="498"
+            cy="202"
+            rx="46"
+            ry="13"
+            fill="#6F96FF"
+            stroke="#171B33"
+            stroke-width="3"
+          ></ellipse>
+          <path
+            d="M624 226 q20 -8 40 0 t40 0 t40 0 t36 0 V252 H624 Z"
+            fill="#C4621D"
+            stroke="#171B33"
+            stroke-width="3"
+            stroke-linejoin="round"
+          ></path>
           <ellipse cx="660" cy="232" rx="14" ry="3" fill="#FFF4DE"></ellipse>
-          <circle cx="890" cy="214" r="30" fill="#FFD23F" stroke="#171B33" stroke-width="3"></circle>
+          <circle
+            cx="890"
+            cy="214"
+            r="30"
+            fill="#FFD23F"
+            stroke="#171B33"
+            stroke-width="3"
+          ></circle>
           <circle cx="890" cy="214" r="9" fill="#F4F6FC" stroke="#171B33" stroke-width="3"></circle>
-          <circle cx="946" cy="232" r="18" fill="#FF9F43" stroke="#171B33" stroke-width="3"></circle>
-          <circle cx="946" cy="232" r="5" fill="#F4F6FC" stroke="#171B33" stroke-width="2.5"></circle>
-          <rect x="566" y="144" width="68" height="28" rx="7" fill="#FFE27F" stroke="#171B33" stroke-width="3" transform="rotate(-4 600 158)"></rect>
-          <path d="M300 176 Q330 118 396 150 Q440 120 492 186" fill="none" stroke="#3FD69A" stroke-width="3.5" stroke-dasharray="7 9" stroke-linecap="round"></path>
-          <circle cx="396" cy="152" r="10" fill="#3FD69A" stroke="#171B33" stroke-width="3"></circle>
-          <path d="M150 92 L262 178" stroke="#171B33" stroke-width="2" fill="none"></path><circle cx="262" cy="178" r="4" fill="#171B33"></circle>
-          <text x="70" y="62" font-family="Bricolage Grotesque, system-ui, sans-serif" font-weight="800" font-size="30" fill="#171B33">Program</text>
-          <text x="70" y="86" font-family="Martian Mono, ui-monospace, monospace" font-size="14" fill="#3A3F5C">runs in its own pocket</text>
+          <circle
+            cx="946"
+            cy="232"
+            r="18"
+            fill="#FF9F43"
+            stroke="#171B33"
+            stroke-width="3"
+          ></circle>
+          <circle
+            cx="946"
+            cy="232"
+            r="5"
+            fill="#F4F6FC"
+            stroke="#171B33"
+            stroke-width="2.5"
+          ></circle>
+          <rect
+            x="566"
+            y="144"
+            width="68"
+            height="28"
+            rx="7"
+            fill="#FFE27F"
+            stroke="#171B33"
+            stroke-width="3"
+            transform="rotate(-4 600 158)"
+          ></rect>
+          <path
+            d="M300 176 Q330 118 396 150 Q440 120 492 186"
+            fill="none"
+            stroke="#3FD69A"
+            stroke-width="3.5"
+            stroke-dasharray="7 9"
+            stroke-linecap="round"
+          ></path>
+          <circle
+            cx="396"
+            cy="152"
+            r="10"
+            fill="#3FD69A"
+            stroke="#171B33"
+            stroke-width="3"
+          ></circle>
+          <path d="M150 92 L262 178" stroke="#171B33" stroke-width="2" fill="none"></path>
+          <circle cx="262" cy="178" r="4" fill="#171B33"></circle>
+          <text
+            x="70"
+            y="62"
+            font-family="Bricolage Grotesque, system-ui, sans-serif"
+            font-weight="800"
+            font-size="30"
+            fill="#171B33"
+          >
+            Program
+          </text>
+          <text
+            x="70"
+            y="86"
+            font-family="Martian Mono, ui-monospace, monospace"
+            font-size="14"
+            fill="#3A3F5C"
+          >
+            runs in its own pocket
+          </text>
           <path d="M470 88 L404 142" stroke="#171B33" stroke-width="2" fill="none"></path>
-          <text x="470" y="62" font-family="Bricolage Grotesque, system-ui, sans-serif" font-weight="800" font-size="30" fill="#171B33">Channel</text>
-          <text x="470" y="86" font-family="Martian Mono, ui-monospace, monospace" font-size="14" fill="#3A3F5C">carries data between programs</text>
-          <path d="M900 392 L880 356" stroke="#171B33" stroke-width="2" fill="none"></path><circle cx="880" cy="356" r="4" fill="#171B33"></circle>
-          <text x="906" y="404" font-family="Bricolage Grotesque, system-ui, sans-serif" font-weight="800" font-size="30" fill="#171B33">Browser tab</text>
-          <text x="906" y="428" font-family="Martian Mono, ui-monospace, monospace" font-size="14" fill="#3A3F5C">holds the whole thing</text>
+          <text
+            x="470"
+            y="62"
+            font-family="Bricolage Grotesque, system-ui, sans-serif"
+            font-weight="800"
+            font-size="30"
+            fill="#171B33"
+          >
+            Channel
+          </text>
+          <text
+            x="470"
+            y="86"
+            font-family="Martian Mono, ui-monospace, monospace"
+            font-size="14"
+            fill="#3A3F5C"
+          >
+            carries data between programs
+          </text>
+          <path d="M900 392 L880 356" stroke="#171B33" stroke-width="2" fill="none"></path>
+          <circle cx="880" cy="356" r="4" fill="#171B33"></circle>
+          <text
+            x="906"
+            y="404"
+            font-family="Bricolage Grotesque, system-ui, sans-serif"
+            font-weight="800"
+            font-size="30"
+            fill="#171B33"
+          >
+            Browser tab
+          </text>
+          <text
+            x="906"
+            y="428"
+            font-family="Martian Mono, ui-monospace, monospace"
+            font-size="14"
+            fill="#3A3F5C"
+          >
+            holds the whole thing
+          </text>
         </svg>
       </figure>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 20px">
         <div style="background: #F4F6FC; border-radius: 22px; padding: 28px; display: flex; flex-direction: column; gap: 10px">
-          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">01</div>
-          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">Run</h3>
-          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">Programs compiled to WebAssembly run inside the page. Nothing to install, no server to keep alive.</p>
+          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">
+            01
+          </div>
+          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+            Run
+          </h3>
+          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">
+            Programs compiled to WebAssembly run inside the page. Nothing to install, no server to
+            keep alive.
+          </p>
         </div>
         <div style="background: #F4F6FC; border-radius: 22px; padding: 28px; display: flex; flex-direction: column; gap: 10px">
-          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">02</div>
-          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">Connect</h3>
-          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">Programs work together: one program’s output becomes another’s input, the way a shell pipeline does.</p>
+          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">
+            02
+          </div>
+          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+            Connect
+          </h3>
+          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">
+            Programs work together: one program’s output becomes another’s input, the way a shell
+            pipeline does.
+          </p>
         </div>
         <div style="background: #F4F6FC; border-radius: 22px; padding: 28px; display: flex; flex-direction: column; gap: 10px">
-          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">03</div>
-          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">Build on it</h3>
-          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">Bash Web and Bun are built on Waffle. The docs cover how it works and how they use it.</p>
+          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #2350C7">
+            03
+          </div>
+          <h3 style="margin: 0; font-size: 28px; letter-spacing: -0.03em; font-weight: 800; font-stretch: 85%">
+            Build on it
+          </h3>
+          <p style="margin: 0; font-size: 17px; line-height: 1.5; color: #3A3F5C">
+            Bash Web and Bun are built on Waffle. The docs cover how it works and how they use it.
+          </p>
         </div>
       </div>
     </div>
   </section>
 
-  <section id="docs" style="padding: clamp(80px, 9vw, 130px) 20px; background-color: #2350C7; background-image: linear-gradient(rgba(255,255,255,0.08) 1.5px, transparent 1.5px), linear-gradient(90deg, rgba(255,255,255,0.08) 1.5px, transparent 1.5px); background-size: 32px 32px; color: #FFFFFF">
+  <section
+    id="docs"
+    style="padding: clamp(80px, 9vw, 130px) 20px; background-color: #2350C7; background-image: linear-gradient(rgba(255,255,255,0.08) 1.5px, transparent 1.5px), linear-gradient(90deg, rgba(255,255,255,0.08) 1.5px, transparent 1.5px); background-size: 32px 32px; color: #FFFFFF"
+  >
     <div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px">
       <div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px">
         <div style="display: flex; flex-direction: column; gap: 14px">
-          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #C4D2FF; letter-spacing: 0.04em">THE BLUEPRINTS</div>
-          <h2 style="margin: 0; font-size: clamp(48px, 7vw, 108px); line-height: 0.9; letter-spacing: -0.045em; font-weight: 800; font-stretch: 80%">Documentation</h2>
+          <div style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #C4D2FF; letter-spacing: 0.04em">
+            THE BLUEPRINTS
+          </div>
+          <h2 style="margin: 0; font-size: clamp(48px, 7vw, 108px); line-height: 0.9; letter-spacing: -0.045em; font-weight: 800; font-stretch: 80%">
+            Documentation
+          </h2>
         </div>
-        <p style="margin: 0; max-width: 22em; font-size: 18px; line-height: 1.5; color: #E3EAFF">Start here. How Waffle works, and how to run programs on it.</p>
+        <p style="margin: 0; max-width: 22em; font-size: 18px; line-height: 1.5; color: #E3EAFF">
+          Start here. How Waffle works, and how to run programs on it.
+        </p>
       </div>
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(270px, 100%), 1fr)); gap: 18px">
-        <a href="https://github.com/ShaulLavo/waffle/blob/main/docs/getting-started.md" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700">START HERE</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">Getting started</span>
+        <a
+          href="https://github.com/ShaulLavo/waffle/blob/main/docs/getting-started.md"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #F3B451; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700">
+            START HERE
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            Getting started
+          </span>
           <span style="margin-top: auto; font-size: 16px">Set up your first Waffle page →</span>
         </a>
-        <a href="https://github.com/ShaulLavo/waffle/blob/main/docs/architecture.md" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">LEARN</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">Concepts</span>
-          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">How programs run and connect →</span>
+        <a
+          href="https://github.com/ShaulLavo/waffle/blob/main/docs/architecture.md"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">
+            LEARN
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            Concepts
+          </span>
+          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">
+            How programs run and connect →
+          </span>
         </a>
-        <a href="https://github.com/ShaulLavo/waffle/blob/main/docs/host-abi.md" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">REFERENCE</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">API reference</span>
-          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">The guest and host contract →</span>
+        <a
+          href="https://github.com/ShaulLavo/waffle/blob/main/docs/host-abi.md"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">
+            REFERENCE
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            API reference
+          </span>
+          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">
+            The guest and host contract →
+          </span>
         </a>
-        <a href="https://github.com/ShaulLavo/bash-web" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">GUIDE</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">Bash Web</span>
-          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">Our shell, on Waffle →</span>
+        <a
+          href="https://github.com/ShaulLavo/bash-web"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">
+            GUIDE
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            Bash Web
+          </span>
+          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">
+            Our shell, on Waffle →
+          </span>
         </a>
-        <a href="https://bun.sprockt.dev/" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">GUIDE</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">Bun</span>
-          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">Our browser build of Bun →</span>
+        <a
+          href="https://bun.sprockt.dev/"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">
+            GUIDE
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            Bun
+          </span>
+          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">
+            Our browser build of Bun →
+          </span>
         </a>
-        <a href="https://github.com/ShaulLavo/waffle" class="wtile" style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none">
-          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">SOURCE</span>
-          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">GitHub</span>
-          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">Code, issues and releases →</span>
+        <a
+          href="https://github.com/ShaulLavo/waffle"
+          class="wtile"
+          style="display: flex; flex-direction: column; gap: 8px; padding: 24px; min-height: 140px; box-sizing: border-box; background: #FFFFFF; color: #171B33; border: 2.5px solid #171B33; border-radius: 22px; box-shadow: 0 6px 0 #0E1F5C; text-decoration: none"
+        >
+          <span style="font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 700; color: #2350C7">
+            SOURCE
+          </span>
+          <span style="font-size: 28px; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%">
+            GitHub
+          </span>
+          <span style="margin-top: auto; font-size: 16px; color: #3A3F5C">
+            Code, issues and releases →
+          </span>
         </a>
       </div>
     </div>
@@ -317,16 +985,37 @@ a:focus-visible{outline:3px solid #F7C564;outline-offset:3px}
   <footer style="background: linear-gradient(180deg, #86CCFF 0%, #E9F6FF 100%); border-top: 2.5px solid #171B33; padding: 72px 20px 32px; overflow: hidden">
     <div style="max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 36px">
       <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px">
-        <p style="margin: 0; font-size: clamp(24px, 2.6vw, 34px); line-height: 1.15; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%; max-width: 18em">Programs run in the pockets. The docs are one click away.</p>
-        <a href="#docs" class="wbtn" style="display: inline-flex; align-items: center; min-height: 52px; padding: 0 24px; background: #FFC94D; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33">Read the docs</a>
+        <p style="margin: 0; font-size: clamp(24px, 2.6vw, 34px); line-height: 1.15; font-weight: 800; letter-spacing: -0.03em; font-stretch: 85%; max-width: 18em">
+          Programs run in the pockets. The docs are one click away.
+        </p>
+        <a
+          href="#docs"
+          class="wbtn"
+          style="display: inline-flex; align-items: center; min-height: 52px; padding: 0 24px; background: #FFC94D; color: #171B33; border: 2.5px solid #171B33; border-radius: 16px; font-weight: 800; font-size: 18px; text-decoration: none; box-shadow: 0 5px 0 #171B33"
+        >
+          Read the docs
+        </a>
       </div>
-      <div aria-hidden="true" style="font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: clamp(110px, 23vw, 340px); line-height: 0.9; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 0.045em #2A1F33; paint-order: stroke fill; text-shadow: 0 0.045em 0 #2A1F33">waffle</div>
+      <div
+        aria-hidden="true"
+        style="font-family: 'Fredoka', 'Arial Rounded MT Bold', system-ui, sans-serif; font-weight: 700; font-size: clamp(110px, 23vw, 340px); line-height: 0.9; letter-spacing: -0.01em; color: #FFC94D; -webkit-text-stroke: 0.045em #2A1F33; paint-order: stroke fill; text-shadow: 0 0.045em 0 #2A1F33"
+      >
+        waffle
+      </div>
       <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; font-family: 'Martian Mono', ui-monospace, Menlo, monospace; font-size: 13px; color: #171B33">
         <div style="display: flex; flex-wrap: wrap; gap: 4px 20px">
-          <a href="#docs" style="color: #171B33">Docs</a>
-          <a href="https://github.com/ShaulLavo/bash-web" style="color: #171B33">Bash Web</a>
-          <a href="https://bun.sprockt.dev/" style="color: #171B33">Bun</a>
-          <a href="https://github.com/ShaulLavo/waffle" style="color: #171B33">GitHub</a>
+          <a href="#docs" style="color: #171B33">
+            Docs
+          </a>
+          <a href="https://github.com/ShaulLavo/bash-web" style="color: #171B33">
+            Bash Web
+          </a>
+          <a href="https://bun.sprockt.dev/" style="color: #171B33">
+            Bun
+          </a>
+          <a href="https://github.com/ShaulLavo/waffle" style="color: #171B33">
+            GitHub
+          </a>
         </div>
         <span>© 2026 Waffle</span>
       </div>
@@ -334,8 +1023,7 @@ a:focus-visible{outline:3px solid #F7C564;outline-offset:3px}
   </footer>
 </div>
 
-
 <script>
-  import { initializeLanding } from '../scripts/landing';
+  import { initializeLanding } from "../scripts/landing";
   initializeLanding();
 </script>

@@ -132,21 +132,38 @@ export class NetHost {
 
   /** Start a request, copying body bytes before handing them to the message transport. */
   fetch(metaText: string, bodyBytes: Uint8Array | null = null): number {
-    let meta: { method?: string; url?: string; headers?: [string, string][]; redirect?: RequestRedirect };
+    let meta: {
+      method?: string;
+      url?: string;
+      headers?: [string, string][];
+      redirect?: RequestRedirect;
+    };
     try {
       meta = JSON.parse(metaText);
     } catch {
       return this.fail({ name: "TypeError", message: "fetch: malformed request metadata" });
     }
     const url = meta.url ?? "";
-    if (!canParse(url)) return this.fail({ name: "TypeError", message: `Failed to parse URL from ${url}` });
+    if (!canParse(url))
+      return this.fail({ name: "TypeError", message: `Failed to parse URL from ${url}` });
 
     const id = this.nextHandle++;
     const method = (meta.method ?? "GET").toUpperCase();
-    const body = bodyBytes && bodyBytes.length > 0 && method !== "GET" && method !== "HEAD" ? new Uint8Array(bodyBytes) : null;
+    const body =
+      bodyBytes && bodyBytes.length > 0 && method !== "GET" && method !== "HEAD"
+        ? new Uint8Array(bodyBytes)
+        : null;
     this.handles.set(id, { kind: "fetch", head: null, chunks: [], ended: false, error: null });
     this.send(
-      { type: "fetch", id, method, url, headers: meta.headers ?? [], body, redirect: meta.redirect ?? "follow" },
+      {
+        type: "fetch",
+        id,
+        method,
+        url,
+        headers: meta.headers ?? [],
+        body,
+        redirect: meta.redirect ?? "follow",
+      },
       body ? [body.buffer] : [],
     );
     return id;
@@ -220,7 +237,11 @@ export class NetHost {
     const h = this.handles.get(handle);
     if (!h || h.kind === "fetch") return BADF;
     const family = h.kind === "conn" ? h.peer.family : "IPv4";
-    return JSON.stringify({ address: family === "IPv4" ? "127.0.0.1" : "::1", family, port: h.port });
+    return JSON.stringify({
+      address: family === "IPv4" ? "127.0.0.1" : "::1",
+      family,
+      port: h.port,
+    });
   }
 
   close(handle: number): number {
@@ -248,9 +269,14 @@ export class NetHost {
       port = EPHEMERAL_BASE;
       while (inUse.has(port)) port++;
     }
-    if (port < 0 || port > 65535) return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
+    if (port < 0 || port > 65535)
+      return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
     if (inUse.has(port)) {
-      return this.fail({ name: "Error", message: `Failed to start server. Is port ${port} in use?`, code: "EADDRINUSE" });
+      return this.fail({
+        name: "Error",
+        message: `Failed to start server. Is port ${port} in use?`,
+        code: "EADDRINUSE",
+      });
     }
     const id = this.nextHandle++;
     this.handles.set(id, { kind: "listener", port, pending: [], error: null });
@@ -263,12 +289,22 @@ export class NetHost {
    * two handles; anything else is unsupported.
    */
   connect(host: string, port: number): number {
-    const listener = Array.from(this.handles.entries()).find(([, h]) => h.kind === "listener" && h.port === port);
+    const listener = Array.from(this.handles.entries()).find(
+      ([, h]) => h.kind === "listener" && h.port === port,
+    );
     if (LOOPBACK.has(host) && (!listener || listener[1].kind !== "listener")) {
-      return this.fail({ name: "Error", message: `connect ECONNREFUSED ${host}:${port}`, code: "ECONNREFUSED" });
+      return this.fail({
+        name: "Error",
+        message: `connect ECONNREFUSED ${host}:${port}`,
+        code: "ECONNREFUSED",
+      });
     }
     if (!LOOPBACK.has(host)) {
-      this.lastError = { name: "Error", message: `connect ${host}:${port}: TCP connections are not available in the browser`, code: "ENOTSUP" };
+      this.lastError = {
+        name: "Error",
+        message: `connect ${host}:${port}: TCP connections are not available in the browser`,
+        code: "ENOTSUP",
+      };
       return UNSUPPORTED;
     }
     if (!listener || listener[1].kind !== "listener") return BADF;
@@ -277,8 +313,20 @@ export class NetHost {
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);
     const stream = (): Stream => ({ chunks: [], ended: false, error: null });
-    this.handles.set(client, { kind: "conn", port: clientPort, peer: { address: "127.0.0.1", port, family: "IPv4" }, pipe: server, ...stream() });
-    this.unaccepted.set(server, { kind: "conn", port, peer: { address: "127.0.0.1", port: clientPort, family: "IPv4" }, pipe: client, ...stream() });
+    this.handles.set(client, {
+      kind: "conn",
+      port: clientPort,
+      peer: { address: "127.0.0.1", port, family: "IPv4" },
+      pipe: server,
+      ...stream(),
+    });
+    this.unaccepted.set(server, {
+      kind: "conn",
+      port,
+      peer: { address: "127.0.0.1", port: clientPort, family: "IPv4" },
+      pipe: client,
+      ...stream(),
+    });
     state.pending.push(server);
     this.news();
     return client;
@@ -329,7 +377,15 @@ export class NetHost {
   private dispatch(handle: number, kind: number, payload: Uint8Array): void {
     if (kind === Kind.FileChanged) {
       const meta: unknown = JSON.parse(decoder.decode(payload));
-      if (!meta || typeof meta !== "object" || !("path" in meta) || typeof meta.path !== "string" || !meta.path.startsWith("/") || meta.path.includes("\0")) throw new TypeError("Invalid file change notification");
+      if (
+        !meta ||
+        typeof meta !== "object" ||
+        !("path" in meta) ||
+        typeof meta.path !== "string" ||
+        !meta.path.startsWith("/") ||
+        meta.path.includes("\0")
+      )
+        throw new TypeError("Invalid file change notification");
       // HMR polls file contents. The completed shared-FS write is already visible; wake
       // the guest to inspect it without replaying stale bytes through writeFile.
       this.news();
@@ -355,15 +411,24 @@ export class NetHost {
   private receiveFile(kind: number, payload: Uint8Array): void {
     if (kind === Kind.FileStart) {
       const meta: unknown = JSON.parse(decoder.decode(payload));
-      if (!meta || typeof meta !== "object" || !("path" in meta) || !("length" in meta)) throw new TypeError("Invalid file update");
-      if (typeof meta.path !== "string" || !meta.path.startsWith("/") || typeof meta.length !== "number" || !Number.isSafeInteger(meta.length) || meta.length < 0) throw new TypeError("Invalid file update metadata");
+      if (!meta || typeof meta !== "object" || !("path" in meta) || !("length" in meta))
+        throw new TypeError("Invalid file update");
+      if (
+        typeof meta.path !== "string" ||
+        !meta.path.startsWith("/") ||
+        typeof meta.length !== "number" ||
+        !Number.isSafeInteger(meta.length) ||
+        meta.length < 0
+      )
+        throw new TypeError("Invalid file update metadata");
       this.fileWrite = { path: meta.path, bytes: new Uint8Array(meta.length), offset: 0 };
       return;
     }
     const pending = this.fileWrite;
     if (!pending) throw new Error("File update has no start record");
     if (kind === Kind.FileData) {
-      if (pending.offset + payload.length > pending.bytes.length) throw new Error("File update exceeds its declared size");
+      if (pending.offset + payload.length > pending.bytes.length)
+        throw new Error("File update exceeds its declared size");
       pending.bytes.set(payload, pending.offset);
       pending.offset += payload.length;
       return;
@@ -381,7 +446,15 @@ export class NetHost {
       this.send({ type: "close", id: conn });
       return;
     }
-    this.unaccepted.set(conn, { kind: "conn", port: h.port, peer, pipe: null, chunks: [], ended: false, error: null });
+    this.unaccepted.set(conn, {
+      kind: "conn",
+      port: h.port,
+      peer,
+      pipe: null,
+      chunks: [],
+      ended: false,
+      error: null,
+    });
     h.pending.push(conn);
   }
 

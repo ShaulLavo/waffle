@@ -6,13 +6,17 @@ import type { PersistedIndex, StorageBackend } from "../fs/storage";
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>(done => { resolve = done; });
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
   return { promise, resolve };
 }
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const cleanup: (() => void)[] = [];
-afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
+afterEach(() => {
+  for (const stop of cleanup.splice(0)) stop();
+});
 
 class BlockedStore implements StorageBackend {
   readonly started = deferred();
@@ -24,14 +28,27 @@ class BlockedStore implements StorageBackend {
   private storageQueue = Promise.resolve();
   reads = 0;
   index: PersistedIndex = {
-    version: 1, generation: 1, root: 1,
+    version: 1,
+    generation: 1,
+    root: 1,
     nodes: [
-      { ino: 1, kind: "dir", mtime: 1, size: 0, children: [["cold", 2], ["replacement", 3]] },
+      {
+        ino: 1,
+        kind: "dir",
+        mtime: 1,
+        size: 0,
+        children: [
+          ["cold", 2],
+          ["replacement", 3],
+        ],
+      },
       { ino: 2, kind: "file", mtime: 1, size: 4, data: "cold" },
       { ino: 3, kind: "file", mtime: 1, size: 3, data: "replacement" },
     ],
   };
-  async load() { return structuredClone(this.index); }
+  async load() {
+    return structuredClone(this.index);
+  }
   async read(key: string) {
     this.reads++;
     if (key === "cold") this.started.resolve();
@@ -42,7 +59,10 @@ class BlockedStore implements StorageBackend {
   }
   persist() {
     this.storageQueue = this.storageQueue.then(async () => {
-      if (this.blockPersist) { this.persistStarted.resolve(); await this.releasePersist.promise; }
+      if (this.blockPersist) {
+        this.persistStarted.resolve();
+        await this.releasePersist.promise;
+      }
     });
     return this.storageQueue;
   }
@@ -57,17 +77,28 @@ async function fixture() {
   const connection = createFilesystemConnection();
   service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
-  cleanup.push(() => { store.release.resolve(); store.releasePersist.resolve(); client.dispose(); service.dispose(); backend.dispose(); });
+  cleanup.push(() => {
+    store.release.resolve();
+    store.releasePersist.resolve();
+    client.dispose();
+    service.dispose();
+    backend.dispose();
+  });
   return { store, backend, client, service, connection };
 }
 
 async function promptly<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([promise, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("hot operation waited for cold storage")), 500);
-    })]);
-  } finally { if (timer !== undefined) clearTimeout(timer); }
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("hot operation waited for cold storage")), 500);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 test("a cold read queued behind a blocked persist does not hold up in-memory reads and writes", async () => {
@@ -83,7 +114,8 @@ test("a cold read queued behind a blocked persist does not hold up in-memory rea
     expect(decode(await promptly(client.asyncCall("readFile", ["/hot"])))).toBe("after");
     expect(store.reads).toBe(1);
   } finally {
-    store.releasePersist.resolve(); store.release.resolve();
+    store.releasePersist.resolve();
+    store.release.resolve();
     await Promise.allSettled([flushing, cold]);
   }
 });
@@ -94,7 +126,10 @@ test("a prepared path read rechecks a replacement before executing", async () =>
   await store.started.promise;
   try {
     expect(await promptly(client.asyncCall("move", ["/replacement", "/cold"]))).toBe(0);
-  } finally { store.release.resolve(); await cold.catch(() => {}); }
+  } finally {
+    store.release.resolve();
+    await cold.catch(() => {});
+  }
   expect(decode(await cold)).toBe("new");
   expect(store.reads).toBe(2);
 });
@@ -103,8 +138,12 @@ test("a prepared path read observes deletion instead of reviving an old file", a
   const { store, client } = await fixture();
   const cold = client.asyncCall("readFile", ["/cold"]);
   await store.started.promise;
-  try { expect(await promptly(client.asyncCall("remove", ["/cold"]))).toBe(true); }
-  finally { store.release.resolve(); await cold.catch(() => {}); }
+  try {
+    expect(await promptly(client.asyncCall("remove", ["/cold"]))).toBe(true);
+  } finally {
+    store.release.resolve();
+    await cold.catch(() => {});
+  }
   expect(await cold).toBeUndefined();
   expect(await client.asyncCall("lookup", ["/cold"])).toBeUndefined();
 });
@@ -119,7 +158,10 @@ test("concurrent reads of one cold handle share a load and cannot overwrite a la
   try {
     await promptly(client.asyncCall("writeFile", ["/hot"], encode("hot")));
     expect(store.reads).toBe(1);
-  } finally { store.release.resolve(); await Promise.allSettled([first, second]); }
+  } finally {
+    store.release.resolve();
+    await Promise.allSettled([first, second]);
+  }
   expect(decode(await first)).toBe("cold");
   expect(decode(await second)).toBe("cold");
   await client.asyncCall("write", [path.node, 0], encode("EDIT"));
@@ -132,8 +174,12 @@ test("unowned handles fail before preparation can start a storage read", async (
   const root = backend.execute("preopen", ["/"], new Uint8Array()) as number;
   const path = backend.execute("resolve", [root, "cold"], new Uint8Array()) as { node: number };
   const read = client.asyncCall("read", [path.node, 4, 0]);
-  try { await expect(promptly(read)).rejects.toMatchObject({ errno: 8 }); }
-  finally { store.release.resolve(); await read.catch(() => {}); }
+  try {
+    await expect(promptly(read)).rejects.toMatchObject({ errno: 8 });
+  } finally {
+    store.release.resolve();
+    await read.catch(() => {});
+  }
   expect(store.reads).toBe(0);
 });
 
@@ -142,13 +188,15 @@ test("capability cache churn cannot evict a handle with suspended preparation", 
   const root = await client.asyncCall("preopen", ["/"]);
   const path = await client.asyncCall("resolve", [root, "cold"]);
   const cold = client.asyncCall("read", [path.node, 4, 0]);
-  const result = cold.catch(error => error);
+  const result = cold.catch((error) => error);
   await store.started.promise;
   try {
     for (let index = 0; index < 260; index++) {
       await client.asyncCall("create", [{ parent: root, name: `new${index}` }, "file"]);
     }
-  } finally { store.release.resolve(); }
+  } finally {
+    store.release.resolve();
+  }
   expect(await result).toBeInstanceOf(Uint8Array);
   expect(decode(await cold)).toBe("cold");
 });
@@ -159,8 +207,13 @@ test("an in-memory full overwrite wins over an outstanding cold hydration", asyn
   await store.started.promise;
   try {
     await promptly(client.asyncCall("writeFile", ["/cold"], encode("new memory bytes")));
-    expect(decode(await promptly(client.asyncCall("readFile", ["/cold"])))).toBe("new memory bytes");
-  } finally { store.release.resolve(); await cold.catch(() => {}); }
+    expect(decode(await promptly(client.asyncCall("readFile", ["/cold"])))).toBe(
+      "new memory bytes",
+    );
+  } finally {
+    store.release.resolve();
+    await cold.catch(() => {});
+  }
   expect(decode(await cold)).toBe("new memory bytes");
   expect(decode(await client.asyncCall("readFile", ["/cold"]))).toBe("new memory bytes");
   expect(store.reads).toBe(1);
@@ -170,10 +223,14 @@ test("failed cold preparation completes the request without poisoning the queue"
   const { store, client } = await fixture();
   store.failReads = true;
   const cold = client.asyncCall("readFile", ["/cold"]);
-  const rejected = cold.catch(error => error);
+  const rejected = cold.catch((error) => error);
   await store.started.promise;
-  try { await promptly(client.asyncCall("writeFile", ["/hot"], encode("memory"))); }
-  finally { store.release.resolve(); expect(await rejected).toMatchObject({ errno: 29 }); }
+  try {
+    await promptly(client.asyncCall("writeFile", ["/hot"], encode("memory")));
+  } finally {
+    store.release.resolve();
+    expect(await rejected).toMatchObject({ errno: 29 });
+  }
   expect(decode(await client.asyncCall("readFile", ["/hot"]))).toBe("memory");
 });
 
@@ -184,7 +241,7 @@ test("revoking a session during preparation prevents its suspended write from ex
   const peer = new FilesystemClient(peerConnection.client);
   cleanup.push(() => peer.dispose());
   const write = client.asyncCall("writeFile", ["/cold", true], encode("cancelled"));
-  const rejected = write.catch(error => error);
+  const rejected = write.catch((error) => error);
   await store.started.promise;
   client.dispose();
   expect(await rejected).toMatchObject({ errno: 11 });
@@ -194,7 +251,9 @@ test("revoking a session during preparation prevents its suspended write from ex
 });
 
 test("yielding storage preparation does not allow overlapping async backend mutations", async () => {
-  const started = deferred(), release = deferred(), arrived = deferred();
+  const started = deferred(),
+    release = deferred(),
+    arrived = deferred();
   const trace: string[] = [];
   class PausedBackend extends MemoryBackend {
     execute(operation: string, args: any[], data: Uint8Array): unknown {
@@ -217,15 +276,22 @@ test("yielding storage preparation does not allow overlapping async backend muta
   const connection = createFilesystemConnection();
   service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
-  cleanup.push(() => { release.resolve(); client.dispose(); service.dispose(); });
+  cleanup.push(() => {
+    release.resolve();
+    client.dispose();
+    service.dispose();
+  });
   const first = client.asyncCall("writeFile", ["/first"], encode("one"));
   await started.promise;
   connection.server.port.addEventListener("message", () => arrived.resolve(), { once: true });
   const second = client.asyncCall("writeFile", ["/second"], encode("two"));
   try {
     await arrived.promise;
-    await new Promise<void>(done => setImmediate(done));
+    await new Promise<void>((done) => setImmediate(done));
     expect(trace).toEqual(["start:/first"]);
-  } finally { release.resolve(); await Promise.allSettled([first, second]); }
+  } finally {
+    release.resolve();
+    await Promise.allSettled([first, second]);
+  }
   expect(trace).toEqual(["start:/first", "end:/first", "start:/second", "end:/second"]);
 });
