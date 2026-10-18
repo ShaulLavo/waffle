@@ -126,6 +126,34 @@ validating callable `_start` and exported WebAssembly memory. A later exit notic
 or numeric completion cannot replace the atomic typed startup outcome. Errors
 after execution starts remain ordinary execution failures.
 
+The public `waffle/proc` entry exports `startFailure(error)` to normalize host setup
+errors into the same typed result. Consumers must not duplicate that errno mapping.
+
+A browser worker may select START_FAILED before its ordered error message reaches
+the broker. Startup queries can observe that result immediately, but consuming waits
+and inherited-descriptor release remain gated on the final error acknowledgement (or
+an observed worker failure). The supervisor emits the selected startup diagnostic once,
+regardless of which producer selected the result; a competing exit or signal emits none.
+The generic worker does not also emit this startup diagnostic.
+
+For an inherited pipe, the broker retains an independent diagnostic-only writer lifetime:
+the worker may release its imported endpoint before the final error acknowledgement. Bootstrap
+closes the diagnostic-only lifetime synchronously when executable entry commits, before guest
+code runs; normal guest stderr closure therefore produces EOF without an extra broker turn.
+A selected startup failure instead retains that lifetime through diagnostic delivery and cleanup.
+
+Startup diagnostic sinks may return a promise. The supervisor retains finishing ownership
+and stderr until it settles or disposal cancels it. Sinks receive an `active()` predicate and
+must stop writing when it becomes false. Disposal reports ECANCELED and releases ownership
+even if a custom sink never settles; late settlement cannot repeat cleanup or change the result.
+The browser broker uses only `tryWrite` (missing immediate I/O reports ENOTSUP), draining partial
+writes without blocking its page or pipe relay. A closed reader fails immediately; a live reader
+that never drains is bounded to **five seconds without write progress** (each positive write
+resets the deadline), and cancellation stops the drain on its next task turn.
+Undelivered bytes are reported to the host error sink as a `ProcessError` (the stream's errno
+or EAGAIN at the deadline), with the unwritten byte count when known. Delivery failure never
+replaces the selected child outcome or prevents descriptor cleanup.
+
 A shell maps START_FAILED ENOENT (WASI 44) to status 127, other startup errors to
 126, signals to 128 + signal, and actual exit codes unchanged. A Node/Bun-style
 guest instead emits a spawn error for START_FAILED (with the named errno and null

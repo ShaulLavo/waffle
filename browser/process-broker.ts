@@ -1,3 +1,4 @@
+import { drainDiagnostic } from "./diagnostic.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
 import { directoryGroups, directoryProcesses, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, TaggedCells, controlLoad, controlStore, controlCas } from "../proc/control.js";
@@ -16,7 +17,7 @@ import { reportProcessAdmission, type ProcessAdmissionEvent, type ProcessAdmissi
 import { confirmWorkerProcessJob, installWorkerBindings, wakeWorkerProcess, workerProcessDirectoryId, workerProcessState, type WorkerProcessMessage, type WorkerProcessTransport } from "../proc/worker-client.js";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec.js";
 import { WorkerPipeBroker } from "../proc/worker-pipes.js";
-import { attachPipePublicationRegistry, PipePublicationRegistry } from "../proc/pipes.js";
+import { attachPipePublicationRegistry, PipeEndpoint, PipePublicationRegistry } from "../proc/pipes.js";
 import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
 
@@ -32,7 +33,7 @@ export interface ProcessController {
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
   launch?(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
-  startFailed?(error: unknown): void;
+  startFailed?(error: unknown, active: () => boolean): void | Promise<void>;
   canConfirmExit?(): boolean;
   quiesce?(): void | Promise<void>;
   exited?(event: ChildExitEvent): void;
@@ -66,7 +67,7 @@ export interface RuntimeRootOptions {
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   workerUrl: string;
-  request: Omit<T, "filesystem" | "runtimeProcess">;
+  request: Omit<T, "filesystem" | "runtimeProcess" | "startupStderr">;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
@@ -81,6 +82,7 @@ interface RuntimeChild {
   stopped: boolean;
   quiescence?: Promise<void>;
   stopping?: Promise<void>;
+  startupStderr?: PipeEndpoint;
   cleanup?(): void;
   wake?(): void;
 }
@@ -106,6 +108,7 @@ export class BrowserProcessBroker {
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
+  private readonly startupDiagnostics = new Set<Promise<void>>();
   private readonly accesses = new WorkerExecutableAccess({
     active: sender => !this.suspended && !isRevoked(this.filesystem(sender)),
     check: async (_sender, path, cwd, active) => { await this.options.registry.check(path, cwd, active); return 0; },
@@ -183,18 +186,7 @@ export class BrowserProcessBroker {
           return this.suspended || (child ? child.acknowledged || child.failed : this.controllers.get(pid)?.canConfirmExit?.() ?? true);
         },
         quiesce: pid => this.quiesceProcess(pid),
-        startFailed: (pid, error) => {
-          const record = this.options.table.get(pid);
-          // Descriptor admission and errors from an already-running worker are not startup failures.
-          if (record?.state === "starting") this.traceProcess(record, "rejected", "start-failed");
-          const controller = this.controllers.get(pid);
-          if (controller?.startFailed) { controller.startFailed(error); return; }
-          const stderr = this.options.table.get(pid)?.descriptors.get(2)?.resource;
-          if (stderr?.kind === "pipe" || stderr?.kind === "terminal") {
-            const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
-            (stderr.tryWrite ?? stderr.write).call(stderr, [bytes]);
-          }
-        },
+        startFailed: (pid, error, active) => this.writeStartupDiagnostic(pid, error, active),
         onError: error => this.report(error),
       });
       supervisor.onChildExit(event => {
@@ -479,10 +471,18 @@ export class BrowserProcessBroker {
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
     try {
+      const stderr = context.descriptors.get(2)?.resource;
+      if (stderr instanceof PipeEndpoint) {
+        // Imported page/worker descriptions share one close-once lifetime. Keep an independent
+        // diagnostic capability through worker cleanup; bootstrap closes it at executable entry
+        // so it cannot postpone ordinary guest fd2 closure or EOF.
+        child.startupStderr = this.pipes.attach(stderr.handle()).duplicate(stderr);
+        context.registerRevocation(() => child.startupStderr!.close());
+      }
       connection = this.options.filesystem.connect(filesystem);
       worker = child.worker = new Worker(options.workerUrl, { type: "module" });
     } catch (error) { child.failed = true; connection?.port.close(); throw error; }
-    const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: serializeOutcome(context.outcome) };
+    const request = { ...options.request, filesystem: connection, runtimeProcess: transport, outcome: serializeOutcome(context.outcome), startupStderr: child.startupStderr?.handle() };
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
       let selected: ReturnType<typeof readOutcome>, entered = false;
@@ -523,7 +523,6 @@ export class BrowserProcessBroker {
       else if (data.type === "exit") context.exit(data.code);
       else if (!entered) context.startFailed(Object.assign(new Error(data.message), { code: data.errno }));
       else context.fail(new Error(data.message));
-      this.stopSafely(child);
     };
     worker.onerror = event => {
       event.preventDefault(); child.failed = true;
@@ -536,11 +535,29 @@ export class BrowserProcessBroker {
       }
       if (status !== 0) context.startFailed(event.error ?? new Error(event.message));
       else context.fail(new Error(event.message));
-      this.stopSafely(child);
     };
     try { worker.postMessage(request, [request.filesystem.port]); }
     catch (error) { child.failed = true; request.filesystem.port.close(); throw error; }
     return { terminate: () => this.stop(child) };
+  }
+  private writeStartupDiagnostic(pid: number, error: unknown, active: () => boolean): void | Promise<void> {
+    const record = this.options.table.get(pid);
+    if (record?.state === "starting") this.traceProcess(record, "rejected", "start-failed");
+    const controller = this.controllers.get(pid);
+    if (controller?.startFailed) return controller.startFailed(error, active);
+    const stderr = this.children.get(pid)?.startupStderr ?? record?.descriptors.get(2)?.resource;
+    if (stderr?.kind !== "pipe" && stderr?.kind !== "terminal") return;
+    const bytes = new TextEncoder().encode(`runtime: process start failed: ${String(error)}\n`);
+    const write = stderr.tryWrite;
+    if (!write) throw new ProcessError(ProcessErrno.NOTSUP, "startup diagnostic requires immediate stderr writes");
+    const pending = drainDiagnostic(bytes, bytes => write.call(stderr, [bytes]), () => active() && !this.suspended);
+    if (pending) {
+      // Await only our cancellable drains during broker teardown, never an arbitrary adapter
+      // promise. The supervisor explicitly retires custom sink ownership on disposal.
+      this.startupDiagnostics.add(pending);
+      void pending.finally(() => this.startupDiagnostics.delete(pending)).catch(() => {});
+    }
+    return pending;
   }
   private collectRuntimeProcess(pid: number, directory?: string): void {
     for (const [rootPid, transport] of this.roots) {
@@ -759,6 +776,7 @@ export class BrowserProcessBroker {
         try { await this.activation; } catch (error) { this.report(error); }
         this.supervisor?.dispose();
       }
+      await Promise.allSettled(this.startupDiagnostics);
       await this.quiesce();
       // A controller stop may release a physical handle, but cannot consume authority
       // before a pending launcher acquires it. Then settle both stops before retirement.

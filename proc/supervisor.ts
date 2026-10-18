@@ -14,11 +14,12 @@ interface ProcessAccesses { next: number; requests: Map<number, AccessRequest>; 
 export interface SupervisorOptions {
   registry: ExecutableRegistry;
   launch(context: ProcessContext): ProcessHandle | Promise<ProcessHandle>;
-  /** Emit a startup diagnostic while this process still owns its inherited output descriptors. */
-  startFailed?(pid: number, error: unknown): void;
+  /** Emit while inherited output is owned; an asynchronous sink must stop when active is false.
+   * Disposal cancels this ownership even if a custom sink never settles its promise. */
+  startFailed?(pid: number, error: unknown, active: () => boolean): void | Promise<void>;
   table?: ProcessTable;
-  /** Message-bearing hosts defer ordinary completion until ordered output/exit messages drain.
-   * Fatal outcomes and explicit disposal never wait for this acknowledgement.
+  /** Message-bearing hosts defer exits and startup failures until ordered output/error messages drain.
+   * Signals and explicit disposal never wait for this acknowledgement.
    */
   canConfirmExit?(pid: number): boolean;
   /** Fence admitted filesystem and adapter work after revocation. Every exit confirmation
@@ -63,6 +64,7 @@ export class ProcessSupervisor {
   /** Retain revoked records and late handles if their safety fence rejects, even after disposal. */
   private readonly finishing = new Map<number, ProcessRecord>();
   private readonly startFailures = new WeakSet<ProcessRecord>();
+  private readonly startupDrains = new Map<ProcessRecord, () => void>();
   constructor(options: SupervisorOptions) { this.options = options; this.table = options.table ?? new ProcessTable(); }
   get(pid: number): ProcessRecord | undefined { return this.table.get(pid); }
   job(id: number) { return this.table.job(id); }
@@ -506,6 +508,7 @@ export class ProcessSupervisor {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const cancel of Array.from(this.startupDrains.values())) cancel();
     const records = Array.from(this.table.values());
     for (const record of records) this.recordSignal(record, Signal.SIGKILL);
     for (const record of records) {
@@ -548,15 +551,10 @@ export class ProcessSupervisor {
       winner = claimOutcome(record.outcome, { kind: "exited", code: 126 }, ownClaim);
       failedExecutor = claimed;
     }
-    if (claimed && winner.kind === "start-failed" && !this.startFailures.has(record)) {
-      // The immutable CAS winner decides diagnostics, before descriptors are released.
-      this.startFailures.add(record);
-      this.safely(() => this.options.startFailed?.(pid, startError));
-    }
     this.notifyStart(pid);
     // Check the immutable winner, not an earlier read: a worker may ordinary-exit while a
     // signal observer is entering this function. Its queued output must still drain first.
-    if (winner.kind === "exited" && !failedExecutor && !this.disposed) {
+    if (winner.kind !== "signaled" && !failedExecutor && !this.disposed) {
       let canConfirm: boolean;
       try { canConfirm = this.options.canConfirmExit?.(pid) !== false; }
       catch (error) { this.finishing.delete(pid); throw error; }
@@ -565,6 +563,40 @@ export class ProcessSupervisor {
         return;
       }
     }
+    if (winner.kind === "start-failed" && !this.startFailures.has(record)) {
+      // Any producer can win the terminal CAS. Ordered acknowledgement supplies the error;
+      // this supervisor alone owns its diagnostic, before revocation or descriptor release.
+      this.startFailures.add(record);
+      let active = true;
+      const complete = () => {
+        if (!active) return;
+        active = false;
+        this.startupDrains.delete(record);
+        this.complete(record, winner);
+      };
+      const cancel = () => {
+        if (!active) return;
+        this.report(new ProcessError(ProcessErrno.CANCELED, "startup diagnostic delivery cancelled by supervisor disposal"));
+        complete();
+      };
+      this.startupDrains.set(record, cancel);
+      if (this.disposed) { cancel(); return; }
+      let pending: void | Promise<void> = undefined;
+      try { pending = this.options.startFailed?.(pid, startError ?? winner.error, () => active && !this.disposed); }
+      catch (error) { if (active) this.report(error); }
+      if (pending) {
+        void pending.then(complete, error => {
+          if (!active) return;
+          this.report(error);
+          complete();
+        });
+      } else complete();
+      return;
+    }
+    this.complete(record, winner);
+  }
+  private complete(record: ProcessRecord, winner: ProcessExit): void {
+    const pid = record.pid;
     if (winner.kind === "signaled" && winner.code === Signal.SIGKILL) this.publishKill(record);
     record.revoked = true;
     const hooks = Array.from(record.revocations);

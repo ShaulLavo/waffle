@@ -15,6 +15,7 @@ import { waitStatus } from "../proc/wait-status.js";
 import type { ProcessExit } from "../proc/types.js";
 import { fatalInterrupt } from "../interrupt/check.js";
 import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
+import type { PipeEndpointHandle } from "../proc/pipes.js";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -22,6 +23,8 @@ export interface RuntimeWorkerRequest {
   env: Record<string, string>;
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
+  /** Broker-owned diagnostic lifetime. Close synchronously at entry, not on startup failure. */
+  startupStderr?: PipeEndpointHandle;
   /** Authoritative terminal word available before loading process adapters. */
   outcome?: OutcomeTransfer;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
@@ -169,6 +172,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // Ownership begins before setup/namespaces can fail or finish the process.
   const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
+  let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
   const finish = (result: WorkerResult) => {
@@ -182,9 +186,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const startupFailure = "error" in result && !started;
     const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
-    // Generic commands select their winner before any reentrant cleanup callback. Legacy
-    // transports still publish completion only after their buffered diagnostics and release.
-    let winner = executor.complete ? settled : claim(ownResult);
+    // Startup failures select their winner before any reentrant cleanup callback. Executor-
+    // owned ordinary completion still follows its buffered diagnostics and descriptor release.
+    let winner = executor.complete && !startupFailure ? settled : claim(ownResult);
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -193,12 +197,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const attempt = (cleanup: () => void): boolean => {
       try { cleanup(); return true; } catch (error) { collect(error); return false; }
     };
+    if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
-    if (executor.complete && "error" in result && !settled) {
+    if (executor.complete && "error" in result && (startupFailure ? !req.runtimeProcess && winner?.kind === "start-failed" : !settled)) {
       attempt(() => executor.diagnostic?.(`${describeWorkerError(result.error)}\n`));
     }
-    if (executor.complete && startupFailure) winner = claim(ownResult);
     const descriptorsReleased = attempt(() => {
       if (wasi) { wasi.descriptors.dispose(); return; }
       const errors: unknown[] = [];
@@ -223,7 +227,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const signal = winner.kind === "signaled" ? winner.code : undefined;
     if (!executor.complete) attempt(() => runtimeProcess?.exit(code));
     const diagnostics = cleanupErrors.length ? { cleanupErrors } : {};
-    if (executor.complete || "code" in result || settled || winner.kind === "signaled") {
+    if ((executor.complete || "code" in result || settled || winner.kind === "signaled") &&
+      !(req.runtimeProcess && startupFailure && winner.kind === "start-failed")) {
       host.postMessage({ type: "exit", code, signal, sleep: sleepMode, ...diagnostics });
     } else {
       host.postMessage({ type: "error", code, errno: winner.kind === "start-failed" ? winner.error : undefined, message: describeWorkerError(result.error), sleep: sleepMode, ...diagnostics });
@@ -249,6 +254,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const requestOutcome = req.outcome === undefined ? undefined : reviveOutcome(req.outcome);
     const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : requestOutcome ?? executor.outcome;
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (req.startupStderr) {
+      const { attachPipeEndpoint } = await import("../proc/pipes.js");
+      const endpoint = attachPipeEndpoint(req.startupStderr);
+      releaseStartupStderr = () => endpoint.close();
+    }
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
     if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
@@ -420,6 +430,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       checkActive();
       const committed = runtimeProcess ? runtimeProcess.started() : outcome ? markStarted(outcome) : true;
       if (!committed) checkActive();
+      releaseStartupStderr?.();
       started = true;
     });
     host.addEventListener?.("error", onError);
