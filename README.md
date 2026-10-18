@@ -66,15 +66,21 @@ all inherited bindings, including arbitrary fd numbers, before guest launch and 
 supervisor with Bun subprocesses. Its codec and broker chunks remain lazy; ordinary Bun startup
 does not load the generic ownership adapters. Startup failure releases the transferred capabilities.
 
-Each process has per-signal default, ignored or handled dispositions. `kill` immediately selects
-SIGINT/SIGTERM/SIGPIPE's default signaled outcome (`128 + signal`) and revokes descriptors when
-no handler is registered. Ignored signals do nothing; handled signals set their own pending bit
+Each process has per-signal default, ignored or handled dispositions. Signal numbers are
+Linux `1..31` and `34..64`; `32` and `33` are invalid. Stop signals `19..22` return
+WASI ENOTSUP: no stopped state is implemented. `SIGCHLD`, `SIGCONT`, `SIGURG` and
+`SIGWINCH` default to no action on a running process. Other accepted signals immediately
+select a signaled outcome (`128 + signal`) and revoke descriptors when no handler is registered. Ignored signals do nothing; handled signals set their own pending bit
 without revoking the guest, whose ordinary `exit` retains its code. Registration and removal are
 synchronous, including restoring the default when the last listener is removed. Distinct pending
 signals cannot overwrite one another; repeated instances of one signal may coalesce. Removing a
 pending handler to default applies that default immediately; ignoring it clears the pending bit.
 The shared interrupt word is a wake hint, not the authoritative queue. `observeSignal` adopts a
-request already published by a guest without publishing it again.
+request already published by a guest without publishing it again. Worker requests with
+`runtimeProcess` supply authoritative readiness automatically. Executors with their own
+`interrupt`, `requestedSignal` or `signal` adapter must provide a nonconsuming
+`interruptPending(): boolean` callback; bootstrap rejects a missing callback before setup.
+The callback, not a stale wake hint, determines preview1 poll interruption.
 
 The preview1 adapter exposes `runtime_proc.signal(sig, mode)` for registration and self-signals,
 `runtime_proc.interrupted()` for dequeue, and `runtime_proc.default_signal(sig)` for an explicit
@@ -300,7 +306,7 @@ The browser loads this adapter lazily for modules importing the extended process
 `adapter: "preview1"` runs a generic WASI executable without Bun's slot adapter. Existing Bun
 slots and the signal-only preview1 path remain available.
 
-Every call is nonblocking except `poll`. Descriptor I/O returns a byte count, zero for EOF or
+Every call is nonblocking except `poll` and blocking `wait_job`. Descriptor I/O returns a byte count, zero for EOF or
 zero-length I/O, or a negative WASI errno; a partial write is permitted. EAGAIN is -6 and EPIPE
 is -64. Spawn reserves inherited capabilities before returning the child PID.
 
@@ -315,9 +321,9 @@ is -64. Spawn reserves inherited capabilities before returning the child PID.
 | `read(fd, ptr, len)`, `write(fd, ptr, len)` | Use the same fd namespace as preview1. Filesystem cold reads/growth prepare asynchronously and return EAGAIN without consuming bytes or advancing the shared offset. |
 | `wait(pid, out)` | Returns 0 and writes u32 kind (0 exited, 1 signaled), then i32 code; returns EAGAIN before confirmed cleanup. |
 | `kill(pid, sig)`, `kill_job(job, sig)` | Return 0 or negative errno. PID targets require self/ancestor authority; a job requires its exact owner. |
-| `job_of(pid)` | Returns the job ID or negative errno. |
+| `job_of(pid)` | Returns the job ID or negative errno. PID 0 selects the caller. Ordinary Bun children explicitly join `job_of(0)`; detached children create a new job with selector 0. |
 | `poll(subs, count, timeout_ms, out)` | Returns event count; 0 on timeout or a pending signal. Timeout -1 has no deadline. |
-| `interrupted()`, `signal(sig, mode)`, `default_signal(sig)` | Share the existing signal queue and dispositions; default actions unwind with `ProcessSignalExit`, distinct from an unrelated WASM trap. |
+| `interrupted()`, `signal(sig, mode)`, `default_signal(sig)` | Share the signal queue and dispositions. Errors use negative WASI errno: EINVAL -28, ENOTSUP -58, unavailable adapter ENOSYS -52. Terminating defaults unwind with `ProcessSignalExit`; ignored defaults return 0. |
 
 Poll subscriptions are 16 bytes: u32 kind, u32 id, u64 userdata. Output events are 16 bytes:
 u64 userdata, u32 kind, u32 flags. All fields are little-endian. Kinds are readable fd (0),

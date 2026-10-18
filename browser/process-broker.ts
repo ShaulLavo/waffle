@@ -177,7 +177,7 @@ export class BrowserProcessBroker {
           const child = this.children.get(pid);
           return this.suspended || (child ? child.acknowledged || child.failed : this.controllers.get(pid)?.canConfirmExit?.() ?? true);
         },
-        quiesce: pid => this.quiesceProcess(pid), retainJobResults: true,
+        quiesce: pid => this.quiesceProcess(pid),
         startFailed: (pid, error) => {
           const record = this.options.table.get(pid);
           // Descriptor admission and errors from an already-running worker are not startup failures.

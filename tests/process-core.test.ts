@@ -873,13 +873,11 @@ test("changing pending handled signal to default selects immediate guest default
 
 
 for (const sig of [1, 10, 64]) {
-  test(`self-raised signal ${sig} adopts its typed outcome without broadening kill`, async () => {
+  test(`self-raised signal ${sig} adopts its typed outcome`, async () => {
     const { supervisor, root, contexts } = fixture();
     const pid = supervisor.spawn(root, request());
     await supervisor.start(pid);
     const context = contexts.get(pid)!;
-    expect(() => supervisor.kill(pid, sig)).toThrow();
-    expect(() => supervisor.killJob(supervisor.jobOf(pid), sig)).toThrow();
     expect(requestSignal(context, sig)).toEqual({ action: "default", outcome: { kind: "signaled", code: sig, status: 128 + sig } });
     expect(() => supervisor.observeSignal(pid, sig)).not.toThrow();
     expect(supervisor.wait(root, pid)).toEqual({ kind: "signaled", code: sig, status: 128 + sig });

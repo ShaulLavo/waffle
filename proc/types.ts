@@ -1,7 +1,14 @@
 import type { DescriptorTable } from "../core/descriptors.js";
 
-export const Signal = Object.freeze({ SIGINT: 2, SIGKILL: 9, SIGPIPE: 13, SIGTERM: 15 });
-export type ProcessSignal = 2 | 9 | 13 | 15;
+export const Signal = Object.freeze({
+  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7,
+  SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13,
+  SIGALRM: 14, SIGTERM: 15, SIGSTKFLT: 16, SIGCHLD: 17, SIGCONT: 18,
+  SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
+  SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
+  SIGPWR: 30, SIGSYS: 31, SIGRTMIN: 34, SIGRTMAX: 64,
+});
+export type ProcessSignal = number;
 export type Signal = ProcessSignal;
 export type ProcessExit = Readonly<
   | { kind: "exited" | "signaled"; code: number; status: number }
@@ -71,10 +78,13 @@ export class ProcessError extends Error {
   readonly errno: number;
   constructor(errno: number, message: string) { super(message); this.errno = errno; this.name = "ProcessError"; }
 }
-export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CHILD: 12, INVAL: 28, SRCH: 71 });
+export const ProcessErrno = Object.freeze({ AGAIN: 6, BADF: 8, CHILD: 12, INVAL: 28, NOTSUP: 58, SRCH: 71 });
 export function checkedSignal(signal: number): ProcessSignal {
-  if (signal !== 2 && signal !== 9 && signal !== 13 && signal !== 15) {
-    throw new ProcessError(ProcessErrno.INVAL, `unsupported signal ${signal}`);
+  if (!Number.isInteger(signal) || signal < 1 || signal > 64 || signal === 32 || signal === 33) {
+    throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);
+  }
+  if (signal >= Signal.SIGSTOP && signal <= Signal.SIGTTOU) {
+    throw new ProcessError(ProcessErrno.NOTSUP, `stop signal ${signal} is not supported`);
   }
   return signal;
 }

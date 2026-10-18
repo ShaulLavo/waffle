@@ -4,7 +4,7 @@ import { Wasi, type WasiOptions } from "../core/wasi";
 import type { Readiness, Stream } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
 import { PipeController } from "../proc/pipes";
-import { createSignalState, requestSignal, setSignalDisposition, takeSignal } from "../proc/signals";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, takeSignal } from "../proc/signals";
 import { outcomeWord } from "../proc/outcome";
 
 const ALL = (1n << 29n) - 1n;
@@ -209,4 +209,40 @@ test("worker preview1 poll wakes from the same pipe endpoint used by ordinary fd
     });
     expect(result).toEqual({ phase: "done", poll: 0, events: 1, userdata: 77n, read: 0, bytes: [65, 66] });
   } finally { clearTimeout(timer); await worker.terminate(); }
+});
+
+
+test("preview1 process readiness ignores a stale wake without consuming real pending signals", () => {
+  const signals = { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() };
+  Atomics.store(signals.interrupt, 0, 17);
+  const state = idle(), notification = new Int32Array(new SharedArrayBuffer(4));
+  let waits = 0;
+  const f = fixture({ interrupt: signals.interrupt, interruptPending: () => signalPending(signals), wait() { waits++; state.readable = true; } });
+  f.subscribe(0, f.wasi.descriptors.open(endpoint(state, notification), ALL, ALL));
+  expect(f.poll()).toBe(0);
+  expect(waits).toBe(1);
+  setSignalDisposition(signals.signalState, 10, 2);
+  requestSignal(signals, 10);
+  expect(f.poll()).toBe(27);
+  expect(takeSignal(signals.signalState)).toBe(10);
+});
+
+test("clock-only advisory waits rescan after same-number publication cannot change the hint", () => {
+  const signals = { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() };
+  setSignalDisposition(signals.signalState, 17, 2);
+  Atomics.store(signals.interrupt, 0, 17);
+  let waits = 0;
+  const f = fixture({ interrupt: signals.interrupt, interruptPending: () => signalPending(signals), wait(word, expected, milliseconds) {
+    expect(word).toBe(signals.interrupt);
+    expect(expected).toBe(17);
+    // Publication after the scan but before wait has the same hint and its notify can be lost.
+    requestSignal(signals, 17);
+    expect(Atomics.load(word, 0)).toBe(expected);
+    expect(milliseconds).toBeLessThanOrEqual(10);
+    waits++;
+  } });
+  f.clock(0, 1_000_000_000n);
+  expect(f.poll()).toBe(27);
+  expect(waits).toBe(1);
+  expect(takeSignal(signals.signalState)).toBe(17);
 });

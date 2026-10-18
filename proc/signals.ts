@@ -1,5 +1,5 @@
 import { claimOutcome, readOutcome } from "./outcome.ts";
-import { ProcessErrno, ProcessError, Signal, type ProcessExit } from "./types.ts";
+import { ProcessErrno, ProcessError, Signal, checkedSignal, type ProcessExit } from "./types.ts";
 
 /** Shared ABI: cell zero is reserved; signal numbers 1..64 index their own cell. */
 export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });
@@ -12,15 +12,19 @@ export function createSignalState(source?: Int32Array | SharedArrayBuffer): Int3
   return state;
 }
 export function checkedSignalNumber(signal: number): number {
-  if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);
-  return signal;
+  return checkedSignal(signal);
+}
+/** SIGCONT is a no-op for a running process; stopped processes are not supported. */
+export function defaultSignalTerminates(signal: number): boolean {
+  checkedSignalNumber(signal);
+  return signal !== Signal.SIGCHLD && signal !== Signal.SIGCONT && signal !== Signal.SIGURG && signal !== Signal.SIGWINCH;
 }
 export function signalDisposition(state: Int32Array, signal: number): number {
   checkedSignalNumber(signal);
   return Atomics.load(state, signal) & DISPOSITION_MASK;
 }
 /** The caller must synchronously claim the default terminal outcome when this returns true. */
-export function setSignalDisposition(state: Int32Array, signal: number, disposition: number): boolean {
+export function setSignalDisposition(state: Int32Array, signal: number, disposition: number, interrupt?: Int32Array): boolean {
   checkedSignalNumber(signal);
   if (signal === Signal.SIGKILL || !Number.isInteger(disposition) || disposition < 0 || disposition > 2) {
     throw new ProcessError(ProcessErrno.INVAL, "invalid signal disposition");
@@ -29,7 +33,13 @@ export function setSignalDisposition(state: Int32Array, signal: number, disposit
     const previous = Atomics.load(state, signal);
     const next = disposition | (disposition === SignalDisposition.HANDLE ? previous & SIGNAL_PENDING : 0);
     if (Atomics.compareExchange(state, signal, previous, next) === previous) {
-      return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0;
+      if (interrupt && disposition !== SignalDisposition.HANDLE) {
+        // Remove only this discarded delivery's hint, never a racing signal or KILL.
+        // A publisher racing the clear retains either its pending bit or its wake.
+        Atomics.compareExchange(interrupt, 0, signal, 0);
+        rearmPendingSignal(state, interrupt);
+      }
+      return disposition === SignalDisposition.DEFAULT && (previous & SIGNAL_PENDING) !== 0 && defaultSignalTerminates(signal);
     }
   }
 }
@@ -40,7 +50,7 @@ export function publishSignal(state: Int32Array, signal: number): "default" | "i
   for (;;) {
     const previous = Atomics.load(state, signal);
     const disposition = previous & DISPOSITION_MASK;
-    if (disposition === SignalDisposition.DEFAULT) return "default";
+    if (disposition === SignalDisposition.DEFAULT) return defaultSignalTerminates(signal) ? "default" : "ignore";
     if (disposition === SignalDisposition.IGNORE) return "ignore";
     if (disposition !== SignalDisposition.HANDLE) throw new ProcessError(ProcessErrno.INVAL, "invalid shared signal disposition");
     if (Atomics.compareExchange(state, signal, previous, previous | SIGNAL_PENDING) === previous) return "handled";
@@ -53,14 +63,15 @@ export function takeSignal(state: Int32Array, interrupt?: Int32Array): number {
   // A racing publisher must retain either its wake hint or its pending bit.
   if (interrupt) Atomics.exchange(interrupt, 0, 0);
   const taken = takePendingSignal(state);
-  if (interrupt) {
-    for (let signal = 1; signal <= 64; signal++) {
-      if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
-      Atomics.compareExchange(interrupt, 0, 0, signal);
-      break;
-    }
-  }
+  if (interrupt) rearmPendingSignal(state, interrupt);
   return taken;
+}
+function rearmPendingSignal(state: Int32Array, interrupt: Int32Array): void {
+  for (let signal = 1; signal <= 64; signal++) {
+    if ((Atomics.load(state, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) continue;
+    Atomics.compareExchange(interrupt, 0, 0, signal);
+    break;
+  }
 }
 function takePendingSignal(state: Int32Array): number {
   for (let signal = 1; signal <= 64; signal++) {
@@ -122,5 +133,25 @@ export function requestSignal(transport: SignalTransport, signal: number): Signa
     if (outcome.kind !== "signaled" || outcome.code !== signal) return { action: "settled", outcome };
   }
   publishWake(transport, signal);
+  if (action === "handled") {
+    const cell = Atomics.load(transport.signalState, signal);
+    if ((cell & (DISPOSITION_MASK | SIGNAL_PENDING)) !== (SignalDisposition.HANDLE | SIGNAL_PENDING)) {
+      // Registration can discard the pending bit before this publisher reaches its wake.
+      // Clear only our hint, then preserve re-registration and any terminal publication.
+      Atomics.compareExchange(transport.interrupt, 0, signal, 0);
+      rearmPendingSignal(transport.signalState, transport.interrupt);
+      const winner = readOutcome(transport.outcome);
+      if (winner?.kind === "signaled") publishWake(transport, winner.code);
+    }
+  }
   return { action, outcome: readOutcome(transport.outcome) };
+}
+
+/** Nonconsuming readiness: interrupt is only a wake hint and may outlive a delivery. */
+export function signalPending(transport: SignalTransport): boolean {
+  if (Atomics.load(transport.requestedSignal, 0) === Signal.SIGKILL || readOutcome(transport.outcome)?.kind === "signaled") return true;
+  for (let signal = 1; signal <= 64; signal++) {
+    if ((Atomics.load(transport.signalState, signal) & (DISPOSITION_MASK | SIGNAL_PENDING)) === (SignalDisposition.HANDLE | SIGNAL_PENDING)) return true;
+  }
+  return false;
 }

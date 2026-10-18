@@ -3,7 +3,7 @@ import { bootstrap, RuntimeWorkerSignal, type RuntimeWorkerMessage, type Runtime
 import { createFilesystemConnection, FilesystemService, MemoryBackend } from "../fs";
 import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome";
 import { createWorkerProcessTransport, workerProcessState } from "../proc/worker-client";
-import { requestSignal, SIGNAL_PENDING } from "../proc/signals";
+import { createSignalState, requestSignal, setSignalDisposition, signalPending, SIGNAL_PENDING, takeSignal } from "../proc/signals";
 
 // Original tiny guest: one memory and an empty preview1 command entry point.
 const module = new WebAssembly.Module(new Uint8Array([
@@ -235,10 +235,10 @@ function signalModule(): WebAssembly.Module {
   const imported = (name: string, type: number) => text("runtime_proc").concat(text(name), [0, type]);
   const exported = (name: string, kind: number, index: number) => text(name).concat([kind, index]);
   return new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0].concat(
-    section(1, [3,96,2,127,127,1,127,96,0,1,127,96,0,0]),
-    section(2, [2].concat(imported("signal", 0), imported("interrupted", 1))),
+    section(1, [4,96,2,127,127,1,127,96,0,1,127,96,0,0,96,1,127,1,127]),
+    section(2, [3].concat(imported("signal", 0), imported("interrupted", 1), imported("default_signal", 3))),
     section(3, [1,2]), section(5, [1,0,1]),
-    section(7, [4].concat(exported("signal", 0, 0), exported("interrupted", 0, 1), exported("memory", 2, 0), exported("_start", 0, 2))),
+    section(7, [5].concat(exported("signal", 0, 0), exported("interrupted", 0, 1), exported("default_signal", 0, 2), exported("memory", 2, 0), exported("_start", 0, 3))),
     section(10, [1,2,0,11]),
   )));
 }
@@ -609,3 +609,148 @@ test("WASI diagnostics follow configured live stderr without recursing through a
   expect(captured[0]).toContain("[wasi] fd_fdstat_get failed: RangeError");
   expect(result.messages.some(message => message.type === "stderr")).toBe(false);
 });
+
+for (const signal of [17, 18, 23, 28]) test(`generic bootstrap default signal ${signal} ignores without revoking the worker`, async () => {
+  const result = await fixture({ run(context) {
+    context.defaultSignal(signal);
+    context.checkActive();
+    return 23;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ type: "exit", code: 23 });
+  expect(result.messages.some(message => message.type === "default-signal" || message.type === "error")).toBe(false);
+});
+
+for (const signal of [19, 20, 21, 22, 32, 33]) test(`generic bootstrap rejects unsupported default signal ${signal} without selecting death`, async () => {
+  const result = await fixture({ run(context) {
+    expect(() => context.defaultSignal(signal)).toThrow(/signal/);
+    context.checkActive();
+    return 0;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ type: "exit", code: 0 });
+});
+
+
+test("generic runtime_proc default_signal validates with WASI errno and returns zero for ignored defaults", async () => {
+  const result = await fixture({ run({ instance }) {
+    const applyDefault = instance.exports.default_signal as (signal: number) => number;
+    for (const signal of [17, 18, 23, 28]) expect(applyDefault(signal)).toBe(0);
+    for (const signal of [19, 20, 21, 22]) expect(applyDefault(signal)).toBe(-58);
+    for (const signal of [0, 32, 33, 65]) expect(applyDefault(signal)).toBe(-28);
+    const signal = instance.exports.signal as (signal: number, mode: number) => number;
+    expect(signal(15, 2)).toBe(-52); // No signal adapter installed: WASI ENOSYS.
+    return 23;
+  } }, { module: signalModule() });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: 23 });
+});
+
+test("generic default-ignore action cannot discard an already selected KILL", async () => {
+  const outcome = outcomeWord();
+  const result = await fixture({ outcome, run(context) {
+    claimOutcome(outcome, { kind: "signaled", code: 9 });
+    let thrown: unknown;
+    try { context.defaultSignal(18); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(RuntimeWorkerSignal);
+    expect((thrown as RuntimeWorkerSignal).signal).toBe(9);
+    return 0;
+  } });
+  expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: 137, signal: 9 });
+});
+
+for (const winner of [{ kind: "exited", code: 0 }, { kind: "exited", code: 23 }, { kind: "start-failed", code: 13 }] as const) {
+  test(`generic default action preserves existing ${winner.kind} ${winner.code} without signal unwind`, async () => {
+    const { WasiExit } = await import("../core");
+    const { waitStatus } = await import("../proc/wait-status");
+    const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
+    let signalCalls = 0;
+    const result = await fixture({ signalError() { signalCalls++; throw new Error("must not signal a non-signaled winner"); },
+      run(context) {
+        const selected = claimOutcome(state.signals.outcome, winner);
+        let thrown: unknown;
+        try { context.defaultSignal(18); } catch (error) { thrown = error; }
+        expect(thrown).toBeInstanceOf(WasiExit);
+        expect((thrown as InstanceType<typeof WasiExit>).code).toBe(waitStatus(selected));
+        return 0;
+      },
+    }, { runtimeProcess });
+    expect(signalCalls).toBe(0);
+    expect(result.messages.find(message => message.type === "exit")).toMatchObject({ code: winner.kind === "start-failed" ? 126 : winner.code, signal: undefined });
+  });
+}
+
+test("generic bootstrap preview1 polling treats stale process wake hints as advisory", async () => {
+  const runtimeProcess = createWorkerProcessTransport(), state = workerProcessState(runtimeProcess);
+  Atomics.store(state.signals.interrupt, 0, 17);
+  let polled = false;
+  const result = await fixture({ run({ wasi, instance }) {
+    const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
+    view.setUint8(8, 0); // An expired clock is ready even though the discarded wake remains.
+    view.setUint32(16, 1, true);
+    view.setBigUint64(24, 0n, true);
+    const poll = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions().poll_oneoff!;
+    expect(poll(0, 1024, 1, 2048)).toBe(0);
+    expect(view.getUint32(2048, true)).toBe(1);
+    polled = true;
+    return 0;
+  } }, { runtimeProcess });
+  expect(polled).toBe(true);
+  expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ type: "exit", code: 0 }]);
+});
+
+
+test("executor-only bootstrap polls authoritative signal readiness without consuming delivery", async () => {
+  const interrupt = new SharedArrayBuffer(4), requestedSignal = new SharedArrayBuffer(4), outcome = outcomeWord();
+  const signals = { interrupt: new Int32Array(interrupt), requestedSignal: new Int32Array(requestedSignal),
+    outcome, signalState: createSignalState() };
+  let checks = 0;
+  const result = await fixture({ interrupt, requestedSignal, outcome,
+    interruptPending: () => signalPending(signals),
+    run({ wasi, instance, runtimeState }) {
+      expect(runtimeState).toBeNull();
+      const view = new DataView((instance.exports.memory as WebAssembly.Memory).buffer);
+      view.setUint8(8, 0);
+      view.setUint32(16, 1, true);
+      view.setBigUint64(24, 0n, true); // Expired clock.
+      const poll = (wasi as unknown as { functions(): Record<string, (...args: number[]) => number> }).functions().poll_oneoff!;
+      const clockReady = () => {
+        expect(poll(0, 1024, 1, 2048)).toBe(0);
+        expect(view.getUint32(2048, true)).toBe(1);
+        checks++;
+      };
+      // A delayed publisher can leave a hint after registration discards delivery.
+      Atomics.store(signals.interrupt, 0, 17);
+      clockReady(); clockReady();
+      setSignalDisposition(signals.signalState, 17, 2, signals.interrupt);
+      requestSignal(signals, 17);
+      expect(poll(0, 1024, 1, 2048)).toBe(27);
+      expect(poll(0, 1024, 1, 2048)).toBe(27); // Readiness must not dequeue it.
+      expect(takeSignal(signals.signalState, signals.interrupt)).toBe(17);
+      clockReady();
+      requestSignal(signals, 17);
+      setSignalDisposition(signals.signalState, 17, 0, signals.interrupt);
+      Atomics.store(signals.interrupt, 0, 17); // A late advisory rearm is not readiness.
+      clockReady();
+      return 0;
+    },
+  });
+  expect(checks).toBe(4);
+  expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([{ type: "exit", code: 0 }]);
+});
+
+for (const transport of ["interrupt", "requestedSignal", "signal"] as const) {
+  test(`executor-owned ${transport} without authoritative readiness fails before setup or guest execution`, async () => {
+    let setup = false, ran = false, closed = 0;
+    const result = await fixture({
+      [transport]: transport === "signal" ? () => 0 : new SharedArrayBuffer(4),
+      stdio: { 1: { kind: "terminal", read: () => 0, write: () => 0,
+        readiness: () => ({ readable: false, writable: true, hangup: false }), close() { closed++; } } },
+      setup() { setup = true; },
+      run() { ran = true; return 0; },
+    });
+    expect(setup).toBe(false);
+    expect(ran).toBe(false);
+    expect(closed).toBe(1);
+    expect(result.messages.filter(message => message.type === "exit" || message.type === "error")).toMatchObject([
+      { type: "error", code: 126, message: expect.stringContaining("WorkerExecutor.interruptPending is required for executor-owned signal transports") },
+    ]);
+  });
+}

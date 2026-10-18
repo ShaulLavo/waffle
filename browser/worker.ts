@@ -1,4 +1,6 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
+import { checkedSignal, ProcessError } from "../proc/types.js";
+import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
 import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
 import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
@@ -50,7 +52,7 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   interrupt?: Int32Array;
   runtimeState: RuntimeWorkerState | null;
   checkActive(): void;
-  defaultSignal(signal: number): never;
+  defaultSignal(signal: number): void;
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
   finish(result: WorkerResult): void;
 }
@@ -69,6 +71,9 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   outcome?: SharedArrayBuffer | BigInt64Array;
   requestedSignal?: SharedArrayBuffer;
   interrupt?: SharedArrayBuffer;
+  /** Nonconsuming handled/fatal readiness. Required for executor-owned signal transports
+   * (interrupt, requestedSignal or signal) when request.runtimeProcess is absent. */
+  interruptPending?(): boolean;
   stdio?: Partial<Record<0 | 1 | 2, Stream>>;
   setup?(context: WorkerSetupContext<R>): void;
   /** Extra import namespaces. The runtime_proc namespace remains owned by Waffle. */
@@ -130,16 +135,18 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const claim = (result: Pick<ProcessExit, "kind" | "code">): ProcessExit => outcome
     ? claimOutcome(outcome, result)
     : localOutcome ??= processOutcome(result);
-  const defaultSignal = (signal: number): never => {
-    if (!Number.isInteger(signal) || signal < 1 || signal > 64) throw new Error(`Invalid default signal: ${signal}`);
+  const defaultSignal = (signal: number): void => {
+    checkedSignal(signal);
     const killed = requestedSignal && Atomics.load(requestedSignal, 0) === 9;
+    if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
+    if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
     revokeFilesystem(fs.connection);
     // Logical death is not an acknowledgement that filesystem references were released.
     if (!outcome && winner.kind === "signaled") host.postMessage({ type: "default-signal", signal: winner.code });
-    if (executor.signalError) return executor.signalError(signal);
-    throw new RuntimeWorkerSignal(signal);
+    if (executor.signalError) return executor.signalError(winner.code);
+    throw new RuntimeWorkerSignal(winner.code);
   };
   const checkActive = () => {
     const winner = outcome ? readOutcome(outcome) : localOutcome;
@@ -225,6 +232,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   try {
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
+    if (!runtimeState && (executor.interrupt || executor.requestedSignal || executor.signal) && typeof executor.interruptPending !== "function") {
+      throw new TypeError("WorkerExecutor.interruptPending is required for executor-owned signal transports");
+    }
     const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
     if (runtimeState) {
       outcome = runtimeState.signals.outcome;
@@ -279,9 +289,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (done) return;
     let instance: WebAssembly.Instance;
     const processImports: Record<string, (...args: number[]) => number | void> = {
-      signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -38,
+      signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
       interrupted: () => req.interruptible ? fatalInterrupt(outcome) : executor.signal?.(0, 0) ?? 0,
-      default_signal: defaultSignal,
+      default_signal: signal => {
+        try { defaultSignal(signal!); return 0; }
+        catch (error) { if (error instanceof ProcessError) return -error.errno; throw error; }
+      },
     };
     wasi = new Wasi({
       hostCallFd: executor.hostCallFd,
@@ -297,6 +310,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         checkActive();
       },
       interrupt,
+      interruptPending: runtimeState ? () => signalPending(runtimeState.signals) : executor.interruptPending ? () => executor.interruptPending!() : undefined,
       wait: (word, expected, ms) => { checkActive(); Atomics.wait(word, 0, expected, ms); checkActive(); },
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? line => console.debug(`[wasi] ${line}`) : undefined,

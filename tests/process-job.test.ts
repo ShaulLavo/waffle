@@ -158,23 +158,6 @@ test("handled signal interrupts blocking job wait without consuming delivery or 
   } finally { f.supervisor.dispose(); }
 });
 
-test("legacy hosts release individually reaped job results only after the last filesystem fence", async () => {
-  let release!: () => void;
-  const pending = new Promise<void>(resolve => { release = resolve; });
-  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); },
-    retainJobResults: false, quiesce: () => pending });
-  const shell = supervisor.createRoot(), leader = supervisor.reserveSpawn(shell, request());
-  const job = supervisor.jobOf(leader);
-  try {
-    supervisor.exit(leader, 0);
-    expect(supervisor.wait(shell, leader)).toBeNull();
-    expect(supervisor.job(job)).toBeDefined();
-    release(); await pending; await Promise.resolve();
-    supervisor.reap(shell, leader);
-    expect(supervisor.job(job)).toBeUndefined();
-  } finally { supervisor.dispose(); }
-});
-
 test("disposal clears job metadata retained after all individual process records were reaped", () => {
   const f = fixture();
   f.supervisor.exit(f.leader, 0); f.supervisor.exit(f.child, 0);
@@ -248,4 +231,38 @@ test("a launch resolving during quiescence retains its revoked handle until the 
     expect(supervisor.get(leader)!.handle).toBeUndefined();
     expect(supervisor.wait(shell, leader)?.status).toBe(137);
   } finally { releaseFence(); supervisor.dispose(); }
+});
+
+
+test("Bun-like nested spawns join job_of(0), and shell kill_job/wait_job collect inherited orphans", () => {
+  const supervisor = new ProcessSupervisor({ registry: new ExecutableRegistry(), launch() { throw new Error("not launched"); } });
+  const shell = supervisor.createRoot(), memory = new WebAssembly.Memory({ initial: 1 });
+  const abiFor = (pid: number) => new ProcessABI({ memory, descriptors: supervisor.get(pid)!.descriptors,
+    fs: new MemFS(), pid, service: supervisor, signals: supervisor.get(pid)! });
+  const shellABI = abiFor(shell);
+  try {
+    const bun = supervisor.reserveSpawn(shell, request(0)), bunABI = abiFor(bun);
+    const job = bunABI.imports.job_of!(0);
+    expect(job).toBe(supervisor.jobOf(bun));
+    expect(job).not.toBe(shellABI.imports.job_of!(0));
+    const child = supervisor.reserveSpawn(bun, request(job)), childABI = abiFor(child);
+    expect(childABI.imports.job_of!(0)).toBe(job);
+    const grandchild = supervisor.reserveSpawn(child, request(childABI.imports.job_of!(0)));
+    const detached = supervisor.reserveSpawn(bun, request(0));
+    expect(supervisor.jobOf(detached)).not.toBe(job);
+    // The leader may exit and be collected before its descendants. The shell's owner
+    // chain and the leader's result must remain available until the whole job is safe.
+    supervisor.exit(bun, 7);
+    supervisor.reap(shell, bun);
+    expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(-6);
+    expect(shellABI.imports.kill_job!(job, 9)).toBe(0);
+    expect(supervisor.get(child)!.result?.status).toBe(137);
+    expect(supervisor.get(grandchild)!.result?.status).toBe(137);
+    expect(supervisor.get(detached)!.result).toBeNull();
+    expect(shellABI.imports.wait_job!(job, 1, 64)).toBe(0);
+    expect(new DataView(memory.buffer).getInt32(64, true)).toBe(7);
+    expect(supervisor.get(child)).toBeUndefined();
+    expect(supervisor.get(grandchild)).toBeUndefined();
+    expect(supervisor.job(job)).toBeUndefined();
+  } finally { supervisor.dispose(); }
 });
