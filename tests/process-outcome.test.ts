@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { claimOutcome, outcomeWord, readOutcome } from "../proc/outcome.js";
+
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { claimOutcome, outcomeWord, readOutcome } =
+  isolated.load<typeof import("../proc/outcome.js")>("outcome");
 
 for (const code of [
   0,
@@ -150,7 +156,8 @@ for (const terminal of [
   { kind: "signaled", code: 9 },
 ] as const) {
   test(`started-running remains live and ${terminal.kind} claims exactly once`, async () => {
-    const { markStarted, startStatus } = await import("../proc/outcome.js");
+    const { markStarted, startStatus } =
+      isolated.load<typeof import("../proc/outcome.js")>("outcome");
     const word = outcomeWord();
     expect(startStatus(word)).toBe(-6);
     expect(markStarted(word)).toBe(true);
@@ -167,7 +174,8 @@ for (const terminal of [
 
 for (const first of ["entry", "terminal"] as const)
   test(`${first} wins a terminal-versus-entry CAS race consistently`, async () => {
-    const { markStarted, startStatus } = await import("../proc/outcome.js");
+    const { markStarted, startStatus } =
+      isolated.load<typeof import("../proc/outcome.js")>("outcome");
     const word = outcomeWord(),
       original = Atomics.compareExchange;
     let raced = false,
@@ -198,7 +206,8 @@ for (const first of ["entry", "terminal"] as const)
   });
 
 test("startup failure prevents entry, while entry forbids a later startup-failure claim", async () => {
-  const { markStarted, startStatus } = await import("../proc/outcome.js");
+  const { markStarted, startStatus } =
+    isolated.load<typeof import("../proc/outcome.js")>("outcome");
   const failed = outcomeWord();
   claimOutcome(failed, { kind: "start-failed", code: 2 });
   expect(markStarted(failed)).toBe(false);

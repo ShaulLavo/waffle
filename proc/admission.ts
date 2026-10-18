@@ -1,3 +1,4 @@
+import { objectFreeze } from "./intrinsics.ts";
 /** Opt-in process admission diagnostics. Reservations and launch requests are not proof that
  * a worker started; only `launched` records successful completion of the adapter launch.
  * `skipped` samples an outcome already selected when admission requests startup; cancellation
@@ -52,7 +53,7 @@ export function reportProcessAdmission(
   if (!observer) return;
   try {
     const pending = observer(
-      Object.freeze({
+      objectFreeze({
         pid: identity.pid,
         parentPid: identity.parentPid,
         job: identity.job,

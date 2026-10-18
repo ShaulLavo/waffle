@@ -1,14 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessError } from "../proc/types.js";
-import {
+import type { PipeController as ProductionPipeController } from "../proc/pipes.js";
+import { isolatedPipes } from "./fixtures/pipes-intrinsics.ts";
+
+const { pipes, atomics: Atomics, hooks } = isolatedPipes();
+const {
   attachPipeController,
   attachPipeEndpoint,
   attachPipePublicationRegistry,
   PipeController,
   PipeErrno,
   PipePublicationRegistry,
-} from "../proc/pipes.js";
+} = pipes;
+type PipeController = ProductionPipeController;
 
 const encode = new TextEncoder();
 const decode = new TextDecoder();
@@ -152,12 +157,21 @@ describe("process pipe endpoints", () => {
     const { controller, reader, writer } = pipe();
     writer.tryWrite([encode.encode("good")]);
     const source = encode.encode("evil");
-    const original = source.subarray.bind(source);
-    source.subarray = (begin, end) => {
-      controller.revoke(2);
-      return original(begin, end);
+    const original = hooks.typedArraySubarray;
+    let intercepted = false;
+    hooks.typedArraySubarray = (view, begin, end) => {
+      if (view === source) {
+        intercepted = true;
+        controller.revoke(2);
+      }
+      return original(view, begin, end);
     };
-    expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
+    try {
+      expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
+    } finally {
+      hooks.typedArraySubarray = original;
+    }
+    expect(intercepted).toBe(true);
     expect(output(reader)).toBe("good");
     expect(output(reader)).toBe("");
   });
@@ -1011,14 +1025,23 @@ describe("ordered record adversarial boundaries", () => {
     const { controller, reader, writer } = pipe();
     const survivor = writer.forProcess(3),
       source = encode.encode("lost"),
-      subarray = source.subarray.bind(source);
-    source.subarray = ((start?: number, end?: number) => {
-      const chunk = subarray(start, end);
-      controller.revoke(2);
-      survivor.tryWrite([encode.encode("good")]);
+      subarray = hooks.typedArraySubarray;
+    let intercepted = false;
+    hooks.typedArraySubarray = (view, start, end) => {
+      const chunk = subarray(view, start, end);
+      if (view === source) {
+        intercepted = true;
+        controller.revoke(2);
+        survivor.tryWrite([encode.encode("good")]);
+      }
       return chunk;
-    }) as typeof source.subarray;
-    expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
+    };
+    try {
+      expect(writer.tryWrite([source])).toBe(-PipeErrno.BADF);
+    } finally {
+      hooks.typedArraySubarray = subarray;
+    }
+    expect(intercepted).toBe(true);
     expect(output(reader)).toBe("good");
   });
 });
@@ -1493,20 +1516,19 @@ test("a competing larger SAB growth makes a smaller stale grow target harmless",
   registry.registerProcess(1);
   registry.allocate(1);
   registry.allocate(1);
-  const prototype = SharedArrayBuffer.prototype;
-  const grow = prototype.grow;
+  const grow = hooks.sharedArrayBufferGrow;
   let raced = false;
-  prototype.grow = function (length: number) {
-    if (this === buffer && !raced) {
+  hooks.sharedArrayBufferGrow = (target, length) => {
+    if (target === buffer && !raced) {
       raced = true;
-      grow.call(this, length + 16);
+      grow(target, length + 16);
     }
-    return grow.call(this, length);
+    grow(target, length);
   };
   try {
     expect(registry.allocate(1)).toBe(2);
   } finally {
-    prototype.grow = grow;
+    hooks.sharedArrayBufferGrow = grow;
   }
   expect(raced).toBe(true);
   registry.revoke(1);
@@ -1600,17 +1622,20 @@ for (const maxCells of [2, 3]) {
 
 test("endpoint lifetime allocation failure does not retain an invisible writer", () => {
   const { controller, reader, writer } = pipe();
-  const previous = globalThis.SharedArrayBuffer;
+  const previous = hooks.SharedArrayBufferConstructor;
+  let intercepted = false;
   try {
-    globalThis.SharedArrayBuffer = new Proxy(previous, {
+    hooks.SharedArrayBufferConstructor = new Proxy(previous, {
       construct() {
+        intercepted = true;
         throw new RangeError("injected lifetime allocation");
       },
     });
     expect(() => controller.duplicate(writer)).toThrow(RangeError);
   } finally {
-    globalThis.SharedArrayBuffer = previous;
+    hooks.SharedArrayBufferConstructor = previous;
   }
+  expect(intercepted).toBe(true);
   writer.close();
   expect(output(reader)).toBe("");
   reader.close();

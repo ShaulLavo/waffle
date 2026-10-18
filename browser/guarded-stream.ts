@@ -1,3 +1,14 @@
+import {
+  objectCreate,
+  objectGetPrototypeOf,
+  reflectGet,
+  reflectApply,
+  ProxyConstructor,
+  MapConstructor,
+  mapHas,
+  mapGet,
+  mapSet,
+} from "../proc/intrinsics.ts";
 import type { Stream } from "../core/descriptors.js";
 
 /** Preserve endpoint prototypes, private receivers and optional immediate I/O while guarding
@@ -7,20 +18,21 @@ export function guardedStream(
   checkActive: () => void,
   owned?: (stream: Stream) => void,
 ): Stream {
-  const methods = new Map<PropertyKey, unknown>();
+  const methods = new MapConstructor<PropertyKey, unknown>();
   // Keep instanceof identity without proxying frozen own properties: wrapped methods must
   // differ from their originals, which a non-configurable target property would forbid.
-  const target: Stream = Object.create(Object.getPrototypeOf(stream));
-  const guarded = new Proxy(target, {
+  const target: Stream = objectCreate(objectGetPrototypeOf(stream));
+  const handler: ProxyHandler<Stream> & { __proto__: null } = {
+    __proto__: null,
     get(_target, key) {
-      const value = Reflect.get(stream, key, stream);
+      const value = reflectGet(stream, key, stream);
       if (typeof value !== "function") return value;
-      if (methods.has(key)) return methods.get(key);
+      if (mapHas(methods, key)) return mapGet(methods, key);
       const method =
         key === "forProcess"
           ? (pid: number) => {
               checkActive();
-              return guardedStream(value.call(stream, pid), checkActive, owned);
+              return guardedStream(reflectApply(value, stream, [pid]), checkActive, owned);
             }
           : key === "read" ||
               key === "write" ||
@@ -29,13 +41,14 @@ export function guardedStream(
               key === "readiness"
             ? (...args: unknown[]) => {
                 checkActive();
-                return value.apply(stream, args);
+                return reflectApply(value, stream, args);
               }
-            : value.bind(stream);
-      methods.set(key, method);
+            : (...args: unknown[]) => reflectApply(value, stream, args);
+      mapSet(methods, key, method);
       return method;
     },
-  });
+  };
+  const guarded = new ProxyConstructor(target, handler);
   owned?.(guarded);
   return guarded;
 }

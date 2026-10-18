@@ -1,4 +1,14 @@
 import {
+  isInstance,
+  isSharedArrayBuffer,
+  isInt32Array,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  objectFreeze,
+  typedArrayBuffer,
+  typedArrayLength,
+} from "./intrinsics.ts";
+import {
   type ControlCells,
   TaggedCells,
   controlLoad,
@@ -11,18 +21,20 @@ import { type OutcomeWord, claimOutcome, readOutcome } from "./outcome.ts";
 import { ProcessErrno, ProcessError, Signal, checkedSignal, type ProcessExit } from "./types.ts";
 
 /** Shared ABI: cell zero is reserved; signal numbers 1..64 index their own cell. */
-export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });
+export const SignalDisposition = objectFreeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });
 export const SIGNAL_PENDING = 4;
 const DISPOSITION_MASK = 3;
 
 export function createSignalState(source?: ControlCells | SharedArrayBuffer): ControlCells {
-  const state =
-    source instanceof TaggedCells
+  const state = isInstance(source, TaggedCells)
+    ? source
+    : isInt32Array(source)
       ? source
-      : source instanceof Int32Array
-        ? source
-        : new Int32Array(source ?? new SharedArrayBuffer(65 * 4));
-  if (!(state.buffer instanceof SharedArrayBuffer) || state.length !== 65)
+      : new Int32ArrayConstructor(source ?? new SharedArrayBufferConstructor(65 * 4));
+  if (
+    !isSharedArrayBuffer(isInstance(state, TaggedCells) ? state.buffer : typedArrayBuffer(state)) ||
+    (isInstance(state, TaggedCells) ? state.length : typedArrayLength(state)) !== 65
+  )
     throw new TypeError("signal state must be 65 shared int32 cells");
   return state;
 }

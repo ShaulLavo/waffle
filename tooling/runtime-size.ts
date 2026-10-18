@@ -1,8 +1,9 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// Transactional descriptor rollback, including start-status main: 7,393 -> 7,456 B gzip.
-export const CORE_BUDGET_BYTES = 7_680;
+// Same-realm intrinsic captures and private descriptor collections: 8,010 B gzip
+// on Bun 1.4.2 (2026-10-18). Keep a bounded 182-byte margin, not an open-ended gate.
+export const CORE_BUDGET_BYTES = 8_192;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
     throw new Error(

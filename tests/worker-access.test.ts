@@ -1,16 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
 import { DescriptorTable } from "../core/descriptors";
 import { MemFS } from "../fs/memory";
-import { ProcessABI } from "../proc/abi";
-import { ExecutableRegistry } from "../proc/registry";
-import { ProcessSupervisor } from "../proc/supervisor";
-import { WorkerProcessBroker } from "../proc/worker-broker";
-import {
-  WorkerProcessClient,
-  createWorkerProcessTransport,
-  workerProcessState,
-  type WorkerProcessMessage,
-} from "../proc/worker-client";
+
+import type { WorkerProcessMessage } from "../proc/worker-client";
+import { isolatedProcess } from "./fixtures/isolated-process.js";
+
+const isolated = await isolatedProcess();
+const Atomics = isolated.atomics;
+const { ProcessABI } = isolated.load<typeof import("../proc/abi")>("abi");
+const { ExecutableRegistry } = isolated.load<typeof import("../proc/registry")>("registry");
+const { ProcessSupervisor } = isolated.load<typeof import("../proc/supervisor")>("supervisor");
+const { WorkerProcessBroker } =
+  isolated.load<typeof import("../proc/worker-broker")>("worker-broker");
+const { WorkerProcessClient, createWorkerProcessTransport, workerProcessState } =
+  isolated.load<typeof import("../proc/worker-client")>("worker-client");
 
 function gate() {
   return Promise.withResolvers<void>();

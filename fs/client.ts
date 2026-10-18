@@ -1,3 +1,32 @@
+import {
+  Int32ArrayConstructor,
+  Uint8ArrayConstructor,
+  SharedArrayBufferConstructor,
+  atomicsLoad,
+  atomicsStore,
+  atomicsAdd,
+  atomicsExchange,
+  atomicsCompareExchange,
+  atomicsNotify,
+  atomicsWait,
+  atomicsWaitAsync,
+  typedArrayLength,
+  typedArraySet,
+  sharedArrayBufferByteLength,
+  MapConstructor,
+  SetConstructor,
+  mapGet,
+  mapSet,
+  mapHas,
+  mapDelete,
+  mapClear,
+  mapSize,
+  mapForEach,
+  setAdd,
+  setDelete,
+  setForEach,
+  arrayAppend,
+} from "../proc/intrinsics.ts";
 import type {
   FileSystem,
   FileHandle,
@@ -35,14 +64,6 @@ import {
   sharedRevoked,
 } from "./shared.js";
 
-const asyncAtomics = Atomics as typeof Atomics & {
-  waitAsync(
-    array: Int32Array,
-    index: number,
-    value: number,
-  ): { async: boolean; value: string | Promise<string> };
-};
-
 export interface WriteFileOptions {
   /** Append bytes instead of replacing the existing file. */
   append?: boolean;
@@ -65,7 +86,7 @@ export function resolveWriteFileMode(mode: WriteFileMode = false): {
 export class FilesystemCompletion {
   readonly cells: Int32Array;
   private changed: (() => void)[] = [];
-  private cancellations = new Set<() => void>();
+  private cancellations = new SetConstructor<() => void>();
   private decoded: unknown;
   private loading?: Promise<unknown>;
   private consumed = false;
@@ -74,25 +95,27 @@ export class FilesystemCompletion {
     readonly buffer: SharedArrayBuffer,
     private client: FilesystemClient,
   ) {
-    this.cells = new Int32Array(buffer, 0, HEADER / 4);
+    this.cells = new Int32ArrayConstructor(buffer, 0, HEADER / 4);
   }
   get ready(): boolean {
-    return isRevoked(this.client.connection) || Atomics.load(this.cells, 0) !== State.Pending;
+    return isRevoked(this.client.connection) || atomicsLoad(this.cells, 0) !== State.Pending;
   }
   get epoch(): number {
     return this.cells[5]!;
   }
   notify(): void {
-    for (const done of this.changed.splice(0)) done();
+    const changed = this.changed;
+    this.changed = [];
+    for (let index = 0; index < changed.length; index++) changed[index]!();
   }
   cancel(): void {
-    if (Atomics.exchange(this.cells, 6, 1)) return;
-    Atomics.compareExchange(this.cells, 0, State.Pending, State.Cancelled);
-    Atomics.notify(this.cells, 0);
+    if (atomicsExchange(this.cells, 6, 1)) return;
+    atomicsCompareExchange(this.cells, 0, State.Pending, State.Cancelled);
+    atomicsNotify(this.cells, 0);
     wake(this.client.connection);
     this.client.connection.port.postMessage({ discard: this.id });
-    for (const cancel of this.cancellations) cancel();
-    this.cancellations.clear();
+    setForEach(this.cancellations, (cancel) => cancel());
+    this.cancellations = new SetConstructor();
     this.notify();
   }
   release(): void {
@@ -100,8 +123,8 @@ export class FilesystemCompletion {
     // release cancels that value and notifies its waiters before removing the completion.
     if (!this.consumed) this.cancel();
     else this.client.connection.port.postMessage({ discard: this.id });
-    this.client.completions.delete(this.id);
-    if (!this.client.completions.size) wake(this.client.connection);
+    mapDelete(this.client.completions, this.id);
+    if (!mapSize(this.client.completions)) wake(this.client.connection);
   }
   /** Release a ready result that the caller does not need, while still delivering failures.
    * This never waits, decodes bytes or requests an overflow transfer. */
@@ -123,22 +146,24 @@ export class FilesystemCompletion {
     return this.cells[4] ? bytes : unpack(bytes);
   }
   wait(): any {
-    const signal = new Int32Array(this.client.connection.signal);
+    const signal = new Int32ArrayConstructor(this.client.connection.signal);
     while (!this.ready) {
-      const observed = Atomics.load(signal, 0);
+      const observed = atomicsLoad(signal, 0);
       this.check();
-      if (!this.ready) Atomics.wait(signal, 0, observed);
+      if (!this.ready) atomicsWait(signal, 0, observed);
     }
     this.check();
     if (this.consumed) return this.decoded;
     const size = this.cells[2]!;
-    let bytes = new Uint8Array(
-      this.buffer,
-      HEADER,
-      Math.min(size, this.buffer.byteLength - HEADER),
-    ).slice();
+    let bytes = new Uint8ArrayConstructor(
+      new Uint8ArrayConstructor(
+        this.buffer,
+        HEADER,
+        Math.min(size, sharedArrayBufferByteLength(this.buffer) - HEADER),
+      ),
+    );
     if (this.cells[0] === State.Overflow) {
-      bytes = new Uint8Array(size);
+      bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE)
         bytes.set(this.client.call("take", [this.id, at, PAGE]), at);
     }
@@ -150,7 +175,7 @@ export class FilesystemCompletion {
   async value(): Promise<any> {
     if (!this.ready)
       await new Promise<void>((resolve) => {
-        this.changed.push(resolve);
+        arrayAppend(this.changed, resolve);
         this.client.watchRevocation();
         // The response may have arrived between the check and registration.
         if (this.ready) this.notify();
@@ -162,22 +187,24 @@ export class FilesystemCompletion {
   }
   private async load(): Promise<unknown> {
     const size = this.cells[2]!;
-    let bytes = new Uint8Array(
-      this.buffer,
-      HEADER,
-      Math.min(size, this.buffer.byteLength - HEADER),
-    ).slice();
+    let bytes = new Uint8ArrayConstructor(
+      new Uint8ArrayConstructor(
+        this.buffer,
+        HEADER,
+        Math.min(size, sharedArrayBufferByteLength(this.buffer) - HEADER),
+      ),
+    );
     if (this.cells[0] === State.Overflow) {
-      bytes = new Uint8Array(size);
+      bytes = new Uint8ArrayConstructor(size);
       for (let at = 0; at < size; at += PAGE) {
         const part = this.client.submit("take", [this.id, at, PAGE]);
         const cancel = () => part.cancel();
-        this.cancellations.add(cancel);
+        setAdd(this.cancellations, cancel);
         try {
           this.check();
           bytes.set(await part.value(), at);
         } finally {
-          this.cancellations.delete(cancel);
+          setDelete(this.cancellations, cancel);
           part.release();
         }
       }
@@ -193,20 +220,20 @@ export class FilesystemCompletion {
  * before changing data; a cached read that overlaps it is discarded, never returned as fresh.
  */
 export class FilesystemClient implements FileSystem {
-  readonly completions = new Map<number, FilesystemCompletion>();
+  readonly completions = new MapConstructor<number, FilesystemCompletion>();
   private nextRequest = 1;
   private reads = new Map<number, { offset: number; bytes: Uint8Array; epoch: number }>();
   private stats = new Map<number, { stat: FileStat; epoch: number }>();
   private paths = new Map<string, { path: ResolvedPath | number; epoch: number }>();
   private readdirs = new Map<number, { entries: DirectoryEntry[]; epoch: number }>();
-  private openHandles = new Map<number, number>();
+  private openHandles = new MapConstructor<number, number>();
   // Shared slots of open regular files: a live handle never changes slot, and direct I/O
   // rechecks the slot's handle under its file lock.
-  private fileSlots = new Map<number, number>();
+  private fileSlots = new MapConstructor<number, number>();
   // Preparation owns no guest buffers and never writes file bytes. Only a successful try* retry
   // commits I/O; the pending grow request merely loads data and reserves capacity.
-  private ioPreparations = new Map<number, FilesystemCompletion>();
-  private capabilityEntries = new Map<number, number>();
+  private ioPreparations = new MapConstructor<number, FilesystemCompletion>();
+  private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
   private revoked: () => boolean;
@@ -214,8 +241,8 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
   constructor(readonly connection: FilesystemConnection) {
-    this.capabilities = new Int32Array(connection.capabilities);
-    this.epoch = new Int32Array(connection.epoch);
+    this.capabilities = new Int32ArrayConstructor(connection.capabilities);
+    this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.revoked = sharedRevoked(connection);
     this.section = new FilesystemSection(connection, this.revoked);
     this.shared = new SharedFilesystemState(
@@ -227,7 +254,7 @@ export class FilesystemClient implements FileSystem {
     );
     connection.port.onmessage = ({ data }) => {
       if (data.segment) this.shared.addSegment(data.segment, data.index);
-      else this.completions.get(data.completed)?.notify();
+      else mapGet(this.completions, data.completed)?.notify();
     };
     connection.port.start();
   }
@@ -240,15 +267,15 @@ export class FilesystemClient implements FileSystem {
     void this.monitorRevocation();
   }
   private async monitorRevocation(): Promise<void> {
-    const signal = new Int32Array(this.connection.signal);
+    const signal = new Int32ArrayConstructor(this.connection.signal);
     try {
-      while (this.completions.size) {
-        const observed = Atomics.load(signal, 0);
+      while (mapSize(this.completions)) {
+        const observed = atomicsLoad(signal, 0);
         if (this.revoked()) {
-          for (const completion of this.completions.values()) completion.cancel();
+          mapForEach(this.completions, (completion) => completion.cancel());
           return;
         }
-        const waiting = asyncAtomics.waitAsync(signal, 0, observed);
+        const waiting = atomicsWaitAsync(signal, 0, observed);
         if (waiting.async) await waiting.value;
       }
     } finally {
@@ -283,15 +310,15 @@ export class FilesystemClient implements FileSystem {
       this.retain(handle);
       try {
         const sourceKey = this.capabilityEntry(handle)!;
-        const entries = new Int32Array(target.capabilities);
+        const entries = new Int32ArrayConstructor(target.capabilities);
         let targetKey = CAPABILITY_HEADER;
         while (
-          targetKey < entries.length &&
-          Atomics.load(entries, targetKey + 1) >= 0 &&
-          Atomics.load(entries, targetKey) !== handle
+          targetKey < typedArrayLength(entries) &&
+          atomicsLoad(entries, targetKey + 1) >= 0 &&
+          atomicsLoad(entries, targetKey) !== handle
         )
           targetKey += CAPABILITY_WORDS;
-        if (targetKey >= entries.length) throw new FilesystemError(51);
+        if (targetKey >= typedArrayLength(entries)) throw new FilesystemError(51);
         const reservation: FilesystemReservation = {
           handle,
           source: this.connection.capabilities,
@@ -299,14 +326,14 @@ export class FilesystemClient implements FileSystem {
           target: target.capabilities,
           targetKey,
           targetOwner: target.owner,
-          state: new SharedArrayBuffer(8),
+          state: new SharedArrayBufferConstructor(8),
         };
-        Atomics.add(this.capabilities, sourceKey + 2, 1);
-        Atomics.store(entries, targetKey, handle);
-        Atomics.store(entries, targetKey + 2, 0);
-        const previous = Atomics.load(entries, targetKey + 1);
-        Atomics.store(entries, targetKey + 1, previous < 0 ? 1 : previous + 1);
-        target.reservations.push(reservation);
+        atomicsAdd(this.capabilities, sourceKey + 2, 1);
+        atomicsStore(entries, targetKey, handle);
+        atomicsStore(entries, targetKey + 2, 0);
+        const previous = atomicsLoad(entries, targetKey + 1);
+        atomicsStore(entries, targetKey + 1, previous < 0 ? 1 : previous + 1);
+        arrayAppend(target.reservations, reservation);
         return reservation;
       } finally {
         this.release(handle);
@@ -317,20 +344,24 @@ export class FilesystemClient implements FileSystem {
   }
   /** Import the already-owned reference, not another retain. */
   adopt(reservation: FilesystemReservation): void {
-    if (Atomics.load(new Int32Array(reservation.state), 0)) return;
-    this.openHandles.set(reservation.handle, (this.openHandles.get(reservation.handle) ?? 0) + 1);
-    this.capabilityEntries.set(reservation.handle, reservation.targetKey);
+    if (atomicsLoad(new Int32ArrayConstructor(reservation.state), 0)) return;
+    mapSet(
+      this.openHandles,
+      reservation.handle,
+      (mapGet(this.openHandles, reservation.handle) ?? 0) + 1,
+    );
+    mapSet(this.capabilityEntries, reservation.handle, reservation.targetKey);
   }
   releaseReservation(reservation: FilesystemReservation): void {
-    const state = new Int32Array(reservation.state);
-    const wasClosed = Atomics.load(state, 0);
+    const state = new Int32ArrayConstructor(reservation.state);
+    const wasClosed = atomicsLoad(state, 0);
     releaseFilesystemReservation(reservation);
     if (!wasClosed) {
-      const count = this.openHandles.get(reservation.handle) ?? 0;
-      if (count > 1) this.openHandles.set(reservation.handle, count - 1);
+      const count = mapGet(this.openHandles, reservation.handle) ?? 0;
+      if (count > 1) mapSet(this.openHandles, reservation.handle, count - 1);
       else {
-        this.openHandles.delete(reservation.handle);
-        this.fileSlots.delete(reservation.handle);
+        mapDelete(this.openHandles, reservation.handle);
+        mapDelete(this.fileSlots, reservation.handle);
         this.cancelIO(reservation.handle);
       }
     }
@@ -343,25 +374,27 @@ export class FilesystemClient implements FileSystem {
   submit(
     operation: string,
     args: unknown[] = [],
-    data: Uint8Array = new Uint8Array(),
+    data: Uint8Array = new Uint8ArrayConstructor(),
     capacity = operation === "read" || operation === "take" || operation === "readdir"
       ? PAGE
       : 1024,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
     const input = pack({ operation, args });
-    const buffer = new SharedArrayBuffer(HEADER + Math.max(input.length + data.length, capacity));
+    const buffer = new SharedArrayBufferConstructor(
+      HEADER + Math.max(input.length + data.length, capacity),
+    );
     const completion = new FilesystemCompletion(this.nextRequest++, buffer, this);
     completion.cells[1] = input.length;
     completion.cells[2] = data.length;
-    new Uint8Array(buffer, HEADER).set(input);
-    new Uint8Array(buffer, HEADER + input.length).set(data);
-    this.completions.set(completion.id, completion);
+    typedArraySet(new Uint8ArrayConstructor(buffer, HEADER), input);
+    typedArraySet(new Uint8ArrayConstructor(buffer, HEADER + input.length), data);
+    mapSet(this.completions, completion.id, completion);
     this.connection.port.postMessage({ id: completion.id, buffer });
     return completion;
   }
   readiness(id: number): { kind: 3; id: number; ready: boolean } | undefined {
-    const completion = this.completions.get(id);
+    const completion = mapGet(this.completions, id);
     return completion && { kind: 3, id, ready: completion.ready };
   }
   call(operation: string, args: unknown[] = [], data?: Uint8Array): any {
@@ -383,39 +416,43 @@ export class FilesystemClient implements FileSystem {
   dispose(): void {
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
-    for (const completion of this.completions.values()) completion.cancel();
-    this.completions.clear();
-    this.ioPreparations.clear();
+    mapForEach(this.completions, (completion) => completion.cancel());
+    mapClear(this.completions);
+    mapClear(this.ioPreparations);
     this.reads.clear();
     this.stats.clear();
     this.paths.clear();
     this.readdirs.clear();
-    this.openHandles.clear();
-    this.fileSlots.clear();
-    this.capabilityEntries.clear();
+    mapClear(this.openHandles);
+    mapClear(this.fileSlots);
+    mapClear(this.capabilityEntries);
     this.sweep();
     this.connection.port.close();
   }
   private version(): number {
     if (this.revoked()) throw new FilesystemError(11);
-    return Atomics.load(this.epoch, 0);
+    return atomicsLoad(this.epoch, 0);
   }
   preopen(path: string): FileHandle {
     return this.call("preopen", [path]);
   }
   private capabilityEntry(handle: FileHandle): number | undefined {
-    const cached = this.capabilityEntries.get(handle);
+    const cached = mapGet(this.capabilityEntries, handle);
     if (
       cached !== undefined &&
-      Atomics.load(this.capabilities, cached) === handle &&
-      Atomics.load(this.capabilities, cached + 1) >= 0
+      atomicsLoad(this.capabilities, cached) === handle &&
+      atomicsLoad(this.capabilities, cached + 1) >= 0
     )
       return cached;
-    this.capabilityEntries.delete(handle);
-    for (let key = CAPABILITY_HEADER; key < this.capabilities.length; key += CAPABILITY_WORDS) {
+    mapDelete(this.capabilityEntries, handle);
+    for (
+      let key = CAPABILITY_HEADER;
+      key < typedArrayLength(this.capabilities);
+      key += CAPABILITY_WORDS
+    ) {
       if (
-        Atomics.load(this.capabilities, key) === handle &&
-        Atomics.load(this.capabilities, key + 1) >= 0
+        atomicsLoad(this.capabilities, key) === handle &&
+        atomicsLoad(this.capabilities, key + 1) >= 0
       )
         return key;
     }
@@ -423,14 +460,14 @@ export class FilesystemClient implements FileSystem {
   }
   private dropReference(key: number): number {
     for (;;) {
-      const count = Atomics.load(this.capabilities, key + 1);
+      const count = atomicsLoad(this.capabilities, key + 1);
       if (count <= 0) return count;
-      if (Atomics.compareExchange(this.capabilities, key + 1, count, count - 1) !== count) continue;
+      if (atomicsCompareExchange(this.capabilities, key + 1, count, count - 1) !== count) continue;
       if (
         count === 1 &&
         !this.revoked() &&
-        (this.shared.isUnlinked(Atomics.load(this.capabilities, key)) ||
-          Atomics.load(this.capabilities, 0) > TRANSIENT_HANDLES)
+        (this.shared.isUnlinked(atomicsLoad(this.capabilities, key)) ||
+          atomicsLoad(this.capabilities, 0) > TRANSIENT_HANDLES)
       )
         this.connection.port.postMessage({ trim: true });
       return count - 1;
@@ -444,14 +481,14 @@ export class FilesystemClient implements FileSystem {
         if (this.revoked()) throw new FilesystemError(11);
         const key = this.capabilityEntry(handle);
         if (key === undefined) throw new FilesystemError(8);
-        const count = Atomics.load(this.capabilities, key + 1);
-        if (count < 0 || Atomics.load(this.capabilities, key) !== handle) continue;
+        const count = atomicsLoad(this.capabilities, key + 1);
+        if (count < 0 || atomicsLoad(this.capabilities, key) !== handle) continue;
         if (count === 0x7fffffff) throw new FilesystemError(33);
-        if (Atomics.compareExchange(this.capabilities, key + 1, count, count + 1) !== count)
+        if (atomicsCompareExchange(this.capabilities, key + 1, count, count + 1) !== count)
           continue;
         // An idle entry may have been evicted and reassigned between the key read and CAS.
         // Our temporary reference prevents further reuse while we validate its identity.
-        if (Atomics.load(this.capabilities, key) !== handle) {
+        if (atomicsLoad(this.capabilities, key) !== handle) {
           this.dropReference(key);
           continue;
         }
@@ -459,17 +496,17 @@ export class FilesystemClient implements FileSystem {
           this.dropReference(key);
           throw new FilesystemError(11);
         }
-        this.capabilityEntries.set(handle, key);
-        this.openHandles.set(handle, (this.openHandles.get(handle) ?? 0) + 1);
-        if (this.capabilityEntries.size > CAPABILITY_SLOTS)
-          for (const [cachedHandle, entry] of this.capabilityEntries) {
+        mapSet(this.capabilityEntries, handle, key);
+        mapSet(this.openHandles, handle, (mapGet(this.openHandles, handle) ?? 0) + 1);
+        if (mapSize(this.capabilityEntries) > CAPABILITY_SLOTS)
+          mapForEach(this.capabilityEntries, (entry, cachedHandle) => {
             if (
-              !this.openHandles.has(cachedHandle) &&
-              (Atomics.load(this.capabilities, entry) !== cachedHandle ||
-                Atomics.load(this.capabilities, entry + 1) < 0)
+              !mapHas(this.openHandles, cachedHandle) &&
+              (atomicsLoad(this.capabilities, entry) !== cachedHandle ||
+                atomicsLoad(this.capabilities, entry + 1) < 0)
             )
-              this.capabilityEntries.delete(cachedHandle);
-          }
+              mapDelete(this.capabilityEntries, cachedHandle);
+          });
         return;
       }
     } finally {
@@ -481,19 +518,19 @@ export class FilesystemClient implements FileSystem {
       this.section.enter();
     } catch (error) {
       if (!(error instanceof FilesystemError) || error.errno !== 11) throw error;
-      this.openHandles.delete(handle);
-      this.fileSlots.delete(handle);
+      mapDelete(this.openHandles, handle);
+      mapDelete(this.fileSlots, handle);
       this.cancelIO(handle);
       return;
     }
     try {
-      const count = this.openHandles.get(handle) ?? 0;
+      const count = mapGet(this.openHandles, handle) ?? 0;
       if (!count) throw new FilesystemError(8);
-      const key = this.capabilityEntries.get(handle)!;
-      if (count > 1) this.openHandles.set(handle, count - 1);
+      const key = mapGet(this.capabilityEntries, handle)!;
+      if (count > 1) mapSet(this.openHandles, handle, count - 1);
       else {
-        this.openHandles.delete(handle);
-        this.fileSlots.delete(handle);
+        mapDelete(this.openHandles, handle);
+        mapDelete(this.fileSlots, handle);
         this.cancelIO(handle);
       }
       // Keep linked zero-reference capabilities as a bounded cache. dropReference queues any
@@ -505,36 +542,36 @@ export class FilesystemClient implements FileSystem {
   }
   /** The shared slot of a regular file this connection holds open, or 0. */
   private directSlot(handle: FileHandle): number {
-    const cached = this.fileSlots.get(handle);
+    const cached = mapGet(this.fileSlots, handle);
     if (cached !== undefined) return cached;
-    if (!this.openHandles.has(handle)) return 0;
+    if (!mapHas(this.openHandles, handle)) return 0;
     const slot = this.shared.fileSlot(handle);
-    if (slot) this.fileSlots.set(handle, slot);
+    if (slot) mapSet(this.fileSlots, handle, slot);
     return slot;
   }
   private directFailure(handle: FileHandle, error: unknown): number {
-    if (error instanceof FilesystemError && error.errno === 8) this.fileSlots.delete(handle);
+    if (error instanceof FilesystemError && error.errno === 8) mapDelete(this.fileSlots, handle);
     return errno(error);
   }
   private cancelIO(handle: FileHandle): void {
-    const completion = this.ioPreparations.get(handle);
+    const completion = mapGet(this.ioPreparations, handle);
     if (!completion) return;
-    this.ioPreparations.delete(handle);
+    mapDelete(this.ioPreparations, handle);
     completion.release();
   }
   private preparedIO(handle: FileHandle): boolean {
-    const completion = this.ioPreparations.get(handle);
+    const completion = mapGet(this.ioPreparations, handle);
     if (!completion) return true;
     if (!completion.ready) return false;
-    this.ioPreparations.delete(handle);
+    mapDelete(this.ioPreparations, handle);
     // Inspect shared completion state even while poll owns the worker, before the port callback
     // can run. No wait(), async continuation or overflow transfer is needed for preparation.
     completion.releaseReady();
     return true;
   }
   private prepareIO(handle: FileHandle, size: number): void {
-    if (!this.ioPreparations.has(handle))
-      this.ioPreparations.set(handle, this.submit("grow", [handle, size]));
+    if (!mapHas(this.ioPreparations, handle))
+      mapSet(this.ioPreparations, handle, this.submit("grow", [handle, size]));
   }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
@@ -621,7 +658,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     writing: boolean,
   ): { readable: boolean; writable: boolean; hangup: boolean } {
-    const pending = this.ioPreparations.get(handle);
+    const pending = mapGet(this.ioPreparations, handle);
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
@@ -673,7 +710,7 @@ export class FilesystemClient implements FileSystem {
   }
   stat(handle: FileHandle): FileStat {
     const epoch = this.version();
-    const direct = this.openHandles.has(handle)
+    const direct = mapHas(this.openHandles, handle)
       ? this.shared.stat(handle, this.revoked)
       : undefined;
     if (direct) return direct;
@@ -795,7 +832,7 @@ export class FilesystemClient implements FileSystem {
       } catch (error) {
         if (error instanceof MissingSegmentError) {
           try {
-            const data = new Uint8Array(total);
+            const data = new Uint8ArrayConstructor(total);
             let at = 0;
             for (const chunk of chunks) {
               data.set(chunk, at);
@@ -827,7 +864,7 @@ export class FilesystemClient implements FileSystem {
     let total = 0;
     for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
     const fallback = () => {
-      const data = new Uint8Array(total);
+      const data = new Uint8ArrayConstructor(total);
       let at = 0;
       for (const chunk of chunks) {
         data.set(chunk, at);
@@ -863,7 +900,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
-    if (this.openHandles.has(handle) && this.shared.hasFile(handle)) {
+    if (mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         const result = this.shared.mutate(
           this.epoch,
@@ -892,7 +929,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   setMtime(handle: FileHandle, mtime: number): number {
-    if (this.openHandles.has(handle) && this.shared.hasFile(handle)) {
+    if (mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         return this.shared.mutate(
           this.epoch,

@@ -1,3 +1,4 @@
+import { isInstance, isSharedArrayBuffer } from "./intrinsics.ts";
 import { OpenDescription, type Descriptor, type Resource } from "../core/descriptors.js";
 import { shareFileResource } from "../core/open-file.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -27,7 +28,7 @@ export function createFilesystemDescriptorCodec(
   target?: FilesystemIdentity,
   sweep?: () => void,
 ): WorkerDescriptorCodec {
-  const client = filesystem instanceof FilesystemClient ? filesystem : undefined;
+  const client = isInstance(filesystem, FilesystemClient) ? filesystem : undefined;
   const identity = client?.connection ?? (filesystem as FilesystemIdentity);
   const discard = (token: unknown) => {
     if (!isFilesystemDescriptorToken(token))
@@ -63,8 +64,7 @@ export function createFilesystemDescriptorCodec(
       const handle = token.reservation.handle;
       let resource: Resource;
       if (token.resource === "file") {
-        if (!(token.offset instanceof SharedArrayBuffer))
-          throw new TypeError("file offset is missing");
+        if (!isSharedArrayBuffer(token.offset)) throw new TypeError("file offset is missing");
         resource = { kind: "file", handle, offset: 0, append: false };
         shareFileResource(resource, identity, token.offset);
       } else resource = { kind: "directory", handle };

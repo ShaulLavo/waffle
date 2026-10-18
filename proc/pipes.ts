@@ -1,7 +1,37 @@
+import {
+  cryptoRandomUUID,
+  scheduleTimeout,
+  arrayFrom,
+  isSharedArrayBuffer,
+  BigInt64ArrayConstructor,
+  DataViewConstructor,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  Uint8ArrayConstructor,
+  atomicsAdd,
+  atomicsCompareExchange,
+  atomicsExchange,
+  atomicsLoad,
+  atomicsNotify,
+  atomicsOr,
+  atomicsStore,
+  atomicsWait,
+  atomicsWaitAsync,
+  dataViewGetUint32,
+  dataViewSetUint32,
+  objectFreeze,
+  sharedArrayBufferByteLength,
+  sharedArrayBufferGrow,
+  sharedArrayBufferMaxByteLength,
+  typedArrayBuffer,
+  typedArrayLength,
+  typedArraySet,
+  typedArraySubarray,
+} from "./intrinsics.ts";
 import type { Readiness, Stream } from "../core/descriptors.js";
 import { ProcessError } from "./types.js";
 
-export const PipeErrno = Object.freeze({ AGAIN: 6, BADF: 8, INVAL: 28, NFILE: 41, PIPE: 64 });
+export const PipeErrno = objectFreeze({ AGAIN: 6, BADF: 8, INVAL: 28, NFILE: 41, PIPE: 64 });
 export type PipeMode = "read" | "write";
 export interface PipeOptions {
   /** Each process owns one bounded ring. Capacity must be a power of two. */
@@ -72,23 +102,16 @@ function advance(value: bigint, bytes: number, record: number): bigint {
   );
 }
 let defaultWake: Int32Array | undefined;
-type AsyncAtomics = {
-  waitAsync(
-    array: Int32Array,
-    index: number,
-    value: number,
-  ): { async: boolean; value: string | Promise<string> };
-};
 function waitChanged(word: Int32Array, observed: number): Promise<unknown> {
-  const result = (Atomics as unknown as AsyncAtomics).waitAsync(word, 0, observed);
+  const result = atomicsWaitAsync(word, 0, observed);
   return Promise.resolve(result.value);
 }
 function notify(word: Int32Array): void {
-  Atomics.add(word, 0, 1);
-  Atomics.notify(word, 0);
+  atomicsAdd(word, 0, 1);
+  atomicsNotify(word, 0);
 }
 function length(chunks: readonly Uint8Array[]): number {
-  return chunks.reduce((total, chunk) => total + chunk.length, 0);
+  return chunks.reduce((total, chunk) => total + typedArrayLength(chunk), 0);
 }
 function counter(value: bigint): number {
   return Number(value & MASK);
@@ -144,47 +167,48 @@ export class PipePublicationRegistry {
     if (!validLimit(processCapacity) || !validLimit(cellsPerProcess))
       throw new RangeError("invalid pipe registry capacity");
     this.wake =
-      attached?.wake ?? options.wake ?? (defaultWake ??= new Int32Array(new SharedArrayBuffer(4)));
-    if (!(this.wake.buffer instanceof SharedArrayBuffer) || this.wake.length !== 1)
+      attached?.wake ??
+      options.wake ??
+      (defaultWake ??= new Int32ArrayConstructor(new SharedArrayBufferConstructor(4)));
+    if (!isSharedArrayBuffer(typedArrayBuffer(this.wake)) || typedArrayLength(this.wake) !== 1)
       throw new TypeError("registry wake must be one shared int32");
     this.cellBase = 16 + processCapacity * 8;
     this.maxCells = attached
-      ? ((attached.buffer as SharedArrayBuffer & { readonly maxByteLength: number }).maxByteLength -
-          this.cellBase) /
-        16
+      ? (sharedArrayBufferMaxByteLength(attached.buffer) - this.cellBase) / 16
       : (options.maxCells ?? 1 << 24);
     if (!Number.isInteger(this.maxCells) || this.maxCells <= 0 || this.maxCells > 1 << 24)
       throw new RangeError("invalid pipe registry cell limit");
     const initialCells = Math.min(processCapacity * cellsPerProcess, this.maxCells);
     // ES2022's declarations predate growable SABs; the host must implement the modern API.
-    const SharedBuffer = SharedArrayBuffer as unknown as {
-      new (length: number, options: { maxByteLength: number }): SharedArrayBuffer;
+    const SharedBuffer = SharedArrayBufferConstructor as unknown as {
+      new (length: number, options: { __proto__: null; maxByteLength: number }): SharedArrayBuffer;
     };
     const buffer =
       attached?.buffer ??
       new SharedBuffer(this.cellBase + initialCells * 16, {
+        __proto__: null,
         maxByteLength: this.cellBase + this.maxCells * 16,
       });
     this.data = { buffer, processCapacity, cellsPerProcess, wake: this.wake };
-    this.allocated = new Int32Array(buffer, 0, 1);
-    this.owners = new BigInt64Array(buffer, 16, processCapacity);
+    this.allocated = new Int32ArrayConstructor(buffer, 0, 1);
+    this.owners = new BigInt64ArrayConstructor(buffer, 16, processCapacity);
   }
   handle(): PipePublicationRegistryHandle {
     return { ...this.data };
   }
   get processCount(): number {
     let count = 0;
-    for (let slot = 0; slot < this.owners.length; slot++)
-      if (Atomics.load(this.owners, slot)) count++;
+    for (let slot = 0; slot < typedArrayLength(this.owners); slot++)
+      if (atomicsLoad(this.owners, slot)) count++;
     return count;
   }
   private process(pid: number): { slot: number; value: bigint } | undefined {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff)
       throw new Error("invalid registry process");
     // Collection leaves holes. An empty earlier probe does not end a lookup.
-    for (let probe = 0; probe < this.owners.length; probe++) {
-      const slot = (pid + probe) % this.owners.length;
-      const value = Atomics.load(this.owners, slot);
+    for (let probe = 0; probe < typedArrayLength(this.owners); probe++) {
+      const slot = (pid + probe) % typedArrayLength(this.owners);
+      const value = atomicsLoad(this.owners, slot);
       if (registryPid(value) === pid) return { slot, value };
     }
     return undefined;
@@ -200,9 +224,9 @@ export class PipePublicationRegistry {
       if (existing.value & OWNER_REVOKED) throw new Error("pipe process is revoked");
       return;
     }
-    for (let probe = 0; probe < this.owners.length; probe++) {
-      const slot = (pid + probe) % this.owners.length;
-      const previous = Atomics.compareExchange(this.owners, slot, 0n, registryOwner(pid));
+    for (let probe = 0; probe < typedArrayLength(this.owners); probe++) {
+      const slot = (pid + probe) % typedArrayLength(this.owners);
+      const previous = atomicsCompareExchange(this.owners, slot, 0n, registryOwner(pid));
       if (!previous) return;
       if (registryPid(previous) === pid) {
         if (previous & OWNER_REVOKED) throw new Error("pipe process is revoked");
@@ -217,27 +241,28 @@ export class PipePublicationRegistry {
   }
   private reserveCell(): number {
     for (;;) {
-      const index = Atomics.load(this.allocated, 0);
+      const index = atomicsLoad(this.allocated, 0);
       if (index >= this.maxCells)
         throw new ProcessError(PipeErrno.NFILE, "pipe cursor registry limit reached");
-      if (Atomics.compareExchange(this.allocated, 0, index, index + 1) === index) return index;
+      if (atomicsCompareExchange(this.allocated, 0, index, index + 1) === index) return index;
     }
   }
   private ensureCell(index: number): void {
-    const buffer = this.data.buffer as SharedArrayBuffer & {
-      grow(length: number): void;
-      readonly maxByteLength: number;
-    };
+    const buffer = this.data.buffer;
     const needed = this.cellBase + (index + 1) * 16;
-    if (buffer.byteLength >= needed) return;
-    const target = Math.min(buffer.maxByteLength, Math.max(needed, buffer.byteLength * 2));
+    if (sharedArrayBufferByteLength(buffer) >= needed) return;
+    const target = Math.min(
+      sharedArrayBufferMaxByteLength(buffer),
+      Math.max(needed, sharedArrayBufferByteLength(buffer) * 2),
+    );
     try {
-      buffer.grow(target);
+      sharedArrayBufferGrow(buffer, target);
     } catch (error) {
       // Another allocator can grow beyond our target between reading length and grow().
       // That operation cannot shrink the buffer, but its RangeError is not an allocation
       // failure if the cell we actually need is already available.
-      if (!(error instanceof RangeError) || buffer.byteLength < needed) throw error;
+      if (!(error instanceof RangeError) || sharedArrayBufferByteLength(buffer) < needed)
+        throw error;
     }
   }
   /** Internal cursor allocation; the returned global cell never moves or gets recycled. */
@@ -246,25 +271,25 @@ export class PipePublicationRegistry {
     if (!owner || owner.value & OWNER_REVOKED) throw new Error("pipe process is revoked");
     const index = this.reserveCell();
     this.ensureCell(index);
-    const entry = new Int32Array(this.data.buffer, this.cellBase + index * 16, 2);
+    const entry = new Int32ArrayConstructor(this.data.buffer, this.cellBase + index * 16, 2);
     const cell = this.canonical(index);
-    Atomics.store(entry, 0, pid);
-    Atomics.store(cell, 0, ALLOCATED);
+    atomicsStore(entry, 0, pid);
+    atomicsStore(cell, 0, ALLOCATED);
     for (;;) {
-      const value = Atomics.load(this.owners, owner.slot);
+      const value = atomicsLoad(this.owners, owner.slot);
       if (registryPid(value) !== pid || value & OWNER_REVOKED) {
-        Atomics.or(cell, 0, STOP);
+        atomicsOr(cell, 0, STOP);
         throw new Error("pipe process is revoked");
       }
-      Atomics.store(entry, 1, Number(value & OWNER_HEAD));
+      atomicsStore(entry, 1, Number(value & OWNER_HEAD));
       const linked = (value & ~OWNER_HEAD) | BigInt(index + 1);
-      if (Atomics.compareExchange(this.owners, owner.slot, value, linked) === value) break;
+      if (atomicsCompareExchange(this.owners, owner.slot, value, linked) === value) break;
     }
     // Linking and revoking contend on the SAME incarnation-tagged word. Once linked, the
     // next pointer is immutable. Revocation either freezes this cell or wins before the CAS.
-    const value = Atomics.load(this.owners, owner.slot);
+    const value = atomicsLoad(this.owners, owner.slot);
     if (registryPid(value) !== pid || value & OWNER_REVOKED) {
-      Atomics.or(cell, 0, STOP);
+      atomicsOr(cell, 0, STOP);
       throw new Error("pipe process is revoked");
     }
     return index;
@@ -274,26 +299,29 @@ export class PipePublicationRegistry {
     if (
       !Number.isInteger(index) ||
       index < 0 ||
-      index >= Atomics.load(this.allocated, 0) ||
-      offset + 8 > this.data.buffer.byteLength
+      index >= atomicsLoad(this.allocated, 0) ||
+      offset + 8 > sharedArrayBufferByteLength(this.data.buffer)
     )
       throw new RangeError("invalid pipe cursor");
     // Per-cell views remain valid after growth, including in a handle cloned before growth.
-    return new BigInt64Array(this.data.buffer, offset, 1);
+    return new BigInt64ArrayConstructor(this.data.buffer, offset, 1);
   }
   private freezeOwner(pid: number): { slot: number; value: bigint } | undefined {
     const owner = this.process(pid);
     if (!owner) return undefined;
     for (;;) {
-      const value = Atomics.load(this.owners, owner.slot);
+      const value = atomicsLoad(this.owners, owner.slot);
       if (registryPid(value) !== pid) return undefined;
       const revoked = value | OWNER_REVOKED;
-      if (Atomics.compareExchange(this.owners, owner.slot, value, revoked) !== value) continue;
+      if (atomicsCompareExchange(this.owners, owner.slot, value, revoked) !== value) continue;
       let link = Number(revoked & OWNER_HEAD);
       while (link) {
         const index = link - 1;
-        Atomics.or(this.canonical(index), 0, STOP);
-        link = Atomics.load(new Int32Array(this.data.buffer, this.cellBase + index * 16 + 4, 1), 0);
+        atomicsOr(this.canonical(index), 0, STOP);
+        link = atomicsLoad(
+          new Int32ArrayConstructor(this.data.buffer, this.cellBase + index * 16 + 4, 1),
+          0,
+        );
       }
       return { slot: owner.slot, value: revoked };
     }
@@ -308,7 +336,7 @@ export class PipePublicationRegistry {
    */
   collectProcess(pid: number): void {
     const owner = this.freezeOwner(pid);
-    if (owner) Atomics.compareExchange(this.owners, owner.slot, owner.value, 0n);
+    if (owner) atomicsCompareExchange(this.owners, owner.slot, owner.value, 0n);
     notify(this.wake);
   }
 }
@@ -346,30 +374,34 @@ class Ring {
     readonly capacity: number,
     private readonly registry?: PipePublicationRegistry,
   ) {
-    this.pid = new Int32Array(buffer, offset, 1);
-    this.refs = new Int32Array(buffer, offset + 4, 1);
-    this.localPublished = new BigInt64Array(buffer, offset + 8, 1);
-    this.localConsumed = new BigInt64Array(buffer, offset + 16, 1);
-    this.mapping = new Int32Array(buffer, offset + 24, 2);
-    this.demand = new Int32Array(buffer, offset + 32, 1);
-    this.bytes = new Uint8Array(buffer, offset + RING_HEADER, capacity);
+    this.pid = new Int32ArrayConstructor(buffer, offset, 1);
+    this.refs = new Int32ArrayConstructor(buffer, offset + 4, 1);
+    this.localPublished = new BigInt64ArrayConstructor(buffer, offset + 8, 1);
+    this.localConsumed = new BigInt64ArrayConstructor(buffer, offset + 16, 1);
+    this.mapping = new Int32ArrayConstructor(buffer, offset + 24, 2);
+    this.demand = new Int32ArrayConstructor(buffer, offset + 32, 1);
+    this.bytes = new Uint8ArrayConstructor(buffer, offset + RING_HEADER, capacity);
     this.recordCapacity = records(capacity);
-    this.metadata = new DataView(buffer, offset + RING_HEADER + capacity, this.recordCapacity * 16);
-    this.metadataWords = new BigInt64Array(
+    this.metadata = new DataViewConstructor(
+      buffer,
+      offset + RING_HEADER + capacity,
+      this.recordCapacity * 16,
+    );
+    this.metadataWords = new BigInt64ArrayConstructor(
       buffer,
       offset + RING_HEADER + capacity,
       this.recordCapacity * 2,
     );
   }
   get published(): BigInt64Array {
-    const index = Atomics.load(this.mapping, 0);
+    const index = atomicsLoad(this.mapping, 0);
     if (!index) return this.localPublished;
     if (this.publication?.index !== index)
       this.publication = { index, cell: this.registry!.canonical(index - 1) };
     return this.publication.cell;
   }
   get consumed(): BigInt64Array {
-    const index = Atomics.load(this.mapping, 1);
+    const index = atomicsLoad(this.mapping, 1);
     if (!index) return this.localConsumed;
     if (this.consumption?.index !== index)
       this.consumption = { index, cell: this.registry!.canonical(index - 1) };
@@ -378,7 +410,7 @@ class Ring {
   bind(pid: number, kind: "published" | "consumed"): void {
     if (!this.registry) return;
     const at = kind === "published" ? 0 : 1;
-    if (Atomics.load(this.mapping, at)) return;
+    if (atomicsLoad(this.mapping, at)) return;
     let index: number;
     try {
       index = this.registry.allocate(pid);
@@ -390,29 +422,29 @@ class Ring {
       throw error;
     }
     const local = kind === "published" ? this.localPublished : this.localConsumed;
-    Atomics.or(this.registry.canonical(index), 0, Atomics.load(local, 0));
-    Atomics.compareExchange(this.mapping, at, 0, index + 1);
-    Atomics.or(this.registry.canonical(index), 0, Atomics.load(local, 0));
+    atomicsOr(this.registry.canonical(index), 0, atomicsLoad(local, 0));
+    atomicsCompareExchange(this.mapping, at, 0, index + 1);
+    atomicsOr(this.registry.canonical(index), 0, atomicsLoad(local, 0));
   }
   get owner(): number {
-    return Atomics.load(this.pid, 0);
+    return atomicsLoad(this.pid, 0);
   }
   get references(): number {
-    return Atomics.load(this.refs, 0);
+    return atomicsLoad(this.refs, 0);
   }
   get closed(): boolean {
-    return (Atomics.load(this.published, 0) & STOP) !== 0n;
+    return (atomicsLoad(this.published, 0) & STOP) !== 0n;
   }
   get available(): number {
-    const consumed = Atomics.load(this.consumed, 0);
-    return Math.min(this.capacity, distance(Atomics.load(this.published, 0), consumed));
+    const consumed = atomicsLoad(this.consumed, 0);
+    return Math.min(this.capacity, distance(atomicsLoad(this.published, 0), consumed));
   }
   get free(): number {
     return this.capacity - this.available;
   }
   get writable(): boolean {
-    const consumed = Atomics.load(this.consumed, 0),
-      published = Atomics.load(this.published, 0);
+    const consumed = atomicsLoad(this.consumed, 0),
+      published = atomicsLoad(this.published, 0);
     return (
       this.free > 0 &&
       ((recordCounter(published) - recordCounter(consumed)) & Number(RECORD_MASK)) <
@@ -420,28 +452,28 @@ class Ring {
     );
   }
   freezeWriter(): void {
-    Atomics.or(this.localPublished, 0, STOP);
-    Atomics.or(this.published, 0, STOP);
+    atomicsOr(this.localPublished, 0, STOP);
+    atomicsOr(this.published, 0, STOP);
   }
   freezeReader(): void {
-    Atomics.or(this.localConsumed, 0, STOP);
-    Atomics.or(this.consumed, 0, STOP);
+    atomicsOr(this.localConsumed, 0, STOP);
+    atomicsOr(this.consumed, 0, STOP);
   }
   request(count: number): boolean {
-    return Atomics.compareExchange(this.demand, 0, 0, Math.min(count, this.capacity)) === 0;
+    return atomicsCompareExchange(this.demand, 0, 0, Math.min(count, this.capacity)) === 0;
   }
   head(): PipeRecord | undefined {
-    const consumed = Atomics.load(this.consumed, 0),
-      published = Atomics.load(this.published, 0);
+    const consumed = atomicsLoad(this.consumed, 0),
+      published = atomicsLoad(this.published, 0);
     if (recordCounter(consumed) === recordCounter(published)) return undefined;
     const index = recordCounter(consumed),
       slot = index % this.recordCapacity;
-    const end = this.metadata.getUint32(slot * 16 + 8, true);
+    const end = dataViewGetUint32(this.metadata, slot * 16 + 8, true);
     return {
       index,
       end,
       remaining: (end - counter(consumed)) >>> 0,
-      ticket: Atomics.load(this.metadataWords, slot * 2),
+      ticket: atomicsLoad(this.metadataWords, slot * 2),
     };
   }
   write(
@@ -450,9 +482,9 @@ class Ring {
     ticket: bigint,
     atomic = true,
   ): number {
-    const published = Atomics.load(this.published, 0);
+    const published = atomicsLoad(this.published, 0);
     if ((published & STOP) !== 0n || !valid()) return -PipeErrno.BADF;
-    const consumed = Atomics.load(this.consumed, 0);
+    const consumed = atomicsLoad(this.consumed, 0);
     const free = this.capacity - distance(published, consumed),
       requested = length(chunks);
     const usedRecords = (recordCounter(published) - recordCounter(consumed)) & Number(RECORD_MASK);
@@ -465,60 +497,88 @@ class Ring {
     if (!count) return -PipeErrno.AGAIN;
     let copied = 0;
     for (const chunk of chunks) {
-      const take = Math.min(chunk.length, count - copied);
+      const take = Math.min(typedArrayLength(chunk), count - copied);
       if (!take) continue;
       const start = (counter(published) + copied) % this.capacity,
         first = Math.min(take, this.capacity - start);
-      this.bytes.set(chunk.subarray(0, first), start);
-      if (take > first) this.bytes.set(chunk.subarray(first, take), 0);
+      typedArraySet(this.bytes, typedArraySubarray(chunk, 0, first), start);
+      if (take > first) typedArraySet(this.bytes, typedArraySubarray(chunk, first, take), 0);
       copied += take;
       if (copied === count) break;
     }
     const end = (counter(published) + count) >>> 0,
       record = recordCounter(published),
       slot = record % this.recordCapacity;
-    Atomics.store(this.metadataWords, slot * 2, ticket);
-    this.metadata.setUint32(slot * 16 + 8, end, true);
+    atomicsStore(this.metadataWords, slot * 2, ticket);
+    dataViewSetUint32(this.metadata, slot * 16 + 8, end, true);
     if (!valid()) return -PipeErrno.BADF;
     // Payload AND record metadata become visible in one canonical CAS. Revocation captures
     // precisely this committed prefix; unused tickets never block readers behind a zombie.
     const next = advance(published, end, record + 1);
-    return Atomics.compareExchange(this.published, 0, published, next) === published
+    return atomicsCompareExchange(this.published, 0, published, next) === published
       ? count
       : -PipeErrno.BADF;
   }
   read(chunks: readonly Uint8Array[], supervisor = false): number {
-    const consumed = Atomics.load(this.consumed, 0);
+    const consumed = atomicsLoad(this.consumed, 0);
     if (!supervisor && (consumed & STOP) !== 0n) return -PipeErrno.AGAIN;
-    const published = Atomics.load(this.published, 0);
+    const published = atomicsLoad(this.published, 0);
     if (recordCounter(consumed) === recordCounter(published))
       return (published & STOP) !== 0n ? 0 : -PipeErrno.AGAIN;
     const record = recordCounter(consumed),
       slot = record % this.recordCapacity;
-    const end = this.metadata.getUint32(slot * 16 + 8, true),
+    const end = dataViewGetUint32(this.metadata, slot * 16 + 8, true),
       remaining = (end - counter(consumed)) >>> 0;
     const count = Math.min(length(chunks), remaining);
-    const copy = new Uint8Array(count),
+    const copy = new Uint8ArrayConstructor(count),
       start = counter(consumed) % this.capacity,
       first = Math.min(count, this.capacity - start);
-    copy.set(this.bytes.subarray(start, start + first));
-    if (count > first) copy.set(this.bytes.subarray(0, count - first), first);
+    typedArraySet(copy, typedArraySubarray(this.bytes, start, start + first));
+    if (count > first) typedArraySet(copy, typedArraySubarray(this.bytes, 0, count - first), first);
     const next = advance(
       consumed,
       counter(consumed) + count,
       record + (count === remaining ? 1 : 0),
     );
-    if (Atomics.compareExchange(this.consumed, 0, consumed, next) !== consumed)
+    if (atomicsCompareExchange(this.consumed, 0, consumed, next) !== consumed)
       return -PipeErrno.AGAIN;
     let at = 0;
     for (const chunk of chunks) {
-      const take = Math.min(chunk.length, count - at);
-      chunk.set(copy.subarray(at, at + take));
+      const take = Math.min(typedArrayLength(chunk), count - at);
+      typedArraySet(chunk, typedArraySubarray(copy, at, at + take));
       at += take;
       if (at === count) break;
     }
     return count;
   }
+}
+
+function ringSome(rings: readonly Ring[], predicate: (ring: Ring) => boolean): boolean {
+  for (let index = 0; index < rings.length; index++) if (predicate(rings[index]!)) return true;
+  return false;
+}
+function ringEvery(rings: readonly Ring[], predicate: (ring: Ring) => boolean): boolean {
+  for (let index = 0; index < rings.length; index++) if (!predicate(rings[index]!)) return false;
+  return true;
+}
+function ringReduce(
+  rings: readonly Ring[],
+  initial: number,
+  reducer: (total: number, ring: Ring) => number,
+): number {
+  let total = initial;
+  for (let index = 0; index < rings.length; index++) total = reducer(total, rings[index]!);
+  return total;
+}
+function ringFind(rings: readonly Ring[], predicate: (ring: Ring) => boolean): Ring | undefined {
+  for (let index = 0; index < rings.length; index++) {
+    const ring = rings[index]!;
+    if (predicate(ring)) return ring;
+  }
+  return undefined;
+}
+function ringForEach(rings: readonly Ring[], callback: (ring: Ring) => void): void {
+  for (let index = 0; index < rings.length; index++) callback(rings[index]!);
 }
 
 class PipeState {
@@ -548,17 +608,19 @@ class PipeState {
     this.maxWriters = handle.maxWriters;
     this.maxReaders = handle.maxReaders;
     this.wake = handle.wake;
-    this.control = new Int32Array(this.buffer, 0, 6);
-    this.sequence = new BigInt64Array(this.buffer, 24, 1);
-    this.selection = new BigInt64Array(this.buffer, 32, 1);
-    this.changed = new Int32Array(this.buffer, 4, 1);
+    this.control = new Int32ArrayConstructor(this.buffer, 0, 6);
+    this.sequence = new BigInt64ArrayConstructor(this.buffer, 24, 1);
+    this.selection = new BigInt64ArrayConstructor(this.buffer, 32, 1);
+    this.changed = new Int32ArrayConstructor(this.buffer, 4, 1);
     const ringStride = stride(this.capacity);
-    this.writers = Array.from(
-      { length: this.maxWriters },
+    const writerSlots = { __proto__: null, length: this.maxWriters };
+    const readerSlots = { __proto__: null, length: this.maxReaders };
+    this.writers = arrayFrom(
+      writerSlots,
       (_, slot) => new Ring(this.buffer, HEADER + slot * ringStride, this.capacity, this.registry),
     );
-    this.readers = Array.from(
-      { length: this.maxReaders },
+    this.readers = arrayFrom(
+      readerSlots,
       (_, slot) =>
         new Ring(
           this.buffer,
@@ -569,31 +631,42 @@ class PipeState {
     );
   }
   get relay(): boolean {
-    return Atomics.load(this.control, 0) !== 0;
+    return atomicsLoad(this.control, 0) !== 0;
   }
   get disposed(): boolean {
-    return Atomics.load(this.control, 3) !== 0;
+    return atomicsLoad(this.control, 3) !== 0;
   }
   get closed(): boolean {
-    const generation = Atomics.load(this.control, 5);
+    const generation = atomicsLoad(this.control, 5);
     if (this.disposed || generation === -1) return true;
     if (generation === 0) return false;
-    const alive = this.writers.concat(this.readers).some((ring) => {
+    let alive = false;
+    for (let index = 0; index < this.writers.length + this.readers.length; index++) {
+      const ring =
+        index < this.writers.length
+          ? this.writers[index]!
+          : this.readers[index - this.writers.length]!;
       const pid = ring.owner;
-      if (!pid || this.registry?.isRevoked(Math.abs(pid))) return false;
-      return pid < 0 ? !ring.closed : ring.references > 0;
-    });
+      if (
+        pid &&
+        !this.registry?.isRevoked(Math.abs(pid)) &&
+        (pid < 0 ? !ring.closed : ring.references > 0)
+      ) {
+        alive = true;
+        break;
+      }
+    }
     if (alive) return false;
     // A new reservation changes the generation AFTER publishing its negative owner but
     // BEFORE publishing references. A scan that passed that slot cannot retire the pipe.
-    return Atomics.compareExchange(this.control, 5, generation, -1) === generation;
+    return atomicsCompareExchange(this.control, 5, generation, -1) === generation;
   }
   private admit(): void {
     for (;;) {
-      const generation = Atomics.load(this.control, 5);
+      const generation = atomicsLoad(this.control, 5);
       if (generation === -1 || this.disposed) throw new Error("pipe endpoint is closed");
       const next = generation === -2 ? 1 : (generation + 1) | 0;
-      if (Atomics.compareExchange(this.control, 5, generation, next) === generation) return;
+      if (atomicsCompareExchange(this.control, 5, generation, next) === generation) return;
     }
   }
   signal(): void {
@@ -604,15 +677,15 @@ class PipeState {
     return ring.owner > 0 && ring.references > 0 && !this.registry?.isRevoked(ring.owner);
   }
   hasReaders(): boolean {
-    return this.readers.some((ring) => this.readerAlive(ring));
+    return ringSome(this.readers, (ring) => this.readerAlive(ring));
   }
   eof(): boolean {
-    const generation = Atomics.load(this.control, 5);
-    if (!this.writers.every((ring) => ring.owner === 0 || ring.closed)) return false;
+    const generation = atomicsLoad(this.control, 5);
+    if (!ringEvery(this.writers, (ring) => ring.owner === 0 || ring.closed)) return false;
     // Closed flags never reopen, but a child can reserve an earlier, already-scanned slot
     // before its parent closes a later slot. Validate the admission epoch so those two
     // observations cannot manufacture EOF while a reserved writer is still alive.
-    if (Atomics.load(this.control, 5) !== generation) {
+    if (atomicsLoad(this.control, 5) !== generation) {
       // Return AGAIN instead of spinning. Wake the caller even when the overlapping
       // handoff already completed (and sent its last notification) inside this scan.
       this.signal();
@@ -621,20 +694,24 @@ class PipeState {
     return true;
   }
   queued(): number {
-    return this.writers.reduce((total, ring) => total + (ring.owner > 0 ? ring.available : 0), 0);
+    return ringReduce(
+      this.writers,
+      0,
+      (total, ring) => total + (ring.owner > 0 ? ring.available : 0),
+    );
   }
   relayAvailable(): number {
     return (
       this.queued() +
-      Math.max(0, Atomics.load(this.control, 4)) +
-      this.readers.reduce((total, ring) => total + (ring.owner > 0 ? ring.available : 0), 0)
+      Math.max(0, atomicsLoad(this.control, 4)) +
+      ringReduce(this.readers, 0, (total, ring) => total + (ring.owner > 0 ? ring.available : 0))
     );
   }
   nextTicket(): bigint {
-    return BigInt.asIntN(64, Atomics.add(this.sequence, 0, 1n) + 1n);
+    return BigInt.asIntN(64, atomicsAdd(this.sequence, 0, 1n) + 1n);
   }
   source(supervisor: boolean): { ring: Ring; record: PipeRecord; pin: bigint } | undefined {
-    const selection = Atomics.load(this.selection, 0),
+    const selection = atomicsLoad(this.selection, 0),
       relay = selection & RELAY_SELECTION;
     if (!supervisor && relay) return undefined;
     const selected = Number(selection & 0x1ffffn) - 1;
@@ -645,13 +722,13 @@ class PipeState {
         return { ring, record, pin: selection };
       // A reader may die after consuming the last byte but before releasing its pin.
       // Canonical consumption makes stale pins helpable without that reader's cleanup.
-      if (Atomics.compareExchange(this.selection, 0, selection, relay) === selection)
+      if (atomicsCompareExchange(this.selection, 0, selection, relay) === selection)
         return this.source(supervisor);
       return undefined;
     }
     // Exclude tickets issued after the scan begins: otherwise an earlier slot scanned empty
     // could commit A before B starts, but the same scan would incorrectly choose later B.
-    const ceiling = Atomics.load(this.sequence, 0);
+    const ceiling = atomicsLoad(this.sequence, 0);
     let chosen: { ring: Ring; record: PipeRecord; pin: bigint } | undefined;
     for (let index = 0; index < this.writers.length; index++) {
       const ring = this.writers[index]!;
@@ -661,7 +738,7 @@ class PipeState {
       if (chosen && BigInt.asIntN(64, record.ticket - chosen.record.ticket) >= 0n) continue;
       chosen = { ring, record, pin: relay | BigInt(index + 1) | (BigInt(record.index) << 17n) };
     }
-    if (!chosen || Atomics.compareExchange(this.selection, 0, relay, chosen.pin) !== relay)
+    if (!chosen || atomicsCompareExchange(this.selection, 0, relay, chosen.pin) !== relay)
       return undefined;
     return chosen;
   }
@@ -672,15 +749,15 @@ class PipeState {
   ): number {
     const result = source.ring.read(chunks, supervisor);
     if (source.ring.head()?.index !== source.record.index)
-      Atomics.compareExchange(this.selection, 0, source.pin, source.pin & RELAY_SELECTION);
+      atomicsCompareExchange(this.selection, 0, source.pin, source.pin & RELAY_SELECTION);
     return result;
   }
   switchToRelay(): void {
-    Atomics.or(this.selection, 0, RELAY_SELECTION);
+    atomicsOr(this.selection, 0, RELAY_SELECTION);
     // Revoke the old direct consumer's lease BEFORE publishing relay mode. A delayed direct
     // read cannot advance a ring's cursor after the supervisor takes over consumption.
-    for (const ring of this.writers) ring.freezeReader();
-    Atomics.store(this.control, 0, 1);
+    ringForEach(this.writers, (ring) => ring.freezeReader());
+    atomicsStore(this.control, 0, 1);
     this.signal();
   }
   retain(pid: number, mode: PipeMode): PipeEndpoint {
@@ -688,11 +765,12 @@ class PipeState {
       throw new Error("invalid pipe process");
     if (
       this.registry?.isRevoked(pid) ||
-      this.writers.concat(this.readers).some((ring) => ring.owner === pid && ring.references < 0)
+      ringSome(this.writers, (ring) => ring.owner === pid && ring.references < 0) ||
+      ringSome(this.readers, (ring) => ring.owner === pid && ring.references < 0)
     )
       throw new Error("pipe process is revoked");
     // Allocate before acquiring a ring reference, so failed allocation owns no endpoint.
-    const lifetime = new SharedArrayBuffer(4);
+    const lifetime = new SharedArrayBufferConstructor(4);
     const rings = mode === "write" ? this.writers : this.readers;
     // Deterministic probing makes simultaneous reservation of the SAME pid contend on the
     // same slot. Negative owner is an unpublished reservation, never a live writer/reader.
@@ -706,31 +784,31 @@ class PipeState {
         for (;;) {
           const refs = ring.references;
           if (refs <= 0) throw new Error("pipe endpoint is closed");
-          if (Atomics.compareExchange(ring.refs, 0, refs, refs + 1) === refs) break;
+          if (atomicsCompareExchange(ring.refs, 0, refs, refs + 1) === refs) break;
         }
         selected = slot;
         break;
       }
-      if (owner !== 0 || Atomics.compareExchange(ring.pid, 0, 0, -pid) !== 0) continue;
+      if (owner !== 0 || atomicsCompareExchange(ring.pid, 0, 0, -pid) !== 0) continue;
       try {
         this.admit();
         ring.bind(pid, "published");
         if (mode === "read") ring.bind(pid, "consumed");
         else if (!this.relay) {
-          const reader = this.readers.find((candidate) => this.readerAlive(candidate));
+          const reader = ringFind(this.readers, (candidate) => this.readerAlive(candidate));
           if (reader) ring.bind(reader.owner, "consumed");
         }
         if (this.registry?.isRevoked(pid)) throw new Error("pipe process is revoked");
-        if (Atomics.compareExchange(ring.refs, 0, 0, 1) !== 0)
+        if (atomicsCompareExchange(ring.refs, 0, 0, 1) !== 0)
           throw new Error("pipe process is revoked");
       } catch (error) {
         ring.freezeWriter();
-        Atomics.store(ring.refs, 0, -1);
-        Atomics.store(ring.pid, 0, pid);
+        atomicsStore(ring.refs, 0, -1);
+        atomicsStore(ring.pid, 0, pid);
         this.signal();
         throw error;
       }
-      Atomics.store(ring.pid, 0, pid);
+      atomicsStore(ring.pid, 0, pid);
       selected = slot;
       break;
     }
@@ -741,13 +819,16 @@ class PipeState {
       // and writer reservations cannot both miss registering the direct consumer's lease.
       // No producer can publish bytes until its reservation has returned the endpoint.
       if (mode === "write" && !this.relay) {
-        const reader = this.readers.find((candidate) => this.readerAlive(candidate));
+        const reader = ringFind(this.readers, (candidate) => this.readerAlive(candidate));
         if (reader) rings[selected]!.bind(reader.owner, "consumed");
       }
       if (mode === "read") {
-        if (this.readers.some((ring) => ring.owner > 0 && ring.owner !== pid)) this.switchToRelay();
+        if (ringSome(this.readers, (ring) => ring.owner > 0 && ring.owner !== pid))
+          this.switchToRelay();
         else if (!this.relay)
-          for (const source of this.writers) if (source.owner > 0) source.bind(pid, "consumed");
+          ringForEach(this.writers, (source) => {
+            if (source.owner > 0) source.bind(pid, "consumed");
+          });
       }
       this.signal();
       return endpoint;
@@ -757,22 +838,22 @@ class PipeState {
     }
   }
   revoke(pid: number, mode?: PipeMode): void {
-    const groups =
-      mode === "read"
-        ? [this.readers]
-        : mode === "write"
-          ? [this.writers]
-          : [this.writers, this.readers];
-    for (const rings of groups) {
-      for (const ring of rings) {
-        if (Math.abs(ring.owner) !== pid || ring.references < 0) continue;
+    const revokeRings = (rings: readonly Ring[], readers: boolean): void => {
+      ringForEach(rings, (ring) => {
+        if (Math.abs(ring.owner) !== pid || ring.references < 0) return;
         ring.freezeWriter();
-        if (rings === this.readers) {
+        if (readers) {
           ring.freezeReader();
-          if (!this.relay) for (const source of this.writers) source.freezeReader();
+          if (!this.relay) ringForEach(this.writers, (source) => source.freezeReader());
         }
-        Atomics.exchange(ring.refs, 0, -1);
-      }
+        atomicsExchange(ring.refs, 0, -1);
+      });
+    };
+    if (mode === "read") revokeRings(this.readers, true);
+    else if (mode === "write") revokeRings(this.writers, false);
+    else {
+      revokeRings(this.writers, false);
+      revokeRings(this.readers, true);
     }
     this.signal();
   }
@@ -793,7 +874,7 @@ export class PipeEndpoint implements Stream {
     lifetime: SharedArrayBuffer,
   ) {
     this.notification = state.wake;
-    this.lifetime = new Int32Array(lifetime);
+    this.lifetime = new Int32ArrayConstructor(lifetime);
   }
   private get ring(): Ring {
     return (this.mode === "write" ? this.state.writers : this.state.readers)[this.slot]!;
@@ -801,7 +882,7 @@ export class PipeEndpoint implements Stream {
   private get live(): boolean {
     return (
       !this.state.disposed &&
-      Atomics.load(this.lifetime, 0) === 0 &&
+      atomicsLoad(this.lifetime, 0) === 0 &&
       this.ring.references > 0 &&
       !this.state.registry?.isRevoked(this.pid)
     );
@@ -817,7 +898,7 @@ export class PipeEndpoint implements Stream {
       pid: this.pid,
       mode: this.mode,
       slot: this.slot,
-      lifetime: this.lifetime.buffer as SharedArrayBuffer,
+      lifetime: typedArrayBuffer(this.lifetime) as SharedArrayBuffer,
       registry: this.state.registry?.handle(),
     };
   }
@@ -833,16 +914,16 @@ export class PipeEndpoint implements Stream {
     this.state.revoke(this.pid, this.mode);
   }
   close(): void {
-    if (Atomics.compareExchange(this.lifetime, 0, 0, 1) !== 0) return;
+    if (atomicsCompareExchange(this.lifetime, 0, 0, 1) !== 0) return;
     for (;;) {
       const refs = this.ring.references;
       if (refs <= 0) break;
-      if (Atomics.compareExchange(this.ring.refs, 0, refs, refs - 1) !== refs) continue;
+      if (atomicsCompareExchange(this.ring.refs, 0, refs, refs - 1) !== refs) continue;
       if (refs === 1) {
         this.ring.freezeWriter();
         if (this.mode === "read") {
           this.ring.freezeReader();
-          if (!this.state.relay) for (const source of this.state.writers) source.freezeReader();
+          if (!this.state.relay) ringForEach(this.state.writers, (source) => source.freezeReader());
         }
       }
       break;
@@ -887,10 +968,10 @@ export class PipeEndpoint implements Stream {
   }
   private block(operation: () => number): number {
     for (;;) {
-      const observed = Atomics.load(this.notification, 0);
+      const observed = atomicsLoad(this.notification, 0);
       const result = operation();
       if (result !== -PipeErrno.AGAIN) return result;
-      Atomics.wait(this.notification, 0, observed);
+      atomicsWait(this.notification, 0, observed);
     }
   }
   readiness(): Readiness {
@@ -912,7 +993,7 @@ export class PipeEndpoint implements Stream {
   }
   private async wait(key: "readable" | "writable"): Promise<void> {
     for (;;) {
-      const observed = Atomics.load(this.notification, 0);
+      const observed = atomicsLoad(this.notification, 0);
       const state = this.readiness();
       if (state[key] || state.hangup) {
         // An earlier EAGAIN may have posted relay demand while bytes are still staged for a
@@ -923,10 +1004,10 @@ export class PipeEndpoint implements Stream {
           this.mode === "read" &&
           this.state.relay &&
           !this.ring.available &&
-          Atomics.load(this.ring.demand, 0) > 0 &&
+          atomicsLoad(this.ring.demand, 0) > 0 &&
           !state.hangup
         ) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
         }
         return;
       }
@@ -971,12 +1052,14 @@ export class PipeController {
       const wake =
         options.registry?.wake ??
         options.wake ??
-        (defaultWake ??= new Int32Array(new SharedArrayBuffer(4)));
-      if (!(wake.buffer instanceof SharedArrayBuffer) || wake.length !== 1)
+        (defaultWake ??= new Int32ArrayConstructor(new SharedArrayBufferConstructor(4)));
+      if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
         throw new TypeError("pipe wake must be one shared int32");
       this.state = new PipeState({
-        id: crypto.randomUUID(),
-        buffer: new SharedArrayBuffer(HEADER + (maxWriters + maxReaders) * stride(capacity)),
+        id: cryptoRandomUUID(),
+        buffer: new SharedArrayBufferConstructor(
+          HEADER + (maxWriters + maxReaders) * stride(capacity),
+        ),
         capacity,
         maxWriters,
         maxReaders,
@@ -1000,7 +1083,7 @@ export class PipeController {
   }
   duplicate(endpoint: PipeEndpoint): PipeEndpoint {
     if (endpoint.handle().id !== this.state.id) throw new Error("endpoint belongs to another pipe");
-    if (Atomics.load(new Int32Array(endpoint.handle().lifetime), 0) !== 0)
+    if (atomicsLoad(new Int32ArrayConstructor(endpoint.handle().lifetime), 0) !== 0)
       throw new Error("pipe endpoint is closed");
     return this.state.retain(endpoint.pid, endpoint.mode);
   }
@@ -1021,11 +1104,12 @@ export class PipeController {
         if (!ring.available) this.delivery = undefined;
         else {
           const alive = this.state.readerAlive(ring);
-          const otherDemand = this.state.readers.some(
+          const otherDemand = ringSome(
+            this.state.readers,
             (candidate) =>
               candidate !== ring &&
               this.state.readerAlive(candidate) &&
-              Atomics.load(candidate.demand, 0) > 0,
+              atomicsLoad(candidate.demand, 0) > 0,
           );
           if (alive && !otherDemand) break;
           if (!alive) {
@@ -1037,17 +1121,19 @@ export class PipeController {
             this.delivery = undefined;
             continue;
           }
-          const copy = new Uint8Array(Math.min(head.remaining, 65536));
+          const copy = new Uint8ArrayConstructor(Math.min(head.remaining, 65536));
           const count = ring.read([copy], true);
           if (count <= 0) continue;
-          const tail = this.pending?.subarray(this.pendingAt) ?? new Uint8Array();
-          const recovered = new Uint8Array(count + tail.length);
-          recovered.set(copy.subarray(0, count));
-          recovered.set(tail, count);
+          const tail = this.pending
+            ? typedArraySubarray(this.pending, this.pendingAt)
+            : new Uint8ArrayConstructor();
+          const recovered = new Uint8ArrayConstructor(count + typedArrayLength(tail));
+          typedArraySet(recovered, typedArraySubarray(copy, 0, count));
+          typedArraySet(recovered, tail, count);
           this.pending = recovered;
           this.pendingAt = 0;
           this.pendingTicket = head.ticket;
-          Atomics.store(this.state.control, 4, recovered.length);
+          atomicsStore(this.state.control, 4, typedArrayLength(recovered));
           if (!ring.available) this.delivery = undefined;
           this.state.signal();
           // A live reader can abandon an EAGAIN request. Reclaiming with the SAME consumed
@@ -1060,7 +1146,7 @@ export class PipeController {
       for (let visited = 0; visited < this.state.readers.length; visited++) {
         const index = (this.readerCursor + visited) % this.state.readers.length,
           ring = this.state.readers[index]!;
-        const demand = Atomics.load(ring.demand, 0);
+        const demand = atomicsLoad(ring.demand, 0);
         if (
           !this.state.readerAlive(ring) ||
           ring.closed ||
@@ -1069,7 +1155,7 @@ export class PipeController {
           demand & INFLIGHT
         )
           continue;
-        if (Atomics.compareExchange(ring.demand, 0, demand, demand | INFLIGHT) !== demand) continue;
+        if (atomicsCompareExchange(ring.demand, 0, demand, demand | INFLIGHT) !== demand) continue;
         destination = ring;
         budget = demand;
         this.readerCursor = (index + 1) % this.state.readers.length;
@@ -1079,22 +1165,26 @@ export class PipeController {
       if (!this.pending) {
         const source = this.state.source(true);
         if (!source) {
-          Atomics.store(destination.demand, 0, budget);
+          atomicsStore(destination.demand, 0, budget);
           break;
         }
-        const chunk = new Uint8Array(Math.min(source.record.remaining, budget, 65536));
+        const chunk = new Uint8ArrayConstructor(Math.min(source.record.remaining, budget, 65536));
         const count = this.state.consume(source, [chunk], true);
         if (count <= 0) {
-          Atomics.store(destination.demand, 0, budget);
+          atomicsStore(destination.demand, 0, budget);
           break;
         }
-        this.pending = chunk.subarray(0, count);
+        this.pending = typedArraySubarray(chunk, 0, count);
         this.pendingAt = 0;
         this.pendingTicket = source.record.ticket;
-        Atomics.store(this.state.control, 4, count);
+        atomicsStore(this.state.control, 4, count);
         this.state.signal();
       }
-      const piece = this.pending.subarray(this.pendingAt, this.pendingAt + Math.min(budget, 65536));
+      const piece = typedArraySubarray(
+        this.pending,
+        this.pendingAt,
+        this.pendingAt + Math.min(budget, 65536),
+      );
       const delivered = destination.write(
         [piece],
         () => this.state.readerAlive(destination!),
@@ -1102,29 +1192,29 @@ export class PipeController {
         false,
       );
       // INFLIGHT prevents a guest racing publication from accidentally posting ghost demand.
-      Atomics.store(destination.demand, 0, 0);
+      atomicsStore(destination.demand, 0, 0);
       if (delivered > 0) {
         this.pendingAt += delivered;
-        Atomics.store(this.state.control, 4, this.pending.length - this.pendingAt);
-        if (this.pendingAt === this.pending.length) this.pending = undefined;
+        atomicsStore(this.state.control, 4, typedArrayLength(this.pending) - this.pendingAt);
+        if (this.pendingAt === typedArrayLength(this.pending)) this.pending = undefined;
         this.delivery = destination;
         this.state.signal();
       } else if (delivered === -PipeErrno.AGAIN) break;
     }
     if (!this.pending && this.state.eof() && this.state.relayAvailable() === 0) {
       let changed = false;
-      for (const ring of this.state.readers) {
-        if (ring.owner <= 0 || ring.closed) continue;
+      ringForEach(this.state.readers, (ring) => {
+        if (ring.owner <= 0 || ring.closed) return;
         ring.freezeWriter();
         changed = true;
-      }
+      });
       if (changed) this.state.signal();
     }
   }
 
   private claimRelay(): void {
     if (this.ownsRelay) return;
-    if (Atomics.compareExchange(this.state.control, 2, 0, 1) !== 0)
+    if (atomicsCompareExchange(this.state.control, 2, 0, 1) !== 0)
       throw new Error("pipe already has a relay supervisor");
     this.ownsRelay = true;
   }
@@ -1137,14 +1227,14 @@ export class PipeController {
   private async serviceRelay(): Promise<void> {
     const signal = this.state.registry ? this.state.wake : this.state.changed;
     while (!this.stopped && !this.closed) {
-      const observed = Atomics.load(signal, 0);
+      const observed = atomicsLoad(signal, 0);
       this.pumpRelay();
       if (this.stopped || this.closed) break;
       // Our own progress causes one extra pass, then the fixed-point pump emits no changes.
       // Registry revocation has no pipe address, so registry-backed relays use the service word.
-      if (Atomics.load(signal, 0) !== observed) {
+      if (atomicsLoad(signal, 0) !== observed) {
         // A microtask-only loop starves kill/exit MessagePort tasks under continuous traffic.
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await new Promise<void>((resolve) => scheduleTimeout(resolve, 0));
         continue;
       }
       await waitChanged(signal, observed);
@@ -1161,9 +1251,14 @@ export class PipeController {
     this.stopped = true;
     this.pending = undefined;
     this.delivery = undefined;
-    Atomics.store(this.state.control, 4, 0);
-    Atomics.store(this.state.control, 3, 1);
-    for (const ring of this.state.writers.concat(this.state.readers)) {
+    atomicsStore(this.state.control, 4, 0);
+    atomicsStore(this.state.control, 3, 1);
+    const rings = this.state.writers.length + this.state.readers.length;
+    for (let index = 0; index < rings; index++) {
+      const ring =
+        index < this.state.writers.length
+          ? this.state.writers[index]!
+          : this.state.readers[index - this.state.writers.length]!;
       const pid = ring.owner;
       if (pid > 0) this.state.revoke(pid);
     }

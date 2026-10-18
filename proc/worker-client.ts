@@ -1,3 +1,22 @@
+import {
+  arrayAppend,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  Uint32ArrayConstructor,
+  atomicsLoad,
+  atomicsStore,
+  typedArrayBuffer,
+  MapConstructor,
+  SetConstructor,
+  mapGet,
+  mapSet,
+  mapDelete,
+  mapClear,
+  mapSize,
+  mapForEach,
+  setHas,
+  setAdd,
+} from "./intrinsics.ts";
 import { spawnError, startFailure } from "./start-failure.js";
 import { MAX_ACCESS_REQUESTS } from "./access.js";
 import { controlLoad, controlStore } from "./control.js";
@@ -6,7 +25,6 @@ import {
   directoryState,
   directorySlots,
   directoryJob,
-  directoryProcesses,
   findDirectoryJob,
   directoryControls,
   isCollectedProcess,
@@ -114,7 +132,7 @@ function reserveRecord(
   };
 }
 export function workerProcessDirectoryId(transport: WorkerProcessTransport): string {
-  const header = new Uint32Array(transport.directory, 0, 8);
+  const header = new Uint32ArrayConstructor(transport.directory, 0, 8);
   return `${header[2]}:${header[3]}`;
 }
 export function createWorkerProcessTransport(
@@ -207,23 +225,26 @@ export class WorkerProcessClient {
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
     if (!path || path.includes("\0") || !cwd.startsWith("/") || cwd.includes("\0"))
       throw new ProcessError(ProcessErrno.INVAL, "invalid executable query");
-    if ((this.accesses?.size ?? 0) >= MAX_ACCESS_REQUESTS || this.nextAccess > 0x7fffffff)
+    if (
+      (this.accesses ? mapSize(this.accesses) : 0) >= MAX_ACCESS_REQUESTS ||
+      this.nextAccess > 0x7fffffff
+    )
       return -ProcessErrno.AGAIN;
     const id = this.nextAccess++,
-      cells = new Int32Array(new SharedArrayBuffer(8));
-    (this.accesses ??= new Map()).set(id, cells);
+      cells = new Int32ArrayConstructor(new SharedArrayBufferConstructor(8));
+    mapSet((this.accesses ??= new MapConstructor()), id, cells);
     try {
       this.options.postMessage({
         type: "runtime-proc",
         operation: "access",
         transport: this.options.transport,
-        request: { id, completion: cells.buffer as SharedArrayBuffer },
+        request: { id, completion: typedArrayBuffer(cells) as SharedArrayBuffer },
         path,
         cwd,
       });
     } catch (error) {
-      Atomics.store(cells, 0, 2);
-      this.accesses.delete(id);
+      atomicsStore(cells, 0, 2);
+      mapDelete(this.accesses, id);
       throw error;
     }
     return id;
@@ -231,39 +252,41 @@ export class WorkerProcessClient {
   private access(pid: number, id: number): Int32Array {
     this.admit();
     if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
-    const cells = this.accesses?.get(id);
-    if (!cells || Atomics.load(cells, 0) === 2) {
-      this.accesses?.delete(id);
+    const cells = this.accesses ? mapGet(this.accesses, id) : undefined;
+    if (!cells || atomicsLoad(cells, 0) === 2) {
+      if (this.accesses) mapDelete(this.accesses, id);
       throw new ProcessError(ProcessErrno.BADF, "unknown executable query");
     }
     return cells;
   }
   accessReady(pid: number, id: number): boolean {
-    return Atomics.load(this.access(pid, id), 0) === 1;
+    return atomicsLoad(this.access(pid, id), 0) === 1;
   }
   accessTake(pid: number, id: number): number {
     const cells = this.access(pid, id);
-    if (Atomics.load(cells, 0) === 0) return -ProcessErrno.AGAIN;
-    Atomics.store(cells, 0, 2);
-    this.accesses!.delete(id);
-    return Atomics.load(cells, 1);
+    if (atomicsLoad(cells, 0) === 0) return -ProcessErrno.AGAIN;
+    atomicsStore(cells, 0, 2);
+    mapDelete(this.accesses!, id);
+    return atomicsLoad(cells, 1);
   }
   accessCancel(pid: number, id: number): number {
     const cells = this.access(pid, id);
-    Atomics.store(cells, 0, 2);
-    this.accesses!.delete(id);
+    atomicsStore(cells, 0, 2);
+    mapDelete(this.accesses!, id);
     this.options.postMessage({
       type: "runtime-proc",
       operation: "access-cancel",
       transport: this.options.transport,
-      request: { id, completion: cells.buffer as SharedArrayBuffer },
+      request: { id, completion: typedArrayBuffer(cells) as SharedArrayBuffer },
     });
     return 0;
   }
   private retireAccesses(): void {
-    if (!this.accesses?.size) return;
-    for (const cells of this.accesses.values()) Atomics.store(cells, 0, 2);
-    this.accesses.clear();
+    if (!this.accesses) return;
+    mapForEach(this.accesses, (cells) => {
+      atomicsStore(cells, 0, 2);
+    });
+    mapClear(this.accesses);
   }
   spawn(parentPid: number, request: SpawnRequest): number {
     try {
@@ -272,12 +295,11 @@ export class WorkerProcessClient {
       throw spawnError(error);
     }
   }
-  private reserveSpawn(parentPid: number, request: SpawnRequest): number {
-    this.admit();
-    if (parentPid !== this.pid)
-      throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
-    const fds = new Set<number>();
-    const sources = request.fds.map((binding) => {
+  private spawnSources(request: SpawnRequest): Descriptor[] {
+    const fds = new SetConstructor<number>();
+    const sources: Descriptor[] = [];
+    for (let index = 0; index < request.fds.length; index++) {
+      const binding = request.fds[index]!;
       if (
         !Number.isInteger(binding.child) ||
         binding.child < 0 ||
@@ -285,14 +307,21 @@ export class WorkerProcessClient {
         !Number.isInteger(binding.parent) ||
         binding.parent < 0 ||
         binding.parent > MAX_DESCRIPTOR ||
-        fds.has(binding.child)
+        setHas(fds, binding.child)
       )
         throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
-      fds.add(binding.child);
+      setAdd(fds, binding.child);
       const source = this.options.descriptors.get(binding.parent);
       if (!source) throw new ProcessError(ProcessErrno.BADF, "missing inherited descriptor");
-      return source;
-    });
+      arrayAppend(sources, source);
+    }
+    return sources;
+  }
+  private reserveSpawn(parentPid: number, request: SpawnRequest): number {
+    this.admit();
+    if (parentPid !== this.pid)
+      throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
+    const sources: Descriptor[] = this.spawnSources(request);
     if (!Number.isInteger(request.job) || request.job < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const job = request.job > 0 ? request.job : this.identities.job();
@@ -303,7 +332,7 @@ export class WorkerProcessClient {
         "unknown or collected job",
       );
     const pid = this.identities.pid();
-    const references = new Map<OpenDescription, number>();
+    const references = new MapConstructor<OpenDescription, number>();
     let child: WorkerProcessTransport | undefined;
     let transfer: WorkerSpawnTransfer | undefined;
     let codec = this.options.codec;
@@ -324,13 +353,13 @@ export class WorkerProcessClient {
       child.data = transfer?.data;
       for (let i = 0; i < sources.length; i++) {
         const source = sources[i]!;
-        let reference = references.get(source.description);
+        let reference = mapGet(references, source.description);
         if (reference === undefined) {
           reference = child.resources.length;
-          child.resources.push(codec.export(source, pid));
-          references.set(source.description, reference);
+          arrayAppend(child.resources, codec.export(source, pid));
+          mapSet(references, source.description, reference);
         }
-        child.bindings.push({
+        arrayAppend(child.bindings, {
           fd: request.fds[i]!.child,
           reference,
           rightsBase: source.rightsBase,
@@ -359,9 +388,10 @@ export class WorkerProcessClient {
           state = workerProcessState(child);
           claimOutcome(state.signals.outcome, startFailure(error));
         }
-        for (const token of child?.resources ?? []) {
+        const resources = child?.resources ?? [];
+        for (let index = 0; index < resources.length; index++) {
           try {
-            codec.discard(token);
+            codec.discard(resources[index]);
           } catch (cleanupError) {
             cleaned = false;
             this.report(cleanupError);
@@ -415,9 +445,13 @@ export class WorkerProcessClient {
     return pid;
   }
   private find(pid: number, retained = false) {
-    for (const state of directoryProcesses(this.options.transport.directory)) {
-      if (state.pid !== pid) continue;
+    const directory = this.options.transport.directory;
+    const slots = directorySlots(directory);
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
       try {
+        const state = directoryState(this.options.transport, slot);
+        if (state.pid !== pid) continue;
         if (retained || controlLoad(state.jobPending, 0) >= 0) return state;
       } catch (error) {
         if (!isCollectedProcess(error)) throw error;
@@ -483,22 +517,34 @@ export class WorkerProcessClient {
         this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH,
         `unknown or collected job ${job}`,
       );
-    if (
-      callerPid === this.pid &&
-      directoryControls(
-        this.options.transport.directory,
-        () => controlLoad(group.controlParent),
-        callerPid,
+    try {
+      if (
+        callerPid === this.pid &&
+        directoryControls(
+          this.options.transport.directory,
+          () => controlLoad(group.controlParent),
+          callerPid,
+        )
       )
-    )
-      return group;
+        return group;
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.CHILD, `job ${job} has been collected`);
+      throw error;
+    }
     throw new ProcessError(63, `job ${job} is outside the caller's owner chain`);
   }
   private jobIsEmpty(group: ReturnType<typeof directoryJob>): boolean {
-    const pending = controlLoad(group.pending);
-    if (pending < 0)
-      throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
-    return pending === 0;
+    try {
+      const pending = controlLoad(group.pending);
+      if (pending < 0)
+        throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
+      return pending === 0;
+    } catch (error) {
+      if (isCollectedProcess(error))
+        throw new ProcessError(ProcessErrno.CHILD, `job ${group.id} has been collected`);
+      throw error;
+    }
   }
   jobEmpty(callerPid: number, job: number): boolean {
     return this.jobIsEmpty(this.requireJob(callerPid, job));
@@ -554,9 +600,20 @@ export class WorkerProcessClient {
   killJob(job: number, signal: number): void {
     if (!this.canSignalJob(this.pid, job))
       throw new ProcessError(63, "job is not owned by the caller");
-    const targets = Array.from(directoryProcesses(this.options.transport.directory)).filter(
-      (state) => state.job === job,
-    );
+    const directory = this.options.transport.directory;
+    const slots = directorySlots(directory);
+    const targets: ReturnType<typeof directoryState>[] = [];
+    // Do not hand private process records to Array.from, filter, or an iterator that a
+    // guest can replace after this module captured its own host intrinsics.
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
+      try {
+        const state = directoryState(this.options.transport, slot);
+        if (state.job === job) arrayAppend(targets, state);
+      } catch (error) {
+        if (!isCollectedProcess(error)) throw error;
+      }
+    }
     this.deliver(targets, checkedSignal(signal), true);
   }
   private deliver(
@@ -565,7 +622,8 @@ export class WorkerProcessClient {
     collective = false,
   ): void {
     this.admit();
-    for (const target of targets) {
+    for (let index = 0; index < targets.length; index++) {
+      const target = targets[index]!;
       try {
         requestSignal(target.signals, signal);
       } catch (error) {
@@ -574,7 +632,8 @@ export class WorkerProcessClient {
     }
     // Select every target before resource callbacks, then freeze all canonical cursors before
     // returning to the guest. A concurrently collected member cannot stop the remaining job.
-    for (const target of targets) {
+    for (let index = 0; index < targets.length; index++) {
+      const target = targets[index]!;
       try {
         if (readOutcome(target.signals.outcome)?.kind === "signaled")
           this.options.revokeProcess?.(target.pid, this.options.transport);
@@ -584,11 +643,13 @@ export class WorkerProcessClient {
     }
     // Every member and parent observes this one directory-wide sequence, not slot-local wakes.
     wakeWorkerProcess(this.options.transport);
+    const pids: number[] = [];
+    for (let index = 0; index < targets.length; index++) pids[index] = targets[index]!.pid;
     this.options.postMessage({
       type: "runtime-proc",
       operation: "signal",
       transport: this.options.transport,
-      targets: targets.map((target) => target.pid),
+      targets: pids,
     });
   }
   defaultSignal(pid: number, signal: number): void {
@@ -638,17 +699,18 @@ export class WorkerProcessClient {
 
 /** Validate every child binding before importing or replacing a descriptor. */
 function validateWorkerBindings(transport: WorkerProcessTransport): void {
-  const targets = new Set<number>();
-  for (const binding of transport.bindings) {
+  const targets = new SetConstructor<number>();
+  for (let index = 0; index < transport.bindings.length; index++) {
+    const binding = transport.bindings[index]!;
     if (
       !Number.isInteger(binding.fd) ||
       binding.fd < 0 ||
       binding.fd > MAX_DESCRIPTOR ||
-      targets.has(binding.fd)
+      setHas(targets, binding.fd)
     ) {
       throw new ProcessError(ProcessErrno.INVAL, "invalid descriptor binding");
     }
-    targets.add(binding.fd);
+    setAdd(targets, binding.fd);
     if (
       !Number.isInteger(binding.reference) ||
       binding.reference < 0 ||
@@ -666,9 +728,12 @@ export function installWorkerBindings(
   codec: WorkerDescriptorCodec,
 ): void {
   validateWorkerBindings(transport);
-  const imported = new Map<number, { description: OpenDescription; resource: Resource }>();
+  const imported = new MapConstructor<
+    number,
+    { description: OpenDescription; resource: Resource }
+  >();
   const staged = new DescriptorTable();
-  const previous = new Map<number, Descriptor | undefined>();
+  const previous = new MapConstructor<number, Descriptor | undefined>();
   const held: OpenDescription[] = [];
   const installed: number[] = [];
   let failed = false;
@@ -685,8 +750,9 @@ export function installWorkerBindings(
   // Import every token before changing the descriptor table. A malformed later token must not
   // leave an earlier inherited descriptor live while the worker reports its typed startup error.
   try {
-    for (const binding of transport.bindings) {
-      let source = imported.get(binding.reference);
+    for (let index = 0; index < transport.bindings.length; index++) {
+      const binding = transport.bindings[index]!;
+      let source = mapGet(imported, binding.reference);
       if (!source) {
         const description = codec.import(
           transport.resources[binding.reference],
@@ -697,22 +763,24 @@ export function installWorkerBindings(
           rightsInheriting: binding.rightsInheriting,
         });
         source = { description, resource: description.resource };
-        imported.set(binding.reference, source);
+        mapSet(imported, binding.reference, source);
       }
     }
 
     // Hold replaced descriptions until the transaction commits. This makes rollback safe even
     // when an inherited fd aliases an existing stdio or preopen descriptor.
-    for (const binding of transport.bindings) {
+    for (let index = 0; index < transport.bindings.length; index++) {
+      const binding = transport.bindings[index]!;
       const entry = descriptors.get(binding.fd);
-      previous.set(binding.fd, entry);
+      mapSet(previous, binding.fd, entry);
       if (entry) {
         entry.description.retain();
-        held.push(entry.description);
+        arrayAppend(held, entry.description);
       }
     }
-    for (const binding of transport.bindings) {
-      const source = imported.get(binding.reference)!;
+    for (let index = 0; index < transport.bindings.length; index++) {
+      const binding = transport.bindings[index]!;
+      const source = mapGet(imported, binding.reference)!;
       descriptors.inherit(binding.fd, {
         ...source,
         rightsBase: binding.rightsBase,
@@ -723,8 +791,9 @@ export function installWorkerBindings(
   } catch (error) {
     failed = true;
     failure = error;
-    for (const fd of installed.reverse()) {
-      const entry = previous.get(fd);
+    for (let index = installed.length - 1; index >= 0; index--) {
+      const fd = installed[index]!;
+      const entry = mapGet(previous, fd);
       if (entry) cleanup(() => descriptors.restore(fd, entry));
       else
         cleanup(() => {
@@ -734,7 +803,7 @@ export function installWorkerBindings(
   }
 
   cleanup(() => staged.dispose());
-  for (const description of held) cleanup(() => description.drop());
+  for (let index = 0; index < held.length; index++) cleanup(() => held[index]!.drop());
   // Preserve the exact import error for startup classification, including non-Error throws.
   // Teardown must still refuse a safe completion when any abandoned resource failed release.
   for (const error of cleanupErrors) descriptors.recordCleanupFailure(error);
