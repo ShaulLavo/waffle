@@ -196,6 +196,88 @@ test("duplicate inherited bindings share one exported lifetime and one child des
   expect(counts[1]).toBe(2);
 });
 
+test("partial inherited binding import rolls back descriptors and releases each imported lifetime once", () => {
+  const transport = createWorkerProcessTransport();
+  transport.bindings = [
+    { fd: 17, reference: 0, rightsBase: 1n, rightsInheriting: 0n },
+    { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n },
+  ];
+  transport.resources = ["retained", "reject"];
+  const descriptors = new DescriptorTable();
+  const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+  let releases = 0;
+  const codec: WorkerDescriptorCodec = {
+    import(token) {
+      if (token === "reject") throw new TypeError("binding rejected");
+      return new OpenDescription(stream, () => { releases++; });
+    },
+    export() { throw new Error("unexpected export"); },
+    discard() {},
+  };
+  try {
+    expect(() => installWorkerBindings(transport, descriptors, codec)).toThrow(TypeError);
+    expect(descriptors.get(17)).toBeUndefined();
+    expect(descriptors.get(31)).toBeUndefined();
+    expect(releases).toBe(1);
+  } finally { descriptors.dispose(); }
+});
+
+test("binding rollback preserves complete preopen metadata after a later install fails", () => {
+  const transport = createWorkerProcessTransport();
+  transport.bindings = [
+    { fd: 0, reference: 0, rightsBase: 1n, rightsInheriting: 0n },
+    { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n },
+  ];
+  transport.resources = ["first", "second"];
+  class FailingTable extends DescriptorTable {
+    private installs = 0;
+    override inherit(fd: number, source: Descriptor): void {
+      if (++this.installs === 2) throw new Error("binding install failed");
+      super.inherit(fd, source);
+    }
+  }
+  const descriptors = new FailingTable();
+  const preopen = { kind: "directory" as const, handle: 1 };
+  descriptors.open(preopen, 7n, 9n, undefined, "/");
+  const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+  let releases = 0;
+  const codec: WorkerDescriptorCodec = {
+    import() { return new OpenDescription(stream, () => { releases++; }); },
+    export() { throw new Error("unexpected export"); }, discard() {},
+  };
+  try {
+    expect(() => installWorkerBindings(transport, descriptors, codec)).toThrow("binding install failed");
+    expect(descriptors.get(0)?.preopen).toBe("/");
+    expect(descriptors.get(0)?.resource).toBe(preopen);
+    expect(descriptors.get(31)).toBeUndefined();
+    expect(releases).toBe(2);
+  } finally { descriptors.dispose(); }
+});
+
+test("non-Error binding failures stay typed while cleanup failures remain on descriptor teardown", () => {
+  for (const primary of [null, undefined, 0, false]) {
+    const transport = createWorkerProcessTransport();
+    transport.bindings = [{ fd: 17, reference: 0, rightsBase: 1n, rightsInheriting: 0n }, { fd: 31, reference: 1, rightsBase: 1n, rightsInheriting: 0n }];
+    transport.resources = ["retained", "reject"];
+    const descriptors = new DescriptorTable();
+    const stream: Stream = { kind: "terminal", read: () => 0, write: () => 0, readiness: () => ({ readable: false, writable: true, hangup: false }) };
+    let releases = 0;
+    const codec: WorkerDescriptorCodec = {
+      import(token) {
+        if (token === "reject") throw primary;
+        return new OpenDescription(stream, () => { releases++; throw new Error("release failed"); });
+      },
+      export() { throw new Error("unexpected export"); }, discard() {},
+    };
+    let caught: unknown;
+    try { installWorkerBindings(transport, descriptors, codec); } catch (error) { caught = error; }
+    expect(caught).toBe(primary);
+    expect(descriptors.get(17)).toBeUndefined();
+    expect(releases).toBe(1);
+    expect(() => descriptors.dispose()).toThrow("release failed");
+  }
+});
+
 test("fatal selection freezes resources synchronously but wait stays pending until broker revocation completes", async () => {
   const f = fixture();
   const { fd } = f.source(f.root.options.descriptors);
