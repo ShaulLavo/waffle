@@ -7,6 +7,7 @@ import { controlLoad, controlStore } from "../proc/control.js";
 import { claimOutcome, markStarted, readOutcome, startStatus } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
+import { ProcessTable } from "../proc/table.js";
 import { ProcessError, type ProcessContext } from "../proc/types.js";
 import { createWorkerProcessTransport, WorkerProcessClient, workerProcessState, confirmWorkerProcessJob, type WorkerProcessMessage } from "../proc/worker-client.js";
 
@@ -217,7 +218,7 @@ for (const adapter of ["worker", "supervisor"] as const) for (const operation of
   const codec = {export() {throw new Error("unused");},import() {throw new Error("unused");},discard() {}};
   const parent = new WorkerProcessClient({transport,descriptors,codec,postMessage:message => notices.push(message)});
   const pid = parent.spawn(parent.pid,request), childTransport = notices.find(message => message.operation === "spawn")!.transport, state = workerProcessState(childTransport);
-  const registry = new ExecutableRegistry(), supervisor = new ProcessSupervisor({registry,launch() {throw new Error("unused");}});
+  const registry = new ExecutableRegistry(), table = new ProcessTable(), supervisor = new ProcessSupervisor({registry,table,launch() {throw new Error("unused");}});
   supervisor.createRoot({pid:parent.pid});
   supervisor.reserveAdmittedSpawn(parent.pid,request,{pid,outcome:state.signals.outcome});
   claimOutcome(state.signals.outcome,{kind:"exited",code:0});
@@ -237,5 +238,9 @@ for (const adapter of ["worker", "supervisor"] as const) for (const operation of
   try { expect(operation === "query" ? abi.imports.start_status!(pid) : abi.imports.poll!(0,1,0,64)).toBe(-12); }
   finally { Atomics.load = original; }
   try { expect(raced).toBe(true); }
-  finally { supervisor.dispose(); descriptors.dispose(); }
+  finally {
+    // This fixture adopts shared state directly, so it owns the broker's reap notification.
+    supervisor.get(pid)?.descriptors.dispose(); table.remove(pid);
+    supervisor.dispose(); descriptors.dispose();
+  }
 });
