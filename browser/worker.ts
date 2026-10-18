@@ -137,7 +137,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // A delayed physical Worker can start after its process incarnation was collected.
   // Acquire shared authority inside the cleanup boundary, not after opening fs but before try.
   let outcome: OutcomeWord | null = null;
-  let outcomeReserved = false;
+  let diagnosticWrite = false;
   let requestedSignal: ControlCells | undefined = executor.requestedSignal ? new Int32Array(executor.requestedSignal) : undefined;
   const revoked = sharedRevoked(req.filesystem);
   let localOutcome: ProcessExit | null = null;
@@ -155,12 +155,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const defaultSignal = (signal: number): void => {
     checkedSignal(signal);
     const killed = requestedSignal && controlLoad(requestedSignal, 0) === 9;
-    const existing = outcomeReserved ? localOutcome : outcome ? readOutcome(outcome) : localOutcome;
-    if (!existing && !killed && !defaultSignalTerminates(signal)) return;
-    if (outcomeReserved && existing) {
-      if (existing.kind !== "signaled") throw new WasiExit(waitStatus(existing));
-      throw new WasiExit(waitStatus(existing));
-    }
+    if (!(outcome ? readOutcome(outcome) : localOutcome) && !killed && !defaultSignalTerminates(signal)) return;
     const winner = claim({ kind: "signaled", code: killed ? 9 : signal });
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     runtimeProcess?.defaultSignal(runtimeProcess.pid, winner.code);
@@ -171,9 +166,15 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     throw new RuntimeWorkerSignal(winner.code);
   };
   const checkActive = () => {
-    const winner = outcomeReserved ? (outcome ? readOutcome(outcome) : null) : outcome ? readOutcome(outcome) : localOutcome;
+    const winner = outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
+    if (revoked()) throw new WasiExit(1);
+  };
+  // Only the synchronous host-authored diagnostic write may use still-owned I/O after its
+  // terminal claim. Guest calls remain guarded, and revocation still retires that authority.
+  const checkIoActive = () => {
+    if (!diagnosticWrite) { checkActive(); return; }
     if (revoked()) throw new WasiExit(1);
   };
   // Ownership begins before setup/namespaces can fail or finish the process.
@@ -201,13 +202,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     // Claim the runtime outcome before draining so a signal delivered during backpressure
     // cannot replace the original execution failure.
     const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
-    let winner: ProcessExit | null;
-    if (runtimeDiagnostic) {
-      outcomeReserved = true;
-      winner = localOutcome ??= processOutcome(ownResult);
-    } else {
-      winner = executor.complete && !startupFailure ? settled : claim(ownResult);
-    }
+    let winner = runtimeDiagnostic || !executor.complete || startupFailure ? claim(ownResult) : settled;
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -222,7 +217,6 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         const pending = drainDiagnostic(bytes, data => writeDiagnostic!(data));
         if (pending) await pending;
       } catch (error) { collect(error); }
-      outcomeReserved = false;
       winner = claim(ownResult);
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
@@ -298,18 +292,18 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       requestedSignal = runtimeState.signals.requestedSignal;
     }
     const stdio = ownedStdio ? {
-      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkActive) } : {}),
-      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkActive) } : {}),
-      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkActive) } : {}),
+      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
+      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
+      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
     } : undefined;
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
-      checkActive();
+      checkIoActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
     };
     const write = (type: "stdout" | "stderr", data: Uint8Array, immediate = false): number => {
-      checkActive();
+      if (immediate) checkIoActive(); else checkActive();
       const fd = type === "stderr" ? 2 : 1;
       if (!wasi) {
         const stream = stdio?.[fd];
@@ -350,7 +344,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       });
       return written;
     };
-    writeDiagnostic = data => write("stderr", data, true);
+    writeDiagnostic = data => {
+      diagnosticWrite = true;
+      try { return write("stderr", data, true); }
+      finally { diagnosticWrite = false; }
+    };
     const post = (type: "stdout" | "stderr", data: Uint8Array) => write(type, data) === data.length;
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
@@ -407,7 +405,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         // Terminal provenance takes priority even when its resolved stream is a PipeEndpoint.
         codec: createRuntimeTerminalCodec({ fallback: pipes.codec(), descriptors: wasi.descriptors,
           resolveTerminal: executor.resolveTerminal?.bind(executor),
-          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive }), postMessage,
+          output: (fd, data) => { output(fd === 2 ? "stderr" : "stdout", data); }, checkActive: checkIoActive }), postMessage,
         createPipe: () => { checkActive(); return pipes.createPipe(); },
         revokeProcess: pid => pipes.revokeProcess(pid),
         prepareSpawn: pid => {

@@ -366,7 +366,15 @@ writes preserve byte order; `EAGAIN` yields to the event loop. Every positive wr
 resets a five-second no-progress deadline, so a reader that keeps draining receives
 the complete diagnostic even when delivery takes longer than five seconds overall.
 The startup broker and post-entry worker use the same `drainDiagnostic` helper and
-`DIAGNOSTIC_STALL_TIMEOUT_MS` constant.
+`DIAGNOSTIC_STALL_TIMEOUT_MS` constant, publicly available from
+`waffle/browser/diagnostic` to browser and Node hosts without loading browser globals.
+Redirected regular-file stderr uses the same bounded policy: acquire its shared offset
+lock without waiting and use `tryWrite` / `tryAppend` filesystem operations, yielding
+on `EAGAIN` rather than entering a blocking filesystem transaction.
+The execution failure claims its terminal outcome before delivery begins; signals
+arriving during backpressure cannot replace that outcome. Only the synchronous
+runtime-owned diagnostic write can use the still-owned stderr after that claim,
+and revocation still retires its authority.
 
 If the reader is closed, the stream lacks immediate writes, the process is revoked,
 or no bytes can be written for five seconds, delivery stops and the unwritten tail

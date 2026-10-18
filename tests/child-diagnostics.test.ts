@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
+import { browserRuntimeDiagnostic, diagnosticDeadline } from "./child-diagnostic-browser.js";
 import { bootstrap, type RuntimeWorkerMessage } from "../browser/worker.js";
 import { createFilesystemConnection } from "../fs/index.js";
 import { createWorkerProcessTransport } from "../proc/worker-client.js";
@@ -34,6 +34,23 @@ test("generic child error writes the complete diagnostic before closing inherite
     expect(order.slice(-2)).toEqual(["close", "error"]);
     expect(messages.filter(message => message.type === "error")).toHaveLength(1);
   } finally { connection.client.port.close(); connection.server.port.close(); }
+});
+
+test("browser diagnostic deadline covers EOF after acknowledgement and permits teardown", async () => {
+  const ack = Promise.resolve("acknowledged"), eof = Promise.withResolvers<void>();
+  let cleaned = false;
+  const operation = (async () => {
+    try { await diagnosticDeadline(Promise.all([ack, eof.promise]), "acknowledgement and EOF", 5); }
+    finally { cleaned = true; eof.resolve(); }
+  })();
+  await expect(operation).rejects.toThrow("acknowledgement and EOF timeout");
+  expect(cleaned).toBe(true);
+});
+
+test("browser stalled-tail deadline covers an EOF that never arrives", async () => {
+  const eof = Promise.withResolvers<void>();
+  try { await expect(diagnosticDeadline(eof.promise, "stalled EOF", 5)).rejects.toThrow("stalled EOF timeout"); }
+  finally { eof.resolve(); }
 });
 
 for (const mode of ["draining", "slow", "stalled", "closed"] as const) test(`real child diagnostic pipe with ${mode} reader releases before acknowledgement`, async () => {

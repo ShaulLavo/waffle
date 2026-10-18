@@ -109,13 +109,13 @@ test("runtime diagnostics claim the execution failure before a queued signal can
   ]);
 });
 
-test("file stderr diagnostics use bounded immediate I/O instead of blocking under the shared offset lock", async () => {
+for (const append of [false, true]) test(`file stderr diagnostics bound shared-offset waits (append=${append})`, async () => {
   let lock!: SharedArrayBuffer;
   let blockingWrites = 0;
   const started = performance.now();
   const result = await fixture({
     instantiated({ wasi, fs }) {
-      const resource = { kind: "file" as const, handle: 17, offset: 0, append: false };
+      const resource = { kind: "file" as const, handle: 17, offset: 0, append };
       lock = shareFileResource(resource, fs.connection);
       const alias = wasi.descriptors.open(resource, 1n << 6n, 0n);
       wasi.descriptors.close(2);
@@ -125,7 +125,9 @@ test("file stderr diagnostics use bounded immediate I/O instead of blocking unde
       // return EAGAIN to the shared drain instead, so the five-second deadline still applies.
       Atomics.store(new Int32Array(lock), 0, fs.connection.owner);
       fs.write = () => { blockingWrites++; return -64; };
+      fs.append = () => { blockingWrites++; return -64; };
       fs.tryWrite = () => -6;
+      fs.tryAppend = () => -6;
     },
     run() { throw new Error("file diagnostic"); },
   });
@@ -137,6 +139,54 @@ test("file stderr diagnostics use bounded immediate I/O instead of blocking unde
     { code: 1, cleanupErrors: [expect.stringContaining("reader made no progress for five seconds")] },
   ]);
 }, 10_000);
+
+for (const append of [false, true]) test(`file stderr diagnostics use immediate filesystem calls (append=${append})`, async () => {
+  const chunks: Uint8Array[] = [];
+  const error = new Error("file diagnostic"); error.stack = "";
+  const expected = new TextEncoder().encode("Error: file diagnostic\n");
+  const result = await fixture({
+    instantiated({ wasi, fs }) {
+      const resource = { kind: "file" as const, handle: 17, offset: 4, append };
+      const alias = wasi.descriptors.open(resource, 1n << 6n, 0n);
+      shareFileResource(resource, fs.connection);
+      wasi.descriptors.inherit(2, wasi.descriptors.get(alias)!);
+      fs.write = fs.append = () => { throw new Error("blocking diagnostic file I/O"); };
+      fs.tryWrite = (_handle, data, offset) => {
+        expect(append).toBe(false);
+        expect(offset).toBe(4 + chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+        const part = data[0]!.slice(0, 3); chunks.push(part); return part.length;
+      };
+      fs.tryAppend = (_handle, data) => {
+        expect(append).toBe(true);
+        const part = data[0]!.slice(0, 3); chunks.push(part);
+        return { written: part.length, offset: 99 + chunks.reduce((sum, chunk) => sum + chunk.length, 0) };
+      };
+    },
+    run() { throw error; },
+  });
+  expect(new Uint8Array(Buffer.concat(chunks))).toEqual(expected);
+  expect(result.messages.filter(message => message.type === "error")).toMatchObject([{ code: 1 }]);
+});
+
+test("diagnostic revocation after a partial write reports a typed failure and exact unwritten span", async () => {
+  const error = new Error("revoked diagnostic"); error.stack = "";
+  const total = new TextEncoder().encode("Error: revoked diagnostic\n").length;
+  let writes = 0;
+  const result = await fixture({
+    instantiated({ wasi, fs }) {
+      const fd = wasi.descriptors.open({ kind: "terminal", read: () => 0, write: () => -64,
+        tryWrite() {
+          if (writes++ === 0) { Atomics.store(new Int32Array(fs.connection.revocations[0]!), 0, 1); return 3; }
+          return -64;
+        }, readiness: () => ({ readable: false, writable: true, hangup: false }) }, 1n << 6n, 0n);
+      wasi.descriptors.inherit(2, wasi.descriptors.get(fd)!);
+    },
+    run() { throw error; },
+  });
+  expect(result.messages.filter(message => message.type === "error")).toMatchObject([{
+    code: 1, cleanupErrors: [expect.stringContaining(`ProcessError: diagnostic write threw (exit 1); ${total - 3} of ${total} diagnostic bytes unwritten`)],
+  }]);
+});
 
 for (const isolated of [true, false]) test(`generic signal winner guards stdio and survives caught unwinds (isolated=${isolated})`, async () => {
   const result = await fixture({

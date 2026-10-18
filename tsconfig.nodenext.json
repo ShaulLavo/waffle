@@ -26,6 +26,7 @@
     "tests/preopen-placement.test.ts",
     "tests/libc-tooling.test.ts",
     "tests/fixtures/preopen-node-host.ts",
-    "tests/fixtures/start-failure-public.ts"
+    "tests/fixtures/start-failure-public.ts",
+    "tests/fixtures/diagnostic-public.ts"
   ]
 }

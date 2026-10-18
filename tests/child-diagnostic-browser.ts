@@ -13,6 +13,16 @@ const module = new WebAssembly.Module(new Uint8Array([
 function check(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 export type DiagnosticReader = "draining" | "slow" | "stalled" | "closed";
 
+export async function diagnosticDeadline<T>(operation: Promise<T>, label: string, timeoutMs = 12_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout`)), timeoutMs); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 /** The same real-Worker control runs under Bun and the three browser engines. */
 export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-worker.js", mode: DiagnosticReader = "draining"): Promise<void> {
   const connection = createFilesystemConnection(), runtimeProcess = createWorkerProcessTransport();
@@ -25,15 +35,6 @@ export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-wo
   // This run owns only one Worker, one RPC connection, pipe endpoints and its deadline.
   let worker: Worker | undefined, draining: Promise<void> | undefined;
   let stopped = false;
-  const deadline = async <T>(operation: Promise<T>, label: string): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        operation,
-        new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout`)), 12_000); }),
-      ]);
-    } finally { clearTimeout(timer); }
-  };
   try {
     worker = new Worker(workerUrl, { type: "module" });
     const done = Promise.withResolvers<Extract<RuntimeWorkerMessage, { type: "error" }>>();
@@ -58,14 +59,15 @@ export async function browserRuntimeDiagnostic(workerUrl = "/child-diagnostic-wo
       }
     };
     draining = mode === "draining" || mode === "slow" ? drain() : undefined;
-    const [message] = await deadline(Promise.all([done.promise, draining]), "child diagnostic acknowledgement and EOF");
+    const [message] = await diagnosticDeadline(Promise.all([done.promise, draining]), "child diagnostic acknowledgement and EOF");
     const elapsed = performance.now() - started;
     const outcome = readOutcome(workerProcessState(runtimeProcess).signals.outcome);
     check(outcome?.kind === "exited" && outcome.code === 1, "diagnostic delivery changed the runtime error outcome");
     if (mode === "stalled") {
       check(elapsed >= DIAGNOSTIC_STALL_TIMEOUT_MS && elapsed < DIAGNOSTIC_STALL_TIMEOUT_MS + 3_000, `stalled reader deadline: ${elapsed}ms`);
       check(message.cleanupErrors?.length === 1 && message.cleanupErrors[0]!.includes("reader made no progress for five seconds"), "missing stalled diagnostic delivery report");
-      await deadline(drain(), "stalled child diagnostic EOF");
+      draining = drain();
+      await diagnosticDeadline(draining, "stalled child diagnostic EOF");
     } else if (mode === "closed") {
       check(elapsed < 3_000, `closed reader retained a dead child for ${elapsed}ms`);
       check(message.cleanupErrors?.length === 1 && message.cleanupErrors[0]!.includes("diagnostic write failed (-64)"), "missing closed diagnostic delivery report");
