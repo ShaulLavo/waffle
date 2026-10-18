@@ -19,10 +19,15 @@ self.onmessage = ({ data }) => {
         fs.retain = () => {};
         fs.release = () => {};
       },
-      run({ instance }) {
+      run({ instance, wasi }) {
         const guest = instance.exports as unknown as PipeFilestatGuest;
         assertPipeFilestat(guest, 17, pipeReadRights);
         assertPipeFilestat(guest, 18, pipeWriteRights);
+        const duplicate = guest.dup(17);
+        if (guest.fd_kind(duplicate) !== 1) throw new Error("inherited duplicate lost pipe kind");
+        wasi.descriptors.close(17);
+        if (guest.fd_kind(17) !== -8 || guest.fd_kind(duplicate) !== 1)
+          throw new Error("closing inherited pipe changed duplicate kind");
         return 0;
       },
     },

@@ -4,7 +4,7 @@ import {
   type QuietFailureStage,
   type QuietFailureSink,
 } from "./start-failure-quiet-browser.js";
-import { browserPipeFilestat } from "./pipe-filestat-browser.js";
+import { browserFdKindWithoutProcess, browserPipeFilestat } from "./pipe-filestat-browser.js";
 import { browserStartupDiagnostic } from "./startup-diagnostic-browser.js";
 import { browserBrokerCellClone, browserStaleCellClone } from "./process-cell-clone-browser.js";
 import { browserRuntimeDiagnostic } from "./child-diagnostic-browser.js";
@@ -812,9 +812,14 @@ const cases: BrowserCase[] = quietFailureCases.concat([
   },
 
   {
-    label: "pipe filestat: guest endpoints and inherited child bindings retain metadata rights",
+    label: "pipe filestat and fd_kind: kinds, stdio, dup and inherited child remaps",
     standalone: true,
     run: () => browserPipeFilestat(),
+  },
+  {
+    label: "fd_kind: signal-only worker without process transport",
+    standalone: true,
+    run: browserFdKindWithoutProcess,
   },
   {
     label: "startup diagnostic: normal entry never delays stderr EOF",
