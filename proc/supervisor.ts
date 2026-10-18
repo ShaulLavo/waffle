@@ -249,7 +249,9 @@ export class ProcessSupervisor {
   }
   private async launch(record: ProcessRecord): Promise<void> {
     try {
-      const executable = await this.options.registry.resolve(record.request!.executable, record.request!.cwd);
+      const executable = await this.options.registry.resolve(record.request!.executable, record.request!.cwd, () => {
+        if (record.result || record.revoked || readOutcome(record.outcome)) throw new Error("process exited before executable admission completed");
+      });
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
       if (settled) { this.finish(record.pid, settled); return; }

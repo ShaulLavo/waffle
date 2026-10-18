@@ -131,8 +131,10 @@ const unregister = runtime.registerProgram("/bin/bun", {
 
 This makes filesystem inspection, a shell's `$PATH` search and process admission agree on the
 same path. The shell searches `$PATH`; Waffle's spawn does not. Spawn resolves its executable
-relative to the request's snapshotted `cwd`, removes dot segments and checks the live filesystem
-before loading even a cached module. A missing file produces `ENOENT` (shell status 127).
+relative to the request's snapshotted `cwd` and walks the actual filesystem tree before
+canonicalizing the registration key, even for a cached module. A missing intermediate cannot
+be canceled by a later `..`; a regular file used as a directory or given a trailing slash
+produces `ENOTDIR` (shell status 126). A missing file produces `ENOENT` (shell status 127).
 A directory or an existing regular file without a registered program produces `EACCES`
 (shell status 126); directory diagnostics explicitly identify the directory. Deleting a registered
 file or replacing it with a directory therefore prevents future execution. Releasing a registration
@@ -141,6 +143,11 @@ leaves its file untouched, so an existing unregistered marker is non-runnable ra
 The low-level `ExecutableRegistry` remains usable with opaque names when constructed without a
 filesystem lookup. Supplying a lookup enables the same canonical path and live-file admission
 used by the page runtime; registration keys in that mode must be canonical absolute paths.
+The lookup receives the original absolute path and returns `{ path, kind }`, where `path` is
+canonical only after a successful real-tree walk. `check(name, cwd)` applies these same live
+admission rules without loading or compiling a module; `resolve` checks again on each spawn.
+Executable admission orders earlier queued filesystem mutations without consuming unrelated
+mutation failures reserved for an explicit filesystem `drain()`.
 
 ## Guest executor extensions
 

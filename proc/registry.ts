@@ -1,7 +1,7 @@
 import { normalize } from "../core/path";
 
 /** Only metadata is needed for executable admission, never file contents or a filesystem owner. */
-export type ExecutableLookup = (path: string) => { readonly kind: "file" | "dir" } | undefined | Promise<{ readonly kind: "file" | "dir" } | undefined>;
+export type ExecutableLookup = (path: string) => { readonly path: string; readonly kind: "file" | "dir" } | undefined | Promise<{ readonly path: string; readonly kind: "file" | "dir" } | undefined>;
 
 export interface Executable {
   /** The loader compiles asynchronously (normally in a compiler worker). Never instantiate here. */
@@ -17,9 +17,8 @@ export class ExecutableNotFound extends Error {
   constructor(name: string) { super(`executable not found: ${name}`); this.name = "ExecutableNotFound"; }
 }
 export class ExecutableNotRunnable extends Error {
-  readonly code = "EACCES";
-  constructor(name: string, directory: boolean) {
-    super(directory ? `cannot execute directory: ${name}` : `file is not a registered executable: ${name}`);
+  constructor(name: string, directory: boolean, readonly code: "EACCES" | "ENOTDIR" = "EACCES") {
+    super(code === "ENOTDIR" ? `not a directory in executable path: ${name}` : directory ? `cannot execute directory: ${name}` : `file is not a registered executable: ${name}`);
     this.name = "ExecutableNotRunnable";
   }
 }
@@ -37,26 +36,55 @@ export class ExecutableRegistry {
   }
   unregister(name: string): boolean { return this.entries.delete(name); }
   has(name: string): boolean { return this.entries.has(name); }
-  async resolve(name: string, cwd = "/"): Promise<ResolvedExecutable> {
+  /** Validate live metadata and registration without loading or compiling a module. */
+  async check(name: string, cwd = "/", assertActive: () => void = () => {}): Promise<Readonly<Required<Executable>>> {
+    assertActive();
     if (!name) throw new ExecutableNotFound(name);
-    const path = this.lookup ? normalize(name, cwd) : name;
-    // Capture the exact registration before yielding: replacing/releasing its lease must
-    // not substitute another adapter or interruption policy into an accepted resolution.
-    const entry = this.entries.get(path);
+    const absolute = name.startsWith("/") ? name : `${cwd}/${name}`;
+    // Predict the key only to snapshot its exact registration before yielding. The
+    // filesystem must still walk the original path; lexical cancellation is not admission.
+    let path = this.lookup ? normalize(absolute) : name;
+    const admitted = { path, entry: this.entries.get(path) };
     if (this.lookup) {
-      const file = await this.lookup(path);
-      if (!file) throw new ExecutableNotFound(path);
-      if (file.kind !== "file" || !entry) throw new ExecutableNotRunnable(path, file.kind === "dir");
+      let file;
+      try { file = await this.lookup(absolute); }
+      catch (error) {
+        assertActive();
+        const errno = error !== null && typeof error === "object" && "errno" in error ? error.errno : undefined;
+        if (errno === 44) throw new ExecutableNotFound(absolute);
+        if (errno === 54) throw new ExecutableNotRunnable(absolute, false, "ENOTDIR");
+        throw error;
+      }
+      assertActive();
+      if (!file) throw new ExecutableNotFound(absolute);
+      path = file.path;
+      if (file.kind !== "file" || path !== admitted.path || !admitted.entry) throw new ExecutableNotRunnable(path, file.kind === "dir");
     }
+    const entry = admitted.entry;
     if (!entry) throw new ExecutableNotFound(path);
+    return entry;
+  }
+  async resolve(name: string, cwd = "/", assertActive: () => void = () => {}): Promise<ResolvedExecutable> {
+    const entry = await this.check(name, cwd, assertActive);
+    assertActive();
     let pending = this.modules.get(entry.module);
     if (!pending) {
-      pending = Promise.resolve().then(() => typeof entry.module === "function" ? entry.module() : entry.module).then(module => {
-        if (!(module instanceof WebAssembly.Module)) throw new TypeError("executable loader did not return a compiled WebAssembly.Module");
-        return module;
-      });
+      let complete!: (module: WebAssembly.Module | PromiseLike<WebAssembly.Module>) => void;
+      let reject!: (error: unknown) => void;
+      pending = new Promise<WebAssembly.Module>((yes, no) => { complete = yes; reject = no; });
+      // Publish before invoking a loader that can reenter. Invoke on this same stack,
+      // so cancellation cannot slip between the liveness check and starting new work.
       this.modules.set(entry.module, pending);
+      try {
+        const loaded = typeof entry.module === "function" ? entry.module() : entry.module;
+        complete(Promise.resolve(loaded).then(module => {
+          if (!(module instanceof WebAssembly.Module)) throw new TypeError("executable loader did not return a compiled WebAssembly.Module");
+          return module;
+        }));
+      } catch (error) { reject(error); }
     }
-    return { module: await pending, adapter: entry.adapter, interruptible: entry.interruptible };
+    const module = await pending;
+    assertActive();
+    return { module, adapter: entry.adapter, interruptible: entry.interruptible };
   }
 }

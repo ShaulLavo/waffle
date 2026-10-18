@@ -836,3 +836,43 @@ test("runtime spawn and PATH metadata agree on live canonical executable files",
   expect(launches).toBe(2);
   expect(loads).toBe(1);
 });
+
+
+for (const [executable, error, code] of [
+  ["/bin/test-guest/", "EACCES", 13],
+  ["/missing/../bin/test-guest", "ENOENT", 2],
+  ["/bin/test-guest/../test-guest", "EACCES", 13],
+] as const) test(`runtime preserves real filesystem traversal constraints for ${executable}`, async () => {
+  const runtime = create();
+  let loads = 0, launches = 0;
+  runtime.registerAdapter("test", context => { launches++; context.exit(0); return { terminate() {} }; });
+  await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
+  runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const pid = supervisor.reserveSpawn(root, { executable, argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(pid);
+  expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "start-failed", code, error, status: null });
+  expect(loads).toBe(0);
+  expect(launches).toBe(0);
+});
+
+test("an unrelated failed mutation cannot reject a later valid executable admission", async () => {
+  const runtime = create({ processHost: processHost() });
+  let loads = 0;
+  runtime.registerAdapter("test", context => { context.exit(23); return { terminate() {} }; });
+  await runtime.filesystem.writeFile("/bin/test-guest", "registered guest");
+  runtime.registerProgram("/bin/test-guest", { adapter: "test", module: () => { loads++; return emptyModule; }, cooperative: true });
+  let failure: unknown;
+  try { await runtime.filesystem.writeFile("/bin", "cannot replace directory"); } catch (error) { failure = error; }
+  expect(failure).toBeDefined();
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const pid = supervisor.reserveSpawn(root, { executable: "/bin/test-guest", argv: [], env: {}, cwd: "/", job: 0, fds: [] });
+  await supervisor.start(pid);
+  expect(await supervisor.waitForExit(root, pid)).toEqual({ kind: "exited", code: 23, status: 23 });
+  expect(loads).toBe(1);
+  // Admission orders writes but must not consume errors owned by the explicit drain API.
+  await expect(runtime.filesystem.drain()).rejects.toThrow();
+  await runtime.filesystem.drain();
+});

@@ -60,7 +60,7 @@ type CapabilityKind = "method" | "async" | "readonly" | "callback";
 // decision here. TypeScript-private owner fields and future implementation details never leak.
 const filesystemCapabilities = {
   createIdentity: "method", fork: "method", connect: "method", revoke: "method", reap: "method",
-  quiesce: "async", drain: "async", flush: "async", lookup: "async", readFile: "async", listFiles: "async",
+  quiesce: "async", drain: "async", flush: "async", resolvePath: "async", lookup: "async", readFile: "async", listFiles: "async",
   mkdirp: "async", writeFile: "async", remove: "async", move: "async",
   ownershipLost: "readonly", onOwnershipLost: "callback",
 } satisfies Record<keyof RuntimeFilesystem, CapabilityKind>;
@@ -228,7 +228,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (activation) return activation;
       const pendingHost = Promise.resolve().then(async (): Promise<BrowserProcessBroker> => {
         const [{ ExecutableRegistry }, { ProcessTable }] = await Promise.all([import("./proc/registry"), import("./proc/table")]);
-        registry = new ExecutableRegistry(path => filesystem.lookup(path));
+        registry = new ExecutableRegistry(path => filesystem.resolvePath(path));
         for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {
