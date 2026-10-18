@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs.js";
 import { createRuntime } from "../runtime.js";
+import { FilesystemSection, FilesystemError } from "../fs/protocol.js";
 
 const originalWorker = globalThis.Worker;
 const workers: TestWorker[] = [];
@@ -9,11 +10,13 @@ class TestWorker {
   listeners = new Map<string, ((event: any) => void)[]>();
   messages: any[] = [];
   terminations = 0;
+  private requested!: () => void;
+  readonly disposalRequested = new Promise<void>(resolve => { this.requested = resolve; });
   constructor() { workers.push(this); }
   addEventListener(type: string, listener: (event: any) => void) {
     this.listeners.set(type, (this.listeners.get(type) ?? []).concat([listener]));
   }
-  postMessage(message: any) { this.messages.push(message); }
+  postMessage(message: any) { this.messages.push(message); if (message.dispose) this.requested(); }
   terminate() { this.terminations++; }
   emit(type: string, event: any) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
   state(status: string) { this.emit("message", { data: { type: "filesystem-state", status } }); }
@@ -96,19 +99,35 @@ for (const status of ["waiting", "ready", "failed", "disposed"] as const) {
   });
 }
 
-test("runtime cancels pending startup before draining queued mutations", async () => {
-  globalThis.Worker = TestWorker as unknown as typeof Worker;
-  const runtime = createRuntime({ filesystem: { storage: "opfs", workerURL: "https://example.test/fs.js" } });
-  const worker = workers[0]!;
-  worker.state("waiting");
-  const operation = runtime.filesystem.writeFile("/pending", "never served").catch(error => error);
-  const disposal = runtime.dispose();
-  expect(worker.messages.filter(message => message.dispose)).toHaveLength(1);
-  expect(await operation).toMatchObject({ errno: 11 });
-  worker.acknowledge();
-  await disposal;
-  expect(worker.terminations).toBe(1);
-});
+for (const filesystemOptions of [
+  { storage: "opfs" },
+  { storage: "indexeddb" },
+  { storage: "indexeddb", whenBusy: "takeover" },
+  { storage: "indexeddb", whenBusy: "wait" },
+] as const) {
+  test(`runtime cancels pending ${filesystemOptions.storage} ${"whenBusy" in filesystemOptions ? filesystemOptions.whenBusy : "default"} startup before draining queued mutations`, async () => {
+    globalThis.Worker = TestWorker as unknown as typeof Worker;
+    const runtime = createRuntime({ filesystem: { ...filesystemOptions, workerURL: "https://example.test/fs.js" } });
+    const worker = workers[0]!;
+    const operation = runtime.filesystem.mkdirp("/pending").catch(error => error);
+    const disposal = runtime.dispose();
+    try {
+      const failure = await operation;
+      expect(failure).toBeInstanceOf(FilesystemError);
+      expect(failure.errno).toBe(11);
+      await worker.disposalRequested;
+      expect(worker.messages.filter(message => message.dispose)).toHaveLength(1);
+      worker.acknowledge();
+      await disposal;
+      expect(worker.terminations).toBe(1);
+    } finally {
+      // A pre-fix runtime is stuck in drain; revoke it so the negative control cleans up.
+      worker.emit("message", { data: { type: "filesystem-error", message: "test cleanup" } });
+      worker.acknowledge();
+      await disposal.catch(() => {});
+    }
+  });
+}
 
 test("a disposed state observer reenters the same runtime disposal", async () => {
   globalThis.Worker = TestWorker as unknown as typeof Worker;
@@ -120,6 +139,7 @@ test("a disposed state observer reenters the same runtime disposal", async () =>
   const worker = workers[0]!;
   worker.state("waiting");
   const disposal = runtime.dispose();
+  await worker.disposalRequested;
   worker.acknowledge();
   await Promise.all([disposal, reentered]);
   expect(reentered).toBe(disposal);
@@ -132,4 +152,45 @@ test("OPFS takeover is excluded by type and rejected before creating a worker", 
   globalThis.Worker = TestWorker as unknown as typeof Worker;
   expect(() => new SharedFilesystem(options)).toThrow('only supports whenBusy: "wait"');
   expect(workers).toHaveLength(0);
+});
+
+for (const whenBusy of ["takeover", "wait"] as const) {
+  test(`pending IndexedDB ${whenBusy} disposal fences admitted consumers before aborting storage`, async () => {
+    globalThis.Worker = TestWorker as unknown as typeof Worker;
+    const runtime = createRuntime({ filesystem: { whenBusy, workerURL: "https://example.test/fs.js" } });
+    const worker = workers[0]!;
+    const identity = runtime.filesystem.fork();
+    const section = new FilesystemSection(identity);
+    let stopped = false;
+    runtime.retainConsumer({ filesystem: identity, revoke() {}, stop() { stopped = true; } });
+    section.enter();
+    const operation = runtime.filesystem.mkdirp("/pending").catch(error => error);
+    const disposal = runtime.dispose();
+    try {
+      expect(await operation).toBeInstanceOf(FilesystemError);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(worker.messages.filter(message => message.dispose)).toHaveLength(0);
+      expect(worker.terminations).toBe(0);
+      expect(stopped).toBe(false);
+      expect(() => new FilesystemSection(identity).enter()).toThrow(FilesystemError);
+    } finally {
+      section.exit();
+      await worker.disposalRequested;
+      expect(stopped).toBe(true);
+      worker.acknowledge();
+      await disposal;
+      identity.port.close();
+    }
+    expect(worker.terminations).toBe(1);
+  });
+}
+
+test("runtime disposal preserves a fatal IndexedDB startup error", async () => {
+  globalThis.Worker = TestWorker as unknown as typeof Worker;
+  const runtime = createRuntime({ filesystem: { workerURL: "https://example.test/fs.js" } });
+  const worker = workers[0]!;
+  worker.emit("message", { data: { type: "filesystem-error", message: "IndexedDB open failed" } });
+  await expect(runtime.dispose()).rejects.toThrow("IndexedDB open failed");
+  expect(worker.messages.filter(message => message.dispose)).toHaveLength(0);
+  expect(worker.terminations).toBe(1);
 });

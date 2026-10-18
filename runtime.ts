@@ -307,12 +307,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (failures.length === 1) throw failures[0];
         if (failures.length > 1) throw new AggregateError(failures, "Runtime disposal failed");
       };
-      let cancelledStartup: Promise<void> | undefined;
+      const pendingStartup = options.filesystem?.persistence !== false
+        && (filesystem.state.status === "opening" || filesystem.state.status === "waiting");
       disposal = Promise.resolve().then(async () => {
         const attempt = async (operation: () => unknown) => {
           try { await operation(); } catch (error) { failures.push(error); }
         };
-        if (cancelledStartup) await attempt(() => cancelledStartup);
         // Initialization is owned too. A factory already in flight cannot escape teardown.
         if (ownedActivation) {
           await attempt(async () => { host = await ownedActivation; });
@@ -321,7 +321,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // A controller may be awaiting an adapter's launch handle when suspension wins.
         // Its late handle and asynchronous stop still belong to this page, not the next owner.
         while (launching.size) await Promise.allSettled(Array.from(launching));
-        if (!cancelledStartup) await attempt(() => filesystem.drain());
+        if (!pendingStartup) await attempt(() => filesystem.drain());
         // Keep the backend and relays alive while every admitted filesystem request fences.
         const failuresBeforeFences = failures.length;
         await Promise.all([
@@ -344,12 +344,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         if (owners[ownerKey] === token) delete owners[ownerKey];
         throwFailures();
       });
-      // Publish before disposal state observers or suspension can reenter this method.
-      // Startup can own a queued storage lock indefinitely: cancel it before drain or
-      // process activation waits for requests that cannot finish without ownership.
-      cancelledStartup = filesystem.state.status !== "ready" && options.filesystem?.persistence !== false
-        && (options.filesystem?.storage === "opfs" || options.filesystem?.whenBusy === "wait")
-        ? filesystem.dispose() : undefined;
+      // Wake page operations before activation/drain can await startup. Keep the worker
+      // and any acquired ownership alive until admitted consumer sections have fenced;
+      // the normal final filesystem.dispose() then performs the startup abort handshake.
+      if (pendingStartup) {
+        try { filesystem.revoke(filesystem.client.connection); } catch (error) { failures.push(error); }
+      }
       // Suspension itself remains synchronous so no new work can race teardown admission.
       for (const consumer of consumers) {
         try { filesystem.revoke(consumer.filesystem); } catch (error) { failures.push(error); }
