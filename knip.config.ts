@@ -19,6 +19,7 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tests/{storage,storage-lock,process-recycling}-browser-runner.ts",
         "tests/interrupt-browser.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host}.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
