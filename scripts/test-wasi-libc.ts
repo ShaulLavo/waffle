@@ -1,23 +1,28 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { addStartSection } from "../tests/fixtures/wasm-start-section.ts";
+import { CommandCleanupError, runOwned } from "./owned-command.ts";
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const sdk = process.env.WASI_SDK_PATH ?? "/work/cache/wasi-sdk-34.0-x86_64-linux";
 const scratch = process.env.WASI_LIBC_SCRATCH_ROOT ?? "/work/tmp";
 const root = mkdtempSync(join(scratch, "waffle-preopen-test-"));
-let child: ReturnType<typeof Bun.spawn> | undefined;
-let interrupted = false;
-const interrupt = () => { interrupted = true; child?.kill("SIGTERM"); };
+const temporary = join(root, "tmp");
+mkdirSync(temporary);
+const controller = new AbortController();
+let safeToRemove = true;
+const interrupt = () => { controller.abort(); };
 process.on("SIGINT", interrupt);
 process.on("SIGTERM", interrupt);
 async function run(command: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  if (interrupted) throw new Error("test interrupted");
-  child = Bun.spawn(command, { cwd: repo, env, stdout: "inherit", stderr: "inherit" });
-  const code = await child.exited;
-  child = undefined;
-  if (code !== 0 || interrupted) throw new Error(`${command[0]} failed (${code})`);
+  try {
+    await runOwned(command, { cwd: repo, signal: controller.signal,
+      env: { ...env, TMPDIR: temporary, TMP: temporary, TEMP: temporary } });
+  } catch (error) {
+    if (error instanceof CommandCleanupError) safeToRemove = false;
+    throw error;
+  }
 }
 try {
   const sysroot = join(root, "sysroot");
@@ -40,5 +45,6 @@ try {
 } finally {
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);
-  rmSync(root, { recursive: true, force: true });
+  if (safeToRemove) rmSync(root, { recursive: true, force: true });
+  else console.error(`Cleanup did not finish; retained scratch: ${root}`);
 }

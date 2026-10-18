@@ -32,6 +32,7 @@
     "tests/wasi-libc.test.ts",
     "tests/wasm-start-section.test.ts",
     "tests/preopen-placement.test.ts",
+    "tests/libc-tooling.test.ts",
     "tests/fixtures/preopen-node-host.ts"
   ]
 }
