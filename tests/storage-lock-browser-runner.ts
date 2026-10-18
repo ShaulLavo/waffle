@@ -615,7 +615,7 @@ async function opfsTakeoverRejected(
     await waitState(page, "failed");
     const current = await state(page);
     assert(
-      /OPFS storage only supports.*wait/i.test(current.error ?? ""),
+      current.error === "opfs-memory does not support whenBusy: takeover",
       `OPFS takeover was not rejected clearly: ${JSON.stringify(current)}`,
     );
   } finally {
