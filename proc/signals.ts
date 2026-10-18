@@ -1,5 +1,5 @@
-import { claimOutcome, readOutcome } from "./outcome.js";
-import { ProcessErrno, ProcessError, Signal, checkedSignal, type ProcessExit } from "./types.js";
+import { claimOutcome, readOutcome } from "./outcome.ts";
+import { ProcessErrno, ProcessError, Signal, checkedSignal, type ProcessExit } from "./types.ts";
 
 /** Shared ABI: cell zero is reserved; signal numbers 1..64 index their own cell. */
 export const SignalDisposition = Object.freeze({ DEFAULT: 0, IGNORE: 1, HANDLE: 2 });

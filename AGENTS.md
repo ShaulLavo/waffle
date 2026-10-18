@@ -48,6 +48,7 @@ Run from the exclusive worktree:
 bun install --frozen-lockfile
 bun run prepare
 bun run check
+bun run check:nodenext
 bun test ./tests
 bun run size
 ```
