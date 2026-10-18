@@ -1,7 +1,7 @@
 import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
-import type { OutcomeWord } from "../proc/outcome.js";
+import { reviveOutcome, type OutcomeTransfer, type OutcomeWord } from "../proc/outcome.js";
 // Process bootstrap shared by preview1 commands and injected guest executors.
 import { checkedSignal, ProcessError } from "../proc/types.js";
 import { defaultSignalTerminates, signalPending } from "../proc/signals.js";
@@ -23,7 +23,7 @@ export interface RuntimeWorkerRequest {
   filesystem: FilesystemConnection;
   runtimeProcess?: WorkerProcessTransport;
   /** Authoritative terminal word available before loading process adapters. */
-  outcome?: SharedArrayBuffer | OutcomeWord;
+  outcome?: OutcomeTransfer;
   /** Admitted code with fatal-only instrumentation, not an admission bypass. */
   interruptible?: boolean;
   trace?: boolean;
@@ -248,7 +248,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   try {
     // A valid process must publish even its first adapter-import failure to shared state.
     // Keep this synchronous, while still routing a stale incarnation through finish().
-    const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : req.outcome ?? executor.outcome;
+    const requestOutcome = req.outcome === undefined ? undefined : reviveOutcome(req.outcome);
+    const sharedOutcome = req.runtimeProcess ? directoryState(req.runtimeProcess).signals.outcome : requestOutcome ?? executor.outcome;
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
     const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;

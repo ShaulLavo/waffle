@@ -1,4 +1,4 @@
-import { TaggedCells, packedControl, controlCas, controlLoad, controlStore } from "./control.js";
+import { TaggedCells, packedControl, controlCas, controlLoad, controlStore, type CellValidity } from "./control.js";
 import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
 import { ProcessErrno, ProcessError, type ProcessExit } from "./types.js";
 import type { SignalTransport } from "./signals.js";
@@ -23,11 +23,12 @@ function row(directory: SharedArrayBuffer, slot: number, job = false): BigInt64A
   if (!Number.isInteger(slot) || slot < 0 || slot >= capacity) throw new TypeError("invalid process directory slot");
   return new BigInt64Array(directory, HEADER_BYTES + (job ? capacity * PROCESS_WORDS + slot * JOB_WORDS : slot * PROCESS_WORDS) * 8, job ? JOB_WORDS : PROCESS_WORDS);
 }
+function validity(raw: BigInt64Array, id: number): CellValidity { return { buffer: raw.buffer as SharedArrayBuffer, byteOffset: raw.byteOffset, id }; }
 function cells(raw: BigInt64Array, id: number, offset: number, count = 1): TaggedCells { return new TaggedCells(raw.subarray(offset, offset + count), id); }
 // Escaping views require a live row; private retirement helpers intentionally retain
 // their tagged access while forwarding lifecycle-3 ancestry.
 function liveCells(raw: BigInt64Array, id: number, offset: number, count = 1): TaggedCells {
-  return new TaggedCells(raw.subarray(offset, offset + count), id, () => valid(raw, id));
+  return new TaggedCells(raw.subarray(offset, offset + count), id, validity(raw, id));
 }
 function identity(raw: BigInt64Array): number { const value = Atomics.load(raw, 0); return (value & 0xffffffffn) === 1n ? Number(value >> 32n) : 0; }
 function valid(raw: BigInt64Array, id: number): boolean { return Atomics.load(raw, 0) === packedControl(id, 1); }
@@ -57,7 +58,7 @@ export function directoryJob(directory: SharedArrayBuffer, slot: number, expecte
   const state = {
     slot, id, ownerPid: data.load(1), leaderPid, foreground: data.load(5) !== 0,
     controlParent: liveCells(raw, id, 6), rootPid: data.load(7), pending: liveCells(raw, id, 4),
-    outcome: new OutcomeCell(raw.subarray(3, 4), leaderPid, () => valid(raw, id)),
+    outcome: new OutcomeCell(raw.subarray(3, 4), leaderPid, validity(raw, id)),
   };
   if (!valid(raw, id)) throw new ProcessError(ProcessErrno.CHILD, "job has been collected");
   return state;
@@ -73,7 +74,7 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     jobOutcome: group.outcome, jobControlParent: group.controlParent, jobPending: group.pending,
     confirmed: liveCells(raw, pid, 71), jobConfirmed: liveCells(raw, pid, 72),
     signals: { interrupt: liveCells(raw, pid, 3), requestedSignal: liveCells(raw, pid, 4),
-      outcome: new OutcomeCell(raw.subarray(5, 6), pid, () => valid(raw, pid)), signalState: liveCells(raw, pid, 6, 65) } satisfies SignalTransport,
+      outcome: new OutcomeCell(raw.subarray(5, 6), pid, validity(raw, pid)), signalState: liveCells(raw, pid, 6, 65) } satisfies SignalTransport,
     wake: new Int32Array(handle.directory, 4, 1),
   };
   if (!valid(raw, pid)) throw new ProcessError(ProcessErrno.SRCH, "process incarnation was collected");
@@ -274,7 +275,7 @@ export function collectDirectoryProcess(handle: DirectoryHandle): ProcessExit {
   const raw = row(handle.directory, handle.slot);
   if (!valid(raw, handle.pid)) throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
   if (!controlLoad(cells(raw, handle.pid, 71)) || !controlLoad(cells(raw, handle.pid, 72))) throw new ProcessError(ProcessErrno.AGAIN, "child has not exited safely");
-  const result = readOutcome(new OutcomeCell(raw.subarray(5, 6), handle.pid, () => valid(raw, handle.pid)))!;
+  const result = readOutcome(new OutcomeCell(raw.subarray(5, 6), handle.pid, validity(raw, handle.pid)))!;
   if (Atomics.compareExchange(raw, 0, packedControl(handle.pid, 1), packedControl(handle.pid, 3)) !== packedControl(handle.pid, 1)) throw new ProcessError(ProcessErrno.CHILD, "child was already collected");
   finishCollection(handle.directory, handle.slot, handle.pid);
   return result;

@@ -223,6 +223,16 @@ fields use `OutcomeWord` (`BigInt64Array | OutcomeCell`). Import `ControlCells`,
 `readOutcome` accept that union, so consumers must use those helpers rather than
 raw atomics on outcome fields. `SpawnReservation` also carries optional
 `controlParent` and `rootPid`; `SharedJobIdentity` carries optional `controlParent`.
+Cells are local class instances, not worker messages. Use `serializeOutcome` /
+`reviveOutcome` from `waffle/proc/outcome` and `serializeTaggedCells` /
+`reviveTaggedCells` from `waffle/proc/control` when carrying them in `postMessage`,
+`workerData`, or a `MessagePort`. Transfers contain only shared memory and captured
+identity data; receiving code rebuilds the class and checks the shared lifecycle
+word, never adopts a recycled row's current identity. A job outcome's lifecycle id
+is its job id, independently of the leader pid used by its running sentinel.
+`WorkerProcessTransport` already carries a cloneable directory handle; obtain its
+local cells with `workerProcessState` rather than embedding that returned state in
+its payload. The browser broker serializes its explicit outcome before posting.
 Captured stale tagged controls/outcomes throw `ProcessError(SRCH = 71)` and cannot
 read or change the next occupant of the recycled slot. These are matching-package
 host contracts, not version-negotiation paths.
