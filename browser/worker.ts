@@ -175,6 +175,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
+  let writeOutput: ((type: "stdout" | "stderr", data: Uint8Array) => number) | undefined;
   const finish = (result: WorkerResult) => {
     if (done) return;
     done = true;
@@ -186,9 +187,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const startupFailure = "error" in result && !started;
     const ownResult: Pick<ProcessExit, "kind" | "code"> = startupFailure ? startFailure(result.error)
       : ownSignal === undefined ? { kind: "exited", code: ownCode } : { kind: "signaled", code: ownSignal };
-    // Startup failures select their winner before any reentrant cleanup callback. Executor-
-    // owned ordinary completion still follows its buffered diagnostics and descriptor release.
-    let winner = executor.complete && !startupFailure ? settled : claim(ownResult);
+    // Startup failures claim before cleanup; runtime diagnostics retain live stderr until drained.
+    const runtimeDiagnostic = !executor.complete && started && "error" in result && !settled;
+    let winner = runtimeDiagnostic || (executor.complete && !startupFailure) ? settled : claim(ownResult);
     const cleanupErrors: string[] = [];
     const collect = (error: unknown): void => {
       if (error instanceof AggregateError && error.errors.length) for (const cause of error.errors) collect(cause);
@@ -197,6 +198,19 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const attempt = (cleanup: () => void): boolean => {
       try { cleanup(); return true; } catch (error) { collect(error); return false; }
     };
+    if (runtimeDiagnostic && "error" in result) {
+      attempt(() => {
+        const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
+        for (let offset = 0; offset < bytes.length;) {
+          const written = writeOutput!("stderr", bytes.subarray(offset));
+          if (!Number.isInteger(written) || written <= 0 || written > bytes.length - offset) {
+            throw new Error(`stderr diagnostic write failed: ${written}`);
+          }
+          offset += written;
+        }
+      });
+      winner = claim(ownResult);
+    }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
     // Legacy transports must buffer diagnostics before publishing logical completion.
@@ -280,22 +294,22 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       checkActive();
       host.postMessage({ type, data }, [data.buffer as ArrayBuffer]);
     };
-    const post = (type: "stdout" | "stderr", data: Uint8Array) => {
+    const write = (type: "stdout" | "stderr", data: Uint8Array): number => {
       checkActive();
       const fd = type === "stderr" ? 2 : 1;
       if (!wasi) {
         const stream = stdio?.[fd];
-        if (stream) return stream.write([data]) === data.length;
+        if (stream) return stream.write([data]);
         output(type, data);
-        return true;
+        return data.length;
       }
       const descriptor = wasi.descriptors.get(fd);
-      if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return false;
+      if (!descriptor || (descriptor.rightsBase & (1n << 6n)) === 0n) return -8;
       const resource = descriptor.resource;
-      if (resource.kind === "directory") return false;
+      if (resource.kind === "directory") return -31;
       // Like preview1, an empty write neither appends nor moves the shared file cursor.
-      if (!data.length) return true;
-      if (resource.kind !== "file") return resource.write([data]) === data.length;
+      if (!data.length) return 0;
+      if (resource.kind !== "file") return resource.write([data]);
       const written = withFileOffset(resource, () => {
         if (resource.append) {
           const result = fs.append(resource.handle, [data]);
@@ -307,8 +321,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         if (written >= 0) resource.offset += written;
         return written;
       });
-      return written === data.length;
+      return written;
     };
+    writeOutput = write;
+    const post = (type: "stdout" | "stderr", data: Uint8Array) => write(type, data) === data.length;
     const context: WorkerSetupContext<R> = { request: req, fs, isolated, outcome, interrupt, runtimeState, checkActive, defaultSignal, post, finish };
     executor.setup?.(context);
     if (done) return;
