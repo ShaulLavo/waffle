@@ -40,7 +40,7 @@ function storageWorker(): void {
 }
 
 const lifecycle = new BrowserRunnerLifecycle();
-let origin = "";
+let origin = "", persistentShutdownFailed = false;
 async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent = false): Promise<T> {
   let context: BrowserContext | undefined, profile: string | undefined;
   try {
@@ -59,7 +59,10 @@ async function inWorker<T>(browser: Browser, request: WorkerRequest, persistent 
       worker.postMessage(request);
     }), request);
   } finally {
-    if (context) { if (persistent) await lifecycle.closeContext(context); else await context.close(); }
+    if (context) {
+      try { if (persistent) await lifecycle.closeContext(context); else await context.close(); }
+      catch (error) { if (persistent) persistentShutdownFailed = true; throw error; }
+    }
     if (profile) await lifecycle.removeDirectory(profile);
   }
 }
@@ -92,6 +95,7 @@ try {
         } catch (error) {
           const failure = `${name} ${backend}: ${label}\n${String(error)}`;
           failures.push(failure); console.error(`  FAIL ${failure}`);
+          if (persistentShutdownFailed) throw error;
         }
       }
       if (!selected) throw new Error(`No storage cases match ${JSON.stringify(process.env.STORAGE_TEST_FILTER)}`);

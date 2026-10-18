@@ -8,7 +8,7 @@ import { score, type Sample } from "./vfs-score.js";
 import type { BrowserRequest, BrowserResult } from "./vfs-browser.js";
 
 const PREFIX = "VFS_EVIDENCE ";
-interface Options { output: string; campaign: string; revision: string; browsers: BrowserName[]; workloads: Workload[]; lanes: Lane[]; mode: "screening" | "promotion"; candidateRoot?: string; candidateRevision?: string; extract?: string; }
+interface Options { output: string; campaign: string; revision: string; browsers: BrowserName[]; workloads: Workload[]; lanes: Lane[]; mode: "screening" | "promotion"; candidateRoot?: string; candidateRevision?: string; initialBaseline?: string; acceptedSummary?: string; extract?: string; }
 function argumentsFor(args: string[]): Options {
   const options: Options = { output: "", campaign: "", revision: "", browsers: Array.from(BROWSERS), workloads: Array.from(WORKLOADS), lanes: Array.from(LANES), mode: "screening" };
   const list = <T extends string>(value: string, allowed: readonly T[]): T[] => {
@@ -18,22 +18,38 @@ function argumentsFor(args: string[]): Options {
     const flag = args[i], value = args[i + 1]; if (!value) throw new Error(`Missing value for ${flag}`);
     if (flag === "--output") options.output = resolve(value);
     else if (flag === "--campaign") options.campaign = value;
-    else if (flag === "--revision") options.revision = value;
     else if (flag === "--browsers") options.browsers = list(value, BROWSERS);
     else if (flag === "--workloads") options.workloads = list(value, WORKLOADS);
     else if (flag === "--lanes") options.lanes = list(value, LANES);
     else if (flag === "--mode" && (value === "screening" || value === "promotion")) options.mode = value;
     else if (flag === "--candidate-root") options.candidateRoot = resolve(value);
-    else if (flag === "--candidate-revision") options.candidateRevision = value;
+    else if (flag === "--initial-baseline") options.initialBaseline = resolve(value);
+    else if (flag === "--accepted-summary") options.acceptedSummary = resolve(value);
     else if (flag === "--extract") options.extract = resolve(value);
     else throw new Error(`Unknown argument ${flag}`);
   }
   if (!options.output) throw new Error("--output must be an external evidence directory");
   const repo = resolve(import.meta.dir, "..");
   if (options.output === repo || options.output.startsWith(`${repo}/`)) throw new Error("Evidence must not be stored in the repository");
-  if (!options.extract && (!/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(options.campaign) || !/^[a-f0-9]{40}$/.test(options.revision))) throw new Error("Need --campaign ID --revision IMMUTABLE_SHA");
-  if (!options.extract && options.mode === "promotion" && (!options.candidateRoot || !/^[a-f0-9]{40}$/.test(options.candidateRevision ?? ""))) throw new Error("Promotion requires --candidate-root and --candidate-revision; baseline revision must be the accepted reference");
+  if (!options.extract && (!/^[a-zA-Z0-9][a-zA-Z0-9._-]+$/.test(options.campaign))) throw new Error("Need --campaign ID");
+  if (!options.extract && options.mode === "promotion" && !options.candidateRoot) throw new Error("Promotion requires --candidate-root");
+  if (!options.extract && options.candidateRoot && (!options.initialBaseline || !options.acceptedSummary)) throw new Error("Promotion requires --initial-baseline and --accepted-summary; neither initial normalization nor the accepted ratchet may reset");
   return options;
+}
+/** Labels come from the immutable source, never CLI text. The remote dispatcher
+ * verifies its archive, and this check additionally binds the reconstructed Git
+ * tree to its manifest and rejects any edited or untracked source. */
+export function sourceRevision(root: string, manifest?: { source_commit: string }): string {
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-C", root].concat(args));
+    if (result.exitCode) throw new Error(`Source provenance check failed: ${result.stderr}`);
+    return result.stdout.toString().trim();
+  };
+  const revision = git("rev-parse", "HEAD");
+  if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error("Missing immutable source revision");
+  if (manifest && manifest.source_commit !== revision) throw new Error("Source HEAD differs from dispatcher manifest");
+  if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("Campaign source must be clean and committed");
+  return revision;
 }
 async function treeSize(path: string): Promise<{ logical: number; physical: number }> {
   let logical = 0, physical = 0;
@@ -89,20 +105,29 @@ async function worker(page: Page, request: BrowserRequest): Promise<BrowserResul
     });
   }, request);
 }
-async function summarize(output: string, samples: Sample[], metadata: unknown): Promise<void> {
-  await Bun.write(resolve(output, "samples.json"), JSON.stringify(samples));
+async function summarize(output: string, samples: Sample[], metadata: unknown, options: Options): Promise<void> {
   const baseline = samples.filter(s => s.role !== "candidate"), candidate = samples.filter(s => s.role === "candidate");
-  await Bun.write(resolve(output, "summary.json"), JSON.stringify({ metadata, ...score(baseline, candidate.length ? candidate : baseline, candidate.length ? baseline : undefined) }, null, 2));
+  if (candidate.length && (!options.initialBaseline || !options.acceptedSummary)) throw new Error("Candidate extraction requires immutable initial baseline and accepted summary inputs");
+  const initial: Sample[] = options.initialBaseline ? await Bun.file(options.initialBaseline).json() : baseline;
+  const acceptedBest = options.acceptedSummary ? Object.fromEntries(Object.entries((await Bun.file(options.acceptedSummary).json()).perVfs).flatMap(([name, value]) => { const score = (value as { score: number | null }).score; return score === null ? [] : [[name, score]]; })) : {};
+  const summary = { metadata, ...score(initial, candidate.length ? candidate : baseline, candidate.length ? baseline : undefined, acceptedBest) };
+  await Bun.write(resolve(output, "samples.json"), JSON.stringify(samples));
+  await Bun.write(resolve(output, "summary.json"), JSON.stringify(summary, null, 2));
 }
 async function extract(options: Options): Promise<void> {
+  if (await Bun.file(resolve(options.output, "samples.json")).exists()) throw new Error("Campaign output already exists; baselines are immutable");
   const lines = (await readFile(options.extract!, "utf8")).split("\n").filter(line => line.startsWith(PREFIX)).map(line => JSON.parse(line.slice(PREFIX.length)));
   const samples: Sample[] = lines.filter(line => line.kind === "sample").map(line => line.sample);
   const metadata = lines.find(line => line.kind === "metadata")?.metadata;
   if (!metadata || !lines.some(line => line.kind === "finished")) throw new Error("Incomplete campaign evidence; retain log, do not publish as completed");
-  await mkdir(options.output, { recursive: true }); await summarize(options.output, samples, metadata);
+  await mkdir(options.output, { recursive: true }); await summarize(options.output, samples, metadata, options);
   await Bun.write(resolve(options.output, "events.jsonl"), lines.map(line => JSON.stringify(line)).join("\n") + "\n");
 }
 async function campaign(options: Options): Promise<void> {
+  const manifestPath = process.env.TMPDIR ? resolve(process.env.TMPDIR, "../manifest.json") : undefined;
+  const manifest = manifestPath && await Bun.file(manifestPath).exists() ? await Bun.file(manifestPath).json() : undefined;
+  options.revision = sourceRevision(resolve(import.meta.dir, ".."), manifest);
+  if (options.candidateRoot) options.candidateRevision = sourceRevision(options.candidateRoot);
   const lifecycle = new BrowserRunnerLifecycle(3_500_000); const samples: Sample[] = [];
   const emit = (value: unknown) => console.log(PREFIX + JSON.stringify(value));
   await mkdir(options.output, { recursive: true });
@@ -115,14 +140,19 @@ async function campaign(options: Options): Promise<void> {
     await lifecycle.init();
     const routes: Record<string, Blob | string> = { "/": "<!doctype html><title>Waffle VFS benchmark</title>" };
     const builds = new Map<string, { benchmark: Blob; fs: Blob }>();
+    const compressedBytes: Record<string, unknown> = {};
     for (const role of options.candidateRoot ? ["baseline", "candidate"] : ["baseline"]) {
       const source = role === "candidate" ? options.candidateRoot! : root;
-      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts"]) {
+      if (role === "candidate") for (const name of ["vfs-workloads.ts", "vfs-score-config.ts", "vfs-guest.ts", "vfs-browser.ts", "vfs-benchmark.ts"]) {
         if (await readFile(resolve(root, "tooling", name), "utf8") !== await readFile(resolve(source, "tooling", name), "utf8")) throw new Error(`Paired workload protocol differs: ${name}`);
       }
+      if (role === "candidate" && await readFile(resolve(root, "tests/browser-runner-lifecycle.ts"), "utf8") !== await readFile(resolve(source, "tests/browser-runner-lifecycle.ts"), "utf8")) throw new Error("Paired lifecycle protocol differs");
       builds.set(role, { benchmark: await browserBundle(resolve(source, "tooling/vfs-browser.ts")), fs: await browserBundle(resolve(source, "browser/fs-worker.ts")) });
+      const size = async (path: string) => { const blob = await browserBundle(resolve(source, path)); return { raw: blob.size, gzip: Bun.gzipSync(await blob.arrayBuffer()).byteLength }; };
+      compressedBytes[role] = { sharedFacade: await size("browser/shared-fs.ts"), indexeddbStandalone: await size("fs/indexeddb.ts"), opfsStandalone: await size("fs/opfs.ts"), sharedWorker: await size("browser/fs-worker.ts"), interpretation: "standalone entry bundles including dependencies, not additive marginal backend contributions; current worker includes both persistent backends" };
     }
     const origin = lifecycle.serve(routes);
+    Object.assign(metadata, { compressedBytes });
     emit({ kind: "metadata", metadata });
     const sampling = SAMPLING[options.mode];
     for (const browser of options.browsers) for (const backend of ["indexeddb", "opfs"] as const) {
@@ -165,47 +195,79 @@ async function campaign(options: Options): Promise<void> {
                 await lifecycle.removeDirectory(profile); profile = await lifecycle.directory(profileRoot, "vfs-");
                 await cp(template, profile, { recursive: true });
               }
+              const storageBefore = await treeSize(profile); sample.observations = { storageBefore };
               const launchStart = performance.now(); context = await lifecycle.persistent(browser, profile);
               sample.browserVersion = context.browser()?.version() ?? `${browser}-persistent`;
               const page = await pageFor(context);
               if (workload === "W5") {
-                const ownerStart = performance.now(); await worker(page, { ...input, action: "open" });
-                const pages: Page[] = [page]; const takeovers: number[] = [], revocations: number[] = [];
+                await worker(page, { ...input, action: "open" });
+                await worker(page, { ...input, action: "marker" });
+                const pages: Page[] = [page], handoffs: number[] = [], revocations: number[] = [], takeovers: number[] = [];
+                const until = async (target: Page, status: string, lost = false) => {
+                  await target.waitForFunction(async ({ input, status, lost }) => {
+                    const g = globalThis as typeof globalThis & { benchmarkWorker?: Worker };
+                    return new Promise<boolean>(resolve => {
+                      g.benchmarkWorker!.onmessage = event => resolve(!event.data.error && (lost ? event.data.result?.ownershipLost === true : event.data.result?.status === status));
+                      g.benchmarkWorker!.postMessage({ ...input, action: "ownership" });
+                    });
+                  }, { input, status, lost }, { timeout: 15000, polling: 20 });
+                };
+                // Real pages queue behind the same workspace owner. Observe each
+                // waiting state before allowing the next contender to join the FIFO.
                 for (let i = 0; i < 3; i++) {
-                  const contender = await pageFor(context); pages.push(contender); const start = performance.now();
-                  try {
-                    await worker(contender, { ...input, action: "open" }); takeovers.push(performance.now() - start);
-                    const previous = pages[i]!;
-                    await previous.waitForFunction(async input => {
-                      const g = globalThis as typeof globalThis & { benchmarkWorker?: Worker };
-                      return await new Promise<boolean>(resolve => { g.benchmarkWorker!.onmessage = event => resolve(event.data.result?.ownershipLost === true); g.benchmarkWorker!.postMessage({ ...input, action: "ownership" }); });
-                    }, input, { timeout: 5000 });
-                    revocations.push(performance.now() - start);
-                  } catch (error) {
-                    if (backend !== "opfs") throw error;
-                    sample.observations = { refusal: String(error), realPages: pages.length }; // Continue creating all three real contenders.
+                  const contender = await pageFor(context); pages.push(contender);
+                  await worker(contender, { ...input, action: "start", whenBusy: "wait" });
+                  await until(contender, "waiting");
+                }
+                for (let i = 1; i < pages.length; i++) {
+                  const start = performance.now();
+                  await worker(pages[i - 1]!, { ...input, action: "dispose" });
+                  await worker(pages[i]!, { ...input, action: "open" });
+                  handoffs.push(performance.now() - start);
+                  await worker(pages[i]!, { ...input, action: "probe" });
+                  for (let j = i + 1; j < pages.length; j++) {
+                    const state = await worker(pages[j]!, { ...input, action: "ownership" });
+                    if (state.status !== "waiting") throw new Error("Queued ownership did not preserve exclusive FIFO order");
                   }
                 }
-                sample.metrics = { ownerReadyMs: performance.now() - ownerStart, takeoverMs: takeovers.length ? takeovers.reduce((a, b) => a + b, 0) / takeovers.length : 0, revocationMs: revocations.length ? revocations.reduce((a, b) => a + b, 0) / revocations.length : 0 };
-                sample.latencies = { takeover: takeovers, revocation: revocations };
-                sample.state = "deferred/not measured"; sample.reason = "Current backend has no queued whenBusy wait/orderly handoff contract (#21); takeover/refusal diagnostics are not W5 eligibility or simultaneous throughput";
+                await worker(pages[3]!, { ...input, action: "dispose" });
+                // Separate IndexedDB default-takeover case, never presented as
+                // simultaneous four-writer throughput or queued handoff latency.
+                if (backend === "indexeddb") {
+                  const takeover = { ...input, name: `${input.name}-takeover` };
+                  await worker(pages[0]!, { ...takeover, action: "open" });
+                  await worker(pages[0]!, { ...takeover, action: "marker" });
+                  for (let i = 1; i < pages.length; i++) {
+                    const start = performance.now();
+                    const revoked = worker(pages[i - 1]!, { ...takeover, action: "await-revocation" }).then(() => performance.now() - start);
+                    void revoked.catch(() => {}); // Observe even if contender startup fails.
+                    await worker(pages[i]!, { ...takeover, action: "open" });
+                    takeovers.push(performance.now() - start); revocations.push(await revoked);
+                    const fenced = await worker(pages[i - 1]!, { ...takeover, action: "fence" });
+                    if (fenced.observations.fenced !== true) throw new Error("Missing old-owner fencing assertion");
+                    await worker(pages[i]!, { ...takeover, action: "probe" });
+                    await worker(pages[i - 1]!, { ...takeover, action: "dispose" });
+                  }
+                  await worker(pages[3]!, { ...takeover, action: "dispose" });
+                }
+                const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+                sample.metrics = { handoffMs: mean(handoffs), ...(takeovers.length ? { takeoverMs: mean(takeovers), revocationMs: mean(revocations) } : {}) };
+                sample.latencies = { handoff: handoffs, takeover: takeovers, revocation: revocations };
+                sample.observations = { ...sample.observations, realPages: 4, origin, workspace: input.name, fifoAndMarkerVerified: true, oldOwnerFenced: backend === "indexeddb", concurrentThroughput: "not applicable to exclusive backends" };
               } else {
                 const opened = await worker(page, { ...input, action: "open" });
                 const launchToReadyMs = performance.now() - launchStart;
-                const storageBefore = await treeSize(profile);
                 const result = await worker(page, input);
-                sample.metrics = { ...sample.metrics, ...result.metrics, metadataReadinessMs: opened.metrics.readinessMs!, readinessMs: launchToReadyMs, launchToReadyMs }; sample.latencies = result.latencies; sample.acknowledgements = result.acknowledgements; sample.observations = result.observations;
+                sample.metrics = { ...sample.metrics, ...result.metrics, metadataReadinessMs: opened.metrics.readinessMs!, readinessMs: launchToReadyMs, launchToReadyMs }; sample.latencies = result.latencies; sample.acknowledgements = result.acknowledgements; sample.observations = { ...sample.observations, ...result.observations };
                 sample.metrics.launchThroughWorkloadControllerMs = performance.now() - launchStart;
-                sample.observations.storageBefore = storageBefore;
                 await worker(page, { ...input, action: "dispose" });
               }
               await lifecycle.closeContext(context); context = undefined;
               const storage = await treeSize(profile); sample.metrics.profileLogicalBytes = storage.logical; sample.metrics.profileAllocatedBytes = storage.physical;
-              const storageBefore = sample.observations?.storageBefore as { logical: number; physical: number } | undefined;
               if (storageBefore) { sample.metrics.profileLogicalGrowthBytes = storage.logical - storageBefore.logical; sample.metrics.profileAllocatedGrowthBytes = storage.physical - storageBefore.physical; }
               if (workload === "W3") {
                 context = await lifecycle.persistent(browser, profile); const page = await pageFor(context);
-                const read = await worker(page, { ...input, action: "read" }); Object.assign(sample.metrics, read.metrics, { readinessMs: sample.metrics.readinessMs, peakResidentPayloadBytes: Math.max(sample.metrics.peakResidentPayloadBytes ?? 0, read.metrics.peakResidentPayloadBytes ?? 0) });
+                const read = await worker(page, { ...input, action: "read" }); Object.assign(sample.metrics, read.metrics, { readinessMs: sample.metrics.readinessMs, residentPayloadEndBytes: Math.max(sample.metrics.residentPayloadEndBytes ?? 0, read.metrics.residentPayloadEndBytes ?? 0) });
                 await worker(page, { ...input, action: "dispose" }); await lifecycle.closeContext(context); context = undefined;
               }
             } catch (error) {
@@ -228,7 +290,7 @@ async function campaign(options: Options): Promise<void> {
         for (const template of templates.values()) await lifecycle.removeDirectory(template);
       }
     }
-    await summarize(options.output, samples, metadata);
+    await summarize(options.output, samples, metadata, options);
     emit({ kind: "finished", samples: samples.length, eligible: samples.filter(s => s.state === "eligible" && !s.warmup).length });
   } finally { clearInterval(rssTimer); await lifecycle.close(); }
 }

@@ -3,11 +3,11 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { OpfsStorage } from "../fs/opfs.js";
 import type { ResolvedPath } from "../core/filesystem.js";
 import { GuestIO, guestFixture } from "./vfs-guest.js";
-import { w1Fixture, executeWorkload, executeSequentialRead, type WorkloadIO, type WorkloadResult } from "./vfs-workloads.js";
+import { content, verify, w1Fixture, executeWorkload, executeSequentialRead, type WorkloadIO, type WorkloadResult } from "./vfs-workloads.js";
 import type { Lane, Workload } from "./vfs-score-config.js";
 
-export interface BrowserRequest { action: "seed" | "run" | "read" | "open" | "dispose" | "ownership"; backend: "indexeddb" | "opfs"; lane: Lane; workload: Workload; name: string; }
-export interface BrowserResult extends WorkloadResult { ready?: boolean; ownershipLost?: boolean; }
+export interface BrowserRequest { action: "seed" | "run" | "read" | "open" | "start" | "dispose" | "ownership" | "await-revocation" | "marker" | "probe" | "fence"; backend: "indexeddb" | "opfs"; lane: Lane; workload: Workload; name: string; whenBusy?: "wait"; }
+export interface BrowserResult extends WorkloadResult { ready?: boolean; ownershipLost?: boolean; status?: string; }
 class HostIO implements WorkloadIO {
   constructor(private fs: SharedFilesystem) {}
   private async handle(path: string, create = false): Promise<number> {
@@ -42,7 +42,8 @@ class HostIO implements WorkloadIO {
   barrier(path?: string): Promise<void> { return this.fs.flush(path); }
 }
 let fs: SharedFilesystem | undefined;
-// Compile the original Wasm fixture before readiness/first-use/workload clocks.
+// Compile before browser filesystem/first-use clocks. Controller readiness
+// deliberately includes this worker startup and compilation.
 const guest = new WebAssembly.Module(guestFixture());
 export async function request(input: BrowserRequest): Promise<BrowserResult> {
   const empty = (): BrowserResult => ({ metrics: {}, latencies: {}, acknowledgements: [], observations: {} });
@@ -51,17 +52,36 @@ export async function request(input: BrowserRequest): Promise<BrowserResult> {
     try { const batch = w1Fixture(); await storage.persist(batch); await storage.flush(); } finally { await storage.close(); }
     return empty();
   }
-  if (input.action === "ownership") return { ...empty(), ownershipLost: fs?.ownershipLost ?? false };
-  if (input.action === "dispose") { if (fs) { await fs.flush(); fs.dispose(); fs = undefined; } return empty(); }
-  const start = performance.now();
-  let readyAt = start;
-  if (!fs) {
-    fs = new SharedFilesystem({ workerURL: "/fs-worker.js", name: input.name, storage: input.backend }, stage => { if (stage === "filesystem-ready") readyAt = performance.now(); });
-    await fs.resolvePath("/");
-    // resolvePath orders after filesystem readiness, but does not hydrate payloads.
-    readyAt = performance.now();
+  if (input.action === "await-revocation") {
+    if (!fs) throw new Error("No owner to observe");
+    if (fs.ownershipLost) return { ...empty(), ownershipLost: true };
+    return new Promise(resolve => { fs!.onOwnershipLost = () => resolve({ ...empty(), ownershipLost: true }); });
   }
-  if (input.action === "open") return { ...empty(), ready: true, metrics: { readinessMs: performance.now() - start } };
+  if (input.action === "ownership") return { ...empty(), ownershipLost: fs?.ownershipLost ?? false, status: fs?.state.status };
+  if (input.action === "dispose") {
+    if (fs) {
+      const owned = fs; fs = undefined;
+      try { if (owned.state.status === "ready" && !owned.ownershipLost) await owned.flush(); }
+      finally { await owned.dispose(); }
+    }
+    return empty();
+  }
+  const start = performance.now();
+  if (!fs) fs = new SharedFilesystem({ workerURL: "/fs-worker.js", name: input.name, storage: input.backend, ...(input.whenBusy ? { whenBusy: input.whenBusy } : {}) });
+  if (input.action === "start") return { ...empty(), status: fs.state.status };
+  if (input.action === "fence") {
+    if (!fs.ownershipLost) throw new Error("Old owner has not observed revocation");
+    let probe: GuestIO | undefined;
+    try {
+      if (input.lane === "guest") { probe = new GuestIO(fs.client, guest); await probe.read("/ownership-marker"); }
+      else await fs.readFile("/ownership-marker");
+    } catch (error) { return { ...empty(), observations: { fenced: true, rejection: String(error) } }; }
+    finally { probe?.dispose(); }
+    throw new Error("Revoked owner still served a filesystem operation");
+  }
+  await fs.resolvePath("/"); // Metadata readiness, without hydrating payloads.
+  const readyAt = performance.now();
+  if (input.action === "open") return { ...empty(), ready: true, metrics: { readinessMs: readyAt - start } };
   const facade = fs;
   const guestIO = input.lane === "guest" ? new GuestIO(facade.client, guest) : undefined;
   const io = guestIO ?? new HostIO(facade);
@@ -71,17 +91,26 @@ export async function request(input: BrowserRequest): Promise<BrowserResult> {
     const barrier = guestIO.barrier.bind(guestIO);
     guestIO.barrier = async path => { await barrier(path); if (path === undefined) await facade.flush(); };
   }
-  let peak = facade.client.shared.resources().usedBytes;
+  // No per-operation resources() scans in the measured path. This end snapshot is
+  // explicitly a resident lower bound, not a claimed high-water mark.
   const measured = new Proxy(io, { get(target, property, receiver) {
     const value = Reflect.get(target, property, receiver);
     if (typeof value !== "function") return value;
-    return async (...args: unknown[]) => { const result = await value.apply(target, args); peak = Math.max(peak, facade.client.shared.resources().usedBytes); return result; };
+    return async (...args: unknown[]) => {
+      try { return await value.apply(target, args); }
+      catch (error) {
+        const value = error as Error;
+        throw Object.assign(new Error(`${String(property)} ${typeof args[0] === "string" ? args[0] : ""}: ${value.message}`), { cause: error, errno: (error as { errno?: number }).errno });
+      }
+    };
   } });
   try {
+    if (input.action === "marker") { await io.write("/ownership-marker", content(12345, 4096)); await io.barrier(); return empty(); }
+    if (input.action === "probe") { verify(await io.read("/ownership-marker"), 12345, 4096); return empty(); }
     const result = input.action === "read" ? { ...empty(), metrics: await executeSequentialRead(measured) }
       : await executeWorkload(input.workload, measured, (operation, elapsedMs) => globalThis.postMessage({ acknowledgement: { operation, elapsedMs } }));
     result.metrics.readinessMs = readyAt - start;
-    result.metrics.peakResidentPayloadBytes = peak;
+    result.metrics.residentPayloadEndBytes = facade.client.shared.resources().usedBytes;
     result.observations = { ...result.observations, resident: facade.client.shared.resources(), hostLane: "SharedFilesystem facade; exposed async client RPC for offset IO/stat/readdir absent from whole-file facade", guestLane: "precompiled Wasm forwarding fixture -> preview1 -> FilesystemClient", namespaceBarrier: "guest directory fsync plus explicit global host flush", dirtyLag: "not exposed by current backends; not measured" };
     await facade.flush();
     return result;

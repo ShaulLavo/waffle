@@ -71,3 +71,54 @@ test("paired intervals guard accepted references, never reset initial baselines"
   expect(score(reference, fast.map(r => ({ ...r, pair: undefined })), reference).guardrailsPass).toBe(false);
   expect(pairOrder(0)).toEqual(["baseline", "candidate"]); expect(pairOrder(1)).toEqual(["candidate", "baseline"]);
 });
+
+test("warmup failures and mixed identities never pass by later repetitions", () => {
+  const initial = fixtures(), candidate = fixtures("test", "candidate");
+  const warmup = { ...candidate[0]!, repetition: -1, warmup: true, state: "failed correctness" as const, reason: "corrupt warmup bytes" };
+  expect(score(initial, candidate.concat([warmup])).cells[0]!.state).toBe("failed correctness");
+  expect(score(initial.concat([{ ...warmup, role: "baseline" }]), candidate).cells[0]!.state).toBe("failed correctness");
+  expect(() => score(initial, candidate.map((row, i) => i ? row : { ...row, revision: "b".repeat(40) }))).toThrow("mixes revisions");
+  expect(() => score(initial, candidate.map((row, i) => i ? row : { ...row, campaign: "another-run" }))).toThrow("campaigns");
+});
+test("per-VFS promotion preserves initial normalization and latest accepted best", () => {
+  const initial = fixtures("initial"), accepted = fixtures("paired", "baseline", 1.2);
+  const comparison = score(initial, fixtures("paired", "candidate", 1.24), accepted, { indexeddb: 120 });
+  expect(comparison.perVfs.indexeddb!.score).toBeCloseTo(124);
+  expect(comparison.perVfs.indexeddb!.acceptedScore).toBeCloseTo(120);
+  expect(comparison.perVfs.indexeddb!.scoreImprovesFivePercent).toBe(false);
+  expect(score(initial, fixtures("paired", "candidate", 1.27), accepted, { indexeddb: 120 }).perVfs.indexeddb!.scoreImprovesFivePercent).toBe(true);
+  expect(score(initial, fixtures("paired", "candidate", 1.27), accepted, { indexeddb: 130 }).perVfs.indexeddb!.scoreImprovesFivePercent).toBe(false);
+  expect(score(initial, fixtures("paired", "candidate", 1.27), accepted).scoreImprovesFivePercent).toBe(false);
+});
+test("WAL unsupported assertions are mandatory for family completeness", () => {
+  const all: Sample[] = [];
+  for (const vfs of ["indexeddb", "opfs-memory", "opfs-safe", "opfs-wal"] as const) {
+    all.push(...fixtures().map(row => ({ ...row, vfs, state: vfs === "opfs-wal" && row.browser !== "chromium" ? "unsupported as specified" as const : "eligible" as const, metrics: Object.fromEntries(primaryMetrics(row.workload, vfs).map(metric => [metric.name, 100])) })));
+  }
+  expect(score(all, all).family.complete).toBe(true);
+  const missing = all.filter(row => row.vfs !== "opfs-wal" || row.browser === "chromium");
+  expect(score(missing, missing).family.complete).toBe(false);
+  expect(score(all, all.map((row, i) => i === all.length - 1 ? { ...row, state: "failed correctness" } : row)).family.complete).toBe(false);
+});
+
+test("source labels are derived, clean, and bound to the dispatcher manifest", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { resolve } = await import("node:path");
+  const { sourceRevision } = await import("../tooling/vfs-benchmark.ts");
+  const root = await mkdtemp(resolve(tmpdir(), "waffle-vfs-provenance-"));
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-C", root].concat(args));
+    if (result.exitCode) throw new Error(result.stderr.toString()); return result.stdout.toString().trim();
+  };
+  try {
+    git("init", "-q", "-b", "fixture"); await Bun.write(`${root}/source.ts`, "export const fixture = 1;\n"); git("add", "source.ts");
+    git("-c", "user.name=VFS Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
+    const actual = git("rev-parse", "HEAD"); expect(sourceRevision(root)).toBe(actual);
+    expect(sourceRevision(root, { source_commit: actual })).toBe(actual);
+    expect(() => sourceRevision(root, { source_commit: "b".repeat(40) })).toThrow("dispatcher manifest");
+    await Bun.write(`${root}/source.ts`, "edited\n"); expect(() => sourceRevision(root)).toThrow("clean and committed");
+    git("checkout", "--", "source.ts"); await Bun.write(`${root}/untracked.ts`, "untracked\n");
+    expect(() => sourceRevision(root)).toThrow("clean and committed");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

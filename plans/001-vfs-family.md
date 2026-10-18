@@ -755,3 +755,66 @@ Execution does not wait for these unless the owner changes the stated defaults.
 - [IndexedDB persistence introduction](https://github.com/ShaulLavo/waffle/commit/037d35e86fd5b0b93e98e174cfac4991fbbd929f)
 - [OPFS storage introduction](https://github.com/ShaulLavo/waffle/commit/c841b91abe86a0213a3cf1beff46d45ad58bdc48)
 - [Ownership and Safari reload changes](https://github.com/ShaulLavo/waffle/commit/538796963d3751911611330475c37a84d5067970)
+
+## Step 1 harness execution
+
+Status: **Approved**. The TypeScript harness implements the fixed v1 traces; it
+changes no storage implementation. `tooling/vfs-score-config.ts` freezes equal
+primary-metric weights within each workload and equal browser/workload/lane cell
+weights within each VFS. Family weights are equal across the four VFSs. Unsupported
+assertions remain mandatory even though their cells have no performance weight.
+
+Run screening on the reserved `upcloud-4` host, never a different host substituted
+into the same baseline. A campaign has two warmups and five measured repetitions
+per selected cell. Split its three browser selections into separately admitted
+exclusive bench jobs if needed to respect the one-hour execution fence; use the
+same campaign ID and immutable revision, retaining each browser's manifest.
+
+The harness derives its revision from a clean Git HEAD. For dispatcher archives,
+stage a Git bundle of that same commit, reconstruct its Git index as documented in
+the fleet skill, and ignore only the staged bundle itself in `.git/info/exclude`.
+The harness also checks the dispatcher's adjacent `manifest.json`; mismatched
+source, edited source and untracked source are rejected before browser launch.
+There is deliberately no command-line revision label.
+
+```sh
+bun tooling/vfs-benchmark.ts --campaign CAMPAIGN --output EXTERNAL_DIRECTORY \
+  --browsers chromium --workloads W1,W2,W3,W4,W5 --lanes host,guest
+bun tooling/vfs-benchmark.ts --extract DISPATCHER_GATE_LOG --output EXTERNAL_DIRECTORY
+```
+
+Keep the dispatcher log and manifest alongside the extracted `samples.json`,
+`events.jsonl` and `summary.json`. Extraction refuses to overwrite existing evidence.
+The log includes observed W4 acknowledgements, fixed environment invalidations and
+all warmup/measured failures. Failed warmups disqualify correctness, not merely
+performance statistics. Sampled process-tree RSS is a lower-bound process metric,
+not unique physical memory. Resident payload end snapshots are not high-water
+marks; closed-profile allocated/logical growth is not device-write amplification.
+Dirty persistence lag is explicitly unmeasured until storage exposes it.
+
+Promotion requires a paired accepted-reference source tree, the immutable initial
+samples and the previously accepted summary. These are distinct inputs; initial
+normalization and the best-score ratchet never reset to the new paired run.
+Both source trees must have identical workload, browser adapter, guest fixture,
+configuration, controller and shared runner lifecycle. Three warmups and nine
+adjacent pairs alternate order; the comparator retains paired intervals and the
+IndexedDB five-percent upper-bound guardrails.
+
+```sh
+bun tooling/vfs-benchmark.ts --mode promotion --campaign CAMPAIGN \
+  --output EXTERNAL_DIRECTORY --candidate-root CANDIDATE_CHECKOUT \
+  --initial-baseline INITIAL_SAMPLES_JSON --accepted-summary ACCEPTED_SUMMARY_JSON
+bun tooling/vfs-score.ts INITIAL_SAMPLES_JSON CANDIDATE_SAMPLES_JSON \
+  PAIRED_ACCEPTED_SAMPLES_JSON ACCEPTED_SUMMARY_JSON
+```
+
+The current guest lane is an original precompiled Wasm forwarding fixture driven
+by TypeScript through actual preview1 calls, not a C/libc/application benchmark.
+Guest namespace barriers additionally request the production global host flush;
+directory `fd_sync` alone is not represented as flushing every file payload.
+W5 uses four actual pages on one workspace, asserts queued waiting/FIFO ownership
+and durable marker recovery, then separately measures IndexedDB default takeover
+and rejection of operations from each revoked owner. No exclusive-backend number
+is labeled simultaneous throughput. The future WAL trace remains unmeasured until
+its protocol exists. Capacity failures retain the unchanged exact workload rather
+than shrinking it or changing storage limits in this measurement-only step.
