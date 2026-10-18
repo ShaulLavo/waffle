@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { MemFS } from "../fs/memory";
-import { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystem, reapFilesystem } from "../fs";
+import { FilesystemClient, FilesystemService, MemoryBackend, PersistentBackend, createFilesystemConnection, createFilesystemIdentity, connectFilesystemIdentity, revokeFilesystem, reapFilesystem } from "../fs";
 import { PAGE } from "../fs/protocol";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
 
@@ -8,6 +8,11 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const encode = (value: string) => new TextEncoder().encode(value);
 const decode = (value: Uint8Array | undefined) => new TextDecoder().decode(value);
+async function expectErrno(action: Promise<unknown>, expected: number): Promise<void> {
+  let error: unknown;
+  try { await action; } catch (value) { error = value; }
+  expect(error).toMatchObject({ errno: expected });
+}
 function fixture(backend = new MemoryBackend()) {
   const service = new FilesystemService(backend);
   // Use a connected root client to create sibling sessions with the same epoch.
@@ -56,6 +61,11 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   await client.asyncCall("mkdirp", ["/directory"]);
   try { await client.asyncCall("writeFile", ["/directory", false, true], encode("not a directory")); throw new Error("exclusive directory create unexpectedly succeeded"); }
   catch (error) { expect(error).toMatchObject({ errno: 20 }); }
+  await expectErrno(client.asyncCall("writeFile", ["/new/", false, true], encode("not a file")), 54);
+  await expectErrno(client.asyncCall("writeFile", ["/directory/.", false, true], encode("not a directory")), 20);
+  await expectErrno(client.asyncCall("writeFile", ["/", false, true], encode("not root")), 20);
+  await expectErrno(client.asyncCall("writeFile", ["/created/child", false, true], encode("not nested")), 54);
+  await expectErrno(client.asyncCall("writeFile", ["/created", true, true], encode("invalid modes")), 28);
   const outcomes = await Promise.allSettled([
     client.asyncCall("writeFile", ["/race", false, true], encode("first")),
     sibling.asyncCall("writeFile", ["/race", false, true], encode("second")),
@@ -64,6 +74,24 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   expect(outcomes.filter(result => result.status === "rejected")).toHaveLength(1);
   expect(outcomes.find(result => result.status === "rejected")).toMatchObject({ reason: { errno: 20 } });
   expect(decode(await client.asyncCall("readFile", ["/race"]))).toMatch(/^(first|second)$/);
+});
+
+test("persistent exclusive creation does not hydrate an existing cold file", async () => {
+  const backend = await PersistentBackend.open({
+    async load() {
+      return { version: 1, generation: 1, root: 1, nodes: [
+        { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["cold", 2]] },
+        { ino: 2, kind: "file", size: 4, mtime: 1, data: "cold-payload" },
+      ] };
+    },
+    async read() { throw new Error("exclusive create must not load the existing payload"); },
+    async persist() {}, async flush() {}, async close() {},
+  }, { intervalMs: 0 });
+  try {
+    expect(backend.shared.resources().files).toBe(0);
+    expect(backend.prepare!("writeFile", ["/cold", false, true], new Uint8Array())).toBeUndefined();
+    expect(backend.shared.resources().files).toBe(0);
+  } finally { await backend.close(); }
 });
 
 test("serialized append requests choose EOF with their writes and return each writer's own end offset", async () => {

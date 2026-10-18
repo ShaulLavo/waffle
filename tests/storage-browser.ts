@@ -55,6 +55,11 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
     await rejects(client.asyncCall("writeFile", ["/created", false, true], bytes("clobber")), "20");
     await client.asyncCall("mkdirp", ["/directory"]);
     await rejects(client.asyncCall("writeFile", ["/directory", false, true], bytes("not a directory")), "20");
+    await rejects(client.asyncCall("writeFile", ["/new/", false, true], bytes("not a file")), "54");
+    await rejects(client.asyncCall("writeFile", ["/directory/.", false, true], bytes("not a directory")), "20");
+    await rejects(client.asyncCall("writeFile", ["/", false, true], bytes("not root")), "20");
+    await rejects(client.asyncCall("writeFile", ["/created/child", false, true], bytes("not nested")), "54");
+    await rejects(client.asyncCall("writeFile", ["/created", true, true], bytes("invalid modes")), "28");
 
     const outcomes = await Promise.allSettled([
       client.asyncCall("writeFile", ["/race", false, true], bytes("first")),

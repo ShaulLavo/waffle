@@ -183,8 +183,13 @@ export class PersistentBackend extends MemoryBackend {
       const node = this.fs.lookup(args[0]);
       if (node?.kind === "file") {
         const handle = this.fs.handleForNode(node);
-        if (operation === "writeFile" && !args[1]) this.sync(handle);
-        else return this.ensureLoaded(handle);
+        if (operation === "writeFile") {
+          // Exclusive creation only needs the namespace entry. Avoid hydrating or registering
+          // an existing cold payload before execute can return EEXIST.
+          if (args[2]) return;
+          if (!args[1]) this.sync(handle);
+          else return this.ensureLoaded(handle);
+        } else return this.ensureLoaded(handle);
       }
     }
   }

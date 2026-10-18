@@ -1,4 +1,4 @@
-import { normalize, dirname, basename, type FileHandle, type ResolvedPath } from "../core/index.js";
+import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
@@ -149,11 +149,17 @@ export class MemoryBackend implements FilesystemBackend {
         return bytes.subarray(0, count);
       }
       case "writeFile": {
+        if (b && c) throw new FilesystemError(28, "writeFile cannot append and create exclusively");
         if (c) {
           // The service queue is the namespace lock. Reuse MemFS.create's exclusive path so
           // the existence check and file insertion cannot be separated by another writer.
-          const parent = this.fs.mkdirp(dirname(a));
-          const result = this.fs.create({ parent: this.fs.handleForNode(parent), name: basename(a), node: undefined, trailingSlash: false, terminalDot: false }, "file", true);
+          try { this.fs.mkdirp(dirname(a)); }
+          catch { throw new FilesystemError(54); }
+          const path = this.fs.resolveAbsolute(a);
+          if (typeof path === "number") throw new FilesystemError(path);
+          if (path.node !== undefined) throw new FilesystemError(20);
+          if (path.trailingSlash) throw new FilesystemError(54);
+          const result = this.fs.create(path, "file", true);
           if (typeof result !== "number") throw new FilesystemError(result.error);
           try {
             this.fs.writeFile(a, data.slice(), false);

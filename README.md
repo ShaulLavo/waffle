@@ -141,7 +141,7 @@ existing paths reject with Waffle's `EEXIST` filesystem error. The older boolean
 remains the append mode, and ordinary writes still replace existing files.
 
 ```ts
-await runtime.filesystem.writeFile("/bin/bun", bytes, { exclusive: true });
+await runtime.filesystem.writeFile("/bin/bun", "registered executable\n", { exclusive: true });
 ```
 
 This makes filesystem inspection, a shell's `$PATH` search and process admission agree on the
