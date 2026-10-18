@@ -395,13 +395,13 @@ export function installFilesystemWorker(
   let errorReported = false;
   let onStartupStage: RuntimeStartupObserver | undefined;
   scope.onmessage = ({ data }) => {
-    if (!service) {
+    service ??= Promise.resolve().then(() => {
       if (data.connect && data.observeStartup === true) {
         onStartupStage = (stage, timestamp) => scope.postMessage({ type: "filesystem-startup", stage, timestamp });
         reportRuntimeStartup(onStartupStage, "filesystem-connected");
       }
-      service = Promise.resolve().then(() => backendFactory(data, onStartupStage)).then(backend => new FilesystemService(backend));
-    }
+      return backendFactory(data, onStartupStage);
+    }).then(backend => new FilesystemService(backend));
     void service.then(owner => {
       if (data.connect) {
         owner.connect(data.connect);

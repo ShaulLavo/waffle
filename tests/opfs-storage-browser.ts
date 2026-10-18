@@ -106,10 +106,6 @@ interface OpfsCase {
 function focusedCases(): OpfsCase[] {
   return [
     {
-      label: "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
-      run: name => runtimeStartupCase(name, "opfs"),
-    },
-    {
       label: "refused writer lock emits no acquired startup milestone",
       async run(name, open) {
         await open();
@@ -517,12 +513,16 @@ function focusedCases(): OpfsCase[] {
   ];
 }
 
-/** The exact same contract callbacks as IndexedDB, plus OPFS-specific fault/resource cases. */
-export function opfsStorageTests(): BrowserStorageTest[] {
+/** Shared contracts and OPFS faults; a consumer-owned worker URL opts in to runtime probes. */
+export function opfsStorageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
   const shared: OpfsCase[] = storageContractCases().map(({ label, run }) => ({
     label, run: (name, open) => run(name, open),
   }));
-  return shared.concat(focusedCases()).map(({ label, run }) => ({
+  const runtime: OpfsCase[] = filesystemWorkerURL === undefined ? [] : [{
+    label: "runtime startup milestones exclude IndexedDB stages across the actual filesystem worker boundary",
+    run: name => runtimeStartupCase(name, "opfs", filesystemWorkerURL),
+  }];
+  return shared.concat(runtime, focusedCases()).map(({ label, run }) => ({
     label,
     async run() {
       const name = `bun-wasm-opfs-test-${crypto.randomUUID()}`;

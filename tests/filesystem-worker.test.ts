@@ -86,6 +86,20 @@ for (const [reason, message] of rejectedReasons) test(`backend startup reports a
   worker.terminate();
 });
 
+for (const data of [null, undefined]) test(`a ${String(data)} first message retains the structured diagnostic and worker error fallback`, async () => {
+  const worker = new Worker(new URL("./fixtures/filesystem-default-service.ts", import.meta.url).href);
+  cleanups.push(() => worker.terminate());
+  const diagnostic = new Promise<any>(resolve => { worker.onmessage = event => resolve(event.data); });
+  const failed = new Promise<string>(resolve => {
+    worker.onerror = event => { event.preventDefault(); resolve(event.message); };
+  });
+  worker.postMessage(data);
+  const [message, error] = await Promise.all([diagnostic, failed]);
+  expect(message).toMatchObject({ type: "filesystem-error", message: expect.stringContaining("connect") });
+  expect(message.stack).toContain("service.ts");
+  expect(error).toContain("connect");
+});
+
 test("a refused diagnostic transfer still dispatches the original worker error", async () => {
   const worker = new Worker(new URL("./fixtures/filesystem-diagnostic-transfer-failure.ts", import.meta.url).href);
   cleanups.push(() => worker.terminate());

@@ -15,7 +15,7 @@ time origin for comparison; message delivery can lag behind the recorded milesto
 | --- | --- |
 | `filesystem-worker-created` | Page: immediately after the filesystem `Worker` constructor returns. This does not mean its script has loaded. |
 | `filesystem-connect-requested` | Page: immediately before posting the initial filesystem connection to that worker. |
-| `filesystem-connected` | Worker: receipt of the initial connection request, before the existing backend factory is scheduled. This is transport receipt, not backend readiness. |
+| `filesystem-connected` | Worker: handling the initial connection request in the existing startup microtask, immediately before invoking the backend factory. This is connection handling, not backend readiness. |
 | `indexeddb-open-requested` | Worker: immediately before starting the existing IndexedDB database-open operation. |
 | `indexeddb-open-resolved` | Worker: after the existing database-open promise resolves, before requesting its writer lock. |
 | `filesystem-lock-requested` | Worker: immediately before the existing Web Locks writer request. |

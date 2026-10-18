@@ -115,12 +115,12 @@ export function storageContractCases(): StorageContractCase[] {
   return cases;
 }
 
-export async function runtimeStartupCase(name: string, storage: "indexeddb" | "opfs" | false): Promise<void> {
+export async function runtimeStartupCase(name: string, storage: "indexeddb" | "opfs" | false, workerURL: string | URL): Promise<void> {
   const seen: [RuntimeStartupStage, number][] = [];
   let resolveReady!: () => void;
   const ready = new Promise<void>(resolve => { resolveReady = resolve; });
   const runtime = createRuntime({ filesystem: { name, persistence: storage !== false,
-    storage: storage === false ? undefined : storage, workerURL: new URL("/filesystem-worker.js", location.href) },
+    storage: storage === false ? undefined : storage, workerURL: new URL(workerURL, location.href) },
     onStartupStage(stage, timestamp) {
       seen.push([stage, timestamp]);
       if (stage === "filesystem-ready") resolveReady();
@@ -146,11 +146,14 @@ export async function runtimeStartupCase(name: string, storage: "indexeddb" | "o
   }
 }
 
-function indexedDBCases(): StorageContractCase[] {
+function indexedDBCases(filesystemWorkerURL?: string | URL): StorageContractCase[] {
   const cases: StorageContractCase[] = [];
   const test: Register = (label, run, compactEvery) => { cases.push({ label, run, compactEvery }); };
-  test("runtime startup milestones cross the actual filesystem worker boundary", name => runtimeStartupCase(name, "indexeddb"));
-  test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", name => runtimeStartupCase(name, false));
+  // Backend-suite consumers need not serve a Waffle runtime worker. Its URL opts in to runtime probes.
+  if (filesystemWorkerURL !== undefined) {
+    test("runtime startup milestones cross the actual filesystem worker boundary", name => runtimeStartupCase(name, "indexeddb", filesystemWorkerURL));
+    test("memory startup milestones exclude storage stages across the actual filesystem worker boundary", name => runtimeStartupCase(name, false, filesystemWorkerURL));
+  }
   test("epoch fencing rejects a stale writer before payload, journal and compaction writes", async (name) => {
     // No loss notification simulates a frozen tab waking while its hash was pending.
     const locks = { async request<T>(_name: string, _options: unknown, callback: (lock: unknown) => Promise<T>) { return callback({}); } };
@@ -339,8 +342,9 @@ function indexedDBCases(): StorageContractCase[] {
   return cases;
 }
 
-export function storageTests(): BrowserStorageTest[] {
-  return storageContractCases().concat(indexedDBCases()).map(({ label, run, compactEvery = 2 }) => ({
+/** Pass the consumer-owned worker URL to include runtime startup probes. Omit it for backend-only tests. */
+export function storageTests(filesystemWorkerURL?: string | URL): BrowserStorageTest[] {
+  return storageContractCases().concat(indexedDBCases(filesystemWorkerURL)).map(({ label, run, compactEvery = 2 }) => ({
     label,
     async run() {
       const name = `bun-wasm-storage-test-${crypto.randomUUID()}`;

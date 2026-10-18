@@ -13,7 +13,8 @@ function storageWorker(): void {
     try {
       const modulePath = "/tests.js";
       const tests = await import(modulePath) as typeof import("./storage-browser");
-      const suites = { indexeddb: tests.storageTests(), opfs: tests.opfsStorageTests() };
+      // The runner owns this route; imported backend suites do not assume one exists.
+      const suites = { indexeddb: tests.storageTests("/fs-worker.js"), opfs: tests.opfsStorageTests("/fs-worker.js") };
       if (event.data.kind === "list") {
         globalThis.postMessage({ result: {
           indexeddb: suites.indexeddb.map(test => test.label), opfs: suites.opfs.map(test => test.label),
@@ -147,9 +148,9 @@ try {
     // Match the existing persistence harness's document and worker isolation policy.
     const headers = {
       "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp",
-      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/filesystem-worker.js" ? "text/javascript" : "text/html",
+      "content-type": path === "/tests.js" || path === "/worker.js" || path === "/fs-worker.js" ? "text/javascript" : "text/html",
     };
-    if (path === "/filesystem-worker.js") return new Response(fsWorkerScript, { headers });
+    if (path === "/fs-worker.js") return new Response(fsWorkerScript, { headers });
     if (path === "/tests.js") return new Response(script, { headers });
     if (path === "/worker.js") return new Response(workerScript, { headers });
     return new Response("<!doctype html><title>Storage tests</title>", { headers });
