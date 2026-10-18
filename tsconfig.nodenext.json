@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": [
+    "index.ts",
+    "runtime.ts",
+    "browser/**/*.ts",
+    "core/**/*.ts",
+    "fs/**/*.ts",
+    "proc/**/*.ts",
+    "interrupt/**/*.ts",
+    "tests/interrupt-browser-runner-control.ts",
+    "tests/storage-browser.ts",
+    "tests/opfs-storage-browser.ts"
+  ]
+}

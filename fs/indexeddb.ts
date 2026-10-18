@@ -2,7 +2,7 @@ import {
   decodeRecord, decodeSnapshot, encodeRecord, encodeSnapshot, validatePersistedIndex,
   validatePersistedNode, validInteger,
   type PersistenceBatch, type PersistedIndex, type PersistedNode, type StorageBackend,
-} from "./storage";
+} from "./storage.js";
 
 const OWNERSHIP_LOST_MESSAGE = "This workspace was opened in another tab. Reload to continue here.";
 

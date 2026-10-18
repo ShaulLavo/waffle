@@ -1,4 +1,4 @@
-import { rewriteInterrupts } from "./rewriter";
+import { rewriteInterrupts } from "./rewriter.js";
 
 /** Content-addressed, process-independent modules. Instances always get fresh countdown globals.
  * The shared content cache is bounded. Active executable registries separately retain their

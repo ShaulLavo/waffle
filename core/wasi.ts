@@ -1,9 +1,9 @@
-import { withFileOffset } from "./open-file";
+import { withFileOffset } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
-import type { FileSystem, FileStat, ResolvedPath } from "./filesystem";
-import { DescriptorTable, type Resource, type Stream } from "./descriptors";
+import type { FileSystem, FileStat, ResolvedPath } from "./filesystem.js";
+import { DescriptorTable, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 
 // errno

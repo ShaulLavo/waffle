@@ -1,6 +1,6 @@
-import { normalize, splitPath, dirname, basename } from "../core";
-import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core";
-export { normalize, splitPath, dirname, basename } from "../core";
+import { normalize, splitPath, dirname, basename } from "../core/index.js";
+import type { FileSystem, FileHandle, FileStat, DirectoryEntry, ResolvedPath } from "../core/index.js";
+export { normalize, splitPath, dirname, basename } from "../core/index.js";
 
 // In-memory filesystem shared by the shell, the editor and every bun.wasm run.
 // The browser filesystem service is the sole owner of this tree.

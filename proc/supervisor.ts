@@ -1,10 +1,10 @@
-import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access";
-import { checkedSignalNumber, createSignalState, requestSignal } from "./signals";
-import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors";
-import { ExecutableNotFound, ExecutableRegistry } from "./registry";
-import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table";
-import { claimOutcome, outcomeWord, readOutcome } from "./outcome";
-import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types";
+import { executableAccessResult, MAX_ACCESS_REQUESTS } from "./access.js";
+import { checkedSignalNumber, createSignalState, requestSignal } from "./signals.js";
+import { DescriptorTable, MAX_DESCRIPTOR, OpenDescription, type Descriptor } from "../core/descriptors.js";
+import { ExecutableNotFound, ExecutableRegistry } from "./registry.js";
+import { ProcessTable, type ProcessJob, type ProcessRecord } from "./table.js";
+import { claimOutcome, outcomeWord, readOutcome } from "./outcome.js";
+import { ProcessErrno, ProcessError, Signal, checkedSignal, type ChildExitEvent, type ProcessContext, type ProcessExit, type ProcessHandle, type SpawnRequest, type SpawnReservation, type SharedJobIdentity } from "./types.js";
 
 interface AccessRequest { result?: number; wake?: Int32Array; }
 interface ProcessAccesses { next: number; requests: Map<number, AccessRequest>; }

@@ -1,13 +1,13 @@
 // Process bootstrap shared by preview1 commands and injected guest executors.
-import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs";
-import { Wasi, WasiExit, type Stream } from "../core";
-import { guardedStream } from "./guarded-stream";
-import { withFileOffset } from "../core/open-file";
-import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome";
-import { waitStatus } from "../proc/wait-status";
-import type { ProcessExit } from "../proc/types";
-import { fatalInterrupt } from "../interrupt/check";
-import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client";
+import { FilesystemClient, revokeFilesystem, sharedRevoked, type FilesystemConnection } from "../fs/index.js";
+import { Wasi, WasiExit, type Stream } from "../core/index.js";
+import { guardedStream } from "./guarded-stream.js";
+import { withFileOffset } from "../core/open-file.js";
+import { claimOutcome, outcomeWord, processOutcome, readOutcome } from "../proc/outcome.js";
+import { waitStatus } from "../proc/wait-status.js";
+import type { ProcessExit } from "../proc/types.js";
+import { fatalInterrupt } from "../interrupt/check.js";
+import type { WorkerProcessClient, WorkerProcessMessage, WorkerProcessTransport, workerProcessState } from "../proc/worker-client.js";
 
 export interface RuntimeWorkerRequest {
   module: WebAssembly.Module;
@@ -118,7 +118,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   host.postMessage({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
-  let processSignalExit: typeof import("../proc/abi").ProcessSignalExit | undefined;
+  let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
   const isolated = host.crossOriginIsolated && typeof SharedArrayBuffer === "function";
   const sleepCell = isolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
@@ -223,7 +223,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (result) { event.preventDefault(); finish(result); }
   };
   try {
-    const runtime = req.runtimeProcess ? await import("../proc/worker-client") : null;
+    const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
     const runtimeState = req.runtimeProcess ? runtime!.workerProcessState(req.runtimeProcess) : null;
     const interrupt = runtimeState?.signals.interrupt ?? (executor.interrupt ? new Int32Array(executor.interrupt) : undefined);
     if (runtimeState) {
@@ -303,17 +303,17 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     });
     const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
-      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec");
-      const { createProcessFilesystemIdentity } = await import("../fs/protocol");
-      const { WorkerPipeHost } = await import("../proc/worker-pipes");
-      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi");
-      const { createRuntimeTerminalCodec } = await import("./runtime-terminals");
+      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec.js");
+      const { createProcessFilesystemIdentity } = await import("../fs/protocol.js");
+      const { WorkerPipeHost } = await import("../proc/worker-pipes.js");
+      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi.js");
+      const { createRuntimeTerminalCodec } = await import("./runtime-terminals.js");
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => host.postMessage(message);
       const pipes = new WorkerPipeHost({
         transport: req.runtimeProcess, postMessage,
         fallback: createFilesystemDescriptorCodec(fs),
-        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
+        registry: (req.runtimeProcess.data as { pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle } | undefined)?.pipeRegistry,
       });
       runtimeProcess = new runtime!.WorkerProcessClient({
         transport: req.runtimeProcess, descriptors: wasi.descriptors,

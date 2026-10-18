@@ -1,4 +1,4 @@
-import { normalize } from "../core/path";
+import { normalize } from "../core/path.js";
 
 /** Only metadata is needed for executable admission, never file contents or a filesystem owner. */
 export type ExecutableLookup = (path: string) => { readonly path: string; readonly kind: "file" | "dir" } | undefined | Promise<{ readonly path: string; readonly kind: "file" | "dir" } | undefined>;

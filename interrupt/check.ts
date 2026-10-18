@@ -1,4 +1,4 @@
-import { readOutcome } from "../proc/outcome";
+import { readOutcome } from "../proc/outcome.js";
 
 /** Injected checkpoints only unwind an already selected default action. They never consume
  * handled signals: our cooperative programs retain their normal handler-delivery checkpoint.

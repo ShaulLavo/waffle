@@ -1,12 +1,12 @@
-import { SharedFilesystem, type SharedFilesystemOptions } from "./browser/shared-fs";
-import type { BrowserProcessBroker, BrowserProcessBrokerOptions } from "./browser/process-broker";
-import { ProcessIdentityAllocator } from "./proc/identity";
-import type { ExecutableRegistry, Executable } from "./proc/registry";
-import type { ProcessSupervisor } from "./proc/supervisor";
-import type { ProcessContext, ProcessHandle } from "./proc/types";
-import type { FilesystemIdentity } from "./fs/protocol";
-import type { ProcessAdmissionObserver } from "./proc/admission";
-export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission";
+import { SharedFilesystem, type SharedFilesystemOptions } from "./browser/shared-fs.js";
+import type { BrowserProcessBroker, BrowserProcessBrokerOptions } from "./browser/process-broker.js";
+import { ProcessIdentityAllocator } from "./proc/identity.js";
+import type { ExecutableRegistry, Executable } from "./proc/registry.js";
+import type { ProcessSupervisor } from "./proc/supervisor.js";
+import type { ProcessContext, ProcessHandle } from "./proc/types.js";
+import type { FilesystemIdentity } from "./fs/protocol.js";
+import type { ProcessAdmissionObserver } from "./proc/admission.js";
+export type { ProcessAdmissionEvent, ProcessAdmissionObserver } from "./proc/admission.js";
 
 /** Adapter-only ownership of a synchronously accepted consumer before lazy process admission. */
 export interface RuntimeConsumer {
@@ -188,7 +188,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           if (!(bytes instanceof Uint8Array)) throw new TypeError("Program source loader must return Wasm bytes");
           // Own source bytes before an asynchronous import can yield to a mutating caller.
           const snapshot = new Uint8Array(bytes);
-          const { compileInterruptible } = await import("./interrupt/loader");
+          const { compileInterruptible } = await import("./interrupt/loader.js");
           const compiled = await compileInterruptible(snapshot);
           assertLive();
           return compiled;
@@ -228,7 +228,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
       if (activation) return activation;
       const pendingHost = Promise.resolve().then(async (): Promise<BrowserProcessBroker> => {
-        const [{ ExecutableRegistry }, { ProcessTable }] = await Promise.all([import("./proc/registry"), import("./proc/table")]);
+        const [{ ExecutableRegistry }, { ProcessTable }] = await Promise.all([import("./proc/registry.js"), import("./proc/table.js")]);
         registry = new ExecutableRegistry(path => filesystem.resolvePath(path));
         for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
@@ -270,7 +270,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         };
         const created = await (options.processHost
           ? options.processHost(hostOptions)
-          : import("./browser/process-broker").then(({ BrowserProcessBroker }) => new BrowserProcessBroker(hostOptions)));
+          : import("./browser/process-broker.js").then(({ BrowserProcessBroker }) => new BrowserProcessBroker(hostOptions)));
         host = created;
         return created;
       });

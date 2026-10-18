@@ -1,3 +1,3 @@
-export { rewriteInterrupts } from "./rewriter";
-export { InterruptModuleCache, compileInterruptible } from "./loader";
-export { fatalInterrupt } from "./check";
+export { rewriteInterrupts } from "./rewriter.js";
+export { InterruptModuleCache, compileInterruptible } from "./loader.js";
+export { fatalInterrupt } from "./check.js";

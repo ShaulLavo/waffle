@@ -9,7 +9,7 @@
 //   SPACE  bumped by the consumer after draining; the producer waits on it when the ring is full
 // Record: [handle i32][kind i32][len i32][payload, padded to 4 bytes]. Records may wrap around the end.
 
-import { MAX_RECORD } from "./protocol";
+import { MAX_RECORD } from "./protocol.js";
 
 const GEN = 0;
 const WRITE = 1;

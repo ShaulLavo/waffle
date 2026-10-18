@@ -1,4 +1,4 @@
-import type { FileHandle } from "./filesystem";
+import type { FileHandle } from "./filesystem.js";
 
 export interface Readiness {
   readable: boolean;

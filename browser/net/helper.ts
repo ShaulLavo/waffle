@@ -3,9 +3,9 @@
 // worker's NetRequests, performs real `fetch`es, runs virtual preview connections, and writes every
 // result into the worker's ring.
 
-import { type ResponseHead, type ResponseSink, ResponseParser, type PreviewRequest, serializeRequest } from "./http1";
-import { CONN_BASE, FETCH_WINDOW, type FetchHead, Kind, MAX_RECORD, type NetError, type NetRequest, type NewConn } from "./protocol";
-import { RingWriter } from "./ring";
+import { type ResponseHead, type ResponseSink, ResponseParser, type PreviewRequest, serializeRequest } from "./http1.js";
+import { CONN_BASE, FETCH_WINDOW, type FetchHead, Kind, MAX_RECORD, type NetError, type NetRequest, type NewConn } from "./protocol.js";
+import { RingWriter } from "./ring.js";
 
 const encoder = new TextEncoder();
 /** Hostnames that mean "this machine": fetches to them may reach the guest's own servers. */

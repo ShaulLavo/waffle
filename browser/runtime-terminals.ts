@@ -1,8 +1,8 @@
 // Original browser adapter: terminal destinations are host callbacks, not shared pipe rings.
-import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors";
-import { guardedStream } from "./guarded-stream";
-import { ProcessError } from "../proc/types";
-import type { WorkerDescriptorCodec } from "../proc/worker-client";
+import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors.js";
+import { guardedStream } from "./guarded-stream.js";
+import { ProcessError } from "../proc/types.js";
+import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
 
 type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken { kind: "web-terminal"; target: TerminalTarget }

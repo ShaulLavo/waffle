@@ -1,7 +1,7 @@
-import { DescriptorTable } from "../core/descriptors";
-import { ProcessIdentityAllocator } from "./identity";
-import { outcomeWord, readOutcome } from "./outcome";
-import { ProcessErrno, ProcessError, type ProcessExit, type ProcessHandle, type SpawnRequest, type SharedJobIdentity } from "./types";
+import { DescriptorTable } from "../core/descriptors.js";
+import { ProcessIdentityAllocator } from "./identity.js";
+import { outcomeWord, readOutcome } from "./outcome.js";
+import { ProcessErrno, ProcessError, type ProcessExit, type ProcessHandle, type SpawnRequest, type SharedJobIdentity } from "./types.js";
 
 export interface ProcessRecord {
   readonly pid: number;
