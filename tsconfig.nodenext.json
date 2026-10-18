@@ -17,6 +17,7 @@
     "tests/opfs-storage-browser.ts",
     "scripts/test-wasi-libc.ts",
     "tests/wasi-libc.test.ts",
+    "tests/wasm-start-section.test.ts",
     "tests/preopen-placement.test.ts",
     "tests/fixtures/preopen-node-host.ts"
   ]
