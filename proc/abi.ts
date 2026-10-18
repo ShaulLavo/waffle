@@ -73,6 +73,8 @@ export class ProcessSignalExit extends Error {
 const READ = 1n << 1n, WRITE = 1n << 6n, POLL = 1n << 27n;
 const FAULT = 21, ISDIR = 31, NOSYS = 52, NOTCAPABLE = 76;
 const decode = new TextDecoder("utf-8", { fatal: true });
+// A leading BOM is a filename character, not a byte-order marker to strip.
+const pathDecode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const clock = performance.now.bind(performance);
 type Subscription = { kind: number; id: number; userdata: bigint };
 
@@ -137,7 +139,7 @@ export class ProcessABI {
   private accessPath(ptr: number, length: number): string {
     const bytes = this.span(ptr, length).slice();
     let path: string;
-    try { path = decode.decode(bytes); }
+    try { path = pathDecode.decode(bytes); }
     catch { throw new ProcessError(ProcessErrno.INVAL, "invalid path encoding"); }
     if (!path || path.includes("\0")) throw new ProcessError(ProcessErrno.INVAL, "invalid path");
     return path;

@@ -163,6 +163,7 @@ test("submission copies path and absolute cwd before guest memory changes", asyn
 
 for (const [path, cwd, expected] of [
   ["guest", "/bin", 0], ["./guest", "/bin", 0], ["../guest", "/bin/sub", 0],
+  ["﻿guest", "/bin", -44],
   ["/bin/guest", "/no-such-cwd", 0], ["/bin/guest/../guest", "/", -54],
   ["/absent/../bin/guest", "/", -44], ["missing", "/bin", -44],
   ["plain", "/bin", -2], ["sub", "/bin", -2],
