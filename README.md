@@ -114,6 +114,34 @@ lookups; removing an adapter prevents future launches through that name. Neither
 stops running processes or changes a launcher already accepted for an in-flight process.
 Registration and removal do not activate the process service or load program sources.
 
+### Executable paths and filesystem visibility
+
+The page runtime requires an absolute, canonical program path, such as `/bin/bun`.
+Bare names (`bun`), dot segments and repeated or trailing slashes reject immediately with
+an explanatory `TypeError`. Registrants create the corresponding regular file separately;
+registration does not write, replace or remove filesystem entries. A small marker file is enough:
+program loading still comes from the registered source or module, not the marker's contents.
+
+```ts
+await runtime.filesystem.writeFile("/bin/bun", "registered executable\n");
+const unregister = runtime.registerProgram("/bin/bun", {
+  adapter: "bun:quickjs", module, cooperative: true,
+});
+```
+
+This makes filesystem inspection, a shell's `$PATH` search and process admission agree on the
+same path. The shell searches `$PATH`; Waffle's spawn does not. Spawn resolves its executable
+relative to the request's snapshotted `cwd`, removes dot segments and checks the live filesystem
+before loading even a cached module. A missing file produces `ENOENT` (shell status 127).
+A directory or an existing regular file without a registered program produces `EACCES`
+(shell status 126); directory diagnostics explicitly identify the directory. Deleting a registered
+file or replacing it with a directory therefore prevents future execution. Releasing a registration
+leaves its file untouched, so an existing unregistered marker is non-runnable rather than missing.
+
+The low-level `ExecutableRegistry` remains usable with opaque names when constructed without a
+filesystem lookup. Supplying a lookup enables the same canonical path and live-file admission
+used by the page runtime; registration keys in that mode must be canonical absolute paths.
+
 ## Guest executor extensions
 
 `bootstrap(request, executor, host?)` from `waffle/browser/worker` creates a worker-local
