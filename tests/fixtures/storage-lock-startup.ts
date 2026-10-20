@@ -1,6 +1,6 @@
 import type { BrowserContext, Page, Request, Response } from "playwright";
 
-export interface StorageLockStartupDiagnostic {
+export interface StorageLockNavigationDiagnostic {
   phase: "new-page" | "navigation";
   target: string;
   current: string | null;
@@ -8,10 +8,10 @@ export interface StorageLockStartupDiagnostic {
   events: string[];
 }
 
-export async function storageLockKeepAlive(
+export async function storageLockNavigate(
   context: BrowserContext,
   target: string,
-  report: (diagnostic: StorageLockStartupDiagnostic) => void,
+  report: (diagnostic: StorageLockNavigationDiagnostic) => void,
 ): Promise<Page> {
   const events: string[] = [];
   const record = (event: string) => {
@@ -29,7 +29,7 @@ export async function storageLockKeepAlive(
   const crashed = () => record("crash");
   const errored = (error: Error) => record(`pageerror ${error.message}`);
   let page: Page | undefined;
-  let phase: StorageLockStartupDiagnostic["phase"] = "new-page";
+  let phase: StorageLockNavigationDiagnostic["phase"] = "new-page";
   try {
     page = await context.newPage();
     page.on("request", requested);

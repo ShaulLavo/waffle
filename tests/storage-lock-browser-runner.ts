@@ -1,4 +1,4 @@
-import { storageLockKeepAlive } from "./fixtures/storage-lock-startup.js";
+import { storageLockNavigate } from "./fixtures/storage-lock-startup.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -53,8 +53,9 @@ function lockName(backend: Backend, name: string): string {
 }
 
 async function pageFixture(context: BrowserContext, baseURL: string): Promise<Page> {
-  const page = (await context.newPage()) as Page;
-  await page.goto(baseURL);
+  const page = await storageLockNavigate(context, baseURL, (navigation) =>
+    console.error(JSON.stringify({ source, purpose: "fixture", navigation })),
+  );
   await page.waitForFunction(() => (globalThis as any).lockTest !== undefined);
   return page;
 }
@@ -840,7 +841,7 @@ try {
     context = await launching!;
     context.setDefaultTimeout(15_000);
     console.log(JSON.stringify({ engine: name, version: context.browser()?.version(), source }));
-    await storageLockKeepAlive(context, `http://127.0.0.1:${server.port}/blank`, (diagnostic) =>
+    await storageLockNavigate(context, `http://127.0.0.1:${server.port}/blank`, (diagnostic) =>
       console.error(JSON.stringify({ engine: name, source, startup: diagnostic })),
     );
     let selected = 0;
