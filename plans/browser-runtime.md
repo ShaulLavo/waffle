@@ -33,8 +33,14 @@ when the import codec cannot be built. Rejection cleanup owns its tokens and fen
 before confirmation. A valid filesystem identity must revoke and quiesce successfully.
 Invalid metadata permits token-only cleanup only when this broker has acquired no
 process record, controller, worker connection, launch or pending launcher for that
-PID. An acquired consumer or failed real fence stays unconfirmed. External rejection
-fences remain owned through runtime quiescence and disposal.
+directory, slot and monotonic PID. An acquired consumer or failed real fence stays unconfirmed. External rejection
+fences remain owned through runtime quiescence and disposal. Valid payload metadata
+cannot replace an acquired controller's adapter fence or separate filesystem fence.
+Controller registration captures the lifetime when its row exists. A controller
+registered before publication binds through this broker's root directory when cleanup
+starts. Supervisor reservation captures the admitted lifetime before descriptor import.
+Consumer ownership remains retained while records, controllers, workers, launchers or
+fences still need it.
 
 Run `bun test tests/browser-process-broker.test.ts --test-name-pattern 'codec construction'`.
 Controls cover missing/malformed metadata, an independently throwing import factory,
@@ -55,12 +61,23 @@ Repeated delivery owns no additional lifetime. Both external rejection and a rep
 queued delivery leave the original tokens and outcome alone. Foreign directories
 release their own transfers without touching an accepted same-number PID. Disposal
 selects queued outcomes and drains admission cleanup before retiring pipe relays.
+Sender authentication errors also start rejection cleanup for the incoming transfer,
+so malformed queued parents cannot strand an already-published child's writer.
 
 Run `bun test tests/browser-process-broker.test.ts --test-name-pattern 'queued duplicate'`.
 Controls cover external duplicates, repeated delivery, foreign-directory PID aliases,
 queued disposal with valid/missing metadata, and held queued/external filesystem fences.
 Existing accepted-child writer, ordinary-parent-exit and stable-generation EOF tests
 remain blocking. No parent-liveness condition or eager supervisor loading was added.
+
+Independent review reproduced three further cases at `d495f731`: bypassed controller
+fences, a stranded nested transfer and foreign-directory PID aliasing. Test-only
+`47da45f` preserves those reds. The `admission review r1` controls cover their repairs,
+prepublication controller ownership, both real filesystem fences and rejected adapter
+fences. The nested control captures confirmation words before orphan reclamation and
+checks current pending membership instead of reading a collected tagged row. Original
+review source and failed runs remain unchanged. Repair evidence is under
+`/work/reports/waffle-finish-20261021/admission/repair-r1/`.
 
 ## Storage and networking
 
@@ -71,5 +88,5 @@ through shared rings. Preview URL routing and service-worker scope remain consum
 ## Verification
 
 The standalone gates run package install and `prepare`, TypeScript checking, unit tests, installed
-Node exports, generic browser storage/process acceptance, and the unchanged 7,168-byte gzip core
-budget. Generated `dist/` output is ignored and must never be committed.
+Node exports, generic browser storage/process acceptance, and the gzip core budget declared in
+`tooling/runtime-size.ts`. Generated `dist/` output is ignored and must never be committed.

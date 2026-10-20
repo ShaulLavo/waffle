@@ -314,9 +314,8 @@ export class BrowserProcessBroker {
   registerController(pid: number, controller: ProcessController): void {
     if (this.suspended) throw new Error("Process broker is disposed");
     if (this.controllers.has(pid)) throw new Error(`Process ${pid} already has a controller`);
-    const lifetime = this.runtimeProcessLifetime(pid);
-    if (lifetime) this.acquiredProcesses.set(pid, lifetime);
     this.controllers.set(pid, controller);
+    this.acquireController(pid);
     if (this.supervisor?.get(pid))
       this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
   }
@@ -547,6 +546,11 @@ export class BrowserProcessBroker {
       throw new Error("process consumer belongs to another lifetime");
     this.acquiredProcesses.set(transport.pid, lifetime);
   }
+  private acquireController(pid: number): void {
+    if (this.acquiredProcesses.has(pid) || !this.controllers.has(pid)) return;
+    const lifetime = this.runtimeProcessLifetime(pid);
+    if (lifetime) this.acquiredProcesses.set(pid, lifetime);
+  }
   private releaseAcquiredProcess(pid: number): void {
     if (
       this.options.table.get(pid) ||
@@ -560,6 +564,9 @@ export class BrowserProcessBroker {
     this.acquiredProcesses.delete(pid);
   }
   private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
+    // prepareSpawn may register a controller before the worker publishes its directory row.
+    // Bind it only through our own root directory or an admitted transport, never a foreign PID.
+    this.acquireController(transport.pid);
     const acquired = this.acquiredProcesses.get(transport.pid) === this.processLifetime(transport);
     let filesystem: FilesystemIdentity | undefined;
     try {

@@ -3671,24 +3671,30 @@ test("admission review r1: foreign malformed transfer cannot borrow another dire
 
 test("admission review r1: valid metadata waits for an acquired controller and its separate filesystem fence", async () => {
   let releaseAdapter = () => {},
-    releaseFilesystem = () => {};
+    releaseFilesystem = () => {},
+    releasePayload = () => {};
   const adapter = new Promise<void>((resolve) => {
     releaseAdapter = resolve;
   });
   const filesystem = new Promise<void>((resolve) => {
     releaseFilesystem = resolve;
   });
+  const payload = new Promise<void>((resolve) => {
+    releasePayload = resolve;
+  });
   regressionCleanups.push(async () => {
     releaseAdapter();
     releaseFilesystem();
+    releasePayload();
   });
   const separateIdentity = createFilesystemIdentity();
   const fixture = await admissionFixture({
-    quiesce: (identity) => (identity === separateIdentity ? filesystem : Promise.resolve()),
+    quiesce: (identity) => (identity === separateIdentity ? filesystem : payload),
   });
   regressionCleanups.push(async () => {
     releaseAdapter();
     releaseFilesystem();
+    releasePayload();
   });
   let entered = 0;
   fixture.broker.registerController(fixture.pid, {
@@ -3718,6 +3724,9 @@ test("admission review r1: valid metadata waits for an acquired controller and i
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
   expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1 });
   releaseFilesystem();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1 });
+  releasePayload();
   await bounded(fixture.broker.quiesce());
   expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
 });
