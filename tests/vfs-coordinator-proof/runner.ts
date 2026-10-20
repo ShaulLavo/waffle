@@ -848,6 +848,10 @@ async function browserControl(engine: keyof typeof engines): Promise<void> {
     }),
   );
   try {
+    if (process.env.E5_MINIMAL_ONLY === "1") {
+      await minimalVolatileClose(browser);
+      return;
+    }
     await productionControl(browser, engine);
     if (engine === "webkit") await minimalVolatileClose(browser);
     for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const)
