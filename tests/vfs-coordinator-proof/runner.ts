@@ -119,7 +119,7 @@ async function mixedWriterControl(pages: Page[], arm: Arm) {
   const result = results[0];
   assert(
     result && typeof result === "object" && "kind" in result && result.kind === "guest-complete",
-    "Mixed guest failed",
+    `Mixed guest failed: ${JSON.stringify(result)}`,
   );
   const pulled = ok(
     await execute(tool, {
@@ -744,6 +744,14 @@ async function runArmSequence(browser: Browser, engine: string, arm: Arm) {
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
   const browser = await lifecycle.launch(engine);
+  console.log(
+    JSON.stringify({
+      kind: "browser-environment",
+      engine,
+      version: browser.version(),
+      source: "E5 proof",
+    }),
+  );
   try {
     await productionControl(browser, engine);
     for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const)
