@@ -4,6 +4,7 @@ import {
   collectDirectoryJob,
   collectDirectoryProcess,
   confirmDirectoryProcess,
+  findDirectoryJob,
 } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
@@ -3111,4 +3112,116 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
   } finally {
     await broker.dispose();
   }
+});
+
+
+async function admissionFixture() {
+  let broker: BrowserProcessBroker | undefined;
+  let descriptors: DescriptorTable | undefined;
+  let reader: PipeEndpoint | undefined;
+  let releaseTokens = () => {};
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    releaseTokens();
+    descriptors?.dispose();
+    reader?.close();
+    if (broker) await bounded(broker.dispose());
+  };
+  regressionCleanups.push(cleanup);
+  const identities = new ProcessIdentityAllocator();
+  const table = new ProcessTable(identities);
+  const registry = new ExecutableRegistry();
+  registry.register("admission", {
+    adapter: "fixture",
+    module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+  });
+  const contexts: import("../proc/types.js").ProcessContext[] = [];
+  const errors: unknown[] = [];
+  broker = new BrowserProcessBroker({
+    identities, table, registry,
+    filesystem: {
+      connect() { throw new Error("unused"); },
+      revoke: revokeFilesystem,
+      reap: revokeFilesystem,
+      async quiesce() {},
+    },
+    launch(context) { contexts.push(context); return { terminate() {} }; },
+    onError(error) { errors.push(error); },
+  });
+  const root = createWorkerProcessTransport({
+    pid: identities.pid(), job: identities.job(), identity: identities.buffer,
+  });
+  root.data = { filesystem: createFilesystemIdentity() };
+  await bounded(broker.adoptRuntimeRoot(root));
+  const messages: WorkerProcessMessage[] = [];
+  descriptors = new DescriptorTable();
+  const host = new WorkerPipeHost({ transport: root, postMessage: (message) => messages.push(message) });
+  const codec = host.codec();
+  const client = new WorkerProcessClient({
+    transport: root, descriptors, codec,
+    postMessage: (message) => messages.push(structuredClone(message)),
+    prepareSpawn(pid) {
+      host.registry.registerProcess(pid);
+      return { data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() } };
+    },
+  });
+  const pair = host.createPipe();
+  reader = pair[0];
+  const writerFd = descriptors.open(pair[1], 127n, 63n);
+  const pid = client.spawn(client.pid, {
+    executable: "admission", argv: [], env: {}, cwd: "/", job: -1,
+    fds: [{ child: 1, parent: writerFd }],
+  });
+  const message = messages.find((message) => message.operation === "spawn");
+  if (!message || message.operation !== "spawn") throw new Error("spawn was not posted");
+  releaseTokens = () => { for (const token of message.transport.resources) codec.discard(token); };
+  descriptors.close(writerFd);
+  const token = message.transport.resources[0] as import("../proc/worker-pipes.js").WorkerPipeDescriptorToken;
+  const lifetime = new Int32Array(token.endpoint.lifetime);
+  const state = workerProcessState(message.transport);
+  const group = findDirectoryJob(message.transport.directory, state.job)!;
+  return { broker, root, pid, client, message, reader, lifetime, state, group, contexts, errors, cleanup };
+}
+
+function admissionObservation(fixture: Awaited<ReturnType<typeof admissionFixture>>) {
+  return {
+    confirmed: controlLoad(fixture.state.confirmed, 0),
+    pending: controlLoad(fixture.group.pending),
+    closed: controlLoad(fixture.lifetime, 0),
+    readiness: fixture.reader.readiness(),
+    outcome: readOutcome(fixture.state.signals.outcome),
+    launches: fixture.contexts.length,
+  };
+}
+
+test("codec construction failure releases the accepted writer and confirms its failed child", async () => {
+  const fixture = await admissionFixture();
+  fixture.message.transport.data = undefined;
+  const result = await bounded(fixture.broker.runtimeMessage(fixture.message, fixture.client.pid).catch((error: unknown) => error));
+  expect(result).toBeInstanceOf(TypeError);
+  const observed = admissionObservation(fixture);
+  console.info("codec construction observation", observed);
+  expect(observed).toMatchObject({ confirmed: 1, pending: 0, closed: 1, launches: 0 });
+  expect(observed.outcome?.kind).toBe("start-failed");
+  expect(observed.readiness.hangup).toBe(true);
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+});
+
+test("queued duplicate external rejection preserves the accepted writer and launches once", async () => {
+  const fixture = await admissionFixture();
+  const accepted = fixture.broker.runtimeMessage(fixture.message, fixture.client.pid);
+  fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+  await bounded(accepted);
+  const supervisor = await bounded(fixture.broker.ready());
+  await bounded(supervisor.start(fixture.pid));
+  const observed = admissionObservation(fixture);
+  console.info("queued duplicate observation", observed);
+  expect(observed).toMatchObject({ confirmed: 0, pending: 1, closed: 0, launches: 1, outcome: null });
+  expect(observed.readiness.hangup).toBe(false);
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  supervisor.exit(fixture.pid, 0);
+  await bounded(supervisor.waitForExit(fixture.client.pid, fixture.pid));
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
 });
