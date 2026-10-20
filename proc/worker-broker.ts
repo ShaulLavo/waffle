@@ -53,6 +53,8 @@ export interface WorkerProcessBrokerOptions {
   onError?(error: unknown): void;
   /** Transport admission only; the host owns adapter launch and startup-failure diagnostics. */
   onAdmission?: ProcessAdmissionObserver;
+  /** Captures the exact lifetime once the supervisor owns its process record. */
+  onAdmitted?(transport: WorkerProcessTransport): void;
 }
 
 /** Page-side admission over an existing supervisor. The worker has already retained every
@@ -458,6 +460,7 @@ export class WorkerProcessBroker {
         },
       );
       admitted = true;
+      this.options.onAdmitted?.(transport);
       this.trace(transport, "reserved");
       const descriptors = supervisor.get(state.pid)!.descriptors;
       reason = "binding-failed";

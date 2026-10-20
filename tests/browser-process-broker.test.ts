@@ -3660,6 +3660,10 @@ test("admission review r1: valid metadata waits for an acquired controller and i
   const fixture = await admissionFixture({
     quiesce: (identity) => (identity === separateIdentity ? filesystem : Promise.resolve()),
   });
+  regressionCleanups.push(async () => {
+    releaseAdapter();
+    releaseFilesystem();
+  });
   let entered = 0;
   fixture.broker.registerController(fixture.pid, {
     filesystem: separateIdentity,
