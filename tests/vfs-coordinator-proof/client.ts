@@ -13,6 +13,7 @@ export class ProofClient {
   readonly client = crypto.randomUUID();
   sequence = 0;
   nudges = 0;
+  readonly faults: string[] = [];
   cursor: Cursor = { epoch: 0, history: "", generation: 0, watermark: 0, durableWatermark: 0 };
   worker: SharedWorker | undefined;
   private messages = 0;
@@ -36,6 +37,8 @@ export class ProofClient {
       name: token,
       type: "module",
     });
+    this.worker.onerror = (event) => this.fault(`worker error: ${event.message}`);
+    this.worker.port.onmessageerror = () => this.fault("port messageerror");
     this.worker.port.onmessage = (event) => this.receive(event.data);
     this.worker.port.start();
     const reply = await this.send({
@@ -49,6 +52,10 @@ export class ProofClient {
     return reply;
   }
 
+  private fault(message: string): void {
+    this.faults.push(message);
+    if (this.faults.length > 32) this.faults.shift();
+  }
   private receive(value: { id?: number; result?: Reply; nudge?: boolean }): void {
     if (value.nudge) {
       this.nudges++;
@@ -66,6 +73,7 @@ export class ProofClient {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.fault(`response deadline: ${command.kind}`);
         resolve({ kind: "error", code: "UNAVAILABLE", message: "UNAVAILABLE: response deadline" });
       }, timeoutMs);
       this.pending.set(id, (reply) => {

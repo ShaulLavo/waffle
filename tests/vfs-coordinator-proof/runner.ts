@@ -72,8 +72,16 @@ async function firstControl(pages: Page[], arm: Arm) {
   assert(new Set(reads.map((value) => value?.id)).size === 1, "File identity diverged");
   record(`${arm}: four independently created writer/tool tabs`, { cuts, reads });
   await mixedWriterControl(pages, arm);
+  console.log(JSON.stringify({ engine: activeEngine, arm, phase: "before-first-close" }));
   await first.close();
-  ok(await execute(second, { kind: "append", path: "/shared", text: "after-first-close\n" }));
+  console.log(JSON.stringify({ engine: activeEngine, arm, phase: "after-first-close" }));
+  const afterClose = await execute(second, {
+    kind: "append",
+    path: "/shared",
+    text: "after-first-close\n",
+  });
+  if (afterClose.kind === "error") await failedAuthority(second, arm, afterClose);
+  ok(afterClose);
   assert(
     (await content(second, "/shared"))?.text.endsWith("after-first-close\n"),
     "First-page close broke authority",
@@ -105,6 +113,24 @@ function batch(value: unknown): { watermark: number; actor: string; key: string 
     return { watermark: change.watermark, actor: change.actor, key: change.key };
   });
 }
+async function failedAuthority(page: Page, arm: Arm, failure: Reply): Promise<void> {
+  const diagnostic = await page.evaluate(async () => ({
+    locks: await navigator.locks.query(),
+    cursor: proof.client.cursor,
+    faults: proof.client.faults,
+    authority: await proof.client.send({ kind: "inspect" }),
+  }));
+  console.error(
+    JSON.stringify({
+      engine: activeEngine,
+      arm,
+      phase: "first-close-failure",
+      failure,
+      diagnostic,
+    }),
+  );
+}
+
 async function mixedWriterControl(pages: Page[], arm: Arm) {
   const [guest, tool, host, other] = pages;
   assert(guest && tool && host && other, "Mixed writers need four pages");
