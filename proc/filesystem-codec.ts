@@ -49,7 +49,8 @@ export function createFilesystemDescriptorCodec(
       if (!client || !target)
         throw new TypeError("filesystem export requires a client and child identity");
       // Promote before reserving: a failed offset conversion cannot strand a child pin.
-      const offset = resource.kind === "file" ? shareFileResource(resource, identity) : undefined;
+      const offset =
+        resource.kind === "file" ? shareFileResource(resource, client.connection) : undefined;
       return {
         kind: "filesystem",
         resource: resource.kind,
