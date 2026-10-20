@@ -1,5 +1,6 @@
 import { createRuntime, type RuntimeNetwork } from "../index.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
+import { networkFlowCases } from "./network-flow-cases.js";
 import { createRing } from "../browser/net/ring.js";
 import { PreviewRouter } from "../browser/preview.js";
 import { activated } from "../browser/service-worker.js";
@@ -31,13 +32,21 @@ async function until(
 }
 
 type Guest = ReturnType<typeof guest>;
-function guest(network: RuntimeNetwork, router: PreviewRouter, startupFailurePort = 0) {
+function guest(
+  network: RuntimeNetwork,
+  router: PreviewRouter,
+  startupFailurePort = 0,
+  failPublication = false,
+) {
   const ring = createRing();
-  const worker = new Worker(`/network-worker.js?failPort=${startupFailurePort}`, {
+  const worker = new Worker("/network-worker.js", {
     type: "module",
   });
   const hooks = {
-    listening: (port: number) => router.register(port, helper),
+    listening: (port: number) => {
+      router.register(port, helper);
+      if (failPublication) throw Error("Observer failed");
+    },
     stopped: (port: number) => router.unregister(port, helper),
   };
   const helper = network.createHelper({
@@ -82,11 +91,19 @@ function guest(network: RuntimeNetwork, router: PreviewRouter, startupFailurePor
     retire(Error(event.message));
   };
   worker.onmessageerror = () => retire(Error("Worker message could not be read"));
+  const deliver = (request: import("../browser/net/protocol.js").NetRequest) => {
+    try {
+      helper.handle(request);
+    } catch (error) {
+      if (!failPublication || !(error instanceof Error) || error.message !== "Observer failed")
+        retire(Error(String(error)));
+    }
+  };
   worker.onmessage = (event: MessageEvent<NetworkWorkerMessage>) => {
     if (retired) return;
     const msg = event.data;
     if (msg.kind === "net") {
-      helper.handle(msg.request);
+      deliver(msg.request);
       return;
     }
     if (msg.kind === "ready") {
@@ -101,7 +118,7 @@ function guest(network: RuntimeNetwork, router: PreviewRouter, startupFailurePor
     if (msg.kind === "error") call.reject(Error(msg.message));
     else call.resolve(msg.value);
   };
-  worker.postMessage({ kind: "init", ring });
+  worker.postMessage({ kind: "init", ring, failPort: startupFailurePort });
   const expire = (id: number, op: string, reject: (error: Error) => void) => {
     pending.delete(id);
     reject(Error(`Worker command ${op} timed out`));
@@ -158,8 +175,8 @@ export async function networkBrowserCases(): Promise<string[]> {
   let registration: ServiceWorkerRegistration | undefined;
   const route = (event: MessageEvent<PreviewMessage>) => router.onMessage(event);
   navigator.serviceWorker.addEventListener("message", route);
-  const make = (space = network, startupFailurePort = 0) => {
-    const item = guest(space, router, startupFailurePort);
+  const make = (space = network, startupFailurePort = 0, failPublication = false) => {
+    const item = guest(space, router, startupFailurePort, failPublication);
     guests.push(item);
     return item;
   };
@@ -268,7 +285,23 @@ export async function networkBrowserCases(): Promise<string[]> {
       number(await client.call({ op: "listen", port: 32134 })) > 0,
       "Failed startup leaked its port",
     );
+    const flowServer = make(),
+      flowClient = make(),
+      badPublisher = make(network, 0, true);
+    await Promise.all([flowServer.ready, flowClient.ready, badPublisher.ready]);
+    check(
+      (await badPublisher.call({ op: "listen", port: 32136 })) === -1,
+      "Throwing hook reported successful bind",
+    );
+    check(
+      number(await flowClient.call({ op: "listen", port: 32136 })) > 0,
+      "Throwing hook leaked its reservation",
+    );
+    await networkFlowCases(flowServer, flowClient, 32137);
+    await networkFlowCases(flowServer, flowServer, 32138);
     return [
+      "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",
+      "throwing listening hook rolls back publication before a healthy worker retry",
       "real worker duplex, peer identity and half-close",
       "bind conflict and namespace isolation",
       "failed startup, abrupt owner exit and unrelated socket survival",

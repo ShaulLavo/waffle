@@ -389,3 +389,37 @@ test("host disposal revokes a news callback already queued by a local pipe", asy
     helper.dispose();
   }
 });
+
+test("host-side async sink receipts retain credit and wake the shared writer", async () => {
+  const f = fixture();
+  const receipt = Promise.withResolvers<void>();
+  try {
+    const server = f.add(),
+      client = f.add();
+    const listener = server.host.listen("localhost", 32211);
+    const connection = client.helper.connect(32211, {
+      data: () => receipt.promise,
+      end() {},
+      error() {},
+    });
+    expect(connection).not.toBeNull();
+    const accepted = await until(
+      () => server.host.accept(listener),
+      (id) => id > 0,
+    );
+    expect(server.host.write(accepted, new Uint8Array(1 << 20))).toBe(1 << 20);
+    expect(server.host.write(accepted, bytes("blocked"))).toBe(AGAIN);
+    while (server.host.poll(0)) {}
+    receipt.resolve();
+    await until(
+      () => server.host.poll(0),
+      (value) => value === 1,
+    );
+    expect(server.host.write(accepted, bytes("resumed"))).toBe(7);
+    connection!.close();
+    expect(server.host.write(accepted, bytes("closed"))).toBe(ERROR);
+  } finally {
+    receipt.resolve();
+    f.close();
+  }
+});

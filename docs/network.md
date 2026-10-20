@@ -49,6 +49,15 @@ Do not mix standalone and shared hosts inside one runtime's shared network.
   the connecting handle's local address. Numeric handles may coincide across hosts.
 - Each TCP receive direction holds at most 1 MiB of unread data. Writes may be
   partial or return `AGAIN`. Reading releases capacity and wakes the writer's ring.
+- Shared HTTP fetches retain socket credit while parsed body bytes wait for the
+  existing 512 KiB fetch window. Only guest reads acknowledge that window. Pausing
+  a reader therefore bounds parser-owned response copies too; cancelling the fetch
+  closes its socket and wakes its blocked peer. This applies within one helper and
+  between helpers. A host-side `ConnectionSink.data` or `PreviewSink.data` may return
+  a `Promise<void>` to defer input credit until its downstream consumer is ready.
+- A failed listening hook rolls back the reservation and preview registration
+  through the stopped hook. Caller request accessors are read before admission;
+  revocation from an accessor or hook cannot create a new listener or connection.
 - Shutdown sends EOF in one direction; replies can still travel in the other.
   Full close makes later peer writes fail. Bytes already written precede EOF.
 - Closing a listener rejects queued accepts but does not close accepted sockets.
@@ -84,6 +93,10 @@ and cleanup failures with the actual memory filesystem worker.
 `bun test tests/network-namespace.test.ts` checks independent rings, real HTTP
 bytes, address identity, bind/ephemeral behavior, bounded writes, wakeups,
 half-close, listener/connection cleanup and runtime isolation.
+
+`bun test tests/network-flow-control.test.ts` runs actual workers against the same
+paused-reader, bounded-buffer, read-wakeup, streaming-EOF and cancellation cases
+used by the browser matrix. It also checks rollback after a listening hook throws.
 
 Run the real browser check through the repository's process supervisor:
 

@@ -48,7 +48,8 @@ export interface PreviewConnection {
 }
 
 export interface ConnectionSink {
-  data(bytes: Uint8Array): void;
+  /** Completion releases receive credit; an omitted receipt means synchronous consumption. */
+  data(bytes: Uint8Array): void | Promise<void>;
   end(): void;
   error(message: string): void;
 }
@@ -70,6 +71,7 @@ export class NetHelper {
   private ring: RingWriter;
   private fetches = new Map<number, FetchJob>();
   private listeners = new Map<number, number>(); // listener handle -> port
+  private sharedListeners = new Set<number>();
   private connections = new Map<number, ConnectionSink>();
   private nextConn = CONN_BASE;
   private disposed = false;
@@ -82,15 +84,15 @@ export class NetHelper {
     private fetchRequest: NetFetch,
     private hooks: NetHelperHooks = {},
     private namespace = new NetNamespace(),
+    private assertOwnerLive: () => void = () => {},
   ) {
     this.ring = new RingWriter(sab);
   }
 
-  handle(req: NetRequest): void {
-    if (this.disposed) {
-      if ("reply" in req) tcpReply(req.reply, ERROR);
-      return;
-    }
+  handle(request: NetRequest): void {
+    const req = snapshotRequest(request);
+    if ("reply" in req) return this.tcp(req);
+    if (!this.live()) return;
     switch (req.type) {
       case "fetch":
         void this.fetch(req);
@@ -103,11 +105,6 @@ export class NetHelper {
         return;
       case "listen":
         this.listen(req.id, req.port, req.host);
-        return;
-      case "tcp-listen":
-      case "tcp-connect":
-      case "tcp-write":
-        this.tcp(req);
         return;
       case "tcp-accept":
         this.pending.get(req.listener)?.delete(req.id);
@@ -140,6 +137,7 @@ export class NetHelper {
     this.fetches.clear();
     this.connections.clear();
     this.listeners.clear();
+    this.sharedListeners.clear();
     const failures: unknown[] = [];
     const attempt = (operation: () => void) => {
       try {
@@ -177,27 +175,46 @@ export class NetHelper {
     req: PreviewRequest,
     sink: PreviewSink,
   ): PreviewConnection | null {
+    const captured = {
+      method: req.method,
+      target: req.target,
+      headers: req.headers,
+      body: req.body,
+    };
+    const request = serializeRequest(captured, `localhost:${port}`);
+    const isHead = captured.method === "HEAD";
+    const sinkHead = sink.head.bind(sink),
+      data = sink.data.bind(sink);
+    const end = sink.end.bind(sink),
+      error = sink.error.bind(sink);
+    let delivered: Promise<void> | undefined;
     let connection: PreviewConnection | null = null;
     const finish: PreviewSink = {
-      head: (head: ResponseHead) => sink.head(head),
-      data: (chunk) => sink.data(chunk),
+      head: (head: ResponseHead) => sinkHead(head),
+      data: (chunk) => {
+        const receipt = data(chunk);
+        if (receipt) delivered = Promise.all([delivered, receipt]).then(() => {});
+      },
       end: () => {
         connection?.close();
-        sink.end();
+        end();
       },
       error: (message) => {
         connection?.close();
-        sink.error(message);
+        error(message);
       },
     };
-    const parser = new ResponseParser(finish, req.method === "HEAD");
+    const parser = new ResponseParser(finish, isHead);
     connection = this.connect(port, {
-      data: (bytes) => parser.push(bytes),
+      data: (bytes) => {
+        parser.push(bytes);
+        return delivered;
+      },
       end: () => parser.end(),
       error: (message) => finish.error(message),
     });
     if (!connection) return null;
-    connection.write(serializeRequest(req, `localhost:${port}`));
+    connection.write(request);
     return connection;
   }
 
@@ -239,9 +256,16 @@ export class NetHelper {
 
   /** Connects a host-side byte stream to the guest without HTTP response framing. */
   connect(port: number, sink: ConnectionSink): PreviewConnection | null {
+    const captured: ConnectionSink = {
+      data: sink.data.bind(sink),
+      end: sink.end.bind(sink),
+      error: sink.error.bind(sink),
+    };
     const listener = this.listenerFor(port);
-    if (this.disposed) return null;
-    if (listener === undefined) return this.connectNamespace(port, sink);
+    if (!this.live()) return null;
+    if (listener === undefined || this.sharedListeners.has(listener))
+      return this.connectNamespace(port, captured);
+    sink = captured;
     const conn = this.nextConn++;
     this.connections.set(conn, sink);
     this.pending.get(listener)?.add(conn);
@@ -267,8 +291,16 @@ export class NetHelper {
     let socket: LoopbackSocket | undefined = undefined;
     const connected = this.namespace.connect(port, {
       data: (bytes) => {
-        sink.data(bytes);
-        socket?.consumed(bytes.length);
+        const receipt = sink.data(bytes);
+        if (!receipt) socket?.consumed(bytes.length);
+        else
+          void receipt.then(
+            () => socket?.consumed(bytes.length),
+            (error: unknown) => {
+              socket?.close();
+              sink.error(String(error));
+            },
+          );
       },
       end: () => sink.end(),
     });
@@ -317,7 +349,14 @@ export class NetHelper {
     }
   }
 
-  private listen(id: number, port: number, host: string): number {
+  private live(): boolean {
+    this.assertOwnerLive();
+    return !this.disposed;
+  }
+
+  private listen(id: number, port: number, host: string, shared = false): number {
+    const listening = this.hooks.listening;
+    if (!this.live()) return ERROR;
     const bound = this.namespace.listen(port, {
       owner: this,
       handle: id,
@@ -326,8 +365,16 @@ export class NetHelper {
     if (bound < 0) return bound;
     this.listeners.set(id, bound);
     this.pending.set(id, new Set());
-    this.hooks.listening?.(bound, host);
-    return bound;
+    if (shared) this.sharedListeners.add(id);
+    try {
+      listening?.call(this.hooks, bound, host);
+      if (this.live()) return bound;
+    } catch (error) {
+      this.close(id);
+      throw error;
+    }
+    this.close(id);
+    return ERROR;
   }
 
   private socketSink(id: number) {
@@ -356,7 +403,7 @@ export class NetHelper {
   private tcp(req: TcpRequest): void {
     let result: [number, number] = [ERROR, 0];
     try {
-      result = this.executeTcp(req);
+      if (this.live()) result = this.executeTcp(req);
     } finally {
       tcpReply(req.reply, result[0], result[1]);
     }
@@ -364,7 +411,7 @@ export class NetHelper {
 
   private executeTcp(req: TcpRequest): [number, number] {
     if (req.type === "tcp-listen") {
-      const port = this.listen(req.id, req.port, req.host);
+      const port = this.listen(req.id, req.port, req.host, true);
       return [port < 0 ? port : 0, port];
     }
     if (req.type === "tcp-write") {
@@ -375,6 +422,7 @@ export class NetHelper {
       sink.data(req.data);
       return [req.data.length, 0];
     }
+    if (!this.live()) return [ERROR, 0];
     const connected = this.namespace.connect(req.port, this.socketSink(req.id));
     if (typeof connected === "number") return [connected, 0];
     this.sockets.set(req.id, connected.socket);
@@ -472,6 +520,7 @@ export class NetHelper {
     let sending: Promise<void> = Promise.resolve();
     const enqueue = (operation: () => Promise<void>) => {
       sending = sending.then(() => (live() ? operation() : undefined));
+      return sending;
     };
     const finish = (kind: number, payload?: Uint8Array) =>
       enqueue(async () => {
@@ -494,7 +543,7 @@ export class NetHelper {
         },
         data: (chunk) => {
           const owned = chunk.slice();
-          enqueue(() => this.writeChunks(id, owned, live));
+          return enqueue(() => this.pumpChunk(id, job, owned));
         },
         end: () => finish(Kind.End),
         error: (message) =>
@@ -551,6 +600,7 @@ export class NetHelper {
     const port = this.listeners.get(id);
     if (port !== undefined) {
       this.listeners.delete(id);
+      this.sharedListeners.delete(id);
       this.namespace.unlisten(this, id);
       for (const conn of this.pending.get(id) ?? []) this.close(conn);
       this.pending.delete(id);
@@ -574,5 +624,41 @@ export class NetHelper {
       if (live && !live()) return;
       await this.ring.write(handle, Kind.Data, bytes.subarray(at, at + MAX_RECORD));
     }
+  }
+}
+
+/** Read caller accessors once, before the final admission check or any allocation. */
+function snapshotRequest(req: NetRequest): NetRequest {
+  const type = req.type,
+    id = req.id;
+  switch (type) {
+    case "tcp-listen":
+      return { type, id, reply: req.reply, port: req.port, host: req.host };
+    case "tcp-connect":
+      return { type, id, reply: req.reply, port: req.port };
+    case "tcp-write":
+      return { type, id, reply: req.reply, data: req.data };
+    case "listen":
+      return { type, id, port: req.port, host: req.host };
+    case "fetch":
+      return {
+        type,
+        id,
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: req.body,
+        redirect: req.redirect,
+      };
+    case "write":
+      return { type, id, data: req.data };
+    case "tcp-accept":
+      return { type, id, listener: req.listener };
+    case "ack":
+    case "tcp-read":
+      return { type, id, bytes: req.bytes };
+    case "close":
+    case "shutdown":
+      return { type, id };
   }
 }

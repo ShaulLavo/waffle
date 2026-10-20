@@ -4,6 +4,8 @@ import { NetHost } from "../browser/net/host.js";
 import { createRing } from "../browser/net/ring.js";
 import { FilesystemSection } from "../fs/protocol.js";
 
+function ignoreData() {}
+
 const noFetch = async () => {
   throw Error("External fetch forbidden");
 };
@@ -263,6 +265,119 @@ test("helper hooks are captured before admission and sibling sessions outlive pa
     expect(stopped).toEqual([]);
     await runtime.dispose();
     expect(stopped).toEqual([32147]);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test.each(["tcp-listen", "tcp-connect"] as const)(
+  "%s snapshots request getters before final helper admission",
+  async (type) => {
+    const runtime = create();
+    try {
+      const network = await runtime.network();
+      const helper = network.createHelper({ ring: createRing(), fetch: noFetch });
+      const sibling = network.createHelper({ ring: createRing(), fetch: noFetch });
+      expect(bind(sibling, 32203)).toBe(0);
+      const reply = new SharedArrayBuffer(12);
+      helper.handle({
+        type,
+        id: 1,
+        host: "localhost",
+        reply,
+        get port() {
+          helper.dispose();
+          return type === "tcp-listen" ? 32204 : 32203;
+        },
+      });
+      expect(Atomics.load(new Int32Array(reply), 1)).toBe(-1);
+      expect(bind(sibling, 32204)).toBe(0);
+      expect(bind(sibling, 49152)).toBe(0);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+);
+
+test.each(["tcp-listen", "tcp-connect"] as const)(
+  "%s cannot allocate after a request getter starts runtime disposal",
+  async (type) => {
+    const runtime = create();
+    try {
+      const network = await runtime.network();
+      const helper = network.createHelper({ ring: createRing(), fetch: noFetch });
+      const reply = new SharedArrayBuffer(12);
+      const request = {
+        type,
+        id: 1,
+        host: "localhost",
+        reply,
+        get port() {
+          void runtime.dispose();
+          return 32208;
+        },
+      };
+      expect(() => helper.handle(request)).toThrow(/disposed/i);
+      expect(Atomics.load(new Int32Array(reply), 0)).toBe(1);
+      expect(Atomics.load(new Int32Array(reply), 1)).toBe(-1);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+);
+
+test("host-side request and connection sink getters cannot allocate after helper revocation", async () => {
+  const runtime = create();
+  try {
+    const network = await runtime.network();
+    const serverRing = createRing();
+    const server = network.createHelper({ ring: serverRing, fetch: noFetch });
+    expect(bind(server, 32209)).toBe(0);
+    const client = network.createHelper({ ring: createRing(), fetch: noFetch });
+    const sink = {
+      get data() {
+        client.dispose();
+        return ignoreData;
+      },
+      end() {},
+      error() {},
+    };
+    expect(client.connect(32209, sink)).toBeNull();
+    const requester = network.createHelper({ ring: createRing(), fetch: noFetch });
+    const request = {
+      get method() {
+        requester.dispose();
+        return "GET";
+      },
+      target: "/",
+      headers: [],
+      body: null,
+    };
+    expect(requester.request(32209, request, { head() {}, data() {}, end() {}, error() {} })).toBe(
+      false,
+    );
+    expect(bind(server, 49152)).toBe(0);
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test("listening callback revocation never publishes a successful handle", async () => {
+  const runtime = create();
+  try {
+    const network = await runtime.network();
+    const helper = network.createHelper({
+      ring: createRing(),
+      fetch: noFetch,
+      hooks: {
+        listening() {
+          helper.dispose();
+        },
+      },
+    });
+    expect(bind(helper, 32210)).toBe(-1);
+    const sibling = network.createHelper({ ring: createRing(), fetch: noFetch });
+    expect(bind(sibling, 32210)).toBe(0);
   } finally {
     await runtime.dispose();
   }

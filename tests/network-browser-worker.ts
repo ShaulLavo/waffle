@@ -5,6 +5,8 @@ import { AGAIN, type NetRequest } from "../browser/net/protocol.js";
 declare const self: DedicatedWorkerGlobalScope;
 export type NetworkCommand =
   | { op: "listen"; port: number }
+  | { op: "fetch"; url: string }
+  | { op: "head" | "poll"; handle: number }
   | { op: "connect"; port: number }
   | { op: "accept"; handle: number }
   | { op: "read"; handle: number; cap: number }
@@ -18,7 +20,7 @@ export type NetworkWorkerMessage =
   | { kind: "result"; id: number; value: unknown }
   | { kind: "error"; id: number; message: string };
 type Incoming =
-  | { kind: "init"; ring: SharedArrayBuffer }
+  | { kind: "init"; ring: SharedArrayBuffer; failPort?: number }
   | { kind: "command"; id: number; command: NetworkCommand };
 
 function incoming(host: NetHost, handle: number): Uint8Array | number {
@@ -72,6 +74,12 @@ function serve(host: NetHost, listener: number): string {
 
 function execute(host: NetHost, command: NetworkCommand): unknown {
   switch (command.op) {
+    case "fetch":
+      return host.fetch(JSON.stringify({ url: command.url }));
+    case "head":
+      return host.fetchHead(command.handle);
+    case "poll":
+      return host.poll(0);
     case "listen":
       return host.listen("localhost", command.port);
     case "connect":
@@ -110,7 +118,7 @@ self.onmessage = (event: MessageEvent<Incoming>) => {
       undefined,
       { shared: true },
     );
-    const failedPort = Number(new URL(self.location.href).searchParams.get("failPort"));
+    const failedPort = input.failPort ?? 0;
     if (failedPort > 0) {
       host.listen("localhost", failedPort);
       throw Error("Injected startup failure after network allocation");

@@ -94,7 +94,13 @@ export function createRuntimeNetwork(assertLive: () => void) {
       assertLive();
       const captured = snapshot(options);
       assertLive();
-      const helper = new NetHelper(captured.ring, captured.fetch, captured.hooks, namespace);
+      const helper = new NetHelper(
+        captured.ring,
+        captured.fetch,
+        captured.hooks,
+        namespace,
+        assertLive,
+      );
       const capability = project(helper, assertLive, () => helpers.delete(helper));
       helpers.set(helper, capability);
       return capability;

@@ -43,7 +43,9 @@ function parse(chunks: string[], isHead = false) {
   const parser = new ResponseParser(
     {
       head: (h) => (out.head = h),
-      data: (c) => (out.body += decode(c)),
+      data: (c) => {
+        out.body += decode(c);
+      },
       end: () => (out.ended = true),
       error: (m) => (out.error = m),
     },
@@ -125,7 +127,9 @@ test("raw preview connections preserve upgrade and duplex frame bytes", async ()
   try {
     helper.handle({ type: "listen", id: 1, port: 3000, host: "localhost" });
     const connection = helper.connect(3000, {
-      data: (bytes) => received.push(bytes),
+      data: (bytes) => {
+        received.push(bytes);
+      },
       end: () => {
         ended = true;
       },
