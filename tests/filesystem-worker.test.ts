@@ -410,6 +410,32 @@ test("resource counts include transient capabilities, bound them, and preserve e
   });
 });
 
+for (const shared of [true, false])
+  test(`cold guest stat uses shared metadata only when published, shared=${shared}`, async () => {
+    const backend = new TrackingBackend();
+    const source: FilesystemBackend = shared
+      ? backend
+      : {
+          execute: backend.execute.bind(backend),
+          retain: backend.retain.bind(backend),
+          release: backend.release.bind(backend),
+        };
+    const { client } = fixture(source);
+    await client.asyncCall("writeFile", ["/cached"], encode("cached!!"));
+    const worker = guestWorker();
+    const connection = client.fork();
+    const result = nextMessage(worker);
+    const before = backend.calls.length;
+    worker.postMessage({ scenario: "transient-stat", connection }, [connection.port]);
+    expect(await result).toMatchObject({
+      directory: { kind: "directory", size: 0 },
+      file: { kind: "file", size: 8 },
+    });
+    expect(backend.calls.slice(before)).toEqual(
+      shared ? ["preopen", "resolve"] : ["preopen", "resolve", "stat", "stat"],
+    );
+  });
+
 test("blocking caches observe sibling same-size writes, stat changes, truncation, and growth after cached EOF", async () => {
   const backend = new TrackingBackend();
   const { client } = fixture(backend);
@@ -479,7 +505,7 @@ test("transient eviction invalidates hot resolve/read/stat caches before a cache
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });
   expect(await result).toEqual(original);
-  expect(backend.calls.slice(before)).toEqual(["resolve", "read", "stat"]);
+  expect(backend.calls.slice(before)).toEqual(["resolve", "read"]);
   const warmed = backend.calls.length;
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });

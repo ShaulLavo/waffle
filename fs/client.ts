@@ -709,21 +709,25 @@ export class FilesystemClient implements FileSystem {
     }
   }
   stat(handle: FileHandle): FileStat {
-    const epoch = this.version();
-    const direct = mapHas(this.openHandles, handle)
-      ? this.shared.stat(handle, this.revoked)
-      : undefined;
-    if (direct) return direct;
-    const cached = this.stats.get(handle);
-    if (!(epoch & 1) && cached?.epoch === epoch) return { ...cached.stat };
-    const completion = this.submit("stat", [handle]);
+    // Keep the capability's backend pin alive while reading its shared metadata slot.
+    this.retain(handle);
     try {
-      const stat = completion.wait();
-      if (this.stats.size >= 256) this.stats.clear();
-      this.stats.set(handle, { stat, epoch: completion.epoch });
-      return { ...stat };
+      const direct = this.shared.stat(handle, this.revoked);
+      if (direct) return direct;
+      const epoch = this.version();
+      const cached = this.stats.get(handle);
+      if (!(epoch & 1) && cached?.epoch === epoch) return { ...cached.stat };
+      const completion = this.submit("stat", [handle]);
+      try {
+        const stat = completion.wait();
+        if (this.stats.size >= 256) this.stats.clear();
+        this.stats.set(handle, { stat, epoch: completion.epoch });
+        return { ...stat };
+      } finally {
+        completion.release();
+      }
     } finally {
-      completion.release();
+      this.release(handle);
     }
   }
   private cachedRead(handle: FileHandle, position: number) {
