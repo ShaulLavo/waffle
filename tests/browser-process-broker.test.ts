@@ -4,6 +4,7 @@ import {
   collectDirectoryJob,
   collectDirectoryProcess,
   confirmDirectoryProcess,
+  directoryProcesses,
   findDirectoryJob,
 } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -3528,7 +3529,10 @@ test("queued duplicate delivery owns no second lifetime before supervisor admiss
   });
 });
 
-async function nestedAdmissionFixture(fixture: Awaited<ReturnType<typeof admissionFixture>>) {
+async function nestedAdmissionFixture(
+  fixture: Awaited<ReturnType<typeof admissionFixture>>,
+  transport = fixture.message.transport,
+) {
   const owned: {
     descriptors?: DescriptorTable;
     reader?: PipeEndpoint;
@@ -3544,7 +3548,7 @@ async function nestedAdmissionFixture(fixture: Awaited<ReturnType<typeof admissi
   owned.reader = reader;
   const fd = descriptors.open(writer, 127n, 63n);
   const client = new WorkerProcessClient({
-    transport: fixture.message.transport,
+    transport,
     descriptors,
     codec: fixture.codec,
     postMessage(message) {
@@ -3587,7 +3591,14 @@ async function nestedAdmissionFixture(fixture: Awaited<ReturnType<typeof admissi
 
 test("admission review r1: malformed queued sender cannot strand a second accepted transfer", async () => {
   const parent = await admissionFixture();
+  const local = await nestedAdmissionFixture(parent, parent.root);
+  await bounded(parent.broker.runtimeMessage(local.message, parent.client.pid));
+  const supervisor = await bounded(parent.broker.ready());
+  await bounded(supervisor.start(local.message.transport.pid));
   const child = await nestedAdmissionFixture(parent);
+  // Capture tagged words before reclamation. No allocations reuse these rows during observation.
+  const confirmed = new TaggedCells(child.state.confirmed.cells, child.state.confirmed.id);
+  const jobConfirmed = new TaggedCells(child.state.jobConfirmed.cells, child.state.jobConfirmed.id);
   parent.message.transport.data = undefined;
   const parentAdmission = parent.broker
     .runtimeMessage(parent.message, parent.client.pid)
@@ -3596,21 +3607,31 @@ test("admission review r1: malformed queued sender cannot strand a second accept
     .runtimeMessage(child.message, child.client.pid)
     .catch((error: unknown) => error);
   await bounded(Promise.all([parentAdmission, childAdmission]));
+  await bounded(parent.broker.quiesce());
   const group = findDirectoryJob(child.message.transport.directory, child.state.job);
   const observed = {
-    confirmed: controlLoad(child.state.confirmed, 0),
+    confirmed: controlLoad(confirmed),
     pending: group ? controlLoad(group.pending) : "collected",
-    jobConfirmed: controlLoad(child.state.jobConfirmed, 0),
+    jobConfirmed: controlLoad(jobConfirmed),
     closed: controlLoad(child.lifetime, 0),
-    outcome: readOutcome(child.state.signals.outcome),
     readiness: child.reader.readiness(),
-    launches: parent.contexts.length,
+    launches: parent.contexts.filter((context) => context.pid === child.message.transport.pid)
+      .length,
   };
   console.info("repair r1 nested transfer", observed);
   expect(observed).toMatchObject({ confirmed: 1, jobConfirmed: 1, closed: 1, launches: 0 });
   if (group) expect(controlLoad(group.pending)).toBe(0);
-  expect(observed.outcome).not.toBeNull();
+  expect(
+    Array.from(directoryProcesses(child.message.transport.directory), (state) => state.pid),
+  ).not.toContain(child.message.transport.pid);
+  expect(observed.readiness.hangup).toBe(true);
   expect(child.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  expect(controlLoad(local.lifetime, 0)).toBe(0);
+  expect(controlLoad(local.state.confirmed)).toBe(0);
+  expect(controlLoad(local.group.pending)).toBe(1);
+  expect(readOutcome(local.state.signals.outcome)).toBeNull();
+  expect(local.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  expect(parent.contexts.map((context) => context.pid)).toEqual([local.message.transport.pid]);
 });
 
 test("admission review r1: foreign malformed transfer cannot borrow another directory's consumer ownership", async () => {
