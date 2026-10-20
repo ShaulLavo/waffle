@@ -1355,7 +1355,7 @@ test("a completed runtime root retains queued background descendants until their
   });
   root.data = { filesystem: createFilesystemIdentity() };
   const messages: WorkerProcessMessage[] = [],
-    const descriptors = owned.descriptors = new DescriptorTable();
+    descriptors = new DescriptorTable();
   const host = new WorkerPipeHost({
     transport: root,
     postMessage: (message) => messages.push(message),
@@ -3151,7 +3151,7 @@ async function admissionFixture(
   });
   const contexts: import("../proc/types.js").ProcessContext[] = [];
   const errors: unknown[] = [];
-  const broker = owned.broker = new BrowserProcessBroker({
+  const broker = (owned.broker = new BrowserProcessBroker({
     identities,
     table,
     registry,
@@ -3171,7 +3171,7 @@ async function admissionFixture(
     onError(error) {
       errors.push(error);
     },
-  });
+  }));
   const root = createWorkerProcessTransport({
     pid: identities.pid(),
     job: identities.job(),
@@ -3180,7 +3180,7 @@ async function admissionFixture(
   root.data = { filesystem: createFilesystemIdentity() };
   await bounded(broker.adoptRuntimeRoot(root));
   const messages: WorkerProcessMessage[] = [];
-  const descriptors = owned.descriptors = new DescriptorTable();
+  const descriptors = (owned.descriptors = new DescriptorTable());
   const host = new WorkerPipeHost({
     transport: root,
     postMessage: (message) => messages.push(message),
@@ -3199,7 +3199,7 @@ async function admissionFixture(
     },
   });
   const pair = host.createPipe();
-  const reader = owned.reader = pair[0];
+  const reader = (owned.reader = pair[0]);
   const writerFd = descriptors.open(pair[1], 127n, 63n);
   const pid = client.spawn(client.pid, {
     executable: "admission",
