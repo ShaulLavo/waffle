@@ -3120,11 +3120,13 @@ async function admissionFixture() {
   let descriptors: DescriptorTable | undefined;
   let reader: PipeEndpoint | undefined;
   let releaseTokens = () => {};
+  let restoreTransport = () => {};
   let cleaned = false;
   const cleanup = async () => {
     if (cleaned) return;
     cleaned = true;
     releaseTokens();
+    restoreTransport();
     descriptors?.dispose();
     reader?.close();
     if (broker) await bounded(broker.dispose());
@@ -3176,6 +3178,8 @@ async function admissionFixture() {
   });
   const message = messages.find((message) => message.operation === "spawn");
   if (!message || message.operation !== "spawn") throw new Error("spawn was not posted");
+  const originalData = message.transport.data;
+  restoreTransport = () => { message.transport.data = originalData; };
   releaseTokens = () => { for (const token of message.transport.resources) codec.discard(token); };
   descriptors.close(writerFd);
   const token = message.transport.resources[0] as import("../proc/worker-pipes.js").WorkerPipeDescriptorToken;
