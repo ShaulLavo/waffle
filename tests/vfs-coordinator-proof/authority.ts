@@ -33,6 +33,10 @@ const counters = {
 };
 
 function trace(event: unknown): void {
+  if (new URL(location.href).searchParams.has("trace")) {
+    const diagnostic = { instance, time: performance.now(), event };
+    for (const port of ports) port.postMessage({ diagnostic });
+  }
   events.push(event);
   if (events.length > 256) events.shift();
 }
@@ -260,6 +264,7 @@ async function response(control: Command, result: Reply): Promise<Reply> {
 }
 function deliver(port: MessagePort, envelope: Envelope): void {
   const control = envelope.command;
+  trace({ phase: "deliver", id: envelope.id, control, initialized: Boolean(state), pending });
   if (control.kind === "release") {
     gates.get(control.gate)?.();
     port.postMessage({
@@ -294,12 +299,14 @@ function deliver(port: MessagePort, envelope: Envelope): void {
   pending++;
   counters.pendingPeak = Math.max(counters.pendingPeak, pending);
   tail = tail.then(async () => {
+    trace({ phase: "queue-start", id: envelope.id, kind: control.kind });
     const committed = await command(control).catch(failure);
     const result = await response(control, committed).catch(failure);
     pending--;
     trace({ phase: "reply", result: result.kind === "ok" ? result.cursor : result });
     if (control.kind === "request" && control.request.dropReply) return;
     port.postMessage({ id: envelope.id, result });
+    trace({ phase: "posted", id: envelope.id, kind: control.kind });
   });
 }
 Reflect.set(globalThis, "onconnect", (event: MessageEvent) => {

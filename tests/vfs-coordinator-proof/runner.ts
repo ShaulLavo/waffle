@@ -836,6 +836,51 @@ async function minimalVolatileClose(browser: Browser): Promise<void> {
     await context.close();
   }
 }
+async function diagnosticSurvivor(page: Page) {
+  return page.evaluate(async () => ({
+    locks: await navigator.locks.query(),
+    authority: await proof.client.send({ kind: "inspect" }),
+    observations: proof.client.observations,
+    faults: proof.client.faults,
+    workerRetained: Boolean(proof.client.worker),
+  }));
+}
+async function diagnosticClose(browser: Browser, arm: Arm): Promise<void> {
+  const context = await browser.newContext();
+  const workspace = `waffle-e5-diagnostic-close-${crypto.randomUUID()}`;
+  const pages: Page[] = [];
+  try {
+    for (let index = 0; index < 4; index++) {
+      const page = await context.newPage();
+      pages.push(page);
+      page.on("console", (message) => console.log(JSON.stringify({ arm, page: index, text: message.text() })));
+      page.on("close", () => console.log(JSON.stringify({ arm, page: index, phase: "driver-page-close" })));
+      await page.goto(origin + "?trace=1");
+      ok(await connected(page, workspace, arm));
+    }
+    const [first, second] = pages;
+    assert(first && second, "Missing diagnostic lifecycle pages");
+    ok(await execute(first, { kind: "write", path: "/minimal", text: "memory-ack" }));
+    assert((await content(second, "/minimal"))?.text === "memory-ack", "Diagnostic pre-close read");
+    const before = await second.evaluate(() => proof.client.send({ kind: "inspect" }));
+    await first.close();
+    const after = await execute(second, { kind: "read", path: "/minimal" });
+    console.log(JSON.stringify({ arm, phase: "diagnostic-close", before, after }));
+    for (const page of pages.slice(1))
+      console.log(JSON.stringify({ arm, phase: "survivor", diagnostic: await diagnosticSurvivor(page) }));
+    const nextRead = await execute(second, { kind: "read", path: "/minimal" });
+    console.log(JSON.stringify({ arm, phase: "post-diagnostic-read", nextRead }));
+    ok(after);
+    assert(ok(after).result !== null, "Diagnostic lost file");
+    record(`${arm}: instrumented first-client close`, { after, nextRead });
+  } catch (error) {
+    const result = { engine: activeEngine, arm, status: "FAILED", error: String(error) };
+    outcomes.push(result);
+    console.error(JSON.stringify(result));
+  } finally {
+    await context.close();
+  }
+}
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
   const browser = await lifecycle.launch(engine);
@@ -848,6 +893,11 @@ async function browserControl(engine: keyof typeof engines): Promise<void> {
     }),
   );
   try {
+    if (process.env.E5_DIAGNOSTIC === "1") {
+      for (const arm of ["volatile-fast", "fenced-safe", "fenced-fast"] as const)
+        await diagnosticClose(browser, arm);
+      return;
+    }
     if (process.env.E5_MINIMAL_ONLY === "1") {
       await minimalVolatileClose(browser);
       return;

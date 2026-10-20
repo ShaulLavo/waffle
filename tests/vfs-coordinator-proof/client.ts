@@ -14,6 +14,14 @@ export class ProofClient {
   sequence = 0;
   nudges = 0;
   readonly faults: string[] = [];
+  readonly observations: unknown[] = [];
+  private observe(event: unknown): void {
+    if (!new URL(location.href).searchParams.has("trace")) return;
+    const value = { client: this.client, time: performance.now(), event };
+    this.observations.push(value);
+    if (this.observations.length > 256) this.observations.shift();
+    console.info("E5_LIFECYCLE " + JSON.stringify(value));
+  }
   cursor: Cursor = { epoch: 0, history: "", generation: 0, watermark: 0, durableWatermark: 0 };
   worker: SharedWorker | undefined;
   private messages = 0;
@@ -33,7 +41,9 @@ export class ProofClient {
     const head = await readRegistry(workspace);
     const token = !replace && head && !head.closed ? head.token : crypto.randomUUID();
     this.detach();
-    this.worker = new SharedWorker(`/authority.js?workspace=${workspace}&token=${token}`, {
+    const trace = new URL(location.href).searchParams.has("trace") ? "&trace=1" : "";
+    this.observe({ phase: "attach", workspace, token });
+    this.worker = new SharedWorker(`/authority.js?workspace=${workspace}&token=${token}${trace}`, {
       name: token,
       type: "module",
     });
@@ -53,10 +63,16 @@ export class ProofClient {
   }
 
   private fault(message: string): void {
+    this.observe({ phase: "fault", message });
     this.faults.push(message);
     if (this.faults.length > 32) this.faults.shift();
   }
-  private receive(value: { id?: number; result?: Reply; nudge?: boolean }): void {
+  private receive(value: { id?: number; result?: Reply; nudge?: boolean; diagnostic?: unknown }): void {
+    if (value.diagnostic) {
+      this.observe(value.diagnostic);
+      return;
+    }
+    this.observe({ phase: "received", id: value.id, reply: value.result?.kind, nudge: value.nudge });
     if (value.nudge) {
       this.nudges++;
       return;
@@ -70,6 +86,7 @@ export class ProofClient {
     if (this.pending.size >= 64)
       return Promise.resolve(failure(new Error("BACKPRESSURE: client pending budget")));
     const id = ++this.messages;
+    this.observe({ phase: "send", id, command });
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -103,6 +120,7 @@ export class ProofClient {
     return reply;
   }
   detach(): void {
+    this.observe({ phase: "detach", hadWorker: Boolean(this.worker) });
     this.worker?.port.close();
     this.worker = undefined;
   }
