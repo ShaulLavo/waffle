@@ -48,7 +48,7 @@ function run(input: { shared: SharedArrayBuffer; path: string; value: string }) 
   view.setUint32(16, 4096, true);
   view.setUint32(20, 1024, true);
   call(instance, "fd_read", [readFd, 16, 1, 1044]);
-  const read = new TextDecoder().decode(bytes.subarray(4096, 4096 + view.getUint32(1044, true)));
+  const read = new TextDecoder().decode(bytes.slice(4096, 4096 + view.getUint32(1044, true)));
   if (!read.endsWith(input.value)) throw new Error("Guest read-after-ACK mismatch");
   call(instance, "fd_close", [readFd]);
   const renamed = new TextEncoder().encode(`${input.path.replace(/^\//, "")}.guest`);
@@ -63,6 +63,10 @@ globalThis.onmessage = (
   try {
     globalThis.postMessage(run(event.data));
   } catch (error) {
-    globalThis.postMessage({ kind: "guest-error", error: String(error) });
+    globalThis.postMessage({
+      kind: "guest-error",
+      error: String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
   }
 };

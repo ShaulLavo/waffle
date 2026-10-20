@@ -178,6 +178,7 @@ async function execute(request: Request): Promise<Reply> {
   trace({ phase: "admit", key: `${request.client}:${request.sequence}`, epoch: request.epoch });
   if (request.operation.kind === "checkpoint") {
     checkRequest(request, local);
+    history(request, local);
     return checkpoint();
   }
   if (local.arm === "volatile-fast") return memoryRequest(local, request);

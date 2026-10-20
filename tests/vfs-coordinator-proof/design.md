@@ -9,7 +9,8 @@ No production exports, format, default, consumer or permissions changes.
    and ordinary read validates the authority epoch in the same IndexedDB
    transaction that publishes or admits it. Fenced replies recheck authority
    after any test-controlled response parking, so even an already admitted read
-   or committed write cannot emit an old-authority success after replacement. SAFE requests explicitly strict
+   or committed write cannot emit an old-authority success after replacement.
+   This final read is an epoch fence, not a stronger durability promise for FAST. SAFE requests explicitly strict
    durability and waits for completion. Fenced FAST uses relaxed transactions;
    this is an experimental stronger tab-death behavior, not a requirement that
    replaces the approved memory-ACK FAST option. Suspected authority replacement
@@ -70,6 +71,8 @@ close the first page while the other three continue. Follow with duplicate appen
 IDs, conflicting reuse, rename replacement, snapshot/stream race, dropped final
 nudge/reply, parked append/rename plus stale authority resumption, graceful drain,
 last-client close and abrupt actual worker termination where controllable.
+The external termination control includes an acknowledged tail, a dropped reply
+with a stored receipt, and a separately parked unpublished append.
 Run the unchanged current production path as an exclusive-ownership control.
 
 Limits are small and explicit: 64 KiB per request, 1 MiB tree payload, 256 retained

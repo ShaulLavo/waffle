@@ -593,6 +593,21 @@ async function deathControl(browser: Browser, engine: string, arm: Arm) {
       proof.client.request({ kind: "append", path: "/shared", text: "acknowledged-tail" }),
     );
     const tail = ok(await submit(old, tailRequest));
+    const lostRequest = await old.evaluate(() =>
+      proof.client.request(
+        { kind: "append", path: "/shared", text: ":lost-reply" },
+        { dropReply: true },
+      ),
+    );
+    const lost = await submit(old, lostRequest);
+    assert(
+      lost.kind === "error" && lost.code === "UNAVAILABLE",
+      "Death control response was not dropped",
+    );
+    const stored = ok(
+      await execute(old, { kind: "status", key: `${lostRequest.client}:${lostRequest.sequence}` }),
+    );
+    assert(stored.result !== null, "Dropped response has no live receipt");
     const gate = "death-pending";
     const pendingRequest = await old.evaluate(
       (gate) =>
@@ -616,7 +631,11 @@ async function deathControl(browser: Browser, engine: string, arm: Arm) {
         "Volatile recovery lost checkpoint or kept volatile tail",
       );
       assert(next.cursor.history !== tail.cursor.history, "Volatile history did not reset");
-      const unknown = await submit(replacement, { ...tailRequest, epoch: next.cursor.epoch });
+      const unknown = await submit(replacement, {
+        ...lostRequest,
+        epoch: next.cursor.epoch,
+        dropReply: false,
+      });
       assert(
         unknown.kind === "error" && unknown.code === "OUTCOME_UNKNOWN",
         "Volatile tail silently replayed",
@@ -638,6 +657,8 @@ async function deathControl(browser: Browser, engine: string, arm: Arm) {
       record(`${arm}: actual worker target death, checkpoint recovery, explicit unknown/gap`, {
         kill,
         tail: tail.cursor,
+        lost,
+        stored,
         unresolved,
         next,
         file,
@@ -646,17 +667,19 @@ async function deathControl(browser: Browser, engine: string, arm: Arm) {
       });
     } else {
       assert(
-        file.text === "checkpoint:acknowledged-tail",
+        file.text === "checkpoint:acknowledged-tail:lost-reply",
         "IDB acknowledged tail missing after worker termination",
       );
-      const repeated = ok(await submit(replacement, { ...tailRequest, epoch: next.cursor.epoch }));
+      const repeated = ok(
+        await submit(replacement, { ...lostRequest, epoch: next.cursor.epoch, dropReply: false }),
+      );
       assert(
-        JSON.stringify(repeated.result) === JSON.stringify(tail.result),
+        JSON.stringify(repeated.result) === JSON.stringify(stored.result),
         "Persisted receipt changed",
       );
       record(
         `${arm}: actual worker target death recovers acknowledged receipt without duplicate append`,
-        { kill, tail: tail.cursor, unresolved, next, file, repeated },
+        { kill, tail: tail.cursor, lost, stored, unresolved, next, file, repeated },
       );
     }
     ok(await replacement.evaluate(() => proof.client.send({ kind: "close" })));
