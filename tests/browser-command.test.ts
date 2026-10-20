@@ -1,5 +1,14 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runBrowserSuite } from "../scripts/browser-command.ts";
@@ -85,7 +94,7 @@ import {writeFileSync} from "node:fs";
 process.on("SIGTERM", () => {});
 const browser = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {detached:true, stdout:"ignore", stderr:"ignore"});
 writeFileSync(process.env.PROBE + "/browser", String(browser.pid));
-writeFileSync(process.env.PROBE + "/scratch", process.env.TMPDIR + "\\n" + process.env.WAFFLE_BROWSER_SHM_ROOT);
+writeFileSync(process.env.PROBE + "/scratch", process.env.STORAGE_SCRATCH_ROOT + "\\n" + process.env.WAFFLE_BROWSER_SHM_ROOT);
 writeFileSync(process.env.PROBE + "/ready", String(process.pid));
 if (process.env.MODE === "fast-exit") process.exit(0);
 if (process.env.MODE === "normal") { browser.kill("SIGKILL"); await browser.exited; process.exit(0); }
@@ -161,3 +170,133 @@ for (const mode of [
     () => containedFixture(mode),
     10_000,
   );
+
+for (const mode of ["success", "failure", "interrupted"] as const)
+  linuxTest(
+    `browser supervisor preserves dispatcher short TMPDIR after ${mode}`,
+    async () => {
+      const base = realpathSync(existsSync("/work/tmp") ? "/work/tmp" : "/tmp");
+      const prefix = join(base, "wc-short-");
+      const root = mkdtempSync(prefix + "x".repeat(47 - prefix.length - 6));
+      const suite = join(root, "suite.ts");
+      try {
+        expect(realpathSync(root).length).toBe(47);
+        mkdirSync(join(root, "unrelated"));
+        writeFileSync(join(root, "unrelated", "keep"), "dispatcher-owned");
+        writeFileSync(
+          suite,
+          `import { writeFileSync } from "node:fs";
+import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+writeFileSync(process.env.PROBE + "/state.json", JSON.stringify({
+  tmp: process.env.TMPDIR, scratch: process.env.SCRATCH,
+  owned: process.env.STORAGE_SCRATCH_ROOT, shm: process.env.WAFFLE_BROWSER_SHM_ROOT,
+}));
+const lifecycle = new BrowserRunnerLifecycle(5000);
+try {
+  await lifecycle.init();
+  writeFileSync(process.env.PROBE + "/initialized", process.env.TMPDIR);
+  if (${JSON.stringify(mode)} === "failure") throw Error("intentional suite failure");
+  if (${JSON.stringify(mode)} === "interrupted") {
+    process.kill(process.ppid, "SIGTERM");
+    await Bun.sleep(10000);
+  }
+} finally { await lifecycle.close(); }
+`,
+        );
+        const failure = await runBrowserSuite([process.execPath, suite], {
+          cwd: repo,
+          env: {
+            ...process.env,
+            PROBE: root,
+            TMPDIR: root,
+            SCRATCH: root,
+            STORAGE_SCRATCH_ROOT: root,
+            PROCESS_SCRATCH_ROOT: root,
+          },
+          timeoutMs: 5000,
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(readFileSync(join(root, "initialized"), "utf8")).toBe(root);
+        expect(failure instanceof Error).toBe(mode !== "success");
+        const state: unknown = JSON.parse(readFileSync(join(root, "state.json"), "utf8"));
+        expect(state).toMatchObject({ tmp: root, scratch: root });
+        expect(readdirSync(root).sort()).toEqual([
+          "initialized",
+          "state.json",
+          "suite.ts",
+          "unrelated",
+        ]);
+        expect(readFileSync(join(root, "unrelated", "keep"), "utf8")).toBe("dispatcher-owned");
+        if (!state || typeof state !== "object" || !("owned" in state) || !("shm" in state))
+          throw Error("Missing supervisor ownership report");
+        expect(typeof state.owned).toBe("string");
+        expect(typeof state.shm).toBe("string");
+        if (typeof state.owned !== "string" || typeof state.shm !== "string")
+          throw Error("Invalid supervisor ownership report");
+        expect(state.owned.startsWith(root + "/wb-")).toBe(true);
+        expect(state.shm.startsWith("/dev/shm/wb-")).toBe(true);
+        expect(existsSync(state.owned)).toBe(false);
+        expect(existsSync(state.shm)).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+linuxTest(
+  "browser supervisor falls back for a 47-character, 91-byte dispatcher TMPDIR",
+  async () => {
+    const base = realpathSync(existsSync("/work/tmp") ? "/work/tmp" : "/tmp");
+    const root = mkdtempSync(join(base, "wc-byte-"));
+    const dispatcher = join(root, "x".repeat(47 - root.length - 1 - 22) + "界".repeat(22));
+    try {
+      mkdirSync(dispatcher);
+      writeFileSync(join(dispatcher, "keep"), "dispatcher-owned");
+      expect(realpathSync(dispatcher).length).toBe(47);
+      expect(Buffer.byteLength(realpathSync(dispatcher), "utf8")).toBe(91);
+      const suite = join(root, "suite.ts");
+      writeFileSync(
+        suite,
+        `import { writeFileSync } from "node:fs";
+import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+writeFileSync(process.env.PROBE + "/before", process.env.TMPDIR);
+writeFileSync(process.env.PROBE + "/owned", process.env.STORAGE_SCRATCH_ROOT + "\\n" + process.env.WAFFLE_BROWSER_SHM_ROOT);
+const lifecycle = new BrowserRunnerLifecycle(5000);
+try {
+  await lifecycle.init();
+  writeFileSync(process.env.PROBE + "/initialized", process.env.TMPDIR);
+} finally { await lifecycle.close(); }
+`,
+      );
+      await runBrowserSuite([process.execPath, suite], {
+        cwd: repo,
+        env: {
+          ...process.env,
+          PROBE: root,
+          TMPDIR: dispatcher,
+          SCRATCH: dispatcher,
+          STORAGE_SCRATCH_ROOT: root,
+          PROCESS_SCRATCH_ROOT: root,
+        },
+        timeoutMs: 5000,
+      });
+      const before = readFileSync(join(root, "before"), "utf8");
+      expect(before).not.toBe(dispatcher);
+      expect(before.startsWith(root + "/wb-")).toBe(true);
+      expect(Buffer.byteLength(before, "utf8")).toBeLessThanOrEqual(48);
+      expect(
+        Buffer.byteLength(readFileSync(join(root, "initialized"), "utf8"), "utf8"),
+      ).toBeLessThanOrEqual(48);
+      expect(readFileSync(join(dispatcher, "keep"), "utf8")).toBe("dispatcher-owned");
+      expect(readdirSync(dispatcher)).toEqual(["keep"]);
+      const owned = readFileSync(join(root, "owned"), "utf8").split("\n");
+      expect(owned).toHaveLength(2);
+      for (const directory of owned) expect(existsSync(directory)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
