@@ -38,7 +38,8 @@ async function fixture(cold = false) {
   if (cold) {
     expect(backend.shared.unload(handle, backend.shared.revision(handle)!)).toBe(true);
     backend.prepare = (operation, args) => {
-      if (operation !== "grow" || backend.shared.isResident(args[0])) return;
+      if ((operation !== "read" && operation !== "grow") || backend.shared.isResident(args[0]))
+        return;
       preparations++;
       return gate.then(() => {
         backend.shared.hydrate(handle, new Uint8Array([65, 66, 67, 68]));

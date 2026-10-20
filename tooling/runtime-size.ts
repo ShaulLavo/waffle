@@ -1,8 +1,8 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-// Authoritative inode permission query: 8,372 B gzip on Bun 1.4.2 (2026-10-21),
-// up from 8,062 B at 15ba700. Keep a bounded 204-byte margin.
+// Authoritative inode permission query: 8,382 B gzip on Bun 1.4.2 (2026-10-21),
+// up from 8,062 B at 15ba700. Keep a bounded 194-byte margin.
 export const CORE_BUDGET_BYTES = 8_576;
 export function checkCoreBudget(gzipBytes: number): void {
   if (gzipBytes > CORE_BUDGET_BYTES)
