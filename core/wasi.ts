@@ -4,7 +4,12 @@ import { withFileOffset } from "./open-file.js";
 // WASI preview1 adapter over filesystem handles and shared open descriptions.
 // Runs synchronously in a guest worker; services supply blocking I/O and readiness.
 
-import type { FileSystem, FileStat, ResolvedPath } from "./filesystem.js";
+import {
+  FilesystemError,
+  type FileSystem,
+  type FileStat,
+  type ResolvedPath,
+} from "./filesystem.js";
 import { DescriptorTable, MAX_DESCRIPTOR, type Resource, type Stream } from "./descriptors.js";
 import { memoryViews, type MemoryViews } from "./memory-views.js";
 
@@ -278,9 +283,12 @@ export class Wasi {
     }
   }
 
-  /** Link only preview1 and explicitly supplied adapter imports, including imported memory. */
+  /** Link preview1, inode permission queries and explicit adapter imports, including memory. */
   imports(module: WebAssembly.Module): WebAssembly.Imports {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
+    const filesystem: Record<string, (...args: never[]) => number> = {
+      path_permissions_get: this.pathPermissions.bind(this),
+    };
     const out: WebAssembly.Imports = Object.create(null);
     this.importedMemory = undefined;
     for (const imp of WebAssembly.Module.imports(module)) {
@@ -290,13 +298,17 @@ export class Wasi {
           ? this.opts.namespaces[imp.module]
           : undefined;
       const value =
-        imp.module === "wasi_snapshot_preview1" && imp.kind === "function"
-          ? Object.hasOwn(impl, imp.name)
-            ? this.wrap(imp.name, impl[imp.name]!)
+        imp.module === "runtime_fs" && imp.kind === "function"
+          ? Object.hasOwn(filesystem, imp.name)
+            ? this.wrap(imp.name, filesystem[imp.name]!)
             : undefined
-          : supplied && Object.hasOwn(supplied, imp.name)
-            ? supplied[imp.name]
-            : undefined;
+          : imp.module === "wasi_snapshot_preview1" && imp.kind === "function"
+            ? Object.hasOwn(impl, imp.name)
+              ? this.wrap(imp.name, impl[imp.name]!)
+              : undefined
+            : supplied && Object.hasOwn(supplied, imp.name)
+              ? supplied[imp.name]
+              : undefined;
       if (value === undefined)
         throw new TypeError(`unsupported import ${imp.module}.${imp.name} (${imp.kind})`);
       if (imp.kind === "memory") {
@@ -326,6 +338,7 @@ export class Wasi {
         return result;
       } catch (err) {
         if (err instanceof WasiExit) throw err;
+        if (err instanceof FilesystemError) return err.errno;
         (this.opts.diagnostic ?? this.opts.stderr)(
           encoder.encode(`[wasi] ${name} failed: ${String(err)}\n`),
         );
@@ -363,6 +376,43 @@ export class Wasi {
     if (dir.resource.kind !== "directory") return ENOTDIR;
     if ((dir.rightsBase & right) !== right) return ENOTCAPABLE;
     return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len));
+  }
+
+  private pathPermissions(
+    fd: number,
+    ptr: number,
+    len: number,
+    flags: number,
+    out: number,
+  ): number {
+    if (flags !== 0) return ENOTSUP;
+    const bytes = this.bytes();
+    ptr >>>= 0;
+    len >>>= 0;
+    out >>>= 0;
+    if (ptr + len > bytes.length || out + 16 > bytes.length) return 21;
+    let path: string;
+    try {
+      path = new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(ptr, ptr + len));
+    } catch {
+      return EINVAL;
+    }
+    if (!path || path.includes("\0")) return EINVAL;
+    const entry = this.descriptors.get(fd);
+    if (!entry) return EBADF;
+    if (entry.resource.kind !== "directory") return ENOTDIR;
+    if (!(entry.rightsBase & RIGHT_PATH_FILESTAT_GET)) return ENOTCAPABLE;
+    const resolved = this.opts.fs.resolve(entry.resource.handle, path);
+    if (typeof resolved === "number") return resolved;
+    if (resolved.node === undefined) return ENOENT;
+    const result = this.opts.fs.permissions?.(resolved.node);
+    if (!result) return ENOTSUP;
+    const view = this.view();
+    view.setUint32(out, result.mode, true);
+    view.setUint32(out + 4, result.modeSupported, true);
+    view.setUint32(out + 8, result.access, true);
+    view.setUint32(out + 12, result.accessSupported, true);
+    return SUCCESS;
   }
 
   private writeFilestat(ptr: number, node: FileStat | null, streamType = FT_CHAR): void {
@@ -779,6 +829,9 @@ export class Wasi {
           node = result;
         }
         const kind = this.opts.fs.stat(node).kind;
+        const permissions = this.opts.fs.permissions?.(node);
+        const access = (rightsBase & RIGHT_FD_READ ? 4 : 0) | (rightsBase & RIGHT_FD_WRITE ? 2 : 0);
+        if (permissions && permissions.accessSupported & access & ~permissions.access) return 2;
         if (oflags & O_DIRECTORY && kind !== "directory") return ENOTDIR;
         if (kind === "directory" && oflags & O_TRUNC) return EISDIR;
         if (kind === "file" && oflags & O_TRUNC) {

@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { afterEach, expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -63,7 +64,7 @@ async function ready(client: FilesystemClient, handle: number, writing: boolean)
 
 test("try I/O never spins or waits for contended file or allocator locks", async () => {
   const { client, handle } = await fixture();
-  const lock = client.shared.fileSlot(handle) * 12 + 8;
+  const lock = client.shared.fileSlot(handle) * SLOT_WORDS + 8;
   const bytes = new Uint8Array(4).fill(9);
   Atomics.store(client.shared.slots, lock, 123);
   try {

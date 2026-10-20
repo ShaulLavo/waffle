@@ -22,7 +22,7 @@ const MAX_FILE_PAGES = TOTAL_PAGES;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-const SLOT_WORDS = 12;
+export const SLOT_WORDS = 13;
 const PAGE_OWNER_OFFSET = HEADER_WORDS;
 const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
 const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
@@ -37,6 +37,7 @@ const USED_PAGES = 2;
 // Header words 5 and 6 belong to connection owner allocation and attachment probing.
 const FREED_REVISION_LOW = 7;
 const FREED_REVISION_HIGH = 8;
+const MODE = 12;
 const FILE_SIZE = 1;
 const MTIME_LOW = 2;
 const MTIME_HIGH = 3;
@@ -394,6 +395,10 @@ export class SharedFilesystemState {
       this.lock(this.at(slot, FILE_LOCK));
       try {
         if (this.slots[this.at(slot, 0)] && this.slots[this.at(slot, INO)] === stat.ino) {
+          if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
+            this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
+            this.changed(slot);
+          }
           if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
             this.setTimestamp(slot, stat.mtime);
             this.changed(slot);
@@ -409,6 +414,7 @@ export class SharedFilesystemState {
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
         this.setTimestamp(slot, stat.mtime);
+        Atomics.store(this.slots, this.at(slot, MODE), stat.mode ?? -1);
         const floor =
           (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +
           (this.cells[FREED_REVISION_LOW]! >>> 0);
@@ -498,6 +504,7 @@ export class SharedFilesystemState {
         ino: this.slots[base + INO]!,
         size: this.slots[base + FILE_SIZE]!,
         mtime: this.getMtime(slot),
+        ...this.modeField(slot),
       };
       const data = new Uint8Array(stat.size);
       for (let position = 0; position < data.length; position += PAGE) {
@@ -579,6 +586,7 @@ export class SharedFilesystemState {
         ino: Atomics.load(this.slots, this.at(slot, INO)),
         size: Atomics.load(this.slots, this.at(slot, FILE_SIZE)),
         mtime: this.getMtime(slot),
+        ...this.modeField(slot),
         capacity: Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE,
       };
     } finally {
@@ -597,9 +605,29 @@ export class SharedFilesystemState {
         ino: Atomics.load(this.slots, this.at(slot, INO)),
         size: kind === 1 ? Atomics.load(this.slots, this.at(slot, FILE_SIZE)) : 0,
         mtime: this.getMtime(slot),
+        ...this.modeField(slot),
       };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
+    }
+  }
+  private modeField(slot: number): Pick<FileStat, "mode"> {
+    const mode = Atomics.load(this.slots, this.at(slot, MODE));
+    return mode < 0 ? {} : { mode };
+  }
+  private checkAccess(slot: number, access: number): void {
+    const mode = this.slots[this.at(slot, MODE)]!;
+    if (mode >= 0 && ((mode >>> 6) & access) !== access) throw new FilesystemError(2);
+  }
+  setMode(handle: FileHandle, mode: number): void {
+    const slot = this.slot(handle);
+    this.lock(this.at(slot, FILE_LOCK));
+    try {
+      if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.slots[this.at(slot, MODE)] = mode;
+      this.changed(slot);
+    } finally {
+      this.unlock(this.at(slot, FILE_LOCK));
     }
   }
   private copyInto(slot: number, source: Uint8Array, offset: number): void {
@@ -625,6 +653,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       this.checkFile(slot, handle);
+      this.checkAccess(slot, 4);
       if (!(this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT))
         throw new MissingDataError("shared filesystem file has not been loaded");
       const size = Atomics.load(this.slots, this.at(slot, FILE_SIZE));
@@ -680,6 +709,7 @@ export class SharedFilesystemState {
     try {
       if (revoked()) throw new FilesystemError(11);
       if (slots[base + HANDLE] !== handle + 1) throw new FilesystemError(8);
+      this.checkAccess(slot, 4);
       if (!(slots[base + REVISION_STATE]! & RESIDENT))
         throw new MissingDataError("shared filesystem file has not been loaded");
       const size = slots[base + FILE_SIZE]!,
@@ -793,6 +823,7 @@ export class SharedFilesystemState {
       try {
         if (revoked()) throw new FilesystemError(11);
         if (slots[base + HANDLE] !== handle + 1) throw new FilesystemError(8);
+        this.checkAccess(slot, 2);
         const size = slots[base + FILE_SIZE]!;
         const at = append ? size : offset;
         if (!total) return at;
@@ -886,6 +917,7 @@ export class SharedFilesystemState {
     try {
       if (revoked?.()) throw new FilesystemError(11);
       this.checkFile(slot, handle);
+      this.checkAccess(slot, 2);
       const end = offset + total;
       if (
         !(this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) ||
@@ -932,6 +964,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       this.checkFile(slot, handle);
+      this.checkAccess(slot, 2);
       const offset = Atomics.load(this.slots, this.at(slot, FILE_SIZE));
       if (!total) return { written: 0, offset };
       if (
@@ -986,6 +1019,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       this.checkFile(slot, handle);
+      this.checkAccess(slot, 2);
       const old = Atomics.load(this.slots, this.at(slot, FILE_SIZE));
       const resident = (this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT) !== 0;
       if (!resident && !(truncate && size === 0))
@@ -1041,6 +1075,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.checkAccess(slot, 2);
       this.setTimestamp(slot, mtime);
       this.changed(slot);
       return 0;

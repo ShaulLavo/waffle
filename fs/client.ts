@@ -1,3 +1,4 @@
+import { permissionsFor } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
@@ -730,6 +731,17 @@ export class FilesystemClient implements FileSystem {
       this.release(handle);
     }
   }
+  permissions(handle: FileHandle) {
+    const stat = this.stat(handle);
+    return stat.mode === undefined ? undefined : permissionsFor(stat.kind, stat.mode);
+  }
+  setMode(handle: FileHandle, mode: number): number {
+    try {
+      return this.call("setMode", [handle, mode]);
+    } catch (error) {
+      return errno(error);
+    }
+  }
   private cachedRead(handle: FileHandle, position: number) {
     const epoch = this.version();
     let cached = this.reads.get(handle);
@@ -912,6 +924,7 @@ export class FilesystemClient implements FileSystem {
           () => {
             const info = this.shared.info(handle, this.revoked);
             if (!info) throw new FilesystemError(8);
+            if (info.mode !== undefined && !(info.mode & 0o200)) throw new FilesystemError(2);
             // Recheck under the global lock: an append may have turned this into a shrink,
             // or a service shrink may have reclaimed the capacity sampled by the caller.
             if ((truncate && size < info.size) || size > info.capacity) return undefined;

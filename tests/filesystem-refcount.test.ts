@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
 import * as shared from "../fs/shared.ts";
@@ -269,7 +270,7 @@ test("shared stat rejects invalid and foreign capabilities even when their metad
 test("revocation during shared stat lock contention releases the temporary reference and backend pin", async () => {
   const { client, service, backend } = fixture();
   const { handle } = await file(client);
-  const lock = client.shared.fileSlot(handle) * 12 + 8;
+  const lock = client.shared.fileSlot(handle) * SLOT_WORDS + 8;
   Atomics.store(client.shared.slots, lock, 42);
   client.shared.onContention = () => {
     revokeFilesystem(client.connection);

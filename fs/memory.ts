@@ -1,3 +1,4 @@
+import { permissionsFor, FilesystemError } from "../core/filesystem.js";
 import {
   normalize,
   splitPath,
@@ -20,6 +21,7 @@ export interface FileNode {
   data: Uint8Array;
   /** Logical size when the persistence backend keeps the payload outside this object. */
   size?: number;
+  mode: number;
   mtime: number; // ms since epoch
   ino: number;
 }
@@ -27,6 +29,7 @@ export interface FileNode {
 export interface DirNode {
   kind: "dir";
   children: Map<string, Node>;
+  mode: number;
   mtime: number;
   ino: number;
 }
@@ -51,11 +54,11 @@ export function adoptInodes(root: DirNode): void {
 }
 
 export function newDir(): DirNode {
-  return { kind: "dir", children: new Map(), mtime: Date.now(), ino: newIno() };
+  return { kind: "dir", mode: 0o700, children: new Map(), mtime: Date.now(), ino: newIno() };
 }
 
 export function newFile(data: Uint8Array = new Uint8Array(0)): FileNode {
-  return { kind: "file", data, mtime: Date.now(), ino: newIno() };
+  return { kind: "file", mode: 0o600, data, mtime: Date.now(), ino: newIno() };
 }
 
 const encoder = new TextEncoder();
@@ -187,6 +190,7 @@ export class MemFS implements FileSystem {
       if (part === "") continue;
       terminalDot = part === "." || part === "..";
       if (node.kind !== "dir") return 54;
+      if (!(node.mode & 0o100)) return 2;
       if (part === ".") continue;
       if (part === "..") {
         if (dirs.length === 0) {
@@ -230,10 +234,28 @@ export class MemFS implements FileSystem {
       ino: node.ino,
       size: node.kind === "file" ? (node.size ?? node.data.length) : 0,
       mtime: node.mtime,
+      mode: node.mode,
     };
+  }
+  permissions(handle: FileHandle) {
+    const node = this.nodeForHandle(handle);
+    return permissionsFor(node.kind === "dir" ? "directory" : "file", node.mode);
+  }
+  /** Host policy mutation. All inodes belong to the same virtual principal. */
+  setMode(handle: FileHandle, mode: number): number {
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0xffffffff) return 28;
+    const node = this.nodeForHandle(handle);
+    if (mode & ~this.permissions(handle).modeSupported) return 58;
+    node.mode = mode;
+    this.changed(node);
+    return 0;
+  }
+  private require(node: Node, access: number): void {
+    if (((node.mode >>> 6) & access) !== access) throw new FilesystemError(2);
   }
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     const node = this.nodeForHandle(handle) as FileNode;
+    if (!(node.mode & 0o400)) return -2;
     let pos = offset;
     for (const chunk of chunks) {
       const n = Math.max(0, Math.min(chunk.length, node.data.length - pos));
@@ -245,6 +267,7 @@ export class MemFS implements FileSystem {
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     const node = this.nodeForHandle(handle) as FileNode;
+    if (!(node.mode & 0o200)) return -2;
     if (chunks.every((chunk) => chunk.length === 0)) return 0;
     let pos = offset;
     for (const chunk of chunks) {
@@ -265,6 +288,7 @@ export class MemFS implements FileSystem {
   }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
     const node = this.nodeForHandle(handle) as FileNode;
+    if (!(node.mode & 0o200)) return 2;
     if (truncate && size < node.data.length) node.data = node.data.slice(0, size);
     else ensureSize(node, size);
     if (truncate) node.mtime = Date.now();
@@ -272,12 +296,14 @@ export class MemFS implements FileSystem {
   }
   setMtime(handle: FileHandle, mtime: number): number {
     const node = this.nodeForHandle(handle);
+    if (!(node.mode & 0o200)) return 2;
     node.mtime = mtime;
     this.changed(node);
     return 0;
   }
   readdir(handle: FileHandle): DirectoryEntry[] {
     const node = this.directory(handle);
+    this.require(node, 4);
     const parent = this.directoryParents.get(node) ?? node;
     const entry = (name: string, node: Node): DirectoryEntry => ({
       name,
@@ -292,7 +318,8 @@ export class MemFS implements FileSystem {
   private parentOf(path: ResolvedPath): DirNode | number {
     if (path.parent === undefined) return 63;
     const parent = this.directory(path.parent);
-    return this.removedDirectories.has(parent) ? 44 : parent;
+    if (this.removedDirectories.has(parent)) return 44;
+    return (parent.mode & 0o300) === 0o300 ? parent : 2;
   }
   create(
     path: ResolvedPath,
@@ -335,6 +362,7 @@ export class MemFS implements FileSystem {
     if (node.kind === "dir" && node.children.size > 0) return 55;
     if (path.parent === undefined) return 63;
     const parent = this.directory(path.parent);
+    if ((parent.mode & 0o300) !== 0o300) return 2;
     parent.children.delete(path.name);
     this.onLinkChange?.(node, -1);
     parent.mtime = Date.now();
@@ -363,6 +391,7 @@ export class MemFS implements FileSystem {
     if (typeof parent === "number") return parent;
     if (from.parent === undefined) return 63;
     const sourceParent = this.directory(from.parent);
+    if ((sourceParent.mode & 0o300) !== 0o300) return 2;
     sourceParent.children.delete(from.name);
     sourceParent.mtime = Date.now();
     parent.children.set(to.name, node);
@@ -393,6 +422,7 @@ export class MemFS implements FileSystem {
     let node: Node = this.root;
     for (const part of splitPath(path)) {
       if (node.kind !== "dir") return undefined;
+      this.require(node, 1);
       const child = node.children.get(part);
       if (!child) return undefined;
       node = child;
@@ -403,8 +433,10 @@ export class MemFS implements FileSystem {
   mkdirp(path: string): DirNode {
     let node: DirNode = this.root;
     for (const part of splitPath(path)) {
+      this.require(node, 1);
       let child = node.children.get(part);
       if (!child) {
+        this.require(node, 2);
         child = newDir();
         node.children.set(part, child);
         this.onLinkChange?.(child, 1);
@@ -423,6 +455,8 @@ export class MemFS implements FileSystem {
     const parent = this.mkdirp(dirname(path));
     const name = basename(path);
     const existing = parent.children.get(name);
+    if (existing) this.require(existing, 2);
+    else this.require(parent, 3);
     if (existing?.kind === "dir") throw new Error(`${name}: is a directory`);
     if (existing && append) {
       const merged = new Uint8Array(existing.data.length + data.length);
@@ -449,12 +483,15 @@ export class MemFS implements FileSystem {
 
   readFile(path: string): Uint8Array | undefined {
     const node = this.lookup(path);
-    return node?.kind === "file" ? node.data : undefined;
+    if (node?.kind !== "file") return undefined;
+    this.require(node, 4);
+    return node.data;
   }
 
   remove(path: string): boolean {
     const parent = this.lookup(dirname(path));
     if (parent?.kind !== "dir") return false;
+    this.require(parent, 3);
     const node = parent.children.get(basename(path));
     const removed = parent.children.delete(basename(path));
     if (removed) {
@@ -474,6 +511,7 @@ export class MemFS implements FileSystem {
         out.push(path);
         return;
       }
+      this.require(node, 5);
       for (const [name, child] of node.children)
         walk(child, path === "/" ? `/${name}` : `${path}/${name}`);
     };

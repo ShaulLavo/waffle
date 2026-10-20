@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
 import { PAGE } from "../fs/protocol";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
@@ -5,7 +6,7 @@ import { MemoryBackend, SharedFilesystemState } from "../fs";
 test("revoking a killed shared-page writer releases its file lock", () => {
   const state = new SharedFilesystemState();
   state.register(0, { kind: "file", ino: 1, size: PAGE, mtime: 1 }, new Uint8Array(PAGE));
-  const lock = 12 + 8;
+  const lock = SLOT_WORDS + 8;
   Atomics.store(state.slots, lock, 41);
   state.revokeOwner(41);
   expect(Atomics.load(state.slots, lock)).toBe(0);
@@ -67,11 +68,11 @@ test("revoking a reader must not repair a live writer's odd epoch", () => {
   const epoch = new Int32Array(new SharedArrayBuffer(4));
   Atomics.store(state.cells, 1, 42);
   Atomics.store(epoch, 0, 1);
-  Atomics.store(state.slots, 12 + 8, 41);
+  Atomics.store(state.slots, SLOT_WORDS + 8, 41);
   state.revokeOwner(41, epoch);
   expect(Atomics.load(epoch, 0)).toBe(1);
   expect(Atomics.load(state.cells, 1)).toBe(42);
-  expect(Atomics.load(state.slots, 12 + 8)).toBe(0);
+  expect(Atomics.load(state.slots, SLOT_WORDS + 8)).toBe(0);
 });
 
 test("revoking the global mutation owner repairs its epoch", () => {
@@ -158,7 +159,7 @@ test("stat rejects a metadata slot reused while waiting for its file lock", () =
   const state = new SharedFilesystemState();
   state.register(0, { kind: "file", ino: 1, size: 0, mtime: 1 });
   const slot = state.fileSlot(0);
-  const lock = slot * 12 + 8;
+  const lock = slot * SLOT_WORDS + 8;
   Atomics.store(state.slots, lock, 42);
   state.onContention = () => {
     Atomics.store(state.slots, lock, 0);

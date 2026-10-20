@@ -1,3 +1,4 @@
+import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { validatePersistedIndex } from "../fs/storage";
@@ -550,4 +551,39 @@ test("a queued deletion checkpoint pins a later cold reattachment until its upse
   validatePersistedIndex(store.index);
   expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("OLD");
   client.release(a.node);
+});
+
+test("inode permission contract uses actual persistence, service and client", async () => {
+  const store = new Store();
+  await permissionStorageCase(async () => store);
+});
+
+test("saved metadata adoption persists defaults without payload reads or format changes", async () => {
+  const store = new Store();
+  store.index = {
+    version: 1,
+    generation: 1,
+    root: 1,
+    nodes: [
+      { ino: 1, kind: "dir", mtime: 1, size: 0, children: [["file", 2]] },
+      { ino: 2, kind: "file", mtime: 1, size: 1, data: "saved" },
+    ],
+  };
+  store.payloads.set("saved", new Uint8Array([9]));
+  const { client } = await fixture(store);
+  const root = await client.asyncCall("preopen", ["/"]);
+  const path = await client.asyncCall("resolve", [root, "file"]);
+  expect(await client.asyncCall("permissions", [path.node])).toEqual({
+    mode: 0o600,
+    modeSupported: 0o600,
+    access: 6,
+    accessSupported: 6,
+  });
+  await client.asyncCall("flush");
+  expect(store.reads).toBe(0);
+  expect(store.index.version).toBe(1);
+  expect(store.index.nodes.find((entry: any) => entry.ino === 2)).toMatchObject({
+    mode: 0o600,
+    data: "saved",
+  });
 });

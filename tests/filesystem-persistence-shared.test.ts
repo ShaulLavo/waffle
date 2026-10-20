@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
 import { PAGE, createFilesystemIdentity } from "../fs/protocol";
 import * as shared from "../fs/shared";
@@ -64,7 +65,7 @@ test("direct guest writes and appends are visible to persistence without an RPC"
 test("shared revisions remain monotonic across low-word overflow on slow and direct writes", () => {
   const state = fixture();
   const slot = state.fileSlot(0),
-    base = slot * 12;
+    base = slot * SLOT_WORDS;
   Atomics.store(state.slots, base + 10, -1);
   expect(state.revision(0)).toBe(0xffffffff);
   state.write(0, [new Uint8Array([90])], 0);
@@ -116,7 +117,7 @@ test("failed growth, empty I/O, reads and capacity growth do not dirty shared co
 test("snapshot retains matching bytes, metadata and revision when a writer follows its unlock", () => {
   const state = fixture();
   const compare = Atomics.compareExchange;
-  const lock = state.fileSlot(0) * 12 + 8;
+  const lock = state.fileSlot(0) * SLOT_WORDS + 8;
   let changed = false;
   Atomics.compareExchange = ((...args: any[]) => {
     const result = Reflect.apply(compare, Atomics, args);
@@ -200,14 +201,14 @@ test("evicting a collision preserves lookup for the remaining files", () => {
 test("eviction checks references and revision only after acquiring the file lock", () => {
   const state = fixture();
   const slot = state.fileSlot(0),
-    lock = slot * 12 + 8;
+    lock = slot * SLOT_WORDS + 8;
   const revision = state.revision(0)!;
   Atomics.store(state.slots, lock, 42);
   let contended = false;
   state.onContention = () => {
     contended = true;
     // A peer owns the held file lock and publishes its retain before handing it over.
-    Atomics.add(state.slots, slot * 12 + 6, 1);
+    Atomics.add(state.slots, slot * SLOT_WORDS + 6, 1);
     Atomics.store(state.slots, lock, 0);
   };
   expect(state.evict(0, revision)).toBe(false);
@@ -216,7 +217,7 @@ test("eviction checks references and revision only after acquiring the file lock
   state.release(0);
   Atomics.store(state.slots, lock, 42);
   state.onContention = () => {
-    Atomics.store(state.slots, slot * 12 + 10, revision + 1);
+    Atomics.store(state.slots, slot * SLOT_WORDS + 10, revision + 1);
     Atomics.store(state.slots, lock, 0);
   };
   expect(state.evict(0, revision)).toBe(false);
@@ -227,7 +228,7 @@ test("eviction checks references and revision only after acquiring the file lock
 test("snapshots reject a slot recycled between lookup and file lock acquisition", () => {
   const state = fixture();
   const compare = Atomics.compareExchange;
-  const lock = state.fileSlot(0) * 12 + 8;
+  const lock = state.fileSlot(0) * SLOT_WORDS + 8;
   let intercepted = false;
   Atomics.compareExchange = ((...args: any[]) => {
     if (!intercepted && args[0] === state.slots && args[1] === lock && args[2] === 0) {

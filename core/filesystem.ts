@@ -1,10 +1,39 @@
+export class FilesystemError extends Error {
+  constructor(
+    public errno: number,
+    message = `filesystem errno ${errno}`,
+  ) {
+    super(message);
+  }
+}
+
 /** Opaque filesystem-owned identity. Open handles remain valid across rename and unlink. */
 export type FileHandle = number;
+export interface FilePermissions {
+  mode: number;
+  modeSupported: number;
+  access: number;
+  accessSupported: number;
+}
+
+/** One virtual principal; regular-file execution belongs to the program registry. */
+export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermissions {
+  const accessSupported = kind === "directory" ? 7 : 6;
+  return {
+    mode,
+    modeSupported: kind === "directory" ? 0o1700 : 0o600,
+    access: (mode >>> 6) & accessSupported,
+    accessSupported,
+  };
+}
+
 export interface FileStat {
   kind: "file" | "directory";
   ino: number;
   size: number;
   mtime: number;
+  /** Absent means unsupported, not mode zero. */
+  mode?: number;
 }
 export interface DirectoryEntry {
   name: string;
@@ -29,6 +58,8 @@ export interface FileSystem {
   release(handle: FileHandle): void;
   resolve(directory: FileHandle, path: string): ResolvedPath | number;
   stat(handle: FileHandle): FileStat;
+  /** Supported clear bits deny access; unsupported bits carry no answer. */
+  permissions?(handle: FileHandle): FilePermissions | undefined;
   /** Bytes transferred, or negative WASI errno; errors must not advance the open offset. */
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number;
   /** Bytes transferred, or negative WASI errno; partial success returns its byte count. */
@@ -45,6 +76,7 @@ export interface FileSystem {
   setMtime(handle: FileHandle, mtime: number): number;
   /** Explicit durability barrier; pure-memory filesystems need no storage work. */
   sync?(handle: FileHandle): number;
+  /** Throws FilesystemError for mode denial and other filesystem failures. */
   readdir(handle: FileHandle): DirectoryEntry[];
   /** Atomically create at parent/name; exclusive rejects existing entries. Nonexclusive file
    * creation returns the current entry, even if it appeared after resolve. */

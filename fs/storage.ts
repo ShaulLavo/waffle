@@ -1,8 +1,11 @@
+import { permissionsFor } from "../core/filesystem.js";
 /** Durable inode metadata. Payload keys are immutable, including across snapshots. */
 export interface PersistedNode {
   ino: number;
   kind: "file" | "dir";
   mtime: number;
+  /** Absent only in saved metadata predating permission adoption. */
+  mode?: number;
   size: number;
   children?: [string, number][];
   data?: string;
@@ -61,11 +64,18 @@ export function validInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+function validateMode(node: PersistedNode): void {
+  if (node.mode === undefined) return;
+  const mask = permissionsFor(node.kind === "dir" ? "directory" : "file", 0).modeSupported;
+  if (!validInteger(node.mode) || node.mode > mask || (node.mode & ~mask) !== 0) invalid();
+}
+
 export function validatePersistedNode(value: unknown): asserts value is PersistedNode {
   if (!value || typeof value !== "object") invalid();
   const node = value as PersistedNode;
   if (!validInteger(node.ino) || !validInteger(node.size) || !Number.isFinite(node.mtime))
     invalid();
+  validateMode(node);
   if (node.kind === "file") {
     if (
       node.children !== undefined ||
