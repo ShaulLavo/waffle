@@ -67,12 +67,22 @@ export class ProofClient {
     this.faults.push(message);
     if (this.faults.length > 32) this.faults.shift();
   }
-  private receive(value: { id?: number; result?: Reply; nudge?: boolean; diagnostic?: unknown }): void {
+  private receive(value: {
+    id?: number;
+    result?: Reply;
+    nudge?: boolean;
+    diagnostic?: unknown;
+  }): void {
     if (value.diagnostic) {
       this.observe(value.diagnostic);
       return;
     }
-    this.observe({ phase: "received", id: value.id, reply: value.result?.kind, nudge: value.nudge });
+    this.observe({
+      phase: "received",
+      id: value.id,
+      reply: value.result?.kind,
+      nudge: value.nudge,
+    });
     if (value.nudge) {
       this.nudges++;
       return;

@@ -836,6 +836,94 @@ async function minimalVolatileClose(browser: Browser): Promise<void> {
     await context.close();
   }
 }
+interface EchoReply {
+  id: number;
+  instance: string;
+  connections: number;
+  value: string;
+}
+declare global {
+  var echoProbe: {
+    worker: SharedWorker;
+    sequence: number;
+    pending: Map<number, (reply: EchoReply) => void>;
+  };
+}
+async function echoConnect(page: Page, token: string): Promise<void> {
+  await page.evaluate((token) => {
+    const worker = new SharedWorker(`/lifetime-echo.js?token=${token}`, {
+      name: token,
+      type: "module",
+    });
+    const pending = new Map<number, (reply: EchoReply) => void>();
+    globalThis.echoProbe = { worker, sequence: 0, pending };
+    worker.port.onmessage = (event: MessageEvent<EchoReply>) => {
+      pending.get(event.data.id)?.(event.data);
+      pending.delete(event.data.id);
+    };
+    worker.port.start();
+  }, token);
+}
+function echoInPage(value: string | undefined): Promise<EchoReply | "TIMEOUT"> {
+  const probe = echoProbe;
+  const id = ++probe.sequence;
+  return new Promise<EchoReply | "TIMEOUT">((resolve) => {
+    const timer = setTimeout(() => resolve("TIMEOUT"), 3000);
+    probe.pending.set(id, (reply) => {
+      clearTimeout(timer);
+      resolve(reply);
+    });
+    probe.worker.port.postMessage({ id, value });
+  });
+}
+async function echoExchange(page: Page, value?: string): Promise<EchoReply | "TIMEOUT"> {
+  return page.evaluate(echoInPage, value);
+}
+async function rawLifetime(browser: Browser): Promise<void> {
+  const context = await browser.newContext();
+  const token = crypto.randomUUID();
+  const pages: Page[] = [];
+  const attachments: unknown[] = [];
+  try {
+    for (let index = 0; index < 4; index++) {
+      const page = await context.newPage();
+      pages.push(page);
+      await page.goto(origin);
+      await echoConnect(page, token);
+      attachments.push(await echoExchange(page));
+    }
+    const [first, second] = pages;
+    assert(first && second, "Missing raw lifecycle pages");
+    const write = await echoExchange(first, "memory-ack");
+    const before = await echoExchange(second);
+    await first.close();
+    const after = await echoExchange(second);
+    const diagnostic = await echoExchange(second);
+    console.log(
+      JSON.stringify({ phase: "raw-no-lock-no-db", attachments, write, before, after, diagnostic }),
+    );
+    assert(
+      before !== "TIMEOUT" && after !== "TIMEOUT",
+      "Raw SharedWorker first-close response lost",
+    );
+    assert(
+      before.instance === after.instance && after.value === "memory-ack",
+      "Raw SharedWorker reset",
+    );
+    record("raw module SharedWorker first-client close", { before, after });
+  } catch (error) {
+    const result = {
+      engine: activeEngine,
+      arm: "raw-lifetime",
+      status: "FAILED",
+      error: String(error),
+    };
+    outcomes.push(result);
+    console.error(JSON.stringify(result));
+  } finally {
+    await context.close();
+  }
+}
 async function diagnosticSurvivor(page: Page) {
   return page.evaluate(async () => ({
     locks: await navigator.locks.query(),
@@ -853,8 +941,12 @@ async function diagnosticClose(browser: Browser, arm: Arm): Promise<void> {
     for (let index = 0; index < 4; index++) {
       const page = await context.newPage();
       pages.push(page);
-      page.on("console", (message) => console.log(JSON.stringify({ arm, page: index, text: message.text() })));
-      page.on("close", () => console.log(JSON.stringify({ arm, page: index, phase: "driver-page-close" })));
+      page.on("console", (message) =>
+        console.log(JSON.stringify({ arm, page: index, text: message.text() })),
+      );
+      page.on("close", () =>
+        console.log(JSON.stringify({ arm, page: index, phase: "driver-page-close" })),
+      );
       await page.goto(origin + "?trace=1");
       ok(await connected(page, workspace, arm));
     }
@@ -867,7 +959,9 @@ async function diagnosticClose(browser: Browser, arm: Arm): Promise<void> {
     const after = await execute(second, { kind: "read", path: "/minimal" });
     console.log(JSON.stringify({ arm, phase: "diagnostic-close", before, after }));
     for (const page of pages.slice(1))
-      console.log(JSON.stringify({ arm, phase: "survivor", diagnostic: await diagnosticSurvivor(page) }));
+      console.log(
+        JSON.stringify({ arm, phase: "survivor", diagnostic: await diagnosticSurvivor(page) }),
+      );
     const nextRead = await execute(second, { kind: "read", path: "/minimal" });
     console.log(JSON.stringify({ arm, phase: "post-diagnostic-read", nextRead }));
     ok(after);
@@ -880,6 +974,11 @@ async function diagnosticClose(browser: Browser, arm: Arm): Promise<void> {
   } finally {
     await context.close();
   }
+}
+async function diagnosticControls(browser: Browser): Promise<void> {
+  await rawLifetime(browser);
+  for (const arm of ["volatile-fast", "fenced-safe", "fenced-fast"] as const)
+    await diagnosticClose(browser, arm);
 }
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
@@ -894,8 +993,7 @@ async function browserControl(engine: keyof typeof engines): Promise<void> {
   );
   try {
     if (process.env.E5_DIAGNOSTIC === "1") {
-      for (const arm of ["volatile-fast", "fenced-safe", "fenced-fast"] as const)
-        await diagnosticClose(browser, arm);
+      await diagnosticControls(browser);
       return;
     }
     if (process.env.E5_MINIMAL_ONLY === "1") {
@@ -915,7 +1013,7 @@ try {
   const routes: Record<string, Blob | string> = {
     "/": '<!doctype html><title>Experimental E5 filesystem proof</title><script type="module" src="/page.js"></script>',
   };
-  for (const entry of ["page", "authority", "guest"])
+  for (const entry of ["page", "authority", "guest", "lifetime-echo"])
     routes[`/${entry}.js`] = await browserBundle(`tests/vfs-coordinator-proof/${entry}.ts`);
   routes["/fs-worker.js"] = await browserBundle("browser/fs-worker.ts");
   const port = Number(process.env.E5_PORT ?? "43187");
