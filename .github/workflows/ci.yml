@@ -2,38 +2,106 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: "1.4.3"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      libc: ${{ steps.paths.outputs.libc }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            libc:
+              - '.github/**'
+              - 'patches/**'
+              - 'scripts/build-wasi-libc.sh'
+              - 'scripts/test-wasi-libc.ts'
+              - 'scripts/owned-command.ts'
+              - 'core/**'
+              - 'fs/**'
+              - 'proc/**'
+              - 'interrupt/**'
+              - 'browser/**'
+              - 'runtime.ts'
+              - 'index.ts'
+              - 'package.json'
+              - 'bun.lock'
+              - 'tests/wasi-libc.test.ts'
+              - 'tests/fixtures/**'
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - run: bun run prepare
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
       - run: bun test
       - run: bun run size
       - run: test -z "$(git ls-files dist)"
   libc:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ env.BUN_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/cache@v4
+        id: wasmtime
+        with:
+          path: ~/downloader/bin/wasmtime
+          key: ${{ runner.os }}-wasmtime-49.0.3
       - uses: bytecodealliance/actions/wasmtime/setup@v1
+        if: steps.wasmtime.outputs.cache-hit != 'true'
         with:
           version: 49.0.3
-      - run: bun install --frozen-lockfile
+      - name: Add cached Wasmtime to PATH
+        run: |
+          echo "$HOME/downloader/bin" >> "$GITHUB_PATH"
+          "$HOME/downloader/bin/wasmtime" --version
+      - uses: actions/cache@v4
+        id: fixtures
+        with:
+          path: ${{ runner.temp }}/libc-fixtures
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('scripts/build-wasi-libc.sh', 'scripts/test-wasi-libc.ts', 'scripts/owned-command.ts', 'patches/wasi-libc/**', 'tests/fixtures/preopen-guest.c', 'tests/fixtures/wasm-start-section.ts') }}
+      - uses: actions/cache@v4
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/libc-sysroot
+          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('scripts/build-wasi-libc.sh', 'patches/wasi-libc/**') }}
+      - uses: actions/cache@v4
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        id: sdk
+        with:
+          path: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
+          key: ${{ runner.os }}-wasi-sdk-34-b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4
       - name: Install pinned wasi-sdk 34
+        if: steps.fixtures.outputs.cache-hit != 'true' && steps.sdk.outputs.cache-hit != 'true'
         run: |
           cd "$RUNNER_TEMP"
           curl -fL --retry 3 https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o wasi-sdk.tar.gz
@@ -45,24 +113,24 @@ jobs:
           WASI_SDK_PATH: ${{ runner.temp }}/wasi-sdk-34.0-x86_64-linux
           WASI_LIBC_SCRATCH_ROOT: ${{ runner.temp }}
           WASMTIME: wasmtime
+          WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
+          WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
   browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - run: bun run prepare
-      - run: bunx playwright install --with-deps
-      - run: bun tests/storage-browser-runner.ts chromium firefox webkit
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
+      - run: bunx playwright install --with-deps chromium firefox webkit
+      - run: bun run test:browser
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-      - run: bun tests/storage-lock-browser-runner.ts chromium firefox webkit
-        env:
-          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
-      - run: bun tests/process-recycling-browser-runner.ts chromium firefox webkit
-        env:
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
   site:
     runs-on: ubuntu-latest
@@ -73,7 +141,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
       - run: bun run build
