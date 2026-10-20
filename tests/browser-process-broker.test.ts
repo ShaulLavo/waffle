@@ -18,6 +18,7 @@ import {
   createWorkerProcessTransport,
   WorkerProcessClient,
   workerProcessState,
+  workerProcessDirectoryId,
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -3804,4 +3805,69 @@ for (const metadata of ["valid", "missing"] as const)
     release();
     await bounded(fixture.broker.quiesce());
     expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
+  });
+
+
+async function prepublicationAdmissionFixture() {
+  const calls = { revoke: 0, quiesce: 0 };
+  const controller = {
+    filesystem: createFilesystemIdentity(),
+    revoke() {
+      calls.revoke++;
+    },
+    quiesce() {
+      calls.quiesce++;
+    },
+  };
+  const fixture = await admissionFixture({
+    allowDisposalFailure: true,
+    prepareSpawn(pid, broker) {
+      broker.registerController(pid, controller);
+    },
+  });
+  return { fixture, calls };
+}
+
+for (const path of ["external", "incoming"] as const)
+  test(`admission review r2: ${path} foreign rejection cannot acquire a local prepublication controller`, async () => {
+    const { fixture: local, calls } = await prepublicationAdmissionFixture();
+    const foreign = await admissionFixture();
+    expect(foreign.pid).toBe(local.pid);
+    expect(foreign.message.transport.slot).toBe(local.message.transport.slot);
+    const directory = workerProcessDirectoryId(local.message.transport);
+    expect(workerProcessDirectoryId(foreign.message.transport)).not.toBe(directory);
+    foreign.message.transport.data = undefined;
+    if (path === "external")
+      local.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
+    else
+      await bounded(
+        local.broker.runtimeMessage(foreign.message, foreign.client.pid).catch((error: unknown) => error),
+      );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const beforeGlobalFence = { ...calls };
+    const registry: unknown = Reflect.get(local.broker, "acquiredProcesses");
+    if (!(registry instanceof Map)) throw new Error("missing acquired lifetime registry");
+    const actualLifetime: unknown = registry.get(local.pid);
+    const expectedLifetime = `${directory}:${local.message.transport.slot}:${local.pid}`;
+    const quiescence = await bounded(local.broker.quiesce().catch((error: unknown) => error));
+    console.info("repair r2 prepublication ownership", {
+      path,
+      beforeGlobalFence,
+      expectedLifetime,
+      actualLifetime,
+      quiescence,
+      local: admissionObservation(local),
+      foreign: admissionObservation(foreign),
+    });
+    expect(actualLifetime).toBe(expectedLifetime);
+    expect(beforeGlobalFence).toEqual({ revoke: 0, quiesce: 0 });
+    expect(quiescence).toBeUndefined();
+    expect(admissionObservation(foreign)).toMatchObject({ confirmed: 1, pending: 0, closed: 1, launches: 0 });
+    expect(admissionObservation(local)).toMatchObject({ confirmed: 0, pending: 1, closed: 0, launches: 0, outcome: null });
+    expect(foreign.reader.readiness().hangup).toBe(true);
+    expect(foreign.reader.tryRead([new Uint8Array(1)])).toBe(0);
+    expect(local.reader.readiness().hangup).toBe(false);
+    expect(local.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+    expect(calls).toEqual({ revoke: 1, quiesce: 1 });
+    await bounded(local.broker.dispose());
   });
