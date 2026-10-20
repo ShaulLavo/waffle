@@ -7,7 +7,9 @@ No production exports, format, default, consumer or permissions changes.
 
 1. `fenced-safe` and `fenced-fast` use one SharedWorker sequencer. Every mutation
    and ordinary read validates the authority epoch in the same IndexedDB
-   transaction that publishes or admits it. SAFE requests explicitly strict
+   transaction that publishes or admits it. Fenced replies recheck authority
+   after any test-controlled response parking, so even an already admitted read
+   or committed write cannot emit an old-authority success after replacement. SAFE requests explicitly strict
    durability and waits for completion. Fenced FAST uses relaxed transactions;
    this is an experimental stronger tab-death behavior, not a requirement that
    replaces the approved memory-ACK FAST option. Suspected authority replacement
@@ -38,19 +40,28 @@ correctness fixture, not a packed-engine revival or production storage proposal.
 IDs are MemFS inode numbers. Rename preserves identity and content version.
 Generation labels one coherent tree; sequence labels change delivery; history
 prevents reuse after volatile loss; watermark advances only on strict completion.
-Checkpoint does not invent a logical mutation. Format is proof-only and isolated
+Checkpoint does not invent a logical mutation. Every FAST authority restart
+changes history and clears the old change log conservatively, including relaxed
+IDB FAST. Its strict claim checkpoints the recovered cut. Persisted duplicate
+receipts remain queryable across histories before an absent receipt is rejected
+as OUTCOME_UNKNOWN. SAFE preserves its strict history. An ahead-of-head change
+cursor returns a gap, never an empty caught-up batch. Format is proof-only and isolated
 under a random database name. It never opens a saved workspace.
 
 Only the authority runs real MemFS operations. Every ordinary tool read/snapshot
 visits the authority. Followers hold no read-authoritative tree. Notifications are
 optional nudges; changes pull the ordered log and detect gaps even when the final
-nudge is dropped. Explicit snapshots return a tree plus its exact stream cursor.
+nudge is dropped. Explicit snapshots return the bounded full tree with paths/bytes plus its exact
+stream cursor. This is not the production streamed WorkspaceVfs API.
 
 Each independent tab has a dedicated guest worker and a tab-local SAB mailbox.
 The guest runs an original generated Wasm fixture through production WASI and a
 synchronous FileSystem bridge. Bytes and operations cross the tab's MessagePort;
 no SAB is sent to the SharedWorker. No guest mutates follower data and ACKs locally.
 The bridge is experimental, not a production syscall-path performance claim.
+It has no retained-unlinked-handle semantics; retain/release are no-ops and
+unlink, link and guest fsync throw UNSUPPORTED. The existing production direct
+SAB writer remains unchanged and is not covered by this bridge proof.
 
 ## Fixed controls and bounds
 
@@ -62,8 +73,15 @@ last-client close and abrupt actual worker termination where controllable.
 Run the unchanged current production path as an exclusive-ownership control.
 
 Limits are small and explicit: 64 KiB per request, 1 MiB tree payload, 256 retained
-receipts and 64 change records. Receipt exhaustion rejects admission rather than
+receipts and 64 change records, 32 queued commands, 64 pending requests per client,
+8 attached ports per worker and 256 trace events. These fixture limits do not
+prove production aggregate memory/above-RAM bounds. Receipt exhaustion rejects admission rather than
 forgetting an operation. Client requests and test gates have fixed deadlines.
+A bootstrap lock queue has a 3-second abort bound. A request can carry an
+explicit admission expiry; a parked request resumed after that time fails before
+mutation. Client response deadlines alone do not imply cancellation or failure
+of a previously published operation. Recover its receipt, never replay under a
+new identity.
 All gates/phase controls are labeled deterministic interleavings, not owner freeze.
 Unsupported actual freeze, Safari/iOS, or process-kill controls remain NOT VERIFIED.
 

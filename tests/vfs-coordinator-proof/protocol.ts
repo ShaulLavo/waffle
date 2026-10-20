@@ -19,7 +19,9 @@ export interface Request {
   history: string;
   actor: Actor;
   operation: Operation;
+  expiresAt?: number;
   gate?: string;
+  replyGate?: string;
   dropReply?: boolean;
   dropNudge?: boolean;
 }
@@ -60,10 +62,18 @@ export type Command =
   | { kind: "inspect" }
   | { kind: "close" }
   | { kind: "die" };
-export interface Envelope { id: number; command: Command }
+export interface Envelope {
+  id: number;
+  command: Command;
+}
 export function cursor(state: Cursor): Cursor {
-  return { epoch: state.epoch, history: state.history, generation: state.generation,
-    watermark: state.watermark, durableWatermark: state.durableWatermark };
+  return {
+    epoch: state.epoch,
+    history: state.history,
+    generation: state.generation,
+    watermark: state.watermark,
+    durableWatermark: state.durableWatermark,
+  };
 }
 export function failure(error: unknown): Reply {
   const message = error instanceof Error ? error.message : String(error);
@@ -72,5 +82,14 @@ export function failure(error: unknown): Reply {
 }
 export function mutation(operation: Operation): boolean {
   if (operation.kind !== "guest") return ["write", "append", "rename"].includes(operation.kind);
-  return ["write", "append", "create", "rename", "resize", "setMtime", "removePath", "link"].includes(operation.method);
+  return [
+    "write",
+    "append",
+    "create",
+    "rename",
+    "resize",
+    "setMtime",
+    "removePath",
+    "link",
+  ].includes(operation.method);
 }
