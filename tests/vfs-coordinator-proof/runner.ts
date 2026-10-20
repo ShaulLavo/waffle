@@ -971,6 +971,7 @@ async function diagnosticClose(browser: Browser, arm: Arm): Promise<void> {
     console.log(JSON.stringify({ arm, phase: "post-diagnostic-read", nextRead }));
     ok(after);
     assert(ok(after).result !== null, "Diagnostic lost file");
+    assert(ok(nextRead).result !== null, "Post-diagnostic read lost file");
     record(`${arm}: instrumented first-client close`, { after, nextRead });
   } catch (error) {
     const result = { engine: activeEngine, arm, status: "FAILED", error: String(error) };
