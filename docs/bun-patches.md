@@ -23,7 +23,9 @@ from supervisor records, gives rejection cleanup a codec-independent discard
 capability, and retains external rejection fences through quiescence and disposal.
 Acquired consumers bind to the directory, slot and monotonic PID at registration or
 supervisor admission. Controllers registered before publication bind through this
-broker's root directory before rejection cleanup. Payload and acquired-controller
+broker's adopted root directory before rejection cleanup. Transports retained only
+for failed cleanup never establish acquisition authority. Already admitted lifetimes
+come from the supervisor admission hook. Payload and acquired-controller
 filesystem fences both precede confirmation. Sender-validation failure starts cleanup
 for the incoming transfer before propagating the error.
 A cleanup-only filesystem codec can release shared reservation tokens without a

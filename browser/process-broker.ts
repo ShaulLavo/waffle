@@ -529,8 +529,7 @@ export class BrowserProcessBroker {
     return `${workerProcessDirectoryId(transport)}:${transport.slot}:${transport.pid}`;
   }
   private runtimeProcessLifetime(pid: number): string | undefined {
-    const transport = this.transport.get(pid);
-    if (transport) return this.processLifetime(transport);
+    // Only adopted directories can resolve a controller registered before publication.
     for (const root of this.roots.values()) {
       const state = Array.from(directoryProcesses(root.directory)).find(
         (state) => state.pid === pid,
@@ -564,8 +563,7 @@ export class BrowserProcessBroker {
     this.acquiredProcesses.delete(pid);
   }
   private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
-    // prepareSpawn may register a controller before the worker publishes its directory row.
-    // Bind it only through our own root directory or an admitted transport, never a foreign PID.
+    // prepareSpawn may register before publication; resolve against our adopted roots.
     this.acquireController(transport.pid);
     const acquired = this.acquiredProcesses.get(transport.pid) === this.processLifetime(transport);
     let filesystem: FilesystemIdentity | undefined;

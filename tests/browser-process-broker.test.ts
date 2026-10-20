@@ -3807,7 +3807,6 @@ for (const metadata of ["valid", "missing"] as const)
     expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
   });
 
-
 async function prepublicationAdmissionFixture() {
   const calls = { revoke: 0, quiesce: 0 };
   const controller = {
@@ -3841,7 +3840,9 @@ for (const path of ["external", "incoming"] as const)
       local.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
     else
       await bounded(
-        local.broker.runtimeMessage(foreign.message, foreign.client.pid).catch((error: unknown) => error),
+        local.broker
+          .runtimeMessage(foreign.message, foreign.client.pid)
+          .catch((error: unknown) => error),
       );
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const beforeGlobalFence = { ...calls };
@@ -3862,8 +3863,19 @@ for (const path of ["external", "incoming"] as const)
     expect(actualLifetime).toBe(expectedLifetime);
     expect(beforeGlobalFence).toEqual({ revoke: 0, quiesce: 0 });
     expect(quiescence).toBeUndefined();
-    expect(admissionObservation(foreign)).toMatchObject({ confirmed: 1, pending: 0, closed: 1, launches: 0 });
-    expect(admissionObservation(local)).toMatchObject({ confirmed: 0, pending: 1, closed: 0, launches: 0, outcome: null });
+    expect(admissionObservation(foreign)).toMatchObject({
+      confirmed: 1,
+      pending: 0,
+      closed: 1,
+      launches: 0,
+    });
+    expect(admissionObservation(local)).toMatchObject({
+      confirmed: 0,
+      pending: 1,
+      closed: 0,
+      launches: 0,
+      outcome: null,
+    });
     expect(foreign.reader.readiness().hangup).toBe(true);
     expect(foreign.reader.tryRead([new Uint8Array(1)])).toBe(0);
     expect(local.reader.readiness().hangup).toBe(false);

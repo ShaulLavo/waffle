@@ -79,6 +79,16 @@ checks current pending membership instead of reading a collected tagged row. Ori
 review source and failed runs remain unchanged. Repair evidence is under
 `/work/reports/waffle-finish-20261021/admission/repair-r1/`.
 
+The r2 independent control found that incoming rejected transports retained for
+cleanup could incorrectly bind an unadmitted local controller to a foreign lifetime.
+Deferred controller binding now uses only publication in this broker's adopted root
+directories. Successful supervisor admission already records the exact acquired
+lifetime through its admission hook. Cleanup retention cannot authenticate either
+path. The permanent `admission review r2` controls cover incoming and external
+foreign rejection before local admission. Original thirteen-case reviewer controls
+and failing-first evidence remain under
+`/work/reports/waffle-finish-20261021/admission/repair-r2/`.
+
 ## Storage and networking
 
 The shared filesystem supports memory, IndexedDB and OPFS backends behind the same capability
