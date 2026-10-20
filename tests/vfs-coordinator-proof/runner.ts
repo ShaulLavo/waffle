@@ -305,7 +305,9 @@ async function expiredVolatile(old: Page, replacement: Page, workspace: string) 
   await waitParked(old, gate);
   const refused = await connected(replacement, workspace, "volatile-fast", true);
   assert(refused.kind === "error" && refused.code === "UNAVAILABLE", "Stole held volatile lock");
-  await old.waitForFunction((expiresAt) => Date.now() >= expiresAt, request.expiresAt, {
+  const expiresAt = request.expiresAt;
+  assert(expiresAt !== undefined, "Missing expiry");
+  await old.waitForFunction((expiresAt) => Date.now() >= expiresAt, expiresAt, {
     timeout: 2000,
   });
   await old.evaluate((gate) => proof.client.send({ kind: "release", gate }), gate);
@@ -527,6 +529,9 @@ async function lastClient(browser: Browser, engine: string, arm: Arm) {
     await context.close();
   }
 }
+function unobservedAfterDeadline(): Promise<string> {
+  return new Promise((resolve) => setTimeout(() => resolve("NOT_OBSERVED"), 1000));
+}
 async function killAuthority(browser: Browser, workspace: string): Promise<unknown> {
   const cdp = await browser.newBrowserCDPSession();
   try {
@@ -535,10 +540,10 @@ async function killAuthority(browser: Browser, workspace: string): Promise<unkno
       (target) => target.type === "shared_worker" && target.url.includes(workspace),
     );
     assert(target, "SharedWorker target absent");
-    const destroyed = new Promise<string>((resolve) =>
-      cdp.on("Target.targetDestroyed", (event) => {
-        if (event.targetId === target.targetId) resolve(event.targetId);
-      }),
+    const destroyed = Promise.withResolvers<string>();
+    cdp.on(
+      "Target.targetDestroyed",
+      (event) => event.targetId === target.targetId && destroyed.resolve(event.targetId),
     );
     await cdp.send("Target.setDiscoverTargets", { discover: true });
     const closed = await cdp.send("Target.closeTarget", { targetId: target.targetId });
@@ -548,10 +553,7 @@ async function killAuthority(browser: Browser, workspace: string): Promise<unkno
       !after.targetInfos.some((value) => value.targetId === target.targetId),
       "Authority target still live",
     );
-    const event = await Promise.race([
-      destroyed,
-      new Promise<string>((resolve) => setTimeout(() => resolve("NOT_OBSERVED"), 1000)),
-    ]);
+    const event = await Promise.race([destroyed.promise, unobservedAfterDeadline()]);
     return {
       mechanism: "CDP Target.closeTarget shared_worker",
       target,
@@ -728,22 +730,24 @@ async function armControl(browser: Browser, arm: Arm): Promise<void> {
     await context.close();
   }
 }
+async function runArmSequence(browser: Browser, engine: string, arm: Arm) {
+  try {
+    await armControl(browser, arm);
+    await lastClient(browser, engine, arm);
+    await deathControl(browser, engine, arm);
+  } catch (error) {
+    const result = { engine, arm, status: "FAILED", error: String(error) };
+    outcomes.push(result);
+    console.error(JSON.stringify(result));
+  }
+}
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
   const browser = await lifecycle.launch(engine);
   try {
     await productionControl(browser, engine);
-    for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const) {
-      try {
-        await armControl(browser, arm);
-        await lastClient(browser, engine, arm);
-        await deathControl(browser, engine, arm);
-      } catch (error) {
-        const result = { engine, arm, status: "FAILED", error: String(error) };
-        outcomes.push(result);
-        console.error(JSON.stringify(result));
-      }
-    }
+    for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const)
+      await runArmSequence(browser, engine, arm);
   } finally {
     await lifecycle.closeBrowser(browser);
   }

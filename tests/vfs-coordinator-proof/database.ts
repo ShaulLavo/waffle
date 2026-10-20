@@ -26,10 +26,28 @@ export function initial(arm: Arm): State {
     changes: [],
   };
 }
+type Update<T> = (value: State | undefined) => { state?: State; result: T };
+function applyUpdate<T>(
+  store: IDBObjectStore,
+  tx: IDBTransaction,
+  value: State | undefined,
+  update: Update<T>,
+  success: (value: T) => void,
+  failed: (error: unknown) => void,
+): void {
+  try {
+    const next = update(value);
+    success(next.result);
+    if (next.state) store.put(next.state, "head");
+  } catch (error) {
+    failed(error);
+    tx.abort();
+  }
+}
 export function transaction<T>(
   db: IDBDatabase,
   durability: IDBTransactionDurability,
-  update: (value: State | undefined) => { state?: State; result: T },
+  update: Update<T>,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction("workspace", "readwrite", { durability });
@@ -43,16 +61,13 @@ export function transaction<T>(
     tx.oncomplete = () => resolve(result);
     tx.onabort = () => reject(problem ?? tx.error ?? new Error("ABORT"));
     const get = store.get("head");
-    get.onsuccess = () => {
-      try {
-        const next = update(get.result);
-        result = next.result;
-        if (next.state) store.put(next.state, "head");
-      } catch (error) {
-        problem = error;
-        tx.abort();
-      }
+    const success = (value: T) => {
+      result = value;
     };
+    const failed = (error: unknown) => {
+      problem = error;
+    };
+    get.onsuccess = () => applyUpdate(store, tx, get.result, update, success, failed);
   });
 }
 export async function readRegistry(workspace: string): Promise<State | undefined> {
