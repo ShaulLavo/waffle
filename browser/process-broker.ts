@@ -36,6 +36,7 @@ import {
   wakeWorkerProcess,
   workerProcessDirectoryId,
   workerProcessState,
+  type WorkerDescriptorCodec,
   type WorkerProcessMessage,
   type WorkerProcessTransport,
 } from "../proc/worker-client.js";
@@ -141,6 +142,7 @@ export class BrowserProcessBroker {
   private readonly fences = new Map<number, Promise<void>>();
   private readonly startupDiagnostics = new Set<Promise<void>>();
   private readonly rejectedTransfers = new Map<string, Promise<void>>();
+  private cleanupCodec?: WorkerDescriptorCodec;
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
     check: async (_sender, path, cwd, active) => {
@@ -491,7 +493,7 @@ export class BrowserProcessBroker {
     );
   }
   private discardCodec() {
-    return this.pipes.codec(createRuntimeTerminalCodec({
+    return this.cleanupCodec ??= this.pipes.codec(createRuntimeTerminalCodec({
       fallback: createFilesystemDescriptorCodec(undefined, undefined, () => this.options.filesystem.sweep?.()),
     }));
   }
@@ -698,8 +700,10 @@ export class BrowserProcessBroker {
     this.traceSpawn(message, "rejected", reason);
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
-    const pending = Promise.resolve().then(() => this.releaseRejectedTransfer(transport));
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const pending = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
     this.rejectedTransfers.set(key, pending);
+    void this.releaseRejectedTransfer(transport).then(resolve, reject);
     void pending.then(
       () => this.rejectedTransfers.delete(key),
       (error) => this.report(error),
