@@ -7,11 +7,23 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `core/`, `fs/`, `proc/`, `interrupt/`                                                           | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                               |
 | `browser/net/`                                                                                  | Original adapter | Generic ring, HTTP framing, fetch and host transport. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle.                                                                                                                                                                                |
 | `browser/process-broker.ts`, `browser/worker.ts`                                                | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned.                                                                                                                                                                     |
+| `proc/worker-broker.ts`, `proc/filesystem-codec.ts`, `browser/process-broker.ts` | Original adapter | Queued PID/directory ownership, metadata-independent token discard and retained rejection fences, based on Waffle `15ba700`. |
 | `fs/opfs.ts`                                                                                    | Adaptation       | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation, queued lock ownership/cancellation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                         | Original adapter | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                    |
 | `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts` | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                |
 | `core/memory-views.js`                                                                          | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity.                                                                                                                                                                                                                      |
 | `patches/wasi-libc/preopen-scan.patch`                                                          | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.    |
+
+## Process admission ownership
+
+`proc/worker-broker.ts`, `proc/filesystem-codec.ts` and `browser/process-broker.ts`
+are original Waffle adapters, based on Waffle revision
+`15ba700268b6199e22ef61aa0d9464798c0d9562`. This change separates queued ownership
+from supervisor records, gives rejection cleanup a codec-independent discard
+capability, and retains external rejection fences through quiescence and disposal.
+A cleanup-only filesystem codec can release shared reservation tokens without a
+process identity; importing still requires an identity. No upstream implementation
+was copied or adapted, and no filesystem storage implementation changed.
 
 ## Patched wasi-libc preopen scan
 

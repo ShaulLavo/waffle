@@ -1355,7 +1355,7 @@ test("a completed runtime root retains queued background descendants until their
   });
   root.data = { filesystem: createFilesystemIdentity() };
   const messages: WorkerProcessMessage[] = [],
-    descriptors = new DescriptorTable();
+    const descriptors = owned.descriptors = new DescriptorTable();
   const host = new WorkerPipeHost({
     transport: root,
     postMessage: (message) => messages.push(message),
@@ -3121,9 +3121,11 @@ async function admissionFixture(
     allowDisposalFailure?: boolean;
   } = {},
 ) {
-  let broker: BrowserProcessBroker | undefined;
-  let descriptors: DescriptorTable | undefined;
-  let reader: PipeEndpoint | undefined;
+  const owned: {
+    broker?: BrowserProcessBroker;
+    descriptors?: DescriptorTable;
+    reader?: PipeEndpoint;
+  } = {};
   let releaseTokens = () => {};
   let restoreTransport = () => {};
   let cleaned = false;
@@ -3132,10 +3134,10 @@ async function admissionFixture(
     cleaned = true;
     releaseTokens();
     restoreTransport();
-    descriptors?.dispose();
-    reader?.close();
-    if (broker)
-      await bounded(broker.dispose()).catch((error: unknown) => {
+    owned.descriptors?.dispose();
+    owned.reader?.close();
+    if (owned.broker)
+      await bounded(owned.broker.dispose()).catch((error: unknown) => {
         if (!options.allowDisposalFailure) throw error;
       });
   };
@@ -3149,7 +3151,7 @@ async function admissionFixture(
   });
   const contexts: import("../proc/types.js").ProcessContext[] = [];
   const errors: unknown[] = [];
-  broker = new BrowserProcessBroker({
+  const broker = owned.broker = new BrowserProcessBroker({
     identities,
     table,
     registry,
@@ -3178,7 +3180,7 @@ async function admissionFixture(
   root.data = { filesystem: createFilesystemIdentity() };
   await bounded(broker.adoptRuntimeRoot(root));
   const messages: WorkerProcessMessage[] = [];
-  descriptors = new DescriptorTable();
+  const descriptors = owned.descriptors = new DescriptorTable();
   const host = new WorkerPipeHost({
     transport: root,
     postMessage: (message) => messages.push(message),
@@ -3197,7 +3199,7 @@ async function admissionFixture(
     },
   });
   const pair = host.createPipe();
-  reader = pair[0];
+  const reader = owned.reader = pair[0];
   const writerFd = descriptors.open(pair[1], 127n, 63n);
   const pid = client.spawn(client.pid, {
     executable: "admission",
@@ -3452,4 +3454,66 @@ test("codec construction missing metadata cannot bypass an acquired consumer's f
     launches: 0,
   });
   expect(stopped).toBe(0);
+});
+
+for (const path of ["queued", "external"] as const)
+  test(`queued duplicate disposal waits for ${path} filesystem quiescence`, async () => {
+    let release = () => {},
+      entered = () => {};
+    const fence = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fixture = await admissionFixture({
+      quiesce: () => {
+        entered();
+        return fence;
+      },
+    });
+    regressionCleanups.push(async () => {
+      release();
+    });
+    let accepted: Promise<unknown> = Promise.resolve();
+    if (path === "queued")
+      accepted = fixture.broker
+        .runtimeMessage(fixture.message, fixture.client.pid)
+        .catch((error: unknown) => error);
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    let disposed = false;
+    const disposal = fixture.broker.dispose().then(() => {
+      disposed = true;
+    });
+    await bounded(started);
+    expect(controlLoad(fixture.lifetime, 0)).toBe(1);
+    expect(controlLoad(fixture.group.pending)).toBe(1);
+    expect(disposed).toBe(false);
+    expect(fixture.contexts).toHaveLength(0);
+    release();
+    await bounded(disposal);
+    await bounded(accepted);
+    expect(controlLoad(fixture.group.pending)).toBe(0);
+    expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  });
+
+test("queued duplicate delivery owns no second lifetime before supervisor admission", async () => {
+  const fixture = await admissionFixture();
+  const accepted = fixture.broker.runtimeMessage(fixture.message, fixture.client.pid);
+  const repeated = fixture.broker.runtimeMessage(
+    structuredClone(fixture.message),
+    fixture.client.pid,
+  );
+  await expect(bounded(repeated)).rejects.toThrow("already registered");
+  expect(controlLoad(fixture.lifetime, 0)).toBe(0);
+  await bounded(accepted);
+  const supervisor = await bounded(fixture.broker.ready());
+  await bounded(supervisor.start(fixture.pid));
+  expect(admissionObservation(fixture)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 0,
+    launches: 1,
+    outcome: null,
+  });
 });
