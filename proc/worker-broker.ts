@@ -43,6 +43,8 @@ export interface WorkerProcessBrokerOptions {
   /** Reuse the host's supervisor and executable registry, including its legacy Bun children. */
   supervisor(): Promise<ProcessSupervisor>;
   codec: WorkerDescriptorCodec | ((transport: WorkerProcessTransport) => WorkerDescriptorCodec);
+  /** Releases transferred lifetimes even if constructing the importing codec fails. */
+  discard?(token: unknown): void;
   /** Optional pipe layer hooks; the ownership transport has no dependency on pipe primitives. */
   onPipe?(handle: unknown, transport: WorkerProcessTransport): void;
   pumpPipes?(): void;
@@ -58,6 +60,7 @@ export interface WorkerProcessBrokerOptions {
  */
 export class WorkerProcessBroker {
   private readonly transports = new Map<number, WorkerProcessTransport>();
+  private readonly queued = new Map<string, WorkerProcessTransport>();
   /** One root per active directory, not one tombstone per historical process. */
   private readonly directories = new Map<string, WorkerProcessTransport>();
   private readonly failedCleanup = new Set<number>();
@@ -169,8 +172,16 @@ export class WorkerProcessBroker {
   get(pid: number): WorkerProcessTransport | undefined {
     return this.transports.get(pid);
   }
-  getIdentity(pid: number): WorkerProcessTransport | undefined {
-    return this.get(pid);
+  getIdentity(pid: number, directory?: string): WorkerProcessTransport | undefined {
+    const existing = this.get(pid);
+    if (existing && (directory === undefined || workerProcessDirectoryId(existing) === directory))
+      return existing;
+    if (directory !== undefined) return this.queued.get(`${directory}:${pid}`);
+    return Array.from(this.queued.values()).find((transport) => transport.pid === pid);
+  }
+  /** Includes queued rejection cleanup, not only supervisor activation. */
+  settled(): Promise<void> {
+    return this.admission;
   }
   private sharedJob(job: number) {
     for (const root of this.directories.values()) {
@@ -333,8 +344,16 @@ export class WorkerProcessBroker {
       );
     }
     if (message.operation === "spawn") {
+      const key = `${workerProcessDirectoryId(message.transport)}:${state.pid}`;
+      if (this.getIdentity(state.pid, workerProcessDirectoryId(message.transport))) {
+        this.trace(message.transport, "dropped", "duplicate-process");
+        return Promise.reject(new ProcessError(ProcessErrno.INVAL, "process identity is already registered"));
+      }
+      this.queued.set(key, message.transport);
       this.trace(message.transport, "queued");
-      const pending = this.admission.then(() => this.spawn(message.transport, message.request));
+      const pending = this.admission
+        .then(() => this.spawn(message.transport, message.request))
+        .finally(() => this.queued.delete(key));
       this.admission = pending.catch((error) => {
         this.report(error);
       });
@@ -379,7 +398,8 @@ export class WorkerProcessBroker {
     const state = workerProcessState(transport);
     // A repeated message owns no new references. Reject without discarding the retained
     // lifetimes already held by the first accepted process.
-    if (this.get(state.pid)) {
+    const existing = this.get(state.pid);
+    if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) {
       this.trace(transport, "dropped", "duplicate-process");
       throw new ProcessError(ProcessErrno.INVAL, "process identity is already registered");
     }
@@ -388,6 +408,7 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
+      if (existing) throw new ProcessError(ProcessErrno.SRCH, "process directory conflicts with registered identity");
       if (this.disposed) {
         reason = "broker-disposed";
         throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed");
@@ -461,44 +482,8 @@ export class WorkerProcessBroker {
       this.pump();
     } catch (error) {
       this.trace(transport, "rejected", reason);
-      if (admitted) {
-        // Imported descriptions release through the supervisor; discard also releases
-        // tokens that failed before import, using the codec's idempotent lifetime.
-        for (const token of transport.resources) {
-          try {
-            if (!codec) throw new Error("descriptor codec unavailable for rejected transfer");
-            codec.discard(token);
-          } catch (cleanupError) {
-            this.failedCleanup.add(state.pid);
-            this.report(cleanupError);
-          }
-        }
-        this.supervisor!.failStart(state.pid, error);
-      } else {
-        // Retain cleanup ownership until every token and the host fence completes.
-        this.transports.set(state.pid, transport);
-        this.failedCleanup.add(state.pid);
-        claimOutcome(state.signals.outcome, startFailure(error));
-        const cleanup = { resourcesReleased: true, fenced: false };
-        this.rejectedCleanup.set(state.pid, cleanup);
-        for (const token of transport.resources) {
-          try {
-            if (!codec) throw new Error("descriptor codec unavailable for rejected transfer");
-            codec.discard(token);
-          } catch (cleanupError) {
-            cleanup.resourcesReleased = false;
-            this.report(cleanupError);
-          }
-        }
-        await this.options.quiesce?.(state.pid, transport);
-        cleanup.fenced = true;
-        if (cleanup.resourcesReleased) {
-          this.transports.delete(state.pid);
-          this.failedCleanup.delete(state.pid);
-          this.rejectedCleanup.delete(state.pid);
-          confirmRejectedProcess(transport, cleanup);
-        }
-      }
+      await this.rejectSpawn(transport, error, codec, admitted, existing);
+
       throw error;
     }
   }
@@ -534,6 +519,50 @@ export class WorkerProcessBroker {
       }
     }
   }
+  private async rejectSpawn(
+    transport: WorkerProcessTransport,
+    error: unknown,
+    codec: WorkerDescriptorCodec | undefined,
+    admitted: boolean,
+    existing: WorkerProcessTransport | undefined,
+  ): Promise<void> {
+    const state = workerProcessState(transport);
+    if (admitted) {
+      // Discard is idempotent with imported descriptions released by failStart.
+      if (!this.discardResources(transport, codec)) this.failedCleanup.add(state.pid);
+      this.supervisor!.failStart(state.pid, error);
+      return;
+    }
+    if (!existing) {
+      this.transports.set(state.pid, transport);
+      this.failedCleanup.add(state.pid);
+    }
+    claimOutcome(state.signals.outcome, startFailure(error));
+    const cleanup = { resourcesReleased: this.discardResources(transport, codec), fenced: false };
+    if (!existing) this.rejectedCleanup.set(state.pid, cleanup);
+    await this.options.quiesce?.(state.pid, transport);
+    cleanup.fenced = true;
+    if (!cleanup.resourcesReleased) return;
+    if (!existing) {
+      this.transports.delete(state.pid);
+      this.failedCleanup.delete(state.pid);
+      this.rejectedCleanup.delete(state.pid);
+    }
+    confirmRejectedProcess(transport, cleanup);
+  }
+  private discardResources(transport: WorkerProcessTransport, codec?: WorkerDescriptorCodec): boolean {
+    let released = true;
+    for (const token of transport.resources) {
+      try {
+        if (this.options.discard) this.options.discard(token);
+        else (codec ??= this.codec(transport)).discard(token);
+      } catch (error) {
+        released = false;
+        this.report(error);
+      }
+    }
+    return released;
+  }
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -566,7 +595,7 @@ export class WorkerProcessBroker {
         if (!isCollectedProcess(error)) throw error;
       }
     }
-    for (const transport of this.transports.values()) {
+    for (const transport of Array.from(this.transports.values()).concat(Array.from(this.queued.values()))) {
       try {
         requestSignal(workerProcessState(transport).signals, 9);
       } catch (error) {
@@ -579,26 +608,9 @@ export class WorkerProcessBroker {
         wakeWorkerProcess(transport);
         continue;
       }
-      let codec: WorkerDescriptorCodec;
-      try {
-        codec = this.codec(transport);
-      } catch (error) {
-        const gate = cleanup.get(pid);
-        if (gate) gate.complete = false;
-        this.report(error);
-        continue;
-      }
-      let released = true;
-      for (const token of transport.resources) {
-        try {
-          codec.discard(token);
-        } catch (error) {
-          released = false;
-          const gate = cleanup.get(pid);
-          if (gate) gate.complete = false;
-          this.report(error);
-        }
-      }
+      const released = this.discardResources(transport);
+      const gate = cleanup.get(pid);
+      if (gate && !released) gate.complete = false;
       const rejected = this.rejectedCleanup.get(pid);
       if (rejected) {
         rejected.resourcesReleased = released;

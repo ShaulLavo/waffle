@@ -140,6 +140,7 @@ export class BrowserProcessBroker {
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
   private readonly startupDiagnostics = new Set<Promise<void>>();
+  private readonly rejectedTransfers = new Map<string, Promise<void>>();
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
     check: async (_sender, path, cwd, active) => {
@@ -153,15 +154,13 @@ export class BrowserProcessBroker {
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(),
       codec: (transport) => this.descriptorCodec(transport),
+      discard: (token) => this.discardCodec().discard(token),
       onPipe: (handle) =>
         this.pipes.attach(handle as import("../proc/pipes.js").PipeEndpointHandle),
       pumpPipes: () => this.pipes.pump(),
       onError: (error) => this.report(error),
       onAdmission: options.onProcessAdmission,
-      quiesce: (pid, transport) =>
-        options.filesystem
-          .quiesce(this.filesystem(transport))
-          .then(() => this.collectRuntimeProcess(pid, workerProcessDirectoryId(transport))),
+      quiesce: (_pid, transport) => this.quiesceUnstarted(transport),
     });
   }
   ready(): Promise<ProcessSupervisor> {
@@ -468,7 +467,17 @@ export class BrowserProcessBroker {
   private filesystem(transport: WorkerProcessTransport): FilesystemIdentity {
     const identity = (transport.data as { filesystem?: FilesystemIdentity } | undefined)
       ?.filesystem;
-    if (!identity) throw new TypeError("runtime process has no filesystem identity");
+    if (
+      !identity || typeof identity !== "object" ||
+      !Number.isSafeInteger(identity.owner) || identity.owner <= 0 ||
+      ![identity.epoch, identity.signal, identity.shared, identity.capabilities, identity.sections, identity.ownerStates]
+        .every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
+      identity.ownerStates.byteLength < (identity.owner + 1) * 4 ||
+      !Array.isArray(identity.revocations) || !identity.revocations.length ||
+      !identity.revocations.every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
+      !Array.isArray(identity.segments) || !identity.segments.every((buffer) => buffer instanceof SharedArrayBuffer) ||
+      !Array.isArray(identity.reservations) || !Number.isFinite(identity.maxBytes)
+    ) throw new TypeError("runtime process has no valid filesystem identity");
     return identity;
   }
   private descriptorCodec(transport: WorkerProcessTransport) {
@@ -480,6 +489,28 @@ export class BrowserProcessBroker {
         output: (fd, bytes) => this.outputFor(workerProcessState(transport).pid)?.(fd, bytes),
       }),
     );
+  }
+  private discardCodec() {
+    return this.pipes.codec(createRuntimeTerminalCodec({
+      fallback: createFilesystemDescriptorCodec(undefined, undefined, () => this.options.filesystem.sweep?.()),
+    }));
+  }
+  private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
+    const pid = transport.pid;
+    let filesystem: FilesystemIdentity | undefined;
+    try {
+      filesystem = this.filesystem(transport);
+    } catch (error) {
+      // Only a transfer that never acquired a process, connection or launcher can use
+      // token-only cleanup. Missing metadata is not evidence that an acquired consumer stopped.
+      if (this.options.table.get(pid) || this.controllers.has(pid) || this.children.has(pid) ||
+          this.launches?.has(pid) || this.pendingLaunches?.has(pid)) throw error;
+    }
+    if (filesystem) {
+      this.options.filesystem.revoke(filesystem);
+      await this.options.filesystem.quiesce(filesystem);
+    }
+    this.collectRuntimeProcess(pid, workerProcessDirectoryId(transport));
   }
   private outputFor(pid: number): RuntimeRootOptions["output"] {
     const rootPid = this.options.table.get(pid)?.rootPid;
@@ -658,36 +689,40 @@ export class BrowserProcessBroker {
         return;
       throw error;
     }
-    const existing = this.transport.getIdentity(state.pid);
-    if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) {
+    const directory = workerProcessDirectoryId(transport);
+    const key = `${directory}:${state.pid}`;
+    if (this.transport.getIdentity(state.pid, directory) || this.rejectedTransfers.has(key)) {
       this.traceSpawn(message, "dropped", "already-registered");
       return;
     }
     this.traceSpawn(message, "rejected", reason);
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
-    const identity = this.filesystem(transport);
-    this.options.filesystem.revoke(identity);
-    const codec = this.descriptorCodec(transport);
+    const pending = Promise.resolve().then(() => this.releaseRejectedTransfer(transport));
+    this.rejectedTransfers.set(key, pending);
+    void pending.then(
+      () => this.rejectedTransfers.delete(key),
+      (error) => this.report(error),
+    );
+  }
+  private async releaseRejectedTransfer(transport: WorkerProcessTransport): Promise<void> {
     let cleaned = true;
-    for (const token of transport.resources)
+    const codec = this.discardCodec();
+    for (const token of transport.resources) {
       try {
         codec.discard(token);
       } catch (error) {
         cleaned = false;
         this.report(error);
       }
+    }
     wakeWorkerProcess(transport);
-    void this.options.filesystem
-      .quiesce(identity)
-      .then(() => {
-        if (!cleaned) return;
-        this.collectRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
-        controlStore(state.confirmed, 0, 1);
-        confirmWorkerProcessJob(transport);
-      })
-      .catch((error) => this.report(error));
+    await this.quiesceUnstarted(transport);
+    if (!cleaned) return;
+    controlStore(workerProcessState(transport).confirmed, 0, 1);
+    confirmWorkerProcessJob(transport);
   }
+
   transportFor(pid: number): WorkerProcessTransport | undefined {
     return this.transport.get(pid);
   }
@@ -1209,6 +1244,8 @@ export class BrowserProcessBroker {
         }
         this.supervisor?.dispose();
       }
+      await this.transport.settled();
+      await Promise.all(this.rejectedTransfers.values());
       await Promise.allSettled(this.startupDiagnostics);
       await this.quiesce();
       // A controller stop may release a physical handle, but cannot consume authority

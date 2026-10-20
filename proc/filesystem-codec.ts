@@ -22,14 +22,15 @@ export function isFilesystemDescriptorToken(token: unknown): token is Filesystem
 }
 
 /** Controller imports need only the identity and a live controller sweep notifier; guests pass
- * their actual client. Both import the same reference, whose release is shared and idempotent. */
+ * their actual client. Both import the same reference, whose release is shared and idempotent.
+ * An undefined identity supplies discard-only cleanup, independent of admission metadata. */
 export function createFilesystemDescriptorCodec(
-  filesystem: FilesystemClient | FilesystemIdentity,
+  filesystem: FilesystemClient | FilesystemIdentity | undefined,
   target?: FilesystemIdentity,
   sweep?: () => void,
 ): WorkerDescriptorCodec {
   const client = isInstance(filesystem, FilesystemClient) ? filesystem : undefined;
-  const identity = client?.connection ?? (filesystem as FilesystemIdentity);
+  const identity = client?.connection ?? (filesystem as FilesystemIdentity | undefined);
   const discard = (token: unknown) => {
     if (!isFilesystemDescriptorToken(token))
       throw new TypeError("not a filesystem descriptor token");
@@ -59,6 +60,7 @@ export function createFilesystemDescriptorCodec(
     import(token: unknown): OpenDescription {
       if (!isFilesystemDescriptorToken(token))
         throw new TypeError("not a filesystem descriptor token");
+      if (!identity) throw new TypeError("filesystem import requires a process identity");
       if (token.reservation.targetOwner !== identity.owner)
         throw new TypeError("filesystem descriptor belongs to another process");
       const handle = token.reservation.handle;
