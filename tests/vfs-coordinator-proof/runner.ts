@@ -72,7 +72,14 @@ async function firstControl(pages: Page[], arm: Arm) {
   assert(new Set(reads.map((value) => value?.id)).size === 1, "File identity diverged");
   record(`${arm}: four independently created writer/tool tabs`, { cuts, reads });
   await mixedWriterControl(pages, arm);
-  console.log(JSON.stringify({ engine: activeEngine, arm, phase: "before-first-close" }));
+  console.log(
+    JSON.stringify({
+      engine: activeEngine,
+      arm,
+      phase: "before-first-close",
+      authority: await second.evaluate(() => proof.client.send({ kind: "inspect" })),
+    }),
+  );
   await first.close();
   console.log(JSON.stringify({ engine: activeEngine, arm, phase: "after-first-close" }));
   const afterClose = await execute(second, {
@@ -790,6 +797,45 @@ async function runArmSequence(browser: Browser, engine: string, arm: Arm) {
     console.error(JSON.stringify(result));
   }
 }
+async function minimalVolatileClose(browser: Browser): Promise<void> {
+  const context = await browser.newContext();
+  const workspace = `waffle-e5-minimal-close-${crypto.randomUUID()}`;
+  const pages: Page[] = [];
+  try {
+    for (let index = 0; index < 4; index++) {
+      const page = await context.newPage();
+      pages.push(page);
+      await page.goto(origin);
+      ok(await connected(page, workspace, "volatile-fast"));
+    }
+    const [first, second] = pages;
+    assert(first && second, "Missing minimal lifecycle pages");
+    ok(await execute(first, { kind: "write", path: "/minimal", text: "memory-ack" }));
+    assert((await content(second, "/minimal"))?.text === "memory-ack", "Minimal pre-close read");
+    const before = await second.evaluate(() => proof.client.send({ kind: "inspect" }));
+    await first.close();
+    const after = await execute(second, { kind: "read", path: "/minimal" });
+    console.log(JSON.stringify({ engine: activeEngine, phase: "minimal-no-guest", before, after }));
+    if (after.kind === "error") await failedAuthority(second, "volatile-fast", after);
+    ok(after);
+    record("volatile-fast: first-client close without guest, namespace or queue gates", {
+      before,
+      after,
+    });
+  } catch (error) {
+    const result = {
+      engine: activeEngine,
+      arm: "volatile-fast",
+      label: "minimal first-client close without guest, namespace or queue gates",
+      status: "FAILED",
+      error: String(error),
+    };
+    outcomes.push(result);
+    console.error(JSON.stringify(result));
+  } finally {
+    await context.close();
+  }
+}
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
   const browser = await lifecycle.launch(engine);
@@ -803,6 +849,7 @@ async function browserControl(engine: keyof typeof engines): Promise<void> {
   );
   try {
     await productionControl(browser, engine);
+    if (engine === "webkit") await minimalVolatileClose(browser);
     for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const)
       await runArmSequence(browser, engine, arm);
   } finally {

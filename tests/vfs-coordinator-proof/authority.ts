@@ -18,6 +18,7 @@ let tail = Promise.resolve();
 let pending = 0;
 let unlock: (() => void) | undefined;
 const gates = new Map<string, () => void>();
+const instance = crypto.randomUUID();
 const events: unknown[] = [];
 const ports = new Set<MessagePort>();
 const counters = {
@@ -58,6 +59,7 @@ async function acquireVolatile(workspace: string): Promise<void> {
     acquired = resolve;
   });
   void navigator.locks.request(`e5-volatile:${workspace}`, { ifAvailable: true }, (lock) => {
+    trace({ phase: "volatile-lock-result", acquired: Boolean(lock), instance });
     acquired(Boolean(lock));
     if (!lock) return;
     return new Promise<void>((resolve) => {
@@ -272,7 +274,7 @@ function deliver(port: MessagePort, envelope: Envelope): void {
       result: {
         kind: "ok",
         cursor: cursor(state ?? initial("fenced-safe")),
-        result: { events, counters },
+        result: { instance, events, counters },
       },
     });
     return;
@@ -313,6 +315,7 @@ Reflect.set(globalThis, "onconnect", (event: MessageEvent) => {
     return;
   }
   ports.add(port);
+  trace({ phase: "connected", instance, ports: ports.size });
   port.onmessage = (message: MessageEvent<Envelope>) => deliver(port, message.data);
   port.start();
 });
