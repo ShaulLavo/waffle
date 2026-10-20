@@ -118,7 +118,7 @@ async function supervise(command: string[], graceMs: number): Promise<number> {
     const dispatcherTmp =
       process.env.TMPDIR &&
       process.env.TMPDIR === process.env.SCRATCH &&
-      realpathSync(process.env.TMPDIR).length <= 48
+      Buffer.byteLength(realpathSync(process.env.TMPDIR), "utf8") <= 48
         ? process.env.TMPDIR
         : undefined;
     const child = Bun.spawn(command, {

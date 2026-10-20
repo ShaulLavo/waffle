@@ -245,3 +245,58 @@ try {
     },
     15_000,
   );
+
+linuxTest(
+  "browser supervisor falls back for a 47-character, 91-byte dispatcher TMPDIR",
+  async () => {
+    const base = realpathSync(existsSync("/work/tmp") ? "/work/tmp" : "/tmp");
+    const root = mkdtempSync(join(base, "wc-byte-"));
+    const dispatcher = join(root, "x".repeat(47 - root.length - 1 - 22) + "界".repeat(22));
+    try {
+      mkdirSync(dispatcher);
+      writeFileSync(join(dispatcher, "keep"), "dispatcher-owned");
+      expect(realpathSync(dispatcher).length).toBe(47);
+      expect(Buffer.byteLength(realpathSync(dispatcher), "utf8")).toBe(91);
+      const suite = join(root, "suite.ts");
+      writeFileSync(
+        suite,
+        `import { writeFileSync } from "node:fs";
+import { BrowserRunnerLifecycle } from ${JSON.stringify(resolve(import.meta.dir, "browser-runner-lifecycle.ts"))};
+writeFileSync(process.env.PROBE + "/before", process.env.TMPDIR);
+writeFileSync(process.env.PROBE + "/owned", process.env.STORAGE_SCRATCH_ROOT + "\\n" + process.env.WAFFLE_BROWSER_SHM_ROOT);
+const lifecycle = new BrowserRunnerLifecycle(5000);
+try {
+  await lifecycle.init();
+  writeFileSync(process.env.PROBE + "/initialized", process.env.TMPDIR);
+} finally { await lifecycle.close(); }
+`,
+      );
+      await runBrowserSuite([process.execPath, suite], {
+        cwd: repo,
+        env: {
+          ...process.env,
+          PROBE: root,
+          TMPDIR: dispatcher,
+          SCRATCH: dispatcher,
+          STORAGE_SCRATCH_ROOT: root,
+          PROCESS_SCRATCH_ROOT: root,
+        },
+        timeoutMs: 5000,
+      });
+      const before = readFileSync(join(root, "before"), "utf8");
+      expect(before).not.toBe(dispatcher);
+      expect(before.startsWith(root + "/wb-")).toBe(true);
+      expect(Buffer.byteLength(before, "utf8")).toBeLessThanOrEqual(48);
+      expect(
+        Buffer.byteLength(readFileSync(join(root, "initialized"), "utf8"), "utf8"),
+      ).toBeLessThanOrEqual(48);
+      expect(readFileSync(join(dispatcher, "keep"), "utf8")).toBe("dispatcher-owned");
+      expect(readdirSync(dispatcher)).toEqual(["keep"]);
+      const owned = readFileSync(join(root, "owned"), "utf8").split("\n");
+      expect(owned).toHaveLength(2);
+      for (const directory of owned) expect(existsSync(directory)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
