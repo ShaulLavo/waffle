@@ -653,19 +653,7 @@ export class BrowserProcessBroker {
         }
       }
     }
-    let revoked = false;
-    try {
-      revoked =
-        !!sender &&
-        message.operation !== "reap-job" &&
-        message.operation !== "reap-process" &&
-        (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender))));
-    } catch (error) {
-      // Sender validation is still an incoming ownership boundary. Its failure cannot
-      // leave a synchronously published child's transferred resources unclaimed.
-      this.rejectMessage(message, senderPid, "sender-revoked");
-      throw error;
-    }
+    const revoked = this.senderRevoked(message, senderPid, sender, result);
     if ((!sender && !retainedNotice) || this.suspended || revoked) {
       this.rejectMessage(
         message,
@@ -696,6 +684,22 @@ export class BrowserProcessBroker {
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
+  }
+  private senderRevoked(
+    message: WorkerProcessMessage,
+    senderPid: number,
+    sender: WorkerProcessTransport | undefined,
+    result: ReturnType<typeof readOutcome>,
+  ): boolean {
+    if (!sender || message.operation === "reap-job" || message.operation === "reap-process")
+      return false;
+    try {
+      return result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)));
+    } catch (error) {
+      // Sender validation owns rejection cleanup for any incoming transferred resources.
+      this.rejectMessage(message, senderPid, "sender-revoked");
+      throw error;
+    }
   }
   rejectRuntimeMessage(
     message: WorkerProcessMessage,
