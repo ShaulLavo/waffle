@@ -533,7 +533,9 @@ export class BrowserProcessBroker {
     const transport = this.transport.get(pid);
     if (transport) return this.processLifetime(transport);
     for (const root of this.roots.values()) {
-      const state = Array.from(directoryProcesses(root.directory)).find((state) => state.pid === pid);
+      const state = Array.from(directoryProcesses(root.directory)).find(
+        (state) => state.pid === pid,
+      );
       if (state) return `${workerProcessDirectoryId(root)}:${state.slot}:${pid}`;
     }
     return undefined;
@@ -553,7 +555,8 @@ export class BrowserProcessBroker {
       this.launches?.has(pid) ||
       this.pendingLaunches?.has(pid) ||
       this.fences.has(pid)
-    ) return;
+    )
+      return;
     this.acquiredProcesses.delete(pid);
   }
   private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
@@ -645,7 +648,8 @@ export class BrowserProcessBroker {
     }
     let revoked = false;
     try {
-      revoked = !!sender &&
+      revoked =
+        !!sender &&
         message.operation !== "reap-job" &&
         message.operation !== "reap-process" &&
         (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender))));

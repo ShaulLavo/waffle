@@ -3596,16 +3596,19 @@ test("admission review r1: malformed queued sender cannot strand a second accept
     .runtimeMessage(child.message, child.client.pid)
     .catch((error: unknown) => error);
   await bounded(Promise.all([parentAdmission, childAdmission]));
+  const group = findDirectoryJob(child.message.transport.directory, child.state.job);
   const observed = {
     confirmed: controlLoad(child.state.confirmed, 0),
-    pending: controlLoad(child.group.pending),
+    pending: group ? controlLoad(group.pending) : "collected",
+    jobConfirmed: controlLoad(child.state.jobConfirmed, 0),
     closed: controlLoad(child.lifetime, 0),
     outcome: readOutcome(child.state.signals.outcome),
     readiness: child.reader.readiness(),
     launches: parent.contexts.length,
   };
   console.info("repair r1 nested transfer", observed);
-  expect(observed).toMatchObject({ confirmed: 1, pending: 0, closed: 1, launches: 0 });
+  expect(observed).toMatchObject({ confirmed: 1, jobConfirmed: 1, closed: 1, launches: 0 });
+  if (group) expect(controlLoad(group.pending)).toBe(0);
   expect(observed.outcome).not.toBeNull();
   expect(child.reader.tryRead([new Uint8Array(1)])).toBe(0);
 });
@@ -3695,3 +3698,54 @@ test("admission review r1: valid metadata waits for an acquired controller and i
   await bounded(fixture.broker.quiesce());
   expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
 });
+
+for (const [path, fence] of [
+  ["external", "adapter"],
+  ["external", "filesystem"],
+  ["codec", "adapter"],
+  ["codec", "filesystem"],
+] as const)
+  test(`admission review r1: ${path} rejection fails closed when acquired ${fence} quiescence rejects`, async () => {
+    const failure = new Error(`acquired ${fence} fence failed`);
+    const separateIdentity = createFilesystemIdentity();
+    const fixture = await admissionFixture({
+      quiesce: async (identity) => {
+        if (fence === "filesystem" && identity === separateIdentity) throw failure;
+      },
+      allowDisposalFailure: true,
+    });
+    fixture.broker.registerController(fixture.pid, {
+      filesystem: separateIdentity,
+      async quiesce() {
+        if (fence === "adapter") throw failure;
+      },
+    });
+    if (path === "external")
+      fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    else {
+      const codec = spyOn(
+        fixture.broker as unknown as { descriptorCodec(): never },
+        "descriptorCodec",
+      ).mockImplementation(() => {
+        throw new Error("codec factory failed");
+      });
+      regressionCleanups.push(async () => {
+        codec.mockRestore();
+      });
+      expect(
+        await bounded(
+          fixture.broker
+            .runtimeMessage(fixture.message, fixture.client.pid)
+            .catch((error: unknown) => error),
+        ),
+      ).toBe(failure);
+    }
+    await expect(bounded(fixture.broker.dispose())).rejects.toBe(failure);
+    expect(admissionObservation(fixture)).toMatchObject({
+      confirmed: 0,
+      pending: 1,
+      closed: 1,
+      launches: 0,
+    });
+    expect(Atomics.load(new Int32Array(separateIdentity.revocations[0]!), 0)).toBe(1);
+  });
