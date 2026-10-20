@@ -393,7 +393,9 @@ export class Wasi {
     if (ptr + len > bytes.length || out + 16 > bytes.length) return 21;
     let path: string;
     try {
-      path = new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice(ptr, ptr + len));
+      path = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        bytes.slice(ptr, ptr + len),
+      );
     } catch {
       return EINVAL;
     }

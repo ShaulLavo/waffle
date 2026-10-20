@@ -314,3 +314,34 @@ test("denied host replacement does not grow or alter a cached shared file", () =
   expect(backend.shared.resources()).toEqual(before);
   expect(backend.shared.snapshot(handle)?.data).toEqual(new TextEncoder().encode("secret"));
 });
+
+for (const append of [false, true]) {
+  test(`host ${append ? "append" : "overwrite"} requires search on the immediate parent`, () => {
+    const fs = new MemFS();
+    const handle = file(fs, "/locked/file");
+    const directory = fs.handleForNode(fs.lookup("/locked")!);
+    expect(fs.setMode(directory, 0o600)).toBe(0);
+    expect(fs.resolve(fs.preopen("/"), "locked/file")).toBe(2);
+    expect(() => fs.writeFile("/locked/file", "after", append)).toThrow("errno 2");
+    expect(fs.setMode(directory, 0o700)).toBe(0);
+    expect(fs.read(handle, [new Uint8Array(6)], 0)).toBe(6);
+    expect(new TextDecoder().decode(fs.readFile("/locked/file"))).toBe("secret");
+    expect(fs.permissions(handle).mode).toBe(0o600);
+  });
+}
+
+for (const shared of [false, true]) {
+  test(`permission query preserves filename BOM with shared=${shared}`, async () => {
+    const { permissionsHost } = await import("./fixtures/permissions-guest.js");
+    const fs = new MemFS();
+    file(fs, "/file");
+    const handle = file(fs, "/\ufefffile");
+    expect(fs.setMode(handle, 0)).toBe(0);
+    const host = permissionsHost(fs, shared);
+    cleanup.push(() => host.wasi.descriptors.dispose());
+    expect(host.call("\ufefffile")).toBe(0);
+    expect(host.words()).toEqual([0, 0o600, 0, 6]);
+    expect(host.call("file")).toBe(0);
+    expect(host.words()).toEqual([0o600, 0o600, 6, 6]);
+  });
+}

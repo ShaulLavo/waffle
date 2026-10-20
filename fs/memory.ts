@@ -453,6 +453,7 @@ export class MemFS implements FileSystem {
   writeFile(path: string, content: string | Uint8Array, append = false): void {
     const data = typeof content === "string" ? encode(content) : content;
     const parent = this.mkdirp(dirname(path));
+    this.require(parent, 1);
     const name = basename(path);
     const existing = parent.children.get(name);
     if (existing) this.require(existing, 2);
