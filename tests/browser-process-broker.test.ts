@@ -3254,6 +3254,30 @@ async function admissionFixture(
   };
 }
 
+function rejectAdmissionFixture(
+  fixture: Awaited<ReturnType<typeof admissionFixture>>,
+  path: "external" | "codec",
+): Promise<unknown> | undefined {
+  if (path === "external") {
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    return;
+  }
+  const codec = spyOn(
+    fixture.broker as unknown as { descriptorCodec(): never },
+    "descriptorCodec",
+  ).mockImplementation(() => {
+    throw new Error("codec factory failed");
+  });
+  regressionCleanups.push(async () => {
+    codec.mockRestore();
+  });
+  return bounded(
+    fixture.broker
+      .runtimeMessage(fixture.message, fixture.client.pid)
+      .catch((error: unknown) => error),
+  );
+}
+
 function admissionObservation(fixture: Awaited<ReturnType<typeof admissionFixture>>) {
   return {
     confirmed: controlLoad(fixture.state.confirmed, 0),
@@ -3377,26 +3401,8 @@ for (const path of ["external", "codec"] as const)
       },
       allowDisposalFailure: true,
     });
-    if (path === "external")
-      fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
-    else {
-      const codec = spyOn(
-        fixture.broker as unknown as { descriptorCodec(): never },
-        "descriptorCodec",
-      ).mockImplementation(() => {
-        throw new Error("codec factory failed");
-      });
-      regressionCleanups.push(async () => {
-        codec.mockRestore();
-      });
-      expect(
-        await bounded(
-          fixture.broker
-            .runtimeMessage(fixture.message, fixture.client.pid)
-            .catch((error: unknown) => error),
-        ),
-      ).toBe(failure);
-    }
+    const rejection = rejectAdmissionFixture(fixture, path);
+    if (rejection) expect(await rejection).toBe(failure);
     await expect(bounded(fixture.broker.dispose())).rejects.toBe(failure);
     expect(admissionObservation(fixture)).toMatchObject({
       confirmed: 0,
@@ -3752,26 +3758,8 @@ for (const [path, fence] of [
         if (fence === "adapter") throw failure;
       },
     });
-    if (path === "external")
-      fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
-    else {
-      const codec = spyOn(
-        fixture.broker as unknown as { descriptorCodec(): never },
-        "descriptorCodec",
-      ).mockImplementation(() => {
-        throw new Error("codec factory failed");
-      });
-      regressionCleanups.push(async () => {
-        codec.mockRestore();
-      });
-      expect(
-        await bounded(
-          fixture.broker
-            .runtimeMessage(fixture.message, fixture.client.pid)
-            .catch((error: unknown) => error),
-        ),
-      ).toBe(failure);
-    }
+    const rejection = rejectAdmissionFixture(fixture, path);
+    if (rejection) expect(await rejection).toBe(failure);
     await expect(bounded(fixture.broker.dispose())).rejects.toBe(failure);
     expect(admissionObservation(fixture)).toMatchObject({
       confirmed: 0,
