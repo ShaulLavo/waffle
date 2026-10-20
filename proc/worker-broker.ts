@@ -347,7 +347,9 @@ export class WorkerProcessBroker {
       const key = `${workerProcessDirectoryId(message.transport)}:${state.pid}`;
       if (this.getIdentity(state.pid, workerProcessDirectoryId(message.transport))) {
         this.trace(message.transport, "dropped", "duplicate-process");
-        return Promise.reject(new ProcessError(ProcessErrno.INVAL, "process identity is already registered"));
+        return Promise.reject(
+          new ProcessError(ProcessErrno.INVAL, "process identity is already registered"),
+        );
       }
       this.queued.set(key, message.transport);
       this.trace(message.transport, "queued");
@@ -408,7 +410,11 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
-      if (existing) throw new ProcessError(ProcessErrno.SRCH, "process directory conflicts with registered identity");
+      if (existing)
+        throw new ProcessError(
+          ProcessErrno.SRCH,
+          "process directory conflicts with registered identity",
+        );
       if (this.disposed) {
         reason = "broker-disposed";
         throw new ProcessError(ProcessErrno.SRCH, "process broker is disposed");
@@ -550,7 +556,10 @@ export class WorkerProcessBroker {
     }
     confirmRejectedProcess(transport, cleanup);
   }
-  private discardResources(transport: WorkerProcessTransport, codec?: WorkerDescriptorCodec): boolean {
+  private discardResources(
+    transport: WorkerProcessTransport,
+    codec?: WorkerDescriptorCodec,
+  ): boolean {
     let released = true;
     for (const token of transport.resources) {
       try {
@@ -595,7 +604,9 @@ export class WorkerProcessBroker {
         if (!isCollectedProcess(error)) throw error;
       }
     }
-    for (const transport of Array.from(this.transports.values()).concat(Array.from(this.queued.values()))) {
+    for (const transport of Array.from(this.transports.values()).concat(
+      Array.from(this.queued.values()),
+    )) {
       try {
         requestSignal(workerProcessState(transport).signals, 9);
       } catch (error) {

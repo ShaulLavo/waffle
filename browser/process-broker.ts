@@ -470,16 +470,30 @@ export class BrowserProcessBroker {
     const identity = (transport.data as { filesystem?: FilesystemIdentity } | undefined)
       ?.filesystem;
     if (
-      !identity || typeof identity !== "object" ||
-      !Number.isSafeInteger(identity.owner) || identity.owner <= 0 ||
-      ![identity.epoch, identity.signal, identity.shared, identity.capabilities, identity.sections, identity.ownerStates]
-        .every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
+      !identity ||
+      typeof identity !== "object" ||
+      !Number.isSafeInteger(identity.owner) ||
+      identity.owner <= 0 ||
+      ![
+        identity.epoch,
+        identity.signal,
+        identity.shared,
+        identity.capabilities,
+        identity.sections,
+        identity.ownerStates,
+      ].every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
       identity.ownerStates.byteLength < (identity.owner + 1) * 4 ||
-      !Array.isArray(identity.revocations) || !identity.revocations.length ||
-      !identity.revocations.every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
-      !Array.isArray(identity.segments) || !identity.segments.every((buffer) => buffer instanceof SharedArrayBuffer) ||
-      !Array.isArray(identity.reservations) || !Number.isFinite(identity.maxBytes)
-    ) throw new TypeError("runtime process has no valid filesystem identity");
+      !Array.isArray(identity.revocations) ||
+      !identity.revocations.length ||
+      !identity.revocations.every(
+        (buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4,
+      ) ||
+      !Array.isArray(identity.segments) ||
+      !identity.segments.every((buffer) => buffer instanceof SharedArrayBuffer) ||
+      !Array.isArray(identity.reservations) ||
+      !Number.isFinite(identity.maxBytes)
+    )
+      throw new TypeError("runtime process has no valid filesystem identity");
     return identity;
   }
   private descriptorCodec(transport: WorkerProcessTransport) {
@@ -493,9 +507,13 @@ export class BrowserProcessBroker {
     );
   }
   private discardCodec() {
-    return this.cleanupCodec ??= this.pipes.codec(createRuntimeTerminalCodec({
-      fallback: createFilesystemDescriptorCodec(undefined, undefined, () => this.options.filesystem.sweep?.()),
-    }));
+    return (this.cleanupCodec ??= this.pipes.codec(
+      createRuntimeTerminalCodec({
+        fallback: createFilesystemDescriptorCodec(undefined, undefined, () =>
+          this.options.filesystem.sweep?.(),
+        ),
+      }),
+    ));
   }
   private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
     const pid = transport.pid;
@@ -505,8 +523,14 @@ export class BrowserProcessBroker {
     } catch (error) {
       // Only a transfer that never acquired a process, connection or launcher can use
       // token-only cleanup. Missing metadata is not evidence that an acquired consumer stopped.
-      if (this.options.table.get(pid) || this.controllers.has(pid) || this.children.has(pid) ||
-          this.launches?.has(pid) || this.pendingLaunches?.has(pid)) throw error;
+      if (
+        this.options.table.get(pid) ||
+        this.controllers.has(pid) ||
+        this.children.has(pid) ||
+        this.launches?.has(pid) ||
+        this.pendingLaunches?.has(pid)
+      )
+        throw error;
     }
     if (filesystem) {
       this.options.filesystem.revoke(filesystem);
@@ -701,7 +725,10 @@ export class BrowserProcessBroker {
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
     let resolve!: () => void, reject!: (error: unknown) => void;
-    const pending = new Promise<void>((accept, fail) => { resolve = accept; reject = fail; });
+    const pending = new Promise<void>((accept, fail) => {
+      resolve = accept;
+      reject = fail;
+    });
     this.rejectedTransfers.set(key, pending);
     void this.releaseRejectedTransfer(transport).then(resolve, reject);
     void pending.then(
@@ -1216,6 +1243,8 @@ export class BrowserProcessBroker {
     this.supervisor?.dispose();
   }
   async quiesce(): Promise<void> {
+    await this.transport.settled();
+    await Promise.all(this.rejectedTransfers.values());
     const pids = new Set(
       Array.from(this.options.table.values(), (record) => record.pid).concat(
         Array.from(this.controllers.keys()),
@@ -1248,8 +1277,6 @@ export class BrowserProcessBroker {
         }
         this.supervisor?.dispose();
       }
-      await this.transport.settled();
-      await Promise.all(this.rejectedTransfers.values());
       await Promise.allSettled(this.startupDiagnostics);
       await this.quiesce();
       // A controller stop may release a physical handle, but cannot consume authority
