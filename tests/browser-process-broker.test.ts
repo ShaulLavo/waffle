@@ -3128,6 +3128,7 @@ async function admissionFixture(
     quiesce?(identity: import("../fs/protocol.js").FilesystemIdentity): Promise<void>;
     activate?: ConstructorParameters<typeof BrowserProcessBroker>[0]["activate"];
     allowDisposalFailure?: boolean;
+    prepareSpawn?(pid: number, broker: BrowserProcessBroker): void;
   } = {},
 ) {
   const owned: {
@@ -3201,6 +3202,7 @@ async function admissionFixture(
     codec,
     postMessage: (message) => messages.push(structuredClone(message)),
     prepareSpawn(pid) {
+      options.prepareSpawn?.(pid, broker);
       host.registry.registerProcess(pid);
       return {
         data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() },
@@ -3769,4 +3771,40 @@ for (const [path, fence] of [
       launches: 0,
     });
     expect(Atomics.load(new Int32Array(separateIdentity.revocations[0]!), 0)).toBe(1);
+  });
+
+for (const metadata of ["valid", "missing"] as const)
+  test(`admission review r1: a controller registered before publication owns its ${metadata} transfer`, async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    const fixture = await admissionFixture({
+      allowDisposalFailure: metadata === "missing",
+      prepareSpawn(pid, broker) {
+        broker.registerController(pid, {
+          quiesce() {
+            entered++;
+            return held;
+          },
+        });
+      },
+    });
+    regressionCleanups.push(async () => {
+      release();
+    });
+    if (metadata === "missing") fixture.message.transport.data = undefined;
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1, closed: 1 });
+    if (metadata === "missing") {
+      expect(entered).toBe(0);
+      await expect(bounded(fixture.broker.dispose())).rejects.toThrow(/filesystem identity/);
+      return;
+    }
+    expect(entered).toBe(1);
+    release();
+    await bounded(fixture.broker.quiesce());
+    expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
   });
