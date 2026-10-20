@@ -1,3 +1,4 @@
+import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { withVfsImplementation, type VfsImplementation } from "../fs/vfs-internal.js";
 /** Real browser storage tests. Shared contract cases run unchanged against both backends. */
 import { createRuntime, VfsError, type RuntimeStartupStage } from "../index.js";
@@ -217,6 +218,9 @@ export function storageContractCases(): StorageContractCase[] {
   const test: Register = (label, run, compactEvery) => {
     cases.push({ label, run, compactEvery });
   };
+  test("inode permissions persist across replacement and reopen", async (_name, open) => {
+    await permissionStorageCase(open);
+  });
   test("host writeFile exclusive creation is atomic", async (_name, open) => {
     await exclusiveFilesystemCase(open);
   });

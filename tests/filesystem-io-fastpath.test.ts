@@ -1,34 +1,10 @@
 import { expect, test } from "bun:test";
-import { FilesystemClient, createFilesystemConnection } from "../fs";
+import { retainedClientFixture } from "./fixtures/retained-client.js";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
-import { fixedWriteSources } from "../fs/shared";
-
-function fixture() {
-  const pair = createFilesystemConnection();
-  const client = new FilesystemClient(pair.client);
-  client.shared.register(
-    0,
-    { kind: "file", ino: 1, size: 4, mtime: 1 },
-    new Uint8Array([65, 66, 67, 68]),
-  );
-  const capabilities = new Int32Array(pair.client.capabilities);
-  Atomics.store(capabilities, 1, 0);
-  Atomics.store(capabilities, 2, 0);
-  client.retain(0);
-  client.call = () => {
-    throw new Error("unexpected I/O RPC");
-  };
-  return {
-    client,
-    cleanup: () => {
-      client.dispose();
-      pair.server.port.close();
-    },
-  };
-}
+import { fixedWriteSources, SLOT_WORDS } from "../fs/shared";
 
 test("retained read, write and append do not construct full file metadata", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   client.shared.info = () => {
     throw new Error("full metadata on I/O path");
   };
@@ -44,11 +20,11 @@ test("retained read, write and append do not construct full file metadata", () =
 });
 
 test("retained positioned writes and appends acquire one file lock each", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const compare = Atomics.compareExchange;
   let locks = 0;
   Atomics.compareExchange = ((...args: any[]) => {
-    if (args[0] === client.shared.slots && args[1] === 20 && args[2] === 0) locks++;
+    if (args[0] === client.shared.slots && args[1] === SLOT_WORDS + 8 && args[2] === 0) locks++;
     return Reflect.apply(compare, Atomics, args);
   }) as typeof Atomics.compareExchange;
   try {
@@ -64,7 +40,7 @@ test("retained positioned writes and appends acquire one file lock each", () => 
 });
 
 test("retained reads copy straight into the guest iovecs", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const read = client.shared.directRead.bind(client.shared);
   const vectors: (readonly Uint8Array[])[] = [];
   client.shared.directRead = (...args) => {
@@ -83,7 +59,7 @@ test("retained reads copy straight into the guest iovecs", () => {
 });
 
 test("guest iovec subclasses cannot reenter the filesystem while a file lock is held", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   let entered = false;
   class ReentrantBytes extends Uint8Array {
     set(source: ArrayLike<number>, offset = 0): void {
@@ -105,7 +81,7 @@ test("guest iovec subclasses cannot reenter the filesystem while a file lock is 
 });
 
 test("retained read, write and append check revocation once each, after locking", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const internal = client as unknown as { revoked: () => boolean };
   const guard = internal.revoked;
   let checks = 0;
@@ -129,7 +105,7 @@ test("retained read, write and append check revocation once each, after locking"
 });
 
 test("retained I/O looks up its shared file slot once per open handle", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const raw = client.shared as unknown as { findSlot(handle: number, create?: boolean): number };
   const find = raw.findSlot.bind(raw);
   let lookups = 0;
@@ -150,7 +126,7 @@ test("retained I/O looks up its shared file slot once per open handle", () => {
 });
 
 test("a revocation seen under the locks fails I/O, releases both locks and leaves the epoch even", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const internal = client as unknown as { revoked: () => boolean };
   const guard = internal.revoked;
   internal.revoked = () => true;
@@ -161,7 +137,7 @@ test("a revocation seen under the locks fails I/O, releases both locks and leave
     expect(client.write(0, [new Uint8Array([90])], 0)).toBe(-11);
     expect(client.append(0, [new Uint8Array([69])])).toBe(-11);
     expect(Atomics.load(client.shared.cells, 1)).toBe(0);
-    expect(Atomics.load(client.shared.slots, 20)).toBe(0);
+    expect(Atomics.load(client.shared.slots, SLOT_WORDS + 8)).toBe(0);
     expect(Atomics.load(new Int32Array(client.connection.epoch), 0) & 1).toBe(0);
     internal.revoked = guard;
     const after = new Uint8Array(5);
@@ -174,7 +150,7 @@ test("a revocation seen under the locks fails I/O, releases both locks and leave
 });
 
 test("a truncate after the locked copy keeps the coherent bytes", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const compare = Atomics.compareExchange;
   const owner = client.connection.owner;
   let truncated = false;
@@ -184,7 +160,7 @@ test("a truncate after the locked copy keeps the coherent bytes", () => {
     if (
       !truncated &&
       args[0] === client.shared.slots &&
-      args[1] === 20 &&
+      args[1] === SLOT_WORDS + 8 &&
       args[2] === owner &&
       args[3] === 0
     ) {
@@ -208,7 +184,7 @@ test("a truncate after the locked copy keeps the coherent bytes", () => {
 });
 
 test("WASI fd_pwrite and fd_pread reject a negative offset with EINVAL", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const host = atomicHost(client, {});
   try {
     const fd = host.wasi.descriptors.open(
@@ -232,7 +208,7 @@ test("WASI fd_pwrite and fd_pread reject a negative offset with EINVAL", () => {
 });
 
 test("retained read and write reject a negative offset without touching the file or guest", () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   try {
     expect(client.write(0, [new Uint8Array([90])], -1)).toBe(-28);
     const guest = new Uint8Array(4).fill(7);
@@ -254,7 +230,7 @@ const emptyLayouts = [
 ];
 for (const { name, lengths } of emptyLayouts) {
   test(`retained read skips ${name} empty iovecs without losing bytes`, () => {
-    const { client, cleanup } = fixture();
+    const { client, cleanup } = retainedClientFixture();
     try {
       const chunks = lengths.map((length) => new Uint8Array(length).fill(99));
       const expected = name === "all-empty" ? [] : [65, 66, 67, 68];
@@ -265,7 +241,7 @@ for (const { name, lengths } of emptyLayouts) {
     }
   });
   test(`WASI fd_read handles ${name} empty iovecs and advances only by copied bytes`, () => {
-    const { client, cleanup } = fixture();
+    const { client, cleanup } = retainedClientFixture();
     const host = atomicHost(client, {});
     try {
       const fd = host.wasi.descriptors.open(
@@ -293,7 +269,7 @@ for (const { name, lengths } of emptyLayouts) {
 for (const operation of ["write", "append"] as const)
   for (const phase of ["before-lock", "during-copy"] as const) {
     test(`${operation} bounds growable source bytes consistently when growth happens ${phase}`, () => {
-      const { client, cleanup } = fixture();
+      const { client, cleanup } = retainedClientFixture();
       const Constructor = SharedArrayBuffer as unknown as new (
         length: number,
         options: { maxByteLength: number },

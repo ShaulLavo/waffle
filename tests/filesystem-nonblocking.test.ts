@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { afterEach, expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -37,7 +38,8 @@ async function fixture(cold = false) {
   if (cold) {
     expect(backend.shared.unload(handle, backend.shared.revision(handle)!)).toBe(true);
     backend.prepare = (operation, args) => {
-      if (operation !== "grow" || backend.shared.isResident(args[0])) return;
+      if ((operation !== "read" && operation !== "grow") || backend.shared.isResident(args[0]))
+        return;
       preparations++;
       return gate.then(() => {
         backend.shared.hydrate(handle, new Uint8Array([65, 66, 67, 68]));
@@ -63,7 +65,7 @@ async function ready(client: FilesystemClient, handle: number, writing: boolean)
 
 test("try I/O never spins or waits for contended file or allocator locks", async () => {
   const { client, handle } = await fixture();
-  const lock = client.shared.fileSlot(handle) * 12 + 8;
+  const lock = client.shared.fileSlot(handle) * SLOT_WORDS + 8;
   const bytes = new Uint8Array(4).fill(9);
   Atomics.store(client.shared.slots, lock, 123);
   try {

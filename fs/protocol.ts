@@ -1,3 +1,5 @@
+import { FilesystemError } from "../core/filesystem.js";
+export { FilesystemError } from "../core/filesystem.js";
 // Original shared-memory protocol. Ports schedule work; request/response bytes and completion
 // state live in the SAB. The service never waits on a guest, including a terminated one.
 // Guest browser-engine polyfills replace MessageChannel; transport endpoints must stay native.
@@ -40,14 +42,6 @@ export const enum State {
   Cancelled,
   Failed,
   Overflow,
-}
-export class FilesystemError extends Error {
-  constructor(
-    public errno: number,
-    message = `filesystem errno ${errno}`,
-  ) {
-    super(message);
-  }
 }
 export interface FilesystemConnection {
   port: MessagePort;

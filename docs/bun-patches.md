@@ -11,6 +11,7 @@ Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger re
 | `fs/opfs.ts`                                                                                    | Adaptation       | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation, queued lock ownership/cancellation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
 | `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                         | Original adapter | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                    |
 | `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts` | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                |
+| Inode permission query and enforcement                                                          | Original adapter | Original Waffle code, 2026-10-21; stored owner read/write, directory search/sticky, shared direct I/O checks and explicit saved-metadata adoption. No upstream source copied.                                                                                                                                                                |
 | `core/memory-views.js`                                                                          | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity.                                                                                                                                                                                                                      |
 | `patches/wasi-libc/preopen-scan.patch`                                                          | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.    |
 
@@ -31,6 +32,15 @@ for the incoming transfer before propagating the error.
 A cleanup-only filesystem codec can release shared reservation tokens without a
 process identity; importing still requires an identity. No upstream implementation
 was copied or adapted, and no filesystem storage implementation changed.
+
+## Original inode permission adapter
+
+`core/{filesystem,wasi}.ts` and `fs/{memory,backend,client,service,shared,storage,persistent}.ts`
+implement Waffle's original single-principal inode policy and guest query. No Bun, Node,
+WebKit or other upstream implementation was copied. Saved mode-less metadata adopts enforced
+0600/0700 defaults on load and records them at checkpoint without changing format identities.
+The query is separate from Preview1 filestat and executable-registry admission. Contract and
+limits are in [permissions](permissions.md).
 
 ## Patched wasi-libc preopen scan
 

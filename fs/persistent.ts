@@ -1,3 +1,4 @@
+import { FilesystemError } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend } from "./backend.js";
 import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory.js";
@@ -42,7 +43,10 @@ export class PersistentBackend extends MemoryBackend {
     visit(fs.root);
     if (index) {
       this.generation = index.generation;
-      for (const node of index.nodes) if (node.data) this.keys.set(node.ino, node.data);
+      for (const node of index.nodes) {
+        if (node.data) this.keys.set(node.ino, node.data);
+        if (node.mode === undefined) this.dirty.add(this.nodes.get(node.ino)!);
+      }
       this.committedKeys = new Map(this.keys);
     } else this.dirty.add(fs.root);
     fs.onLinkChange = (node, delta) => this.changeLinks(node, delta);
@@ -71,11 +75,18 @@ export class PersistentBackend extends MemoryBackend {
       nodes.set(
         entry.ino,
         entry.kind === "dir"
-          ? { kind: "dir", ino: entry.ino, mtime: entry.mtime, children: new Map() }
+          ? {
+              kind: "dir",
+              ino: entry.ino,
+              mtime: entry.mtime,
+              mode: entry.mode ?? 0o700,
+              children: new Map(),
+            }
           : {
               kind: "file",
               ino: entry.ino,
               mtime: entry.mtime,
+              mode: entry.mode ?? 0o600,
               size: entry.size,
               data: new Uint8Array(),
             },
@@ -256,6 +267,13 @@ export class PersistentBackend extends MemoryBackend {
         : target?.kind === "file"
           ? this.fs.handleForNode(target)
           : undefined;
+    if (handle !== undefined && operation !== "writeFile") {
+      const access = operation === "read" || operation === "readFile" ? 4 : 2;
+      if ((this.fs.permissions(handle).access & access) !== access) throw new FilesystemError(2);
+    }
+    if (handle !== undefined && operation === "writeFile" && !args[2]) {
+      if (!(this.fs.permissions(handle).access & 2)) throw new FilesystemError(2);
+    }
     const resources = this.shared.resources();
     if (resources.files > 1024 || resources.usedBytes >= resources.maxBytes / 2)
       this.evictClean(handle);
@@ -276,26 +294,6 @@ export class PersistentBackend extends MemoryBackend {
         } else return this.ensureLoaded(handle);
       }
     }
-  }
-  execute(operation: string, args: any[], data: Uint8Array): unknown {
-    if (operation === "lookup") {
-      const node = this.fs.lookup(args[0]);
-      if (!node) return undefined;
-      const metadata = (entry: Node) => {
-        const handle = this.fs.handleForNode(entry);
-        const stat = this.shared.stat(handle);
-        return { kind: entry.kind, ino: entry.ino, mtime: stat?.mtime ?? entry.mtime };
-      };
-      return node.kind === "file"
-        ? metadata(node)
-        : {
-            ...metadata(node),
-            children: new Map(
-              Array.from(node.children, ([name, child]) => [name, metadata(child)]),
-            ),
-          };
-    }
-    return super.execute(operation, args, data);
   }
   /** Capture only dirty nodes and changed resident payloads. Cost is bounded by the shared
    * slot table plus changes, not by the number of cold files in a workspace. */
@@ -353,6 +351,7 @@ export class PersistentBackend extends MemoryBackend {
             ino: node.ino,
             kind: "dir",
             mtime: node.mtime,
+            mode: node.mode,
             size: 0,
             children: Array.from(node.children, ([name, child]) => [name, child.ino]),
           }
@@ -360,6 +359,7 @@ export class PersistentBackend extends MemoryBackend {
             ino: node.ino,
             kind: "file",
             mtime: node.mtime,
+            mode: node.mode,
             size: node.size ?? node.data.length,
             data: this.keys.get(node.ino),
           },
