@@ -23,7 +23,7 @@ export class GuestFilesystem implements FileSystem {
     globalThis.postMessage({ kind: "syscall", operation: { kind: "guest", method, args, bytes } });
     if (Atomics.wait(cells, 0, 0, 5000) === "timed-out") throw new Error("UNAVAILABLE: guest syscall deadline");
     const encoded = new Uint8Array(this.shared, 16, Atomics.load(cells, 1));
-    const reply = object(JSON.parse(new TextDecoder().decode(encoded)));
+    const reply = object(JSON.parse(new TextDecoder().decode(new Uint8Array(encoded))));
     if (reply.kind !== "ok") throw new Error(text(reply.message));
     if (["write", "append", "create", "rename", "resize", "setMtime"].includes(method)) return object(reply.result).result;
     return reply.result;

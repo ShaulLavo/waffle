@@ -5,6 +5,7 @@ import type {} from "./page.js";
 
 const lifecycle = new BrowserRunnerLifecycle(480000);
 const outcomes: unknown[] = [];
+let activeEngine = "";
 let origin = "";
 function assert(value: unknown, label: string): asserts value {
   if (!value) throw new Error(label);
@@ -28,7 +29,7 @@ async function content(page: Page, path: string): Promise<{ id: number; version:
   return { id: value.id, version: value.version, text: value.text };
 }
 function record(label: string, detail: unknown): void {
-  const result = { label, status: "VERIFIED", detail };
+  const result = { engine: activeEngine, label, status: "VERIFIED", detail };
   outcomes.push(result); console.log(JSON.stringify(result));
 }
 async function firstControl(pages: Page[], arm: Arm) {
@@ -80,6 +81,96 @@ async function streamControl(page: Page, arm: Arm) {
   assert(value && typeof value === "object" && "kind" in value && value.kind === "batch" && "changes" in value && Array.isArray(value.changes) && value.changes.length === 1, "Snapshot/stream missed final change");
   record(`${arm}: snapshot-to-stream handoff with dropped final nudge`, { snapshot: snapshot.cursor, changes });
 }
+async function waitParked(page: Page, gate: string): Promise<void> {
+  await page.waitForFunction(async (gate) => {
+    const reply = await proof.client.send({ kind: "inspect" });
+    return reply.kind === "ok" && JSON.stringify(reply.result).includes(`"gate":"${gate}"`);
+  }, gate, { timeout: 2500 });
+}
+async function submit(page: Page, request: Request): Promise<Reply> {
+  return page.evaluate((request) => proof.client.submit(request), request);
+}
+async function staleControl(old: Page, replacement: Page, workspace: string, arm: Arm) {
+  const gate = "pending-append";
+  const request = await old.evaluate((gate) => proof.client.request({ kind: "append", path: "/shared", text: "pending-old\n" }, { gate }), gate);
+  const pending = submit(old, request);
+  await waitParked(old, gate);
+  const replaced = await connected(replacement, workspace, arm, true);
+  if (arm === "volatile-fast") {
+    assert(replaced.kind === "error" && replaced.code === "UNAVAILABLE", "Stole volatile lock");
+    await old.evaluate((gate) => proof.client.send({ kind: "release", gate }), gate);
+    ok(await pending);
+    const after = ok(await execute(old, { kind: "read", path: "/shared" }));
+    assert(after.cursor.epoch === request.epoch, "Volatile authority changed despite held lock");
+    record(`${arm}: parked lock holder refuses suspicion takeover, resumes same authority`, { replaced, after: after.cursor });
+    return;
+  }
+  ok(replaced);
+  ok(await execute(replacement, { kind: "append", path: "/shared", text: "successor\n" }));
+  await old.evaluate((gate) => proof.client.send({ kind: "release", gate }), gate);
+  const resumed = await pending;
+  const staleRead = await execute(old, { kind: "read", path: "/shared" });
+  const staleWrite = await execute(old, { kind: "append", path: "/shared", text: "stale-new\n" });
+  for (const reply of [resumed, staleRead, staleWrite]) assert(reply.kind === "error" && reply.code === "FENCED", "Stale authority read or ACK");
+  const file = await content(replacement, "/shared");
+  assert(file && !file.text.includes("pending-old") && !file.text.includes("stale-new"), "Stale publication escaped fence");
+  record(`${arm}: pending append, stale-resume, new stale mutation and read fenced`, { replaced, resumed, staleRead, staleWrite, file });
+}
+async function renameControl(page: Page, other: Page, workspace: string, arm: Arm) {
+  ok(await execute(page, { kind: "write", path: "/rename-old", text: "source" }));
+  ok(await execute(page, { kind: "write", path: "/rename-new", text: "target" }));
+  const original = await content(page, "/rename-old");
+  const gate = "pending-rename";
+  const request = await page.evaluate((gate) => proof.client.request({ kind: "rename", from: "/rename-old", to: "/rename-new" }, { gate }), gate);
+  const pending = submit(page, request);
+  await waitParked(page, gate);
+  if (arm !== "volatile-fast") {
+    ok(await connected(other, workspace, arm, true));
+    assert((await content(other, "/rename-old"))?.text === "source", "Partial pre-rename source");
+    assert((await content(other, "/rename-new"))?.text === "target", "Partial pre-rename target");
+  }
+  await page.evaluate((gate) => proof.client.send({ kind: "release", gate }), gate);
+  const result = await pending;
+  if (arm !== "volatile-fast") {
+    assert(result.kind === "error" && result.code === "FENCED", "Pending stale rename ACK");
+    ok(await execute(other, { kind: "rename", from: "/rename-old", to: "/rename-new" }));
+  } else ok(result);
+  const active = arm === "volatile-fast" ? page : other;
+  const renamed = await content(active, "/rename-new");
+  assert(await content(active, "/rename-old") === null, "Rename retained old namespace");
+  assert(renamed?.id === original?.id && renamed?.version === original?.version && renamed?.text === "source", "Rename identity/version changed");
+  record(`${arm}: pending rename and atomic replacement identity`, { original, result, renamed });
+}
+async function droppedResponse(page: Page, other: Page, workspace: string, arm: Arm) {
+  const request = await page.evaluate(() => proof.client.request({ kind: "append", path: "/shared", text: "reply-lost\n" }, { dropReply: true }));
+  const missing = await submit(page, request);
+  assert(missing.kind === "error" && missing.code === "UNAVAILABLE", "Response was not dropped");
+  if (arm !== "volatile-fast") ok(await connected(other, workspace, arm, true));
+  const active = arm === "volatile-fast" ? page : other;
+  const current = await active.evaluate(() => proof.client.cursor);
+  const retry = { ...request, epoch: current.epoch, history: current.history, dropReply: false };
+  const repeated = ok(await submit(active, retry));
+  const file = await content(active, "/shared");
+  assert(file?.text.split("reply-lost\n").length === 2, "Dropped response retry duplicated append");
+  record(`${arm}: dropped reply resolves same receipt${arm === "volatile-fast" ? " in live memory" : " after authority replacement"}`, { missing, repeated, file });
+}
+async function productionControl(browser: Browser, engine: string): Promise<void> {
+  const context = await browser.newContext();
+  try {
+    const owner = await context.newPage(), follower = await context.newPage();
+    await owner.goto(origin); await follower.goto(origin);
+    const workspace = `waffle-e5-production-${crypto.randomUUID()}`;
+    await owner.evaluate((workspace) => proof.productionOpen(workspace), workspace);
+    await owner.evaluate(() => proof.productionWrite());
+    await follower.evaluate((workspace) => proof.productionOpen(workspace), workspace);
+    await follower.waitForFunction(() => proof.productionState() === "waiting", undefined, { timeout: 3000 });
+    await owner.evaluate(() => proof.productionClose());
+    const read = await follower.evaluate(() => proof.productionRead());
+    assert(read === "current-production", "Production reopen data lost");
+    await follower.evaluate(() => proof.productionClose());
+    record(`${engine}: unchanged production exclusive wait/reopen control`, { read, simultaneousWriters: false });
+  } finally { await context.close(); }
+}
 async function armControl(browser: Browser, arm: Arm): Promise<void> {
   const context = await browser.newContext();
   const workspace = `waffle-e5-${arm}-${crypto.randomUUID()}`;
@@ -93,13 +184,22 @@ async function armControl(browser: Browser, arm: Arm): Promise<void> {
     await duplicateControl(active, arm);
     await guestControl(active, arm);
     await streamControl(active, arm);
-    console.log(JSON.stringify({ arm, authority: await active.evaluate(() => proof.client.send({ kind: "inspect" })) }));
-    ok(await active.evaluate(() => proof.client.send({ kind: "close" })));
+    const second = pages[2], third = pages[3]; assert(second && third, "Missing lifecycle pages");
+    await staleControl(active, second, workspace, arm);
+    const afterStale = arm === "volatile-fast" ? active : second;
+    await renameControl(afterStale, third, workspace, arm);
+    const afterRename = arm === "volatile-fast" ? active : third;
+    await droppedResponse(afterRename, second, workspace, arm);
+    const final = arm === "volatile-fast" ? active : second;
+    console.log(JSON.stringify({ arm, authority: await final.evaluate(() => proof.client.send({ kind: "inspect" })) }));
+    ok(await final.evaluate(() => proof.client.send({ kind: "close" })));
   } finally { await context.close(); }
 }
 async function browserControl(engine: keyof typeof engines): Promise<void> {
+  activeEngine = engine;
   const browser = await lifecycle.launch(engine);
   try {
+    await productionControl(browser, engine);
     for (const arm of ["fenced-safe", "fenced-fast", "volatile-fast"] as const) {
       try { await armControl(browser, arm); }
       catch (error) { const result = { engine, arm, status: "FAILED", error: String(error) }; outcomes.push(result); console.error(JSON.stringify(result)); }
