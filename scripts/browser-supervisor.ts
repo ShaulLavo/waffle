@@ -1,5 +1,5 @@
 import { dlopen, FFIType } from "bun:ffi";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -114,10 +114,17 @@ async function supervise(command: string[], graceMs: number): Promise<number> {
   try {
     scratch = mkdtempSync(join(root, "wb-"));
     shm = mkdtempSync("/dev/shm/wb-");
+    // Keep the dispatcher's short browser TMPDIR separate from our owned scratch.
+    const dispatcherTmp =
+      process.env.TMPDIR &&
+      process.env.TMPDIR === process.env.SCRATCH &&
+      realpathSync(process.env.TMPDIR).length <= 48
+        ? process.env.TMPDIR
+        : undefined;
     const child = Bun.spawn(command, {
       env: {
         ...process.env,
-        TMPDIR: scratch,
+        TMPDIR: dispatcherTmp ?? scratch,
         STORAGE_SCRATCH_ROOT: scratch,
         PROCESS_SCRATCH_ROOT: scratch,
         WAFFLE_BROWSER_SHM_ROOT: shm,
