@@ -67,6 +67,18 @@ self.onmessage = async (event) => {
     self.postMessage(snapshot());
     return;
   }
+  if ("scenario" in input && input.scenario === "transient-stat") {
+    try {
+      const root = fs.preopen("/");
+      const path = fs.resolve(root, "cached");
+      if (typeof path === "number" || path.node === undefined)
+        throw new Error("missing stat fixture");
+      self.postMessage({ directory: fs.stat(root), file: fs.stat(path.node) });
+    } finally {
+      fs.dispose();
+    }
+    return;
+  }
   if ("scenario" in input && input.scenario === "inflight") {
     const root = fs.preopen("/");
     fs.retain(root);

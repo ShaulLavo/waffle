@@ -153,3 +153,20 @@ test("link, unlink and cross-directory rename refresh both affected directory ti
   expect(backend.shared.stat(root)!.mtime).toBeGreaterThan(1);
   expect(backend.shared.stat(child)!.mtime).toBeGreaterThan(1);
 });
+
+test("stat rejects a metadata slot reused while waiting for its file lock", () => {
+  const state = new SharedFilesystemState();
+  state.register(0, { kind: "file", ino: 1, size: 0, mtime: 1 });
+  const slot = state.fileSlot(0);
+  const lock = slot * 12 + 8;
+  Atomics.store(state.slots, lock, 42);
+  state.onContention = () => {
+    Atomics.store(state.slots, lock, 0);
+    state.unlink(0);
+    state.register(4095, { kind: "file", ino: 2, size: 0, mtime: 2 });
+    state.onContention = undefined;
+  };
+  expect(state.stat(0)).toBeUndefined();
+  expect(state.fileSlot(4095)).toBe(slot);
+  expect(state.stat(4095)).toMatchObject({ ino: 2, mtime: 2 });
+});
