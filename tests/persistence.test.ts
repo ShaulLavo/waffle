@@ -1,3 +1,8 @@
+import { DescriptorTable } from "../core/descriptors.js";
+import { ProcessABI } from "../proc/abi.js";
+import { ProcessSupervisor } from "../proc/supervisor.js";
+import { ExecutableRegistry } from "../proc/registry.js";
+import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { validatePersistedIndex } from "../fs/storage";
@@ -550,4 +555,104 @@ test("a queued deletion checkpoint pins a later cold reattachment until its upse
   validatePersistedIndex(store.index);
   expect(decode(await client.asyncCall("readFile", ["/b"]))).toBe("OLD");
   client.release(a.node);
+});
+
+test("inode permission contract uses actual persistence, service and client", async () => {
+  const store = new Store();
+  await permissionStorageCase(async () => store);
+});
+
+test("saved metadata adoption persists defaults without payload reads or format changes", async () => {
+  const store = new Store();
+  store.index = {
+    version: 1,
+    generation: 1,
+    root: 1,
+    nodes: [
+      { ino: 1, kind: "dir", mtime: 1, size: 0, children: [["file", 2]] },
+      { ino: 2, kind: "file", mtime: 1, size: 1, data: "saved" },
+    ],
+  };
+  store.payloads.set("saved", new Uint8Array([9]));
+  const { client } = await fixture(store);
+  const root = await client.asyncCall("preopen", ["/"]);
+  const path = await client.asyncCall("resolve", [root, "file"]);
+  expect(await client.asyncCall("permissions", [path.node])).toEqual({
+    mode: 0o600,
+    modeSupported: 0o600,
+    access: 6,
+    accessSupported: 6,
+  });
+  await client.asyncCall("flush");
+  expect(store.reads).toBe(0);
+  expect(store.index.version).toBe(1);
+  expect(store.index.nodes.find((entry: any) => entry.ino === 2)).toMatchObject({
+    mode: 0o600,
+    data: "saved",
+  });
+});
+
+async function coldPermissionFixture(mode: number) {
+  const store = new Store();
+  const first = await fixture(store);
+  await first.client.asyncCall("writeFile", ["/file"], encode("ABCD"));
+  const firstRoot = await first.client.asyncCall("preopen", ["/"]);
+  const firstPath = await first.client.asyncCall("resolve", [firstRoot, "file"]);
+  expect(await first.client.asyncCall("setMode", [firstPath.node, mode])).toBe(0);
+  await first.client.asyncCall("flush");
+  const { client, backend } = await fixture(store);
+  const root = await client.asyncCall("preopen", ["/"]);
+  const path = await client.asyncCall("resolve", [root, "file"]);
+  const handle: number = path.node;
+  client.retain(handle);
+  cleanup.push(() => client.release(handle));
+  expect(store.reads).toBe(0);
+  return { store, client, backend, handle };
+}
+
+for (const pollFirst of [false, true]) {
+  test(`cold read-only process read hydrates with read rights, pollFirst=${pollFirst}`, async () => {
+    const { client, store, handle } = await coldPermissionFixture(0o400);
+    const descriptors = new DescriptorTable();
+    const supervisor = new ProcessSupervisor({
+      registry: new ExecutableRegistry(),
+      launch() {
+        throw new Error("no process launch expected");
+      },
+    });
+    cleanup.push(() => supervisor.dispose());
+    const pid = supervisor.createRoot({ descriptors });
+    const signals = supervisor.get(pid)!;
+    const memory = new WebAssembly.Memory({ initial: 1 });
+    const abi = new ProcessABI({
+      memory,
+      descriptors,
+      fs: client,
+      pid,
+      service: supervisor,
+      signals,
+    });
+    const fd = descriptors.open({ kind: "file", handle, offset: 0, append: false }, 2n, 0n);
+    const bytes = new Uint8Array(memory.buffer, 1024, 4);
+    bytes.fill(0xa5);
+    if (pollFirst) expect(client.ioReadiness(handle, false).readable).toBe(false);
+    else expect(abi.imports.read!(fd, 1024, 4)).toBe(-6);
+    expect(bytes).toEqual(new Uint8Array(4).fill(0xa5));
+    while (!client.ioReadiness(handle, false).readable) await Bun.sleep(1);
+    expect(abi.imports.read!(fd, 1024, 4)).toBe(4);
+    expect(decode(bytes)).toBe("ABCD");
+    expect(store.reads).toBe(1);
+    expect(client.tryWrite(handle, [encode("deny")], 0)).toBe(-2);
+    expect(client.resize(handle, 0, true)).toBe(2);
+    expect(client.completions.size).toBe(0);
+  });
+}
+
+test("cold read denial settles without loading data or retaining a request", async () => {
+  const { client, store, handle } = await coldPermissionFixture(0o200);
+  expect(client.permissions(handle)?.access).toBe(2);
+  const denied = await client.asyncCall("readFile", ["/file"]).catch((error: unknown) => error);
+  expect(denied).toMatchObject({ errno: 2 });
+  expect(store.reads).toBe(0);
+  expect(client.completions.size).toBe(0);
 });

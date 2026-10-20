@@ -9,6 +9,7 @@ const signatures: Record<string, string> = {
   fd_pwrite: "iiiji",
   fd_pread: "iiiji",
   fd_tell: "ii",
+  fd_readdir: "iiiji",
   fd_fdstat_set_flags: "ii",
 };
 function leb(value: number): number[] {
