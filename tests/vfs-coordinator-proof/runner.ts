@@ -910,7 +910,12 @@ async function rawLifetime(browser: Browser): Promise<void> {
       before.instance === after.instance && after.value === "memory-ack",
       "Raw SharedWorker reset",
     );
-    record("raw module SharedWorker first-client close", { before, after });
+    assert(diagnostic !== "TIMEOUT", "Raw SharedWorker diagnostic response lost");
+    assert(
+      diagnostic.instance === before.instance && diagnostic.value === "memory-ack",
+      "Raw SharedWorker diagnostic reset",
+    );
+    record("raw module SharedWorker first-client close", { before, after, diagnostic });
   } catch (error) {
     const result = {
       engine: activeEngine,
