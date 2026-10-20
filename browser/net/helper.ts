@@ -12,6 +12,7 @@ import {
 } from "./http1.js";
 import {
   CONN_BASE,
+  AGAIN,
   FETCH_WINDOW,
   type FetchHead,
   Kind,
@@ -19,8 +20,13 @@ import {
   type NetError,
   type NetRequest,
   type NewConn,
+  ERROR,
+  type PeerAddr,
+  type TcpRequest,
 } from "./protocol.js";
 import { RingWriter } from "./ring.js";
+import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
+export { NetNamespace } from "./namespace.js";
 
 const encoder = new TextEncoder();
 /** Hostnames that mean "this machine": fetches to them may reach the guest's own servers. */
@@ -67,18 +73,24 @@ export class NetHelper {
   private connections = new Map<number, ConnectionSink>();
   private nextConn = CONN_BASE;
   private disposed = false;
+  private sockets = new Map<number, LoopbackSocket>();
+  private pending = new Map<number, Set<number>>();
   private fileWrites: Promise<void> = Promise.resolve();
 
   constructor(
     sab: SharedArrayBuffer,
     private fetchRequest: NetFetch,
     private hooks: NetHelperHooks = {},
+    private namespace = new NetNamespace(),
   ) {
     this.ring = new RingWriter(sab);
   }
 
   handle(req: NetRequest): void {
-    if (this.disposed) return;
+    if (this.disposed) {
+      if ("reply" in req) tcpReply(req.reply, ERROR);
+      return;
+    }
     switch (req.type) {
       case "fetch":
         void this.fetch(req);
@@ -90,8 +102,22 @@ export class NetHelper {
         this.close(req.id);
         return;
       case "listen":
-        this.listeners.set(req.id, req.port);
-        this.hooks.listening?.(req.port, req.host);
+        this.listen(req.id, req.port, req.host);
+        return;
+      case "tcp-listen":
+      case "tcp-connect":
+      case "tcp-write":
+        this.tcp(req);
+        return;
+      case "tcp-accept":
+        this.pending.get(req.listener)?.delete(req.id);
+        return;
+      case "tcp-read":
+        this.sockets.get(req.id)?.consumed(req.bytes);
+        return;
+      case "shutdown":
+        if (this.sockets.has(req.id)) this.sockets.get(req.id)!.shutdown();
+        else this.close(req.id);
         return;
       case "write":
         this.connections.get(req.id)?.data(req.data);
@@ -104,12 +130,32 @@ export class NetHelper {
     if (this.disposed) return;
     this.disposed = true;
     this.ring.dispose();
-    for (const job of this.fetches.values()) job.controller.abort();
+    this.namespace.release(this);
+    const sockets = Array.from(this.sockets.values());
+    const fetches = Array.from(this.fetches.values());
+    const connections = Array.from(this.connections.values());
+    const ports = Array.from(this.listeners.values());
+    this.sockets.clear();
+    this.pending.clear();
     this.fetches.clear();
-    for (const conn of this.connections.values()) conn.error("the server stopped");
     this.connections.clear();
-    for (const port of this.listeners.values()) this.hooks.stopped?.(port);
     this.listeners.clear();
+    const failures: unknown[] = [];
+    const attempt = (operation: () => void) => {
+      try {
+        operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    for (const socket of sockets) attempt(() => socket.close());
+    for (const job of fetches) {
+      attempt(() => job.controller.abort());
+      job.wake?.();
+    }
+    for (const conn of connections) attempt(() => conn.error("the server stopped"));
+    for (const port of ports) attempt(() => this.hooks.stopped?.(port));
+    if (failures.length) throw new AggregateError(failures, "Network helper disposal failed");
   }
 
   /** The listener handle for `port`, if this worker is serving it. */
@@ -194,9 +240,11 @@ export class NetHelper {
   /** Connects a host-side byte stream to the guest without HTTP response framing. */
   connect(port: number, sink: ConnectionSink): PreviewConnection | null {
     const listener = this.listenerFor(port);
-    if (listener === undefined || this.disposed) return null;
+    if (this.disposed) return null;
+    if (listener === undefined) return this.connectNamespace(port, sink);
     const conn = this.nextConn++;
     this.connections.set(conn, sink);
+    this.pending.get(listener)?.add(conn);
     const announce: NewConn = {
       conn,
       peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" },
@@ -213,6 +261,124 @@ export class NetHelper {
         sending = sending.then(() => this.ring.write(conn, Kind.End));
       },
     };
+  }
+
+  private connectNamespace(port: number, sink: ConnectionSink): PreviewConnection | null {
+    let socket: LoopbackSocket | undefined = undefined;
+    const connected = this.namespace.connect(port, {
+      data: (bytes) => {
+        sink.data(bytes);
+        socket?.consumed(bytes.length);
+      },
+      end: () => sink.end(),
+    });
+    if (typeof connected === "number") return null;
+    const id = this.nextConn++;
+    socket = connected.socket;
+    this.sockets.set(id, socket);
+    this.connections.set(id, sink);
+    const ownedSocket = socket;
+    let live = true;
+    let sending = Promise.resolve();
+    return {
+      write: (bytes) => {
+        const owned = bytes.slice();
+        sending = sending.then(() =>
+          this.sendSocket(ownedSocket, owned, () => live && !this.disposed, sink),
+        );
+      },
+      close: () => {
+        live = false;
+        this.sockets.delete(id);
+        this.connections.delete(id);
+        ownedSocket.close();
+      },
+    };
+  }
+
+  private async sendSocket(
+    socket: LoopbackSocket,
+    bytes: Uint8Array,
+    live: () => boolean,
+    sink: ConnectionSink,
+  ): Promise<void> {
+    let at = 0;
+    while (live() && at < bytes.length) {
+      const count = socket.write(bytes.subarray(at));
+      if (count === AGAIN) {
+        await socket.writable();
+        continue;
+      }
+      if (count < 0) {
+        sink.error("the server stopped");
+        return;
+      }
+      at += count;
+    }
+  }
+
+  private listen(id: number, port: number, host: string): number {
+    const bound = this.namespace.listen(port, {
+      owner: this,
+      handle: id,
+      accept: (peer, socket) => this.acceptSocket(id, peer, socket),
+    });
+    if (bound < 0) return bound;
+    this.listeners.set(id, bound);
+    this.pending.set(id, new Set());
+    this.hooks.listening?.(bound, host);
+    return bound;
+  }
+
+  private socketSink(id: number) {
+    let sending = Promise.resolve();
+    return {
+      data: (bytes: Uint8Array) => {
+        sending = sending.then(() => this.writeChunks(id, bytes));
+      },
+      end: () => {
+        sending = sending.then(() => this.ring.write(id, Kind.End));
+      },
+      writable: () => {
+        void this.ring.write(id, Kind.Writable);
+      },
+    };
+  }
+
+  private acceptSocket(listener: number, peer: PeerAddr, socket: LoopbackSocket): void {
+    const conn = this.nextConn++;
+    this.sockets.set(conn, socket);
+    this.pending.get(listener)?.add(conn);
+    void this.ring.write(listener, Kind.Conn, json({ conn, peer } satisfies NewConn));
+    socket.receive(this.socketSink(conn));
+  }
+
+  private tcp(req: TcpRequest): void {
+    let result: [number, number] = [ERROR, 0];
+    try {
+      result = this.executeTcp(req);
+    } finally {
+      tcpReply(req.reply, result[0], result[1]);
+    }
+  }
+
+  private executeTcp(req: TcpRequest): [number, number] {
+    if (req.type === "tcp-listen") {
+      const port = this.listen(req.id, req.port, req.host);
+      return [port < 0 ? port : 0, port];
+    }
+    if (req.type === "tcp-write") {
+      const socket = this.sockets.get(req.id);
+      if (socket) return [socket.write(req.data), 0];
+      const sink = this.connections.get(req.id);
+      if (!sink) return [ERROR, 0];
+      sink.data(req.data);
+      return [req.data.length, 0];
+    }
+    const connected = this.namespace.connect(req.port, this.socketSink(req.id));
+    if (typeof connected === "number") return [connected, 0];
+    this.sockets.set(req.id, connected.socket);
+    return [0, connected.port];
   }
 
   // ---------- fetch ----------
@@ -264,13 +430,7 @@ export class NetHelper {
         const { done, value } = await reader.read();
         if (done) break;
         if (!this.fetches.has(id)) return;
-        for (let at = 0; at < value.length; at += MAX_RECORD) {
-          const piece = value.subarray(at, at + MAX_RECORD);
-          await this.waitForWindow(id, job);
-          if (!this.fetches.has(id)) return;
-          job.inFlight += piece.length;
-          await this.ring.write(id, Kind.Data, piece);
-        }
+        await this.pumpChunk(id, job, value);
       }
     } catch (err) {
       await this.failFetch(id, err);
@@ -281,12 +441,22 @@ export class NetHelper {
     await this.ring.write(id, Kind.End);
   }
 
+  private async pumpChunk(id: number, job: FetchJob, value: Uint8Array): Promise<void> {
+    for (let at = 0; at < value.length; at += MAX_RECORD) {
+      const piece = value.subarray(at, at + MAX_RECORD);
+      await this.waitForWindow(id, job);
+      if (!this.fetches.has(id)) return;
+      job.inFlight += piece.length;
+      await this.ring.write(id, Kind.Data, piece);
+    }
+  }
+
   /** The port when `url` addresses one of this worker's own servers (http://localhost:<port>/…). */
   private loopbackPort(url: string): number | undefined {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" || !LOOPBACK.has(parsed.hostname)) return undefined;
     const port = Number(parsed.port || 80);
-    return this.listenerFor(port) === undefined ? undefined : port;
+    return this.namespace.has(port) ? port : undefined;
   }
 
   /**
@@ -365,6 +535,12 @@ export class NetHelper {
   // ---------- listeners and connections ----------
 
   private close(id: number): void {
+    const socket = this.sockets.get(id);
+    if (socket) {
+      this.sockets.delete(id);
+      socket.close();
+      return;
+    }
     const job = this.fetches.get(id);
     if (job) {
       this.fetches.delete(id);
@@ -375,6 +551,9 @@ export class NetHelper {
     const port = this.listeners.get(id);
     if (port !== undefined) {
       this.listeners.delete(id);
+      this.namespace.unlisten(this, id);
+      for (const conn of this.pending.get(id) ?? []) this.close(conn);
+      this.pending.delete(id);
       this.hooks.stopped?.(port);
       return;
     }

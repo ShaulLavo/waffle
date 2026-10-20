@@ -8,11 +8,13 @@ import {
   Kind,
   type NetError,
   type NetRequest,
+  type TcpCommand,
   type NewConn,
   OK,
   type PeerAddr,
   UNSUPPORTED,
 } from "./protocol.js";
+import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./namespace.js";
 import { RingReader } from "./ring.js";
 
 interface Stream {
@@ -68,6 +70,7 @@ export class NetHost {
   /** Connections announced by the helper but not accepted yet (their bytes buffer here meanwhile). */
   private unaccepted = new Map<number, ConnHandle>();
   private nextHandle = 1;
+  private disposed = false;
   private seenGeneration: number;
   private lastError: NetError | null = null;
   /** Something changed without a ring record (a local pipe write or close): `poll` must not sleep. */
@@ -78,6 +81,7 @@ export class NetHost {
     sab: SharedArrayBuffer,
     private send: (msg: NetRequest, transfer?: Transferable[]) => void,
     private writeFile?: (path: string, bytes: Uint8Array) => void,
+    private options: { shared?: boolean } = {},
   ) {
     this.ring = new RingReader(sab);
     this.seenGeneration = this.ring.generation();
@@ -85,6 +89,7 @@ export class NetHost {
 
   /** Register the nonblocking consumer's wake callback. Blocking consumers use poll instead. */
   onNews(cb: () => void): void {
+    if (this.disposed) return;
     this.newsCallback = cb;
     this.watchRing();
   }
@@ -94,13 +99,18 @@ export class NetHost {
   /** Something changed: wake a blocking `poll` (localNews) or the browser engine's loop. */
   private news(): void {
     this.localNews = true;
-    if (this.newsCallback) queueMicrotask(this.newsCallback);
+    if (this.newsCallback)
+      queueMicrotask(() => {
+        if (!this.disposed) this.newsCallback?.();
+      });
   }
 
   /** Calls onNews whenever the helper writes to the ring (Atomics.waitAsync, else a short timer). */
   private watchRing(): void {
+    if (this.disposed) return;
     const seen = this.ring.generation();
     const again = () => {
+      if (this.disposed) return;
       this.drain();
       if (this.ring.generation() !== seen && this.newsCallback) this.newsCallback();
       this.watchRing();
@@ -113,6 +123,7 @@ export class NetHost {
   // ---------- handle operations ----------
 
   poll(timeoutMs: number): number {
+    if (this.disposed) return 0;
     this.drain();
     if (this.localNews) {
       this.localNews = false;
@@ -132,6 +143,7 @@ export class NetHost {
 
   /** Start a request, copying body bytes before handing them to the message transport. */
   fetch(metaText: string, bodyBytes: Uint8Array | null = null): number {
+    if (this.disposed) return BADF;
     let meta: {
       method?: string;
       url?: string;
@@ -187,6 +199,8 @@ export class NetHost {
       const chunk = this.take(h, cap);
       if (h.kind === "fetch") this.send({ type: "ack", id: handle, bytes: chunk.length });
       else if (h.pipe !== null) this.news();
+      else if (this.options.shared)
+        this.send({ type: "tcp-read", id: handle, bytes: chunk.length });
       return chunk;
     }
     if (h.error) return ERROR;
@@ -202,6 +216,15 @@ export class NetHost {
     const n = Math.min(bytes.length, MAX_WRITE);
     if (n === 0) return 0;
     const data = new Uint8Array(bytes.subarray(0, n));
+    if (h.pipe === null && this.options.shared) {
+      const [written] = this.call({ type: "tcp-write", id: handle, data }, [data.buffer]);
+      if (written === AGAIN) return AGAIN;
+      if (written < 0) {
+        h.error = this.tcpError(written);
+        return ERROR;
+      }
+      return written;
+    }
     if (h.pipe === null) {
       this.send({ type: "write", id: handle, data }, [data.buffer]);
       return n;
@@ -224,7 +247,8 @@ export class NetHost {
     if (h?.kind !== "conn") return BADF;
     if (h.writeEnded) return OK;
     h.writeEnded = true;
-    if (h.pipe === null) this.send({ type: "close", id: handle });
+    if (h.pipe === null)
+      this.send({ type: this.options.shared ? "shutdown" : "close", id: handle });
     else {
       const peer = this.connection(h.pipe);
       if (peer) peer.ended = true;
@@ -262,7 +286,9 @@ export class NetHost {
   }
 
   listen(hostname: string, port: number): number {
+    if (this.disposed) return BADF;
     const host = hostname || "0.0.0.0";
+    if (this.options.shared) return this.listenShared(host, port);
     const inUse = new Set<number>();
     for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.port);
     if (port === 0) {
@@ -285,10 +311,12 @@ export class NetHost {
   }
 
   /**
-   * Browsers have no TCP. A connection to one of the guest's own listeners is a local pipe between
-   * two handles; anything else is unsupported.
+   * Shared hosts route loopback through their runtime's helpers. Standalone hosts use an in-host
+   * pipe. Outbound TCP to non-loopback addresses is unsupported in either mode.
    */
   connect(host: string, port: number): number {
+    if (this.disposed) return BADF;
+    if (this.options.shared && LOOPBACK.has(host)) return this.connectShared(port);
     const listener = Array.from(this.handles.entries()).find(
       ([, h]) => h.kind === "listener" && h.port === port,
     );
@@ -332,6 +360,59 @@ export class NetHost {
     return client;
   }
 
+  /** Close this host's handles. The launcher must also dispose its helper on worker exit. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.newsCallback = null;
+    for (const handle of this.handles.keys()) this.close(handle);
+    this.fileWrite = null;
+    this.ring.wake();
+  }
+
+  private tcpError(status: number): NetError {
+    const codes: Record<number, string> = {
+      [TCP_IN_USE]: "EADDRINUSE",
+      [TCP_REFUSED]: "ECONNREFUSED",
+      [TCP_PIPE]: "EPIPE",
+      [TCP_INVALID]: "EINVAL",
+    };
+    const code = codes[status] ?? "ECANCELED";
+    return { name: "Error", message: `loopback TCP: ${code}`, code };
+  }
+
+  private call(request: TcpCommand, transfer: Transferable[] = []): [number, number] {
+    const reply = new SharedArrayBuffer(12);
+    const cells = new Int32Array(reply);
+    this.send({ ...request, reply }, transfer);
+    while (Atomics.load(cells, 0) === 0) Atomics.wait(cells, 0, 0);
+    return [Atomics.load(cells, 1), Atomics.load(cells, 2)];
+  }
+
+  private listenShared(host: string, port: number): number {
+    const id = this.nextHandle++;
+    const [status, bound] = this.call({ type: "tcp-listen", id, host, port });
+    if (status < 0) return this.fail(this.tcpError(status));
+    this.handles.set(id, { kind: "listener", port: bound, pending: [], error: null });
+    return id;
+  }
+
+  private connectShared(port: number): number {
+    const id = this.nextHandle++;
+    const [status, local] = this.call({ type: "tcp-connect", id, port });
+    if (status < 0) return this.fail(this.tcpError(status));
+    this.handles.set(id, {
+      kind: "conn",
+      port: local,
+      peer: { address: "127.0.0.1", family: "IPv4", port },
+      pipe: null,
+      chunks: [],
+      ended: false,
+      error: null,
+    });
+    return id;
+  }
+
   private connection(handle: number): ConnHandle | undefined {
     const h = this.handles.get(handle) ?? this.unaccepted.get(handle);
     return h?.kind === "conn" ? h : undefined;
@@ -353,6 +434,7 @@ export class NetHost {
     if (!state) return AGAIN;
     this.unaccepted.delete(conn);
     this.handles.set(conn, state);
+    this.send({ type: "tcp-accept", id: conn, listener });
     return conn;
   }
 
@@ -371,6 +453,7 @@ export class NetHost {
   // ---------- events from the helper ----------
 
   private drain(): void {
+    if (this.disposed) return;
     for (const { handle, kind, payload } of this.ring.drain()) this.dispatch(handle, kind, payload);
   }
 

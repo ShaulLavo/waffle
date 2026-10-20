@@ -786,6 +786,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
   // Fence failure intentionally retains ownership until the page is destroyed. Use an isolated
   // process as that page, then destroy it in finally rather than deleting a live owner's guard.
   const script = `
+    import { createRing } from ${JSON.stringify(new URL("../browser/net/ring.ts", import.meta.url).href)};
     import { createRuntime } from ${JSON.stringify(new URL("../index.ts", import.meta.url).href)};
     import { ProcessSupervisor } from ${JSON.stringify(new URL("../proc/supervisor.ts", import.meta.url).href)};
     import { MemoryBackend } from ${JSON.stringify(new URL("../fs/backend.ts", import.meta.url).href)};
@@ -793,13 +794,16 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     const backend = new MemoryBackend();
     backend.fs.writeFile("/app", new Uint8Array());
     const filesystem = new FilesystemService(backend);
-    let filesystemStops = 0, consumerStops = 0, relayStops = 0;
+    let filesystemStops = 0, consumerStops = 0, relayStops = 0, networkStops = 0;
     globalThis.Worker = class { addEventListener() {} postMessage(message) { filesystem.connect(message.connect); } terminate() { filesystem.dispose(); filesystemStops++; } };
     const runtime = createRuntime({ filesystem: { mode: "memory", workerURL: "https://example.test/fs.js" }, processHost: options => {
       const supervisor = new ProcessSupervisor({ registry: options.registry, table: options.table, launch: options.launch });
       return { ready: async () => supervisor, suspend: () => supervisor.dispose(),
         quiesce: async () => { throw new Error("fence failed"); }, dispose: async () => { relayStops++; } };
     } });
+    const network = await runtime.network();
+    const helper = network.createHelper({ ring: createRing(), fetch: async () => { throw Error("Unexpected external fetch"); }, hooks: { stopped() { networkStops++; } } });
+    helper.handle({ type: "tcp-listen", id: 1, port: 32146, host: "localhost", reply: new SharedArrayBuffer(12) });
     runtime.registerAdapter("test", () => ({ terminate() { consumerStops++; } }));
     runtime.registerProgram("/app", { adapter: "test", module: new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])), cooperative: true });
     const supervisor = await (await runtime.processes()).ready();
@@ -811,7 +815,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
     try { await disposal; } catch (failure) { error = failure.message; }
     let guardHeld = false;
     try { createRuntime(); } catch (failure) { guardHeld = /live|owner|runtime/i.test(failure.message); }
-    console.log(JSON.stringify({ error, filesystemStops, consumerStops, relayStops, guardHeld, sameDisposal: runtime.dispose() === disposal }));
+    console.log(JSON.stringify({ error, filesystemStops, consumerStops, relayStops, networkStops, guardHeld, sameDisposal: runtime.dispose() === disposal }));
     process.exit(0);
   `;
   const page = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe" });
@@ -827,6 +831,7 @@ test("a rejected disposal fence retains consumers, relays, filesystem ownership,
       filesystemStops: 0,
       consumerStops: 0,
       relayStops: 0,
+      networkStops: 0,
       guardHeld: true,
       sameDisposal: true,
     });

@@ -33,6 +33,8 @@ export const Kind = {
   FileEnd: 8,
   /** A file already changed in the shared filesystem: JSON {path}. Wake only; never replace bytes. */
   FileChanged: 9,
+  /** The peer consumed bytes after the connection hit its write limit. */
+  Writable: 10,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 
@@ -61,7 +63,18 @@ export interface NewConn {
   peer: PeerAddr;
 }
 
+export type TcpCommand =
+  | { type: "tcp-listen"; id: number; port: number; host: string }
+  | { type: "tcp-connect"; id: number; port: number }
+  | { type: "tcp-write"; id: number; data: Uint8Array };
+
+export type TcpRequest = TcpCommand & { reply: SharedArrayBuffer };
+
 export type NetRequest =
+  | TcpRequest
+  | { type: "tcp-read"; id: number; bytes: number }
+  | { type: "tcp-accept"; id: number; listener: number }
+  | { type: "shutdown"; id: number }
   | {
       type: "fetch";
       id: number;
