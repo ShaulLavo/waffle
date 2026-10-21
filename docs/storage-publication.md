@@ -227,8 +227,10 @@ ownership wait without retiring its ordinary holder. The owner forwards its abor
 signal and retains the original physical opening debt before the native request starts.
 Readiness may reject early, but a blocked or aborted IndexedDB request remains debt
 until terminal native delivery or error. A delivered DB closes once after any started
-epoch transaction and lock callback retire. A terminal native error without a handle
-has no close obligation. The owner joins the original shared opening and physical debt
+epoch transaction and lock callback retire. The cleanup owner records a started epoch
+transaction and its original terminal promise before request setup, so a synchronous
+setup failure cannot bypass that join. A terminal native error without a handle has
+no close obligation. The owner joins the original shared opening and physical debt
 before releasing guards. A failed native close retains that debt and the same failed
 stop. Cancellation is not permission to forgive pending or failed physical cleanup.
 
@@ -247,7 +249,16 @@ requires the caller's acceptance of that loss and uncertainty. This private mech
 does not provide Runtime recovery, retirement of surviving clients, SAFE guarantees,
 a public recovery API or a consumer format switch.
 
-The existing cross-tab runner registers native factory controls. A separately approved
-focused stage can select `--persistent-owner-only chromium`; the default runner still
-includes all prior controls. These native controls are not substitutes for the broader
-browser matrix or independent review.
+The cross-tab runner's `--persistent-owner-only chromium` selection passed the actual
+ordinary-worker pending-claim cancellation, queued native-open delivery, injected
+original physical-close failure and completed-epoch cancellation controls. It keeps
+all prior factory controls, and the default runner keeps its full selection. The
+native holder remains alive with unchanged bytes and epoch when only its pending
+competitor is cancelled. Failed close retains the same failed stop and guards until
+observed realm destruction, which is teardown rather than successful cleanup.
+
+These bounded checks do not prove factory mutation/save/reopen recovery, refusal of
+old descriptors, input/reply mutation or reentrant calls, persistent CLAIMED refusal,
+other native schedules, OPFS or other-engine qualification. They do not replace the
+complete registered browser matrix or independent review, and do not accept Runtime
+recovery, SAFE mode, public/default APIs or consumer installation.
