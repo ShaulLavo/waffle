@@ -239,7 +239,7 @@ function pendingNativeClaim() {
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
   const locks = {
-    request(name: string, options: LockOptions, callback: LockGrantedCallback) {
+    request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
       if (!name.startsWith("bun-wasm:filesystem:indexeddb:"))
         return Promise.resolve(callback({ name, mode: "exclusive" }));
       claimSignal = options.signal;
