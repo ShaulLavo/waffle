@@ -492,6 +492,23 @@ export class MemFS implements FileSystem {
     const plan = boundedNamespace(namespacePlan(edges, created, [], created.map((entry) => ({ node: entry, delta: 1 }))), bound);
     return { plan, node };
   }
+  planHostFile(path: string, exclusive: boolean, bound: number): { readonly plan: NamespacePlan; readonly node: FileNode } {
+    const prepared = this.planMkdirp(dirname(path), bound);
+    const parent = prepared.node, name = basename(path), existing = parent.children.get(name);
+    this.require(parent, 1);
+    if (existing && exclusive) throw new FilesystemError(20);
+    if (existing?.kind === "dir") throw new FilesystemError(31);
+    if (existing) {
+      this.require(existing, 2);
+      return { plan: prepared.plan, node: existing };
+    }
+    this.require(parent, 3);
+    const node = newFile();
+    const edits = prepared.plan.edits.concat([{ parent, name, before: undefined, after: node }]);
+    const created = prepared.plan.created.concat([node]);
+    const links = prepared.plan.links.concat([{ node, delta: 1 }]);
+    return { plan: boundedNamespace(namespacePlan(edits, created, [], links), bound), node };
+  }
   private planDirectoryChild(parent: DirNode, name: string, edges: NamespaceEdge[], created: Node[], bound: number): DirNode {
     this.require(parent, 2);
     if (edges.length * 3 + 3 > bound) throw new FilesystemError(6, "namespace effect bound exceeded");

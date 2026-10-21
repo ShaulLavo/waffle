@@ -288,11 +288,11 @@ test("production publication try I/O owns no byte work on EAGAIN and admits one 
   } finally { Atomics.store(root.shared.cells, 1, 0); fixture.stop(); }
 });
 
-test("production publication refuses incomplete compound writeFile before changes", async () => {
+test("production compound writeFile refuses over-bound input before changes", async () => {
   const fixture = await localPublicationFixture();
   try {
     const start = await fixture.cut();
-    await expectErrno(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 52);
+    await expectErrno(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array(65).fill(9)), 6);
     expect(await fixture.cut()).toEqual(start);
     expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([1, 2, 3]));
     expect(fixture.backend.fs.lookup("/missing")).toBeUndefined();
@@ -648,5 +648,40 @@ test("production recursive removal publishes every edge and retained directory c
     const after = await fixture.cut();
     expect(await fixture.root.asyncCall("remove", ["/tree"])).toBe(false);
     expect(await fixture.cut()).toEqual(after);
+  } finally { fixture.stop(); }
+});
+
+
+test("production host replace append exclusive and move each publish one complete group", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const start = await fixture.cut();
+    await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9, 8]));
+    let page = await fixture.changes(start);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].changes.map((effect: {kind: string}) => effect.kind)).toEqual(["resize", "bytes", "metadata"]);
+    expect(await fixture.root.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([9, 8]));
+    let before = await fixture.cut();
+    await fixture.root.asyncCall("writeFile", ["/file", true], new Uint8Array([7]));
+    page = await fixture.changes(before);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].changes[0]).toMatchObject({kind: "bytes", offset: 2, size: 3});
+    expect(await fixture.root.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([9, 8, 7]));
+    before = await fixture.cut();
+    await expectErrno(fixture.root.asyncCall("writeFile", ["/file", false, true], new Uint8Array([1])), 20);
+    expect(await fixture.cut()).toEqual(before);
+    await expectErrno(fixture.root.asyncCall("writeFile", ["/a/b/c/d/e/file"], new Uint8Array([1])), 6);
+    expect(fixture.backend.fs.lookup("/a")).toBeUndefined();
+    expect(await fixture.cut()).toEqual(before);
+    await fixture.root.asyncCall("writeFile", ["/new/child", false, true], new Uint8Array([6]));
+    page = await fixture.changes(before);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].changes.filter((effect: {kind: string}) => effect.kind === "inode")).toHaveLength(2);
+    expect(page.publications[0].changes.filter((effect: {kind: string}) => effect.kind === "entry")).toHaveLength(2);
+    expect(await fixture.root.asyncCall("readFile", ["/new/child"])).toEqual(new Uint8Array([6]));
+    before = await fixture.cut();
+    expect(await fixture.root.asyncCall("move", ["/new/child", "/new/moved"])).toBe(0);
+    expect((await fixture.changes(before)).publications).toHaveLength(1);
+    expect(await fixture.root.asyncCall("listFiles", ["/"])).toEqual(["/file", "/new/moved"]);
   } finally { fixture.stop(); }
 });

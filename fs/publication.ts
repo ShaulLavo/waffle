@@ -550,8 +550,8 @@ function text(value: unknown): string {
   return value;
 }
 function path(value: unknown): ResolvedPath {
-  if (!value || typeof value !== "object" || !("name" in value) || !("parent" in value) || !("node" in value)) throw new FilesystemError(28);
-  return { parent: value.parent === undefined ? undefined : integer(value.parent), node: value.node === undefined ? undefined : integer(value.node), name: text(value.name), trailingSlash: "trailingSlash" in value && value.trailingSlash === true, terminalDot: "terminalDot" in value && value.terminalDot === true };
+  if (!value || typeof value !== "object" || !("name" in value)) throw new FilesystemError(28);
+  return { parent: !("parent" in value) || value.parent === undefined ? undefined : integer(value.parent), node: !("node" in value) || value.node === undefined ? undefined : integer(value.node), name: text(value.name), trailingSlash: "trailingSlash" in value && value.trailingSlash === true, terminalDot: "terminalDot" in value && value.terminalDot === true };
 }
 /** Normalize the legacy string boundary once, before admission or asynchronous preparation. */
 export function mutationIntent(operation: string, args: readonly unknown[]): MutationIntent | undefined {

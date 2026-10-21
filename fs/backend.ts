@@ -32,6 +32,13 @@ const namespaceOperations = new Set([
   "remove",
   "move",
 ]);
+interface NamespaceAction {
+  readonly kind: "namespace";
+  readonly plan: NamespacePlan;
+  readonly registered: readonly FileHandle[];
+  readonly removed: readonly { node: Node; handle: FileHandle }[];
+  readonly preopen?: string;
+}
 type LocalMutationAction =
   | { readonly kind: "none" }
   | { readonly kind: "write"; readonly handle: FileHandle; readonly offset: number; readonly data: Uint8Array; readonly mtime: number }
@@ -39,7 +46,8 @@ type LocalMutationAction =
   | { readonly kind: "setMode"; readonly handle: FileHandle; readonly mode: number }
   | { readonly kind: "setMtime"; readonly handle: FileHandle; readonly mtime: number }
   | { readonly kind: "preopen"; readonly path: string }
-  | { readonly kind: "namespace"; readonly plan: NamespacePlan; readonly registered: readonly FileHandle[]; readonly removed: readonly { node: Node; handle: FileHandle }[]; readonly preopen?: string };
+  | NamespaceAction
+  | { readonly kind: "writeFile"; readonly namespace: NamespaceAction; readonly handle: FileHandle; readonly append: boolean; readonly data: Uint8Array; readonly offset: number; readonly mtime: number };
 export interface LocalMutationPlan {
   readonly action: LocalMutationAction;
   readonly result: MutationResult;
@@ -455,7 +463,7 @@ export class MemoryBackend implements FilesystemBackend {
         const prepared = this.fs.planRename(from, to, domain.limits.effects);
         return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
       }
-      case "writeFile": throw new FilesystemError(52, "local publication compound writeFile planning is incomplete");
+      case "writeFile": return this.planPublicationHostWrite(intent, data);
       default: { const exhaustive: never = intent; return exhaustive; }
     }
   }
@@ -480,9 +488,41 @@ export class MemoryBackend implements FilesystemBackend {
     }
   }
   discardPublication(plan: LocalMutationPlan): void {
-    if (plan.action.kind !== "namespace") return;
-    for (const handle of plan.action.registered) this.shared.unlink(handle);
-    this.fs.discardNamespace(plan.action.plan);
+    const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
+    if (action.kind !== "namespace") return;
+    for (const handle of action.registered) this.shared.unlink(handle);
+    this.fs.discardNamespace(action.plan);
+  }
+  private planPublicationHostWrite(intent: Extract<MutationIntent, {kind: "writeFile"}>, data: Uint8Array): LocalMutationPlan {
+    if (intent.append && intent.exclusive) throw new FilesystemError(28);
+    const resolved = this.fs.resolveAbsolute(intent.path);
+    if (typeof resolved === "number" && resolved !== 44) throw new FilesystemError(resolved);
+    if (typeof resolved === "number") this.checkMissingParent(intent.path);
+    if (intent.path.endsWith("/")) throw new FilesystemError(54);
+    const prepared = this.fs.planHostFile(normalize(intent.path), intent.exclusive, this.shared.publication!.limits.effects);
+    const namespace = this.planNamespace(prepared.plan, {kind: "void"});
+    if (namespace.action.kind !== "namespace") throw new FilesystemError(29);
+    try {
+      const handle = this.fs.handleForNode(prepared.node);
+      const info = this.publicationFile(handle), offset = intent.append ? info.size : 0;
+      const size = offset + data.length;
+      if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
+      this.shared.growLocked(handle, size);
+      const file = this.publicationKey(info.ino), version = this.shared.publication!.cut().generation + 1;
+      const mtime = prepared.plan.mtime, changes = namespace.changes.slice();
+      if (intent.append && !data.length && !changes.length) return {action: {kind: "none"}, result: {kind: "void"}, changes: []};
+      if (!intent.append && size !== info.size) changes.push({kind: "resize", file, size, version});
+      if (data.length) changes.push({kind: "bytes", file, offset, bytes: data, size, version});
+      changes.push({kind: "metadata", file, mode: prepared.node.mode, mtime});
+      return {action: {kind: "writeFile", namespace: namespace.action, handle, append: intent.append, data, offset, mtime}, result: {kind: "void"}, changes};
+    } catch (error) { this.discardPublication(namespace); throw error; }
+  }
+  private applyNamespace(action: NamespaceAction): void {
+    this.fs.applyNamespace(action.plan);
+    for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
+    for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
+    for (const entry of action.removed) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
+    if (action.preopen) this.sync(this.fs.preopen(action.preopen));
   }
   private publicationFile(handle: FileHandle) {
     this.check(handle, "file");
@@ -560,12 +600,14 @@ export class MemoryBackend implements FilesystemBackend {
         this.shared.setMtime(action.handle, action.mtime);
         return;
       case "preopen": this.sync(this.fs.preopen(action.path)); return;
-      case "namespace":
-        this.fs.applyNamespace(action.plan);
-        for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
-        for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
-        for (const entry of action.removed) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
-        if (action.preopen) this.sync(this.fs.preopen(action.preopen));
+      case "namespace": this.applyNamespace(action); return;
+      case "writeFile":
+        this.applyNamespace(action.namespace);
+        if (!action.append) this.shared.resize(action.handle, 0, true);
+        if (action.data.length) this.shared.write(action.handle, [action.data], action.offset);
+        this.shared.setMtime(action.handle, action.mtime);
+        this.fs.setMtime(action.handle, action.mtime);
+        if (!action.append) this.shared.reclaimLocked(action.handle);
         return;
       default: { const exhaustive: never = action; return exhaustive; }
     }
