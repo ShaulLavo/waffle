@@ -1174,6 +1174,44 @@ test("facade initial browser graph keeps process services and interrupt compilat
   ).toBe(true);
 });
 
+test.each(["consumer", "siblings", "multiple", "late", "host", "success"])(
+  "terminal filesystem cleanup retains original %s debt in an isolated page",
+  async (mode) => {
+    const page = Bun.spawn([
+      process.execPath,
+      new URL("./fixtures/runtime-retirement-page.ts", import.meta.url).pathname,
+      mode,
+    ], { stdout: "pipe", stderr: "pipe" });
+    const timeout = setTimeout(() => page.kill(), 8000);
+    try {
+      const [exitCode, stdout, stderr] = await Promise.all([
+        page.exited, new Response(page.stdout).text(), new Response(page.stderr).text(),
+      ]);
+      expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+      const result = JSON.parse(stdout);
+      console.log(`Runtime retirement stand-in receipt: ${stdout.trim()}`);
+      expect(result).toMatchObject({
+        sameDisposal: true, synchronousDisposed: true, methodsClosed: true,
+        stopsBeforeFence: 0, stopInsideSection: false,
+        filesystemStops: mode === "success" ? 1 : 0,
+        filesystemDisposed: mode === "success", guardHeld: mode !== "success",
+      });
+      const expectedStops = mode === "host" ? [] : mode === "late" ? ["handle"]
+        : mode === "siblings" || mode === "multiple" ? ["first", "second"] : ["first"];
+      expect(result.stops).toEqual(expectedStops);
+      if (mode === "host") expect(result.hostEmpty).toBe(true);
+      if (mode !== "success") expect(result.originalFailures).toEqual(
+        mode === "multiple" ? [0, 1] : [mode === "siblings" ? 1 : 0],
+      );
+    } finally {
+      clearTimeout(timeout);
+      page.kill();
+      await page.exited;
+    }
+  },
+  15_000,
+);
+
 test("cleanup errors still close the filesystem and release page ownership", async () => {
   const runtime = create({
     processHost: processHost(async () => {
