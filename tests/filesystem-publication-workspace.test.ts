@@ -23,8 +23,7 @@ const limits: PublicationLimits = {
   pinBytes: 256,
 };
 
-async function fixture() {
-  const backend = new MemoryBackend();
+async function fixture(backend = new MemoryBackend()) {
   backend.fs.mkdirp("/dir");
   backend.fs.writeFile("/dir/a", new Uint8Array([1, 2, 3]));
   backend.fs.writeFile("/dir/b", new Uint8Array([4, 5]));
@@ -112,4 +111,40 @@ test("retained files survive rename, replacement and unlink with current permiss
     await call(f, "setMode", [f.file, 0]);
     await rejectsErrno(call(f, "read", [f.file, 3, 0]), 2);
   } finally { await f.stop(); }
+});
+
+class PausedBackend extends MemoryBackend {
+  started = Promise.withResolvers<void>();
+  released = Promise.withResolvers<void>();
+  pause = false;
+  prepare(operation: string): void | Promise<void> {
+    if (!this.pause || operation !== "writeFile") return;
+    this.pause = false;
+    this.started.resolve();
+    return this.released.promise;
+  }
+}
+test("service-side queued cancellation has no effects and stop joins its preparation", async () => {
+  const backend = new PausedBackend(), f = await fixture(backend);
+  let stopped = false;
+  try {
+    await call(f, "preopen", ["/"]);
+    const before = backend.shared.publication!.cut();
+    backend.pause = true;
+    const abort = new AbortController();
+    const pending = f.channel.call("workspace", { token: f.session.token, request: { operation: "writeFile", args: ["/dir/cancelled"], input: new Uint8Array([99]) } }, abort.signal);
+    await backend.started.promise;
+    abort.abort();
+    await rejectsErrno(pending, 11);
+    const stop = f.stop().then(() => { stopped = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stopped).toBe(false);
+    backend.released.resolve();
+    await stop;
+    expect(before.generation).toBeGreaterThanOrEqual(0);
+    expect(backend.fs.lookup("/dir/cancelled")).toBeUndefined();
+  } finally {
+    backend.released.resolve();
+    if (!stopped) await f.stop();
+  }
 });

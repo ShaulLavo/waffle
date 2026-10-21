@@ -55,6 +55,7 @@ interface Session {
   responses: Map<number, Uint8Array>;
   pending: Map<number, SharedArrayBuffer>;
   preparingHandles: Map<number, number>;
+  preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
@@ -97,6 +98,7 @@ export class FilesystemService {
       responses: new Map(),
       pending: new Map(),
       preparingHandles: new Map(),
+      preparations: new Set(),
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
     };
     this.sessions.add(session);
@@ -150,6 +152,16 @@ export class FilesystemService {
       }
     };
     connection.port.start();
+  }
+  private async closeWorkspace(connection: FilesystemConnection): Promise<void> {
+    const session = Array.from(this.sessions).find((peer) => peer.connection.capabilities === connection.capabilities);
+    if (!session) return;
+    await waitForFilesystemQuiescence(session.connection);
+    await this.queue;
+    await Promise.all(Array.from(session.preparations));
+    await this.queue;
+    this.close(session);
+    if (this.sessions.has(session)) throw new FilesystemError(6);
   }
   private adoptWorkspace(connection: FilesystemConnection, reservation: import("./protocol.js").FilesystemReservation): void {
     const target = Array.from(this.sessions).find((peer) => peer.connection.capabilities === connection.capabilities);
@@ -456,13 +468,15 @@ export class FilesystemService {
           this.checkRequest(session, operation, args, continuation.handles);
           prepared = continuation;
           preparing = true;
-          void preparation.then(
+          const joined = preparation.then(
             () => this.enqueue(session, id, buffer, continuation),
             (error) => {
               continuation.failure = { error };
               this.enqueue(session, id, buffer, continuation);
             },
           );
+          session.preparations.add(joined);
+          void joined.finally(() => session.preparations.delete(joined));
           return;
         }
       }
@@ -617,6 +631,7 @@ export class FilesystemService {
           connect: (connection) => this.connect(connection),
           sweep: () => this.sweep(),
           adopt: (connection, reservation) => this.adoptWorkspace(connection, reservation),
+          close: (connection) => this.closeWorkspace(connection),
         };
         const descriptor = this.residentPublication.retain(
           handle, operation === "publicationWorkspace" ? "workspace" : "file",

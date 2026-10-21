@@ -1,4 +1,4 @@
-import { WorkspacePeer } from "../fs/publication-workspace.js";
+import { WorkspacePeer, workspaceRequest } from "../fs/publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
 import {
   ResidentGrantAuthority,
@@ -70,6 +70,15 @@ export class ResidentAuthorityServer {
     let client: string, id: string;
     try { client = text(message.client); id = text(message.id); } catch { return; }
     const key = `${client}:${id}`;
+    if (message.operation === "workspace") {
+      try {
+        const body = record(message.body), limits = this.authority.backend.shared.publication!.limits;
+        message.body = { token: text(body.token), request: workspaceRequest(body.request, limits.inputBytes, limits.argumentBytes) };
+      } catch (error) {
+        this.channel.postMessage({ kind: "reply", client, id, errno: error instanceof FilesystemError ? error.errno : 29 });
+        return;
+      }
+    }
     if (this.requests.has(key)) return;
     if (this.requests.size >= this.authority.backend.shared.publication!.limits.operations) {
       this.channel.postMessage({ kind: "reply", client, id, errno: 6 });
@@ -97,8 +106,8 @@ export class ResidentAuthorityServer {
     this.peers.set(session.token, peer);
     return peer;
   }
-  private closeSession(session: ResidentSession): void {
-    this.peers.get(session.token)?.stop();
+  private async closeSession(session: ResidentSession): Promise<void> {
+    await this.peers.get(session.token)?.stop();
     this.peers.delete(session.token);
     this.authority.close(session);
   }
@@ -152,7 +161,7 @@ export class ResidentAuthorityServer {
     }
     if (operation === "closeConnection") {
       const session = this.sessions.get(client);
-      if (session) this.closeSession(session);
+      if (session) await this.closeSession(session);
       this.sessions.delete(client);
       return null;
     }
@@ -195,7 +204,7 @@ export class ResidentAuthorityServer {
       return encodeResidentSettlement(result);
     }
     if (operation === "close") {
-      this.closeSession(session);
+      await this.closeSession(session);
       this.sessions.delete(client);
       return null;
     }
@@ -226,7 +235,7 @@ export class ResidentAuthorityServer {
     await this.queue;
     // A pending/unknown claimant keeps both continuity and bootstrap held.
     if (this.outstanding) throw new FilesystemError(6);
-    for (const peer of this.peers.values()) peer.stop();
+    for (const peer of this.peers.values()) await peer.stop();
     this.peers.clear();
     this.channel.close();
     this.authority.dispose();

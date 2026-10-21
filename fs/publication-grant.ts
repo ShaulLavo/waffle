@@ -351,7 +351,7 @@ export class ResidentGrantAuthority {
   retain(handle: number, kind: ResidentDescriptor["kind"] = "file"): ResidentDescriptor {
     return this.boundary(0, () => {
       if (this.descriptions.size >= this.domain.limits.sessions) throw new FilesystemError(6);
-      const stat = this.backend.shared.info(handle);
+      const stat = this.backend.shared.stat(handle);
       if (!stat || stat.kind !== (kind === "file" ? "file" : "directory"))
         throw new FilesystemError(8);
       this.backend.retain(handle);

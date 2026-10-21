@@ -190,7 +190,7 @@ async function queuedAttachmentControl(): Promise<unknown> {
     new AbortController().signal,
   );
   const candidate = new ResidentAttachment(
-    { workspace, instance: "not-opened", epoch: 1, description: "not-issued", handle: 1 },
+    { kind: "file", workspace, instance: "not-opened", epoch: 1, description: "not-issued", handle: 1 },
     () => false,
   );
   let accepted = false;
@@ -221,6 +221,7 @@ async function cancelledStartupControl(): Promise<unknown> {
     new AbortController().signal,
   );
   const connection = createResidentConnection({
+    kind: "file",
     workspace,
     instance: "cancelled",
     epoch: 1,

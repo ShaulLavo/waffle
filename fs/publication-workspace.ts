@@ -12,7 +12,7 @@ import {
 export interface WorkspaceHost {
   readonly root: FilesystemIdentity;
   connect(connection: FilesystemConnection): void;
-  sweep(): void;
+  close(connection: FilesystemConnection): Promise<void>;
   adopt(connection: FilesystemConnection, reservation: FilesystemIdentity["reservations"][number]): void;
 }
 interface WorkspaceCall {
@@ -37,11 +37,30 @@ function identity(value: unknown): MutationId {
   const data = record(value);
   return { session: integer(data.session), sequence: integer(data.sequence) };
 }
-function request(value: unknown, inputBound: number, argumentBound: number): WorkspaceCall {
+function argumentSize(value: unknown, budget: number, depth = 0): number {
+  if (budget < 0 || depth > 4) throw new FilesystemError(6);
+  if (value === undefined || value === null || typeof value === "boolean") return 8;
+  if (typeof value === "number") { integer(value); return 24; }
+  if (typeof value === "string") {
+    if (value.length > budget) throw new FilesystemError(6);
+    return value.length * 3 + 4;
+  }
+  if (typeof value !== "object") throw new FilesystemError(28);
+  const keys = Object.keys(value);
+  if (keys.length > (Array.isArray(value) ? 4096 : 8)) throw new FilesystemError(6);
+  let size = 2;
+  for (const key of keys) {
+    size += key.length + argumentSize(Reflect.get(value, key), budget - size, depth + 1);
+    if (size > budget) throw new FilesystemError(6);
+  }
+  return size;
+}
+export function workspaceRequest(value: unknown, inputBound: number, argumentBound: number): WorkspaceCall {
   const data = record(value), operation = text(data.operation);
   if (!Array.isArray(data.args) || data.args.length > 4) throw new FilesystemError(28);
   if (!(data.input instanceof Uint8Array) || data.input.length > inputBound)
     throw new FilesystemError(6);
+  argumentSize(data.args, argumentBound);
   if (pack(data.args).length > argumentBound) throw new FilesystemError(6);
   const args: unknown[] = data.args;
   const intent = mutationIntent(operation, args);
@@ -112,7 +131,7 @@ export class WorkspacePeer {
   async execute(value: unknown, signal: AbortSignal): Promise<unknown> {
     if (this.stopped || signal.aborted) throw new FilesystemError(11);
     const limits = this.client.shared.publication!.limits;
-    const call = request(value, limits.inputBytes, limits.argumentBytes);
+    const call = workspaceRequest(value, limits.inputBytes, limits.argumentBytes);
     let admission;
     if (mutationIntent(call.operation, call.args)) {
       const admitted = this.client[localPublication](call.operation, call.args, call.input, call.id);
@@ -127,6 +146,8 @@ export class WorkspacePeer {
     if (signal.aborted) cancel();
     try {
       const result: unknown = await completion.value();
+      argumentSize(result instanceof Uint8Array ? undefined : result, requestBound);
+      if (result instanceof Uint8Array && result.length > limits.inputBytes) throw new FilesystemError(6);
       const handles = this.holdResults();
       const receipt = admission ? this.receipt(admission.id) : undefined;
       return { value: result, handles, ...(receipt?.kind === "committed" ? { receipt: receipt.receipt } : {}) };
@@ -136,11 +157,11 @@ export class WorkspacePeer {
       completion.release();
     }
   }
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     for (const completion of this.pending) completion.cancel();
+    await this.host.close(this.client.connection);
     this.client.dispose();
-    this.host.sweep();
     this.retained.clear();
   }
 }
