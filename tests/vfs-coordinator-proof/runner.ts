@@ -1,3 +1,4 @@
+import { recoveryControls } from "./recovery-runner.js";
 import type { Browser, Page } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "../browser-runner-lifecycle.js";
 import type { Arm, Operation, Reply, Request } from "./protocol.js";
@@ -986,6 +987,10 @@ async function diagnosticControls(browser: Browser): Promise<void> {
   for (const arm of ["volatile-fast", "fenced-safe", "fenced-fast"] as const)
     await diagnosticClose(browser, arm);
 }
+function recoveryRecord(outcome: unknown): void {
+  outcomes.push(outcome);
+  console.log(JSON.stringify(outcome));
+}
 async function browserControl(engine: keyof typeof engines): Promise<void> {
   activeEngine = engine;
   const browser = await lifecycle.launch(engine);
@@ -998,6 +1003,12 @@ async function browserControl(engine: keyof typeof engines): Promise<void> {
     }),
   );
   try {
+    if (process.env.E5_RECOVERY === "1") {
+      await recoveryControls(browser, engine, origin, recoveryRecord, (workspace) =>
+        killAuthority(browser, workspace),
+      );
+      return;
+    }
     if (process.env.E5_DIAGNOSTIC === "1") {
       await diagnosticControls(browser);
       return;

@@ -61,7 +61,9 @@ export type Command =
   | { kind: "release"; gate: string }
   | { kind: "inspect" }
   | { kind: "close" }
-  | { kind: "die" };
+  | { kind: "die" }
+  | { kind: "replace-instance" }
+  | { kind: "drain-instance" };
 export interface Envelope {
   id: number;
   command: Command;
@@ -93,3 +95,7 @@ export function mutation(operation: Operation): boolean {
     "link",
   ].includes(operation.method);
 }
+
+export type WorkerMessage =
+  | { hello: string }
+  | { instance: string; id?: number; result?: Reply; nudge?: boolean; diagnostic?: unknown };

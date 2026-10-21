@@ -18,7 +18,8 @@ let tail = Promise.resolve();
 let pending = 0;
 let unlock: (() => void) | undefined;
 const gates = new Map<string, () => void>();
-const instance = crypto.randomUUID();
+let instance = crypto.randomUUID();
+let workspaceName: string | undefined;
 const events: unknown[] = [];
 const ports = new Set<MessagePort>();
 const counters = {
@@ -32,10 +33,33 @@ const counters = {
   rejected: 0,
 };
 
+function post(
+  port: MessagePort,
+  message: { id?: number; result?: Reply; nudge?: boolean; diagnostic?: unknown },
+  from = instance,
+): void {
+  port.postMessage({ ...message, instance: from });
+}
+function greet(): void {
+  for (const port of ports) port.postMessage({ hello: instance });
+}
+function replaceInstance(): void {
+  unlock?.();
+  unlock = undefined;
+  db?.close();
+  db = undefined;
+  state = undefined;
+  workspaceName = undefined;
+  stopped = false;
+  pending = 0;
+  tail = Promise.resolve();
+  instance = crypto.randomUUID();
+  greet();
+}
 function trace(event: unknown): void {
   if (new URL(location.href).searchParams.has("trace")) {
     const diagnostic = { instance, time: performance.now(), event };
-    for (const port of ports) port.postMessage({ diagnostic });
+    for (const port of ports) post(port, { diagnostic });
   }
   events.push(event);
   if (events.length > 256) events.shift();
@@ -73,11 +97,24 @@ async function acquireVolatile(workspace: string): Promise<void> {
   if (!(await ready)) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
 }
 async function initialize(command: Extract<Command, { kind: "initialize" }>): Promise<Reply> {
-  if (state) return { kind: "ok", cursor: cursor(current()), result: "already initialized" };
+  if (state) {
+    const local = current();
+    if (
+      workspaceName !== command.workspace ||
+      local.arm !== command.arm ||
+      local.token !== command.token
+    )
+      throw new Error("FENCED: initialized authority identity mismatch");
+    await transaction(database(), "relaxed", (head) => ({ result: fence(head) }));
+    if (local !== current()) throw new Error("FENCED: initialize changed across await");
+    counters.relaxed++;
+    return { kind: "ok", cursor: cursor(local), result: "already initialized" };
+  }
   if (command.arm === "volatile-fast") await acquireVolatile(command.workspace);
   try {
     db = await openDatabase(command.workspace);
     state = await transaction(db, "strict", (saved) => claim(saved, command));
+    workspaceName = command.workspace;
   } catch (error) {
     unlock?.();
     unlock = undefined;
@@ -216,7 +253,7 @@ function memoryRequest(local: State, request: Request): Reply {
 }
 function announce(request: Request): void {
   if (request.dropNudge) return;
-  for (const port of ports) port.postMessage({ nudge: true, cursor: cursor(current()) });
+  for (const port of ports) post(port, { nudge: true });
 }
 function park(gate: string): Promise<void> {
   trace({ phase: "parked", gate });
@@ -232,7 +269,7 @@ function park(gate: string): Promise<void> {
     });
   });
 }
-async function close(): Promise<Reply> {
+async function drain(): Promise<Reply> {
   const result = await checkpoint();
   await transaction(database(), "strict", (head) => {
     const next = fence(head);
@@ -242,6 +279,10 @@ async function close(): Promise<Reply> {
   stopped = true;
   unlock?.();
   db?.close();
+  return result;
+}
+async function close(): Promise<Reply> {
+  const result = await drain();
   setTimeout(() => Reflect.get(globalThis, "close")(), 0);
   return result;
 }
@@ -249,6 +290,7 @@ async function command(command: Command): Promise<Reply> {
   if (command.kind === "initialize") return initialize(command);
   if (command.kind === "request") return execute(command.request);
   if (command.kind === "close") return close();
+  if (command.kind === "drain-instance") return drain();
   throw new Error("INVALID: queued control");
 }
 async function response(control: Command, result: Reply): Promise<Reply> {
@@ -265,21 +307,37 @@ async function response(control: Command, result: Reply): Promise<Reply> {
 function deliver(port: MessagePort, envelope: Envelope): void {
   const control = envelope.command;
   trace({ phase: "deliver", id: envelope.id, control, initialized: Boolean(state), pending });
+  const deliveredInstance = instance;
+  if (control.kind === "replace-instance") {
+    if (pending > 0 && gates.size === 0) {
+      post(port, {
+        id: envelope.id,
+        result: failure(new Error("UNAVAILABLE: not at deterministic replacement boundary")),
+      });
+      return;
+    }
+    post(port, {
+      id: envelope.id,
+      result: { kind: "ok", cursor: cursor(current()), result: "explicit discard, not freeze" },
+    });
+    replaceInstance();
+    return;
+  }
   if (control.kind === "release") {
     gates.get(control.gate)?.();
-    port.postMessage({
+    post(port, {
       id: envelope.id,
       result: { kind: "ok", cursor: cursor(current()), result: "released" },
     });
     return;
   }
   if (control.kind === "inspect") {
-    port.postMessage({
+    post(port, {
       id: envelope.id,
       result: {
         kind: "ok",
         cursor: cursor(state ?? initial("fenced-safe")),
-        result: { instance, events, counters },
+        result: { instance, initialized: Boolean(state), events, counters },
       },
     });
     return;
@@ -290,7 +348,7 @@ function deliver(port: MessagePort, envelope: Envelope): void {
   }
   if (pending >= 32) {
     counters.rejected++;
-    port.postMessage({
+    post(port, {
       id: envelope.id,
       result: failure(new Error("BACKPRESSURE: pending budget")),
     });
@@ -300,12 +358,19 @@ function deliver(port: MessagePort, envelope: Envelope): void {
   counters.pendingPeak = Math.max(counters.pendingPeak, pending);
   tail = tail.then(async () => {
     trace({ phase: "queue-start", id: envelope.id, kind: control.kind });
-    const committed = await command(control).catch(failure);
-    const result = await response(control, committed).catch(failure);
-    pending--;
+    const committed =
+      deliveredInstance === instance
+        ? await command(control).catch(failure)
+        : failure(new Error("FENCED: retired queue"));
+    const result =
+      deliveredInstance === instance
+        ? await response(control, committed).catch(failure)
+        : failure(new Error("FENCED: retired response"));
+    if (deliveredInstance === instance) pending--;
     trace({ phase: "reply", result: result.kind === "ok" ? result.cursor : result });
     if (control.kind === "request" && control.request.dropReply) return;
-    port.postMessage({ id: envelope.id, result });
+    post(port, { id: envelope.id, result }, deliveredInstance);
+    if (control.kind === "drain-instance" && result.kind === "ok") replaceInstance();
     trace({ phase: "posted", id: envelope.id, kind: control.kind });
   });
 }
@@ -314,7 +379,7 @@ Reflect.set(globalThis, "onconnect", (event: MessageEvent) => {
   if (!port) return;
   if (ports.size >= 8) {
     port.onmessage = (message: MessageEvent<Envelope>) =>
-      port.postMessage({
+      post(port, {
         id: message.data.id,
         result: failure(new Error("BACKPRESSURE: port budget")),
       });
@@ -322,6 +387,7 @@ Reflect.set(globalThis, "onconnect", (event: MessageEvent) => {
     return;
   }
   ports.add(port);
+  port.postMessage({ hello: instance });
   trace({ phase: "connected", instance, ports: ports.size });
   port.onmessage = (message: MessageEvent<Envelope>) => deliver(port, message.data);
   port.start();
