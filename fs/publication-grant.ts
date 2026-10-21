@@ -303,11 +303,9 @@ export class ResidentGrantCell {
         if (this.grant.kind === "read")
           return { kind: "read", grant, count: this.state[1]!, cut: this.grant.cut };
         try {
-          return {
-            kind: "committed",
-            grant,
-            publication: decodeEffects(typedArraySubarray(this.payload, 0, this.state[1]!)),
-          };
+          const bytes = new Uint8ArrayConstructor(this.state[1]!);
+          typedArraySet(bytes, typedArraySubarray(this.payload, 0, this.state[1]!));
+          return { kind: "committed", grant, publication: decodeEffects(bytes) };
         } catch {
           atomicsStore(this.state, 0, CellState.Stopped);
           return { kind: "stopped", grant };
