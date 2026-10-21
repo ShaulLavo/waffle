@@ -226,6 +226,7 @@ function pendingNativeClaim(closeFailure?: Error) {
   );
   const requested = Promise.withResolvers<void>();
   const pending = Promise.withResolvers<never>();
+  void pending.promise.catch(() => {});
   let claimSignal: AbortSignal | undefined;
   let closed = 0;
   let released = 0;
@@ -305,7 +306,7 @@ function pendingNativeClaim(closeFailure?: Error) {
       opening.onerror!(new Event("error"));
     },
     block() {
-      opening.onblocked!(new Event("blocked"));
+      opening.onblocked!(Object.assign(new Event("blocked"), { oldVersion: 0, newVersion: null }));
     },
     async close() {
       pending.reject(new DOMException("fixture retirement", "AbortError"));
