@@ -11,7 +11,7 @@ type PageMessage = { connect?: FilesystemConnection; dispose?: true };
 type WorkerEvent = { data?: unknown; message?: string; preventDefault(): void };
 const previousWorker = globalThis.Worker;
 const workers: PageWorkerStandIn[] = [];
-const fixtures: ReturnType<typeof fixture>[] = [];
+const fixtures: { cleanup(): Promise<void> }[] = [];
 
 // This stand-in injects the existing service wire ACK. It proves page ownership only,
 // not native service/storage closure, persistence, or original Worker death.
@@ -165,8 +165,10 @@ test("ready and disposed observers reenter one disposal after synchronous admiss
     if (state.status === "disposed") repeated = fs.dispose();
     if (state.status !== "ready") return;
     first = fs.dispose();
+    const section = new FilesystemSection(fs.client.connection);
     try {
-      new FilesystemSection(fs.client.connection).enter();
+      section.enter();
+      section.exit();
     } catch (error) {
       admissionFailure = error;
     }
@@ -264,6 +266,63 @@ for (const type of ["error", "messageerror", "filesystem-error", "filesystem-own
     });
   }
 }
+
+test("a success ACK cannot lock out an error ACK before the original root fence", async () => {
+  const { fs, worker, hold } = fixture();
+  worker.ready();
+  const release = hold();
+  const stopping = fs.dispose();
+  const outcome = observe(stopping);
+  worker.acknowledge();
+  await checkpoint();
+  expect(outcome.settled).toBe(false);
+  worker.acknowledge("close failure before original root exit");
+  const result = await outcome.result;
+  expect(result).toMatchObject({
+    kind: "rejected",
+    reason: { message: "close failure before original root exit" },
+  });
+  expectRetained(fs, worker);
+  release();
+  worker.acknowledge();
+  await checkpoint();
+  expect(fs.dispose()).toBe(stopping);
+  expect(await observe(fs.dispose()).result).toEqual(result);
+  expectRetained(fs, worker);
+});
+
+test("missing or malformed wire success never completes ready ordinary disposal", async () => {
+  const { fs, worker } = fixture();
+  worker.ready();
+  const stopping = fs.dispose();
+  const outcome = observe(stopping);
+  for (const message of [
+    null,
+    {},
+    { type: "filesystem-disposed", error: false },
+    { type: "filesystem-disposed", error: null },
+    { type: "filesystem-disposed", error: {} },
+  ]) worker.emit("message", message);
+  await checkpoint();
+  expect(outcome.settled).toBe(false);
+  expectRetained(fs, worker);
+  worker.acknowledge();
+  await stopping;
+});
+
+test("ready disposal rejects new identity, fork, connect and real section admission", async () => {
+  const { fs, worker } = fixture();
+  worker.ready();
+  const identity = fs.createIdentity();
+  const stopping = fs.dispose();
+  expect(() => fs.createIdentity()).toThrow(FilesystemError);
+  expect(() => fs.fork()).toThrow(FilesystemError);
+  expect(() => fs.connect(identity)).toThrow(FilesystemError);
+  expect(() => new FilesystemSection(identity).enter()).toThrow(FilesystemError);
+  expectRetained(fs, worker);
+  worker.acknowledge();
+  await stopping;
+});
 
 const limits: PublicationLimits = {
   sessions: 8,
