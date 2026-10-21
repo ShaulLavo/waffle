@@ -1291,7 +1291,11 @@ test("production proven-dead admission holder releases only its own arena for a 
     const start = await fixture.cut();
     expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([7])], 0)).toBe(-6);
     revokeFilesystem(held.connection);
-    await held.worker.terminate();
+    const exited = new Promise<void>((resolve) => {
+      held.worker.addEventListener("close", () => resolve(), { once: true });
+    });
+    held.worker.terminate();
+    await exited;
     reapFilesystem(held.connection);
     fixture.service.sweep();
     const written = fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([9])], 0);
