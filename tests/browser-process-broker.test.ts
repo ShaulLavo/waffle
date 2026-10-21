@@ -3836,8 +3836,7 @@ for (const path of ["external", "incoming"] as const)
     const directory = workerProcessDirectoryId(local.message.transport);
     expect(workerProcessDirectoryId(foreign.message.transport)).not.toBe(directory);
     foreign.message.transport.data = undefined;
-    if (path === "external")
-      local.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
+    if (path === "external") local.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
     else
       await bounded(
         local.broker
