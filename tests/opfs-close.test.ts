@@ -84,10 +84,16 @@ class FileStandIn implements FileSystemFileHandle {
 }
 
 function directoryIterator<T>(values: Iterable<T>): FileSystemDirectoryHandleAsyncIterator<T> {
-  const iterator = (async function* () { yield* values; })();
-  return Object.assign(iterator, {
-    async [Symbol.asyncDispose](): Promise<void> { await iterator.return(); },
-  });
+  const iterator = values[Symbol.iterator]();
+  return {
+    async next(): Promise<IteratorResult<T, undefined>> {
+      const result = iterator.next();
+      if (result.done) return { done: true, value: undefined };
+      return { done: false, value: result.value };
+    },
+    [Symbol.asyncIterator]() { return this; },
+    async [Symbol.asyncDispose](): Promise<void> { iterator.return?.(); },
+  };
 }
 
 class DirectoryStandIn implements FileSystemDirectoryHandle {
