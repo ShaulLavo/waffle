@@ -6,7 +6,8 @@ import {
   createFilesystemConnection,
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
-import { ResidentChannel, ResidentGrantClient, residentDescriptor, residentSession } from "../fs/publication-attachment";
+import { ResidentChannel, ResidentGrantClient, createResidentConnection, residentDescriptor, residentSession } from "../fs/publication-attachment";
+import { connectFilesystemIdentity, createProcessFilesystemIdentity, isRevoked } from "../fs/protocol";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -159,4 +160,55 @@ test("repeated joined resident stop never posts cancellation on its closed chann
     await client.stop();
     await client.stop();
   } finally { await f.stop(); }
+});
+
+
+test("legitimate workspace reservation transfer never changes live ownership controls", async () => {
+  const f = await fixture();
+  const connection = createResidentConnection(f.session.descriptor);
+  // Bind issued authority sessions directly: this unit exercises the real page bridge, not Web Locks.
+  const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
+  const childIdentity = createProcessFilesystemIdentity(connection);
+  const childPair = connectFilesystemIdentity(childIdentity);
+  const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
+  const childSession = residentSession(await f.channel.call("open", f.session.descriptor));
+  const changed: string[] = [];
+  const originalStore = Atomics.store;
+  let reservation: ReturnType<FilesystemClient["reserve"]> | undefined;
+  let childBound = false;
+  try {
+    await parent.asyncCall("workspaceBind", [f.session]);
+    await parent.asyncCall("preopen", ["/"]);
+    await parent.asyncCall("resolve", [f.directory, "dir/a"]);
+    reservation = parent.reserve(f.file, childIdentity);
+    const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
+    const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
+    Atomics.store = ((...args: Parameters<typeof Atomics.store>) => {
+      const result = originalStore(...args);
+      if (isRevoked(connection)) changed.push("service revocation");
+      if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount) changed.push("source capability header");
+      if (Atomics.load(new Int32Array(childIdentity.capabilities), 0) !== targetCount) changed.push("target capability header");
+      return result;
+    });
+    connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
+    await child.asyncCall("workspaceBind", [childSession]);
+    childBound = true;
+    Atomics.store = originalStore;
+    child.adopt(reservation);
+    expect(Atomics.load(new Int32Array(reservation.state), 1)).toBe(1);
+    expect(Atomics.load(new Int32Array(reservation.source), reservation.sourceKey + 2)).toBe(0);
+    expect(await child.asyncCall("read", [f.file, 3, 0])).toEqual(new Uint8Array([1, 2, 3]));
+    expect(await parent.asyncCall("stat", [f.file])).toMatchObject({ size: 3 });
+    expect(isRevoked(connection)).toBe(false);
+    expect(changed).toEqual([]);
+  } finally {
+    Atomics.store = originalStore;
+    if (reservation) parent.releaseReservation(reservation);
+    if (childBound) await child.asyncCall("workspaceBridgeStop");
+    await parent.asyncCall("workspaceBridgeStop");
+    child.dispose();
+    parent.dispose();
+    await f.channel.call("close", { token: childSession.token });
+    await f.stop();
+  }
 });
