@@ -22,7 +22,7 @@ export class ResidentAuthorityServer {
   private channel: BroadcastChannel;
   private sessions = new Map<string, ResidentSession>();
   private status = new Map<string, StatusWaiter>();
-  private outstanding: { readonly client: string; readonly token: string } | undefined;
+  private outstanding: { readonly client: string; readonly token: string; readonly grant: string } | undefined;
   private queue = Promise.resolve();
   private stopped = false;
   private stopping: Promise<void> | undefined;
@@ -83,12 +83,14 @@ export class ResidentAuthorityServer {
       await this.settleOutstanding();
       if (this.stopped) throw new FilesystemError(11);
       const grant = this.authority.prepare(session, request);
-      this.outstanding = { client, token: session.token };
+      this.outstanding = { client, token: session.token, grant: grant.key };
       return grant;
     }
     if (operation === "settle") {
-      const result = this.authority.settle(session, residentOutcome(body.outcome));
-      if (result.kind !== "pending" && this.outstanding?.token === session.token) this.outstanding = undefined;
+      const outcome = residentOutcome(body.outcome);
+      const result = this.authority.settle(session, outcome);
+      if (result.kind !== "pending" && this.outstanding?.token === session.token && this.outstanding.grant === outcome.grant)
+        this.outstanding = undefined;
       return encodeResidentSettlement(result);
     }
     if (operation === "close") {
