@@ -307,6 +307,14 @@ export class PersistentBackend extends MemoryBackend {
   flush(target?: FileHandle | string): Promise<void> {
     return this.checkpoint(true, target);
   }
+  private assertOpen(): void {
+    if (this.stopped) throw new Error("filesystem persistence backend is closed");
+  }
+  private async flushOpen(keys?: readonly string[]): Promise<void> {
+    this.assertOpen();
+    await this.storage.flush(keys);
+    this.assertOpen();
+  }
   /** Background close-only checkpoint. Explicit saves/fsync use flush() for payload durability. */
   checkpoint(durable = false, target?: FileHandle | string): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("filesystem persistence backend is closed"));
@@ -382,7 +390,10 @@ export class PersistentBackend extends MemoryBackend {
         : undefined;
     const flushKeys = target === undefined ? undefined : key ? [key] : [];
     if (!upserts.length && !removes.length && !data.size)
-      return this.lastCommit.then(() => (durable ? this.storage.flush(flushKeys) : undefined));
+      return this.lastCommit.then(() => {
+        this.assertOpen();
+        return durable ? this.flushOpen(flushKeys) : undefined;
+      });
     const epoch = this.checkpointEpoch;
     const batch: PersistenceBatch = {
       generation: 0,
@@ -394,6 +405,7 @@ export class PersistentBackend extends MemoryBackend {
     this.pendingCheckpoints++;
     const commit = this.tail
       .then(async () => {
+        this.assertOpen();
         if (epoch !== this.checkpointEpoch)
           throw new Error("filesystem checkpoint invalidated by a failed commit");
         batch.generation = this.generation + 1;
@@ -407,6 +419,7 @@ export class PersistentBackend extends MemoryBackend {
           Array.from(detachedSnapshots.values(), (snapshot) => snapshot.key),
         );
         await this.storage.persist(batch);
+        this.assertOpen();
         this.generation = batch.generation;
         for (const entry of upserts) if (entry.data) this.committedKeys.set(entry.ino, entry.data);
         this.pruneDetached();
@@ -434,6 +447,7 @@ export class PersistentBackend extends MemoryBackend {
       });
     this.lastCommit = commit;
     this.tail = commit.catch(() => {
+      if (this.stopped) return;
       this.checkpointEpoch++;
       for (const node of changed) if (!this.detached.has(node)) this.dirty.add(node);
       // A later request may have linked an open inode back into the namespace while
@@ -442,7 +456,10 @@ export class PersistentBackend extends MemoryBackend {
       this.keys = new Map(this.committedKeys);
       this.revisions.clear();
     });
-    return durable ? commit.then(() => this.storage.flush(flushKeys)) : commit;
+    return commit.then(() => {
+      this.assertOpen();
+      return durable ? this.flushOpen(flushKeys) : undefined;
+    });
   }
   dispose(): void {
     this.stopped = true;

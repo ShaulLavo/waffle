@@ -195,3 +195,15 @@ of raw-control-memory exposure to hostile JavaScript. An untrusted host integrat
 or arbitrary raw-SAB writer can corrupt control memory directly and is outside
 this private slice. Existing captured private grant-state protections are unchanged.
 This neither claims S2/SAFE acceptance nor enables public or default operation.
+
+## Persistent checkpoint lifetime
+
+Existing persistent-backend checkpoints and flushes reject late successful storage
+completions after backend disposal. A stopped persist completion does not install
+checkpoint bookkeeping or start a payload flush. Disposal does not abort or join
+an adapter operation. Rejection is not rollback, and applied v1 bytes remain saved.
+Live storage failures retain their original errors and dirty retry behavior.
+A later failed persist does not invalidate an earlier successful payload barrier.
+Ordinary close saves before disposal and joins storage close afterward.
+These checks change no storage format, FAST memory ACK, or untracked receipt.
+They do not provide explicit recovery, a durable publication cut, or SAFE mode.
