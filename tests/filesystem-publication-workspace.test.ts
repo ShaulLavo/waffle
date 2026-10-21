@@ -171,7 +171,8 @@ test("legitimate workspace reservation transfer never changes live ownership con
   const childIdentity = createProcessFilesystemIdentity(connection);
   const childPair = connectFilesystemIdentity(childIdentity);
   const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
-  const childSession = residentSession(await f.channel.call("open", f.session.descriptor));
+  const childChannel = new ResidentChannel(f.session.descriptor.workspace);
+  const childSession = residentSession(await childChannel.call("open", f.session.descriptor));
   const changed: string[] = [];
   const originalStore = Atomics.store;
   let reservation: ReturnType<FilesystemClient["reserve"]> | undefined;
@@ -208,7 +209,8 @@ test("legitimate workspace reservation transfer never changes live ownership con
     await parent.asyncCall("workspaceBridgeStop");
     child.dispose();
     parent.dispose();
-    await f.channel.call("close", { token: childSession.token });
+    await childChannel.call("close", { token: childSession.token });
+    childChannel.close();
     await f.stop();
   }
 });
