@@ -149,10 +149,28 @@ async function stopOwners(owners: readonly WorkerOwner[], fs: SharedFilesystem):
 }
 type Fixture = Awaited<ReturnType<typeof memoryFixture>>;
 async function group(f: Fixture, before: PublicationCut, kinds?: readonly string[]) {
+  const immediate = f.client.shared.current(true, undefined, f.client.connection.owner, () => {
+    const domain = f.client.shared.publication!;
+    const page = domain.changes(before, f.config.logBytes);
+    if (page.kind !== "changes") throw new Error("Missing synchronous publication group");
+    equal(page.publications.length, 1);
+    const publication = page.publications[0]!;
+    if (kinds)
+      equal(
+        publication.changes.map((effect) => effect.kind),
+        kinds,
+      );
+    equal(domain.lookupAny(publication.receipt.id), {
+      kind: "committed",
+      receipt: publication.receipt,
+    });
+    return publication.receipt;
+  });
   const page = await f.observer.changes(before, f.config.logBytes);
   if (page.kind !== "changes") throw new Error("Unexpected publication gap");
   equal(page.publications.length, 1);
   const publication = page.publications[0]!;
+  equal(publication.receipt, immediate);
   equal(publication.receipt.cut, { history: before.history, generation: before.generation + 1 });
   equal(await f.observer.receipt(publication.receipt.id), {
     kind: "committed",
@@ -281,7 +299,13 @@ async function nonblocking(): Promise<void> {
     const append = await group(f, cut, ["bytes", "metadata"]);
     equal(append.receipt.result, { kind: "append", written: 64, offset: 128 });
     cut = await f.observer.cut();
-    equal(await f.client.asyncCall("write", [f.handle, 0], new Uint8Array()), 0);
+    const empty = f.client[localPublication]("write", [f.handle, 0], new Uint8Array());
+    if (empty.kind !== "admitted") throw new Error("Missing empty-write identity");
+    equal(await f.client.asyncCall("write", [f.handle, 0], empty.input, empty.admission), 0);
+    const receipt = await f.observer.receipt(empty.admission.id);
+    equal(field(receipt, "kind"), "committed");
+    equal(field(field(receipt, "receipt"), "cut"), cut);
+    equal(field(field(receipt, "receipt"), "result"), { kind: "number", value: 0 });
     equal(f.client.tryAppend(f.handle, []), { written: 0, offset: 128 });
     equal(await f.observer.cut(), cut);
     await denied(f.client.asyncCall("writeFile", ["/file"], new Uint8Array(65)), 6);
@@ -313,6 +337,22 @@ async function growth(): Promise<void> {
     equal(f.client.tryRead(f.handle, [output], PAGE), 1);
     equal(Array.from(output), [9]);
     equal(field(await f.observer.diagnostics(), "pending"), 0);
+    equal(await f.client.asyncCall("resize", [f.handle, PAGE * 2, false]), 0);
+    const appendCut = await f.observer.cut(),
+      appendRevision = f.client.shared.revision(f.handle);
+    bytes[0] = 10;
+    equal(f.client.tryAppend(f.handle, [bytes]), -6);
+    bytes[0] = 11;
+    const appendPreparation = Array.from(f.client.completions.values());
+    equal(appendPreparation.length, 1);
+    await appendPreparation[0]!.value();
+    equal(await f.observer.cut(), appendCut);
+    equal(f.client.shared.revision(f.handle), appendRevision);
+    equal(f.client.stat(f.handle).size, PAGE * 2);
+    equal(f.client.tryAppend(f.handle, [bytes]), { written: 1, offset: PAGE * 2 + 1 });
+    await group(f, appendCut, ["bytes", "metadata"]);
+    equal(f.client.tryRead(f.handle, [output], PAGE * 2), 1);
+    equal(Array.from(output), [11]);
   } finally {
     await f.stop();
   }
@@ -484,8 +524,33 @@ async function identitiesAndPins(): Promise<void> {
     } finally {
       fork.dispose();
     }
+    await closedSession(f);
   } finally {
     await f.stop();
+  }
+}
+async function closedSession(f: Fixture): Promise<void> {
+  const old = new FilesystemClient(f.fs.fork());
+  const session = old.connection.publication!.session;
+  const id = old.shared.publication!.next(session);
+  old.dispose();
+  // This real service round trip sweeps the closed owner before the new fork.
+  const before = await f.observer.cut();
+  const fresh = new FilesystemClient(f.fs.fork());
+  try {
+    equal(fresh.connection.publication!.session.serial === session.serial, false);
+    throws(() => fresh[localPublication]("write", [f.handle, 0], new Uint8Array([9]), id));
+    throws(() =>
+      fresh.shared.publication!.admit(
+        session,
+        id,
+        { kind: "write", handle: f.handle, offset: 0 },
+        new Uint8Array([9]),
+      ),
+    );
+    equal(await f.observer.cut(), before);
+  } finally {
+    fresh.dispose();
   }
 }
 async function liveAdmission(): Promise<void> {

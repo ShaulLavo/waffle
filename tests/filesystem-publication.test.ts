@@ -56,22 +56,22 @@ test("local publication orders real host, WASI and direct writers without a nudg
   try {
     let cut = await observer.cut();
     await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([1, 2, 3]));
-    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    cut = await oracleSuccess(fixture.root, observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [1, 2, 3]);
     new Uint8Array(memory.buffer, 256, 1)[0] = 4;
     expect(guestFunction(guest, "fd_pwrite")(fd, 0, 1, 1n, 32)).toBe(0);
     expect(view.getUint32(32, true)).toBe(1);
     expect(resource.offset).toBe(0);
-    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    cut = await oracleSuccess(fixture.root, observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [1, 4, 3]);
     expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([5])], 2)).toBe(1);
-    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    cut = await oracleSuccess(fixture.root, observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [1, 4, 5]);
     new Uint8Array(memory.buffer, 256, 1)[0] = 6;
     expect(guestFunction(guest, "fd_write")(fd, 0, 1, 32)).toBe(0);
     expect(view.getUint32(32, true)).toBe(1);
     expect(resource.offset).toBe(1);
-    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    cut = await oracleSuccess(fixture.root, observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [6, 4, 5]);
     // The kernel emits no publication nudge, including for this last success. Completion
     // delivery is untouched. Only explicit observer reads discover the committed group.
@@ -79,7 +79,7 @@ test("local publication orders real host, WASI and direct writers without a nudg
       written: 1,
       offset: 4,
     });
-    await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    await oracleSuccess(fixture.root, observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [6, 4, 5, 7]);
   } finally {
     wasi.descriptors.dispose();
@@ -89,14 +89,29 @@ test("local publication orders real host, WASI and direct writers without a nudg
 });
 
 async function oracleSuccess(
+  root: FilesystemClient,
   observer: ReturnType<typeof publicationObserver>,
   previous: import("../fs/publication").PublicationCut,
   kinds: readonly string[],
 ) {
+  const immediate = root.shared.current(true, undefined, root.connection.owner, () => {
+    const domain = root.shared.publication!;
+    const page = domain.changes(previous, limits.logBytes);
+    requirePublicationGroups(page, 1);
+    if (page.kind !== "changes") throw new Error("missing synchronous publication group");
+    const group = page.publications[0]!;
+    expect<readonly string[]>(group.changes.map((effect) => effect.kind)).toEqual(kinds);
+    expect(domain.lookupAny(group.receipt.id)).toEqual({
+      kind: "committed",
+      receipt: group.receipt,
+    });
+    return group.receipt;
+  });
   const page = await observer.changes(previous, limits.logBytes);
   requirePublicationGroups(page, 1);
   if (page.kind !== "changes") throw new Error("missing complete publication group");
   const group = page.publications[0]!;
+  expect(group.receipt).toEqual(immediate);
   expect(group.receipt.cut).toEqual({
     history: previous.history,
     generation: previous.generation + 1,

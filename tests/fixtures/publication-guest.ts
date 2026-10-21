@@ -195,11 +195,6 @@ async function installService(request: ServiceSetup): Promise<void> {
       },
       { intervalMs: 0 },
     );
-    const hydrate = backend.shared.hydrate.bind(backend.shared);
-    backend.shared.hydrate = (handle, bytes) => {
-      hydrationCount++;
-      return hydrate(handle, bytes);
-    };
   } else {
     backend = new MemoryBackend();
     backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
@@ -221,6 +216,13 @@ async function installService(request: ServiceSetup): Promise<void> {
   };
   service = new FilesystemService(backend);
   service.connect(request.connection);
+  if (request.cold) {
+    const hydrate = backend.shared.hydrate.bind(backend.shared);
+    backend.shared.hydrate = (handle, bytes) => {
+      hydrationCount++;
+      return hydrate(handle, bytes);
+    };
+  }
   self.postMessage({ ready: true });
 }
 async function serviceControl(request: ServiceControl): Promise<void> {
