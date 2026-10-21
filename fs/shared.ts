@@ -108,6 +108,8 @@ export class SharedFilesystemState {
   private readonly firstBytes: Uint8Array;
   private readonly pageViews: (Uint8Array | undefined)[] = [];
   private serviceMutation = false;
+  private globalOwner: number | undefined;
+  private fileOwnsGlobal = new Set<number>();
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
   onContention?: () => void;
@@ -245,45 +247,90 @@ export class SharedFilesystemState {
       if (Atomics.compareExchange(cells, index, 0, owner) === 0) return;
     }
   }
-  private lock(index: number, revoked?: () => boolean, owner = this.lockOwner): void {
+  private assertLockAccess(access: "data" | "activation" | "release"): void {
+    if (access === "release") return;
+    if (access === "activation") this.publication?.assertLive();
+    else this.publication?.assertAccess();
+  }
+  private lock(
+    index: number,
+    revoked?: () => boolean,
+    owner = this.lockOwner,
+    access: "data" | "release" = "data",
+  ): void {
+    const global = !!this.publication && this.globalOwner === undefined;
+    if (global) this.globalLock(revoked, owner, false, access);
+    else this.assertLockAccess(access);
     this.section?.enter();
+    let held = false;
     try {
       if (Atomics.compareExchange(this.slots, index, 0, owner) !== 0)
         this.contend(this.slots, index, revoked, owner);
-      if (!revoked?.()) return;
-      Atomics.compareExchange(this.slots, index, owner, 0);
-      throw new FilesystemError(11);
+      held = true;
+      if (revoked?.()) throw new FilesystemError(11);
+      if (global) this.fileOwnsGlobal.add(index);
     } catch (error) {
+      if (held) Atomics.compareExchange(this.slots, index, owner, 0);
       this.section?.exit();
+      if (global) this.globalUnlock(owner);
       throw error;
     }
   }
   private unlock(index: number, owner = this.lockOwner): void {
     Atomics.compareExchange(this.slots, index, owner, 0);
     this.section?.exit();
+    if (!this.fileOwnsGlobal.delete(index)) return;
+    this.globalUnlock(owner);
   }
-  private globalLock(revoked?: () => boolean, owner = this.lockOwner): void {
-    if (this.serviceMutation && owner === SERVICE_OWNER) return;
+  private globalLock(
+    revoked?: () => boolean,
+    owner = this.lockOwner,
+    nonblocking = false,
+    access: "data" | "activation" | "release" = "data",
+    revocation: "global" | "file" = "global",
+  ): void {
+    if (this.serviceMutation && owner === SERVICE_OWNER) {
+      this.assertLockAccess(access);
+      return;
+    }
     this.section?.enter();
+    let held = false;
     try {
-      if (Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) !== 0)
-        this.contend(this.cells, GLOBAL_LOCK, revoked, owner);
-      if (!revoked?.()) return;
-      Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
-      throw new FilesystemError(11);
+      held = Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) === 0;
+      if (!held && nonblocking) throw new FilesystemError(6);
+      if (!held) this.contend(this.cells, GLOBAL_LOCK, revoked, owner);
+      held = true;
+      if (revocation === "global" && revoked?.()) throw new FilesystemError(11);
+      this.assertLockAccess(access);
+      this.globalOwner = owner;
     } catch (error) {
+      if (held) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
       this.section?.exit();
       throw error;
     }
   }
   private globalUnlock(owner = this.lockOwner): void {
-    if (!this.serviceMutation) {
-      Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
-      this.section?.exit();
+    if (this.serviceMutation) return;
+    this.globalOwner = undefined;
+    Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
+    this.section?.exit();
+  }
+  activateResidentAuthority(): void {
+    this.globalLock(undefined, this.lockOwner, false, "activation");
+    try {
+      this.publication!.activateResident();
+    } finally {
+      this.globalUnlock();
     }
   }
-  beginServiceMutation(epoch: Int32Array): void {
+  beginServiceMutation(epoch: Int32Array, residentGrant = 0): void {
     this.globalLock();
+    try {
+      this.publication?.assertCurrent(residentGrant);
+    } catch (error) {
+      this.globalUnlock();
+      throw error;
+    }
     this.serviceMutation = true;
     Atomics.add(epoch, 0, 1);
   }
@@ -306,7 +353,7 @@ export class SharedFilesystemState {
     const previous = this.currentOwner;
     this.currentOwner = owner;
     try {
-      this.publication?.assertLive();
+      this.publication?.assertCurrent();
       return fn();
     } finally {
       this.currentOwner = previous;
@@ -723,25 +770,18 @@ export class SharedFilesystemState {
     if (!this.publication) return read();
     if ((this.serviceMutation && owner === SERVICE_OWNER) || this.currentOwner === owner) {
       this.publication.assertLive();
+      this.publication.assertAccess();
       return read();
     }
-    this.section?.enter();
-    let held = false;
+    this.globalLock(revoked, owner, nonblocking);
     try {
-      held = Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) === 0;
-      if (!held && nonblocking) throw new FilesystemError(6);
-      if (!held) {
-        this.contend(this.cells, GLOBAL_LOCK, revoked, owner);
-        held = true;
-      }
-      if (revoked?.()) throw new FilesystemError(11);
-      this.publication.assertLive();
+      this.publication.assertCurrent();
       return read();
     } finally {
-      if (held) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
-      this.section?.exit();
+      this.globalUnlock(owner);
     }
   }
+
   directRead(
     slot: number,
     handle: FileHandle,
@@ -806,6 +846,15 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
+  private readyGlobal(revoked: () => boolean, owner: number): boolean {
+    try {
+      this.globalLock(revoked, owner, true);
+      return true;
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === 6) return false;
+      throw error;
+    }
+  }
   /** Probe without spinning or changing file data. True means ready, false means lock contention,
    * and undefined requests hydration. The same locks gate a successful retry. */
   directReadiness(
@@ -822,7 +871,7 @@ export class SharedFilesystemState {
     try {
       if (revoked()) throw new FilesystemError(11);
       if (writing || this.publication) {
-        global = Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) === 0;
+        global = this.readyGlobal(revoked, owner);
         if (!global) return false;
       }
       file = Atomics.compareExchange(this.slots, lock, 0, owner) === 0;
@@ -831,7 +880,7 @@ export class SharedFilesystemState {
       return this.slots[slot * SLOT_WORDS + REVISION_STATE]! & RESIDENT ? true : undefined;
     } finally {
       if (file) Atomics.compareExchange(this.slots, lock, owner, 0);
-      if (global) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
+      if (global) this.globalUnlock(owner);
       this.section?.exit();
     }
   }
@@ -872,20 +921,10 @@ export class SharedFilesystemState {
     nonblocking = false,
     admission?: PublicationAdmission,
   ): number {
-    const cells = this.cells,
-      slots = this.slots,
+    const slots = this.slots,
       base = slot * SLOT_WORDS,
       lock = base + FILE_LOCK;
-    this.section?.enter();
-    try {
-      if (Atomics.compareExchange(cells, GLOBAL_LOCK, 0, owner) !== 0) {
-        if (nonblocking) throw new FilesystemError(6);
-        this.contend(cells, GLOBAL_LOCK, revoked, owner);
-      }
-    } catch (error) {
-      this.section?.exit();
-      throw error;
-    }
+    this.globalLock(revoked, owner, nonblocking, "data", "file");
     Atomics.add(epoch, 0, 1);
     try {
       if (Atomics.compareExchange(slots, lock, 0, owner) !== 0) {
@@ -898,7 +937,7 @@ export class SharedFilesystemState {
         this.checkAccess(slot, 2);
         const size = slots[base + FILE_SIZE]!;
         const at = append ? size : offset;
-        this.publication?.assertLive();
+        this.publication?.assertCurrent();
         if (this.publication && !admission)
           throw new FilesystemError(28, "publication admission required");
         if (!total) {
@@ -952,8 +991,7 @@ export class SharedFilesystemState {
       }
     } finally {
       Atomics.add(epoch, 0, 1);
-      Atomics.compareExchange(cells, GLOBAL_LOCK, owner, 0);
-      this.section?.exit();
+      this.globalUnlock(owner);
     }
   }
   private commitDirectBytes(
@@ -1334,7 +1372,7 @@ export class SharedFilesystemState {
     try {
       const slot = this.slot(handle);
       let free = false;
-      this.lock(this.at(slot, FILE_LOCK));
+      this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, "release");
       try {
         if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
         const refs = Atomics.sub(this.slots, this.at(slot, REFS), 1) - 1;
@@ -1342,7 +1380,7 @@ export class SharedFilesystemState {
       } finally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
-      if (free) this.free(handle);
+      if (free) this.free(handle, "release");
     } finally {
       this.section?.exit();
     }
@@ -1404,12 +1442,12 @@ export class SharedFilesystemState {
     this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
     Atomics.store(this.slots, this.at(slot, HANDLE), -1);
   }
-  private free(handle: FileHandle): void {
-    this.globalLock();
+  private free(handle: FileHandle, access: "data" | "release" = "data"): void {
+    this.globalLock(undefined, this.lockOwner, false, access);
     try {
       const slot = this.findSlot(handle);
       if (!slot) return;
-      this.lock(this.at(slot, FILE_LOCK));
+      this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, access);
       try {
         if (
           this.slots[this.at(slot, HANDLE)] !== handle + 1 ||

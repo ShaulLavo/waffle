@@ -1,3 +1,4 @@
+import { ResidentAttachment } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
 import {
   mutationIntent,
@@ -251,10 +252,13 @@ export class FilesystemClient implements FileSystem {
   private readonly section: FilesystemSection;
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
+  private resident: ResidentAttachment | undefined;
   constructor(readonly connection: FilesystemConnection) {
     this.capabilities = new Int32ArrayConstructor(connection.capabilities);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.revoked = sharedRevoked(connection);
+    if (connection.residentPublication)
+      this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
     this.section = new FilesystemSection(connection, this.revoked);
     this.shared = new SharedFilesystemState(
       connection.shared,
@@ -269,6 +273,17 @@ export class FilesystemClient implements FileSystem {
       else mapGet(this.completions, data.completed)?.notify();
     };
     connection.port.start();
+  }
+  attachResidentPublication(): Promise<void> {
+    return this.resident?.attach() ?? Promise.resolve();
+  }
+  stopResidentPublication(): Promise<void> {
+    return this.resident?.stop() ?? Promise.resolve();
+  }
+  residentPublicationClient() {
+    const client = this.resident?.client;
+    if (!client) throw new FilesystemError(6);
+    return client;
   }
   /** A single shared-signal waiter handles service death without a port completion message.
    * Normal replies still use the port; the watcher exits when the last completion is released.
@@ -407,6 +422,7 @@ export class FilesystemClient implements FileSystem {
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
+    if (this.resident) throw new FilesystemError(58, "resident grant namespace is unsupported");
     const domain = this.shared.publication;
     const connection = this.connection.publication;
     const intent = domain ? mutationIntent(operation, args) : undefined;
@@ -485,6 +501,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   dispose(): void {
+    this.resident?.invalidate();
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
     mapForEach(this.completions, (completion) => completion.cancel());
@@ -651,8 +668,24 @@ export class FilesystemClient implements FileSystem {
         : this.submit("grow", [handle, intent.size]);
     mapSet(this.ioPreparations, handle, completion);
   }
+  private residentIO<T>(action: () => T): T | number {
+    try {
+      this.section.enter();
+    } catch (error) {
+      return -errno(error);
+    }
+    try {
+      return action();
+    } catch (error) {
+      return -errno(error);
+    } finally {
+      this.section.exit();
+    }
+  }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
     if (!(offset >= 0)) return -28;
     try {
       if (!this.preparedIO(handle)) return -6;
@@ -680,6 +713,8 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
     if (!(offset >= 0)) return -28;
     try {
@@ -710,6 +745,8 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
     try {
       if (!this.preparedIO(handle)) return -6;
@@ -1011,6 +1048,7 @@ export class FilesystemClient implements FileSystem {
     return cached;
   }
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.resident) return this.tryRead(handle, chunks, offset);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     const slot = this.directSlot(handle);
     if (slot) {
@@ -1066,6 +1104,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.resident) return this.tryWrite(handle, chunks, offset);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
@@ -1125,6 +1164,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.resident) return this.tryAppend(handle, chunks);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, false);
     chunks = fixedWriteSources(chunks);
     let total = 0;

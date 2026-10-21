@@ -208,6 +208,10 @@ function captureWorkerHost(host: RuntimeWorkerHost) {
   return { postToHost, addListener, removeListener };
 }
 
+function residentPreopens(filesystem: FilesystemConnection): Record<string, string> {
+  return filesystem.residentPublication ? {} : { "/": "/" };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -364,7 +368,15 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       }
       if (errors.length) throw new AggregateError(errors, "stdio release failed");
     });
-    const filesystemReleased = attempt(() => fs.dispose());
+    let filesystemReleased = attempt(() => fs.dispose());
+    if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
+      try {
+        await fs.stopResidentPublication();
+      } catch (error) {
+        collect(error);
+        filesystemReleased = false;
+      }
+    }
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so
       // the page must fence this process before termination or releasing inherited refs.
@@ -435,6 +447,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       ? directoryState(req.runtimeProcess).signals.outcome
       : (requestOutcome ?? executor.outcome);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
       const { attachPipeEndpoint } = await import("../proc/pipes.js");
       const endpoint = attachPipeEndpoint(req.startupStderr);
@@ -578,7 +591,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       args: req.args,
       env,
       fs,
-      preopens: { "/": "/" },
+      preopens: residentPreopens(req.filesystem),
       reservedFds,
       stdio,
       stdout: (data) => {

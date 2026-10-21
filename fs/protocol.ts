@@ -1,3 +1,4 @@
+import type { ResidentDescriptor } from "./publication-grant.js";
 import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { FilesystemError } from "../core/filesystem.js";
@@ -46,6 +47,7 @@ export const enum State {
   Overflow,
 }
 export interface FilesystemConnection {
+  residentPublication?: ResidentDescriptor;
   publication?: PublicationConnection;
   port: MessagePort;
   epoch: SharedArrayBuffer;
@@ -115,6 +117,7 @@ export function createFilesystemIdentity(
   }
   return {
     ...(domain ? { publication: domain } : {}),
+    ...(parent?.residentPublication ? { residentPublication: parent.residentPublication } : {}),
     epoch: parent?.epoch ?? new SharedArrayBuffer(4),
     // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
     signal: parent?.signal ?? new SharedArrayBuffer(4),

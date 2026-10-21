@@ -173,8 +173,8 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 
 ### Internal local publication unit, 2026-10-21
 
-Status: Approved implementation for independent review and integration. The
-`storage/publication-local` branch adds opt-in publication to the existing root,
+Status: Merged as PR #44 at `cc14e0f4cb36bec655425596cd49dbd25704b35a`. The
+local publication unit adds opt-in publication to the existing root,
 not a new public storage mode. See [the internal contract](../docs/storage-publication.md).
 
 The compiling baseline oracle failed with errno52 at `dcf989f`. The enabled
@@ -186,5 +186,21 @@ Admission tests observe native worker closure before proven-dead reap.
 Original failed and invalid candidates remain under
 `/work/reports/waffle-finish-20261021/storage-publication-local/author/` and
 `/work/reports/waffle-finish-20261021/storage-publication-complete-r1/author/`.
-Required full gates, independent review, merge and postmerge verification remain
-separate obligations. No consumer changes or S1/S2 acceptance follow from this unit.
+The repair acceptance and exact-head hosted checks are recorded in
+`storage-publication-repair-r1/PARENT-FIX-MAPPING.md` under the program reports.
+No consumer changes or S1/S2 acceptance follow from this unit.
+
+### Bounded independent-page resident grant pilot, 2026-10-21
+
+Status: Approved bounded implementation, not accepted S2. The exclusive
+`storage/cross-tab-grant-pilot` branch starts at `cc14e0f`. It keeps one actual
+production MemoryBackend and publication domain, with a private retained-file
+attachment and one outstanding operation grant. It does not add another proof
+filesystem, public selector, persistent format or consumer pin.
+
+The private authority, attachment and actual-bootstrap contracts are described
+in [the publication contract](../docs/storage-publication.md). Exact immutable
+heads, original reds, focused controls, gate approvals and actual-host cleanup
+are owned by `/work/reports/waffle-finish-20261021/storage-cross-tab-grant-pilot/`.
+Independent review, required broad gates and program acceptance remain root-owned;
+a compiling or pushed candidate alone does not satisfy them.
