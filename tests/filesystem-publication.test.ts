@@ -260,21 +260,11 @@ test("production publication content paths publish before direct and service suc
     expect(page.publications.map((publication: { receipt: { cut: { generation: number } } }) => publication.receipt.cut.generation)).toEqual([1, 2]);
     console.info("publication phase: forbidden sibling control");
     await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
-    console.info("publication phase: missing root grant");
-    const listener = root.connection.port.onmessage;
-    root.connection.port.onmessage = (event) => {
-      console.info("publication received root message", event.data);
-      listener?.call(root.connection.port, event);
-    };
-    const missing = root.submit("publicationCut");
-    void missing.value().then(() => console.info("unexpected control success"), (error: unknown) => console.info("publication raw rejection", error));
-    const probe = setTimeout(() => console.info("publication completion probe", {
-      cells: Array.from(missing.cells), pending: Array.from(root.completions.keys()),
-      global: Atomics.load(root.shared.cells, 1), resources: fixture.service.resources(),
-      domain: fixture.backend.shared.publication!.diagnostics(),
-    }), 25);
-    try { await expect(missing.value()).rejects.toMatchObject({ errno: 2 }); }
-    finally { clearTimeout(probe); missing.release(); }
+    console.info("publication phase: missing root grant with ordinary await");
+    let rejection: unknown;
+    try { await root.asyncCall("publicationCut"); }
+    catch (error) { rejection = error; }
+    expect(rejection).toMatchObject({ errno: 2 });
   } finally { console.info("publication phase: teardown"); fixture.stop(); }
 });
 
@@ -309,7 +299,10 @@ test("production publication rejects unimplemented namespace plans before change
   const fixture = await localPublicationFixture();
   try {
     const start = await fixture.cut();
-    await expect(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9]))).rejects.toMatchObject({ errno: 52 });
+    let rejection: unknown;
+    try { await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])); }
+    catch (error) { rejection = error; }
+    expect(rejection).toMatchObject({ errno: 52 });
     await expect(fixture.root.asyncCall("mkdirp", ["/missing/child"])).rejects.toMatchObject({ errno: 52 });
     expect(await fixture.cut()).toEqual(start);
     expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([1, 2, 3]));
