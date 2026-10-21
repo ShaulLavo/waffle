@@ -64,21 +64,25 @@ export async function committedClaim(workspace: string) {
 }
 export async function blockedOpen(workspace: string) {
   const blocker = await openDatabase(workspace);
-  const deletion = indexedDB.deleteDatabase(workspace);
-  const deleted = new Promise<void>((resolve, reject) => {
-    deletion.onsuccess = () => resolve();
-    deletion.onerror = () => reject(deletion.error);
+  const upgrade = indexedDB.open(workspace, 2);
+  const abortedUpgrade = new Promise<void>((resolve, reject) => {
+    upgrade.onupgradeneeded = () => upgrade.transaction?.abort();
+    upgrade.onerror = () => resolve();
+    upgrade.onsuccess = () => { upgrade.result.close(); reject(new Error("Upgrade was not aborted")); };
   });
-  await new Promise<void>((resolve) => { deletion.onblocked = () => resolve(); });
+  await new Promise<void>((resolve) => { upgrade.onblocked = () => resolve(); });
+  const beforeOpens = interruptions.requestedOpens();
   interruptions.startConnect(workspace);
   const started = performance.now();
-  while (!(await navigator.locks.query()).held?.some((lock) => lock.name === `e5-bootstrap:${workspace}`)) {
+  while (interruptions.requestedOpens() === beforeOpens || !(await navigator.locks.query()).held?.some((lock) => lock.name === `e5-bootstrap:${workspace}`)) {
     if (performance.now() - started > 1000) throw new Error("Bootstrap was never granted");
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   interruptions.client.detach();
+  const joined = interruptions.joined();
+  if (!joined) throw new Error("Missing connect attempt");
   const bounded = await Promise.race([
-    interruptions.joined().then(() => true),
+    joined.then(() => true),
     new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 800)),
   ]);
   const successor = await interruptions.client.connect(`${workspace}-successor`, "volatile-fast");
@@ -86,7 +90,7 @@ export async function blockedOpen(workspace: string) {
   interruptions.retainWorker();
   const before = await interruptions.snapshot();
   blocker.close();
-  await deleted;
+  await abortedUpgrade;
   const barrier = await openDatabase(workspace);
   barrier.close();
   await interruptions.joined();

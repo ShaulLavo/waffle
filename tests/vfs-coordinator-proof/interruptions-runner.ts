@@ -275,16 +275,39 @@ async function holderRefusal(page: Page, workspace: string): Promise<unknown> {
   return refused;
 }
 async function databaseCancellation(page: Page, workspace: string): Promise<unknown> {
-  const result = await page.evaluate((workspace) => interruptions.blockedOpen(workspace), workspace);
-  assert(result.bounded && result.sameWorker && result.unchanged, "Late blocked open changed successor or exceeded cancellation bound");
+  const result = await page.evaluate(
+    (workspace) => interruptions.blockedOpen(workspace),
+    workspace,
+  );
+  assert(
+    result.bounded && result.sameWorker && result.unchanged,
+    "Late blocked open changed successor or exceeded cancellation bound",
+  );
   assert(result.resources.databases === 0, "Late opened database was not closed");
   return result;
 }
 async function claimBoundaries(page: Page, workspace: string): Promise<unknown> {
-  const before = await page.evaluate((workspace) => interruptions.uncommittedClaim(`${workspace}-before`), workspace);
-  assert(!before.result.committed && !before.updated && before.savedEpoch === 0, "Uncommitted cancellation wrote a claim");
-  const after = await page.evaluate((workspace) => interruptions.committedClaim(`${workspace}-after`), workspace);
-  assert(after.result === 1 && after.interrupted && !after.installed && after.savedEpoch === 1 && after.token === "committed-fence" && after.closed === false, "Committed strict claim was rolled back or installed after cancellation");
+  const before = await page.evaluate(
+    (workspace) => interruptions.uncommittedClaim(`${workspace}-before`),
+    workspace,
+  );
+  assert(
+    !before.result.committed && !before.updated && before.savedEpoch === 0,
+    "Uncommitted cancellation wrote a claim",
+  );
+  const after = await page.evaluate(
+    (workspace) => interruptions.committedClaim(`${workspace}-after`),
+    workspace,
+  );
+  assert(
+    after.result === 1 &&
+      after.interrupted &&
+      !after.installed &&
+      after.savedEpoch === 1 &&
+      after.token === "committed-fence" &&
+      after.closed === false,
+    "Committed strict claim was rolled back or installed after cancellation",
+  );
   return { before, after };
 }
 async function run(

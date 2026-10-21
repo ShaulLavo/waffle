@@ -8,8 +8,10 @@ let outcome: Reply | undefined;
 let release: (() => void) | undefined;
 let successorWorker: SharedWorker | undefined;
 const connections = new Set<IDBDatabase>();
+let openRequests = 0;
 const originalOpen = indexedDB.open.bind(indexedDB);
 indexedDB.open = (name: string, version?: number) => {
+  openRequests++;
   const request = originalOpen(name, version);
   request.addEventListener("success", () => connections.add(request.result));
   return request;
@@ -80,10 +82,12 @@ async function snapshot(): Promise<string> {
     throw new Error("Invalid inspection");
   const detail = inspection.result;
   if (!("state" in detail)) throw new Error("Missing inspected state");
-  return serialized({ authority: client.authority, cursor: client.cursor, state: detail.state });
+  return serialized({ authority: client.authority, cursor: client.cursor, state: detail.state, connection: client.attachment() });
 }
 const interruptions = {
-  blockedOpen, committedClaim, uncommittedClaim,
+  blockedOpen,
+  committedClaim,
+  uncommittedClaim,
   client,
   holdBootstrap,
   holdRegistry,
@@ -95,6 +99,7 @@ const interruptions = {
     release?.();
     release = undefined;
   },
+  requestedOpens: () => openRequests,
   resources: () => ({ databases: connections.size, worker: Boolean(client.worker) }),
   snapshot,
   retainWorker: () => {

@@ -81,6 +81,9 @@ export class ProofClient {
       if (this.attempt === attempt) this.attempt = undefined;
     }
   }
+  attachment(): Readonly<{ workspace: string; arm: Arm; token: string }> | undefined {
+    return this.connection && { ...this.connection };
+  }
   async recover(): Promise<Reply> {
     const connection = this.connection;
     if (!connection || !this.worker) return failure(new Error("UNAVAILABLE: no retained port"));
