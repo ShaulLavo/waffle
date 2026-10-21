@@ -94,7 +94,14 @@ test("remote ACK excludes local direct and service operations until exact one-ti
     expect(changes.kind).toBe("changes");
     if (changes.kind !== "changes") throw new Error("missing group");
     expect(changes.publications).toHaveLength(1);
-    expect(changes.publications[0]).toEqual(publication.kind === "committed" ? publication.publication : undefined);
+    // The existing service protocol represents typed bytes as numeric JSON keys.
+    expect(JSON.stringify(changes.publications[0])).toBe(JSON.stringify(publication.kind === "committed" ? publication.publication : undefined));
+    if (publication.kind !== "committed") throw new Error("missing immutable publication");
+    const original = publication.publication;
+    const changed = { ...publication, publication: { ...original, receipt: { ...original.receipt,
+      cut: { ...original.receipt.cut, generation: original.receipt.cut.generation + 1 } } } };
+    expect(() => f.authority.settle(f.session, changed)).toThrow();
+    expect(f.authority.settle(f.session, publication)).toEqual(imported);
   } finally { f.stop(); }
 });
 

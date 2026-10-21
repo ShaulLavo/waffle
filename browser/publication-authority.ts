@@ -25,6 +25,7 @@ export class ResidentAuthorityServer {
   private outstanding: { readonly client: string; readonly token: string } | undefined;
   private queue = Promise.resolve();
   private stopped = false;
+  private stopping: Promise<void> | undefined;
   constructor(readonly authority: ResidentGrantAuthority, private guard: PublicationGuard, private bootstrap: PublicationGuard) {
     this.channel = new BroadcastChannel(`waffle:resident:${authority.workspace}`);
     this.channel.onmessage = ({ data }: MessageEvent<unknown>) => {
@@ -106,9 +107,11 @@ export class ResidentAuthorityServer {
       this.channel.postMessage({ kind: "reply", client, id, errno });
     }
   }
-  async stop(): Promise<void> {
-    if (this.stopped) return;
+  stop(): Promise<void> {
     this.stopped = true;
+    return this.stopping ??= this.stopOwned();
+  }
+  private async stopOwned(): Promise<void> {
     await this.queue;
     // A pending/unknown claimant keeps both continuity and bootstrap held.
     if (this.outstanding) throw new FilesystemError(6);

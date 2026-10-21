@@ -93,15 +93,17 @@ export interface PublicationGuard { release(): Promise<void> }
 export async function acquirePublicationGuard(workspace: string, mode: "shared" | "exclusive", signal: AbortSignal, ifAvailable = false): Promise<PublicationGuard> {
   const ready = Promise.withResolvers<void>();
   const held = Promise.withResolvers<void>();
-  const done = navigator.locks.request(continuityKey(workspace), { mode, signal, ifAvailable }, async (lock) => {
+  if (signal.aborted) throw new FilesystemError(11);
+  const options: LockOptions = ifAvailable ? { mode, ifAvailable } : { mode, signal };
+  const done = navigator.locks.request(continuityKey(workspace), options, async (lock) => {
     if (!lock) { ready.reject(new FilesystemError(6)); return; }
     ready.resolve();
     await held.promise;
   });
   void done.catch((error: unknown) => ready.reject(error));
   try { await ready.promise; } catch (error) { held.resolve(); await done.catch(() => {}); throw error; }
-  let released = false;
-  return { async release() { if (released) return; released = true; held.resolve(); await done; } };
+  let released: Promise<void> | undefined;
+  return { release() { held.resolve(); return released ??= done; } };
 }
 
 interface PendingCall {
@@ -152,32 +154,61 @@ export class ResidentChannel {
   }
 }
 
+type AttemptResources =
+  | { readonly kind: "none" }
+  | { readonly kind: "guard"; readonly guard: PublicationGuard }
+  | { readonly kind: "channel"; readonly guard: PublicationGuard; readonly channel: ResidentChannel }
+  | { readonly kind: "client"; readonly client: ResidentGrantClient };
+interface AttachmentAttempt {
+  readonly abort: AbortController;
+  readonly joined: Promise<void>;
+  readonly cleanup: ReturnType<typeof Promise.withResolvers<void>>;
+  resources: AttemptResources;
+}
+type AttachmentOwner =
+  | { readonly kind: "none" }
+  | { readonly kind: "attempt"; readonly attempt: AttachmentAttempt }
+  | { readonly kind: "client"; readonly client: ResidentGrantClient };
 type AttachmentState =
   | { readonly kind: "unavailable" }
-  | { readonly kind: "attaching"; readonly attempt: object; readonly abort: AbortController; readonly joined: Promise<void> }
+  | { readonly kind: "attaching"; readonly attempt: AttachmentAttempt }
   | { readonly kind: "current"; readonly client: ResidentGrantClient }
-  | { readonly kind: "stopped"; readonly retained: ResidentGrantClient | undefined };
+  | { readonly kind: "stopped"; readonly owner: AttachmentOwner };
 
 export class ResidentGrantClient {
   private cell: ResidentGrantCell | undefined;
   private stopped = false;
   private stoppedJoin: Promise<void> | undefined;
+  private preparing: Promise<void> | undefined;
   constructor(readonly session: ResidentSession, private channel: ResidentChannel, private guard: PublicationGuard) {
     channel.status = () => this.cell?.snapshot();
   }
-  async prepare(request: ResidentRequest): Promise<void> {
+  prepare(request: ResidentRequest): Promise<void> {
     const owned = residentRequest(request);
-    if (this.stopped) throw new FilesystemError(11);
+    if (this.stopped) return Promise.reject(new FilesystemError(11));
+    if (this.preparing) return Promise.reject(new FilesystemError(6));
+    const preparing = this.prepareOwned(owned);
+    this.preparing = preparing;
+    void preparing.then(() => this.clearPreparing(preparing), () => this.clearPreparing(preparing));
+    return preparing;
+  }
+  private clearPreparing(preparing: Promise<void>): void {
+    if (this.preparing === preparing) this.preparing = undefined;
+  }
+  private async prepareOwned(request: ResidentRequest): Promise<void> {
     if (this.cell) {
       this.cell.cancel();
       const status = await this.settle();
-      if (status.kind === "pending") throw new FilesystemError(6);
+      if (status.kind === "pending" || status.kind === "unknown") throw new FilesystemError(6);
     }
-    const grant = residentGrant(await this.channel.call("prepare", { token: this.session.token, request: owned }));
-    const cell = new ResidentGrantCell(grant);
-    if (this.stopped) { cell.cancel(); await this.channel.call("settle", { token: this.session.token, outcome: encodeResidentOutcome(cell.snapshot()) }); throw new FilesystemError(11); }
-    if (grant.session.token !== this.session.token || grant.session.descriptor.instance !== this.session.descriptor.instance) throw new FilesystemError(11);
-    this.cell = cell;
+    if (this.stopped) throw new FilesystemError(11);
+    const grant = residentGrant(await this.channel.call("prepare", { token: this.session.token, request }));
+    if (JSON.stringify(grant.session) !== JSON.stringify(this.session)) throw new FilesystemError(11);
+    this.cell = new ResidentGrantCell(grant);
+    if (!this.stopped) return;
+    this.cell.cancel();
+    await this.settle();
+    throw new FilesystemError(11);
   }
   tryRead(handle: number, chunks: readonly Uint8Array[], offset: number): number {
     return this.stopped ? -11 : this.cell?.tryRead(handle, chunks, offset) ?? -6;
@@ -199,7 +230,11 @@ export class ResidentGrantClient {
     return this.stoppedJoin ??= this.stopOwned();
   }
   private async stopOwned(): Promise<void> {
-    if (this.cell && (await this.settle()).kind === "pending") throw new FilesystemError(6);
+    await this.preparing?.catch(() => {});
+    if (this.cell) {
+      const result = await this.settle();
+      if (result.kind === "pending" || result.kind === "unknown") throw new FilesystemError(6);
+    }
     await this.channel.call("close", { token: this.session.token });
     this.channel.close();
     await this.guard.release();
@@ -213,51 +248,84 @@ export class ResidentAttachment {
   attach(signal?: AbortSignal): Promise<void> {
     if (this.state.kind === "stopped") return Promise.reject(new FilesystemError(11));
     if (this.state.kind === "current") return Promise.resolve();
-    if (this.state.kind === "attaching") return this.state.joined;
-    const attempt = {}, abort = new AbortController();
-    const completion = Promise.withResolvers<void>();
-    this.state = { kind: "attaching", attempt, abort, joined: completion.promise };
+    if (this.state.kind === "attaching") return this.state.attempt.joined;
+    const abort = new AbortController(), completion = Promise.withResolvers<void>();
+    const attempt: AttachmentAttempt = { abort, joined: completion.promise,
+      cleanup: Promise.withResolvers<void>(), resources: { kind: "none" } };
+    // Stop joins cleanup separately from the caller-visible cancelled attachment.
+    void attempt.cleanup.promise.catch(() => {});
+    this.state = { kind: "attaching", attempt };
     const cancel = () => abort.abort();
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) abort.abort();
     const timer = setTimeout(cancel, callBound);
-    void this.acquire(attempt, abort.signal).then(completion.resolve, completion.reject).finally(() => {
+    void this.acquire(attempt).then(completion.resolve, completion.reject).finally(() => {
       clearTimeout(timer); signal?.removeEventListener("abort", cancel);
     });
     return completion.promise;
   }
-  private active(attempt: object): boolean {
+  private active(attempt: AttachmentAttempt): boolean {
     return this.state.kind === "attaching" && this.state.attempt === attempt && !this.revoked();
   }
-  private async acquire(attempt: object, signal: AbortSignal): Promise<void> {
-    let guard: PublicationGuard | undefined, channel: ResidentChannel | undefined;
-    let accepted: ResidentGrantClient | undefined;
+  private async acquire(attempt: AttachmentAttempt): Promise<void> {
+    const signal = attempt.abort.signal;
     try {
-      guard = await acquirePublicationGuard(this.descriptor.workspace, "shared", signal);
+      const guard = await acquirePublicationGuard(this.descriptor.workspace, "shared", signal);
+      attempt.resources = { kind: "guard", guard };
       if (signal.aborted || !this.active(attempt)) throw new FilesystemError(11);
-      channel = new ResidentChannel(this.descriptor.workspace);
+      const channel = new ResidentChannel(this.descriptor.workspace);
+      attempt.resources = { kind: "channel", channel, guard };
       const session = residentSession(await channel.call("open", this.descriptor));
-      accepted = new ResidentGrantClient(session, channel, guard);
-      if (signal.aborted || !this.active(attempt)) { await accepted.stop(); throw new FilesystemError(11); }
-      this.state = { kind: "current", client: accepted };
+      if (JSON.stringify(session.descriptor) !== JSON.stringify(this.descriptor)) throw new FilesystemError(11);
+      const client = new ResidentGrantClient(session, channel, guard);
+      attempt.resources = { kind: "client", client };
+      if (signal.aborted || !this.active(attempt)) throw new FilesystemError(11);
+      this.state = { kind: "current", client };
     } catch (error) {
-      if (!accepted) { channel?.close(); await guard?.release(); }
+      await this.cleanupAttempt(attempt);
       if (this.state.kind === "attaching" && this.state.attempt === attempt) this.state = { kind: "unavailable" };
+      throw error;
+    }
+  }
+  private async cleanupAttempt(attempt: AttachmentAttempt): Promise<void> {
+    try {
+      const resources = attempt.resources;
+      if (resources.kind === "client") await resources.client.stop();
+      if (resources.kind === "channel") {
+        await resources.channel.call("closeConnection", null);
+        resources.channel.close();
+        await resources.guard.release();
+      }
+      if (resources.kind === "guard") await resources.guard.release();
+      attempt.resources = { kind: "none" };
+      attempt.cleanup.resolve();
+    } catch (error) {
+      attempt.cleanup.reject(error);
+      this.state = { kind: "stopped", owner: { kind: "attempt", attempt } };
       throw error;
     }
   }
   invalidate(): void {
     const previous = this.state;
     if (previous.kind === "stopped") return;
-    if (previous.kind === "attaching") previous.abort.abort();
-    if (previous.kind === "current") previous.client.invalidate();
-    this.state = { kind: "stopped", retained: previous.kind === "current" ? previous.client : undefined };
+    if (previous.kind === "attaching") {
+      previous.attempt.abort.abort();
+      this.state = { kind: "stopped", owner: { kind: "attempt", attempt: previous.attempt } };
+      return;
+    }
+    if (previous.kind === "current") {
+      previous.client.invalidate();
+      this.state = { kind: "stopped", owner: { kind: "client", client: previous.client } };
+      return;
+    }
+    this.state = { kind: "stopped", owner: { kind: "none" } };
   }
   async stop(): Promise<void> {
-    const previous = this.state;
     this.invalidate();
-    if (previous.kind === "attaching") await previous.joined.catch(() => {});
-    if (this.state.kind === "stopped") await this.state.retained?.stop();
+    if (this.state.kind !== "stopped") throw new FilesystemError(29);
+    const owner = this.state.owner;
+    if (owner.kind === "attempt") await owner.attempt.cleanup.promise;
+    if (owner.kind === "client") await owner.client.stop();
   }
 }
 

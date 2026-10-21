@@ -61,7 +61,7 @@ interface RetainedDescription {
 }
 interface AuthoritySession {
   readonly value: ResidentSession;
-  last: { readonly grant: string; readonly result: ResidentSettlement } | undefined;
+  last: { readonly outcome: ResidentOutcome; readonly result: ResidentSettlement } | undefined;
 }
 type OutstandingGrant =
   | { readonly kind: "idle" }
@@ -300,7 +300,14 @@ export class ResidentGrantAuthority {
   }
   settle(session: ResidentSession, outcome: ResidentOutcome): ResidentSettlement {
     const owner = this.session(session);
-    if (owner.last?.grant === outcome.grant) return owner.last.result;
+    if (owner.last?.outcome.grant === outcome.grant) {
+      const previous = owner.last.outcome;
+      const unchanged = previous.kind === "committed" && outcome.kind === "committed"
+        ? sameBytes(canonical(previous.publication, this.domain.limits.effectBytes), canonical(outcome.publication, this.domain.limits.effectBytes))
+        : JSON.stringify(previous) === JSON.stringify(outcome);
+      if (!unchanged) throw new FilesystemError(28);
+      return structuredClone(owner.last.result);
+    }
     const issued = this.outstanding;
     if (issued.kind !== "issued" || issued.grant.key !== outcome.grant || issued.grant.session.token !== session.token)
       throw new FilesystemError(11);
@@ -323,7 +330,7 @@ export class ResidentGrantAuthority {
     } else { this.domain.stop(); throw new FilesystemError(29); }
     this.domain.releaseResidentGrant(issued.serial);
     this.outstanding = { kind: "idle" };
-    owner.last = { grant: grant.key, result };
+    owner.last = structuredClone({ outcome, result });
     return result;
   }
   private importMutation(grant: Extract<ResidentGrant, { kind: "write" | "append" }>, admission: PublicationAdmission, publication: ResidentPublication): ResidentSettlement {
