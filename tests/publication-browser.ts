@@ -605,6 +605,8 @@ async function liveAdmission(): Promise<void> {
     equal(await finished, { result: 11, offset: 0, byte: 88, count: 0xdeadbeef });
     await quiesced;
     equal(await f.observer.cut(), before);
+    // Request completion precedes service sweep; observe retirement before testing the live peer.
+    equal((await f.observer.diagnostics()).sessions, 1);
     equal(f.client.tryWrite(f.handle, [new Uint8Array([9])], 0), 1);
     await group(f, before, ["bytes", "metadata"]);
   } finally {
