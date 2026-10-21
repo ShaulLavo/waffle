@@ -323,3 +323,50 @@ test("service fd_sync forwards the checked file identity rather than flushing ev
     service.dispose();
   }
 });
+
+class CompletionGate {
+  readonly entered = Promise.withResolvers<void>();
+  readonly released = Promise.withResolvers<void>();
+  async wait(): Promise<void> {
+    this.entered.resolve();
+    await this.released.promise;
+  }
+}
+
+class CompletionStore extends Store {
+  readonly persistGate = new CompletionGate();
+  override async persist(batch: PersistenceBatch): Promise<void> {
+    await super.persist(batch);
+    await this.persistGate.wait();
+  }
+}
+
+test("disposed checkpoint rejects a persist completion that already reached storage", async () => {
+  const store = new CompletionStore();
+  const backend = await PersistentBackend.open(store, { intervalMs: 0 });
+  let reopened: PersistentBackend | undefined;
+  const pending: Promise<void>[] = [];
+  try {
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    const saving = backend.flush();
+    void saving.catch(() => {});
+    pending.push(saving);
+    await store.persistGate.entered.promise;
+    backend.dispose();
+    store.persistGate.released.resolve();
+    await Promise.allSettled(pending);
+    await expect(saving, `payload flushes after disposal: ${store.syncs.length}`).rejects.toThrow(
+      "filesystem persistence backend is closed",
+    );
+    expect(store.syncs).toEqual([]);
+    reopened = await PersistentBackend.open(store, { intervalMs: 0 });
+    await reopened.prepare("readFile", ["/checkpoint"]);
+    expect(reopened.execute("readFile", ["/checkpoint"], new Uint8Array())).toEqual(encode("saved"));
+  } finally {
+    store.persistGate.released.resolve();
+    await Promise.allSettled(pending);
+    backend.dispose();
+    reopened?.dispose();
+    await store.close();
+  }
+});
