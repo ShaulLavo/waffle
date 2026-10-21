@@ -252,7 +252,9 @@ async function latePreparationControl(): Promise<unknown> {
   const client = await attachResidentPublication(descriptor, new AbortController().signal);
   await authority.request("holdPrepare");
   let denied = false;
-  const preparing = client.prepare({ kind: "write", offset: 0, maxBytes: 1 }).catch(() => { denied = true; });
+  const preparing = client.prepare({ kind: "write", offset: 0, maxBytes: 1 }).catch(() => {
+    denied = true;
+  });
   await authority.until("prepareHeld");
   client.invalidate();
   const joined = client.stop();
@@ -261,8 +263,15 @@ async function latePreparationControl(): Promise<unknown> {
     await preparing;
     await joined;
     const inspection = record(await authority.request("inspect"));
-    return { denied, count: inspection.count, generation: record(inspection.cut).generation, bytes: inspection.bytes };
-  } finally { await client.stop(); }
+    return {
+      denied,
+      count: inspection.count,
+      generation: record(inspection.cut).generation,
+      bytes: inspection.bytes,
+    };
+  } finally {
+    await client.stop();
+  }
 }
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
@@ -275,7 +284,8 @@ export async function control(operation: string, value?: unknown): Promise<unkno
     return descriptor;
   }
   if (operation === "peer") {
-    if (Object.values(record(value)).some((part) => part instanceof SharedArrayBuffer)) throw new Error("authority SAB crossed page boundary");
+    if (Object.values(record(value)).some((part) => part instanceof SharedArrayBuffer))
+      throw new Error("authority SAB crossed page boundary");
     descriptor = residentDescriptor(value);
     attachment = await attachResidentPublication(descriptor, new AbortController().signal);
     return { attached: true, authorityRootReceived: false };

@@ -39,7 +39,9 @@ BroadcastChannel.prototype.postMessage = function (value: unknown): void {
     data.kind === "reply" &&
     response &&
     typeof response === "object" &&
-    (holdReply === "open" ? "descriptor" in response && "token" in response : "key" in response && "session" in response)
+    (holdReply === "open"
+      ? "descriptor" in response && "token" in response
+      : "key" in response && "session" in response)
   ) {
     const phase = holdReply;
     holdReply = undefined;
