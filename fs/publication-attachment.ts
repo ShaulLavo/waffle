@@ -2,10 +2,17 @@ import {
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
   typedArraySet,
+  atomicsLoad,
+  atomicsStore,
+  sharedArrayBufferByteLength,
 } from "../proc/intrinsics.js";
-import { installWorkspaceBridge } from "./publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
-import { decodeEffects, encodeEffects, type PublicationCut } from "./publication.js";
+import {
+  decodeEffects,
+  encodeEffects,
+  type PublicationCut,
+  type MutationId,
+} from "./publication.js";
 import {
   ResidentGrantCell,
   type ResidentDescriptor,
@@ -19,6 +26,16 @@ import {
 import {
   CAPABILITY_HEADER,
   CAPABILITY_LENGTH,
+  CAPABILITY_SLOTS,
+  CAPABILITY_WORDS,
+  HEADER,
+  PAGE,
+  State,
+  isRevoked,
+  pack,
+  unpack,
+  wake,
+  type FilesystemIdentity,
   CONNECTION_SHARED_BYTES,
   MAX_CONNECTION_OWNERS,
   connectFilesystemIdentity,
@@ -536,4 +553,311 @@ export function createResidentConnection(value: ResidentDescriptor): FilesystemC
   if (descriptor.kind === "workspace") installWorkspaceBridge(connection.server);
   else connection.server.port.close();
   return connection.client;
+}
+
+const requestBound = PAGE + 8192;
+const backingWords = {
+  shared: CONNECTION_SHARED_BYTES / 4,
+  owners: MAX_CONNECTION_OWNERS,
+  capabilities: CAPABILITY_LENGTH,
+};
+/** Host-only trailers are never part of a guest operation's views or slot scans.
+ * This proves aliasing under exclusive host trailer writes, not hostile raw-SAB authentication.
+ * Comparisons run synchronously in the one bridge realm; operational guest writes stay independent. */
+export function sameWorkspaceBacking(
+  left: SharedArrayBuffer,
+  right: SharedArrayBuffer,
+  kind: keyof typeof backingWords,
+): boolean {
+  const words = backingWords[kind],
+    bytes = (words + 1) * 4;
+  if (sharedArrayBufferByteLength(left) !== bytes || sharedArrayBufferByteLength(right) !== bytes)
+    return false;
+  const a = new Int32ArrayConstructor(left, words * 4, 1);
+  const b = new Int32ArrayConstructor(right, words * 4, 1);
+  const before = atomicsLoad(a, 0);
+  if (before !== 0 || atomicsLoad(b, 0) !== 0) return false;
+  const probe = -1;
+  try {
+    atomicsStore(a, 0, probe);
+    return atomicsLoad(b, 0) === probe;
+  } finally {
+    atomicsStore(a, 0, before);
+  }
+}
+function reservationKey(value: number): boolean {
+  return (
+    Number.isSafeInteger(value) &&
+    value >= CAPABILITY_HEADER &&
+    value < CAPABILITY_LENGTH &&
+    (value - CAPABILITY_HEADER) % CAPABILITY_WORDS === 0
+  );
+}
+
+function identity(value: unknown): MutationId {
+  const data = record(value);
+  return { session: integer(data.session), sequence: integer(data.sequence) };
+}
+interface BridgeOperation {
+  readonly abort: AbortController;
+  readonly buffer: SharedArrayBuffer;
+  readonly joined: Promise<void>;
+}
+interface BridgeParent {
+  readonly bridge: WorkspaceBridge;
+  readonly handles: readonly number[];
+}
+class WorkspaceBridge {
+  private channel: ResidentChannel;
+  private session: ResidentSession | undefined;
+  private pending = new Map<number, BridgeOperation>();
+  private responses = new Map<number, Uint8Array>();
+  private bound: Promise<void> = Promise.resolve();
+  private children = new Set<WorkspaceBridge>();
+  private transfer = Promise.withResolvers<void>();
+  constructor(
+    private connection: FilesystemConnection,
+    private parent?: BridgeParent,
+  ) {
+    this.channel = new ResidentChannel(connection.residentPublication!.workspace);
+    connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
+    connection.port.start();
+  }
+  private connect(value: unknown): void {
+    const child = value as FilesystemConnection;
+    if (
+      isRevoked(this.connection) ||
+      !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") ||
+      !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners")
+    )
+      throw new FilesystemError(11);
+    const handles: number[] = [];
+    for (const reservation of child.reservations) {
+      this.validateReservation(child, reservation);
+      handles.push(reservation.handle);
+    }
+    if (this.children.size >= 16) throw new FilesystemError(6);
+    const bridge = new WorkspaceBridge(child, { bridge: this, handles });
+    this.children.add(bridge);
+    void bridge.transfer.promise.finally(() => this.children.delete(bridge));
+    if (!handles.length) bridge.transfer.resolve();
+  }
+  private validateReservation(
+    child: FilesystemConnection,
+    reservation: FilesystemIdentity["reservations"][number],
+  ): void {
+    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH),
+      target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
+    if (
+      !sameWorkspaceBacking(reservation.source, this.connection.capabilities, "capabilities") ||
+      !sameWorkspaceBacking(reservation.target, child.capabilities, "capabilities") ||
+      reservation.targetOwner !== child.owner ||
+      !reservationKey(reservation.sourceKey) ||
+      !reservationKey(reservation.targetKey)
+    )
+      throw new FilesystemError(8);
+    if (
+      Atomics.load(source, reservation.sourceKey) !== reservation.handle ||
+      Atomics.load(source, reservation.sourceKey + 2) <= 0 ||
+      Atomics.load(target, reservation.targetKey) !== reservation.handle ||
+      Atomics.load(target, reservation.targetKey + 1) <= 0
+    )
+      throw new FilesystemError(8);
+    const state = new Int32Array(reservation.state);
+    if (Atomics.load(state, 0) || Atomics.load(state, 1)) throw new FilesystemError(11);
+  }
+  private receive(value: unknown): void {
+    try {
+      this.message(record(value));
+    } catch {
+      /* Malformed local data owns no request. */
+    }
+  }
+  private message(data: Record<string, unknown>): void {
+    if ("connect" in data) return this.connect(data.connect);
+    if ("discard" in data) {
+      const id = integer(data.discard);
+      this.pending.get(id)?.abort.abort();
+      this.responses.delete(id);
+      return;
+    }
+    if ("sweep" in data || "trim" in data) {
+      for (const child of this.children) child.cancelTransferred();
+      return;
+    }
+    const id = integer(data.id);
+    if (!(data.buffer instanceof SharedArrayBuffer)) throw new FilesystemError(28);
+    const buffer = data.buffer;
+    if (buffer.byteLength > requestBound || this.pending.size >= 16)
+      return this.fail(id, buffer, 6);
+    const abort = new AbortController();
+    const joined = this.execute(id, buffer, abort.signal).catch((error: unknown) =>
+      this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29),
+    );
+    this.pending.set(id, { abort, buffer, joined });
+    void joined.finally(() => this.pending.delete(id));
+  }
+  private fail(id: number, buffer: SharedArrayBuffer, errno: number): void {
+    this.complete(id, buffer, undefined, errno);
+  }
+  private complete(id: number, buffer: SharedArrayBuffer, value: unknown, errno = 0): void {
+    const cells = new Int32Array(buffer, 0, HEADER / 4);
+    if (Atomics.load(cells, 6) || isRevoked(this.connection)) errno = 11;
+    const binary = value instanceof Uint8Array;
+    const bytes = binary ? value : pack(value);
+    cells[3] = errno;
+    cells[4] = binary ? 1 : 0;
+    cells[2] = bytes.length;
+    let state = errno === 11 ? State.Cancelled : errno ? State.Failed : State.Complete;
+    if (!errno && bytes.length > buffer.byteLength - HEADER) {
+      if (this.responses.size >= 16 || bytes.length > requestBound) return this.fail(id, buffer, 6);
+      this.responses.set(id, bytes);
+      state = State.Overflow;
+    } else if (!errno) new Uint8Array(buffer, HEADER).set(bytes);
+    Atomics.store(cells, 0, state);
+    Atomics.notify(cells, 0);
+    wake(this.connection);
+    this.connection.port.postMessage({ completed: id });
+  }
+  private async bind(value: unknown): Promise<void> {
+    if (this.session) throw new FilesystemError(6);
+    const session = residentSession(value);
+    if (
+      session.descriptor.kind !== "workspace" ||
+      JSON.stringify(session.descriptor) !== JSON.stringify(this.connection.residentPublication)
+    )
+      throw new FilesystemError(11);
+    this.session = session;
+    const parent = this.parent;
+    if (!parent || !parent.handles.length) return;
+    await parent.bridge.bound;
+    const source = parent.bridge.session;
+    if (!source) throw new FilesystemError(11);
+    await this.channel.call("workspaceAdopt", {
+      token: session.token,
+      source: source.token,
+      handles: parent.handles,
+    });
+    for (const reservation of this.connection.reservations) this.finishReservation(reservation);
+    this.transfer.resolve();
+  }
+  private cancelTransferred(): void {
+    if (
+      !isRevoked(this.connection) &&
+      this.connection.reservations.some(
+        (reservation) => !Atomics.load(new Int32Array(reservation.state), 0),
+      )
+    )
+      return;
+    this.transfer.resolve();
+  }
+  private finishReservation(reservation: FilesystemIdentity["reservations"][number]): void {
+    const parent = this.parent;
+    if (!parent) throw new FilesystemError(11);
+    parent.bridge.validateReservation(this.connection, reservation);
+    const state = new Int32Array(reservation.state);
+    if (Atomics.compareExchange(state, 1, 0, 1)) throw new FilesystemError(11);
+    Atomics.sub(
+      new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
+      reservation.sourceKey + 2,
+      1,
+    );
+  }
+  private mirror(value: unknown): unknown {
+    const response = record(value);
+    if (!Array.isArray(response.handles) || response.handles.length > CAPABILITY_SLOTS)
+      throw new FilesystemError(29);
+    const entries = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH);
+    for (const raw of response.handles) this.mirrorHandle(entries, integer(raw));
+    return response.value;
+  }
+  private mirrorHandle(entries: Int32Array, handle: number): void {
+    let free = -1;
+    for (let key = CAPABILITY_HEADER; key < entries.length; key += CAPABILITY_WORDS) {
+      if (Atomics.load(entries, key) === handle && Atomics.load(entries, key + 1) >= 0) return;
+      if (free < 0 && Atomics.load(entries, key + 1) < 0) free = key;
+    }
+    if (free < 0) throw new FilesystemError(51);
+    Atomics.store(entries, free, handle);
+    Atomics.store(entries, free + 2, 0);
+    Atomics.store(entries, free + 1, 0);
+    Atomics.add(entries, 0, 1);
+  }
+  private async stop(id: number): Promise<void> {
+    for (const [key, pending] of this.pending) if (key !== id) pending.abort.abort();
+    await Promise.all(
+      Array.from(this.pending, ([key, pending]) =>
+        key === id ? Promise.resolve() : pending.joined,
+      ),
+    );
+    for (const child of this.children) child.cancelTransferred();
+    await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
+    this.responses.clear();
+    this.channel.close();
+  }
+  private async execute(id: number, buffer: SharedArrayBuffer, signal: AbortSignal): Promise<void> {
+    const cells = new Int32Array(buffer, 0, HEADER / 4);
+    const inputLength = integer(cells[1], 8192),
+      dataLength = integer(cells[2], PAGE);
+    if (inputLength + dataLength > buffer.byteLength - HEADER) throw new FilesystemError(28);
+    const input: unknown = unpack(new Uint8Array(buffer, HEADER, inputLength));
+    const call = record(input),
+      operation = text(call.operation);
+    if (!Array.isArray(call.args)) throw new FilesystemError(28);
+    if (operation === "workspaceBind") {
+      this.bound = this.bind(call.args[0]);
+      await this.bound;
+      return this.complete(id, buffer, undefined);
+    }
+    if (operation === "take") {
+      const key = integer(call.args[0]),
+        at = integer(call.args[1]),
+        count = integer(call.args[2], PAGE);
+      const response = this.responses.get(key);
+      if (!response) throw new FilesystemError(11);
+      const part = response.slice(at, at + count);
+      if (at + count >= response.length) this.responses.delete(key);
+      return this.complete(id, buffer, part);
+    }
+    if (operation === "workspaceBridgeStop") {
+      await this.stop(id);
+      return this.complete(id, buffer, undefined);
+    }
+    await this.bound;
+    const session = this.session;
+    if (!session || signal.aborted || Atomics.load(cells, 6)) throw new FilesystemError(11);
+    const token = session.token;
+    if (
+      operation === "workspaceNext" ||
+      operation === "workspaceReceipt" ||
+      operation === "workspaceReceipts"
+    ) {
+      const value = await this.channel.call(operation, { token, id: call.args[0] }, signal);
+      return this.complete(id, buffer, value);
+    }
+    const args = call.args;
+    const explicit = operation === "workspaceMutation";
+    const actualOperation = explicit ? text(args[1]) : operation;
+    const actualArgs = explicit ? args[2] : args;
+    const mutationId = explicit ? identity(args[0]) : undefined;
+    const value = await this.channel.call(
+      "workspace",
+      {
+        token,
+        request: {
+          operation: actualOperation,
+          args: actualArgs,
+          input: new Uint8Array(new Uint8Array(buffer, HEADER + inputLength, dataLength)),
+          id: mutationId,
+        },
+      },
+      signal,
+    );
+    if (signal.aborted || Atomics.load(cells, 6) || isRevoked(this.connection))
+      throw new FilesystemError(11);
+    this.complete(id, buffer, this.mirror(value));
+  }
+}
+function installWorkspaceBridge(connection: FilesystemConnection): void {
+  new WorkspaceBridge(connection);
 }

@@ -430,11 +430,7 @@ export class FilesystemClient implements FileSystem {
     if (this.resident && this.connection.residentPublication?.kind !== "workspace")
       throw new FilesystemError(58, "resident grant namespace is unsupported");
     if (this.resident && !this.resident.client) throw new FilesystemError(6);
-    if (
-      this.connection.residentPublication?.kind === "workspace" &&
-      (mapSize(this.completions) >= 16 || data.length > PAGE || pack(args).length > 8192)
-    )
-      throw new FilesystemError(6);
+    this.checkWorkspaceBounds(args, data);
     const domain = this.shared.publication;
     const connection = this.connection.publication;
     const intent = domain ? mutationIntent(operation, args) : undefined;
@@ -457,6 +453,11 @@ export class FilesystemClient implements FileSystem {
       if (publication && connection) domain!.cancel(connection.session, publication);
       throw error;
     }
+  }
+  private checkWorkspaceBounds(args: unknown[], data: Uint8Array): void {
+    if (this.connection.residentPublication?.kind !== "workspace") return;
+    if (mapSize(this.completions) >= 16 || data.length > PAGE || pack(args).length > 8192)
+      throw new FilesystemError(6);
   }
   private submitPrepared(
     operation: string,

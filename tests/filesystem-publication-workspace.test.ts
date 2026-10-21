@@ -12,6 +12,7 @@ import {
   createResidentConnection,
   residentDescriptor,
   residentSession,
+  sameWorkspaceBacking,
 } from "../fs/publication-attachment";
 import {
   CAPABILITY_HEADER,
@@ -26,7 +27,6 @@ import {
   createProcessFilesystemIdentity,
   isRevoked,
 } from "../fs/protocol";
-import { sameWorkspaceBacking } from "../fs/publication-workspace";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
