@@ -238,20 +238,26 @@ test("production publication content paths publish before direct and service suc
   const fixture = await localPublicationFixture();
   const { root, sibling, handle, cut, changes } = fixture;
   try {
+    console.info("publication phase: initial cut");
     const start = await cut();
+    console.info("publication phase: direct write");
     expect(root.tryWrite(handle, [new Uint8Array([9, 8])], 0)).toBe(2);
     const output = new Uint8Array(3);
     expect(sibling.tryRead(handle, [output], 0)).toBe(3);
     expect(output).toEqual(new Uint8Array([9, 8, 3]));
+    console.info("publication phase: service append");
     expect(await root.asyncCall("append", [handle], new Uint8Array([7]))).toEqual({ written: 1, offset: 4 });
+    console.info("publication phase: explicit changes");
     const page = await changes(start);
     expect(page.kind).toBe("changes");
     expect(page.publications).toHaveLength(2);
     expect(page.publications.map((publication: { changes: unknown[] }) => publication.changes.length)).toEqual([2, 2]);
     expect(page.publications.map((publication: { receipt: { cut: { generation: number } } }) => publication.receipt.cut.generation)).toEqual([1, 2]);
+    console.info("publication phase: forbidden sibling control");
     await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
+    console.info("publication phase: missing root grant");
     await expect(root.asyncCall("publicationCut")).rejects.toMatchObject({ errno: 2 });
-  } finally { fixture.stop(); }
+  } finally { console.info("publication phase: teardown"); fixture.stop(); }
 });
 
 test("production publication try I/O owns no byte work on EAGAIN and admits one bounded prefix", async () => {
