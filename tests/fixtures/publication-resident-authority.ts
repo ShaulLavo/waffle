@@ -10,6 +10,19 @@ const limits: PublicationLimits = { sessions: 16, operations: 16, inputBytes: 64
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
 let handle = 0;
+let holdOpen = false, heldOpen: (() => void) | undefined;
+const post = BroadcastChannel.prototype.postMessage;
+BroadcastChannel.prototype.postMessage = function (value: unknown): void {
+  const data = record(value);
+  const response = data.value;
+  if (holdOpen && data.kind === "reply" && response && typeof response === "object" && "descriptor" in response && "token" in response) {
+    holdOpen = false;
+    heldOpen = () => Reflect.apply(post, this, [value]);
+    self.postMessage({ event: "openHeld" });
+    return;
+  }
+  Reflect.apply(post, this, [value]);
+};
 async function execute(operation: string, body: unknown): Promise<unknown> {
   if (operation === "start") {
     backend = new MemoryBackend();
@@ -27,6 +40,8 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return descriptor;
   }
   if (!root || !backend || !service) throw new Error("authority not started");
+  if (operation === "holdOpen") { holdOpen = true; return null; }
+  if (operation === "releaseOpen") { heldOpen?.(); heldOpen = undefined; return null; }
   if (operation === "inspect") {
     const output = new Uint8Array(8).fill(90), count = root.tryRead(handle, [output], 0);
     return { count, bytes: Array.from(output), cut: await publicationObserver(root).cut(),

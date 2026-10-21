@@ -20,11 +20,12 @@ export default {
       entry: [
         "tests/**/*.test.ts",
         "scripts/browser-supervisor.ts",
-        "tests/{storage,storage-lock,process-recycling,network,publication}-browser-runner.ts",
+        "tests/{storage,storage-lock,process-recycling,network,publication,publication-cross-tab}-browser-runner.ts",
         "tests/interrupt-browser.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host}.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
+        "tests/fixtures/publication-resident-{authority,guest}.ts",
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
         "tests/storage-open-worker.ts",

@@ -30,8 +30,9 @@ async function observeDeaths(page: Page): Promise<void> {
     await death;
   });
 }
-async function run(origin: string): Promise<void> {
-  const browser = await lifecycle.launch("chromium");
+async function run(name: string, origin: string): Promise<void> {
+  if (name !== "chromium" && name !== "firefox" && name !== "webkit") throw new Error(`unknown engine ${name}`);
+  const browser = await lifecycle.launch(name);
   try {
     const context = await browser.newContext();
     const first = await context.newPage(), second = await context.newPage();
@@ -71,8 +72,20 @@ async function run(origin: string): Promise<void> {
     equal(changes.kind, "changes");
     if (!Array.isArray(changes.publications)) throw new Error("missing complete groups");
     equal(changes.publications.length, 2);
+    for (let index = 0; index < changes.publications.length; index++) {
+      const group = record(changes.publications[index]), receipt = record(group.receipt);
+      equal(record(receipt.cut).generation, index + 1);
+      equal(record(receipt.cut).history, record(initial.cut).history);
+      equal(record(receipt.id).sequence, index + 1);
+      equal(receipt.durability, { kind: "untracked" });
+      if (!Array.isArray(group.changes)) throw new Error("missing complete effects");
+      equal(group.changes.length, 2);
+      equal(group.changes.map((effect) => record(effect).kind), ["bytes", "metadata"]);
+    }
     equal(record(record(record(changes.publications[1]).receipt).result), { kind: "append", written: 2, offset: 5 });
     console.log("PASS independent pages, real runtime_proc writes/append and Preview1 current read, no root SAB transfer, no commit nudge, exact two groups");
+    equal(await control(first, "lateAttachment"), { accepted: false, count: 1, bytes: [9] });
+    console.log("PASS late open cancellation joins exact session cleanup without detaching successor");
     equal(await control(first, "oldSettlement"), { denied: true, queries: 1, current: "ready" });
     console.log("PASS duplicate old cancellation cannot erase the next READY grant from transport status tracking");
     equal(await control(first, "queuedAttachment"), { accepted: false, joined: true });
@@ -91,7 +104,7 @@ async function run(origin: string): Promise<void> {
     equal(await control(first, "exclusive"), true);
     console.log("PASS CLAIMED live worker blocks exclusive continuity after creator authority death and timeout; separate native worker death releases guard");
     await context.close();
-    console.log(`chromium ${browser.version()}: focused resident grant pilot controls passed`);
+    console.log(`${name} ${browser.version()}: focused resident grant pilot controls passed`);
   } finally { await lifecycle.closeBrowser(browser); }
 }
 try {
@@ -100,6 +113,6 @@ try {
     "/cross-tab.js": await browserBundle(resolve(import.meta.dir, "publication-cross-tab-browser.ts")),
     "/resident-authority.js": await browserBundle(resolve(import.meta.dir, "fixtures/publication-resident-authority.ts")),
     "/resident-guest.js": await browserBundle(resolve(import.meta.dir, "fixtures/publication-resident-guest.ts")) });
-  if (process.argv.slice(2).some((name) => name !== "chromium")) throw new Error("focused runner currently admits Chromium only");
-  await run(origin);
+  const names = process.argv.slice(2);
+  for (const name of names.length ? names : ["chromium"]) await run(name, origin);
 } finally { await lifecycle.close(); }

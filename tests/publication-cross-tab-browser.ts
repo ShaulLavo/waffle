@@ -122,6 +122,28 @@ async function oldSettlementControl(): Promise<unknown> {
     await guard.release();
   }
 }
+async function lateAttachmentControl(): Promise<unknown> {
+  if (!descriptor || !authority) throw new Error("authority missing");
+  await authority.request("holdOpen");
+  const candidate = new ResidentAttachment(descriptor, () => false), abort = new AbortController();
+  let accepted = false;
+  const prospective = candidate.attach(abort.signal).then(() => { accepted = true; }, () => {});
+  await authority.until("openHeld");
+  abort.abort(); candidate.invalidate();
+  const joined = candidate.stop();
+  const successor = new ResidentAttachment(descriptor, () => false);
+  await successor.attach();
+  try {
+    await authority.request("releaseOpen");
+    await prospective; await joined;
+    const client = successor.client;
+    if (!client) throw new Error("successor detached by stale completion");
+    await client.prepare({ kind: "read", offset: 0, maxBytes: 1 });
+    const output = new Uint8Array([80]), count = client.tryRead(descriptor.handle, [output], 0);
+    await client.settle();
+    return { accepted, count, bytes: Array.from(output) };
+  } finally { await successor.stop(); await candidate.stop(); }
+}
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation === "authority") {
@@ -136,6 +158,7 @@ export async function control(operation: string, value?: unknown): Promise<unkno
     attachment = await attachResidentPublication(descriptor, new AbortController().signal);
     return { attached: true, authorityRootReceived: false };
   }
+  if (operation === "lateAttachment") return lateAttachmentControl();
   if (operation === "oldSettlement") return oldSettlementControl();
   if (operation === "queuedAttachment") return queuedAttachmentControl();
   if (operation === "cancelledStartup") return cancelledStartupControl();
