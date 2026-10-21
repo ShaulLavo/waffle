@@ -1,10 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { SharedFilesystem, type SharedFilesystemOptions } from "../browser/shared-fs.js";
-import {
-  FilesystemError,
-  FilesystemSection,
-  type FilesystemConnection,
-} from "../fs/protocol.js";
+import { FilesystemError, FilesystemSection, type FilesystemConnection } from "../fs/protocol.js";
 import { localPublication, type PublicationLimits } from "../fs/publication-internal.js";
 
 type PageMessage = { connect?: FilesystemConnection; dispose?: true };
@@ -41,7 +37,10 @@ class PageWorkerStandIn {
     this.emit("message", { type: "filesystem-state", status: "ready" });
   }
   acknowledge(error?: string): void {
-    this.emit("message", { type: "filesystem-disposed", ...(error === undefined ? {} : { error }) });
+    this.emit("message", {
+      type: "filesystem-disposed",
+      ...(error === undefined ? {} : { error }),
+    });
   }
   fault(type: string): void {
     if (type === "error" || type === "messageerror") return this.emit(type);
@@ -116,7 +115,12 @@ function observe(promise: Promise<void>) {
   void result.then(() => {
     settled = true;
   });
-  return { result, get settled() { return settled; } };
+  return {
+    result,
+    get settled() {
+      return settled;
+    },
+  };
 }
 function expectRetained(fs: SharedFilesystem, worker: PageWorkerStandIn): void {
   expect(worker.terminations).toBe(0);
@@ -205,7 +209,10 @@ test("an error ACK retains the original failed owner despite section exit and du
   const outcome = observe(stopping);
   worker.acknowledge("original service close failed");
   const result = await outcome.result;
-  expect(result).toMatchObject({ kind: "rejected", reason: { message: "original service close failed" } });
+  expect(result).toMatchObject({
+    kind: "rejected",
+    reason: { message: "original service close failed" },
+  });
   expect(fs.state.status).toBe("failed");
   expectRetained(fs, worker);
   release();
@@ -242,7 +249,9 @@ for (const type of ["error", "messageerror", "filesystem-error", "filesystem-own
       worker.ready();
       const release = hold();
       let ownershipLost = 0;
-      fs.onOwnershipLost = () => { ownershipLost++; };
+      fs.onOwnershipLost = () => {
+        ownershipLost++;
+      };
       if (at === "before-dispose") worker.fault(type);
       const stopping = fs.dispose();
       const outcome = observe(stopping);
@@ -302,7 +311,8 @@ test("missing or malformed wire success never completes ready ordinary disposal"
     { type: "filesystem-disposed", error: false },
     { type: "filesystem-disposed", error: null },
     { type: "filesystem-disposed", error: {} },
-  ]) worker.emit("message", message);
+  ])
+    worker.emit("message", message);
   await checkpoint();
   expect(outcome.settled).toBe(false);
   expectRetained(fs, worker);
