@@ -9,6 +9,7 @@ const runners = [
   "tests/storage-lock-browser-runner.ts",
   "tests/process-recycling-browser-runner.ts",
   "tests/network-browser-runner.ts",
+  "tests/publication-browser-runner.ts",
 ];
 const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
   runners.map((runner) => [{ runner, engines: ["webkit"] }]),
