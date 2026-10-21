@@ -307,7 +307,7 @@ test("production compound writeFile refuses over-bound input before changes", as
 });
 
 import { Wasi } from "../core/wasi";
-import { DescriptorTable } from "../core/descriptors";
+import { DescriptorTable, type Resource } from "../core/descriptors";
 import { shareFileResource } from "../core/open-file";
 import { ProcessABI, type ProcessService } from "../proc/abi";
 import { createSignalState } from "../proc/signals";
@@ -323,7 +323,7 @@ test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, out
   const fixture = await localPublicationFixture();
   const { root, handle } = fixture;
   const descriptors = new DescriptorTable();
-  const resource = { kind: "file", handle, offset: 0, append: false } as const;
+  const resource: Extract<Resource, {kind: "file"}> = { kind: "file", handle, offset: 0, append: false };
   shareFileResource(resource, root.connection);
   const fd = descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
   const memory = new WebAssembly.Memory({ initial: 4 });
@@ -358,7 +358,7 @@ test("real WASI exported Wasm functions publish positioned and offset writes", a
   const wasi = new Wasi({ args: [], env: {}, fs: fixture.root, preopens: {}, namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() {} });
   const module = publicationWasiModule();
   const guest = new WebAssembly.Instance(module, { ...wasi.imports(module), env: { memory } });
-  const resource = { kind: "file", handle: fixture.handle, offset: 0, append: false } as const;
+  const resource: Extract<Resource, {kind: "file"}> = { kind: "file", handle: fixture.handle, offset: 0, append: false };
   shareFileResource(resource, fixture.root.connection);
   const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
   wasi.start(guest);
@@ -795,7 +795,7 @@ test("production current cached and host reads recheck traversal permissions and
     fixture.root.retain(child.node);
     const before = await fixture.cut();
     expect(fixture.root.stat(child.node).size).toBe(1);
-    expect(fixture.root.permissions(child.node).access).toBe(6);
+    expect(fixture.root.permissions(child.node)?.access).toBe(6);
     expect(await fixture.root.asyncCall("resize", [child.node, 2, false])).toBe(0);
     expect(fixture.root.stat(child.node).size).toBe(2);
     expect(await fixture.root.asyncCall("setMtime", [child.node, 55])).toBe(0);

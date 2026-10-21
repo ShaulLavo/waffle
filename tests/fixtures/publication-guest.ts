@@ -1,6 +1,6 @@
 import { FilesystemClient, type FilesystemConnection } from "../../fs";
 import { Wasi } from "../../core/wasi";
-import { DescriptorTable } from "../../core/descriptors";
+import { DescriptorTable, type Resource } from "../../core/descriptors";
 import { shareFileResource } from "../../core/open-file";
 import { ProcessABI, type ProcessService } from "../../proc/abi";
 import { createSignalState } from "../../proc/signals";
@@ -25,7 +25,7 @@ function setup({ connection, mode }: Setup) {
   const path: { node: number } = client.call("resolve", [directory, "file"]);
   client.retain(path.node);
   const memory = new WebAssembly.Memory({ initial: 4 });
-  const resource = { kind: "file", handle: path.node, offset: 0, append: false } as const;
+  const resource: Extract<Resource, {kind: "file"}> = { kind: "file", handle: path.node, offset: 0, append: false };
   shareFileResource(resource, connection);
   const rights = (1n << 1n) | (1n << 2n) | (1n << 6n);
   if (mode === "wasi") {
