@@ -239,12 +239,7 @@ async function writerOracle(): Promise<void> {
     await f.stop();
   }
 }
-async function contention(
-  f: Fixture,
-  owner: WorkerOwner,
-  cells: Int32Array,
-  lock: number,
-): Promise<void> {
+async function contention(owner: WorkerOwner, cells: Int32Array, lock: number): Promise<void> {
   Atomics.store(cells, lock, 99);
   try {
     equal(await message(owner.worker, { operation: "write", byte: 10 }), {
@@ -268,9 +263,8 @@ async function nonblocking(): Promise<void> {
   try {
     const owner = await f.spawn("proc");
     const before = await f.observer.cut();
-    await contention(f, owner, f.client.shared.cells, 1);
+    await contention(owner, f.client.shared.cells, 1);
     await contention(
-      f,
       owner,
       f.client.shared.slots,
       f.client.shared.fileSlot(f.handle) * SLOT_WORDS + 8,
@@ -777,6 +771,7 @@ export async function runPublicationBrowser(): Promise<string[]> {
   ];
   const passed: string[] = [];
   for (const [name, run] of cases) {
+    console.log(`publication control: ${name}`);
     try {
       await run();
     } catch (error) {

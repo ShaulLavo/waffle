@@ -27,6 +27,7 @@ async function run(name: string, origin: string): Promise<void> {
   const browser = await lifecycle.launch(name);
   try {
     const page = await browser.newPage();
+    page.on("console", (message) => console.log(message.text()));
     await installDeathObserver(page);
     await page.goto(origin);
     const passed = await page.evaluate(async () => {
