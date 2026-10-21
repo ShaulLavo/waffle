@@ -584,3 +584,24 @@ export function forkPublication(connection: PublicationConnection): PublicationC
   const domain = new PublicationDomain(connection.buffers);
   return { buffers: connection.buffers, session: domain.openSession() };
 }
+
+export function publicationAdmission(value: unknown): PublicationAdmission {
+  if (!value || typeof value !== "object" || !("slot" in value) || !("ticket" in value) || !("id" in value)) throw new FilesystemError(28);
+  const id = value.id;
+  if (!id || typeof id !== "object" || !("session" in id) || !("sequence" in id)) throw new FilesystemError(28);
+  return { slot: integer(value.slot), ticket: integer(value.ticket), id: { session: integer(id.session), sequence: integer(id.sequence) } };
+}
+export function publicationCut(value: unknown): PublicationCut {
+  if (!value || typeof value !== "object" || !("history" in value) || !("generation" in value)) throw new FilesystemError(28);
+  return { history: text(value.history), generation: integer(value.generation) };
+}
+export function mutationValue(result: MutationResult): number | boolean | { written: number; offset: number } | undefined {
+  switch (result.kind) {
+    case "void": return;
+    case "number": return result.value;
+    case "boolean": return result.value;
+    case "append": return { written: result.written, offset: result.offset };
+    case "error": throw new FilesystemError(result.errno);
+    default: { const exhaustive: never = result; return exhaustive; }
+  }
+}

@@ -1,3 +1,4 @@
+import { mutationIntent, type PublicationAdmission } from "./publication.js";
 import { permissionsFor } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
@@ -95,6 +96,7 @@ export class FilesystemCompletion {
     readonly id: number,
     readonly buffer: SharedArrayBuffer,
     private client: FilesystemClient,
+    readonly publication?: PublicationAdmission,
   ) {
     this.cells = new Int32ArrayConstructor(buffer, 0, HEADER / 4);
   }
@@ -110,6 +112,7 @@ export class FilesystemCompletion {
     for (let index = 0; index < changed.length; index++) changed[index]!();
   }
   cancel(): void {
+    if (this.publication) this.client.cancelPublication(this.publication);
     if (atomicsExchange(this.cells, 6, 1)) return;
     atomicsCompareExchange(this.cells, 0, State.Pending, State.Cancelled);
     atomicsNotify(this.cells, 0);
@@ -252,6 +255,7 @@ export class FilesystemClient implements FileSystem {
       connection.owner,
       connection.segments,
       this.section,
+      connection.publication?.buffers,
     );
     connection.port.onmessage = ({ data }) => {
       if (data.segment) this.shared.addSegment(data.segment, data.index);
@@ -379,13 +383,24 @@ export class FilesystemClient implements FileSystem {
     capacity = operation === "read" || operation === "take" || operation === "readdir"
       ? PAGE
       : 1024,
+    publication?: PublicationAdmission,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
-    const input = pack({ operation, args });
+    const domain = this.shared.publication;
+    const connection = this.connection.publication;
+    const intent = domain ? mutationIntent(operation, args) : undefined;
+    if (domain && connection && intent && !publication) {
+      const admitted = domain.admit(connection.session, domain.next(connection.session), intent, data);
+      if (admitted.kind !== "admitted") throw new FilesystemError(29);
+      publication = admitted.admission;
+      data = admitted.input;
+    }
+    if (domain && connection && intent && publication) domain.verify(connection.session, publication, intent, data);
+    const input = pack({ operation, args, publication });
     const buffer = new SharedArrayBufferConstructor(
       HEADER + Math.max(input.length + data.length, capacity),
     );
-    const completion = new FilesystemCompletion(this.nextRequest++, buffer, this);
+    const completion = new FilesystemCompletion(this.nextRequest++, buffer, this, publication);
     completion.cells[1] = input.length;
     completion.cells[2] = data.length;
     typedArraySet(new Uint8ArrayConstructor(buffer, HEADER), input);
@@ -393,6 +408,10 @@ export class FilesystemClient implements FileSystem {
     mapSet(this.completions, completion.id, completion);
     this.connection.port.postMessage({ id: completion.id, buffer });
     return completion;
+  }
+  cancelPublication(admission: PublicationAdmission): void {
+    const connection = this.connection.publication;
+    if (connection) this.shared.publication!.cancel(connection.session, admission);
   }
   readiness(id: number): { kind: 3; id: number; ready: boolean } | undefined {
     const completion = mapGet(this.completions, id);
@@ -610,6 +629,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
     if (!(offset >= 0)) return -28;
     try {
       if (!this.preparedIO(handle)) return -6;
@@ -639,6 +659,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
     try {
       if (!this.preparedIO(handle)) return -6;
       const slot = this.directSlot(handle);
@@ -661,6 +682,78 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       return -this.directFailure(handle, error);
     }
+  }
+  private publicationInput(chunks: readonly Uint8Array[]): Uint8Array {
+    const bound = this.shared.publication!.limits.inputBytes;
+    chunks = fixedWriteSources(chunks);
+    let length = 0;
+    for (const chunk of chunks) length = Math.min(bound, length + chunk.length);
+    const bytes = new Uint8ArrayConstructor(length);
+    let at = 0;
+    for (const chunk of chunks) {
+      const count = Math.min(chunk.length, length - at);
+      if (!count) break;
+      typedArraySet(bytes, new Uint8ArrayConstructor(chunk.buffer, chunk.byteOffset, count), at);
+      at += count;
+    }
+    return bytes;
+  }
+  private publishedAppend(handle: FileHandle, chunks: readonly Uint8Array[], nonblocking: boolean): { written: number; offset: number } | number {
+    const result = this.publicationIO(handle, chunks, 0, true, nonblocking);
+    return result;
+  }
+  private publishedWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number, nonblocking: boolean): number {
+    const result = this.publicationIO(handle, chunks, offset, false, nonblocking);
+    return typeof result === "number" ? result : result.written;
+  }
+  private publicationIO(handle: FileHandle, chunks: readonly Uint8Array[], offset: number, append: boolean, nonblocking: boolean): { written: number; offset: number } | number {
+    const domain = this.shared.publication!, connection = this.connection.publication!;
+    let admission: PublicationAdmission | undefined;
+    try {
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new FilesystemError(28);
+      if (nonblocking && !this.preparedIO(handle)) return -6;
+      const slot = this.directSlot(handle);
+      if (!slot && nonblocking) return -8;
+      const bytes = this.publicationInput(chunks);
+      const intent = append ? { kind: "append", handle } as const : { kind: "write", handle, offset } as const;
+      const admitted = domain.admit(connection.session, domain.next(connection.session), intent, bytes);
+      if (admitted.kind !== "admitted") throw new FilesystemError(29);
+      admission = admitted.admission;
+      return this.executePublicationIO(slot, handle, admitted.input, offset, append, nonblocking, admission);
+    } catch (error) {
+      return -this.directFailure(handle, error);
+    } finally {
+      if (admission) domain.cancel(connection.session, admission);
+    }
+  }
+  private executePublicationIO(slot: number, handle: FileHandle, input: Uint8Array, offset: number, append: boolean, nonblocking: boolean, admission: PublicationAdmission): { written: number; offset: number } | number {
+    if (!slot) return this.publicationFallback(handle, input, offset, append, admission);
+    for (;;) {
+      const result = this.attemptPublicationIO(slot, handle, input, offset, append, nonblocking, admission);
+      if (typeof result !== "number" || result >= 0) return result;
+      const size = -result;
+      if (nonblocking) { this.prepareIO(handle, { kind: "grow", size }); return -6; }
+      this.call("grow", [handle, size]);
+    }
+  }
+  private attemptPublicationIO(slot: number, handle: FileHandle, input: Uint8Array, offset: number, append: boolean, nonblocking: boolean, admission: PublicationAdmission): { written: number; offset: number } | number {
+    try {
+      if (append) {
+        const result = this.shared.directAppend(slot, handle, [input], input.length, this.epoch, this.revoked, this.connection.owner, nonblocking, admission);
+        return typeof result === "number" ? -result : result;
+      }
+      const result = this.shared.directWrite(slot, handle, [input], offset, input.length, this.epoch, this.revoked, this.connection.owner, nonblocking, admission);
+      return result === undefined ? -Math.max(1, offset + input.length) : result;
+    } catch (error) {
+      if (!(error instanceof MissingSegmentError)) throw error;
+      if (nonblocking) throw new FilesystemError(6);
+      return this.publicationFallback(handle, input, offset, append, admission);
+    }
+  }
+  private publicationFallback(handle: FileHandle, input: Uint8Array, offset: number, append: boolean, admission: PublicationAdmission): { written: number; offset: number } | number {
+    const completion = this.submit(append ? "append" : "write", append ? [handle] : [handle, offset], input, 1024, admission);
+    try { return completion.wait(); }
+    finally { completion.release(); }
   }
   ioReadiness(
     handle: FileHandle,
@@ -702,7 +795,7 @@ export class FilesystemClient implements FileSystem {
       const epoch = this.version();
       const key = `${directory}\0${path}`;
       const cached = this.paths.get(key);
-      if (!(epoch & 1) && cached?.epoch === epoch)
+      if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return typeof cached.path === "number" ? cached.path : { ...cached.path };
       const completion = this.submit("resolve", [directory, path]);
       try {
@@ -725,7 +818,7 @@ export class FilesystemClient implements FileSystem {
       if (direct) return direct;
       const epoch = this.version();
       const cached = this.stats.get(handle);
-      if (!(epoch & 1) && cached?.epoch === epoch) return { ...cached.stat };
+      if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch) return { ...cached.stat };
       const completion = this.submit("stat", [handle]);
       try {
         const stat = completion.wait();
@@ -754,6 +847,7 @@ export class FilesystemClient implements FileSystem {
     const epoch = this.version();
     let cached = this.reads.get(handle);
     if (
+      this.shared.publication ||
       epoch & 1 ||
       cached?.epoch !== epoch ||
       position < cached.offset ||
@@ -826,6 +920,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
     const slot = this.directSlot(handle);
@@ -884,6 +979,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.shared.publication) return this.publishedAppend(handle, chunks, false);
     chunks = fixedWriteSources(chunks);
     let total = 0;
     for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
@@ -924,7 +1020,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
-    if (mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
+    if (!this.shared.publication && mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         const result = this.shared.mutate(
           this.epoch,
@@ -954,7 +1050,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   setMtime(handle: FileHandle, mtime: number): number {
-    if (mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
+    if (!this.shared.publication && mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         return this.shared.mutate(
           this.epoch,
@@ -982,7 +1078,7 @@ export class FilesystemClient implements FileSystem {
   readdir(handle: FileHandle): DirectoryEntry[] {
     const epoch = this.version();
     const cached = this.readdirs.get(handle);
-    if (!(epoch & 1) && cached?.epoch === epoch)
+    if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
       return cached.entries.map((entry) => ({ ...entry }));
     const completion = this.submit("readdir", [handle]);
     try {

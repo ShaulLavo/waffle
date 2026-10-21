@@ -212,3 +212,84 @@ test("direct publication kernel fails before bytes on conflicts, bounds and glob
   Atomics.store(shared.slots, lock, 0);
   expect(Atomics.load(shared.cells, 1)).toBe(0);
 });
+
+async function localPublicationFixture() {
+  const backend = new MemoryBackend();
+  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  service.connect(connection.server);
+  const root = new FilesystemClient(connection.client);
+  const sibling = new FilesystemClient(root.fork());
+  const directory = await root.asyncCall("preopen", ["/"]);
+  const path = await root.asyncCall("resolve", [directory, "file"]);
+  root.retain(path.node);
+  const peerDirectory = await sibling.asyncCall("preopen", ["/"]);
+  const peerPath = await sibling.asyncCall("resolve", [peerDirectory, "file"]);
+  sibling.retain(peerPath.node);
+  const grant = connection.client.publication!.observer;
+  const cut = () => root.asyncCall("publicationCut", [grant]);
+  const changes = (after: unknown) => root.asyncCall("publicationChanges", [grant, after, limits.logBytes]);
+  const stop = () => { sibling.dispose(); root.dispose(); service.dispose(); };
+  return { backend, service, root, sibling, handle: path.node as number, grant, cut, changes, stop };
+}
+
+test("production publication content paths publish before direct and service success without a nudge", async () => {
+  const fixture = await localPublicationFixture();
+  const { root, sibling, handle, cut, changes } = fixture;
+  try {
+    const start = await cut();
+    expect(root.tryWrite(handle, [new Uint8Array([9, 8])], 0)).toBe(2);
+    const output = new Uint8Array(3);
+    expect(sibling.tryRead(handle, [output], 0)).toBe(3);
+    expect(output).toEqual(new Uint8Array([9, 8, 3]));
+    expect(await root.asyncCall("append", [handle], new Uint8Array([7]))).toEqual({ written: 1, offset: 4 });
+    const page = await changes(start);
+    expect(page.kind).toBe("changes");
+    expect(page.publications).toHaveLength(2);
+    expect(page.publications.map((publication: { changes: unknown[] }) => publication.changes.length)).toEqual([2, 2]);
+    expect(page.publications.map((publication: { receipt: { cut: { generation: number } } }) => publication.receipt.cut.generation)).toEqual([1, 2]);
+    await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
+    await expect(root.asyncCall("publicationCut")).rejects.toMatchObject({ errno: 2 });
+  } finally { fixture.stop(); }
+});
+
+test("production publication try I/O owns no byte work on EAGAIN and admits one bounded prefix", async () => {
+  const fixture = await localPublicationFixture();
+  const { root, handle, backend, cut, changes } = fixture;
+  try {
+    root.call = () => { throw new Error("blocking fallback"); };
+    root.shared.onContention = () => { throw new Error("blocking contention"); };
+    const start = await cut();
+    const before = backend.shared.revision(handle);
+    Atomics.store(root.shared.cells, 1, 99);
+    expect(root.tryWrite(handle, [new Uint8Array([90])], 0)).toBe(-6);
+    const output = new Uint8Array(3).fill(42);
+    expect(root.tryRead(handle, [output], 0)).toBe(-6);
+    expect(output).toEqual(new Uint8Array(3).fill(42));
+    Atomics.store(root.shared.cells, 1, 0);
+    expect(backend.shared.revision(handle)).toBe(before);
+    expect(backend.shared.publication!.diagnostics()).toMatchObject({ pending: 0, inputBytes: 0 });
+    expect(await cut()).toEqual(start);
+    expect(root.tryWrite(handle, [new Uint8Array(128).fill(90)], 0)).toBe(64);
+    const page = await changes(start);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].receipt.result).toEqual({ kind: "number", value: 64 });
+    expect(backend.shared.stat(handle)?.size).toBe(64);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    expect((await changes(start)).publications).toHaveLength(1);
+  } finally { Atomics.store(root.shared.cells, 1, 0); fixture.stop(); }
+});
+
+test("production publication rejects unimplemented namespace plans before changes", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const start = await fixture.cut();
+    await expect(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9]))).rejects.toMatchObject({ errno: 52 });
+    await expect(fixture.root.asyncCall("mkdirp", ["/missing/child"])).rejects.toMatchObject({ errno: 52 });
+    expect(await fixture.cut()).toEqual(start);
+    expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([1, 2, 3]));
+    expect(fixture.backend.fs.lookup("/missing")).toBeUndefined();
+    expect(fixture.backend.shared.publication!.diagnostics().pending).toBe(0);
+  } finally { fixture.stop(); }
+});

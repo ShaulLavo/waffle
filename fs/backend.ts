@@ -1,3 +1,4 @@
+import type { MutationIntent, MutationResult, PublicationEffect } from "./publication.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node } from "./memory.js";
@@ -31,6 +32,18 @@ const namespaceOperations = new Set([
   "remove",
   "move",
 ]);
+type LocalMutationAction =
+  | { readonly kind: "none" }
+  | { readonly kind: "write"; readonly handle: FileHandle; readonly offset: number; readonly data: Uint8Array; readonly mtime: number }
+  | { readonly kind: "resize"; readonly handle: FileHandle; readonly size: number; readonly truncate: boolean; readonly mtime: number }
+  | { readonly kind: "setMode"; readonly handle: FileHandle; readonly mode: number }
+  | { readonly kind: "setMtime"; readonly handle: FileHandle; readonly mtime: number }
+  | { readonly kind: "preopen"; readonly path: string };
+export interface LocalMutationPlan {
+  readonly action: LocalMutationAction;
+  readonly result: MutationResult;
+  readonly changes: readonly PublicationEffect[];
+}
 export class MemoryBackend implements FilesystemBackend {
   readonly fs: MemFS;
   constructor(fs = new MemFS()) {
@@ -46,6 +59,8 @@ export class MemoryBackend implements FilesystemBackend {
     publication?: PublicationBuffers,
   ): void {
     if (this.sharedAttached) {
+      if (!!this.shared.publication !== !!publication || (publication && this.shared.publication?.buffers.history !== publication.history))
+        throw new FilesystemError(58, "filesystem publication root mismatch");
       // SAB wrappers change identity when cloned through a port. Probe a reserved header word
       // instead; connect runs synchronously on the sole service thread and guests never use it.
       const incoming = new Int32Array(buffer, 0, 16);
@@ -395,6 +410,107 @@ export class MemoryBackend implements FilesystemBackend {
       }
       default:
         throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
+    }
+  }
+  /** Preflight runs under the existing global lock after all storage waits. It does not
+   * change namespace, logical size or revision. Unsupported plans fail before any effect. */
+  planPublication(intent: MutationIntent, data: Uint8Array): LocalMutationPlan {
+    const domain = this.shared.publication;
+    if (!domain) throw new FilesystemError(28);
+    domain.assertLive();
+    switch (intent.kind) {
+      case "write": case "append": return this.planPublicationWrite(intent, data);
+      case "resize": return this.planPublicationResize(intent);
+      case "setMode": return this.planPublicationMode(intent);
+      case "setMtime": return this.planPublicationMtime(intent);
+      case "preopen": {
+        const node = this.fs.lookup(intent.path);
+        if (!node || node.kind !== "dir") throw new FilesystemError(52, "local publication namespace planning is incomplete");
+        const handle = this.fs.handleForNode(node);
+        return { action: { kind: "preopen", path: intent.path }, result: { kind: "number", value: handle }, changes: [] };
+      }
+      case "mkdirp": case "remove": case "writeFile": case "move": case "create": case "link": case "rename": case "removePath":
+        throw new FilesystemError(52, "local publication namespace planning is incomplete");
+      default: { const exhaustive: never = intent; return exhaustive; }
+    }
+  }
+  private publicationFile(handle: FileHandle) {
+    this.check(handle, "file");
+    const info = this.shared.info(handle)!;
+    if (info.mode !== undefined && !(info.mode & 0o200)) throw new FilesystemError(2);
+    return info;
+  }
+  private publicationKey(ino: number) {
+    return { birthHistory: this.shared.publication!.buffers.history, ino };
+  }
+  private planPublicationWrite(intent: Extract<MutationIntent, { kind: "write" | "append" }>, data: Uint8Array): LocalMutationPlan {
+    const info = this.publicationFile(intent.handle);
+    const offset = intent.kind === "append" ? info.size : intent.offset;
+    const end = offset + data.length;
+    if (!Number.isSafeInteger(end)) throw new FilesystemError(28);
+    const result: MutationResult = intent.kind === "append" ? { kind: "append", written: data.length, offset: end } : { kind: "number", value: data.length };
+    if (!data.length) return { action: { kind: "none" }, result, changes: [] };
+    this.shared.growLocked(intent.handle, end);
+    const file = this.publicationKey(info.ino), mtime = Date.now();
+    return {
+      action: { kind: "write", handle: intent.handle, offset, data, mtime }, result,
+      changes: [
+        { kind: "bytes", file, offset, bytes: data, size: Math.max(info.size, end), version: this.shared.publication!.cut().generation + 1 },
+        { kind: "metadata", file, mode: info.mode ?? 0o600, mtime },
+      ],
+    };
+  }
+  private planPublicationResize(intent: Extract<MutationIntent, { kind: "resize" }>): LocalMutationPlan {
+    const info = this.publicationFile(intent.handle);
+    this.shared.growLocked(intent.handle, intent.size);
+    const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
+    const file = this.publicationKey(info.ino), mtime = intent.truncate ? Date.now() : info.mtime;
+    const changes: PublicationEffect[] = [];
+    if (size !== info.size) changes.push({ kind: "resize", file, size, version: this.shared.publication!.cut().generation + 1 });
+    if (mtime !== info.mtime) changes.push({ kind: "metadata", file, mode: info.mode ?? 0o600, mtime });
+    return { action: { kind: "resize", handle: intent.handle, size: intent.size, truncate: intent.truncate, mtime }, result: { kind: "number", value: 0 }, changes };
+  }
+  private planPublicationMode(intent: Extract<MutationIntent, { kind: "setMode" }>): LocalMutationPlan {
+    this.check(intent.handle);
+    const supported = this.fs.permissions(intent.handle).modeSupported;
+    if (intent.mode > 0xffffffff) return { action: { kind: "none" }, result: { kind: "number", value: 28 }, changes: [] };
+    if (intent.mode & ~supported) return { action: { kind: "none" }, result: { kind: "number", value: 58 }, changes: [] };
+    const stat = this.shared.stat(intent.handle)!;
+    const changes: PublicationEffect[] = stat.mode === intent.mode ? [] : [{ kind: "metadata", file: this.publicationKey(stat.ino), mode: intent.mode, mtime: stat.mtime }];
+    return { action: { kind: "setMode", handle: intent.handle, mode: intent.mode }, result: { kind: "number", value: 0 }, changes };
+  }
+  private planPublicationMtime(intent: Extract<MutationIntent, { kind: "setMtime" }>): LocalMutationPlan {
+    this.check(intent.handle);
+    if (!(this.fs.permissions(intent.handle).access & 2)) throw new FilesystemError(2);
+    const stat = this.shared.stat(intent.handle)!;
+    const changes: PublicationEffect[] = stat.mtime === intent.mtime ? [] : [{ kind: "metadata", file: this.publicationKey(stat.ino), mode: stat.mode ?? 0o600, mtime: intent.mtime }];
+    return { action: { kind: "setMtime", handle: intent.handle, mtime: intent.mtime }, result: { kind: "number", value: 0 }, changes };
+  }
+  /** Only this synchronous typed switch applies a publication-aware service mutation. */
+  applyPublication(plan: LocalMutationPlan): void {
+    const action = plan.action;
+    switch (action.kind) {
+      case "none": return;
+      case "write":
+        this.shared.write(action.handle, [action.data], action.offset);
+        this.shared.setMtime(action.handle, action.mtime);
+        this.fs.setMtime(action.handle, action.mtime);
+        return;
+      case "resize":
+        this.shared.resize(action.handle, action.size, action.truncate);
+        if (action.truncate) this.shared.setMtime(action.handle, action.mtime);
+        if (action.truncate) this.shared.reclaimLocked(action.handle);
+        return;
+      case "setMode":
+        this.fs.setMode(action.handle, action.mode);
+        this.shared.setMode(action.handle, action.mode);
+        return;
+      case "setMtime":
+        this.fs.setMtime(action.handle, action.mtime);
+        this.shared.setMtime(action.handle, action.mtime);
+        return;
+      case "preopen": this.sync(this.fs.preopen(action.path)); return;
+      default: { const exhaustive: never = action; return exhaustive; }
     }
   }
   revokeOwner(owner: number, epoch?: Int32Array): void {
