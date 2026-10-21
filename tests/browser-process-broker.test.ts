@@ -4,6 +4,8 @@ import {
   collectDirectoryJob,
   collectDirectoryProcess,
   confirmDirectoryProcess,
+  directoryProcesses,
+  findDirectoryJob,
 } from "../proc/directory.js";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { BrowserProcessBroker } from "../browser/process-broker.js";
@@ -16,6 +18,7 @@ import {
   createWorkerProcessTransport,
   WorkerProcessClient,
   workerProcessState,
+  workerProcessDirectoryId,
   type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -1861,7 +1864,15 @@ for (const failure of ["first-import", "error-event", "running-error"] as const)
   });
 const regressionCleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  while (regressionCleanups.length) await regressionCleanups.pop()!();
+  const errors: unknown[] = [];
+  while (regressionCleanups.length) {
+    try {
+      await regressionCleanups.pop()!();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "regression cleanup failed");
 });
 async function bounded<T>(pending: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -3112,3 +3123,762 @@ test("startup diagnostics reject write-only stderr without calling its blocking 
     await broker.dispose();
   }
 });
+
+async function admissionFixture(
+  options: {
+    quiesce?(identity: import("../fs/protocol.js").FilesystemIdentity): Promise<void>;
+    activate?: ConstructorParameters<typeof BrowserProcessBroker>[0]["activate"];
+    allowDisposalFailure?: boolean;
+    prepareSpawn?(pid: number, broker: BrowserProcessBroker): void;
+  } = {},
+) {
+  const owned: {
+    broker?: BrowserProcessBroker;
+    descriptors?: DescriptorTable;
+    reader?: PipeEndpoint;
+  } = {};
+  let releaseTokens = () => {};
+  let restoreTransport = () => {};
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) return;
+    cleaned = true;
+    releaseTokens();
+    restoreTransport();
+    owned.descriptors?.dispose();
+    owned.reader?.close();
+    if (owned.broker)
+      await bounded(owned.broker.dispose()).catch((error: unknown) => {
+        if (!options.allowDisposalFailure) throw error;
+      });
+  };
+  regressionCleanups.push(cleanup);
+  const identities = new ProcessIdentityAllocator();
+  const table = new ProcessTable(identities);
+  const registry = new ExecutableRegistry();
+  registry.register("admission", {
+    adapter: "fixture",
+    module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
+  });
+  const contexts: import("../proc/types.js").ProcessContext[] = [];
+  const errors: unknown[] = [];
+  const broker = (owned.broker = new BrowserProcessBroker({
+    identities,
+    table,
+    registry,
+    activate: options.activate,
+    filesystem: {
+      connect() {
+        throw new Error("unused");
+      },
+      revoke: revokeFilesystem,
+      reap: revokeFilesystem,
+      quiesce: options.quiesce ?? (async () => {}),
+    },
+    launch(context) {
+      contexts.push(context);
+      return { terminate() {} };
+    },
+    onError(error) {
+      errors.push(error);
+    },
+  }));
+  const root = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  root.data = { filesystem: createFilesystemIdentity() };
+  await bounded(broker.adoptRuntimeRoot(root));
+  const messages: WorkerProcessMessage[] = [];
+  const descriptors = (owned.descriptors = new DescriptorTable());
+  const host = new WorkerPipeHost({
+    transport: root,
+    postMessage: (message) => messages.push(message),
+  });
+  const codec = host.codec();
+  const client = new WorkerProcessClient({
+    transport: root,
+    descriptors,
+    codec,
+    postMessage: (message) => messages.push(structuredClone(message)),
+    prepareSpawn(pid) {
+      options.prepareSpawn?.(pid, broker);
+      host.registry.registerProcess(pid);
+      return {
+        data: { filesystem: createFilesystemIdentity(), pipeRegistry: host.registry.handle() },
+      };
+    },
+  });
+  const pair = host.createPipe();
+  const reader = (owned.reader = pair[0]);
+  const writerFd = descriptors.open(pair[1], 127n, 63n);
+  const pid = client.spawn(client.pid, {
+    executable: "admission",
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: -1,
+    fds: [{ child: 1, parent: writerFd }],
+  });
+  const message = messages.find((message) => message.operation === "spawn");
+  if (!message || message.operation !== "spawn") throw new Error("spawn was not posted");
+  const originalData = message.transport.data;
+  restoreTransport = () => {
+    message.transport.data = originalData;
+  };
+  releaseTokens = () => {
+    for (const token of message.transport.resources) codec.discard(token);
+  };
+  descriptors.close(writerFd);
+  const token = message.transport
+    .resources[0] as import("../proc/worker-pipes.js").WorkerPipeDescriptorToken;
+  const lifetime = new Int32Array(token.endpoint.lifetime);
+  const state = workerProcessState(message.transport);
+  const group = findDirectoryJob(message.transport.directory, state.job)!;
+  return {
+    broker,
+    root,
+    pid,
+    client,
+    message,
+    reader,
+    lifetime,
+    state,
+    group,
+    contexts,
+    errors,
+    cleanup,
+    table,
+    codec,
+    host,
+  };
+}
+
+function rejectAdmissionFixture(
+  fixture: Awaited<ReturnType<typeof admissionFixture>>,
+  path: "external" | "codec",
+): Promise<unknown> | undefined {
+  if (path === "external") {
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    return;
+  }
+  const codec = spyOn(
+    fixture.broker as unknown as { descriptorCodec(): never },
+    "descriptorCodec",
+  ).mockImplementation(() => {
+    throw new Error("codec factory failed");
+  });
+  regressionCleanups.push(async () => {
+    codec.mockRestore();
+  });
+  return bounded(
+    fixture.broker
+      .runtimeMessage(fixture.message, fixture.client.pid)
+      .catch((error: unknown) => error),
+  );
+}
+
+function admissionObservation(fixture: Awaited<ReturnType<typeof admissionFixture>>) {
+  return {
+    confirmed: controlLoad(fixture.state.confirmed, 0),
+    pending: controlLoad(fixture.group.pending),
+    closed: controlLoad(fixture.lifetime, 0),
+    readiness: fixture.reader.readiness(),
+    outcome: readOutcome(fixture.state.signals.outcome),
+    launches: fixture.contexts.length,
+  };
+}
+
+test("codec construction failure releases the accepted writer and confirms its failed child", async () => {
+  const fixture = await admissionFixture();
+  fixture.message.transport.data = undefined;
+  const result = await bounded(
+    fixture.broker
+      .runtimeMessage(fixture.message, fixture.client.pid)
+      .catch((error: unknown) => error),
+  );
+  expect(result).toBeInstanceOf(TypeError);
+  const observed = admissionObservation(fixture);
+  console.info("codec construction observation", observed);
+  expect(observed).toMatchObject({ confirmed: 1, pending: 0, closed: 1, launches: 0 });
+  expect(observed.outcome?.kind).toBe("start-failed");
+  expect(observed.readiness.hangup).toBe(true);
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+});
+
+test("queued duplicate external rejection preserves the accepted writer and launches once", async () => {
+  const fixture = await admissionFixture();
+  const accepted = fixture.broker.runtimeMessage(fixture.message, fixture.client.pid);
+  fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+  await bounded(accepted);
+  const supervisor = await bounded(fixture.broker.ready());
+  await bounded(supervisor.start(fixture.pid));
+  const observed = admissionObservation(fixture);
+  console.info("queued duplicate observation", observed);
+  expect(observed).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 0,
+    launches: 1,
+    outcome: null,
+  });
+  expect(observed.readiness.hangup).toBe(false);
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  supervisor.exit(fixture.pid, 0);
+  await bounded(supervisor.waitForExit(fixture.client.pid, fixture.pid));
+  expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+});
+
+for (const metadata of [undefined, null, "invalid", { sections: new SharedArrayBuffer(4) }])
+  test(`codec construction external rejection cleans an unstarted transfer with ${JSON.stringify(metadata)} metadata`, async () => {
+    const fixture = await admissionFixture();
+    fixture.message.transport.data = { filesystem: metadata };
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    await bounded(fixture.broker.quiesce());
+    expect(admissionObservation(fixture)).toMatchObject({
+      confirmed: 1,
+      pending: 0,
+      closed: 1,
+      launches: 0,
+    });
+    expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  });
+
+test("codec construction failure waits for a valid identity's actual filesystem fence", async () => {
+  let release = () => {},
+    entered = () => {};
+  const fence = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  regressionCleanups.push(async () => {
+    release();
+  });
+  const fixture = await admissionFixture({
+    quiesce: () => {
+      entered();
+      return fence;
+    },
+  });
+  const codec = spyOn(
+    fixture.broker as unknown as { descriptorCodec(): never },
+    "descriptorCodec",
+  ).mockImplementation(() => {
+    throw new Error("codec factory failed");
+  });
+  regressionCleanups.push(async () => {
+    codec.mockRestore();
+    release();
+  });
+  const accepted = fixture.broker
+    .runtimeMessage(fixture.message, fixture.client.pid)
+    .catch((error: unknown) => error);
+  await bounded(started);
+  expect(admissionObservation(fixture)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 1,
+    launches: 0,
+  });
+  release();
+  expect(await bounded(accepted)).toMatchObject({ message: "codec factory failed" });
+  expect(admissionObservation(fixture)).toMatchObject({
+    confirmed: 1,
+    pending: 0,
+    closed: 1,
+    launches: 0,
+  });
+});
+
+for (const path of ["external", "codec"] as const)
+  test(`codec construction ${path} rejection stays unconfirmed when a valid identity's fence rejects`, async () => {
+    const failure = new Error("actual filesystem fence rejected");
+    const fixture = await admissionFixture({
+      quiesce: async () => {
+        throw failure;
+      },
+      allowDisposalFailure: true,
+    });
+    const rejection = rejectAdmissionFixture(fixture, path);
+    if (rejection) expect(await rejection).toBe(failure);
+    await expect(bounded(fixture.broker.dispose())).rejects.toBe(failure);
+    expect(admissionObservation(fixture)).toMatchObject({
+      confirmed: 0,
+      pending: 1,
+      closed: 1,
+      launches: 0,
+    });
+  });
+
+for (const metadata of ["valid", "missing"] as const)
+  test(`queued duplicate disposal drains ${metadata} unstarted ownership without launching`, async () => {
+    const fixture = await admissionFixture();
+    if (metadata === "missing") fixture.message.transport.data = undefined;
+    const accepted = fixture.broker
+      .runtimeMessage(fixture.message, fixture.client.pid)
+      .catch((error: unknown) => error);
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    await bounded(fixture.broker.dispose());
+    await bounded(accepted);
+    expect(controlLoad(fixture.lifetime, 0)).toBe(1);
+    expect(controlLoad(fixture.group.pending)).toBe(0);
+    expect(fixture.contexts).toHaveLength(0);
+    expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+    expect(Array.from(fixture.table.values())).toHaveLength(0);
+  });
+
+test("queued duplicate foreign directory rejection cannot consume the accepted PID's writer", async () => {
+  const accepted = await admissionFixture();
+  const foreign = await admissionFixture();
+  expect(accepted.pid).toBe(foreign.pid);
+  const pending = accepted.broker.runtimeMessage(accepted.message, accepted.client.pid);
+  accepted.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
+  await bounded(pending);
+  const supervisor = await bounded(accepted.broker.ready());
+  await bounded(supervisor.start(accepted.pid));
+  expect(admissionObservation(accepted)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 0,
+    launches: 1,
+    outcome: null,
+  });
+  expect(admissionObservation(foreign)).toMatchObject({
+    confirmed: 1,
+    pending: 0,
+    closed: 1,
+    launches: 0,
+  });
+  expect(accepted.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  expect(foreign.reader.tryRead([new Uint8Array(1)])).toBe(0);
+});
+
+test("codec construction missing metadata cannot bypass an acquired consumer's fence", async () => {
+  const fixture = await admissionFixture({ allowDisposalFailure: true });
+  let stopped = 0;
+  fixture.broker.registerController(fixture.pid, {
+    stop() {
+      stopped++;
+    },
+  });
+  fixture.message.transport.data = undefined;
+  fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+  await expect(bounded(fixture.broker.dispose())).rejects.toThrow(/filesystem identity/);
+  expect(admissionObservation(fixture)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 1,
+    launches: 0,
+  });
+  expect(stopped).toBe(0);
+});
+
+for (const path of ["queued", "external"] as const)
+  test(`queued duplicate disposal waits for ${path} filesystem quiescence`, async () => {
+    let release = () => {},
+      entered = () => {};
+    const fence = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fixture = await admissionFixture({
+      quiesce: () => {
+        entered();
+        return fence;
+      },
+    });
+    regressionCleanups.push(async () => {
+      release();
+    });
+    let accepted: Promise<unknown> = Promise.resolve();
+    if (path === "queued")
+      accepted = fixture.broker
+        .runtimeMessage(fixture.message, fixture.client.pid)
+        .catch((error: unknown) => error);
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    let disposed = false;
+    const disposal = fixture.broker.dispose().then(() => {
+      disposed = true;
+    });
+    await bounded(started);
+    expect(controlLoad(fixture.lifetime, 0)).toBe(1);
+    expect(controlLoad(fixture.group.pending)).toBe(1);
+    expect(disposed).toBe(false);
+    expect(fixture.contexts).toHaveLength(0);
+    release();
+    await bounded(disposal);
+    await bounded(accepted);
+    expect(controlLoad(fixture.group.pending)).toBe(0);
+    expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  });
+
+test("queued duplicate delivery owns no second lifetime before supervisor admission", async () => {
+  const fixture = await admissionFixture();
+  const accepted = fixture.broker.runtimeMessage(fixture.message, fixture.client.pid);
+  const repeated = fixture.broker.runtimeMessage(
+    structuredClone(fixture.message),
+    fixture.client.pid,
+  );
+  await expect(bounded(repeated)).rejects.toThrow("already registered");
+  expect(controlLoad(fixture.lifetime, 0)).toBe(0);
+  await bounded(accepted);
+  const supervisor = await bounded(fixture.broker.ready());
+  await bounded(supervisor.start(fixture.pid));
+  expect(admissionObservation(fixture)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 0,
+    launches: 1,
+    outcome: null,
+  });
+});
+
+async function nestedAdmissionFixture(
+  fixture: Awaited<ReturnType<typeof admissionFixture>>,
+  transport = fixture.message.transport,
+) {
+  const owned: {
+    descriptors?: DescriptorTable;
+    reader?: PipeEndpoint;
+    message?: Extract<WorkerProcessMessage, { operation: "spawn" }>;
+  } = {};
+  regressionCleanups.push(async () => {
+    for (const token of owned.message?.transport.resources ?? []) fixture.codec.discard(token);
+    owned.descriptors?.dispose();
+    owned.reader?.close();
+  });
+  const descriptors = (owned.descriptors = new DescriptorTable());
+  const [reader, writer] = fixture.host.createPipe();
+  owned.reader = reader;
+  const fd = descriptors.open(writer, 127n, 63n);
+  const client = new WorkerProcessClient({
+    transport,
+    descriptors,
+    codec: fixture.codec,
+    postMessage(message) {
+      if (message.operation === "spawn") owned.message = structuredClone(message);
+    },
+    prepareSpawn(pid) {
+      fixture.host.registry.registerProcess(pid);
+      return {
+        data: {
+          filesystem: createFilesystemIdentity(),
+          pipeRegistry: fixture.host.registry.handle(),
+        },
+      };
+    },
+  });
+  client.spawn(client.pid, {
+    executable: "admission",
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: -1,
+    fds: [{ child: 1, parent: fd }],
+  });
+  const message = owned.message;
+  if (!message) throw new Error("no nested transfer");
+  const token = message.transport
+    .resources[0] as import("../proc/worker-pipes.js").WorkerPipeDescriptorToken;
+  const state = workerProcessState(message.transport);
+  const group = findDirectoryJob(message.transport.directory, state.job)!;
+  descriptors.close(fd);
+  return {
+    message,
+    reader,
+    client,
+    state,
+    group,
+    lifetime: new Int32Array(token.endpoint.lifetime),
+  };
+}
+
+test("admission review r1: malformed queued sender cannot strand a second accepted transfer", async () => {
+  const parent = await admissionFixture();
+  const local = await nestedAdmissionFixture(parent, parent.root);
+  await bounded(parent.broker.runtimeMessage(local.message, parent.client.pid));
+  const supervisor = await bounded(parent.broker.ready());
+  await bounded(supervisor.start(local.message.transport.pid));
+  const child = await nestedAdmissionFixture(parent);
+  // Capture tagged words before reclamation. No allocations reuse these rows during observation.
+  const confirmed = new TaggedCells(child.state.confirmed.cells, child.state.confirmed.id);
+  const jobConfirmed = new TaggedCells(child.state.jobConfirmed.cells, child.state.jobConfirmed.id);
+  parent.message.transport.data = undefined;
+  const parentAdmission = parent.broker
+    .runtimeMessage(parent.message, parent.client.pid)
+    .catch((error: unknown) => error);
+  const childAdmission = parent.broker
+    .runtimeMessage(child.message, child.client.pid)
+    .catch((error: unknown) => error);
+  await bounded(Promise.all([parentAdmission, childAdmission]));
+  await bounded(parent.broker.quiesce());
+  const group = findDirectoryJob(child.message.transport.directory, child.state.job);
+  const observed = {
+    confirmed: controlLoad(confirmed),
+    pending: group ? controlLoad(group.pending) : "collected",
+    jobConfirmed: controlLoad(jobConfirmed),
+    closed: controlLoad(child.lifetime, 0),
+    readiness: child.reader.readiness(),
+    launches: parent.contexts.filter((context) => context.pid === child.message.transport.pid)
+      .length,
+  };
+  console.info("repair r1 nested transfer", observed);
+  expect(observed).toMatchObject({ confirmed: 1, jobConfirmed: 1, closed: 1, launches: 0 });
+  if (group) expect(controlLoad(group.pending)).toBe(0);
+  expect(
+    Array.from(directoryProcesses(child.message.transport.directory), (state) => state.pid),
+  ).not.toContain(child.message.transport.pid);
+  expect(observed.readiness.hangup).toBe(true);
+  expect(child.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  expect(controlLoad(local.lifetime, 0)).toBe(0);
+  expect(controlLoad(local.state.confirmed)).toBe(0);
+  expect(controlLoad(local.group.pending)).toBe(1);
+  expect(readOutcome(local.state.signals.outcome)).toBeNull();
+  expect(local.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  expect(parent.contexts.map((context) => context.pid)).toEqual([local.message.transport.pid]);
+});
+
+test("admission review r1: foreign malformed transfer cannot borrow another directory's consumer ownership", async () => {
+  const accepted = await admissionFixture();
+  const foreign = await admissionFixture();
+  await bounded(accepted.broker.runtimeMessage(accepted.message, accepted.client.pid));
+  const supervisor = await bounded(accepted.broker.ready());
+  await bounded(supervisor.start(accepted.pid));
+  foreign.message.transport.data = undefined;
+  accepted.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
+  const cleanup = await bounded(accepted.broker.quiesce().catch((error: unknown) => error));
+  console.info("repair r1 foreign transfer", {
+    cleanup,
+    accepted: admissionObservation(accepted),
+    foreign: admissionObservation(foreign),
+  });
+  expect(cleanup).toBeUndefined();
+  expect(admissionObservation(foreign)).toMatchObject({
+    confirmed: 1,
+    pending: 0,
+    closed: 1,
+    launches: 0,
+  });
+  expect(admissionObservation(accepted)).toMatchObject({
+    confirmed: 0,
+    pending: 1,
+    closed: 0,
+    launches: 1,
+    outcome: null,
+  });
+  expect(foreign.reader.tryRead([new Uint8Array(1)])).toBe(0);
+  expect(accepted.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+  await bounded(accepted.broker.dispose());
+});
+
+test("admission review r1: valid metadata waits for an acquired controller and its separate filesystem fence", async () => {
+  let releaseAdapter = () => {},
+    releaseFilesystem = () => {},
+    releasePayload = () => {};
+  const adapter = new Promise<void>((resolve) => {
+    releaseAdapter = resolve;
+  });
+  const filesystem = new Promise<void>((resolve) => {
+    releaseFilesystem = resolve;
+  });
+  const payload = new Promise<void>((resolve) => {
+    releasePayload = resolve;
+  });
+  regressionCleanups.push(async () => {
+    releaseAdapter();
+    releaseFilesystem();
+    releasePayload();
+  });
+  const separateIdentity = createFilesystemIdentity();
+  const fixture = await admissionFixture({
+    quiesce: (identity) => (identity === separateIdentity ? filesystem : payload),
+  });
+  regressionCleanups.push(async () => {
+    releaseAdapter();
+    releaseFilesystem();
+    releasePayload();
+  });
+  let entered = 0;
+  fixture.broker.registerController(fixture.pid, {
+    filesystem: separateIdentity,
+    quiesce() {
+      entered++;
+      return adapter;
+    },
+  });
+  fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const observed = {
+    entered,
+    revoked: Atomics.load(new Int32Array(separateIdentity.revocations[0]!), 0),
+    ...admissionObservation(fixture),
+  };
+  console.info("repair r1 controller fence", observed);
+  expect(observed).toMatchObject({
+    entered: 1,
+    revoked: 1,
+    confirmed: 0,
+    pending: 1,
+    closed: 1,
+    launches: 0,
+  });
+  releaseAdapter();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1 });
+  releaseFilesystem();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1 });
+  releasePayload();
+  await bounded(fixture.broker.quiesce());
+  expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
+});
+
+for (const [path, fence] of [
+  ["external", "adapter"],
+  ["external", "filesystem"],
+  ["codec", "adapter"],
+  ["codec", "filesystem"],
+] as const)
+  test(`admission review r1: ${path} rejection fails closed when acquired ${fence} quiescence rejects`, async () => {
+    const failure = new Error(`acquired ${fence} fence failed`);
+    const separateIdentity = createFilesystemIdentity();
+    const fixture = await admissionFixture({
+      quiesce: async (identity) => {
+        if (fence === "filesystem" && identity === separateIdentity) throw failure;
+      },
+      allowDisposalFailure: true,
+    });
+    fixture.broker.registerController(fixture.pid, {
+      filesystem: separateIdentity,
+      async quiesce() {
+        if (fence === "adapter") throw failure;
+      },
+    });
+    const rejection = rejectAdmissionFixture(fixture, path);
+    if (rejection) expect(await rejection).toBe(failure);
+    await expect(bounded(fixture.broker.dispose())).rejects.toBe(failure);
+    expect(admissionObservation(fixture)).toMatchObject({
+      confirmed: 0,
+      pending: 1,
+      closed: 1,
+      launches: 0,
+    });
+    expect(Atomics.load(new Int32Array(separateIdentity.revocations[0]!), 0)).toBe(1);
+  });
+
+for (const metadata of ["valid", "missing"] as const)
+  test(`admission review r1: a controller registered before publication owns its ${metadata} transfer`, async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+    const fixture = await admissionFixture({
+      allowDisposalFailure: metadata === "missing",
+      prepareSpawn(pid, broker) {
+        broker.registerController(pid, {
+          quiesce() {
+            entered++;
+            return held;
+          },
+        });
+      },
+    });
+    regressionCleanups.push(async () => {
+      release();
+    });
+    if (metadata === "missing") fixture.message.transport.data = undefined;
+    fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(admissionObservation(fixture)).toMatchObject({ confirmed: 0, pending: 1, closed: 1 });
+    if (metadata === "missing") {
+      expect(entered).toBe(0);
+      await expect(bounded(fixture.broker.dispose())).rejects.toThrow(/filesystem identity/);
+      return;
+    }
+    expect(entered).toBe(1);
+    release();
+    await bounded(fixture.broker.quiesce());
+    expect(admissionObservation(fixture)).toMatchObject({ confirmed: 1, pending: 0 });
+  });
+
+async function prepublicationAdmissionFixture() {
+  const calls = { revoke: 0, quiesce: 0 };
+  const controller = {
+    filesystem: createFilesystemIdentity(),
+    revoke() {
+      calls.revoke++;
+    },
+    quiesce() {
+      calls.quiesce++;
+    },
+  };
+  const fixture = await admissionFixture({
+    allowDisposalFailure: true,
+    prepareSpawn(pid, broker) {
+      broker.registerController(pid, controller);
+    },
+  });
+  return { fixture, calls };
+}
+
+for (const path of ["external", "incoming"] as const)
+  test(`admission review r2: ${path} foreign rejection cannot acquire a local prepublication controller`, async () => {
+    const { fixture: local, calls } = await prepublicationAdmissionFixture();
+    const foreign = await admissionFixture();
+    expect(foreign.pid).toBe(local.pid);
+    expect(foreign.message.transport.slot).toBe(local.message.transport.slot);
+    const directory = workerProcessDirectoryId(local.message.transport);
+    expect(workerProcessDirectoryId(foreign.message.transport)).not.toBe(directory);
+    foreign.message.transport.data = undefined;
+    if (path === "external") local.broker.rejectRuntimeMessage(foreign.message, foreign.client.pid);
+    else
+      await bounded(
+        local.broker
+          .runtimeMessage(foreign.message, foreign.client.pid)
+          .catch((error: unknown) => error),
+      );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const beforeGlobalFence = { ...calls };
+    const registry: unknown = Reflect.get(local.broker, "acquiredProcesses");
+    if (!(registry instanceof Map)) throw new Error("missing acquired lifetime registry");
+    const actualLifetime: unknown = registry.get(local.pid);
+    const expectedLifetime = `${directory}:${local.message.transport.slot}:${local.pid}`;
+    const quiescence = await bounded(local.broker.quiesce().catch((error: unknown) => error));
+    console.info("repair r2 prepublication ownership", {
+      path,
+      beforeGlobalFence,
+      expectedLifetime,
+      actualLifetime,
+      quiescence,
+      local: admissionObservation(local),
+      foreign: admissionObservation(foreign),
+    });
+    expect(actualLifetime).toBe(expectedLifetime);
+    expect(beforeGlobalFence).toEqual({ revoke: 0, quiesce: 0 });
+    expect(quiescence).toBeUndefined();
+    expect(admissionObservation(foreign)).toMatchObject({
+      confirmed: 1,
+      pending: 0,
+      closed: 1,
+      launches: 0,
+    });
+    expect(admissionObservation(local)).toMatchObject({
+      confirmed: 0,
+      pending: 1,
+      closed: 0,
+      launches: 0,
+      outcome: null,
+    });
+    expect(foreign.reader.readiness().hangup).toBe(true);
+    expect(foreign.reader.tryRead([new Uint8Array(1)])).toBe(0);
+    expect(local.reader.readiness().hangup).toBe(false);
+    expect(local.reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
+    expect(calls).toEqual({ revoke: 1, quiesce: 1 });
+    await bounded(local.broker.dispose());
+  });
