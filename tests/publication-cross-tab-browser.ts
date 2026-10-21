@@ -403,6 +403,58 @@ async function cancelWorkspaceChild(connection: FilesystemConnection): Promise<v
     connection.port.close();
   }
 }
+async function workspacePageControl(
+  operation: string,
+  body: ReturnType<typeof record>,
+): Promise<unknown> {
+  if (!workspaceClient || !Array.isArray(body.args)) throw new Error("missing page workspace");
+  const bytes = Array.isArray(body.bytes) ? Uint8Array.from(body.bytes) : undefined;
+  try {
+    return await workspaceClient.asyncCall(text(body.operation), body.args, bytes);
+  } catch (error) {
+    if (operation !== "workspacePageDenied") throw error;
+    return Number(Reflect.get(Object(error), "errno"));
+  }
+}
+async function workspaceGuestControl(
+  operation: string,
+  body: ReturnType<typeof record>,
+): Promise<unknown> {
+  const guest = guests.get(text(body.key));
+  if (!guest) throw new Error("missing workspace guest");
+  if (operation === "workspaceGuestStatus")
+    return {
+      exit: guest.worker.observed("exit"),
+      finished: guest.worker.observed("finished"),
+      cleanupError: guest.worker.observed("cleanup-error"),
+    };
+  if (operation === "workspaceGuestTerminal") {
+    const terminal = await guest.worker.until(text(body.event));
+    await guest.worker.until("finished");
+    return terminal;
+  }
+  if (operation === "workspaceGuestReady") return guest.worker.until("ready");
+  if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
+  if (operation === "workspaceGuestRevoke") {
+    revokeFilesystem(guest.connection);
+    return null;
+  }
+  if (operation === "workspaceGuestCleanupError") return guest.worker.until("cleanup-error");
+  if (operation === "workspaceGuestDeath") {
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return null;
+  }
+  if (operation === "workspaceGuestStop") {
+    await guest.worker.request("stop");
+    const exit = await guest.worker.until("exit");
+    await guest.worker.until("finished");
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return { exit };
+  }
+  return guest.worker.request(text(body.operation), body.request);
+}
 async function workspaceControl(operation: string, value: unknown): Promise<unknown> {
   if (operation === "workspaceCancelledStartup") return cancelledWorkspaceStartup();
   if (operation === "workspaceAuthority") {
@@ -429,14 +481,7 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   }
   const body = record(value);
   if (operation === "workspacePage" || operation === "workspacePageDenied") {
-    if (!workspaceClient || !Array.isArray(body.args)) throw new Error("missing page workspace");
-    const bytes = Array.isArray(body.bytes) ? Uint8Array.from(body.bytes) : undefined;
-    try {
-      return await workspaceClient.asyncCall(text(body.operation), body.args, bytes);
-    } catch (error) {
-      if (operation !== "workspacePageDenied") throw error;
-      return Number(Reflect.get(Object(error), "errno"));
-    }
+    return workspacePageControl(operation, body);
   }
   if (operation === "workspaceGuest") {
     if (!descriptor) throw new Error("missing workspace descriptor");
@@ -487,40 +532,7 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     if (operation === "workspaceDescendantQueue") return null;
     return worker.until("ready");
   }
-  const guest = guests.get(text(body.key));
-  if (!guest) throw new Error("missing workspace guest");
-  if (operation === "workspaceGuestStatus")
-    return {
-      exit: guest.worker.observed("exit"),
-      finished: guest.worker.observed("finished"),
-      cleanupError: guest.worker.observed("cleanup-error"),
-    };
-  if (operation === "workspaceGuestTerminal") {
-    const terminal = await guest.worker.until(text(body.event));
-    await guest.worker.until("finished");
-    return terminal;
-  }
-  if (operation === "workspaceGuestReady") return guest.worker.until("ready");
-  if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
-  if (operation === "workspaceGuestRevoke") {
-    revokeFilesystem(guest.connection);
-    return null;
-  }
-  if (operation === "workspaceGuestCleanupError") return guest.worker.until("cleanup-error");
-  if (operation === "workspaceGuestDeath") {
-    await guest.worker.terminate();
-    guests.delete(text(body.key));
-    return null;
-  }
-  if (operation === "workspaceGuestStop") {
-    await guest.worker.request("stop");
-    const exit = await guest.worker.until("exit");
-    await guest.worker.until("finished");
-    await guest.worker.terminate();
-    guests.delete(text(body.key));
-    return { exit };
-  }
-  return guest.worker.request(text(body.operation), body.request);
+  return workspaceGuestControl(operation, body);
 }
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
