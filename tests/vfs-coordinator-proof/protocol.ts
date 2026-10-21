@@ -99,3 +99,9 @@ export function mutation(operation: Operation): boolean {
 export type WorkerMessage =
   | { hello: string }
   | { instance: string; id?: number; result?: Reply; nudge?: boolean; diagnostic?: unknown };
+
+export function checkRequestBytes(request: Request): void {
+  const serialized = JSON.stringify(request);
+  if (serialized.length > 65536 || new TextEncoder().encode(serialized).length > 65536)
+    throw new Error("BACKPRESSURE: request bytes");
+}

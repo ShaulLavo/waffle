@@ -89,6 +89,24 @@ async function firstClose(browser: Browser, engine: string, arm: Arm, origin: st
     const [first, second] = pages;
     assert(first && second, "Four pages required");
     ok(await execute(first, { kind: "write", path: "/data", text: "checkpoint:" }));
+    const admission = await first.evaluate(async () => {
+      const before = { intents: proof.client.intents.intents.size, cursor: proof.client.cursor };
+      const rejected = await proof.client.execute({
+        kind: "append",
+        path: "/data",
+        text: "界".repeat(22000),
+      });
+      return {
+        before,
+        rejected,
+        after: { intents: proof.client.intents.intents.size, cursor: proof.client.cursor },
+      };
+    });
+    error(admission.rejected, "BACKPRESSURE");
+    assert(
+      JSON.stringify(admission.before) === JSON.stringify(admission.after),
+      "Oversized intent was admitted",
+    );
     const writes = await Promise.all(
       pages.map((page, index) =>
         execute(page, { kind: "append", path: "/data", text: `${index},` }),
@@ -124,8 +142,10 @@ async function firstClose(browser: Browser, engine: string, arm: Arm, origin: st
     assert(before.kind === "current" && current.kind === "current", "Missing accepted authority");
     const replaced = before.accepted.instance !== current.accepted.instance;
     const expected = arm === "volatile-fast" && replaced ? saved : saved + "tail";
-    for (const page of survivors)
+    for (const page of survivors) {
       assert((await text(page)) === expected, "Recovered creator-close tree mismatch");
+      assert((await text(page)) === expected, "Second recovered creator-close read mismatch");
+    }
     if (replaced && arm === "volatile-fast")
       assert(
         current.accepted.cursor.history !== before.accepted.cursor.history,
@@ -141,7 +161,7 @@ async function firstClose(browser: Browser, engine: string, arm: Arm, origin: st
       label:
         "real first creator close, explicit retained-port recovery and two current reads per survivor",
       status: "VERIFIED",
-      detail: { before, after, next, recovered, replaced, expected },
+      detail: { before, after, next, recovered, replaced, expected, admission },
     });
     if (!replaced)
       emit({
@@ -362,12 +382,18 @@ async function oldQueueRelease(
   epoch: number,
 ): Promise<void> {
   const before = await old.evaluate(() => proof.client.staleReplies);
+  const acceptedBefore = await old.evaluate(() => proof.client.authority);
   ok(await observer.evaluate((gate) => proof.client.send({ kind: "release", gate }), gate));
   await old.waitForFunction((before) => proof.client.staleReplies > before, before, {
     timeout: 2500,
   });
   const current = await old.evaluate(() => proof.client.cursor);
   assert(current.epoch === epoch, "Old queue response changed accepted epoch");
+  const acceptedAfter = await old.evaluate(() => proof.client.authority);
+  assert(
+    JSON.stringify(acceptedBefore) === JSON.stringify(acceptedAfter),
+    "Old queue changed accepted state",
+  );
 }
 async function gracefulDrain(pages: Page[], engine: string, arm: Arm, emit: Emit) {
   const [first, second] = pages;

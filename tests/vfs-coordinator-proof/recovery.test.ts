@@ -82,3 +82,36 @@ test("intent budget rejects rather than forgetting receipt identities", () => {
   expect(() => ledger.capture({ ...request(), sequence: 257 })).toThrow("BACKPRESSURE");
   expect(() => ledger.capture(request())).not.toThrow();
 });
+test("oversized unresolved intent is rejected before retaining its identity or payload", () => {
+  const ledger = new IntentLedger();
+  const oversized = {
+    ...request(),
+    operation: { kind: "append" as const, path: "/file", text: "x".repeat(65537) },
+  };
+  expect(() => ledger.capture(oversized)).toThrow("BACKPRESSURE");
+  expect(ledger.intents.size).toBe(0);
+  expect(ledger.unresolved()).toEqual([]);
+});
+test("intent capacity refuses new work without evicting unknown identities", () => {
+  const ledger = new IntentLedger();
+  const first = ledger.capture(request());
+  ledger.settle(first, unsettled(first, "lost response"));
+  for (let sequence = 2; sequence <= 256; sequence++) ledger.capture({ ...request(), sequence });
+  expect(() => ledger.capture({ ...request(), sequence: 257 })).toThrow("BACKPRESSURE");
+  expect(ledger.unresolved()).toContain("client:1");
+  expect(() =>
+    ledger.capture({ ...request(), operation: { kind: "append", path: "/file", text: "other" } }),
+  ).toThrow("OP_ID_CONFLICT");
+});
+
+test("encoded request bytes include Unicode and routing metadata", () => {
+  const ledger = new IntentLedger();
+  const unicode = {
+    ...request(),
+    operation: { kind: "append" as const, path: "/file", text: "界".repeat(22000) },
+  };
+  const metadata = { ...request(), client: "x".repeat(65537) };
+  expect(() => ledger.capture(unicode)).toThrow("BACKPRESSURE");
+  expect(() => ledger.capture(metadata)).toThrow("BACKPRESSURE");
+  expect(ledger.intents.size).toBe(0);
+});

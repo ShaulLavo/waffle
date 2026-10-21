@@ -65,6 +65,8 @@ export class ProofClient {
     arm: Arm;
     token: string;
   }): Promise<Reply> {
+    if (this.connection !== connection || !this.worker)
+      return failure(new Error("FENCED: recovery attachment changed before admission"));
     const previous = accepted(this.authority);
     const worker = this.worker;
     const attempt = ++this.recoveryAttempt;

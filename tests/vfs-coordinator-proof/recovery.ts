@@ -1,4 +1,4 @@
-import { mutation, type Cursor, type Reply, type Request } from "./protocol.js";
+import { checkRequestBytes, mutation, type Cursor, type Reply, type Request } from "./protocol.js";
 
 export interface AcceptedAuthority {
   instance: string;
@@ -65,6 +65,7 @@ export class IntentLedger {
     { request: Request; fingerprint: string; outcome: "issued" | "unknown" | "resolved" }
   >();
   capture(input: Request): Request {
+    checkRequestBytes(input);
     const request = structuredClone(input);
     if (!mutation(request.operation)) return request;
     const key = `${request.client}:${request.sequence}`;

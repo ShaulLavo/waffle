@@ -2,6 +2,7 @@ import { openDatabase, initial, transaction } from "./database.js";
 import { perform, bumpVersions, enforceBounds } from "./filesystem.js";
 import {
   cursor,
+  checkRequestBytes,
   failure,
   mutation,
   type Command,
@@ -81,22 +82,25 @@ function fence(head: State | undefined): State {
   }
   return head;
 }
-async function acquireVolatile(workspace: string): Promise<void> {
-  let acquired: (value: boolean) => void = () => {};
-  const ready = new Promise<boolean>((resolve) => {
-    acquired = resolve;
-  });
+function requireInstance(expected: string): void {
+  if (instance !== expected) throw new Error("FENCED: instance changed across await");
+}
+async function acquireVolatile(workspace: string): Promise<() => void> {
+  const ready = Promise.withResolvers<(() => void) | undefined>();
   void navigator.locks.request(`e5-volatile:${workspace}`, { ifAvailable: true }, (lock) => {
     trace({ phase: "volatile-lock-result", acquired: Boolean(lock), instance });
-    acquired(Boolean(lock));
-    if (!lock) return;
-    return new Promise<void>((resolve) => {
-      unlock = resolve;
-    });
+    if (!lock) {
+      ready.resolve(undefined);
+      return;
+    }
+    return new Promise<void>((resolve) => ready.resolve(resolve));
   });
-  if (!(await ready)) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
+  const release = await ready.promise;
+  if (!release) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
+  return release;
 }
 async function initialize(command: Extract<Command, { kind: "initialize" }>): Promise<Reply> {
+  const from = instance;
   if (state) {
     const local = current();
     if (
@@ -106,19 +110,30 @@ async function initialize(command: Extract<Command, { kind: "initialize" }>): Pr
     )
       throw new Error("FENCED: initialized authority identity mismatch");
     await transaction(database(), "relaxed", (head) => ({ result: fence(head) }));
+    requireInstance(from);
     if (local !== current()) throw new Error("FENCED: initialize changed across await");
     counters.relaxed++;
     return { kind: "ok", cursor: cursor(local), result: "already initialized" };
   }
-  if (command.arm === "volatile-fast") await acquireVolatile(command.workspace);
+  let claimedDatabase: IDBDatabase | undefined;
+  let release: (() => void) | undefined;
   try {
-    db = await openDatabase(command.workspace);
-    state = await transaction(db, "strict", (saved) => claim(saved, command));
+    if (command.arm === "volatile-fast") release = await acquireVolatile(command.workspace);
+    requireInstance(from);
+    claimedDatabase = await openDatabase(command.workspace);
+    requireInstance(from);
+    const claimed = await transaction(claimedDatabase, "strict", (saved) => {
+      requireInstance(from);
+      return claim(saved, command);
+    });
+    requireInstance(from);
+    db = claimedDatabase;
+    unlock = release;
+    state = claimed;
     workspaceName = command.workspace;
   } catch (error) {
-    unlock?.();
-    unlock = undefined;
-    db?.close();
+    release?.();
+    claimedDatabase?.close();
     throw error;
   }
   counters.strict++;
@@ -143,8 +158,7 @@ function checkRequest(request: Request, head: State): void {
   if (request.epoch !== head.epoch) throw new Error("FENCED: request epoch");
   if (request.expiresAt !== undefined && Date.now() >= request.expiresAt)
     throw new Error("UNAVAILABLE: request expired before admission");
-  if (JSON.stringify(request.operation).length > 65536)
-    throw new Error("BACKPRESSURE: request bytes");
+  checkRequestBytes(request);
 }
 function history(request: Request, head: State): void {
   if (request.history !== head.history) throw new Error("OUTCOME_UNKNOWN: history reset");
@@ -203,20 +217,25 @@ function resultAt(next: State, request: Request): unknown {
   throw new Error("INVALID: mutation");
 }
 async function checkpoint(): Promise<Reply> {
+  const from = instance;
   const local = current();
   const saved = await transaction(database(), "strict", (head) => {
+    requireInstance(from);
     fence(head);
     const next = structuredClone(local);
     next.durableWatermark = next.watermark;
     return { state: next, result: next };
   });
+  requireInstance(from);
   counters.strict++;
   state = saved;
   return { kind: "ok", cursor: cursor(saved), result: "checkpoint" };
 }
 async function execute(request: Request): Promise<Reply> {
+  const from = instance;
   current();
   if (request.gate) await park(request.gate);
+  requireInstance(from);
   const local = current();
   trace({ phase: "admit", key: `${request.client}:${request.sequence}`, epoch: request.epoch });
   if (request.operation.kind === "checkpoint") {
@@ -226,9 +245,11 @@ async function execute(request: Request): Promise<Reply> {
   }
   if (local.arm === "volatile-fast") return memoryRequest(local, request);
   const durability = local.arm === "fenced-safe" ? "strict" : "relaxed";
-  const result = await transaction(database(), durability, (saved) =>
-    fencedRequest(saved, request),
-  );
+  const result = await transaction(database(), durability, (saved) => {
+    requireInstance(from);
+    return fencedRequest(saved, request);
+  });
+  requireInstance(from);
   counters[durability]++;
   state = result.head;
   announce(request);
@@ -270,12 +291,16 @@ function park(gate: string): Promise<void> {
   });
 }
 async function drain(): Promise<Reply> {
+  const from = instance;
   const result = await checkpoint();
+  requireInstance(from);
   await transaction(database(), "strict", (head) => {
+    requireInstance(from);
     const next = fence(head);
     next.closed = true;
     return { state: next, result: undefined };
   });
+  requireInstance(from);
   stopped = true;
   unlock?.();
   db?.close();
@@ -294,12 +319,18 @@ async function command(command: Command): Promise<Reply> {
   throw new Error("INVALID: queued control");
 }
 async function response(control: Command, result: Reply): Promise<Reply> {
+  const from = instance;
   if (control.kind !== "request" || result.kind !== "ok") return result;
   if (control.request.replyGate) await park(control.request.replyGate);
+  requireInstance(from);
   const local = current();
   checkRequest(control.request, local);
   if (local.arm !== "volatile-fast") {
-    await transaction(database(), "relaxed", (saved) => ({ result: fence(saved) }));
+    await transaction(database(), "relaxed", (saved) => {
+      requireInstance(from);
+      return { result: fence(saved) };
+    });
+    requireInstance(from);
     counters.relaxed++;
   }
   return result;
