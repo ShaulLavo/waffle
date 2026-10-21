@@ -69,6 +69,20 @@ The authority imports the selected offset and publication once. Explicit status
 finds the original cell even when the final commit notification is omitted.
 A missing committed payload stops the old history rather than guessing success.
 
+Issuing the first descriptor permanently excludes ordinary direct clients of
+that root, including existing clients, cached/nonblocking paths and later
+descendants. The retain and exclusion share the filesystem global lock. Backend
+and service access stays pending until the authority holds its own matching
+shared guard and activates under that same lock. Failed acquisition stops the
+history before releasing guards. Joined stop also stops idle history before
+release; unfinished cleanup never counts as completed disposal. Roots that never
+enable this private pilot keep their ordinary behavior.
+
+Private claim state and invoked effect codecs use captured atomics, constructors
+and byte operations. Snapshot decoding uses an owned nonshared copy. The CLAIMED
+browser pause is inserted only into the test bundle after the real transition;
+it receives no private view and adds no callback to shipped source.
+
 Each attached page and actual guest worker owns its own non-stealable shared
 Web Lock, keyed by workspace across authority incarnations. Recovery requests
 exclusive continuity before taking any incoming shared guard. Bootstrap attaches
@@ -85,3 +99,7 @@ current source report records which stages actually passed and every preserved
 red. Cold files, growth beyond the resident bound and namespace operations on a
 private attachment are explicitly unsupported. No SAFE, durable history,
 consumer pin, public API or S1/S2 acceptance follows.
+
+A fresh resident connection reuses the full root-format allocation. It costs
+25,477,140 bytes before JavaScript objects, ports and shared offsets, despite
+creating no second MemFS. This is byte accounting, not aggregate memory acceptance.

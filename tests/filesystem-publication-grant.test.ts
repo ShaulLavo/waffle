@@ -367,6 +367,28 @@ test("idle authority disposal permanently denies queued ordinary service work", 
   }
 });
 
+test("failed disposal stays stopped and retries unfinished retained-description cleanup", async () => {
+  const f = await residentFixture();
+  const release = f.backend.release.bind(f.backend);
+  let attempts = 0;
+  f.backend.release = (handle) => {
+    if (++attempts === 1) throw new Error("retained release failure");
+    release(handle);
+  };
+  try {
+    expect(() => f.authority.dispose()).toThrow("retained release failure");
+    expect(f.backend.shared.publication!.stopped).toBe(true);
+    expect(() => f.authority.activate()).toThrow();
+    expect(() => f.authority.dispose()).not.toThrow();
+    expect(attempts).toBe(2);
+    f.authority.dispose();
+    expect(attempts).toBe(2);
+  } finally {
+    f.backend.release = release;
+    f.stop();
+  }
+});
+
 test("claim constructors, copies and paired codec bypass late prototype hooks", async () => {
   const f = await residentFixture();
   const restorations: (() => void)[] = [];
