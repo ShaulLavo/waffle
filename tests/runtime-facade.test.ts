@@ -1174,9 +1174,15 @@ test("facade initial browser graph keeps process services and interrupt compilat
   ).toBe(true);
 });
 
-test.each(["consumer", "siblings", "multiple", "late", "host", "success"].concat([
-  "falsy-undefined", "falsy-null", "falsy-false", "falsy-zero", "falsy-empty",
-]))(
+test.each(
+  ["consumer", "siblings", "multiple", "late", "host", "success"].concat([
+    "falsy-undefined",
+    "falsy-null",
+    "falsy-false",
+    "falsy-zero",
+    "falsy-empty",
+  ]),
+)(
   "terminal filesystem cleanup retains original %s debt in an isolated page",
   async (mode) => {
     const page = Bun.spawn(

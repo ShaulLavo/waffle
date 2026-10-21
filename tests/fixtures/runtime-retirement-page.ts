@@ -19,7 +19,10 @@ const falsyFailures = new Map<string, unknown>([
   ["falsy-empty", ""],
 ]);
 const falsy = mode !== undefined && falsyFailures.has(mode);
-const failures = [falsy ? falsyFailures.get(mode) : new Error("original first stop"), new Error("original second stop")];
+const failures = [
+  falsy ? falsyFailures.get(mode) : new Error("original first stop"),
+  new Error("original second stop"),
+];
 const previousWorker = globalThis.Worker;
 let filesystemStops = 0;
 let hostStops = 0;

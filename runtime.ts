@@ -583,7 +583,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           if (result.status === "rejected") failures.push(result.reason);
         }
         if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
-        if (hostOwner && hostStop) await attempt(() => joinStop(hostOwner, hostStop, cleanupDebt, physicalStops));
+        if (hostOwner && hostStop)
+          await attempt(() => joinStop(hostOwner, hostStop, cleanupDebt, physicalStops));
         if (cleanupDebt.size) throwFailures();
         handles.clear();
         consumers.clear();

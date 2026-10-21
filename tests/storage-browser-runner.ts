@@ -166,15 +166,22 @@ type RetirementTarget = {
 };
 function retirementTarget(worker: Worker, index: number): RetirementTarget {
   let finish!: () => void;
-  const close = new Promise<void>((resolve) => { finish = resolve; });
+  const close = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
   const target: RetirementTarget = { worker, index, initialURL: "", closed: false, close };
-  worker.once("close", () => { target.closed = true; finish(); });
+  worker.once("close", () => {
+    target.closed = true;
+    finish();
+  });
   return target;
 }
 function retirementTargets(page: Page) {
   const targets: RetirementTarget[] = [];
   let created!: () => void;
-  const ready = new Promise<void>((resolve) => { created = resolve; });
+  const ready = new Promise<void>((resolve) => {
+    created = resolve;
+  });
   page.on("worker", (worker) => {
     const target = retirementTarget(worker, targets.length);
     targets.push(target);
@@ -183,57 +190,115 @@ function retirementTargets(page: Page) {
   });
   return { targets, ready };
 }
-async function retirementBounded<T>(pending: Promise<T>, phase: string, milliseconds = 10_000): Promise<T> {
+async function retirementBounded<T>(
+  pending: Promise<T>,
+  phase: string,
+  milliseconds = 10_000,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Runtime retirement ${phase} timed out`)), milliseconds);
+    timer = setTimeout(
+      () => reject(new Error(`Runtime retirement ${phase} timed out`)),
+      milliseconds,
+    );
   });
-  try { return await Promise.race([pending, timeout]); }
-  finally { clearTimeout(timer); }
+  try {
+    return await Promise.race([pending, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
-async function retirementAttempt<T>(operation: () => T | Promise<T>): Promise<RetirementOutcome<T>> {
-  try { return { status: "fulfilled", value: await operation() }; }
-  catch (reason) { return { status: "rejected", reason }; }
+async function retirementAttempt<T>(
+  operation: () => T | Promise<T>,
+): Promise<RetirementOutcome<T>> {
+  try {
+    return { status: "fulfilled", value: await operation() };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
 }
-async function retirementStep<T>(outcomes: RetirementPhase[], phase: string, operation: () => T | Promise<T>) {
+async function retirementStep<T>(
+  outcomes: RetirementPhase[],
+  phase: string,
+  operation: () => T | Promise<T>,
+) {
   const outcome = await retirementAttempt(operation);
   outcomes.push({ phase, outcome });
   return outcome;
 }
 function retirementPhaseReceipt({ phase, outcome }: RetirementPhase) {
-  if (outcome.status === "fulfilled") return { phase, status: outcome.status, value: outcome.value };
+  if (outcome.status === "fulfilled")
+    return { phase, status: outcome.status, value: outcome.value };
   const reason = outcome.reason;
-  return { phase, status: outcome.status, reason: { type: typeof reason, detail: String(reason), stack: reason instanceof Error ? reason.stack : undefined } };
+  return {
+    phase,
+    status: outcome.status,
+    reason: {
+      type: typeof reason,
+      detail: String(reason),
+      stack: reason instanceof Error ? reason.stack : undefined,
+    },
+  };
 }
 function retirementFinish(outcomes: RetirementPhase[]) {
-  console.log(`Runtime retirement outcome receipt: ${JSON.stringify(outcomes.map(retirementPhaseReceipt))}`);
-  const failures = outcomes.flatMap(({ outcome }) => outcome.status === "rejected" ? [outcome.reason] : []);
+  console.log(
+    `Runtime retirement outcome receipt: ${JSON.stringify(outcomes.map(retirementPhaseReceipt))}`,
+  );
+  const failures = outcomes.flatMap(({ outcome }) =>
+    outcome.status === "rejected" ? [outcome.reason] : [],
+  );
   if (failures.length === 1) throw failures[0];
-  if (failures.length) throw new AggregateError(failures, "Runtime retirement primary and cleanup failures");
+  if (failures.length)
+    throw new AggregateError(failures, "Runtime retirement primary and cleanup failures");
 }
 function retirementTargetReceipt(target: RetirementTarget) {
-  return { index: target.index, initialURL: target.initialURL, observed: target.observed, closed: target.closed };
+  return {
+    index: target.index,
+    initialURL: target.initialURL,
+    observed: target.observed,
+    closed: target.closed,
+  };
 }
 async function retirementObserveTarget(target: RetirementTarget, attempt: string) {
   const url = await target.worker.evaluate(() => location.href);
   const parsed = new URL(url);
   const role = parsed.searchParams.get("role");
-  if (parsed.origin !== origin || parsed.searchParams.get("attempt") !== attempt || (role !== "filesystem" && role !== "consumer"))
+  if (
+    parsed.origin !== origin ||
+    parsed.searchParams.get("attempt") !== attempt ||
+    (role !== "filesystem" && role !== "consumer")
+  )
     throw new Error(`Unowned original worker ${target.index}: ${url}`);
   const path = role === "filesystem" ? "/fs-worker.js" : "/retirement-consumer.js";
-  if (parsed.pathname !== path || target.closed) throw new Error(`Original worker not live before disposal: ${url}`);
+  if (parsed.pathname !== path || target.closed)
+    throw new Error(`Original worker not live before disposal: ${url}`);
   target.observed = { url, role };
 }
-async function retirementObserveOriginals(observation: ReturnType<typeof retirementTargets>, attempt: string) {
+async function retirementObserveOriginals(
+  observation: ReturnType<typeof retirementTargets>,
+  attempt: string,
+) {
   await retirementBounded(observation.ready, "original workers before disposal");
   await Promise.all(observation.targets.map((target) => retirementObserveTarget(target, attempt)));
-  if (observation.targets.length !== 2 || new Set(observation.targets.map((target) => target.observed?.role)).size !== 2)
-    throw new Error("Runtime retirement observation did not establish both distinct original workers");
-  console.log(`Runtime retirement original observation receipt: ${JSON.stringify({ attempt, targets: observation.targets.map(retirementTargetReceipt) })}`);
+  if (
+    observation.targets.length !== 2 ||
+    new Set(observation.targets.map((target) => target.observed?.role)).size !== 2
+  )
+    throw new Error(
+      "Runtime retirement observation did not establish both distinct original workers",
+    );
+  console.log(
+    `Runtime retirement original observation receipt: ${JSON.stringify({ attempt, targets: observation.targets.map(retirementTargetReceipt) })}`,
+  );
 }
 async function inspectRetirementTarget(target: RetirementTarget) {
-  if (!target.observed) throw new Error(`Original worker ${target.index} was not observed before disposal`);
-  return { ...retirementTargetReceipt(target), url: target.observed.url, live: target.closed ? false : await target.worker.evaluate(() => true) };
+  if (!target.observed)
+    throw new Error(`Original worker ${target.index} was not observed before disposal`);
+  return {
+    ...retirementTargetReceipt(target),
+    url: target.observed.url,
+    live: target.closed ? false : await target.worker.evaluate(() => true),
+  };
 }
 async function retirementAcquireLock(database: string) {
   const lock = `bun-wasm:filesystem:indexeddb:${database}`;
@@ -252,10 +317,24 @@ async function retirementDeleteDatabase(database: string) {
 async function retirementStorageCleanup(context: BrowserContext, attempt: string) {
   const cleanup = await context.newPage();
   const outcomes: RetirementPhase[] = [];
-  await retirementStep(outcomes, "database cleanup navigation", () => retirementBounded(cleanup.goto(origin), "database cleanup navigation"));
-  await retirementStep(outcomes, "owned native lock cleanup", () => retirementBounded(cleanup.evaluate(retirementAcquireLock, attempt), "owned native lock cleanup"));
-  await retirementStep(outcomes, "owned native database deletion", () => retirementBounded(cleanup.evaluate(retirementDeleteDatabase, attempt), "owned native database deletion"));
-  await retirementStep(outcomes, "database cleanup page destruction", () => retirementBounded(cleanup.close(), "database cleanup page destruction"));
+  await retirementStep(outcomes, "database cleanup navigation", () =>
+    retirementBounded(cleanup.goto(origin), "database cleanup navigation"),
+  );
+  await retirementStep(outcomes, "owned native lock cleanup", () =>
+    retirementBounded(
+      cleanup.evaluate(retirementAcquireLock, attempt),
+      "owned native lock cleanup",
+    ),
+  );
+  await retirementStep(outcomes, "owned native database deletion", () =>
+    retirementBounded(
+      cleanup.evaluate(retirementDeleteDatabase, attempt),
+      "owned native database deletion",
+    ),
+  );
+  await retirementStep(outcomes, "database cleanup page destruction", () =>
+    retirementBounded(cleanup.close(), "database cleanup page destruction"),
+  );
   retirementFinish(outcomes);
   return { database: attempt, lockReleased: true, deleted: true };
 }
@@ -264,28 +343,62 @@ async function retirementLockAvailable(context: BrowserContext, attempt: string)
   const outcomes: RetirementPhase[] = [];
   const result = await retirementStep(outcomes, "native lock observation", async () => {
     await observer.goto(origin);
-    return observer.evaluate((database) => navigator.locks.request(`bun-wasm:filesystem:indexeddb:${database}`, { ifAvailable: true }, (lock) => lock !== null), attempt);
+    return observer.evaluate(
+      (database) =>
+        navigator.locks.request(
+          `bun-wasm:filesystem:indexeddb:${database}`,
+          { ifAvailable: true },
+          (lock) => lock !== null,
+        ),
+      attempt,
+    );
   });
-  await retirementStep(outcomes, "lock observer page destruction", () => retirementBounded(observer.close(), "lock observer page destruction"));
+  await retirementStep(outcomes, "lock observer page destruction", () =>
+    retirementBounded(observer.close(), "lock observer page destruction"),
+  );
   retirementFinish(outcomes);
   if (result.status === "fulfilled") return result.value;
   throw result.reason;
 }
 async function retirementCloseOriginal(target: RetirementTarget): Promise<RetirementPhase[]> {
   const label = `original target ${target.index} ${target.observed?.role ?? "unobserved"}`;
-  const request = target.closed ? undefined : retirementAttempt(() => retirementBounded(target.worker.evaluate(() => close()), `${label} close request`));
+  const request = target.closed
+    ? undefined
+    : retirementAttempt(() =>
+        retirementBounded(
+          target.worker.evaluate(() => close()),
+          `${label} close request`,
+        ),
+      );
   const joining = retirementAttempt(() => retirementBounded(target.close, `${label} close join`));
   const requested = request ? await request : undefined;
   const joined = await joining;
-  const outcomes: RetirementPhase[] = requested ? [{ phase: `${label} close request`, outcome: requested }] : [];
+  const outcomes: RetirementPhase[] = requested
+    ? [{ phase: `${label} close request`, outcome: requested }]
+    : [];
   return outcomes.concat([{ phase: `${label} close join`, outcome: joined }]);
 }
-async function retirementCleanup(context: BrowserContext, page: Page, targets: RetirementTarget[], attempt: string, outcomes: RetirementPhase[]) {
+async function retirementCleanup(
+  context: BrowserContext,
+  page: Page,
+  targets: RetirementTarget[],
+  attempt: string,
+  outcomes: RetirementPhase[],
+) {
   const closed = await Promise.all(targets.map(retirementCloseOriginal));
   outcomes.push(...closed.flat());
-  await retirementStep(outcomes, "original page destruction", () => retirementBounded(page.close(), "original page destruction"));
-  const cleanup = await retirementStep(outcomes, "cleanup page and native database", () => retirementBounded(retirementStorageCleanup(context, attempt), "cleanup page and native database"));
-  console.log(`Runtime retirement cleanup receipt: ${JSON.stringify({ attempt, targets: targets.map(retirementTargetReceipt), cleanup: retirementPhaseReceipt({ phase: "storage", outcome: cleanup }) })}`);
+  await retirementStep(outcomes, "original page destruction", () =>
+    retirementBounded(page.close(), "original page destruction"),
+  );
+  const cleanup = await retirementStep(outcomes, "cleanup page and native database", () =>
+    retirementBounded(
+      retirementStorageCleanup(context, attempt),
+      "cleanup page and native database",
+    ),
+  );
+  console.log(
+    `Runtime retirement cleanup receipt: ${JSON.stringify({ attempt, targets: targets.map(retirementTargetReceipt), cleanup: retirementPhaseReceipt({ phase: "storage", outcome: cleanup }) })}`,
+  );
 }
 async function inspectRetirementArm(
   context: BrowserContext,
@@ -301,7 +414,9 @@ async function inspectRetirementArm(
       const control: typeof import("./runtime-retirement-browser") = await import(source);
       const observe = Reflect.get(globalThis, "retirementObserveOriginals");
       if (typeof observe !== "function") throw new Error("Missing original-worker observer");
-      return control.runtimeRetirementControl(options, async () => { await observe(); });
+      return control.runtimeRetirementControl(options, async () => {
+        await observe();
+      });
     },
     { attempt, fail },
   );
@@ -361,16 +476,26 @@ async function runRetirementArm(browser: Browser, name: string, fail: boolean): 
     page = await context.newPage();
     observation = retirementTargets(page);
     const originalObservation = observation;
-    await page.exposeFunction("retirementObserveOriginals", () => retirementObserveOriginals(originalObservation, attempt));
-    await retirementBounded(inspectRetirementArm(context, page, observation.targets, attempt, fail), "native case", 45_000);
+    await page.exposeFunction("retirementObserveOriginals", () =>
+      retirementObserveOriginals(originalObservation, attempt),
+    );
+    await retirementBounded(
+      inspectRetirementArm(context, page, observation.targets, attempt, fail),
+      "native case",
+      45_000,
+    );
   });
   const outcomes: RetirementPhase[] = [{ phase: "primary", outcome: primary }];
   if (page && observation) {
     const originalPage = page;
     const targets = observation.targets;
-    await retirementStep(outcomes, "cleanup schedule", () => retirementCleanup(context, originalPage, targets, attempt, outcomes));
+    await retirementStep(outcomes, "cleanup schedule", () =>
+      retirementCleanup(context, originalPage, targets, attempt, outcomes),
+    );
   }
-  await retirementStep(outcomes, "test context destruction", () => retirementBounded(context.close(), "test context destruction"));
+  await retirementStep(outcomes, "test context destruction", () =>
+    retirementBounded(context.close(), "test context destruction"),
+  );
   retirementFinish(outcomes);
 }
 async function runRetirementCase(
