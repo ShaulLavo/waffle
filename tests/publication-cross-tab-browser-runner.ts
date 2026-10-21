@@ -160,13 +160,23 @@ async function run(name: string, origin: string): Promise<void> {
     await control(second, "pageStop");
     equal(await control(first, "authorityDeath"), { observedNativeDeath: true });
     equal(await control(first, "exclusive"), false);
-    // A live frozen worker alone holds continuity, including across a replacement epoch.
+    const recovery = await context.newPage();
+    await recovery.goto(origin);
+    equal(await control(recovery, "peer", descriptor), {
+      attached: true,
+      authorityRootReceived: false,
+    });
+    await control(recovery, "pageStop");
+    await first.close();
+    equal(await control(recovery, "exclusive"), false);
+    // Creator-page closure is not claimant death. Its actual worker on the other page
+    // still holds workspace continuity, including across a replacement epoch.
     await new Promise((resolve) => setTimeout(resolve, 3200));
-    equal(await control(first, "exclusive"), false);
+    equal(await control(recovery, "exclusive"), false);
     equal(await control(second, "guestDeath", { mode: "proc" }), { observedNativeDeath: true });
-    equal(await control(first, "exclusive"), true);
+    equal(await control(recovery, "exclusive"), true);
     console.log(
-      "PASS CLAIMED live worker blocks exclusive continuity after creator authority death and timeout; separate native worker death releases guard",
+      "PASS CLAIMED live worker blocks exclusive continuity after creator authority death, creator page close and timeout; separate native worker death releases guard",
     );
     await context.close();
     console.log(`${name} ${browser.version()}: focused resident grant pilot controls passed`);
