@@ -370,3 +370,33 @@ test("only workspace allocations append identity cells and capability scans excl
     file.port.close();
   }
 });
+
+
+test("synchronous cleanup posting failure is memoized without skipping local disposal", async () => {
+  const pair = createFilesystemConnection();
+  pair.client.residentPublication = {
+    kind: "workspace", workspace: "failed-local-post", instance: "test", epoch: 1,
+    description: "not-attached", handle: 1,
+  };
+  const client = new FilesystemClient(pair.client);
+  const post = pair.client.port.postMessage.bind(pair.client.port);
+  let attempted = 0;
+  Object.defineProperty(pair.client.port, "postMessage", { value(value: unknown, transfer: Transferable[]) {
+    if (value && typeof value === "object" && "stopWorkspace" in value) {
+      attempted++;
+      throw new Error("intentional cleanup post failure");
+    }
+    post(value, transfer);
+  } });
+  try {
+    expect(() => client.dispose()).not.toThrow();
+    expect(isRevoked(pair.client)).toBe(true);
+    await expect(client.stopResidentPublication()).rejects.toThrow("intentional cleanup post failure");
+    client.dispose();
+    await expect(client.stopResidentPublication()).rejects.toThrow("intentional cleanup post failure");
+    expect(attempted).toBe(1);
+  } finally {
+    pair.client.port.close();
+    pair.server.port.close();
+  }
+});

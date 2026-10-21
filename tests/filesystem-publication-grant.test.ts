@@ -571,6 +571,23 @@ test("claim constructors, copies and paired codec bypass late prototype hooks", 
 });
 
 
+async function attemptOtherFileGrant(channel: ResidentChannel, token: string, handle: number) {
+  let issued = false;
+  let failure: unknown;
+  try {
+    const grant = residentGrant(await channel.call("prepare", {
+      token, handle, request: { kind: "read", offset: 0, maxBytes: 1 },
+    }));
+    issued = true;
+    const cell = new ResidentGrantCell(grant);
+    cell.cancel();
+    await channel.call("settle", { token, outcome: encodeResidentOutcome(cell.snapshot()) });
+  } catch (error) {
+    failure = error;
+  }
+  return { issued, failure };
+}
+
 test("file-only authority rejects another retained file handle without issuing a grant", async () => {
   const f = await rootFixture();
   await f.root.asyncCall("writeFile", ["/other"], new Uint8Array([9]));
@@ -586,23 +603,10 @@ test("file-only authority rejects another retained file handle without issuing a
   const channel = new ResidentChannel(authority.workspace);
   const session = residentSession(await channel.call("open", descriptor));
   const before = f.backend.shared.publication!.cut();
-  let issued = false;
-  let failure: unknown;
   try {
-    try {
-      const grant = residentGrant(await channel.call("prepare", {
-        token: session.token, handle: other.node,
-        request: { kind: "read", offset: 0, maxBytes: 1 },
-      }));
-      issued = true;
-      const cell = new ResidentGrantCell(grant);
-      cell.cancel();
-      await channel.call("settle", { token: session.token, outcome: encodeResidentOutcome(cell.snapshot()) });
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toMatchObject({ errno: 8 });
-    expect(issued).toBe(false);
+    const result = await attemptOtherFileGrant(channel, session.token, other.node);
+    expect(result.failure).toMatchObject({ errno: 8 });
+    expect(result.issued).toBe(false);
     expect(f.backend.shared.publication!.cut()).toEqual(before);
   } finally {
     await channel.call("close", { token: session.token });

@@ -656,6 +656,7 @@ class WorkspaceBridge {
   private pending = new Map<number, BridgeOperation>();
   private responses = new Map<number, Uint8Array>();
   private bound: Promise<void> = Promise.resolve();
+  private bindingStarted = false;
   private children = new Set<WorkspaceBridge>();
   private transfer = Promise.withResolvers<void>();
   private stopping: Promise<void> | undefined;
@@ -795,6 +796,7 @@ class WorkspaceBridge {
     this.transfer.resolve();
   }
   private cancelTransferred(): void {
+    if (this.bindingStarted) return;
     if (
       !isRevoked(this.connection) &&
       this.connection.reservations.some(
@@ -851,6 +853,8 @@ class WorkspaceBridge {
   private cleanupReply(port: MessagePort, result: WorkspaceCleanupResult): void {
     try {
       port.postMessage(result);
+    } catch {
+      // A vanished receiver cannot turn a failed join into successful cleanup.
     } finally {
       port.close();
     }
@@ -883,6 +887,7 @@ class WorkspaceBridge {
       operation = text(call.operation);
     if (!Array.isArray(call.args)) throw new FilesystemError(28);
     if (operation === "workspaceBind") {
+      this.bindingStarted = true;
       this.bound = this.bind(call.args[0]);
       void this.bound.catch((error: unknown) => this.transfer.reject(error));
       await this.bound;

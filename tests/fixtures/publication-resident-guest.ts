@@ -247,6 +247,14 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     );
     return null;
   }
+  if (operation === "revokedData") {
+    try {
+      await current.fs.asyncCall("stat", [resource?.handle]);
+      return 0;
+    } catch (error) {
+      return Number(Reflect.get(Object(error), "errno"));
+    }
+  }
   if (operation === "repeatStop") {
     await current.fs.stopResidentPublication();
     current.fs.dispose();
@@ -300,6 +308,7 @@ type GuestMessage =
         | "observerDenied"
         | "beginPending"
         | "repeatStop"
+        | "revokedData"
         | "offset"
         | "prepareDenied"
         | "armClaim"

@@ -11,10 +11,15 @@ import {
   residentSession,
   ResidentAttachment,
   ResidentChannel,
+  stopWorkspaceBridge,
   type ResidentGrantClient,
   text,
 } from "../fs/publication-attachment";
-import { revokeFilesystem, type FilesystemConnection } from "../fs/protocol";
+import {
+  revokeFilesystem,
+  releaseFilesystemReservation,
+  type FilesystemConnection,
+} from "../fs/protocol";
 import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
 
 class FixtureWorker {
@@ -424,6 +429,17 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     await worker.request("start", { mode: text(body.mode), connection, failSetup: body.failSetup }, [connection.port]);
     return worker.until(body.failSetup === true ? "finished" : "ready");
   }
+  if (operation === "workspaceDescendantCancel") {
+    const parent = guests.get(text(body.parent));
+    if (!parent) throw new Error("missing source guest");
+    const inherited = record(await parent.worker.request("descendantCodec"));
+    const connection = inherited.connection as FilesystemConnection;
+    revokeFilesystem(connection);
+    for (const reservation of connection.reservations) releaseFilesystemReservation(reservation);
+    await stopWorkspaceBridge(connection);
+    connection.port.close();
+    return null;
+  }
   if (operation === "workspaceDescendant" || operation === "workspaceDescendantQueue") {
     const parent = guests.get(text(body.parent));
     if (!parent) throw new Error("missing source guest");
@@ -441,6 +457,11 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   if (!guest) throw new Error("missing workspace guest");
   if (operation === "workspaceGuestStatus")
     return { exit: guest.worker.observed("exit"), finished: guest.worker.observed("finished"), cleanupError: guest.worker.observed("cleanup-error") };
+  if (operation === "workspaceGuestTerminal") {
+    const terminal = await guest.worker.until(text(body.event));
+    await guest.worker.until("finished");
+    return terminal;
+  }
   if (operation === "workspaceGuestReady") return guest.worker.until("ready");
   if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
   if (operation === "workspaceGuestRevoke") {

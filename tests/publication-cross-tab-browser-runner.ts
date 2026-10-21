@@ -267,6 +267,120 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
     await context.close();
   }
 }
+async function waitForCancellation(page: Page, before: number): Promise<void> {
+  await page.waitForFunction((before) => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    return state && typeof state === "object" && Number(Reflect.get(state, "cancelled")) > before;
+  }, before);
+}
+async function joinedGuestStop(page: Page, key: string): Promise<void> {
+  equal(record(await control(page, "workspaceGuestTerminal", { key, event: "exit" })).type, "exit");
+  await control(page, "workspaceGuestDeath", { key });
+}
+async function startupCleanup(page: Page): Promise<void> {
+  const before = record(await workspaceChannels(page));
+  const cancelled = record(await control(page, "workspaceCancelledStartup"));
+  equal(record(cancelled.finished).setupCount, 0);
+  equal(cancelled.exit, false);
+  equal(cancelled.cleanupError, false);
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
+  await control(page, "workspaceGuest", { key: "setup-failed", mode: "wasi", failSetup: true });
+  equal(record(await control(page, "workspaceGuestTerminal", { key: "setup-failed", event: "error" })).type, "error");
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 2);
+  await control(page, "workspaceGuestDeath", { key: "setup-failed" });
+  console.log("PASS actual workspace startup cancellation and setup failure close their owned bridges");
+}
+async function pendingCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "pending", mode: "proc" });
+  const before = record(await workspaceChannels(page));
+  await channelBarrier(page, "workspace");
+  await workspaceGuest(page, "pending", "beginPending");
+  await heldChannel(page);
+  await control(page, "workspaceGuestSignalStop", { key: "pending" });
+  await waitForCancellation(page, Number(before.cancelled));
+  equal(record(await control(page, "workspaceGuestStatus", { key: "pending" })).exit, false);
+  equal(record(await workspaceChannels(page)).closed, before.closed);
+  await channelBarrier(page, "release");
+  await joinedGuestStop(page, "pending");
+  const after = record(await workspaceChannels(page));
+  equal(after.closed, Number(before.closed) + 1);
+  equal(after.pending, 0);
+  equal(after.closedPending, 0);
+  console.log("PASS actual workspace exit waits for the native pending authority reply before channel close and exit ACK");
+}
+async function transferCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "parent", mode: "proc" });
+  const before = record(await workspaceChannels(page));
+  await channelBarrier(page, "workspaceAdopt");
+  await control(page, "workspaceDescendantQueue", { parent: "parent", key: "living-child", mode: "proc" });
+  await heldChannel(page);
+  await control(page, "workspaceGuestSignalStop", { key: "parent" });
+  // A fresh channel query gives the page/worker event queues a real round trip, not a sleep.
+  await workspacePage(page, "stat", [await workspacePage(page, "preopen", ["/"])]);
+  equal(record(await control(page, "workspaceGuestStatus", { key: "parent" })).exit, false);
+  equal(record(await workspaceChannels(page)).closed, before.closed);
+  await channelBarrier(page, "release");
+  await control(page, "workspaceGuestReady", { key: "living-child" });
+  await joinedGuestStop(page, "parent");
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
+  await workspaceGuest(page, "living-child", "prepare", { kind: "read", offset: 0, maxBytes: 1 });
+  equal(record(await workspaceGuest(page, "living-child", "call", { kind: "read", bytes: [88] })).bytes, [10]);
+  await control(page, "workspaceGuestStop", { key: "living-child" });
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 2);
+  equal(record(await workspaceChannels(page)).closedPending, 0);
+  console.log("PASS actual workspace exit joins codec adoption while the accepted independent child survives and reads");
+}
+async function repeatedCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "repeat", mode: "proc" });
+  const before = record(await workspaceChannels(page));
+  await workspaceGuest(page, "repeat", "repeatStop");
+  equal(await workspaceGuest(page, "repeat", "revokedData"), 11);
+  await control(page, "workspaceGuestStop", { key: "repeat" });
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
+  await control(page, "workspaceGuest", { key: "cancel-parent", mode: "proc" });
+  await control(page, "workspaceDescendantCancel", { parent: "cancel-parent" });
+  await control(page, "workspaceGuestStop", { key: "cancel-parent" });
+  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 3);
+  console.log("PASS repeated stop/dispose stays revoked and closes once; unaccepted codec reservation cancellation joins separately");
+}
+async function failedCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "lost", mode: "proc", cleanupFailure: true });
+  const before = record(await workspaceChannels(page));
+  await channelBarrier(page, "workspace");
+  await workspaceGuest(page, "lost", "beginPending");
+  await heldChannel(page);
+  await control(page, "workspaceGuestSignalStop", { key: "lost" });
+  await waitForCancellation(page, Number(before.cancelled));
+  equal(record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "cleanup-error" })).type, "cleanup-error");
+  equal(record(await control(page, "workspaceGuestStatus", { key: "lost" })).exit, false);
+  equal(record(await workspaceChannels(page)).closed, before.closed);
+  await control(page, "workspaceStop");
+  await control(page, "authorityDeath");
+  equal(await control(page, "exclusive"), false);
+  await control(page, "workspaceGuestDeath", { key: "lost" });
+  equal(await control(page, "exclusive"), true);
+  await channelBarrier(page, "release");
+  console.log("PASS lost workspace reply emits cleanup-error without exit ACK/channel close; native worker death alone releases retained continuity");
+}
+async function workspaceCleanupControls(browser: Browser, origin: string): Promise<void> {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    page.on("pageerror", (error) => console.error(error));
+    await observeDeaths(page);
+    await observeWorkspaceChannels(page);
+    await page.goto(origin);
+    const descriptor = await control(page, "workspaceAuthority", `cleanup-${crypto.randomUUID()}`);
+    await control(page, "workspacePeer", descriptor);
+    await startupCleanup(page);
+    await pendingCleanup(page);
+    await transferCleanup(page);
+    await repeatedCleanup(page);
+    await failedCleanup(page);
+  } finally {
+    await context.close();
+  }
+}
 async function run(name: string, origin: string): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")
     throw new Error(`unknown engine ${name}`);
@@ -431,6 +545,7 @@ async function run(name: string, origin: string): Promise<void> {
     );
     await context.close();
     await workspaceControls(browser, origin);
+    await workspaceCleanupControls(browser, origin);
     console.log(`${name} ${browser.version()}: focused resident and workspace controls passed`);
   } finally {
     await lifecycle.closeBrowser(browser);

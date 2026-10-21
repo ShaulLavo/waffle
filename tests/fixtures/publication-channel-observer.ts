@@ -6,6 +6,7 @@ export function installWorkspaceChannelObserver(): void {
     pending: 0,
     held: 0,
     closedPending: 0,
+    cancelled: 0,
     hold: "",
     release: () => {},
   };
@@ -23,6 +24,8 @@ export function installWorkspaceChannelObserver(): void {
       const data = message(value);
       if (data?.kind === "request" && typeof data.id === "string")
         this.track(data.id, data.operation);
+      if (data?.kind === "cancel" && typeof data.id === "string" && this.requests.has(data.id))
+        state.cancelled++;
       super.postMessage(value);
     }
     private track(id: string, operation: unknown): void {
