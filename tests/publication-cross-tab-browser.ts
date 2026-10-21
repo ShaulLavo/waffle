@@ -674,8 +674,60 @@ async function inspectFactoryWorkspace(name: string): Promise<unknown> {
     database.close();
   }
 }
+let ordinaryHolder: { owner: SharedFilesystem; url: string } | undefined;
+let nativeBlocker: { database: IDBDatabase; deletion: Promise<void> } | undefined;
+async function holdOrdinaryWorkspace(name: string): Promise<unknown> {
+  if (ordinaryHolder) throw new Error("ordinary holder still retained");
+  const url = new URL(`/fs-worker.js?attempt=${crypto.randomUUID()}`, location.href).href;
+  const owner = new SharedFilesystem({ name, mode: "fast", whenBusy: "wait", workerURL: url });
+  ordinaryHolder = { owner, url };
+  return Array.from((await owner.readFile("/nested/deeper/a"))!);
+}
+async function blockNativeOpen(name: string): Promise<unknown> {
+  if (nativeBlocker) throw new Error("native blocker still retained");
+  const database = await nativeRequest(indexedDB.open(name, 1));
+  const blocked = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<void>();
+  void completed.promise.catch(() => {});
+  const request = indexedDB.deleteDatabase(name);
+  request.onblocked = () => blocked.resolve();
+  request.onsuccess = () => completed.resolve();
+  request.onerror = () => {
+    blocked.reject(request.error);
+    completed.reject(request.error);
+  };
+  nativeBlocker = { database, deletion: completed.promise };
+  await blocked.promise;
+  return { blocked: true };
+}
 let persistentHolder: Awaited<ReturnType<typeof acquirePublicationGuard>> | undefined;
 async function persistentControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "persistentOrdinaryHold") return holdOrdinaryWorkspace(text(value));
+  if (operation === "persistentOrdinaryRead")
+    return Array.from((await ordinaryHolder!.owner.readFile("/nested/deeper/a"))!);
+  if (operation === "persistentOrdinaryRelease") {
+    await stopOrdinaryOwner(ordinaryHolder!.owner, ordinaryHolder!.url);
+    ordinaryHolder = undefined;
+    return null;
+  }
+  if (operation === "persistentBlockNativeOpen") return blockNativeOpen(text(value));
+  if (operation === "persistentUnblockNativeOpen") {
+    nativeBlocker!.database.close();
+    await nativeBlocker!.deletion;
+    nativeBlocker = undefined;
+    return null;
+  }
+  if (
+    [
+      "persistentCancelPendingClaim",
+      "persistentBeginLateRequest",
+      "persistentCancelEpoch",
+    ].includes(operation)
+  ) {
+    if (authority) throw new Error("previous authority realm still retained");
+    authority = new FixtureWorker("/resident-authority.js");
+    return authority.request(operation, value);
+  }
   if (operation === "persistentSeed") return ordinaryPersistentWorkspace(text(value), true);
   if (operation === "persistentInspect") return inspectFactoryWorkspace(text(value));
   if (operation === "persistentDelete") {

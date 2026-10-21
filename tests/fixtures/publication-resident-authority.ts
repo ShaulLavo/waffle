@@ -13,6 +13,7 @@ import {
 import { record, text } from "../../fs/publication-attachment";
 
 import { IndexedDBStorage } from "../../fs/indexeddb";
+import type { RuntimeStartupStage } from "../../fs/startup";
 import {
   createPersistentResidentOwner,
   selectPersistentWorkspace,
@@ -28,6 +29,19 @@ let failNativeClose = false;
 let openGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
 let openHeld: ReturnType<typeof Promise.withResolvers<void>> | undefined;
 let nativeEvents: string[] = [];
+let startupBarrier:
+  | { stage: RuntimeStartupStage; arrived: ReturnType<typeof Promise.withResolvers<void>> }
+  | undefined;
+let abortAtStage: RuntimeStartupStage | undefined;
+let failPhysicalClose = false;
+const physicalCloseFailure = new Error("injected original physical close failure");
+const nativeDatabaseClose = IDBDatabase.prototype.close;
+IDBDatabase.prototype.close = function () {
+  if (observeNative) nativeEvents.push("native-db-close-called");
+  if (failPhysicalClose) throw physicalCloseFailure;
+  nativeDatabaseClose.call(this);
+  if (observeNative) nativeEvents.push("native-db-closed");
+};
 const nativeOpen = IndexedDBStorage.open;
 const nativeLoad = IndexedDBStorage.prototype.load;
 const nativeClose = IndexedDBStorage.prototype.close;
@@ -182,7 +196,11 @@ function beginPersistent(body: unknown): PersistentResidentOwner {
   persistentAbort = new AbortController();
   persistentStop = undefined;
   const request = persistentRequest(body);
-  persistentOwner = createPersistentResidentOwner(request, persistentAbort.signal);
+  persistentOwner = createPersistentResidentOwner(request, persistentAbort.signal, (stage) => {
+    nativeEvents.push(stage);
+    if (startupBarrier?.stage === stage) startupBarrier.arrived.resolve();
+    if (abortAtStage === stage) persistentAbort!.abort();
+  });
   return persistentOwner;
 }
 async function stopPersistent(): Promise<unknown> {
@@ -195,10 +213,75 @@ async function stopPersistent(): Promise<unknown> {
     if (persistentOwner === owner) persistentOwner = undefined;
     return { same, stopped: true, events: nativeEvents.slice() };
   } catch (error) {
-    return { same, stopped: false, failure: String(error), events: nativeEvents.slice() };
+    return {
+      same,
+      stopped: false,
+      failure: String(error),
+      originalFailure: error === physicalCloseFailure,
+      events: nativeEvents.slice(),
+    };
   }
 }
+function beginObservedPersistent(body: unknown): Promise<boolean> {
+  return beginPersistent(body).ready.then(
+    () => true,
+    () => false,
+  );
+}
+async function pendingNativeClaim(body: unknown): Promise<unknown> {
+  startupBarrier = { stage: "filesystem-lock-requested", arrived: Promise.withResolvers<void>() };
+  const ready = beginObservedPersistent(body);
+  await startupBarrier.arrived.promise;
+  const key = `bun-wasm:filesystem:indexeddb:${text(record(body).name)}`;
+  const before = await navigator.locks.query();
+  const held = before.held?.filter((lock) => lock.name === key).length;
+  const pending = before.pending?.filter((lock) => lock.name === key).length;
+  if (held !== 1 || pending !== 1)
+    throw new Error("ordinary holder or pending native claim missing");
+  const stopped = await stopPersistent();
+  const after = await navigator.locks.query();
+  startupBarrier = undefined;
+  return {
+    ready: await ready,
+    held,
+    pending,
+    heldAfter: after.held?.filter((lock) => lock.name === key).length,
+    pendingAfter: after.pending?.filter((lock) => lock.name === key).length,
+    stopped,
+  };
+}
+async function pendingNativeOpen(body: unknown): Promise<unknown> {
+  startupBarrier = { stage: "indexeddb-open-requested", arrived: Promise.withResolvers<void>() };
+  failPhysicalClose = record(body).failClose === true;
+  const ready = beginObservedPersistent(body);
+  await startupBarrier.arrived.promise;
+  persistentStop = persistentOwner!.stop();
+  let settled = false;
+  void persistentStop.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await ready;
+  await Promise.resolve();
+  startupBarrier = undefined;
+  return { ready: false, pending: !settled, events: nativeEvents.slice() };
+}
+async function cancelledNativeEpoch(body: unknown): Promise<unknown> {
+  abortAtStage = "filesystem-epoch-resolved";
+  const ready = beginObservedPersistent(body);
+  const outcome = await ready;
+  const stopped = await stopPersistent();
+  abortAtStage = undefined;
+  return { ready: outcome, stopped };
+}
 async function persistentOperation(operation: string, body: unknown): Promise<unknown> {
+  if (operation === "persistentCancelPendingClaim") return pendingNativeClaim(body);
+  if (operation === "persistentBeginLateRequest") return pendingNativeOpen(body);
+  if (operation === "persistentCancelEpoch") return cancelledNativeEpoch(body);
   if (operation === "persistentStart") {
     const owner = beginPersistent(body);
     try {

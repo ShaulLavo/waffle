@@ -544,6 +544,101 @@ function nativeClosedBeforeRelease(value: unknown): void {
   )
     throw new Error("native close did not precede both final guard releases");
 }
+function cancelledBeforeLoad(value: unknown): void {
+  const result = record(value);
+  equal(result.ready, false);
+  const stopped = record(result.stopped);
+  equal(stopped.same, true);
+  equal(stopped.stopped, true);
+  if (!Array.isArray(stopped.events)) throw new Error("native cancellation events missing");
+  const events = stopped.events;
+  const close = events.indexOf("native-db-closed");
+  if (
+    close < 0 ||
+    events.slice(close + 1).filter((event) => event === "guard-released").length !== 2
+  )
+    throw new Error("physical close did not precede final guards");
+  for (const stage of ["native-acquired", "native-load", "filesystem-ready"])
+    if (events.includes(stage)) throw new Error(`cancelled owner reached ${stage}`);
+}
+async function pendingClaimControl(owner: Page, holder: Page, name: string): Promise<void> {
+  equal(await control(holder, "persistentOrdinaryHold", name), [11, 22, 33, 44]);
+  const before = await control(owner, "persistentInspect", name);
+  const result = record(
+    await control(owner, "persistentCancelPendingClaim", persistentAttempt(name)),
+  );
+  equal(result.held, 1);
+  equal(result.pending, 1);
+  equal(result.heldAfter, 1);
+  equal(result.pendingAfter, 0);
+  cancelledBeforeLoad(result);
+  const events = record(result.stopped).events;
+  if (
+    !Array.isArray(events) ||
+    !events.includes("indexeddb-open-resolved") ||
+    events.includes("filesystem-epoch-requested")
+  )
+    throw new Error("pending claim did not stay before epoch after a real native open");
+  equal(await control(holder, "persistentOrdinaryRead"), [11, 22, 33, 44]);
+  equal(await control(owner, "persistentInspect", name), before);
+  await control(owner, "persistentDeath");
+  await control(holder, "persistentOrdinaryRelease");
+  console.log("P1_PENDING_NATIVE_CLAIM=" + JSON.stringify(result));
+  console.log(
+    "PASS pending native claim cancels after real DB open while ordinary worker retains its lock, epoch and bytes",
+  );
+}
+async function lateRequestControl(owner: Page, holder: Page, failClose: boolean): Promise<void> {
+  const name = `waffle-u1-late-request-${crypto.randomUUID()}`;
+  equal(await control(holder, "persistentBlockNativeOpen", name), { blocked: true });
+  const result = record(
+    await control(owner, "persistentBeginLateRequest", {
+      ...record(persistentAttempt(name)),
+      failClose,
+    }),
+  );
+  equal(result.ready, false);
+  equal(result.pending, true);
+  if (
+    !Array.isArray(result.events) ||
+    !result.events.includes("indexeddb-open-requested") ||
+    result.events.includes("indexeddb-open-resolved")
+  )
+    throw new Error("native open was not physically pending at abort");
+  equal(await control(holder, "persistentProbe", name), false);
+  await control(holder, "persistentUnblockNativeOpen");
+  const stopped = record(await control(owner, "persistentStop"));
+  equal(stopped.same, true);
+  equal(stopped.stopped, !failClose);
+  if (failClose) {
+    equal(stopped.originalFailure, true);
+    equal(await control(owner, "persistentStop"), stopped);
+    equal(await control(holder, "persistentProbe", name), false);
+  } else cancelledBeforeLoad({ ready: false, stopped });
+  console.log("P1_LATE_NATIVE_REQUEST=" + JSON.stringify({ failClose, result, stopped }));
+  await control(owner, "persistentDeath");
+  equal(await control(holder, "persistentProbe", name), true);
+  await control(owner, "persistentDelete", name);
+  console.log(
+    `PASS physically pending native request joins actual late delivery and ${failClose ? "retains original failed close and guards" : "closes before guards release"}`,
+  );
+}
+async function epochCancellationControl(owner: Page, name: string): Promise<void> {
+  const before = record(await control(owner, "persistentInspect", name));
+  const result = record(await control(owner, "persistentCancelEpoch", persistentAttempt(name)));
+  cancelledBeforeLoad(result);
+  const events = record(result.stopped).events;
+  if (!Array.isArray(events) || !events.includes("filesystem-epoch-resolved"))
+    throw new Error("actual epoch transaction did not complete before cancellation");
+  const after = record(await control(owner, "persistentInspect", name));
+  equal(after.epoch, Number(before.epoch) + 1);
+  equal(after.generation, before.generation);
+  await control(owner, "persistentDeath");
+  console.log("P1_NATIVE_EPOCH_CANCELLATION=" + JSON.stringify(result));
+  console.log(
+    "PASS granted native epoch retires before cancelled factory closes without adapter load",
+  );
+}
 async function persistentOwnerControls(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext();
   const name = `waffle-u1-native-${crypto.randomUUID()}`;
@@ -625,6 +720,13 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     console.log(
       "PASS failed native close stays failed; surviving real attachment blocks replacement until genuine realm destruction",
     );
+    const pendingHolder = await context.newPage();
+    await observeDeaths(pendingHolder);
+    await pendingHolder.goto(origin);
+    await pendingClaimControl(owner, pendingHolder, name);
+    await lateRequestControl(owner, pendingHolder, false);
+    await lateRequestControl(owner, pendingHolder, true);
+    await epochCancellationControl(owner, name);
     await control(owner, "persistentDelete", name);
   } finally {
     await context.close();
