@@ -1,3 +1,10 @@
+import type { RuntimeNetwork } from "./browser/net/runtime.js";
+export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
+
+type RuntimeNetworkOwner = ReturnType<
+  (typeof import("./browser/net/runtime.js"))["createRuntimeNetwork"]
+>;
+
 import { SharedFilesystem, type SharedFilesystemOptions } from "./browser/shared-fs.js";
 import type {
   BrowserProcessBroker,
@@ -82,6 +89,8 @@ export interface Runtime {
   /** Adapter plumbing, not an application/shell API. Release only after another owner accepts
    * the consumer synchronously, or its physical cleanup is proven complete. */
   retainConsumer(consumer: RuntimeConsumer): () => void;
+  /** Lazy runtime-owned localhost services, independent of process activation. */
+  network(): Promise<RuntimeNetwork>;
   processes(): Promise<ProcessService>;
   dispose(): Promise<void>;
 }
@@ -257,6 +266,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
   let activation: Promise<ProcessService> | undefined;
+  let ownedNetwork: Promise<RuntimeNetworkOwner | undefined> | undefined;
+  let networkActivation: Promise<RuntimeNetwork> | undefined;
   let disposal: Promise<void> | undefined;
   let terminationFence: Promise<void> | undefined;
   let service: ProcessService | undefined;
@@ -373,6 +384,20 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // Disposal now owns this fence and stop, including releases from cancellation hooks.
         if (!disposed) consumers.delete(owned);
       };
+    },
+    network() {
+      if (disposed) return Promise.reject(new Error("Runtime is disposed"));
+      if (networkActivation) return networkActivation;
+      const pending = import("./browser/net/runtime.js").then(({ createRuntimeNetwork }) =>
+        disposed ? undefined : createRuntimeNetwork(assertLive),
+      );
+      ownedNetwork = pending;
+      networkActivation = pending.then((owner) => {
+        assertLive();
+        if (!owner) throw new Error("Runtime is disposed");
+        return owner.network;
+      });
+      return networkActivation;
     },
     processes() {
       if (disposed) return Promise.reject(new Error("Runtime is disposed"));
@@ -523,6 +548,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         );
         handles.clear();
         consumers.clear();
+        if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
         await attempt(() => host?.dispose());
         await attempt(() => filesystem.dispose());
         adapters.clear();

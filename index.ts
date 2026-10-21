@@ -2,6 +2,8 @@ export { createRuntime } from "./runtime.js";
 export type {
   Runtime,
   RuntimeOptions,
+  RuntimeNetwork,
+  RuntimeNetworkHelper,
   RuntimeFilesystem,
   RuntimeSupervisor,
   RuntimeConsumer,

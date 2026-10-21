@@ -132,6 +132,12 @@ export class RingReader extends RingBase {
     return Atomics.wait(this.cells, GEN, seen, timeoutMs < 0 ? Infinity : timeoutMs);
   }
 
+  /** Release a host's ring watcher when it is disposed. */
+  wake(): void {
+    Atomics.add(this.cells, GEN, 1);
+    Atomics.notify(this.cells, GEN);
+  }
+
   /** Resolves once the generation differs from `seen`; null where Atomics.waitAsync is missing. */
   waitAsync(seen: number): Promise<unknown> | null {
     const waitAsync = (Atomics as unknown as { waitAsync?: WaitAsync }).waitAsync;
