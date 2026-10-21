@@ -920,7 +920,7 @@ export class SharedFilesystemState {
     domain.verifyAdmission(admission, append ? { kind: "append", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1 } : { kind: "write", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1, offset: at }, bytes);
     const file = { birthHistory: domain.buffers.history, ino: this.slots[slot * SLOT_WORDS + INO]! };
     const publication = domain.prepare(admission, append ? { kind: "append", written: bytes.length, offset: end } : { kind: "number", value: bytes.length }, [
-      { kind: "bytes", file, offset: at, bytes, size: Math.max(oldSize, end), version: domain.cut().generation + 1 },
+      { kind: "bytes", file, offset: at, bytes, size: Math.max(oldSize, end), version: domain.nextContentVersion(file.ino) },
       { kind: "metadata", file, mode: this.slots[slot * SLOT_WORDS + MODE]!, mtime },
     ]);
     return { publication, bytes };
@@ -1132,7 +1132,7 @@ export class SharedFilesystemState {
     domain.verifyAdmission(admission, { kind: "resize", handle, size, truncate }, new Uint8Array());
     const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
     const changes: import("./publication.js").PublicationEffect[] = [];
-    if (next !== this.slots[this.at(slot, FILE_SIZE)]) changes.push({ kind: "resize", file, size: next, version: domain.cut().generation + 1 });
+    if (next !== this.slots[this.at(slot, FILE_SIZE)]) changes.push({ kind: "resize", file, size: next, version: domain.nextContentVersion(file.ino) });
     if (mtime !== this.getMtime(slot)) changes.push({ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime });
     return domain.prepare(admission, { kind: "number", value: 0 }, changes);
   }
@@ -1258,6 +1258,7 @@ export class SharedFilesystemState {
   }
   /** Both global and file locks are held. Keep the lock and generation until after publication. */
   private freeLocked(slot: number): void {
+    this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
     const revision = this.getRevision(slot);
     const floor =

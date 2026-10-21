@@ -51,6 +51,7 @@ interface Session {
   quiescing?: Promise<void>;
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
+  publicationPins?: Set<number>;
 }
 interface PreparedRequest {
   handles: number[];
@@ -82,6 +83,7 @@ export class FilesystemService {
       responses: new Map(),
       pending: new Map(),
       preparingHandles: new Map(),
+      ...(connection.publication?.observer ? {publicationPins: new Set<number>()} : {}),
     };
     this.sessions.add(session);
     for (const reservation of connection.reservations) {
@@ -247,6 +249,12 @@ export class FilesystemService {
   }
   private checkRequest(session: Session, operation: string, args: any[], held?: number[]): void {
     const [a, b] = args;
+    if (operation === "publicationPin") {
+      const grant = session.connection.publication?.observer;
+      if (!grant || a !== grant) throw new FilesystemError(2);
+      if (typeof b !== "number" || !Number.isSafeInteger(b) || b < 0) throw new FilesystemError(28);
+      this.check(session, b, held);
+    }
     if (
       [
         "retain",
@@ -390,8 +398,8 @@ export class FilesystemService {
       if (prepared?.failure) throw prepared.failure.error;
       if (operation !== "flush" && operation !== "sync") {
         const preparation = this.backend.prepare?.(
-          operation,
-          args,
+          operation === "publicationPin" ? "read" : operation,
+          operation === "publicationPin" ? [args[1]] : args,
           bytes.subarray(inputLength, inputLength + dataLength),
         );
         if (preparation) {
@@ -525,9 +533,31 @@ export class FilesystemService {
         if (!identity || typeof identity !== "object" || !("session" in identity) || !("sequence" in identity) || typeof identity.session !== "number" || typeof identity.sequence !== "number") throw new FilesystemError(28);
         return domain.lookupAny({ session: identity.session, sequence: identity.sequence });
       }
+      case "publicationPin": return this.publicationPin(session, args);
+      case "publicationReleasePin": {
+        const id = args[1];
+        if (typeof id !== "number" || !session.publicationPins?.delete(id)) throw new FilesystemError(28);
+        domain.releasePin(id);
+        return;
+      }
+      case "publicationDiagnostics": return domain.diagnostics();
       case "publicationStop": domain.stop(); return;
       default: throw new FilesystemError(52);
     }
+  }
+  private publicationPin(session: Session, args: readonly unknown[]): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const [_, handle, offset, length] = args;
+    const shared = this.backend.shared, domain = shared.publication!;
+    if (typeof handle !== "number" || typeof offset !== "number" || typeof length !== "number" || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > Math.floor(domain.limits.pinBytes / domain.limits.pins)) throw new FilesystemError(28);
+    this.check(session, handle);
+    const stat = shared.info(handle);
+    if (!stat || stat.kind !== "file") throw new FilesystemError(8);
+    const read = this.backend.execute("read", [handle, length, offset], new Uint8Array());
+    if (!(read instanceof Uint8Array)) throw new FilesystemError(29);
+    const pin = domain.pin({birthHistory: domain.buffers.history, ino: stat.ino}, domain.contentVersion(stat.ino), read);
+    session.publicationPins!.add(pin.id);
+    return {...pin, bytes: Array.from(pin.bytes)};
   }
   sweep(): void {
     if (this.sweeping) return;
@@ -585,6 +615,8 @@ export class FilesystemService {
     session.references.clear();
     session.responses.clear();
     session.preparingHandles.clear();
+    if (this.backend instanceof MemoryBackend) for (const id of session.publicationPins ?? []) this.backend.shared.publication?.releasePin(id);
+    session.publicationPins?.clear();
     session.connection.port.close();
     session.closed = true;
     if (!session.handles.size) {

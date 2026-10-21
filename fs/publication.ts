@@ -77,6 +77,7 @@ export interface PreparedPublication {
   readonly result: Uint8Array;
   readonly effects: Uint8Array;
   readonly changed: boolean;
+  readonly versions: readonly {slot: number; version: number}[];
 }
 export interface PublicationPin {
   readonly id: number;
@@ -91,6 +92,8 @@ const SESSION_WORDS = 4;
 const OP_WORDS = 9;
 const LOG_WORDS = 3;
 const PIN_WORDS = 3;
+const VERSION_SLOTS = 4096;
+const VERSION_WORDS = 3;
 const enum Control { Stopped, ArenaLock, Serial, GenerationLow, GenerationHigh, LogNext, LogCount, PinSerial, OperationSerial }
 const enum Session { Serial, Next, Retired, Open }
 const enum Op { State, Session, Sequence, Arguments, Input, Result, GenerationLow, GenerationHigh, Reserved }
@@ -128,6 +131,7 @@ export function createPublicationBuffers(limits: PublicationLimits): Publication
     logData: new SharedArrayBuffer(limits.logBytes),
     pins: new SharedArrayBuffer(limits.pins * PIN_WORDS * 4),
     pinData: new SharedArrayBuffer(limits.pinBytes),
+    versions: new SharedArrayBuffer(VERSION_SLOTS * VERSION_WORDS * 4),
   };
 }
 function same(left: Uint8Array, right: Uint8Array): boolean {
@@ -174,6 +178,7 @@ export class PublicationDomain {
   private readonly logData: Uint8Array;
   private readonly pins: Int32Array;
   private readonly pinData: Uint8Array;
+  private readonly versions: Int32Array;
   readonly limits: PublicationLimits;
   constructor(readonly buffers: PublicationBuffers) {
     this.limits = buffers.limits;
@@ -186,6 +191,7 @@ export class PublicationDomain {
     this.logData = new Uint8Array(buffers.logData);
     this.pins = new Int32Array(buffers.pins);
     this.pinData = new Uint8Array(buffers.pinData);
+    this.versions = new Int32Array(buffers.versions);
   }
   get stopped(): boolean { return Atomics.load(this.control, Control.Stopped) !== 0; }
   assertLive(): void { if (this.stopped) throw new FilesystemError(11); }
@@ -328,6 +334,42 @@ export class PublicationDomain {
     if (this.operations[base + Op.State] !== admission.ticket + state || this.operations[base + Op.Session] !== admission.id.session || this.operations[base + Op.Sequence] !== admission.id.sequence) throw new FilesystemError(11);
     return base;
   }
+  private versionSlot(ino: number, create: boolean): number {
+    let free = -1;
+    for (let slot = 0; slot < VERSION_SLOTS; slot++) {
+      const current = this.versions[slot * VERSION_WORDS];
+      if (current === ino) return slot;
+      if (!current && free < 0) free = slot;
+    }
+    if (!create) return -1;
+    if (free < 0) throw new FilesystemError(6, "publication content identity bound exceeded");
+    this.versions[free * VERSION_WORDS] = ino;
+    return free;
+  }
+  contentVersion(ino: number): number {
+    this.assertLive();
+    const slot = this.versionSlot(ino, false);
+    return slot < 0 ? 0 : number(this.versions[slot * VERSION_WORDS + 1]!, this.versions[slot * VERSION_WORDS + 2]!);
+  }
+  nextContentVersion(ino: number): number {
+    const next = this.contentVersion(ino) + 1;
+    if (!Number.isSafeInteger(next)) { this.stop(); throw new FilesystemError(33); }
+    return next;
+  }
+  forgetContent(ino: number): void {
+    const slot = this.versionSlot(ino, false);
+    if (slot >= 0) this.versions.fill(0, slot * VERSION_WORDS, (slot + 1) * VERSION_WORDS);
+  }
+  private prepareVersions(changes: readonly PublicationEffect[]): {slot: number; version: number}[] {
+    const versions: {slot: number; version: number}[] = [];
+    for (const change of changes) {
+      if (change.kind !== "bytes" && change.kind !== "resize") continue;
+      if (change.file.birthHistory !== this.buffers.history || change.version !== this.nextContentVersion(change.file.ino)) throw new FilesystemError(29, "invalid content version");
+      const slot = this.versionSlot(change.file.ino, true);
+      if (!versions.some((entry) => entry.slot === slot)) versions.push({slot, version: change.version});
+    }
+    return versions;
+  }
   prepare(admission: PublicationAdmission, result: MutationResult, changes: readonly PublicationEffect[]): PreparedPublication {
     this.checkAdmission(admission);
     if (changes.length > this.limits.effects) throw new FilesystemError(6, "publication effect count exceeded");
@@ -335,7 +377,7 @@ export class PublicationDomain {
     const generation = cut.generation + (changes.length ? 1 : 0);
     if (!Number.isSafeInteger(generation)) { this.stop(); throw new FilesystemError(33); }
     const receipt: PublicationReceipt = { id: admission.id, cut: { ...cut, generation }, result, durability: { kind: "untracked" } };
-    const prepared = { admission, receipt, result: json(result, this.limits.resultBytes), effects: encodeEffects(receipt, changes, this.limits.effectBytes), changed: changes.length > 0 };
+    const prepared = { admission, receipt, result: json(result, this.limits.resultBytes), effects: encodeEffects(receipt, changes, this.limits.effectBytes), changed: changes.length > 0, versions: this.prepareVersions(changes) };
     const base = this.checkAdmission(admission);
     if (Atomics.compareExchange(this.operations, base + Op.State, admission.ticket + Status.Pending, admission.ticket + Status.Committing) !== admission.ticket + Status.Pending) throw new FilesystemError(11);
     return prepared;
@@ -348,6 +390,11 @@ export class PublicationDomain {
     const current = this.cut().generation;
     if (generation !== current + (prepared.changed ? 1 : 0)) { this.stop(); throw new FilesystemError(29); }
     const [low, high] = words(generation);
+    for (const entry of prepared.versions) {
+      const [versionLow, versionHigh] = words(entry.version);
+      this.versions[entry.slot * VERSION_WORDS + 1] = versionLow;
+      this.versions[entry.slot * VERSION_WORDS + 2] = versionHigh;
+    }
     this.results.set(prepared.result, prepared.admission.slot * this.limits.resultBytes);
     this.operations[base + Op.Result] = prepared.result.length;
     this.operations[base + Op.GenerationLow] = low;
@@ -463,6 +510,7 @@ export class PublicationDomain {
     this.results.fill(0);
     this.pins.fill(0);
     this.pinData.fill(0);
+    this.versions.fill(0);
   }
   diagnostics(): PublicationDiagnostics {
     let sessions = 0, pending = 0, receipts = 0, inputBytes = 0, pins = 0, pinBytes = 0;

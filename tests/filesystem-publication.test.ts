@@ -687,3 +687,34 @@ test("production host replace append exclusive and move each publish one complet
     expect(await fixture.root.asyncCall("listFiles", ["/"])).toEqual(["/file", "/new/moved"]);
   } finally { fixture.stop(); }
 });
+
+
+test("production copied pins preserve a content version across metadata and later bytes", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const {root, grant, handle} = fixture;
+    expect(root.tryWrite(handle, [new Uint8Array([8])], 0)).toBe(1);
+    const pin = await root.asyncCall("publicationPin", [grant, handle, 0, 3]);
+    expect(pin.version).toBe(1);
+    expect(pin.bytes).toEqual([8, 2, 3]);
+    await root.asyncCall("setMode", [handle, 0o400]);
+    const metadata = await root.asyncCall("publicationPin", [grant, handle, 0, 3]);
+    expect(metadata.version).toBe(pin.version);
+    expect(metadata.cut.generation).toBeGreaterThan(pin.cut.generation);
+    await expectErrno(root.asyncCall("publicationPin", [grant, handle, 0, 3]), 6);
+    await root.asyncCall("publicationReleasePin", [grant, metadata.id]);
+    await root.asyncCall("setMode", [handle, 0o600]);
+    expect(root.tryWrite(handle, [new Uint8Array([9])], 0)).toBe(1);
+    const current = await root.asyncCall("publicationPin", [grant, handle, 0, 3]);
+    expect(current.version).toBe(2);
+    expect(current.bytes).toEqual([9, 2, 3]);
+    expect(pin.bytes).toEqual([8, 2, 3]);
+    expect((await fixture.changes(pin.cut)).kind).toBe("gap");
+    await root.asyncCall("publicationReleasePin", [grant, pin.id]);
+    await root.asyncCall("publicationReleasePin", [grant, current.id]);
+    expect(await root.asyncCall("publicationDiagnostics", [grant])).toMatchObject({pins: 0, pinBytes: 0});
+    await root.asyncCall("setMode", [handle, 0o200]);
+    await expectErrno(root.asyncCall("publicationPin", [grant, handle, 0, 3]), 2);
+    expect(await root.asyncCall("publicationDiagnostics", [grant])).toMatchObject({pins: 0, pinBytes: 0});
+  } finally { fixture.stop(); }
+});

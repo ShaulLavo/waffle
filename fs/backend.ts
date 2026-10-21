@@ -508,7 +508,7 @@ export class MemoryBackend implements FilesystemBackend {
       const size = offset + data.length;
       if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
       this.shared.growLocked(handle, size);
-      const file = this.publicationKey(info.ino), version = this.shared.publication!.cut().generation + 1;
+      const file = this.publicationKey(info.ino), version = this.shared.publication!.nextContentVersion(info.ino);
       const mtime = prepared.plan.mtime, changes = namespace.changes.slice();
       if (intent.append && !data.length && !changes.length) return {action: {kind: "none"}, result: {kind: "void"}, changes: []};
       if (!intent.append && size !== info.size) changes.push({kind: "resize", file, size, version});
@@ -545,7 +545,7 @@ export class MemoryBackend implements FilesystemBackend {
     return {
       action: { kind: "write", handle: intent.handle, offset, data, mtime }, result,
       changes: [
-        { kind: "bytes", file, offset, bytes: data, size: Math.max(info.size, end), version: this.shared.publication!.cut().generation + 1 },
+        { kind: "bytes", file, offset, bytes: data, size: Math.max(info.size, end), version: this.shared.publication!.nextContentVersion(info.ino) },
         { kind: "metadata", file, mode: info.mode ?? 0o600, mtime },
       ],
     };
@@ -556,7 +556,7 @@ export class MemoryBackend implements FilesystemBackend {
     const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
     const file = this.publicationKey(info.ino), mtime = intent.truncate ? Date.now() : info.mtime;
     const changes: PublicationEffect[] = [];
-    if (size !== info.size) changes.push({ kind: "resize", file, size, version: this.shared.publication!.cut().generation + 1 });
+    if (size !== info.size) changes.push({ kind: "resize", file, size, version: this.shared.publication!.nextContentVersion(info.ino) });
     if (mtime !== info.mtime) changes.push({ kind: "metadata", file, mode: info.mode ?? 0o600, mtime });
     return { action: { kind: "resize", handle: intent.handle, size: intent.size, truncate: intent.truncate, mtime }, result: { kind: "number", value: 0 }, changes };
   }
