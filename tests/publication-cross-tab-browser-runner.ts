@@ -399,8 +399,13 @@ async function repeatedCleanup(page: Page): Promise<void> {
       JSON.stringify({ connecting, held, cancelled, after: await workspaceChannels(page), result }),
   );
   equal(result.joined, true);
+  const joined = record(await workspaceChannels(page));
+  equal(joined.opened, held.opened);
+  equal(joined.closed, held.closed);
   await control(page, "workspaceGuestStop", { key: "cancel-parent" });
-  equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 3);
+  const stopped = record(await workspaceChannels(page));
+  equal(stopped.opened, held.opened);
+  equal(stopped.closed, Number(held.closed) + 1);
   console.log(
     "PASS repeated stop/dispose stays revoked and closes once; unaccepted codec reservation cancellation joins separately",
   );
