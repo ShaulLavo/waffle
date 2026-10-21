@@ -21,36 +21,7 @@ const limits: PublicationLimits = {
   pinBytes: 256,
 };
 
-test("the production service issues a private retained resident descriptor", async () => {
-  const backend = new MemoryBackend();
-  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
-  const service = new FilesystemService(backend);
-  const connection = createFilesystemConnection(undefined, { limits, observe: true });
-  service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
-  try {
-    const directory: number = await root.asyncCall("preopen", ["/"]);
-    const path: { node: number } = await root.asyncCall("resolve", [directory, "file"]);
-    root.retain(path.node);
-    const before = await publicationObserver(root).cut();
-    const descriptor: unknown = await root.asyncCall("publicationResident", [
-      connection.client.publication!.observer,
-      path.node,
-      "resident-red-control",
-    ]);
-    expect(descriptor).toMatchObject({ workspace: "resident-red-control", handle: path.node });
-    await rejectsErrno(publicationObserver(root).cut(), 6);
-    service.residentPublication!.activate();
-    expect(await publicationObserver(root).cut()).toEqual(before);
-  } finally {
-    root.dispose();
-    service.dispose();
-  }
-});
-
-import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
-
-async function residentFixture(configuration = limits) {
+async function rootFixture(configuration = limits) {
   const backend = new MemoryBackend();
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
@@ -63,27 +34,50 @@ async function residentFixture(configuration = limits) {
   const directory: number = await root.asyncCall("preopen", ["/"]);
   const path: { node: number } = await root.asyncCall("resolve", [directory, "file"]);
   root.retain(path.node);
-  const descriptor: ResidentDescriptor = await root.asyncCall("publicationResident", [
-    connection.client.publication!.observer,
-    path.node,
-    "resident-fixture",
-  ]);
-  const authority = service.residentPublication!;
-  authority.activate();
-  const session = authority.open(descriptor);
   return {
     backend,
     service,
     root,
-    authority,
-    session,
+    connection,
     handle: path.node,
-    observer: publicationObserver(root),
     stop() {
       root.dispose();
       service.dispose();
     },
   };
+}
+
+test("the production service issues a private retained resident descriptor", async () => {
+  const f = await rootFixture();
+  try {
+    const before = await publicationObserver(f.root).cut();
+    const descriptor: unknown = await f.root.asyncCall("publicationResident", [
+      f.connection.client.publication!.observer,
+      f.handle,
+      "resident-red-control",
+    ]);
+    expect(descriptor).toMatchObject({ workspace: "resident-red-control", handle: f.handle });
+    await rejectsErrno(publicationObserver(f.root).cut(), 6);
+    f.service.residentPublication!.activate();
+    expect(await publicationObserver(f.root).cut()).toEqual(before);
+  } finally {
+    f.stop();
+  }
+});
+
+import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
+
+async function residentFixture(configuration = limits) {
+  const f = await rootFixture(configuration);
+  const descriptor: ResidentDescriptor = await f.root.asyncCall("publicationResident", [
+    f.connection.client.publication!.observer,
+    f.handle,
+    "resident-fixture",
+  ]);
+  const authority = f.service.residentPublication!;
+  authority.activate();
+  const session = authority.open(descriptor);
+  return { ...f, authority, session, observer: publicationObserver(f.root) };
 }
 
 async function rejectsErrno(action: Promise<unknown>, errno: number): Promise<void> {
@@ -328,29 +322,53 @@ test("private claim views never reach late guest atomics hooks", async () => {
 });
 
 test("pending resident activation denies ordinary service and direct cached work", async () => {
-  const backend = new MemoryBackend();
-  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
-  const service = new FilesystemService(backend);
-  const connection = createFilesystemConnection(undefined, { limits, observe: true });
-  service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
+  const f = await rootFixture();
   try {
-    const directory: number = await root.asyncCall("preopen", ["/"]);
-    const path: { node: number } = await root.asyncCall("resolve", [directory, "file"]);
-    root.retain(path.node);
-    expect(root.tryRead(path.node, [new Uint8Array(1)], 0)).toBe(1);
-    await root.asyncCall("publicationResident", [
-      connection.client.publication!.observer,
-      path.node,
+    expect(f.root.tryRead(f.handle, [new Uint8Array(1)], 0)).toBe(1);
+    await f.root.asyncCall("publicationResident", [
+      f.connection.client.publication!.observer,
+      f.handle,
       "pending-control",
     ]);
-    expect(root.tryRead(path.node, [new Uint8Array(1)], 0)).toBe(-6);
-    expect(root.tryWrite(path.node, [new Uint8Array([7])], 0)).toBe(-6);
-    await rejectsErrno(root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 6);
-    expect(() => backend.shared.read(path.node, [new Uint8Array(1)], 0)).toThrow();
+    expect(f.root.tryRead(f.handle, [new Uint8Array(1)], 0)).toBe(-6);
+    expect(f.root.tryWrite(f.handle, [new Uint8Array([7])], 0)).toBe(-6);
+    await rejectsErrno(f.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 6);
+    expect(() => f.backend.shared.read(f.handle, [new Uint8Array(1)], 0)).toThrow();
   } finally {
-    root.dispose();
-    service.dispose();
+    f.stop();
+  }
+});
+
+test("reference cleanup cannot lend its access to a reentrant readiness probe", async () => {
+  const f = await rootFixture();
+  const shared = f.root.shared;
+  shared.retain(f.handle);
+  await f.root.asyncCall("publicationResident", [
+    f.connection.client.publication!.observer,
+    f.handle,
+    "cleanup-probe",
+  ]);
+  f.service.residentPublication!.activate();
+  const slot = shared.fileSlot(f.handle);
+  const load = Atomics.load;
+  let readiness: boolean | undefined;
+  try {
+    Atomics.load = function (...args: Parameters<typeof Atomics.load>) {
+      Atomics.load = load;
+      readiness = shared.directReadiness(
+        slot,
+        f.handle,
+        false,
+        () => false,
+        f.root.connection.owner,
+      );
+      return Reflect.apply(load, Atomics, args);
+    };
+    shared.release(f.handle);
+    expect(readiness).toBe(false);
+  } finally {
+    Atomics.load = load;
+    f.stop();
   }
 });
 
