@@ -10,6 +10,7 @@ import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js"
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
 import {
   CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   HEADER,
@@ -55,6 +56,7 @@ interface Session {
   responses: Map<number, Uint8Array>;
   pending: Map<number, SharedArrayBuffer>;
   preparingHandles: Map<number, number>;
+  preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
@@ -86,7 +88,7 @@ export class FilesystemService {
     const session: Session = {
       connection,
       handles: new Map(),
-      capabilities: new Int32Array(connection.capabilities),
+      capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
       freeEntries: Array.from(
         { length: CAPABILITY_SLOTS },
         (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS,
@@ -97,6 +99,7 @@ export class FilesystemService {
       responses: new Map(),
       pending: new Map(),
       preparingHandles: new Map(),
+      preparations: new Set(),
       ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
     };
     this.sessions.add(session);
@@ -118,7 +121,11 @@ export class FilesystemService {
         } else if (isRevoked(connection))
           Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
       } finally {
-        Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
+        Atomics.sub(
+          new Int32Array(reservation.source, 0, CAPABILITY_LENGTH),
+          reservation.sourceKey + 2,
+          1,
+        );
       }
     }
     Atomics.store(session.capabilities, 0, session.transient.size);
@@ -150,6 +157,53 @@ export class FilesystemService {
       }
     };
     connection.port.start();
+  }
+  private async closeWorkspace(connection: FilesystemConnection): Promise<void> {
+    const session = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === connection.capabilities,
+    );
+    if (!session) return;
+    await waitForFilesystemQuiescence(session.connection);
+    await this.queue;
+    await Promise.all(Array.from(session.preparations));
+    await this.queue;
+    this.close(session);
+    if (this.sessions.has(session)) throw new FilesystemError(6);
+  }
+  private adoptWorkspace(
+    connection: FilesystemConnection,
+    reservation: import("./protocol.js").FilesystemReservation,
+  ): void {
+    const target = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === connection.capabilities,
+    );
+    const source = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === reservation.source,
+    );
+    if (
+      !target ||
+      !source ||
+      isRevoked(source.connection) ||
+      isRevoked(connection) ||
+      reservation.target !== connection.capabilities ||
+      reservation.targetOwner !== connection.owner ||
+      source.handles.get(reservation.handle) !== reservation.sourceKey ||
+      Atomics.load(source.capabilities, reservation.sourceKey + 2) <= 0
+    )
+      throw new FilesystemError(8);
+    const state = new Int32Array(reservation.state);
+    if (Atomics.load(state, 0) || Atomics.compareExchange(state, 1, 0, 1))
+      throw new FilesystemError(11);
+    try {
+      if (target.handles.has(reservation.handle)) return;
+      this.backend.retain(reservation.handle);
+      target.handles.set(reservation.handle, reservation.targetKey);
+      target.transient.set(reservation.handle, true);
+      const free = target.freeEntries.indexOf(reservation.targetKey);
+      if (free >= 0) target.freeEntries.splice(free, 1);
+    } finally {
+      Atomics.sub(source.capabilities, reservation.sourceKey + 2, 1);
+    }
   }
   private enqueue(
     session: Session,
@@ -434,13 +488,15 @@ export class FilesystemService {
           this.checkRequest(session, operation, args, continuation.handles);
           prepared = continuation;
           preparing = true;
-          void preparation.then(
+          const joined = preparation.then(
             () => this.enqueue(session, id, buffer, continuation),
             (error) => {
               continuation.failure = { error };
               this.enqueue(session, id, buffer, continuation);
             },
           );
+          session.preparations.add(joined);
+          void joined.finally(() => session.preparations.delete(joined));
           return;
         }
       }
@@ -577,6 +633,7 @@ export class FilesystemService {
     if (!grant || args[0] !== grant) throw new FilesystemError(2);
     const domain = this.backend.shared.publication!;
     switch (operation) {
+      case "publicationWorkspace":
       case "publicationResident": {
         const handle = args[1],
           workspace = args[2];
@@ -589,7 +646,16 @@ export class FilesystemService {
           workspace,
         );
         if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
-        const descriptor = this.residentPublication.retain(handle);
+        this.residentPublication.workspaceHost ??= {
+          root: session.connection,
+          connect: (connection) => this.connect(connection),
+          adopt: (connection, reservation) => this.adoptWorkspace(connection, reservation),
+          close: (connection) => this.closeWorkspace(connection),
+        };
+        const descriptor = this.residentPublication.retain(
+          handle,
+          operation === "publicationWorkspace" ? "workspace" : "file",
+        );
         domain.excludeDirect();
         return descriptor;
       }

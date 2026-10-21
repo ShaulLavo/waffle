@@ -1,3 +1,4 @@
+import { FilesystemClient } from "../fs/client";
 import {
   acquirePublicationGuard,
   attachResidentPublication,
@@ -10,10 +11,15 @@ import {
   residentSession,
   ResidentAttachment,
   ResidentChannel,
+  stopWorkspaceBridge,
   type ResidentGrantClient,
   text,
 } from "../fs/publication-attachment";
-import { revokeFilesystem, type FilesystemConnection } from "../fs/protocol";
+import {
+  revokeFilesystem,
+  releaseFilesystemReservation,
+  type FilesystemConnection,
+} from "../fs/protocol";
 import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
 
 class FixtureWorker {
@@ -26,6 +32,7 @@ class FixtureWorker {
   constructor(
     path: string,
     private expectedStartupFailure = false,
+    private expectedCleanupFailure = false,
   ) {
     this.url = new URL(`${path}?worker=${crypto.randomUUID()}`, location.href).href;
     this.worker = new Worker(this.url, { type: "module" });
@@ -34,12 +41,16 @@ class FixtureWorker {
     this.worker.onmessageerror = () => this.fail(new Error("invalid worker clone"));
   }
   private receive(data: Record<string, unknown>): void {
+    if (data.type === "exit" || data.type === "cleanup-error" || data.type === "error") {
+      this.events.set(data.type, data);
+      this.waiting.get(data.type)?.resolve(data);
+    }
     if (typeof data.event === "string") {
       this.events.set(data.event, data);
       this.waiting.get(data.event)?.resolve(data);
     }
     if (
-      data.type === "cleanup-error" ||
+      (data.type === "cleanup-error" && !this.expectedCleanupFailure) ||
       data.event === "failure" ||
       (data.type === "error" && !this.expectedStartupFailure)
     )
@@ -91,6 +102,9 @@ class FixtureWorker {
       this.waiting.delete(event);
     }
   }
+  observed(event: string): boolean {
+    return this.events.has(event);
+  }
   async terminate(): Promise<void> {
     const observed = Reflect.get(globalThis, "__publicationWaitForClose");
     if (typeof observed !== "function") throw new Error("native worker death observer unavailable");
@@ -104,6 +118,7 @@ let authority: FixtureWorker | undefined,
 let descriptor: ResidentDescriptor | undefined;
 const guests = new Map<string, { worker: FixtureWorker; connection: FilesystemConnection }>();
 let claimGate: Int32Array | undefined;
+let workspaceClient: FilesystemClient | undefined;
 async function ordinarySurvivorControl(): Promise<unknown> {
   const owner = new FixtureWorker("/resident-authority.js");
   const worker = new FixtureWorker("/resident-guest.js");
@@ -190,7 +205,14 @@ async function queuedAttachmentControl(): Promise<unknown> {
     new AbortController().signal,
   );
   const candidate = new ResidentAttachment(
-    { workspace, instance: "not-opened", epoch: 1, description: "not-issued", handle: 1 },
+    {
+      kind: "file",
+      workspace,
+      instance: "not-opened",
+      epoch: 1,
+      description: "not-issued",
+      handle: 1,
+    },
     () => false,
   );
   let accepted = false;
@@ -221,6 +243,7 @@ async function cancelledStartupControl(): Promise<unknown> {
     new AbortController().signal,
   );
   const connection = createResidentConnection({
+    kind: "file",
     workspace,
     instance: "cancelled",
     epoch: 1,
@@ -235,6 +258,32 @@ async function cancelledStartupControl(): Promise<unknown> {
   } finally {
     await worker.terminate();
     await exclusive.release();
+  }
+}
+async function cancelledWorkspaceStartup(): Promise<unknown> {
+  const workspace = `workspace-startup-${crypto.randomUUID()}`;
+  const guard = await acquirePublicationGuard(workspace, "exclusive", new AbortController().signal);
+  const connection = createResidentConnection({
+    kind: "workspace",
+    workspace,
+    instance: "cancelled",
+    epoch: 1,
+    description: "never-opened",
+    handle: 1,
+  });
+  const worker = new FixtureWorker("/resident-guest.js", true);
+  try {
+    await worker.request("start", { mode: "wasi", connection }, [connection.port]);
+    revokeFilesystem(connection);
+    const finished = await worker.until("finished");
+    return {
+      finished,
+      exit: worker.observed("exit"),
+      cleanupError: worker.observed("cleanup-error"),
+    };
+  } finally {
+    await worker.terminate();
+    await guard.release();
   }
 }
 async function oldSettlementControl(): Promise<unknown> {
@@ -344,8 +393,157 @@ async function latePreparationControl(): Promise<unknown> {
   }
 }
 
+const reservedWorkspaceChildren = new Map<string, FilesystemConnection>();
+async function cancelWorkspaceChild(connection: FilesystemConnection): Promise<void> {
+  revokeFilesystem(connection);
+  for (const reservation of connection.reservations) releaseFilesystemReservation(reservation);
+  Reflect.set(globalThis, "__workspaceChildCancelled", {
+    revoked: Atomics.load(new Int32Array(connection.revocations[0]!), 0),
+    reservations: connection.reservations.map((reservation) =>
+      Array.from(new Int32Array(reservation.state)),
+    ),
+  });
+  try {
+    await stopWorkspaceBridge(connection);
+  } finally {
+    connection.port.close();
+  }
+}
+async function workspacePageControl(
+  operation: string,
+  body: ReturnType<typeof record>,
+): Promise<unknown> {
+  if (!workspaceClient || !Array.isArray(body.args)) throw new Error("missing page workspace");
+  const bytes = Array.isArray(body.bytes) ? Uint8Array.from(body.bytes) : undefined;
+  try {
+    return await workspaceClient.asyncCall(text(body.operation), body.args, bytes);
+  } catch (error) {
+    if (operation !== "workspacePageDenied") throw error;
+    return Number(Reflect.get(Object(error), "errno"));
+  }
+}
+async function workspaceGuestControl(
+  operation: string,
+  body: ReturnType<typeof record>,
+): Promise<unknown> {
+  const guest = guests.get(text(body.key));
+  if (!guest) throw new Error("missing workspace guest");
+  if (operation === "workspaceGuestStatus")
+    return {
+      exit: guest.worker.observed("exit"),
+      finished: guest.worker.observed("finished"),
+      cleanupError: guest.worker.observed("cleanup-error"),
+    };
+  if (operation === "workspaceGuestTerminal") {
+    const terminal = await guest.worker.until(text(body.event));
+    await guest.worker.until("finished");
+    return terminal;
+  }
+  if (operation === "workspaceGuestReady") return guest.worker.until("ready");
+  if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
+  if (operation === "workspaceGuestRevoke") {
+    revokeFilesystem(guest.connection);
+    return null;
+  }
+  if (operation === "workspaceGuestCleanupError") return guest.worker.until("cleanup-error");
+  if (operation === "workspaceGuestDeath") {
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return null;
+  }
+  if (operation === "workspaceGuestStop") {
+    await guest.worker.request("stop");
+    const exit = await guest.worker.until("exit");
+    await guest.worker.until("finished");
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return { exit };
+  }
+  return guest.worker.request(text(body.operation), body.request);
+}
+async function workspaceControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "workspaceCancelledStartup") return cancelledWorkspaceStartup();
+  if (operation === "workspaceAuthority") {
+    authority = new FixtureWorker("/resident-authority.js");
+    return residentDescriptor(await authority.request("workspaceStart", text(value)));
+  }
+  if (operation === "workspacePeer") {
+    descriptor = residentDescriptor(value);
+    workspaceClient = new FilesystemClient(createResidentConnection(descriptor));
+    await workspaceClient.attachResidentPublication();
+    return { authorityRootReceived: false };
+  }
+  if (operation === "workspaceCut") return authority?.request("workspaceCut");
+  if (operation === "workspaceChanges") return authority?.request("changes", value);
+  if (operation === "workspaceStop") {
+    await workspaceClient?.stopResidentPublication();
+    workspaceClient?.dispose();
+    return null;
+  }
+  if (operation === "workspaceAuthorityStop") {
+    await authority?.request("workspaceStop");
+    await authority?.terminate();
+    return null;
+  }
+  const body = record(value);
+  if (operation === "workspacePage" || operation === "workspacePageDenied") {
+    return workspacePageControl(operation, body);
+  }
+  if (operation === "workspaceGuest") {
+    if (!descriptor) throw new Error("missing workspace descriptor");
+    const worker = new FixtureWorker(
+        "/resident-guest.js",
+        body.failSetup === true,
+        body.cleanupFailure === true,
+      ),
+      connection = createResidentConnection(descriptor);
+    guests.set(text(body.key), { worker, connection });
+    await worker.request(
+      "start",
+      { mode: text(body.mode), connection, failSetup: body.failSetup },
+      [connection.port],
+    );
+    return worker.until(body.failSetup === true ? "finished" : "ready");
+  }
+  if (operation === "workspaceDescendantCancelReserved") {
+    const key = text(body.key),
+      connection = reservedWorkspaceChildren.get(key);
+    if (!connection) throw new Error("missing reserved workspace child");
+    reservedWorkspaceChildren.delete(key);
+    await cancelWorkspaceChild(connection);
+    return null;
+  }
+  if (operation === "workspaceDescendantCancel" || operation === "workspaceDescendantReserve") {
+    const parent = guests.get(text(body.parent));
+    if (!parent) throw new Error("missing source guest");
+    const inherited = record(await parent.worker.request("descendantCodec"));
+    const connection = inherited.connection as FilesystemConnection;
+    if (operation === "workspaceDescendantReserve") {
+      reservedWorkspaceChildren.set(text(body.key), connection);
+      return null;
+    }
+    await cancelWorkspaceChild(connection);
+    return null;
+  }
+  if (operation === "workspaceDescendant" || operation === "workspaceDescendantQueue") {
+    const parent = guests.get(text(body.parent));
+    if (!parent) throw new Error("missing source guest");
+    const inherited = record(await parent.worker.request("descendantCodec"));
+    const connection = inherited.connection as FilesystemConnection;
+    const worker = new FixtureWorker("/resident-guest.js");
+    guests.set(text(body.key), { worker, connection });
+    await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [
+      connection.port,
+    ]);
+    if (operation === "workspaceDescendantQueue") return null;
+    return worker.until("ready");
+  }
+  return workspaceGuestControl(operation, body);
+}
+
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation.startsWith("workspace")) return workspaceControl(operation, value);
   if (operation === "guardLifecycle") return guardLifecycleControl();
   if (operation === "ordinarySurvivor") return ordinarySurvivorControl();
   if (operation === "authority") {

@@ -1,4 +1,4 @@
-import { ResidentAttachment } from "./publication-attachment.js";
+import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
 import {
   mutationIntent,
@@ -46,6 +46,7 @@ import type {
 } from "../core/index.js";
 import {
   CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   HEADER,
@@ -253,8 +254,9 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
+  private workspaceStop: Promise<void> | undefined;
   constructor(readonly connection: FilesystemConnection) {
-    this.capabilities = new Int32ArrayConstructor(connection.capabilities);
+    this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.revoked = sharedRevoked(connection);
     if (connection.residentPublication)
@@ -274,11 +276,23 @@ export class FilesystemClient implements FileSystem {
     };
     connection.port.start();
   }
-  attachResidentPublication(): Promise<void> {
-    return this.resident?.attach() ?? Promise.resolve();
+  async attachResidentPublication(): Promise<void> {
+    await this.resident?.attach();
+    if (this.connection.residentPublication?.kind === "workspace")
+      await this.asyncCall("workspaceBind", [this.residentPublicationClient().session]);
   }
-  stopResidentPublication(): Promise<void> {
-    return this.resident?.stop() ?? Promise.resolve();
+  private beginWorkspaceStop(): Promise<void> | undefined {
+    if (this.connection.residentPublication?.kind !== "workspace") return;
+    if (!this.workspaceStop) {
+      this.workspaceStop = stopWorkspaceBridge(this.connection);
+      void this.workspaceStop.catch(() => {});
+    }
+    return this.workspaceStop;
+  }
+  async stopResidentPublication(): Promise<void> {
+    this.resident?.invalidate();
+    await this.beginWorkspaceStop();
+    await this.resident?.stop();
   }
   residentPublicationClient() {
     const client = this.resident?.client;
@@ -337,7 +351,7 @@ export class FilesystemClient implements FileSystem {
       this.retain(handle);
       try {
         const sourceKey = this.capabilityEntry(handle)!;
-        const entries = new Int32ArrayConstructor(target.capabilities);
+        const entries = new Int32ArrayConstructor(target.capabilities, 0, CAPABILITY_LENGTH);
         let targetKey = CAPABILITY_HEADER;
         while (
           targetKey < typedArrayLength(entries) &&
@@ -422,7 +436,10 @@ export class FilesystemClient implements FileSystem {
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
-    if (this.resident) throw new FilesystemError(58, "resident grant namespace is unsupported");
+    if (this.resident && this.connection.residentPublication?.kind !== "workspace")
+      throw new FilesystemError(58, "resident grant namespace is unsupported");
+    if (this.resident && !this.resident.client) throw new FilesystemError(6);
+    this.checkWorkspaceBounds(args, data);
     const domain = this.shared.publication;
     const connection = this.connection.publication;
     const intent = domain ? mutationIntent(operation, args) : undefined;
@@ -445,6 +462,11 @@ export class FilesystemClient implements FileSystem {
       if (publication && connection) domain!.cancel(connection.session, publication);
       throw error;
     }
+  }
+  private checkWorkspaceBounds(args: unknown[], data: Uint8Array): void {
+    if (this.connection.residentPublication?.kind !== "workspace") return;
+    if (mapSize(this.completions) >= 16 || data.length > PAGE || pack(args).length > 8192)
+      throw new FilesystemError(6);
   }
   private submitPrepared(
     operation: string,
@@ -502,6 +524,7 @@ export class FilesystemClient implements FileSystem {
   }
   dispose(): void {
     this.resident?.invalidate();
+    this.beginWorkspaceStop();
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
     mapForEach(this.completions, (completion) => completion.cancel());
@@ -554,7 +577,7 @@ export class FilesystemClient implements FileSystem {
       if (
         count === 1 &&
         !this.revoked() &&
-        (this.shared.isUnlinked(atomicsLoad(this.capabilities, key)) ||
+        ((!this.resident && this.shared.isUnlinked(atomicsLoad(this.capabilities, key))) ||
           atomicsLoad(this.capabilities, 0) > TRANSIENT_HANDLES)
       )
         this.connection.port.postMessage({ trim: true });
@@ -977,7 +1000,7 @@ export class FilesystemClient implements FileSystem {
       const epoch = this.version();
       const key = `${directory}\0${path}`;
       const cached = this.paths.get(key);
-      if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
+      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return typeof cached.path === "number" ? cached.path : { ...cached.path };
       const completion = this.submit("resolve", [directory, path]);
       try {
@@ -996,11 +1019,11 @@ export class FilesystemClient implements FileSystem {
     // Keep the capability's backend pin alive while reading its shared metadata slot.
     this.retain(handle);
     try {
-      const direct = this.shared.stat(handle, this.revoked);
+      const direct = this.resident ? undefined : this.shared.stat(handle, this.revoked);
       if (direct) return direct;
       const epoch = this.version();
       const cached = this.stats.get(handle);
-      if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
+      if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return { ...cached.stat };
       const completion = this.submit("stat", [handle]);
       try {
@@ -1030,6 +1053,7 @@ export class FilesystemClient implements FileSystem {
     const epoch = this.version();
     let cached = this.reads.get(handle);
     if (
+      this.resident ||
       this.shared.publication ||
       epoch & 1 ||
       cached?.epoch !== epoch ||
@@ -1047,8 +1071,61 @@ export class FilesystemClient implements FileSystem {
     }
     return cached;
   }
+  private workspaceRead(handle: number, chunks: readonly Uint8Array[], offset: number): number {
+    try {
+      let requested = 0;
+      for (const chunk of chunks) requested += chunk.length;
+      if (requested > PAGE) throw new FilesystemError(6);
+      const bytes: Uint8Array = this.call("read", [handle, requested, offset]);
+      let at = 0;
+      for (const chunk of chunks) {
+        const count = Math.min(chunk.length, bytes.length - at);
+        if (count > 0) typedArraySet(chunk, bytes.subarray(at, at + count));
+        at += count;
+      }
+      return bytes.length;
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: false,
+  ): number;
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: true,
+  ): number | { written: number; offset: number };
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: boolean,
+  ): number | { written: number; offset: number } {
+    try {
+      chunks = fixedWriteSources(chunks);
+      let length = 0;
+      for (const chunk of chunks) length += typedArrayLength(chunk);
+      if (length > PAGE) throw new FilesystemError(6);
+      const bytes = new Uint8ArrayConstructor(length);
+      let at = 0;
+      for (const chunk of chunks) {
+        typedArraySet(bytes, chunk, at);
+        at += typedArrayLength(chunk);
+      }
+      return this.call(append ? "append" : "write", append ? [handle] : [handle, offset], bytes);
+    } catch (error) {
+      return -errno(error);
+    }
+  }
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.tryRead(handle, chunks, offset);
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryRead(handle, chunks, offset);
+    if (this.resident) return this.workspaceRead(handle, chunks, offset);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     const slot = this.directSlot(handle);
     if (slot) {
@@ -1104,7 +1181,9 @@ export class FilesystemClient implements FileSystem {
     }
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.tryWrite(handle, chunks, offset);
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryWrite(handle, chunks, offset);
+    if (this.resident) return this.workspaceWrite(handle, chunks, offset, false);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     chunks = fixedWriteSources(chunks);
@@ -1164,7 +1243,8 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
-    if (this.resident) return this.tryAppend(handle, chunks);
+    if (this.connection.residentPublication?.kind === "file") return this.tryAppend(handle, chunks);
+    if (this.resident) return this.workspaceWrite(handle, chunks, 0, true);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, false);
     chunks = fixedWriteSources(chunks);
     let total = 0;
@@ -1348,7 +1428,7 @@ export class FilesystemClient implements FileSystem {
   readdir(handle: FileHandle): DirectoryEntry[] {
     const epoch = this.version();
     const cached = this.readdirs.get(handle);
-    if (!this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
+    if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
       return cached.entries.map((entry) => ({ ...entry }));
     const completion = this.submit("readdir", [handle]);
     try {

@@ -209,7 +209,7 @@ function captureWorkerHost(host: RuntimeWorkerHost) {
 }
 
 function residentPreopens(filesystem: FilesystemConnection): Record<string, string> {
-  return filesystem.residentPublication ? {} : { "/": "/" };
+  return filesystem.residentPublication?.kind === "file" ? {} : { "/": "/" };
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */

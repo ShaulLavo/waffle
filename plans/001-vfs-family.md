@@ -204,3 +204,37 @@ heads, original reds, focused controls, gate approvals and actual-host cleanup
 are owned by `/work/reports/waffle-finish-20261021/storage-cross-tab-grant-pilot/`.
 Independent review, required broad gates and program acceptance remain root-owned;
 a compiling or pushed candidate alone does not satisfy them.
+
+### Private workspace transport cleanup, 2026-10-21
+
+Status: Approved bounded implementation, awaiting independent review and final
+immutable gates. Namespace, metadata and retained-file operations use one actual
+MemoryBackend and history through private page bridges. This is not S1/S2, SAFE,
+public/default selection, persistence or consumer acceptance.
+
+The actual worker disposes its ordinary filesystem identity before joined resident
+stop. A separate cleanup-only reply port now joins the page bridge without
+restoring data access. Started codec adoption remains joined independently of
+parent revocation; a living accepted child keeps its own session. Failed or
+unconfirmed cleanup retains continuity and withholds exit acknowledgement.
+
+The compiling unchanged-production actual-bootstrap control at `cde451d6` observed
+exit acknowledgement with the owned page channel still open. The source and
+canonical red/repair gate ledger live under
+`/work/reports/waffle-finish-20261021/storage-workspace-cleanup-r2/`. The existing
+cross-tab runner retains its original groups and adds actual-bootstrap startup,
+pending reply, codec transfer, repeated stop and failed-cleanup controls. The
+report, not this plan, records which immutable candidates have passed. Parent owns
+independent review, required CI, merge and exact-main verification.
+
+The separate pre-connect repair unit starts from `3183527`. Its unchanged native
+Firefox control held actual connect before the production handler, revoked the
+child and released its reservation, then delivered the same event. No cleanup
+receiver existed and dedicated stop failed with errno6. The FS-private repair
+separates provenance from admission and retains a cancelled child's cleanup-only
+listener until actual dedicated stop. It adds no caller ordering workaround,
+authority channel, session or data admission. Root-approved API, exact-head gate
+results and cleanup live under
+`/work/reports/waffle-finish-20261021/storage-workspace-connect-repair-r3/`.
+This source is not final-head acceptance; independent review and the full immutable
+wave remain required before a PR can be review-ready.

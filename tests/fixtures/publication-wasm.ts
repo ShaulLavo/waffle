@@ -70,6 +70,14 @@ export function publicationWasiModule(): WebAssembly.Module {
     { name: "fd_write", parameters: ["i32", "i32", "i32", "i32"] },
     { name: "fd_read", parameters: ["i32", "i32", "i32", "i32"] },
     { name: "fd_tell", parameters: ["i32", "i32"] },
+    { name: "fd_filestat_get", parameters: ["i32", "i32"] },
+    {
+      name: "path_open",
+      parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"],
+    },
+    { name: "path_rename", parameters: ["i32", "i32", "i32", "i32", "i32", "i32"] },
+    { name: "path_unlink_file", parameters: ["i32", "i32", "i32"] },
+    { name: "fd_close", parameters: ["i32"] },
   ]);
 }
 export function publicationProcModule(): WebAssembly.Module {

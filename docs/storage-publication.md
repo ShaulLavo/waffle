@@ -96,10 +96,102 @@ reads after ACK without a commit nudge, bounded prefixes, exact import, local
 exclusion, late attachment cleanup and separately observed native worker death.
 Passing focused controls is not full matrix or production acceptance. The
 current source report records which stages actually passed and every preserved
-red. Cold files, growth beyond the resident bound and namespace operations on a
-private attachment are explicitly unsupported. No SAFE, durable history,
+red. Cold files and growth beyond the resident bound are explicitly unsupported.
+File-only attachments still reject namespace operations. No SAFE, durable history,
 consumer pin, public API or S1/S2 acceptance follows.
 
 A fresh resident connection reuses the full root-format allocation. It costs
 25,477,140 bytes before JavaScript objects, ports and shared offsets, despite
 creating no second MemFS. This is byte accounting, not aggregate memory acceptance.
+
+## Private workspace transport
+
+A `workspace` resident descriptor also routes namespace and metadata calls through
+that same authority. Independent pages receive no authority root buffers. Each
+page owns an asynchronous local bridge; actual guests use their existing
+synchronous completion transport to that bridge. File-only descriptors still
+have no namespace preopen. The actual worker keeps its dispose-before-joined-stop
+ordering. Local bridge cleanup has a separate private reply port, so revoking the
+guest identity and closing its ordinary sender cannot skip that cleanup.
+
+The authority creates each service identity from its actual root. Resolve,
+lookup, stat, permissions, readdir and blocking reads reach current service
+execution, not the page's synthetic metadata or path caches. Returned handles
+keep bounded authority-side capability pins until that session stops. They keep
+the same inode through rename, replacement and unlink. Same-page descendants use
+the existing codec's exact reservation and shared offset cell. Independent pages
+do not share open-description offsets.
+
+Namespace mutations use authority-minted session identities, separate from
+transport correlation. An exact duplicate returns its original receipt; changed
+input conflicts. Own-session receipt queries recover outcomes without repeating
+the mutation. Raw changes, arbitrary receipt lookup, diagnostics, pins and domain
+stop remain on the authority's non-inherited observer route. Neither the
+workspace descriptor nor ordinary guests inherit that grant.
+
+Requests, input, pending results and retained capabilities have fixed limits.
+Queued cancellation reaches the actual service completion. Stop joins service
+preparation and reservation transfer before releasing its continuity guard.
+Prepared leaf grants still provide immediate nonblocking I/O; EAGAIN owns no
+caller input and schedules no later syscall. No second writable tree is created.
+
+Both stop-first and dispose-first synchronously invalidate leaf admission. The
+client starts one cleanup exchange before closing its ordinary port and memoizes
+its result, including failure. The bridge stops admitting data and children before
+awaiting owned operations. It joins real authority replies and started descriptor
+adoption, then clears retained responses and closes its channel and server port.
+Cancelling an unaccepted reservation cannot cancel an accepted independent child.
+A descendant connect may arrive after its controller revoked the child and released
+its unclaimed reservations through another channel. The bridge checks connection
+and reservation provenance separately from live admission. An exactly cancelled
+identity receives only a local cleanup listener, with no authority channel, session
+or data/bind path. Its parent keeps ownership until an actual dedicated stop closes
+that listener. Parent revocation or stopping cannot discard that proven cleanup
+ownership; neither ancestor revocation nor live/adopted reservations qualify.
+Malformed or unproven connections receive no cleanup-success listener. Started
+adoption still joins its real result, and a failed join retains continuity.
+Only successful bridge cleanup proceeds to the separate resident session close
+and continuity release. Local transport timeout is not proof of authority
+completion. Failed cleanup retains the worker guard and cannot publish exit ACK.
+File-only sessions may prepare only their issued retained handle; workspace handle
+overrides still require the authority session's actual capability ownership.
+
+The extended cross-tab runner keeps the resident pilot controls and adds genuine
+WASI namespace operations, retained-file metadata, runtime_proc I/O, codec offset
+transfer, current reads after a lost nudge, observer denial and receipt recovery.
+The source report records executed results. This remains a private MemoryBackend
+slice, not S1/S2, SAFE, public-mode or whole-project acceptance. Cold range loading,
+growth beyond admitted bounds, durable history and consumer pins stay separate.
+
+### Workspace backing identity
+
+Workspace synthetic shared state, owner states and capability tables each append
+one non-operational word. Ordinary and file-only allocations keep their original
+sizes. Capability views and scans exclude that final word. The page bridge checks
+fixed allocation lengths and compares backing stores only at those fixed final
+words, using captured constructors, byte-length accessors and atomic operations.
+The synchronous comparison restores zero in `finally`. It never probes a live
+revocation, lock, liveness or capability word. Source/target reservation keys,
+counts, owner and transfer state are still checked separately.
+
+This check assumes only the trusted host bridge writes the trailer. All host
+allocations initialize it to zero; the bridge rejects a nonzero initial trailer.
+Two unrelated zero-filled or copied allocations cannot pass: changing the first
+trailer to minus one leaves the other at zero. Structured-cloned aliases see the
+same change. Live guest operations may change operational words concurrently,
+but none of their bounded capability views or slot scans includes the trailer.
+
+The worker bootstrap keeps `FilesystemClient` in host closures. WASI and process
+imports receive guest-memory arguments and descriptor operations, not the raw
+connection or trailer views. The retained-descriptor codec and identity transport
+are trusted host machinery. Captured construction, copying and atomics prevent a
+late guest global/prototype replacement from receiving the comparison views.
+This does not protect every ordinary control view. Existing protocol revocation,
+section and wake operations, shared revocation checks and capability initialization
+still use some late global or prototype dispatch. Hostile same-realm JavaScript
+can intercept those ordinary views and obtain their backing buffers. The supported
+assumption is trusted guest-ABI use with host-exclusive trailer writes, not absence
+of raw-control-memory exposure to hostile JavaScript. An untrusted host integration
+or arbitrary raw-SAB writer can corrupt control memory directly and is outside
+this private slice. Existing captured private grant-state protections are unchanged.
+This neither claims S2/SAFE acceptance nor enables public or default operation.

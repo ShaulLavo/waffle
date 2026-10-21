@@ -1,3 +1,4 @@
+import { Int32ArrayConstructor, SharedArrayBufferConstructor } from "../proc/intrinsics.js";
 import type { ResidentDescriptor } from "./publication-grant.js";
 import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
@@ -38,7 +39,9 @@ export const CAPABILITY_SLOTS = 4096;
 // reference count revokes an entry. Handles never recycle, but these per-session entries do.
 export const CAPABILITY_HEADER = 1;
 export const CAPABILITY_WORDS = 3;
-const MAX_CONNECTION_OWNERS = 65536;
+export const MAX_CONNECTION_OWNERS = 65536;
+export const CONNECTION_SHARED_BYTES = 24 * 1024 * 1024;
+export const CAPABILITY_LENGTH = CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS;
 export const enum State {
   Pending,
   Complete,
@@ -89,7 +92,7 @@ export function createFilesystemIdentity(
   publication?: PublicationConfiguration,
 ): FilesystemIdentity {
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
-  const shared = parent?.shared ?? new SharedArrayBuffer(24 * 1024 * 1024);
+  const shared = parent?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
   const segments =
     parent?.segments ??
     Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () => createSharedSegment());
@@ -97,12 +100,14 @@ export function createFilesystemIdentity(
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");
   const ownerStates = parent?.ownerStates ?? new SharedArrayBuffer(MAX_CONNECTION_OWNERS * 4);
-  const capabilities = new SharedArrayBuffer(
-    (CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS) * 4,
+  const workspace = parent?.residentPublication?.kind === "workspace";
+  const capabilities = new SharedArrayBufferConstructor(
+    (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4,
   );
-  const entries = new Int32Array(capabilities);
+  const entries = new Int32ArrayConstructor(capabilities, 0, CAPABILITY_LENGTH);
   entries.fill(-1);
   entries[0] = 0;
+  if (workspace) new Int32ArrayConstructor(capabilities, CAPABILITY_LENGTH * 4, 1)[0] = 0;
   let domain: PublicationConnection | undefined;
   if (parent?.publication)
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
@@ -142,7 +147,7 @@ export function createProcessFilesystemIdentity(parent: FilesystemIdentity): Fil
 export function releaseFilesystemReservation(reservation: FilesystemReservation): void {
   const state = new Int32Array(reservation.state);
   if (Atomics.exchange(state, 0, 1)) return;
-  const target = new Int32Array(reservation.target);
+  const target = new Int32ArrayConstructor(reservation.target, 0, CAPABILITY_LENGTH);
   for (;;) {
     const count = Atomics.load(target, reservation.targetKey + 1);
     if (
@@ -152,7 +157,11 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
       break;
   }
   if (Atomics.compareExchange(state, 1, 0, 2) === 0)
-    Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
+    Atomics.sub(
+      new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
+      reservation.sourceKey + 2,
+      1,
+    );
 }
 export function connectFilesystemIdentity(identity: FilesystemIdentity) {
   const channel = new NativeMessageChannel();
