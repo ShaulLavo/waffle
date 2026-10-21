@@ -226,3 +226,15 @@ cross-tab runner retains its original groups and adds actual-bootstrap startup,
 pending reply, codec transfer, repeated stop and failed-cleanup controls. The
 report, not this plan, records which immutable candidates have passed. Parent owns
 independent review, required CI, merge and exact-main verification.
+
+The separate pre-connect repair unit starts from `3183527`. Its unchanged native
+Firefox control held actual connect before the production handler, revoked the
+child and released its reservation, then delivered the same event. No cleanup
+receiver existed and dedicated stop failed with errno6. The FS-private repair
+separates provenance from admission and retains a cancelled child's cleanup-only
+listener until actual dedicated stop. It adds no caller ordering workaround,
+authority channel, session or data admission. Root-approved API, exact-head gate
+results and cleanup live under
+`/work/reports/waffle-finish-20261021/storage-workspace-connect-repair-r3/`.
+This source is not final-head acceptance; independent review and the full immutable
+wave remain required before a PR can be review-ready.

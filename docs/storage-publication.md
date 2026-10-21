@@ -141,6 +141,15 @@ its result, including failure. The bridge stops admitting data and children befo
 awaiting owned operations. It joins real authority replies and started descriptor
 adoption, then clears retained responses and closes its channel and server port.
 Cancelling an unaccepted reservation cannot cancel an accepted independent child.
+A descendant connect may arrive after its controller revoked the child and released
+its unclaimed reservations through another channel. The bridge checks connection
+and reservation provenance separately from live admission. An exactly cancelled
+identity receives only a local cleanup listener, with no authority channel, session
+or data/bind path. Its parent keeps ownership until an actual dedicated stop closes
+that listener. Parent revocation or stopping cannot discard that proven cleanup
+ownership; neither ancestor revocation nor live/adopted reservations qualify.
+Malformed or unproven connections receive no cleanup-success listener. Started
+adoption still joins its real result, and a failed join retains continuity.
 Only successful bridge cleanup proceeds to the separate resident session close
 and continuity release. Local transport timeout is not proof of authority
 completion. Failed cleanup retains the worker guard and cannot publish exit ACK.

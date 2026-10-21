@@ -21,6 +21,11 @@ import {
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   CONNECTION_SHARED_BYTES,
+  HEADER,
+  State,
+  pack,
+  type FilesystemConnection,
+  type FilesystemIdentity,
   MAX_CONNECTION_OWNERS,
   SHARED_SEGMENT_BYTES,
   connectFilesystemIdentity,
@@ -471,3 +476,258 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
     await f.stop();
   }
 });
+
+async function bridgeRequest(connection: FilesystemConnection, operation: string, args: unknown[]) {
+  const bytes = pack({ operation, args });
+  const buffer = new SharedArrayBuffer(HEADER + bytes.length);
+  const cells = new Int32Array(buffer, 0, HEADER / 4);
+  cells[1] = bytes.length;
+  new Uint8Array(buffer, HEADER).set(bytes);
+  const completed = Promise.withResolvers<void>();
+  const receive = () => completed.resolve();
+  connection.port.addEventListener("message", receive, { once: true });
+  try {
+    connection.port.postMessage({ id: 1, buffer });
+    await completed.promise;
+    return { state: cells[0], errno: cells[3] };
+  } finally {
+    connection.port.removeEventListener("message", receive);
+  }
+}
+function observeReceiverInstalls() {
+  const descriptor = Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage");
+  const setter = descriptor?.set;
+  if (!descriptor || !setter) throw new Error("native port message setter missing");
+  const observation = { installed: 0 };
+  Object.defineProperty(MessagePort.prototype, "onmessage", {
+    ...descriptor,
+    set(this: MessagePort, handler: MessagePort["onmessage"]) {
+      observation.installed++;
+      setter.call(this, handler);
+    },
+  });
+  return {
+    observation,
+    restore: () => Object.defineProperty(MessagePort.prototype, "onmessage", descriptor),
+  };
+}
+async function cleanupFixture() {
+  const f = await fixture();
+  const stopping = observeBridgeStop();
+  const connection = createResidentConnection(f.session.descriptor);
+  stopping.restore();
+  const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
+  await parent.asyncCall("workspaceBind", [f.session]);
+  await parent.asyncCall("preopen", ["/"]);
+  await parent.asyncCall("resolve", [f.directory, "dir/a"]);
+  const identity = createProcessFilesystemIdentity(connection);
+  const pair = connectFilesystemIdentity(identity);
+  const reservation = parent.reserve(f.file, identity);
+  return {
+    f,
+    parent,
+    connection,
+    identity,
+    pair,
+    reservation,
+    stopping,
+    cancel() {
+      revokeFilesystem(identity);
+      releaseFilesystemReservation(reservation);
+    },
+    connect() {
+      connection.port.postMessage({ connect: pair.server }, [pair.server.port]);
+    },
+    async close() {
+      pair.client.port.close();
+      pair.server.port.close();
+      parent.dispose();
+      await f.stop();
+    },
+  };
+}
+
+test("released pre-connect child has cleanup only and parent waits for its actual stop", async () => {
+  const f = await cleanupFixture();
+  const child = new FilesystemClient(f.pair.client);
+  let joined: Promise<void> | undefined;
+  const post = BroadcastChannel.prototype.postMessage;
+  const authorityRequests: unknown[] = [];
+  BroadcastChannel.prototype.postMessage = function (value: unknown) {
+    authorityRequests.push(value);
+    post.call(this, value);
+  };
+  try {
+    f.cancel();
+    f.connect();
+    expect(await bridgeRequest(f.pair.client, "workspaceBind", [f.f.session])).toEqual({
+      state: State.Cancelled,
+      errno: 11,
+    });
+    expect(await bridgeRequest(f.pair.client, "writeFile", ["/dir/forbidden"])).toEqual({
+      state: State.Cancelled,
+      errno: 11,
+    });
+    expect(authorityRequests).toEqual([]);
+    expect(f.f.backend.fs.lookup("/dir/forbidden")).toBeUndefined();
+    let parentStopped = false;
+    joined = stopWorkspaceBridge(f.connection).then(() => {
+      parentStopped = true;
+    });
+    void joined.catch(() => {});
+    await f.stopping.started;
+    expect(parentStopped).toBe(false);
+    await child.stopResidentPublication();
+    await child.stopResidentPublication();
+    child.dispose();
+    await child.stopResidentPublication();
+    await joined;
+    expect(parentStopped).toBe(true);
+    expect(Array.from(new Int32Array(f.reservation.state))).toEqual([1, 2]);
+    expect(new Int32Array(f.reservation.source)[f.reservation.sourceKey + 2]).toBe(0);
+    expect(new Int32Array(f.reservation.target)[f.reservation.targetKey + 1]).toBe(0);
+    expect(authorityRequests).toEqual([]);
+  } finally {
+    BroadcastChannel.prototype.postMessage = post;
+    await joined?.catch(() => {});
+    child.dispose();
+    await f.close();
+  }
+});
+
+test("revoked parent still receives its proven cancelled child without live admission", async () => {
+  const f = await cleanupFixture();
+  try {
+    f.cancel();
+    revokeFilesystem(f.connection);
+    f.connect();
+    expect(await bridgeRequest(f.pair.client, "workspaceBind", [f.f.session])).toMatchObject({
+      errno: 11,
+    });
+    await stopWorkspaceBridge(f.pair.client);
+    await stopWorkspaceBridge(f.connection);
+  } finally {
+    await f.close();
+  }
+});
+
+test("parent stopping joins a proven cancelled connect delivered during an older child join", async () => {
+  const f = await cleanupFixture();
+  const older = createProcessFilesystemIdentity(f.connection);
+  const olderPair = connectFilesystemIdentity(older);
+  const olderReservation = f.parent.reserve(f.f.file, older);
+  let joined: Promise<void> | undefined;
+  try {
+    f.connection.port.postMessage({ connect: olderPair.server }, [olderPair.server.port]);
+    await f.parent.asyncCall("stat", [f.f.file]);
+    let parentStopped = false;
+    joined = stopWorkspaceBridge(f.connection).then(() => {
+      parentStopped = true;
+    });
+    void joined.catch(() => {});
+    await f.stopping.started;
+    f.cancel();
+    f.connect();
+    expect(await bridgeRequest(f.pair.client, "workspaceBind", [f.f.session])).toMatchObject({
+      errno: 11,
+    });
+    revokeFilesystem(older);
+    releaseFilesystemReservation(olderReservation);
+    await stopWorkspaceBridge(olderPair.client);
+    expect(parentStopped).toBe(false);
+    await stopWorkspaceBridge(f.pair.client);
+    await joined;
+    expect(parentStopped).toBe(true);
+  } finally {
+    await joined?.catch(() => {});
+    olderPair.client.port.close();
+    olderPair.server.port.close();
+    await f.close();
+  }
+});
+
+type InvalidConnection = (child: FilesystemConnection, parent: FilesystemConnection) => unknown;
+const invalidCleanupConnections: readonly [string, InvalidConnection][] = [
+  ["copied shared backing", (child) => ({ ...child, shared: child.shared.slice(0) })],
+  ["copied owner backing", (child) => ({ ...child, ownerStates: child.ownerStates.slice(0) })],
+  [
+    "descriptor identity",
+    (child) => ({
+      ...child,
+      residentPublication: { ...child.residentPublication!, description: "other" },
+    }),
+  ],
+  ["parent owner", (child, parent) => ({ ...child, owner: parent.owner })],
+  ["unallocated owner", (child) => ({ ...child, owner: MAX_CONNECTION_OWNERS - 1 })],
+  ["malformed own revocation", (child) => ({ ...child, revocations: [new SharedArrayBuffer(8)] })],
+  [
+    "ancestor-only revocation",
+    (child) => ({ ...child, revocations: [new SharedArrayBuffer(4)].concat(child.revocations) }),
+  ],
+  [
+    "copied source backing",
+    (child) => invalidReservation(child, { source: child.reservations[0]!.source.slice(0) }),
+  ],
+  [
+    "copied target backing",
+    (child) => invalidReservation(child, { target: child.capabilities.slice(0) }),
+  ],
+  ["wrong target owner", (child) => invalidReservation(child, { targetOwner: child.owner + 1 })],
+  [
+    "unaligned source key",
+    (child) => invalidReservation(child, { sourceKey: CAPABILITY_HEADER + 1 }),
+  ],
+  [
+    "out of range target key",
+    (child) => invalidReservation(child, { targetKey: CAPABILITY_LENGTH }),
+  ],
+  [
+    "unproven handle",
+    (child) => invalidReservation(child, { handle: child.reservations[0]!.handle + 1 }),
+  ],
+  [
+    "short reservation state",
+    (child) => invalidReservation(child, { state: new SharedArrayBuffer(4) }),
+  ],
+  ["live reservation", (child) => invalidReservation(child, { state: new SharedArrayBuffer(8) })],
+  [
+    "adopted reservation",
+    (child) => {
+      const state = new SharedArrayBuffer(8);
+      new Int32Array(state).set([1, 1]);
+      return invalidReservation(child, { state });
+    },
+  ],
+  [
+    "unbounded reservations",
+    (child) => ({
+      ...child,
+      reservations: Array.from({ length: CAPABILITY_SLOTS + 1 }, () => child.reservations[0]!),
+    }),
+  ],
+];
+function invalidReservation(
+  child: FilesystemConnection,
+  change: Partial<FilesystemIdentity["reservations"][number]>,
+) {
+  return { ...child, reservations: [{ ...child.reservations[0]!, ...change }] };
+}
+for (const [name, invalid] of invalidCleanupConnections) {
+  test(`pre-connect cleanup rejects ${name} without installing a receiver`, async () => {
+    const f = await cleanupFixture();
+    const observer = observeReceiverInstalls();
+    try {
+      f.cancel();
+      f.connection.port.postMessage({ connect: invalid(f.pair.server, f.connection) }, [
+        f.pair.server.port,
+      ]);
+      await f.parent.asyncCall("stat", [f.f.file]);
+      expect(observer.observation.installed).toBe(0);
+      expect(Array.from(new Int32Array(f.reservation.state))).toEqual([1, 2]);
+      await stopWorkspaceBridge(f.connection);
+    } finally {
+      observer.restore();
+      await f.close();
+    }
+  });
+}

@@ -641,6 +641,65 @@ export async function stopWorkspaceBridge(connection: FilesystemConnection): Pro
     ports.port2.close();
   }
 }
+type WorkspaceEndpoint =
+  | { readonly kind: "live"; readonly channel: ResidentChannel }
+  | { readonly kind: "cleanup-only" };
+
+function workspaceBuffer(value: unknown, bytes?: number): SharedArrayBuffer {
+  if (!(value instanceof SharedArrayBufferConstructor)) throw new FilesystemError(28);
+  if (bytes !== undefined && sharedArrayBufferByteLength(value) !== bytes)
+    throw new FilesystemError(28);
+  return value;
+}
+function workspaceBuffers(value: unknown, max: number, bytes?: number): SharedArrayBuffer[] {
+  if (!Array.isArray(value) || value.length > max) throw new FilesystemError(28);
+  return value.map((buffer: unknown) => workspaceBuffer(buffer, bytes));
+}
+function workspaceReservation(value: unknown): FilesystemIdentity["reservations"][number] {
+  const data = record(value);
+  return {
+    handle: integer(data.handle),
+    source: workspaceBuffer(data.source, (CAPABILITY_LENGTH + 1) * 4),
+    sourceKey: integer(data.sourceKey),
+    target: workspaceBuffer(data.target, (CAPABILITY_LENGTH + 1) * 4),
+    targetKey: integer(data.targetKey),
+    targetOwner: integer(data.targetOwner, MAX_CONNECTION_OWNERS - 1),
+    state: workspaceBuffer(data.state, 8),
+  };
+}
+function workspaceConnection(value: unknown, parent: FilesystemConnection): FilesystemConnection {
+  const data = record(value);
+  const descriptor = residentDescriptor(data.residentPublication);
+  if (
+    !(data.port instanceof NativeMessagePort) ||
+    descriptor.kind !== "workspace" ||
+    JSON.stringify(descriptor) !== JSON.stringify(parent.residentPublication) ||
+    !Array.isArray(data.reservations) ||
+    data.reservations.length > CAPABILITY_SLOTS ||
+    data.publication !== undefined ||
+    data.maxBytes !== parent.maxBytes
+  )
+    throw new FilesystemError(28);
+  const revocations = workspaceBuffers(data.revocations, MAX_CONNECTION_OWNERS, 4);
+  const segments = workspaceBuffers(data.segments, parent.segments.length);
+  if (!revocations.length || segments.length !== parent.segments.length)
+    throw new FilesystemError(28);
+  return {
+    residentPublication: descriptor,
+    port: data.port,
+    epoch: workspaceBuffer(data.epoch, 4),
+    signal: workspaceBuffer(data.signal, 4),
+    revocations,
+    shared: workspaceBuffer(data.shared, CONNECTION_SHARED_BYTES + 4),
+    segments,
+    capabilities: workspaceBuffer(data.capabilities, (CAPABILITY_LENGTH + 1) * 4),
+    sections: workspaceBuffer(data.sections, 4),
+    owner: integer(data.owner, MAX_CONNECTION_OWNERS - 1),
+    maxBytes: parent.maxBytes,
+    ownerStates: workspaceBuffer(data.ownerStates, (MAX_CONNECTION_OWNERS + 1) * 4),
+    reservations: data.reservations.map(workspaceReservation),
+  };
+}
 interface BridgeOperation {
   readonly abort: AbortController;
   readonly buffer: SharedArrayBuffer;
@@ -651,7 +710,7 @@ interface BridgeParent {
   readonly handles: readonly number[];
 }
 class WorkspaceBridge {
-  private channel: ResidentChannel;
+  private endpoint: WorkspaceEndpoint;
   private session: ResidentSession | undefined;
   private pending = new Map<number, BridgeOperation>();
   private responses = new Map<number, Uint8Array>();
@@ -663,40 +722,47 @@ class WorkspaceBridge {
   constructor(
     private connection: FilesystemConnection,
     private parent?: BridgeParent,
+    admission: WorkspaceEndpoint["kind"] = "live",
   ) {
-    this.channel = new ResidentChannel(connection.residentPublication!.workspace);
+    this.endpoint =
+      admission === "cleanup-only"
+        ? { kind: "cleanup-only" }
+        : { kind: "live", channel: new ResidentChannel(connection.residentPublication!.workspace) };
     void this.transfer.promise.catch(() => {});
     connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
     connection.port.start();
   }
+  private get channel(): ResidentChannel {
+    if (this.endpoint.kind !== "live") throw new FilesystemError(11);
+    return this.endpoint.channel;
+  }
   private connect(value: unknown): void {
-    const child = value as FilesystemConnection;
+    const child = workspaceConnection(value, this.connection);
     if (
-      isRevoked(this.connection) ||
       !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") ||
-      !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners")
+      !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners") ||
+      !child.owner ||
+      child.owner === this.connection.owner ||
+      child.owner > Atomics.load(new Int32ArrayConstructor(child.shared), 5)
     )
       throw new FilesystemError(11);
-    const handles: number[] = [];
-    for (const reservation of child.reservations) {
-      this.validateReservation(child, reservation);
-      handles.push(reservation.handle);
-    }
+    for (const reservation of child.reservations) this.validateProvenance(child, reservation);
+    const admission = this.cancelledConnection(child) ? "cleanup-only" : "live";
+    if (admission === "live") this.validateChildAdmission(child);
     if (this.children.size >= 16) throw new FilesystemError(6);
-    const bridge = new WorkspaceBridge(child, { bridge: this, handles });
+    const handles = child.reservations.map((reservation) => reservation.handle);
+    const bridge = new WorkspaceBridge(child, { bridge: this, handles }, admission);
     this.children.add(bridge);
     void bridge.transfer.promise.then(
       () => this.children.delete(bridge),
       () => {},
     );
-    if (!handles.length) bridge.transfer.resolve();
+    if (admission === "live" && !handles.length) bridge.transfer.resolve();
   }
-  private validateReservation(
+  private validateProvenance(
     child: FilesystemConnection,
     reservation: FilesystemIdentity["reservations"][number],
   ): void {
-    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH),
-      target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
     if (
       !sameWorkspaceBacking(reservation.source, this.connection.capabilities, "capabilities") ||
       !sameWorkspaceBacking(reservation.target, child.capabilities, "capabilities") ||
@@ -705,6 +771,43 @@ class WorkspaceBridge {
       !reservationKey(reservation.targetKey)
     )
       throw new FilesystemError(8);
+    const source = new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
+      target = new Int32ArrayConstructor(reservation.target, 0, CAPABILITY_LENGTH);
+    if (
+      Atomics.load(source, reservation.sourceKey) !== reservation.handle ||
+      Atomics.load(target, reservation.targetKey) !== reservation.handle
+    )
+      throw new FilesystemError(8);
+  }
+  private cancelledConnection(child: FilesystemConnection): boolean {
+    const revoked = Atomics.load(new Int32ArrayConstructor(child.revocations[0]!), 0);
+    const owner = Atomics.load(new Int32ArrayConstructor(child.ownerStates), child.owner);
+    if ((revoked !== 1 && revoked !== 2) || (owner !== 1 && owner !== 2)) return false;
+    return child.reservations.every((reservation) => {
+      const state = new Int32ArrayConstructor(reservation.state);
+      const source = new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH);
+      const target = new Int32ArrayConstructor(reservation.target, 0, CAPABILITY_LENGTH);
+      return (
+        Atomics.load(state, 0) === 1 &&
+        Atomics.load(state, 1) === 2 &&
+        Atomics.load(source, reservation.sourceKey + 2) >= 0 &&
+        Atomics.load(target, reservation.targetKey + 1) === 0 &&
+        Atomics.load(target, reservation.targetKey + 2) === 0
+      );
+    });
+  }
+  private validateChildAdmission(child: FilesystemConnection): void {
+    if (this.stopping || isRevoked(this.connection) || isRevoked(child))
+      throw new FilesystemError(11);
+    for (const reservation of child.reservations) this.validateReservation(child, reservation);
+  }
+  private validateReservation(
+    child: FilesystemConnection,
+    reservation: FilesystemIdentity["reservations"][number],
+  ): void {
+    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH),
+      target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
+    this.validateProvenance(child, reservation);
     if (
       Atomics.load(source, reservation.sourceKey) !== reservation.handle ||
       Atomics.load(source, reservation.sourceKey + 2) <= 0 ||
@@ -724,11 +827,11 @@ class WorkspaceBridge {
   }
   private message(data: Record<string, unknown>): void {
     if ("stopWorkspace" in data) return this.replyStopped(data.stopWorkspace);
-    if (this.stopping) {
+    if ("connect" in data && this.endpoint.kind === "live") return this.connect(data.connect);
+    if (this.stopping || this.endpoint.kind === "cleanup-only") {
       if (data.buffer instanceof SharedArrayBuffer) this.fail(integer(data.id), data.buffer, 11);
       return;
     }
-    if ("connect" in data) return this.connect(data.connect);
     if ("discard" in data) {
       const id = integer(data.discard);
       this.pending.get(id)?.abort.abort();
@@ -796,7 +899,7 @@ class WorkspaceBridge {
     this.transfer.resolve();
   }
   private cancelTransferred(): void {
-    if (this.bindingStarted) return;
+    if (this.endpoint.kind === "cleanup-only" || this.bindingStarted) return;
     if (
       !isRevoked(this.connection) &&
       this.connection.reservations.some(
@@ -870,11 +973,13 @@ class WorkspaceBridge {
     for (const pending of this.pending.values()) pending.abort.abort();
     await Promise.all(Array.from(this.pending.values(), (pending) => pending.joined));
     await this.bound;
-    this.channel.assertSettled();
-    for (const child of this.children) child.cancelTransferred();
-    await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
+    if (this.endpoint.kind === "live") this.endpoint.channel.assertSettled();
+    while (this.children.size) {
+      for (const child of this.children) child.cancelTransferred();
+      await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
+    }
     this.responses.clear();
-    this.channel.close();
+    if (this.endpoint.kind === "live") this.endpoint.channel.close();
     this.connection.port.close();
     if (!this.bindingStarted) this.transfer.resolve();
   }
