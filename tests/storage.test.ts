@@ -194,6 +194,7 @@ for (const whenBusy of ["takeover", "wait"] as const) {
     } finally {
       clearTimeout(timeout);
       opening.onsuccess!(new Event("success"));
+      expect(closed).toBe(1);
       await result;
     }
     expect(closed).toBe(1);
@@ -294,6 +295,56 @@ for (const whenBusy of ["takeover", "wait"] as const)
       expect(lockHeld).toBe(false);
     });
   }
+
+test("IndexedDB publishes its close attempt before synchronous versionchange reentry", async () => {
+  const failure = new Error("original reentrant close failure");
+  const requested = Promise.withResolvers<void>();
+  const claim = Promise.withResolvers<never>();
+  let originalDebt: Promise<void> | undefined;
+  let closed = 0;
+  const change = () =>
+    database.onversionchange!(
+      Object.assign(new Event("versionchange"), { oldVersion: 1, newVersion: 2 }),
+    );
+  const database = {
+    objectStoreNames: { length: 3, contains: () => true },
+    onversionchange: null,
+    close() {
+      closed++;
+      if (closed === 1) change();
+      throw failure;
+    },
+  } as unknown as IDBDatabase;
+  const opening = { result: database } as IDBOpenDBRequest;
+  const locks: StorageLockManager = {
+    request(_name, options) {
+      if ("signal" in options)
+        options.signal?.addEventListener("abort", () => claim.reject(options.signal?.reason), {
+          once: true,
+        });
+      requested.resolve();
+      return claim.promise;
+    },
+  };
+  const result = IndexedDBStorage.open("reentrant-close", {
+    indexedDB: { open: () => opening } as unknown as IDBFactory,
+    locks,
+    whenBusy: "wait",
+    retainOpeningDebt(debt) {
+      originalDebt = debt;
+    },
+  }).catch((error: unknown) => error);
+  opening.onsuccess!(new Event("success"));
+  await requested.promise;
+  const failed = originalDebt!.catch((error: unknown) => error);
+  change();
+  expect(closed).toBe(1);
+  expect(await result).toBe(failure);
+  expect(await failed).toBe(failure);
+  change();
+  await expect(originalDebt!).rejects.toBe(failure);
+  expect(closed).toBe(1);
+});
 
 test("IndexedDB retains the original debt before native request and preserves a late close failure", async () => {
   const controller = new AbortController();

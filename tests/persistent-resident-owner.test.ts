@@ -217,7 +217,7 @@ test("persistent server drain keeps authority live until separate finalization",
 import { createPersistentResidentOwner } from "../browser/persistent-resident-owner";
 
 /** Native API stand-ins exercise the real owner/opener, not browser scheduling. */
-function pendingNativeClaim(closeFailure?: Error, setupFailure?: Error) {
+function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Error) {
   const originals = new Map(
     ["location", "navigator", "indexedDB"].map((key) => [
       key,
@@ -252,7 +252,7 @@ function pendingNativeClaim(closeFailure?: Error, setupFailure?: Error) {
     },
     close() {
       closed++;
-      if (closeFailure) throw closeFailure;
+      if (closeFailure) throw closeFailure.value;
     },
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
@@ -380,9 +380,9 @@ test("owner joins a physically pending native open after readiness cancellation"
   }
 });
 
-test("owner retains the original failed late native close and memoized stop with guards", async () => {
-  const failure = new Error("original late native close failure");
-  const owned = pendingNativeClaim(failure);
+for (const failure of [new Error("original late native close failure"), undefined, null, false, 0, ""])
+  test(`owner retains original late native close failure ${String(failure)} and memoized stop with guards`, async () => {
+  const owned = pendingNativeClaim({ value: failure });
   try {
     await owned.opened;
     const stopped = owned.owner.stop();
