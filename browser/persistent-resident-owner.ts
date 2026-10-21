@@ -27,7 +27,7 @@ export interface SelectedPersistentWorkspace {
   readonly implementation: "indexeddb" | "opfs-memory";
   readonly format: string;
 }
-export interface AuthorityIdentity {
+interface AuthorityIdentity {
   readonly instance: ResidentDescriptor["instance"];
   readonly history: PublicationCut["history"];
 }
@@ -44,14 +44,14 @@ export type PersistentOwnerRequest = {
       readonly accept: "new-history-loss-and-unknown";
     }
 );
-export interface V1ReopenNotice {
+interface V1ReopenNotice {
   readonly kind: "v1-new-history";
   readonly durablePublicationCut: "untracked";
   readonly oldCapabilities: "not-restored";
   readonly oldMutationOutcomes: "not-restored";
   readonly acknowledgedTail: "may-be-lost";
 }
-export interface PersistentResidentReady {
+interface PersistentResidentReady {
   readonly request: PersistentOwnerRequest;
   readonly identity: AuthorityIdentity;
   readonly descriptor: ResidentDescriptor;
