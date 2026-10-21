@@ -1,3 +1,4 @@
+import { FilesystemClient } from "../fs/client";
 import {
   acquirePublicationGuard,
   attachResidentPublication,
@@ -104,6 +105,7 @@ let authority: FixtureWorker | undefined,
 let descriptor: ResidentDescriptor | undefined;
 const guests = new Map<string, { worker: FixtureWorker; connection: FilesystemConnection }>();
 let claimGate: Int32Array | undefined;
+let workspaceClient: FilesystemClient | undefined;
 async function ordinarySurvivorControl(): Promise<unknown> {
   const owner = new FixtureWorker("/resident-authority.js");
   const worker = new FixtureWorker("/resident-guest.js");
@@ -345,8 +347,71 @@ async function latePreparationControl(): Promise<unknown> {
   }
 }
 
+async function workspaceControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "workspaceAuthority") {
+    authority = new FixtureWorker("/resident-authority.js");
+    return residentDescriptor(await authority.request("workspaceStart", text(value)));
+  }
+  if (operation === "workspacePeer") {
+    descriptor = residentDescriptor(value);
+    workspaceClient = new FilesystemClient(createResidentConnection(descriptor));
+    await workspaceClient.attachResidentPublication();
+    return { authorityRootReceived: false };
+  }
+  if (operation === "workspaceCut") return authority?.request("workspaceCut");
+  if (operation === "workspaceChanges") return authority?.request("changes", value);
+  if (operation === "workspaceStop") {
+    await workspaceClient?.stopResidentPublication();
+    workspaceClient?.dispose();
+    return null;
+  }
+  if (operation === "workspaceAuthorityStop") {
+    await authority?.request("workspaceStop");
+    await authority?.terminate();
+    return null;
+  }
+  const body = record(value);
+  if (operation === "workspacePage" || operation === "workspacePageDenied") {
+    if (!workspaceClient || !Array.isArray(body.args)) throw new Error("missing page workspace");
+    const bytes = Array.isArray(body.bytes) ? Uint8Array.from(body.bytes) : undefined;
+    try { return await workspaceClient.asyncCall(text(body.operation), body.args, bytes); }
+    catch (error) {
+      if (operation !== "workspacePageDenied") throw error;
+      return Number(Reflect.get(Object(error), "errno"));
+    }
+  }
+  if (operation === "workspaceGuest") {
+    if (!descriptor) throw new Error("missing workspace descriptor");
+    const worker = new FixtureWorker("/resident-guest.js"), connection = createResidentConnection(descriptor);
+    guests.set(text(body.key), { worker, connection });
+    await worker.request("start", { mode: text(body.mode), connection }, [connection.port]);
+    return worker.until("ready");
+  }
+  if (operation === "workspaceDescendant") {
+    const parent = guests.get(text(body.parent));
+    if (!parent) throw new Error("missing source guest");
+    const inherited = record(await parent.worker.request("descendantCodec"));
+    const connection = inherited.connection as FilesystemConnection;
+    const worker = new FixtureWorker("/resident-guest.js");
+    guests.set(text(body.key), { worker, connection });
+    await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [connection.port]);
+    return worker.until("ready");
+  }
+  const guest = guests.get(text(body.key));
+  if (!guest) throw new Error("missing workspace guest");
+  if (operation === "workspaceGuestStop") {
+    await guest.worker.request("stop");
+    await guest.worker.until("finished");
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return null;
+  }
+  return guest.worker.request(text(body.operation), body.request);
+}
+
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation.startsWith("workspace")) return workspaceControl(operation, value);
   if (operation === "guardLifecycle") return guardLifecycleControl();
   if (operation === "ordinarySurvivor") return ordinarySurvivorControl();
   if (operation === "authority") {

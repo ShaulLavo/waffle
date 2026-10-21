@@ -27,7 +27,7 @@ const limits: PublicationLimits = {
 };
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
-let handle = 0;
+let handle = 0, rootHandle = 0;
 let ordinaryPort: MessagePort | undefined;
 let holdReply: "open" | "prepare" | undefined;
 let heldReply: (() => void) | undefined;
@@ -55,11 +55,15 @@ BroadcastChannel.prototype.postMessage = function (value: unknown): void {
 async function initialize(): Promise<void> {
   backend = new MemoryBackend();
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  backend.fs.mkdirp("/dir");
+  backend.fs.writeFile("/dir/a", new Uint8Array([10, 20, 30, 40]));
+  backend.fs.writeFile("/dir/b", new Uint8Array([5, 6]));
   service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
   root = new FilesystemClient(connection.client);
   const dir: number = await root.asyncCall("preopen", ["/"]);
+  rootHandle = dir;
   const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
   handle = file.node;
   root.retain(handle);
@@ -85,11 +89,11 @@ async function serviceWork(): Promise<number> {
     return Number(Reflect.get(Object(error), "errno"));
   }
 }
-async function enable(workspace: string): Promise<unknown> {
+async function enable(workspace: string, namespace = false): Promise<unknown> {
   if (!root || !service) throw new Error("authority not initialized");
-  const descriptor: unknown = await root.asyncCall("publicationResident", [
+  const descriptor: unknown = await root.asyncCall(namespace ? "publicationWorkspace" : "publicationResident", [
     root.connection.publication!.observer,
-    handle,
+    namespace ? rootHandle : handle,
     workspace,
   ]);
   server = await serveResidentAuthority(service.residentPublication!, new AbortController().signal);
@@ -142,6 +146,17 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
       idleStopped: await serviceWork(),
       stopped: backend!.shared.publication!.stopped,
     };
+  }
+  if (operation === "workspaceStart") {
+    await initialize();
+    return enable(text(body), true);
+  }
+  if (operation === "workspaceCut") return publicationObserver(root!).cut();
+  if (operation === "workspaceStop") {
+    await server?.stop();
+    root?.dispose();
+    service?.dispose();
+    return null;
   }
   if (operation === "start") {
     await initialize();

@@ -172,6 +172,7 @@ export class ResidentAuthorityServer {
       if (this.stopped || signal.aborted) throw new FilesystemError(11);
       const peer = this.peer(session);
       if (operation === "workspaceNext") return peer.next();
+      if (operation === "workspaceReceipts") return peer.receipts();
       if (operation === "workspaceReceipt") return peer.receipt(body.id);
       if (operation === "workspaceAdopt") {
         if (!Array.isArray(body.handles) || body.handles.length > 4096) throw new FilesystemError(28);

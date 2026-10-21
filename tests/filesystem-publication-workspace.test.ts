@@ -90,6 +90,7 @@ test("namespace mutations use exact session identities and preserve one complete
     await rejectsErrno(call(f, "writeFile", ["/dir/c"], new Uint8Array([8]), id), 28);
     expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id })).toMatchObject({ kind: "committed", receipt: first.receipt });
     expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id: { session: 1, sequence: 1 } })).toEqual({ kind: "unknown" });
+    expect(await f.channel.call("workspaceReceipts", { token: f.session.token })).toContainEqual({ id, outcome: { kind: "committed", receipt: first.receipt } });
     await rejectsErrno(call(f, "publicationChanges", [f.root.connection.publication!.observer, before, limits.logBytes]), 2);
     const changes = await f.root.asyncCall("publicationChanges", [f.root.connection.publication!.observer, before, limits.logBytes]);
     expect(changes).toMatchObject({ kind: "changes" });
