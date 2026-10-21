@@ -1,5 +1,5 @@
 import { localPublication, type PublicationConfiguration } from "../fs/publication-internal.js";
-import { mutationValue, type PublicationAdmission, type PublicationCut, type MutationId } from "../fs/publication.js";
+import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
 import {
   reportRuntimeStartup,
   isWorkerStartupMessage,
@@ -293,20 +293,6 @@ export class SharedFilesystem {
       this.failure ??= error;
     });
     return result;
-  }
-  /** Private root observer. Ordinary guest forks never receive the grant. */
-  [localPublication]() {
-    const grant = this.client.connection.publication?.observer;
-    if (!grant) throw new Error("Publication observer was not granted");
-    return {
-      cut: (): Promise<PublicationCut> => this.request("publicationCut", [grant]),
-      changes: (after: PublicationCut, bytes: number) => this.request("publicationChanges", [grant, after, bytes]),
-      receipt: (id: MutationId) => this.request("publicationReceipt", [grant, id]),
-      pin: (handle: number, offset: number, length: number) => this.request("publicationPin", [grant, handle, offset, length]),
-      releasePin: (id: number) => this.request("publicationReleasePin", [grant, id]),
-      diagnostics: () => this.request("publicationDiagnostics", [grant]),
-      stop: () => this.request("publicationStop", [grant]),
-    };
   }
   /** Wait for this page's queued mutations, without waiting for background persistence. */
   async drain(): Promise<void> {

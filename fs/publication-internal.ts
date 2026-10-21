@@ -1,3 +1,6 @@
+import type { FilesystemClient } from "./client.js";
+import type { MutationId, PublicationCut } from "./publication.js";
+
 /** Internal experiment switch. It is deliberately absent from package exports. */
 export const localPublication = Symbol("waffle.local-publication");
 
@@ -51,4 +54,19 @@ export interface PublicationDiagnostics {
   readonly pins: number;
   readonly pinBytes: number;
   readonly allocatedBytes: number;
+}
+
+/** Root observer access stays outside the public filesystem capability table. */
+export function publicationObserver(client: FilesystemClient) {
+  const grant = client.connection.publication?.observer;
+  if (!grant) throw new Error("Publication observer was not granted");
+  return {
+    cut: (): Promise<PublicationCut> => client.asyncCall("publicationCut", [grant]),
+    changes: (after: PublicationCut, bytes: number) => client.asyncCall("publicationChanges", [grant, after, bytes]),
+    receipt: (id: MutationId) => client.asyncCall("publicationReceipt", [grant, id]),
+    pin: (handle: number, offset: number, length: number) => client.asyncCall("publicationPin", [grant, handle, offset, length]),
+    releasePin: (id: number) => client.asyncCall("publicationReleasePin", [grant, id]),
+    diagnostics: () => client.asyncCall("publicationDiagnostics", [grant]),
+    stop: () => client.asyncCall("publicationStop", [grant]),
+  };
 }

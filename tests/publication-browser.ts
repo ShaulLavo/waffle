@@ -1,5 +1,5 @@
 import { SharedFilesystem } from "../browser/shared-fs.js";
-import { localPublication, type PublicationLimits } from "../fs/publication-internal.js";
+import { localPublication, publicationObserver, type PublicationLimits } from "../fs/publication-internal.js";
 import type { FilesystemConnection } from "../fs/protocol.js";
 
 const limits: PublicationLimits = {
@@ -39,7 +39,7 @@ export async function runPublicationBrowser(): Promise<string[]> {
     await queued;
     equal(Array.from((await fs.readFile("/file"))!), [1, 2, 3]);
     passed.push("page owns input before its promise queue");
-    const observer = fs[localPublication]();
+    const observer = publicationObserver(fs.client);
     const start = await observer.cut();
     for (const mode of ["wasi", "proc"]) {
       const worker = new Worker("/guest.js", {type: "module"}), connection = fs.fork();
