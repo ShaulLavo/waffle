@@ -366,3 +366,63 @@ test("idle authority disposal permanently denies queued ordinary service work", 
     f.stop();
   }
 });
+
+test("claim constructors, copies and paired codec bypass late prototype hooks", async () => {
+  const f = await residentFixture();
+  const restorations: (() => void)[] = [];
+  let intercepted = 0;
+  try {
+    const grant = f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 });
+    const input = new Uint8Array([9]);
+    for (const name of ["Uint8Array", "Int32Array", "SharedArrayBuffer", "DataView"]) {
+      const descriptor = Object.getOwnPropertyDescriptor(globalThis, name)!;
+      const value = Reflect.get(globalThis, name);
+      Object.defineProperty(globalThis, name, {
+        ...descriptor,
+        value: new Proxy(value, {
+          construct(target, args) {
+            intercepted++;
+            return Reflect.construct(target, args);
+          },
+        }),
+      });
+      restorations.push(() => Object.defineProperty(globalThis, name, descriptor));
+    }
+    const methods: readonly [object, string][] = [
+      [Uint8Array.prototype, "slice"],
+      [Uint8Array.prototype, "subarray"],
+      [Uint8Array.prototype, "set"],
+      [DataView.prototype, "getUint32"],
+      [DataView.prototype, "setUint32"],
+      [TextEncoder.prototype, "encode"],
+      [TextDecoder.prototype, "decode"],
+    ];
+    for (const [prototype, name] of methods) {
+      const own = Object.getOwnPropertyDescriptor(prototype, name);
+      const method = Reflect.get(prototype, name);
+      Object.defineProperty(prototype, name, {
+        configurable: true,
+        writable: true,
+        value: function (this: unknown, ...args: unknown[]) {
+          intercepted++;
+          return Reflect.apply(method, this, args);
+        },
+      });
+      restorations.push(() => {
+        if (own) Object.defineProperty(prototype, name, own);
+        else Reflect.deleteProperty(prototype, name);
+      });
+    }
+    const cell = new ResidentGrantCell(grant);
+    const count = cell.tryWrite(f.handle, [input], 0);
+    const outcome = cell.snapshot();
+    for (const restore of restorations.toReversed()) restore();
+    restorations.length = 0;
+    expect(count).toBe(1);
+    expect(outcome.kind).toBe("committed");
+    expect(intercepted).toBe(0);
+  } finally {
+    for (const restore of restorations.toReversed()) restore();
+    f.stop();
+  }
+});

@@ -248,7 +248,7 @@ export class ResidentGrantCell {
     views: readonly Uint8Array[],
     length: number,
   ): number {
-    const count = Math.min(length, grant.typedArrayLength(bytes));
+    const count = Math.min(length, typedArrayLength(grant.bytes));
     this.state[1] = count;
     let at = 0;
     for (let index = 0; index < views.length; index++) {
@@ -532,7 +532,7 @@ export class ResidentGrantAuthority {
       if (issued.admission) this.domain.cancel(owner.value.session, issued.admission);
       result = { kind: "retired" };
     } else if (outcome.kind === "read" && grant.kind === "read") {
-      bounded(outcome.count, grant.typedArrayLength(bytes));
+      bounded(outcome.count, typedArrayLength(grant.bytes));
       if (
         outcome.cut.history !== grant.cut.history ||
         outcome.cut.generation !== grant.cut.generation

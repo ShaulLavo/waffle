@@ -485,8 +485,8 @@ export async function attachResidentPublication(
   return client;
 }
 
-/** Local liveness, capability and offset a full root-format allocation, 25,477,140 bytes before objects, ports and offsets. This allocates no MemFS,
- * backend, root directory or authority publication arena. Namespace calls are unsupported. */
+/** Local liveness and capabilities reuse a full root-format allocation: 25,477,140 bytes
+ * before objects, ports and offsets. No backend or authority root is copied; namespace is unsupported. */
 export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
   const descriptor = residentDescriptor(value);
   const identity = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
