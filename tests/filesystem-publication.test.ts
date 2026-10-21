@@ -43,7 +43,7 @@ test("local publication orders real host, WASI and direct writers without a nudg
 });
 
 import { PublicationDomain, createPublicationBuffers } from "../fs/publication";
-import type { PublicationLimits } from "../fs/publication-internal";
+import { localPublication, type PublicationLimits } from "../fs/publication-internal";
 import { PAGE, reapFilesystem } from "../fs/protocol";
 
 const limits: PublicationLimits = {
@@ -238,7 +238,7 @@ async function localPublicationFixture(backend = new MemoryBackend(), seed = tru
   const cut = () => root.asyncCall("publicationCut", [grant]);
   const changes = (after: unknown) => root.asyncCall("publicationChanges", [grant, after, limits.logBytes]);
   const stop = () => { sibling.dispose(); root.dispose(); service.dispose(); };
-  return { backend, service, root, sibling, handle: path.node as number, grant, cut, changes, stop };
+  return { backend, service, server: connection.server, root, sibling, handle: path.node as number, grant, cut, changes, stop };
 }
 
 test("production publication content paths publish before direct and service success without a nudge", async () => {
@@ -717,4 +717,45 @@ test("production copied pins preserve a content version across metadata and late
     await expectErrno(root.asyncCall("publicationPin", [grant, handle, 0, 3]), 2);
     expect(await root.asyncCall("publicationDiagnostics", [grant])).toMatchObject({pins: 0, pinBytes: 0});
   } finally { fixture.stop(); }
+});
+
+
+test("production exact identities survive after-commit response loss and cannot replay retired work", async () => {
+  const fixture = await localPublicationFixture();
+  const post = fixture.server.port.postMessage.bind(fixture.server.port);
+  const delivered = deferred();
+  let dropped = -1;
+  fixture.server.port.postMessage = (message: unknown) => {
+    if (message && typeof message === "object" && "completed" in message && message.completed === dropped) { delivered.resolve(); return; }
+    post(message);
+  };
+  try {
+    const before = await fixture.cut();
+    const args = [fixture.handle, 0], data = new Uint8Array([9]);
+    const admitted = fixture.root[localPublication]("write", args, data);
+    if (admitted.kind !== "admitted") throw new Error("expected new identity");
+    const completion = fixture.root.submit("write", args, admitted.input, undefined, admitted.admission);
+    dropped = completion.id;
+    await delivered.promise;
+    completion.cancel();
+    completion.release();
+    const receipt = await fixture.root.asyncCall("publicationReceipt", [fixture.grant, admitted.admission.id]);
+    expect(receipt.kind).toBe("committed");
+    expect(receipt.receipt.result).toEqual({kind: "number", value: 1});
+    expect(receipt.receipt.cut.generation).toBe(before.generation + 1);
+    const duplicate = fixture.root[localPublication]("write", args, data, admitted.admission.id);
+    expect(duplicate).toEqual({kind: "duplicate", receipt: receipt.receipt});
+    expect(() => fixture.root[localPublication]("write", args, new Uint8Array([8]), admitted.admission.id)).toThrow("conflicting");
+    expect(() => fixture.root[localPublication]("write", [fixture.handle, 1], data, admitted.admission.id)).toThrow("conflicting");
+    expect(() => fixture.root[localPublication]("append", [fixture.handle], data, admitted.admission.id)).toThrow("conflicting");
+    expect(() => fixture.root[localPublication]("write", [999, 0], data, admitted.admission.id)).toThrow("conflicting");
+    expect((await fixture.changes(before)).publications).toHaveLength(1);
+    const after = await fixture.cut();
+    for (let index = 0; index < limits.operations; index++) await fixture.root.asyncCall("setMtime", [fixture.handle, 100 + index]);
+    expect((await fixture.root.asyncCall("publicationReceipt", [fixture.grant, admitted.admission.id])).kind).toBe("retired");
+    expect(() => fixture.root[localPublication]("write", args, data, admitted.admission.id)).toThrow("retired");
+    expect((await fixture.cut()).generation).toBe(after.generation + limits.operations);
+    fixture.sibling.dispose();
+    expect(() => fixture.sibling[localPublication]("write", args, data, admitted.admission.id)).toThrow();
+  } finally { fixture.server.port.postMessage = post; fixture.stop(); }
 });

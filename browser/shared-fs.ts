@@ -1,3 +1,5 @@
+import { localPublication, type PublicationConfiguration } from "../fs/publication-internal.js";
+import { mutationValue, type PublicationAdmission, type PublicationCut, type MutationId } from "../fs/publication.js";
 import {
   reportRuntimeStartup,
   isWorkerStartupMessage,
@@ -41,6 +43,7 @@ export type SharedFilesystemStateObserver = (
 ) => void | PromiseLike<void>;
 
 export type SharedFilesystemOptions = VfsSelection & {
+  [localPublication]?: PublicationConfiguration;
   workerURL?: string | URL;
   name?: string;
   /** Called when startup enters or leaves the queued ownership state. */
@@ -109,7 +112,7 @@ export class SharedFilesystem {
     this.onStateChange = options.onStateChange;
     this.cancellableStartup = this.vfs.persistent;
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
-    const connection = createFilesystemConnection();
+    const connection = createFilesystemConnection(undefined, options[localPublication]);
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
     try {
@@ -267,10 +270,10 @@ export class SharedFilesystem {
     await waitForFilesystemQuiescence(connection);
     this.reap(connection);
   }
-  private async request(operation: string, args: unknown[] = [], bytes?: Uint8Array): Promise<any> {
+  private async request(operation: string, args: unknown[] = [], bytes?: Uint8Array, publication?: PublicationAdmission): Promise<any> {
     this.assertLive();
     try {
-      return await this.client.asyncCall(operation, args, bytes);
+      return await this.client.asyncCall(operation, args, bytes, publication);
     } catch (error) {
       // Revocation wakes pending requests with ECANCELED. The page owns the worker's
       // actual failure, such as unavailable or corrupt browser storage.
@@ -279,12 +282,31 @@ export class SharedFilesystem {
     }
   }
   private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
-    const result = this.writes.then(() => this.request(operation, args, bytes));
+    const admission = this.client.shared.publication ? this.client[localPublication](operation, args, bytes ?? new Uint8Array()) : undefined;
+    const owned = admission?.kind === "admitted" ? admission.input : bytes;
+    const publication = admission?.kind === "admitted" ? admission.admission : undefined;
+    const result = this.writes.then(() => admission?.kind === "duplicate" ? mutationValue(admission.receipt.result) : this.request(operation, args, owned, publication)).finally(() => {
+      if (publication) this.client.cancelPublication(publication);
+    });
     // Keep ordering after an error, while returning the failure to the caller that owns it.
     this.writes = result.catch((error) => {
       this.failure ??= error;
     });
     return result;
+  }
+  /** Private root observer. Ordinary guest forks never receive the grant. */
+  [localPublication]() {
+    const grant = this.client.connection.publication?.observer;
+    if (!grant) throw new Error("Publication observer was not granted");
+    return {
+      cut: (): Promise<PublicationCut> => this.request("publicationCut", [grant]),
+      changes: (after: PublicationCut, bytes: number) => this.request("publicationChanges", [grant, after, bytes]),
+      receipt: (id: MutationId) => this.request("publicationReceipt", [grant, id]),
+      pin: (handle: number, offset: number, length: number) => this.request("publicationPin", [grant, handle, offset, length]),
+      releasePin: (id: number) => this.request("publicationReleasePin", [grant, id]),
+      diagnostics: () => this.request("publicationDiagnostics", [grant]),
+      stop: () => this.request("publicationStop", [grant]),
+    };
   }
   /** Wait for this page's queued mutations, without waiting for background persistence. */
   async drain(): Promise<void> {

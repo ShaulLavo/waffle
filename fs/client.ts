@@ -1,4 +1,5 @@
-import { mutationIntent, type PublicationAdmission, type MutationIntent } from "./publication.js";
+import { localPublication } from "./publication-internal.js";
+import { mutationIntent, type PublicationAdmission, type MutationIntent, type MutationId, type AdmissionResult } from "./publication.js";
 import { permissionsFor } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
@@ -376,6 +377,14 @@ export class FilesystemClient implements FileSystem {
   sweep(): void {
     this.connection.port.postMessage({ sweep: true });
   }
+  [localPublication](operation: string, args: readonly unknown[], data: Uint8Array, id?: MutationId): AdmissionResult {
+    if (this.revoked()) throw new FilesystemError(11);
+    const domain = this.shared.publication, connection = this.connection.publication;
+    if (!domain || !connection) throw new FilesystemError(58);
+    const intent = mutationIntent(operation, args);
+    if (!intent) throw new FilesystemError(28);
+    return domain.admit(connection.session, id ?? domain.next(connection.session), intent, data);
+  }
   submit(
     operation: string,
     args: unknown[] = [],
@@ -433,8 +442,8 @@ export class FilesystemClient implements FileSystem {
       completion.release();
     }
   }
-  async asyncCall(operation: string, args: unknown[] = [], data?: Uint8Array): Promise<any> {
-    const completion = this.submit(operation, args, data);
+  async asyncCall(operation: string, args: unknown[] = [], data?: Uint8Array, publication?: PublicationAdmission): Promise<any> {
+    const completion = this.submit(operation, args, data, undefined, publication);
     try {
       return await completion.value();
     } finally {
