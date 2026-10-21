@@ -104,6 +104,28 @@ let authority: FixtureWorker | undefined,
 let descriptor: ResidentDescriptor | undefined;
 const guests = new Map<string, { worker: FixtureWorker; connection: FilesystemConnection }>();
 let claimGate: Int32Array | undefined;
+async function ordinarySurvivorControl(): Promise<unknown> {
+  const owner = new FixtureWorker("/resident-authority.js");
+  const worker = new FixtureWorker("/resident-guest.js");
+  try {
+    const result = record(await owner.request("ordinaryRoot"));
+    const connection = result.connection as FilesystemConnection;
+    await worker.request("start", { mode: "proc", connection, handle: result.handle }, [connection.port]);
+    await worker.until("ready");
+    const request = { kind: "write", bytes: [2] };
+    const before = record(await worker.request("call", request)).result;
+    const issued = residentDescriptor(await owner.request("enable", `ordinary-${crypto.randomUUID()}`));
+    const activated = record(await worker.request("call", request)).result;
+    await owner.terminate();
+    const guard = await acquirePublicationGuard(issued.workspace, "exclusive", new AbortController().signal, true);
+    await guard.release();
+    const survivor = record(await worker.request("call", request)).result;
+    return { before, activated, survivor, observedNativeAuthorityDeath: true, exclusive: true };
+  } finally {
+    await worker.terminate();
+    await owner.terminate();
+  }
+}
 async function startGuest(mode: string): Promise<unknown> {
   if (!descriptor) throw new Error("descriptor missing");
   const worker = new FixtureWorker("/resident-guest.js"),
@@ -276,6 +298,7 @@ async function latePreparationControl(): Promise<unknown> {
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation === "ordinarySurvivor") return ordinarySurvivorControl();
   if (operation === "authority") {
     authority = new FixtureWorker("/resident-authority.js");
     descriptor = residentDescriptor(await authority.request("start", text(value)));
@@ -331,6 +354,7 @@ async function guestControl(operation: string, value?: unknown): Promise<unknown
     mode = text(body.mode),
     guest = guests.get(mode);
   if (!guest) throw new Error(`missing guest ${mode}`);
+  if (operation === "armDefensiveHooks" || operation === "defensiveResult") return guest.worker.request(operation);
   if (operation === "prepare")
     return guest.worker.request("prepare", residentRequest(body.request));
   if (operation === "call") return guest.worker.request("call", body.request);

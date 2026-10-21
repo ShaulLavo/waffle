@@ -17,6 +17,22 @@ let fd = 0,
   setupCount = 0;
 let finish: (() => void) | undefined;
 let claimGate: Int32Array | undefined;
+let privateInterceptions = 0;
+const nativeLoad = Atomics.load, nativeStore = Atomics.store, nativeCompare = Atomics.compareExchange;
+function armDefensiveHooks(): void {
+  const observe = (array: Int32Array) => {
+    if (array.length === 3 && array.buffer.byteLength === 12) privateInterceptions++;
+  };
+  Atomics.load = ((array: Int32Array, index: number) => { observe(array); return nativeLoad(array, index); }) as typeof Atomics.load;
+  Atomics.store = ((array: Int32Array, index: number, value: number) => { observe(array); return nativeStore(array, index, value); }) as typeof Atomics.store;
+  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => { observe(array); return nativeCompare(array, index, expected, replacement); }) as typeof Atomics.compareExchange;
+}
+function defensiveResult(): number {
+  Atomics.load = nativeLoad;
+  Atomics.store = nativeStore;
+  Atomics.compareExchange = nativeCompare;
+  return privateInterceptions;
+}
 const memory = new WebAssembly.Memory({ initial: 4 });
 function call(body: unknown): unknown {
   if (!current || !resource) throw new Error("guest not started");
@@ -56,7 +72,7 @@ function call(body: unknown): unknown {
     count: view.getUint32(32, true),
   };
 }
-async function start(request: { mode: string; connection: FilesystemConnection }): Promise<void> {
+async function start(request: { mode: string; connection: FilesystemConnection; handle?: number }): Promise<void> {
   mode = text(request.mode);
   const connection = request.connection;
   const req: RuntimeWorkerRequest = {
@@ -73,12 +89,13 @@ async function start(request: { mode: string; connection: FilesystemConnection }
     namespaces: () => ({ env: { memory } }),
     beforeBindings(context) {
       const descriptor = connection.residentPublication;
-      if (!descriptor) throw new Error("missing private descriptor");
-      context.fs.retain(descriptor.handle);
-      resource = { kind: "file", handle: descriptor.handle, offset: 0, append: false };
+      const handle = descriptor?.handle ?? request.handle;
+      if (handle === undefined) throw new Error("missing retained handle");
+      context.fs.retain(handle);
+      resource = { kind: "file", handle, offset: 0, append: false };
       shareFileResource(resource, connection);
       fd = context.wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n, () =>
-        context.fs.release(descriptor.handle),
+        context.fs.release(handle),
       );
     },
     async run(context) {
@@ -112,6 +129,8 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return null;
   }
   if (!current) throw new Error("guest not ready");
+  if (operation === "armDefensiveHooks") { armDefensiveHooks(); return null; }
+  if (operation === "defensiveResult") return defensiveResult();
   if (operation === "prepare") {
     await current.fs.residentPublicationClient().prepare(residentRequest(body));
     return null;
@@ -125,8 +144,8 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
   throw new Error(`unknown guest operation ${operation}`);
 }
 type GuestMessage =
-  | { id: string; operation: "start"; body: { mode: string; connection: FilesystemConnection } }
-  | { id: string; operation: "armClaim" | "prepare" | "settle" | "call" | "stop"; body: unknown };
+  | { id: string; operation: "start"; body: { mode: string; connection: FilesystemConnection; handle?: number } }
+  | { id: string; operation: "armDefensiveHooks" | "defensiveResult" | "armClaim" | "prepare" | "settle" | "call" | "stop"; body: unknown };
 self.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
   const id = data.id;
   if (data.operation === "start") {

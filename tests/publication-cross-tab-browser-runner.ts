@@ -48,6 +48,8 @@ async function run(name: string, origin: string): Promise<void> {
       await observeDeaths(page);
       await page.goto(origin);
     }
+    const survivor = await control(first, "ordinarySurvivor");
+    console.log("ORDINARY_SURVIVOR=" + JSON.stringify(survivor));
     const descriptor = await control(first, "authority", `resident-${crypto.randomUUID()}`);
     equal(await control(second, "peer", descriptor), {
       attached: true,
@@ -55,6 +57,7 @@ async function run(name: string, origin: string): Promise<void> {
     });
     await control(first, "startGuest", "wasi");
     await control(second, "startGuest", "proc");
+    await control(second, "armDefensiveHooks", { mode: "proc" });
     const initial = record(await control(first, "authorityInspect"));
     equal(initial.count, 3);
     const failed = record(
@@ -73,6 +76,11 @@ async function run(name: string, origin: string): Promise<void> {
     );
     equal(write.result, 1);
     equal(write.offset, 1);
+    const intercepted = await control(second, "defensiveResult", { mode: "proc" });
+    console.log("PRIVATE_VIEW_INTERCEPTIONS=" + JSON.stringify(intercepted));
+    equal(survivor, { before: 1, activated: -6, survivor: -6, observedNativeAuthorityDeath: true, exclusive: true });
+    equal(intercepted, 0);
+    console.log("PASS ordinary survivor exclusion and post-exposure defensive private-view hooks");
     equal(record(await control(first, "authorityInspect")).count, -6);
     // No settle/nudge is sent after ACK. The next request must query the old cell.
     await control(second, "prepare", { mode: "proc", request: { kind: "append", maxBytes: 2 } });

@@ -277,3 +277,40 @@ test("READY reserves effect capacity and exact session identity before any remot
     live.stop();
   }
 });
+
+test("private claim views never reach late guest atomics hooks", async () => {
+  const f = await residentFixture();
+  const load = Atomics.load, store = Atomics.store, compareExchange = Atomics.compareExchange;
+  let intercepted = 0;
+  try {
+    const cell = new ResidentGrantCell(f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 }));
+    const observe = (array: ArrayBufferView) => {
+      if (array.buffer === cell.state.buffer || array.buffer === cell.payload.buffer) intercepted++;
+    };
+    Atomics.load = ((array: Int32Array, index: number) => {
+      observe(array);
+      return load(array, index);
+    }) as typeof Atomics.load;
+    Atomics.store = ((array: Int32Array, index: number, value: number) => {
+      observe(array);
+      return store(array, index, value);
+    }) as typeof Atomics.store;
+    Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+      observe(array);
+      return compareExchange(array, index, expected, replacement);
+    }) as typeof Atomics.compareExchange;
+    const written = cell.tryWrite(f.handle, [new Uint8Array([9])], 0);
+    const snapshot = cell.snapshot();
+    Atomics.load = load;
+    Atomics.store = store;
+    Atomics.compareExchange = compareExchange;
+    expect(written).toBe(1);
+    expect(snapshot.kind).toBe("committed");
+    expect(intercepted).toBe(0);
+  } finally {
+    Atomics.load = load;
+    Atomics.store = store;
+    Atomics.compareExchange = compareExchange;
+    f.stop();
+  }
+});

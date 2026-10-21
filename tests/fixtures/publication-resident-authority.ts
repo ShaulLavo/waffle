@@ -28,6 +28,7 @@ const limits: PublicationLimits = {
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
 let handle = 0;
+let ordinaryPort: MessagePort | undefined;
 let holdReply: "open" | "prepare" | undefined;
 let heldReply: (() => void) | undefined;
 const post = BroadcastChannel.prototype.postMessage;
@@ -51,8 +52,7 @@ BroadcastChannel.prototype.postMessage = function (value: unknown): void {
   }
   Reflect.apply(post, this, [value]);
 };
-async function execute(operation: string, body: unknown): Promise<unknown> {
-  if (operation === "start") {
+async function initialize(): Promise<void> {
     backend = new MemoryBackend();
     backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
     service = new FilesystemService(backend);
@@ -63,17 +63,33 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
     handle = file.node;
     root.retain(handle);
-    const descriptor: unknown = await root.asyncCall("publicationResident", [
-      connection.client.publication!.observer,
-      handle,
-      text(body),
-    ]);
-    server = await serveResidentAuthority(
-      service.residentPublication!,
-      new AbortController().signal,
-    );
-    return descriptor;
+}
+async function enable(workspace: string): Promise<unknown> {
+  if (!root || !service) throw new Error("authority not initialized");
+  const descriptor: unknown = await root.asyncCall("publicationResident", [
+    root.connection.publication!.observer,
+    handle,
+    workspace,
+  ]);
+  server = await serveResidentAuthority(service.residentPublication!, new AbortController().signal);
+  return descriptor;
+}
+async function execute(operation: string, body: unknown): Promise<unknown> {
+  if (operation === "start") {
+    await initialize();
+    return enable(text(body));
   }
+  if (operation === "ordinaryRoot") {
+    await initialize();
+    const connection = root!.fork();
+    const sibling = new FilesystemClient(connection);
+    const directory: number = await sibling.asyncCall("preopen", ["/"]);
+    const file: { node: number } = await sibling.asyncCall("resolve", [directory, "file"]);
+    sibling.retain(file.node);
+    ordinaryPort = connection.port;
+    return { connection, handle: file.node };
+  }
+  if (operation === "enable") return enable(text(body));
   if (!root || !backend || !service) throw new Error("authority not started");
   if (operation === "holdOpen" || operation === "holdPrepare") {
     holdReply = operation === "holdOpen" ? "open" : "prepare";
@@ -120,7 +136,10 @@ self.onmessage = ({ data }: MessageEvent<unknown>) => {
   const message = record(data),
     id = text(message.id);
   void execute(text(message.operation), message.body).then(
-    (value) => self.postMessage({ id, value }),
+    (value) => {
+      const transfer = message.operation === "ordinaryRoot" && ordinaryPort ? [ordinaryPort] : [];
+      self.postMessage({ id, value }, transfer);
+    },
     (error: unknown) => self.postMessage({ id, failure: String(error) }),
   );
 };
