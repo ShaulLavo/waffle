@@ -44,7 +44,7 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
   if (operation === "releaseOpen") { heldOpen?.(); heldOpen = undefined; return null; }
   if (operation === "inspect") {
     const output = new Uint8Array(8).fill(90), count = root.tryRead(handle, [output], 0);
-    return { count, bytes: Array.from(output), cut: await publicationObserver(root).cut(),
+    return { count, bytes: Array.from(output), cut: backend.shared.publication!.cut(),
       lock: Atomics.load(backend.shared.cells, 1), diagnostics: backend.shared.publication!.diagnostics() };
   }
   if (operation === "bypass") {
