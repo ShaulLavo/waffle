@@ -1,3 +1,5 @@
+import { SharedFilesystem } from "../browser/shared-fs";
+import { decodeRecord } from "../fs/storage";
 import { FilesystemClient } from "../fs/client";
 import {
   acquirePublicationGuard,
@@ -21,6 +23,112 @@ import {
   type FilesystemConnection,
 } from "../fs/protocol";
 import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
+
+function nativeRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function inspectPersistentWorkspace(name: string): Promise<unknown> {
+  const database = await nativeRequest(indexedDB.open(name, 1));
+  try {
+    const transaction = database.transaction(["metadata", "journal"], "readonly");
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    const metadata = transaction.objectStore("metadata");
+    const [epoch, format, first, second, journal] = await Promise.all([
+      nativeRequest(metadata.get("epoch")),
+      nativeRequest(metadata.get("format")),
+      nativeRequest(metadata.get(0)),
+      nativeRequest(metadata.get(1)),
+      nativeRequest(transaction.objectStore("journal").getAll()),
+    ]);
+    await completed;
+    const records = await Promise.all([first, second].concat(journal).map(decodeRecord));
+    const generations = records
+      .filter((value) => value !== undefined)
+      .map((value) => {
+        const generation = record(value).generation;
+        if (typeof generation !== "number") throw new Error("missing saved generation");
+        return generation;
+      });
+    if (!generations.length) throw new Error("saved generations missing");
+    return {
+      inspection: "readonly-native-no-owner-claim",
+      name,
+      epoch,
+      format,
+      generation: Math.max(...generations),
+    };
+  } finally {
+    database.close();
+  }
+}
+async function stopOrdinaryOwner(owner: SharedFilesystem, url: string): Promise<void> {
+  const observe = Reflect.get(globalThis, "__publicationWaitForClose");
+  if (typeof observe !== "function") throw new Error("native worker observer missing");
+  const closed: Promise<unknown> = observe(url);
+  try {
+    await owner.dispose();
+  } finally {
+    await closed;
+  }
+}
+async function ordinaryPersistentWorkspace(name: string, seed: boolean): Promise<unknown> {
+  const url = new URL(`/fs-worker.js?attempt=${crypto.randomUUID()}`, location.href).href;
+  const owner = new SharedFilesystem({ name, mode: "fast", whenBusy: "wait", workerURL: url });
+  try {
+    if (seed) {
+      await owner.mkdirp("/nested/deeper");
+      await owner.writeFile("/nested/deeper/a", new Uint8Array([11, 22, 33, 44]));
+      await owner.writeFile("/nested/second", new Uint8Array([91, 82, 73]));
+    }
+    const root: number = await owner.client.asyncCall("preopen", ["/"]);
+    const entry = record(await owner.client.asyncCall("resolve", [root, "nested/deeper/a"]));
+    if (seed) await owner.client.asyncCall("setMode", [entry.node, 0o400]);
+    const stat = record(await owner.client.asyncCall("stat", [entry.node]));
+    const first = await owner.readFile("/nested/deeper/a");
+    const second = await owner.readFile("/nested/second");
+    if (!first || !second) throw new Error("seeded workspace bytes missing");
+    if (seed) await owner.flush();
+    return {
+      name,
+      implementation: owner.vfs.implementation,
+      format: owner.vfs.format?.id,
+      first: Array.from(first),
+      second: Array.from(second),
+      mode: stat.mode,
+      size: stat.size,
+      nested: await owner.listFiles("/nested"),
+      worker: url,
+    };
+  } finally {
+    await stopOrdinaryOwner(owner, url);
+  }
+}
+async function deletePersistentWorkspace(name: string): Promise<void> {
+  const deletion = indexedDB.deleteDatabase(name);
+  await new Promise<void>((resolve, reject) => {
+    deletion.onsuccess = () => resolve();
+    deletion.onerror = () => reject(deletion.error);
+    deletion.onblocked = () => reject(new Error(`owned database deletion blocked: ${name}`));
+  });
+}
+async function persistentBaseline(): Promise<unknown> {
+  const name = `waffle-u1-baseline-${crypto.randomUUID()}`;
+  try {
+    const seeded = await ordinaryPersistentWorkspace(name, true);
+    const before = await inspectPersistentWorkspace(name);
+    const reopened = await ordinaryPersistentWorkspace(name, false);
+    const after = await inspectPersistentWorkspace(name);
+    return { seeded, before, reopened, after };
+  } finally {
+    await deletePersistentWorkspace(name);
+  }
+}
 
 class FixtureWorker {
   readonly worker: Worker;
@@ -541,8 +649,168 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   return workspaceGuestControl(operation, body);
 }
 
+async function inspectFactoryWorkspace(name: string): Promise<unknown> {
+  const metadata = record(await inspectPersistentWorkspace(name));
+  const database = await nativeRequest(indexedDB.open(name, 1));
+  try {
+    const transaction = database.transaction("data", "readonly");
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    const store = transaction.objectStore("data");
+    const [keys, values]: [IDBValidKey[], unknown[]] = await Promise.all([
+      nativeRequest(store.getAllKeys()),
+      nativeRequest(store.getAll()),
+    ]);
+    await completed;
+    const payloads = values.map((value, index) => {
+      if (!(value instanceof Uint8Array))
+        throw new Error("unexpected native payload representation");
+      return { key: keys[index], bytes: Array.from(value) };
+    });
+    return { ...metadata, payloads };
+  } finally {
+    database.close();
+  }
+}
+let ordinaryHolder: { owner: SharedFilesystem; url: string } | undefined;
+let nativeBlocker: { database: IDBDatabase; deletion: Promise<void> } | undefined;
+async function holdOrdinaryWorkspace(name: string): Promise<unknown> {
+  if (ordinaryHolder) throw new Error("ordinary holder still retained");
+  const url = new URL(`/fs-worker.js?attempt=${crypto.randomUUID()}`, location.href).href;
+  const owner = new SharedFilesystem({ name, mode: "fast", whenBusy: "wait", workerURL: url });
+  ordinaryHolder = { owner, url };
+  return Array.from((await owner.readFile("/nested/deeper/a"))!);
+}
+async function blockNativeOpen(name: string): Promise<unknown> {
+  if (nativeBlocker) throw new Error("native blocker still retained");
+  const database = await nativeRequest(indexedDB.open(name, 1));
+  const blocked = Promise.withResolvers<void>();
+  const completed = Promise.withResolvers<void>();
+  void completed.promise.catch(() => {});
+  const request = indexedDB.deleteDatabase(name);
+  request.onblocked = () => blocked.resolve();
+  request.onsuccess = () => completed.resolve();
+  request.onerror = () => {
+    blocked.reject(request.error);
+    completed.reject(request.error);
+  };
+  nativeBlocker = { database, deletion: completed.promise };
+  await blocked.promise;
+  return { blocked: true };
+}
+let persistentHolder: Awaited<ReturnType<typeof acquirePublicationGuard>> | undefined;
+async function persistentControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "persistentOrdinaryHold") return holdOrdinaryWorkspace(text(value));
+  if (operation === "persistentOrdinaryRead")
+    return Array.from((await ordinaryHolder!.owner.readFile("/nested/deeper/a"))!);
+  if (operation === "persistentOrdinaryRelease") {
+    await stopOrdinaryOwner(ordinaryHolder!.owner, ordinaryHolder!.url);
+    ordinaryHolder = undefined;
+    return null;
+  }
+  if (operation === "persistentBlockNativeOpen") return blockNativeOpen(text(value));
+  if (operation === "persistentUnblockNativeOpen") {
+    nativeBlocker!.database.close();
+    await nativeBlocker!.deletion;
+    nativeBlocker = undefined;
+    return null;
+  }
+  if (
+    [
+      "persistentCancelPendingClaim",
+      "persistentBeginLateRequest",
+      "persistentCancelEpoch",
+    ].includes(operation)
+  ) {
+    if (authority) throw new Error("previous authority realm still retained");
+    authority = new FixtureWorker("/resident-authority.js");
+    return authority.request(operation, value);
+  }
+  if (operation === "persistentSeed") return ordinaryPersistentWorkspace(text(value), true);
+  if (operation === "persistentInspect") return inspectFactoryWorkspace(text(value));
+  if (operation === "persistentDelete") {
+    await deletePersistentWorkspace(text(value));
+    return null;
+  }
+  if (operation === "persistentHold") {
+    const workspace = JSON.stringify([location.origin, "indexeddb", text(value)]);
+    persistentHolder = await acquirePublicationGuard(
+      workspace,
+      "shared",
+      new AbortController().signal,
+    );
+    return workspace;
+  }
+  if (operation === "persistentProbe") {
+    const workspace = JSON.stringify([location.origin, "indexeddb", text(value)]);
+    try {
+      const guard = await acquirePublicationGuard(
+        workspace,
+        "exclusive",
+        new AbortController().signal,
+        true,
+      );
+      await guard.release();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (operation === "persistentRelease") {
+    await persistentHolder?.release();
+    persistentHolder = undefined;
+    return null;
+  }
+  if (operation === "persistentStart" || operation === "persistentAbortLateOpen") {
+    if (authority) throw new Error("previous authority realm still retained");
+    authority = new FixtureWorker("/resident-authority.js");
+    const result = await authority.request(operation, value);
+    if (operation === "persistentAbortLateOpen") {
+      await authority.terminate();
+      authority = undefined;
+    }
+    return result;
+  }
+  if (operation === "persistentStop") {
+    const result = record(await authority!.request("persistentStop"));
+    if (result.stopped === true) {
+      await authority!.terminate();
+      authority = undefined;
+    }
+    return result;
+  }
+  if (operation === "persistentFailClose") return authority!.request(operation);
+  if (operation === "persistentDeath") {
+    await authority!.terminate();
+    authority = undefined;
+    return null;
+  }
+  if (operation === "persistentRead") {
+    const descriptor = residentDescriptor(value);
+    const client = new FilesystemClient(createResidentConnection(descriptor));
+    await client.attachResidentPublication();
+    try {
+      const root: number = await client.asyncCall("preopen", ["/"]);
+      const first = record(await client.asyncCall("resolve", [root, "nested/deeper/a"]));
+      const second = record(await client.asyncCall("resolve", [root, "nested/second"]));
+      const stat = record(await client.asyncCall("stat", [first.node]));
+      const a: Uint8Array = await client.asyncCall("read", [first.node, 4, 0]);
+      const b: Uint8Array = await client.asyncCall("read", [second.node, 3, 0]);
+      return { first: Array.from(a), second: Array.from(b), mode: stat.mode, size: stat.size };
+    } finally {
+      await client.stopResidentPublication();
+      client.dispose();
+    }
+  }
+  throw new Error(`unknown persistent page operation ${operation}`);
+}
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation !== "persistentBaseline" && operation.startsWith("persistent"))
+    return persistentControl(operation, value);
+  if (operation === "persistentBaseline") return persistentBaseline();
   if (operation.startsWith("workspace")) return workspaceControl(operation, value);
   if (operation === "guardLifecycle") return guardLifecycleControl();
   if (operation === "ordinarySurvivor") return ordinarySurvivorControl();

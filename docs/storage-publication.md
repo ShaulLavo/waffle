@@ -207,3 +207,58 @@ A later failed persist does not invalidate an earlier successful payload barrier
 Ordinary close saves before disposal and joins storage close afterward.
 These checks change no storage format, FAST memory ACK, or untracked receipt.
 They do not provide explicit recovery, a durable publication cut, or SAFE mode.
+
+## Private persistent resident owner
+
+`browser/persistent-resident-owner.ts` is an internal construction and teardown owner.
+It is not exported by the package and does not install a replacement Runtime filesystem.
+The caller retains the returned owner before awaiting `ready`, including when readiness
+fails. Only a successful `stop()` permits dropping that owner.
+
+Selection snapshots the actual origin, implementation, exact name and current format.
+The continuity key is JSON of `[origin, implementation, name]`. Format validates the
+request but cannot create a separate lock namespace for the same physical store.
+Bootstrap and exclusive continuity precede native open, ownership claim and load.
+The new owner always waits for native ownership without stealing it. The ordinary
+filesystem worker keeps its existing policy through the same backend opener.
+
+Startup cancellation closes admission immediately and cancels an ungranted native
+ownership wait without retiring its ordinary holder. The owner forwards its abort
+signal and retains the original physical opening debt before the native request starts.
+Readiness may reject early, but a blocked or aborted IndexedDB request remains debt
+until terminal native delivery or error. A delivered DB closes once after any started
+epoch transaction and lock callback retire. The cleanup owner records a started epoch
+transaction and its original terminal promise before request setup, so a synchronous
+setup failure cannot bypass that join. A terminal native error without a handle has
+no close obligation. The owner joins the original shared opening and physical debt
+before releasing guards. A failed native close retains that debt and the same failed
+stop. Cancellation is not permission to forgive pending or failed physical cleanup.
+
+A published owner stops in this order: resident transport drain, service preparation
+and detached-barrier drain, final checkpoint with the publication domain still live,
+backend lifetime disposal, root/service disposal, actual native storage close, then
+continuity and bootstrap release. Unpublished construction omits the final checkpoint.
+A live resident session or outstanding grant refuses the drain. Failure retains the
+owner and remaining guards. Repeated stop returns the original promise, even if it
+failed. Genuine realm destruction is distinct from successful cooperative cleanup.
+
+Every ready result includes a new instance/history and the full `v1-new-history`
+notice. Durable publication cuts are untracked, old capabilities and mutation
+outcomes are not restored, and the acknowledged tail may be lost. Explicit `reopen-v1`
+requires the caller's acceptance of that loss and uncertainty. This private mechanism
+does not provide Runtime recovery, retirement of surviving clients, SAFE guarantees,
+a public recovery API or a consumer format switch.
+
+The cross-tab runner's `--persistent-owner-only chromium` selection passed the actual
+ordinary-worker pending-claim cancellation, queued native-open delivery, injected
+original physical-close failure and completed-epoch cancellation controls. It keeps
+all prior factory controls, and the default runner keeps its full selection. The
+native holder remains alive with unchanged bytes and epoch when only its pending
+competitor is cancelled. Failed close retains the same failed stop and guards until
+observed realm destruction, which is teardown rather than successful cleanup.
+
+These bounded checks do not prove factory mutation/save/reopen recovery, refusal of
+old descriptors, input/reply mutation or reentrant calls, persistent CLAIMED refusal,
+other native schedules, OPFS or other-engine qualification. They do not replace the
+complete registered browser matrix or independent review, and do not accept Runtime
+recovery, SAFE mode, public/default APIs or consumer installation.

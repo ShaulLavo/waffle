@@ -36,6 +36,8 @@ export class ResidentAuthorityServer {
   private queue = Promise.resolve();
   private stopped = false;
   private stopping: Promise<void> | undefined;
+  private draining: Promise<void> | undefined;
+  private finalizing: Promise<void> | undefined;
   constructor(
     readonly authority: ResidentGrantAuthority,
     private guard: PublicationGuard,
@@ -265,11 +267,31 @@ export class ResidentAuthorityServer {
     return (this.stopping ??= this.stopOwned());
   }
   private async stopOwned(): Promise<void> {
+    await this.drainTransport();
+    await this.finishStop();
+  }
+  drainForOwner(): Promise<void> {
+    this.stopped = true;
+    for (const active of this.requests.values()) active.abort.abort();
+    return (this.draining ??= this.drainPersistentTransport());
+  }
+  private async drainPersistentTransport(): Promise<void> {
+    await this.queue;
+    if (this.sessions.size || this.outstanding)
+      throw new FilesystemError(6, "resident clients must finish their original cleanup");
+    await this.drainTransport();
+  }
+  private async drainTransport(): Promise<void> {
     await this.queue;
     // A pending/unknown claimant keeps both continuity and bootstrap held.
     if (this.outstanding) throw new FilesystemError(6);
     for (const peer of this.peers.values()) await peer.stop();
     this.peers.clear();
+  }
+  finishStop(): Promise<void> {
+    return (this.finalizing ??= this.finalizeTransport());
+  }
+  private async finalizeTransport(): Promise<void> {
     this.channel.close();
     this.authority.dispose();
     await this.guard.release();

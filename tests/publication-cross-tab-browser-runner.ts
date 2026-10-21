@@ -478,11 +478,267 @@ async function workspaceCleanupControls(browser: Browser, origin: string): Promi
     await context.close();
   }
 }
-async function run(name: string, origin: string): Promise<void> {
+async function currentPersistentBaseline(page: Page): Promise<void> {
+  const result = record(await control(page, "persistentBaseline"));
+  const seeded = record(result.seeded),
+    reopened = record(result.reopened);
+  const before = record(result.before),
+    after = record(result.after);
+  equal(seeded.name, reopened.name);
+  for (const value of [seeded, reopened]) {
+    equal(value.implementation, "indexeddb");
+    equal(value.format, "waffle-indexeddb-v1");
+    equal(value.first, [11, 22, 33, 44]);
+    equal(value.second, [91, 82, 73]);
+    equal(value.mode, 0o400);
+    equal(value.size, 4);
+  }
+  equal(before.inspection, "readonly-native-no-owner-claim");
+  equal(after.inspection, before.inspection);
+  equal(after.name, before.name);
+  equal(after.format, before.format);
+  if (typeof before.epoch !== "number" || typeof after.epoch !== "number")
+    throw new Error("saved owner epochs missing");
+  equal(after.epoch, before.epoch + 1);
+  equal(after.generation, before.generation);
+  if (seeded.worker === reopened.worker) throw new Error("native owner attempts reused identity");
+  console.log("CURRENT_API_PERSISTENT_BASELINE=" + JSON.stringify(result));
+  console.log("PASS ordinary native persistent worker same-name reopen, permissions and bytes");
+}
+function persistentAttempt(name: string, original?: unknown): unknown {
+  return { name, runtimeLifetime: crypto.randomUUID(), attempt: crypto.randomUUID(), original };
+}
+function readyPersistent(value: unknown): Record<string, unknown> {
+  const result = record(value);
+  equal(result.ready, true);
+  const ready = record(result.value);
+  equal(ready.notice, {
+    kind: "v1-new-history",
+    durablePublicationCut: "untracked",
+    oldCapabilities: "not-restored",
+    oldMutationOutcomes: "not-restored",
+    acknowledgedTail: "may-be-lost",
+  });
+  return ready;
+}
+function noFactoryNativeOpen(result: Record<string, unknown>): void {
+  if (
+    !Array.isArray(result.events) ||
+    result.events.some((event) => String(event).startsWith("native-"))
+  )
+    throw new Error("refused factory touched native storage");
+}
+function nativeClosedBeforeRelease(value: unknown): void {
+  const result = record(value);
+  equal(result.same, true);
+  equal(result.stopped, true);
+  if (!Array.isArray(result.events)) throw new Error("native lifecycle evidence missing");
+  const events = result.events;
+  const close = events.indexOf("native-closed");
+  const finalRelease = events.lastIndexOf("guard-released");
+  // The initial exclusive-to-shared handoff has its own earlier release.
+  if (
+    close < 0 ||
+    finalRelease <= close ||
+    events.slice(close + 1).filter((event) => event === "guard-released").length !== 2
+  )
+    throw new Error("native close did not precede both final guard releases");
+}
+function cancelledBeforeLoad(value: unknown): void {
+  const result = record(value);
+  equal(result.ready, false);
+  const stopped = record(result.stopped);
+  equal(stopped.same, true);
+  equal(stopped.stopped, true);
+  if (!Array.isArray(stopped.events)) throw new Error("native cancellation events missing");
+  const events = stopped.events;
+  const close = events.indexOf("native-db-closed");
+  if (
+    close < 0 ||
+    events.slice(close + 1).filter((event) => event === "guard-released").length !== 2
+  )
+    throw new Error("physical close did not precede final guards");
+  for (const stage of ["native-acquired", "native-load", "filesystem-ready"])
+    if (events.includes(stage)) throw new Error(`cancelled owner reached ${stage}`);
+}
+async function pendingClaimControl(owner: Page, holder: Page, name: string): Promise<void> {
+  equal(await control(holder, "persistentOrdinaryHold", name), [11, 22, 33, 44]);
+  const before = await control(owner, "persistentInspect", name);
+  const result = record(
+    await control(owner, "persistentCancelPendingClaim", persistentAttempt(name)),
+  );
+  equal(result.held, 1);
+  equal(result.pending, 1);
+  equal(result.heldAfter, 1);
+  equal(result.pendingAfter, 0);
+  cancelledBeforeLoad(result);
+  const events = record(result.stopped).events;
+  if (
+    !Array.isArray(events) ||
+    !events.includes("indexeddb-open-resolved") ||
+    events.includes("filesystem-epoch-requested")
+  )
+    throw new Error("pending claim did not stay before epoch after a real native open");
+  equal(await control(holder, "persistentOrdinaryRead"), [11, 22, 33, 44]);
+  equal(await control(owner, "persistentInspect", name), before);
+  await control(owner, "persistentDeath");
+  await control(holder, "persistentOrdinaryRelease");
+  console.log("P1_PENDING_NATIVE_CLAIM=" + JSON.stringify(result));
+  console.log(
+    "PASS pending native claim cancels after real DB open while ordinary worker retains its lock, epoch and bytes",
+  );
+}
+async function lateRequestControl(owner: Page, holder: Page, failClose: boolean): Promise<void> {
+  const name = `waffle-u1-late-request-${crypto.randomUUID()}`;
+  equal(await control(holder, "persistentBlockNativeOpen", name), { blocked: true });
+  const result = record(
+    await control(owner, "persistentBeginLateRequest", {
+      ...record(persistentAttempt(name)),
+      failClose,
+    }),
+  );
+  equal(result.ready, false);
+  equal(result.pending, true);
+  if (
+    !Array.isArray(result.events) ||
+    !result.events.includes("indexeddb-open-requested") ||
+    result.events.includes("indexeddb-open-resolved")
+  )
+    throw new Error("native open was not physically pending at abort");
+  equal(await control(holder, "persistentProbe", name), false);
+  await control(holder, "persistentUnblockNativeOpen");
+  const stopped = record(await control(owner, "persistentStop"));
+  equal(stopped.same, true);
+  equal(stopped.stopped, !failClose);
+  if (failClose) {
+    equal(stopped.originalFailure, true);
+    equal(await control(owner, "persistentStop"), stopped);
+    equal(await control(holder, "persistentProbe", name), false);
+  } else cancelledBeforeLoad({ ready: false, stopped });
+  console.log("P1_LATE_NATIVE_REQUEST=" + JSON.stringify({ failClose, result, stopped }));
+  if (failClose) await control(owner, "persistentDeath");
+  equal(await control(holder, "persistentProbe", name), true);
+  await control(owner, "persistentDelete", name);
+  console.log(
+    `PASS physically pending native request joins actual late delivery and ${failClose ? "retains original failed close and guards" : "closes before guards release"}`,
+  );
+}
+async function epochCancellationControl(owner: Page, name: string): Promise<void> {
+  const before = record(await control(owner, "persistentInspect", name));
+  const result = record(await control(owner, "persistentCancelEpoch", persistentAttempt(name)));
+  cancelledBeforeLoad(result);
+  const events = record(result.stopped).events;
+  if (!Array.isArray(events) || !events.includes("filesystem-epoch-resolved"))
+    throw new Error("actual epoch transaction did not complete before cancellation");
+  const after = record(await control(owner, "persistentInspect", name));
+  equal(after.epoch, Number(before.epoch) + 1);
+  equal(after.generation, before.generation);
+  await control(owner, "persistentDeath");
+  console.log("P1_NATIVE_EPOCH_CANCELLATION=" + JSON.stringify(result));
+  console.log(
+    "PASS granted native epoch retires before cancelled factory closes without adapter load",
+  );
+}
+async function persistentOwnerControls(browser: Browser, origin: string): Promise<void> {
+  const context = await browser.newContext();
+  const name = `waffle-u1-native-${crypto.randomUUID()}`;
+  try {
+    const owner = await context.newPage(),
+      holder = await context.newPage();
+    for (const page of [owner, holder]) {
+      await observeDeaths(page);
+      await page.goto(origin);
+    }
+    await control(owner, "persistentSeed", name);
+    await pendingClaimControl(owner, holder, name);
+    await lateRequestControl(owner, holder, false);
+    await lateRequestControl(owner, holder, true);
+    await epochCancellationControl(owner, name);
+    const before = await control(owner, "persistentInspect", name);
+    await control(holder, "persistentHold", name);
+    for (const attempt of ["first-live-holder", "second-explicit-live-holder"]) {
+      const denied = record(await control(owner, "persistentStart", persistentAttempt(name)));
+      equal(denied.ready, false);
+      noFactoryNativeOpen(denied);
+      const stopped = record(await control(owner, "persistentStop"));
+      equal(stopped.same, true);
+      equal(stopped.stopped, true);
+      equal(await control(owner, "persistentInspect", name), before);
+      console.log(
+        `PASS ${attempt} refused before factory native open/claim/load; readonly inspection unchanged`,
+      );
+    }
+    await control(holder, "persistentRelease");
+    const first = readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)));
+    equal(await control(holder, "persistentRead", first.descriptor), {
+      first: [11, 22, 33, 44],
+      second: [91, 82, 73],
+      mode: 0o400,
+      size: 4,
+    });
+    nativeClosedBeforeRelease(await control(owner, "persistentStop"));
+    const reopened = readyPersistent(
+      await control(owner, "persistentStart", persistentAttempt(name, first.identity)),
+    );
+    const previous = record(first.identity),
+      fresh = record(reopened.identity);
+    if (previous.instance === fresh.instance || previous.history === fresh.history)
+      throw new Error("reopen reused history or instance");
+    equal(await control(holder, "persistentRead", reopened.descriptor), {
+      first: [11, 22, 33, 44],
+      second: [91, 82, 73],
+      mode: 0o400,
+      size: 4,
+    });
+    nativeClosedBeforeRelease(await control(owner, "persistentStop"));
+    console.log(
+      "PASS private factory same-name explicit v1 reopen, fresh identities, cold namespace bytes/mode and native-close-before-final-guard-release",
+    );
+    const aborted = record(
+      await control(owner, "persistentAbortLateOpen", persistentAttempt(name)),
+    );
+    equal(aborted.ready, false);
+    equal(aborted.pendingBeforeRelease, true);
+    nativeClosedBeforeRelease(record(aborted.stopped));
+    console.log("PASS abort joins a late actual native adapter and never publishes readiness");
+    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)));
+    await control(owner, "persistentFailClose");
+    const failed = record(await control(owner, "persistentStop"));
+    equal(failed.same, true);
+    equal(failed.stopped, false);
+    equal(await control(owner, "persistentStop"), failed);
+    equal(await control(holder, "persistentProbe", name), false);
+    await control(owner, "persistentDeath");
+    const afterFailure = readyPersistent(
+      await control(owner, "persistentStart", persistentAttempt(name)),
+    );
+    await control(holder, "workspacePeer", afterFailure.descriptor);
+    await control(owner, "persistentDeath");
+    const survivorDenied = record(await control(owner, "persistentStart", persistentAttempt(name)));
+    equal(survivorDenied.ready, false);
+    noFactoryNativeOpen(survivorDenied);
+    equal(record(await control(owner, "persistentStop")).stopped, true);
+    await holder.close();
+    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)));
+    nativeClosedBeforeRelease(await control(owner, "persistentStop"));
+    console.log(
+      "PASS failed native close stays failed; surviving real attachment blocks replacement until genuine realm destruction",
+    );
+    await control(owner, "persistentDelete", name);
+  } finally {
+    await context.close();
+  }
+}
+async function run(name: string, origin: string, persistentOnly: boolean): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")
     throw new Error(`unknown engine ${name}`);
   const browser = await lifecycle.launch(name);
   try {
+    if (persistentOnly) {
+      await persistentOwnerControls(browser, origin);
+      console.log(`${name} ${browser.version()}: private persistent owner controls passed`);
+      return;
+    }
     const context = await browser.newContext();
     const first = await context.newPage(),
       second = await context.newPage();
@@ -492,6 +748,8 @@ async function run(name: string, origin: string): Promise<void> {
       await observeDeaths(page);
       await page.goto(origin);
     }
+    await currentPersistentBaseline(first);
+    await persistentOwnerControls(browser, origin);
     const lifecycleControl = await control(first, "guardLifecycle");
     console.log("GUARD_LIFECYCLE=" + JSON.stringify(lifecycleControl));
     equal(lifecycleControl, { pending: 6, failed: 11, idleStopped: 11, queued: 11, stopped: true });
@@ -659,9 +917,11 @@ try {
       resolve(import.meta.dir, "fixtures/publication-resident-authority.ts"),
     ),
     "/resident-guest.js": await guestBundle(),
+    "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
   });
-  const names = process.argv.slice(2);
-  for (const name of names.length ? names : ["chromium"]) await run(name, origin);
+  const persistentOnly = process.argv.includes("--persistent-owner-only");
+  const names = process.argv.slice(2).filter((name) => name !== "--persistent-owner-only");
+  for (const name of names.length ? names : ["chromium"]) await run(name, origin, persistentOnly);
 } finally {
   await lifecycle.close();
 }

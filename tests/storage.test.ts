@@ -194,6 +194,7 @@ for (const whenBusy of ["takeover", "wait"] as const) {
     } finally {
       clearTimeout(timeout);
       opening.onsuccess!(new Event("success"));
+      expect(closed).toBe(1);
       await result;
     }
     expect(closed).toBe(1);
@@ -254,7 +255,15 @@ for (const whenBusy of ["takeover", "wait"] as const)
           }
         },
       };
+      let physicalDebt: Promise<void> | undefined;
+      let debtSettled = false;
       const pending = IndexedDBStorage.open("granted", {
+        retainOpeningDebt(debt) {
+          physicalDebt = debt;
+          void debt.then(() => {
+            debtSettled = true;
+          });
+        },
         indexedDB: factory,
         locks,
         whenBusy,
@@ -273,13 +282,183 @@ for (const whenBusy of ["takeover", "wait"] as const)
         expect(abortCount).toBe(1);
         expect(lockHeld).toBe(true);
         expect(closeCount).toBe(0);
+        expect(debtSettled).toBe(false);
         acknowledgeAbort();
       } else transaction.oncomplete!(new Event("complete"));
       const result = await pending;
       // Always release a pre-fix owner, so this regression is safe as a negative control.
       if (result instanceof IndexedDBStorage) await result.close();
       expect(result).toBe(aborted);
+      await physicalDebt;
+      expect(debtSettled).toBe(true);
       expect(closeCount).toBe(1);
       expect(lockHeld).toBe(false);
     });
   }
+
+test("IndexedDB publishes its close attempt before synchronous versionchange reentry", async () => {
+  const failure = new Error("original reentrant close failure");
+  const requested = Promise.withResolvers<void>();
+  const claim = Promise.withResolvers<never>();
+  let originalDebt: Promise<void> | undefined;
+  let closed = 0;
+  const change = () =>
+    database.onversionchange!(
+      Object.assign(new Event("versionchange"), { oldVersion: 1, newVersion: 2 }),
+    );
+  const database = {
+    objectStoreNames: { length: 3, contains: () => true },
+    onversionchange: null,
+    close() {
+      closed++;
+      if (closed === 1) change();
+      throw failure;
+    },
+  } as unknown as IDBDatabase;
+  const opening = { result: database } as IDBOpenDBRequest;
+  const locks: StorageLockManager = {
+    request(_name, options) {
+      if ("signal" in options)
+        options.signal?.addEventListener("abort", () => claim.reject(options.signal?.reason), {
+          once: true,
+        });
+      requested.resolve();
+      return claim.promise;
+    },
+  };
+  const result = IndexedDBStorage.open("reentrant-close", {
+    indexedDB: { open: () => opening } as unknown as IDBFactory,
+    locks,
+    whenBusy: "wait",
+    retainOpeningDebt(debt) {
+      originalDebt = debt;
+    },
+  }).catch((error: unknown) => error);
+  opening.onsuccess!(new Event("success"));
+  await requested.promise;
+  const failed = originalDebt!.catch((error: unknown) => error);
+  change();
+  expect(closed).toBe(1);
+  expect(await result).toBe(failure);
+  expect(await failed).toBe(failure);
+  change();
+  await expect(originalDebt!).rejects.toBe(failure);
+  expect(closed).toBe(1);
+});
+
+test("IndexedDB retains the original debt before native request and preserves a late close failure", async () => {
+  const controller = new AbortController();
+  const failure = new Error("original physical close failure");
+  let originalDebt: Promise<void> | undefined;
+  let closed = 0;
+  const opening = {
+    result: {
+      close() {
+        closed++;
+        throw failure;
+      },
+    },
+  } as unknown as IDBOpenDBRequest;
+  const factory = {
+    open() {
+      expect(originalDebt).toBeInstanceOf(Promise);
+      return opening;
+    },
+  } as unknown as IDBFactory;
+  const result = IndexedDBStorage.open("late-close-failure", {
+    indexedDB: factory,
+    locks: {
+      async request() {
+        throw new Error("claim must not start");
+      },
+    },
+    signal: controller.signal,
+    whenBusy: "wait",
+    retainOpeningDebt(debt) {
+      originalDebt = debt;
+    },
+  }).catch((error: unknown) => error);
+  const aborted = new DOMException("cancel physical request", "AbortError");
+  controller.abort(aborted);
+  expect(await result).toBe(aborted);
+  const failed = originalDebt!.catch((error: unknown) => error);
+  opening.onsuccess!(new Event("success"));
+  expect(await failed).toBe(failure);
+  await expect(originalDebt!).rejects.toBe(failure);
+  expect(closed).toBe(1);
+});
+
+for (const whenBusy of ["wait", "takeover"] as const)
+  test(`IndexedDB ${whenBusy} request setup failure joins the original started epoch transaction`, async () => {
+    const failure = new Error("synchronous epoch request setup failure");
+    const retired = Promise.withResolvers<void>();
+    let debt: Promise<void> | undefined;
+    let debtSettled = false;
+    let closed = 0;
+    let aborted = 0;
+    let terminal = false;
+    const transaction = {
+      onabort: null as IDBTransaction["onabort"],
+      oncomplete: null as IDBTransaction["oncomplete"],
+      abort() {
+        aborted++;
+      },
+      objectStore() {
+        return {
+          get() {
+            throw failure;
+          },
+        };
+      },
+    } as unknown as IDBTransaction;
+    const database = {
+      objectStoreNames: { length: 3, contains: () => true },
+      transaction: () => transaction,
+      close() {
+        closed++;
+      },
+    } as unknown as IDBDatabase;
+    const opening = { result: database } as IDBOpenDBRequest;
+    const locks: StorageLockManager = {
+      async request(_name, _options, callback) {
+        try {
+          return await callback({});
+        } finally {
+          retired.resolve();
+        }
+      },
+    };
+    const result = IndexedDBStorage.open("setup-failure", {
+      whenBusy,
+      indexedDB: { open: () => opening } as unknown as IDBFactory,
+      locks,
+      retainOpeningDebt(original) {
+        debt = original;
+        void original.then(
+          () => {
+            debtSettled = true;
+          },
+          () => {
+            debtSettled = true;
+          },
+        );
+      },
+    }).catch((error: unknown) => error);
+    try {
+      opening.onsuccess!(new Event("success"));
+      await retired.promise;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(debtSettled).toBe(false);
+      expect(closed).toBe(0);
+      expect(aborted).toBeGreaterThan(0);
+      transaction.onabort!(new Event("abort"));
+      terminal = true;
+      expect(await result).toBe(failure);
+      await debt;
+      expect(closed).toBe(1);
+    } finally {
+      if (!terminal) transaction.oncomplete!(new Event("complete"));
+      await result;
+      await debt;
+    }
+  });
