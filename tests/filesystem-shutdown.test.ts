@@ -13,12 +13,14 @@ import {
   HEADER,
   isRevoked,
   pack,
+  reapFilesystem,
   releaseFilesystemReservation,
   revokeFilesystem,
   State,
 } from "../fs/protocol";
 import { installFilesystemWorker } from "../fs/service";
 import type { FilesystemBackend } from "../fs/backend";
+import { SLOT_WORDS } from "../fs/shared";
 
 class ClosingBackend extends MemoryBackend {
   closes = 0;
@@ -632,3 +634,169 @@ test("a failed original session release retains its pin and still attempts safe 
     await owned.close();
   }
 });
+
+
+test("F1 shutdown recovers later proven-dead locks before an earlier session release", async () => {
+  const owned = fixture();
+  const child = connectFilesystemIdentity(createProcessFilesystemIdentity(owned.root.client));
+  owned.connections.push(child);
+  let contentions = 0;
+  let lock: number | undefined;
+  try {
+    const client = owned.connect();
+    await client.asyncCall("writeFile", ["/locked"], new Uint8Array([1]));
+    const directory: number = await client.asyncCall("preopen", ["/"]);
+    const path: { node: number } = await client.asyncCall("resolve", [directory, "locked"]);
+    client.retain(path.node);
+    owned.service.connect(child.server);
+    lock = owned.backend.shared.fileSlot(path.node) * SLOT_WORDS + 8;
+    expect(owned.backend.pins.get(path.node)).toBe(1);
+    Atomics.store(owned.backend.shared.slots, lock, child.client.owner);
+    reapFilesystem(child.client);
+    const contend = owned.backend.shared.onContention;
+    owned.backend.shared.onContention = () => {
+      contentions++;
+      contend?.();
+      // Finite escape after recording the real blocked release, not timeout evidence.
+      owned.backend.revokeOwner(child.client.owner, new Int32Array(child.client.epoch));
+    };
+    const stopping = owned.service.shutdown();
+    owned.joins.push(outcome(stopping));
+    await stopping;
+    expect(contentions).toBe(0);
+    expect(owned.backend.shared.ownerActive(child.client.owner)).toBe(false);
+    expect(owned.backend.pins.size).toBe(0);
+    expect(owned.backend.closes).toBe(1);
+  } finally {
+    if (lock !== undefined) Atomics.store(owned.backend.shared.slots, lock, 0);
+    owned.backend.shared.onContention = undefined;
+    await owned.close();
+  }
+});
+
+function attempt(run: () => void): PromiseSettledResult<void> {
+  try {
+    run();
+    return { status: "fulfilled", value: undefined };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
+}
+
+test("F2 initiating dispose owns a pin before its release callback reenters sweep", async () => {
+  const owned = fixture();
+  let releases = 0;
+  try {
+    const client = owned.connect();
+    await client.asyncCall("preopen", ["/"]);
+    owned.backend.onRelease = () => {
+      releases++;
+      owned.service.sweep();
+    };
+    const result = attempt(() => owned.service.dispose());
+    expect(result).toEqual({ status: "fulfilled", value: undefined });
+    expect(releases).toBe(1);
+    expect(owned.backend.pins.size).toBe(0);
+    expect(owned.service.resources().clients).toBe(0);
+    expect(owned.backend.closes).toBe(0);
+  } finally {
+    owned.backend.onRelease = undefined;
+    await owned.close();
+  }
+});
+
+test("F2 a failed initiating release keeps its pin and original failure without retry", async () => {
+  const owned = fixture();
+  const failure = new Error("initiating release");
+  let releases = 0;
+  try {
+    const client = owned.connect();
+    const directory: number = await client.asyncCall("preopen", ["/"]);
+    owned.backend.onRelease = () => {
+      releases++;
+      owned.service.sweep();
+      throw failure;
+    };
+    expect(attempt(() => owned.service.dispose())).toEqual({ status: "rejected", reason: failure });
+    expect(releases).toBe(1);
+    expect(owned.backend.pins.get(directory)).toBe(1);
+    expect(attempt(() => owned.service.sweep())).toEqual({ status: "rejected", reason: failure });
+    expect(releases).toBe(1);
+    const stopping = owned.service.shutdown();
+    owned.joins.push(outcome(stopping));
+    expect(await outcome(stopping)).toEqual({ status: "rejected", reason: failure });
+    expect(owned.service.shutdown()).toBe(stopping);
+    expect(releases).toBe(1);
+    expect(owned.backend.closes).toBe(0);
+  } finally {
+    owned.backend.onRelease = undefined;
+    if (owned.backend.pins.size) owned.joins.push(outcome(owned.service.shutdown()));
+    await owned.close();
+  }
+});
+
+function originalQuiescing(service: FilesystemService) {
+  const sessions: unknown = Reflect.get(service, "sessions");
+  if (!(sessions instanceof Set)) throw new Error("missing original sessions");
+  for (const session of sessions) {
+    if (typeof session !== "object" || session === null) continue;
+    const done: unknown = Reflect.get(session, "quiescing");
+    if (done instanceof Promise) return { session, done };
+  }
+  throw new Error("missing original quiescing promise");
+}
+
+async function rejectedQuiescing(reason: unknown, reentrant: boolean): Promise<void> {
+  const owned = fixture();
+  const section = new FilesystemSection(owned.root.client);
+  let held = false;
+  let releases = 0;
+  let stopping: Promise<void> | undefined;
+  owned.releases.push(() => {
+    if (held) section.exit();
+    held = false;
+  });
+  try {
+    const client = owned.connect();
+    const directory: number = await client.asyncCall("preopen", ["/"]);
+    section.enter();
+    held = true;
+    revokeFilesystem(owned.root.client);
+    owned.service.sweep();
+    const original = originalQuiescing(owned.service);
+    const quiesced = outcome(original.done);
+    owned.joins.push(quiesced);
+    owned.backend.onRelease = () => {
+      releases++;
+      if (releases !== 1) return;
+      expect(Reflect.get(original.session, "quiescing")).toBeUndefined();
+      if (reentrant) stopping = owned.service.shutdown();
+      throw reason;
+    };
+    section.exit();
+    held = false;
+    expect(await quiesced).toEqual({ status: "rejected", reason });
+    expect(Reflect.get(original.session, "quiescing")).toBeUndefined();
+    expect(owned.backend.pins.get(directory)).toBe(1);
+    stopping ??= owned.service.shutdown();
+    owned.joins.push(outcome(stopping));
+    const result = await outcome(stopping);
+    expect(result.status).toBe("rejected");
+    if (result.status === "rejected") expect(result.reason).toBe(reason);
+    expect(owned.service.shutdown()).toBe(stopping);
+    expect(releases).toBe(1);
+    expect(owned.backend.closes).toBe(0);
+  } finally {
+    await owned.close();
+  }
+}
+
+const quiescingReasons = [new Error("original quiescing sweep"), undefined, null, false, 0, ""];
+for (const [index, reason] of quiescingReasons.entries()) {
+  test(`F3 original cleared quiescing rejection ${index} survives later shutdown`, () =>
+    rejectedQuiescing(reason, false),
+  );
+  test(`F3 original cleared quiescing rejection ${index} survives reentrant shutdown`, () =>
+    rejectedQuiescing(reason, true),
+  );
+}
