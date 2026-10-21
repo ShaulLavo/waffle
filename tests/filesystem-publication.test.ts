@@ -221,9 +221,8 @@ test("direct publication kernel fails before bytes on conflicts, bounds and glob
   expect(Atomics.load(shared.cells, 1)).toBe(0);
 });
 
-async function localPublicationFixture() {
-  const backend = new MemoryBackend();
-  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+async function localPublicationFixture(backend = new MemoryBackend(), seed = true) {
+  if (seed) backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
@@ -466,4 +465,83 @@ test("production publication growth prepares no bytes and retry captures the new
     expect(page.publications).toHaveLength(1);
     expect(page.publications[0].receipt.result).toEqual({ kind: "number", value: 1 });
   } finally { fixture.stop(); }
+});
+
+import { PersistentBackend } from "../fs/persistent";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+async function coldPublicationFixture() {
+  const reading = deferred(), release = deferred();
+  let reads = 0, hydrations = 0;
+  const backend = await PersistentBackend.open({
+    async load() {
+      return { version: 1, generation: 1, root: 100, nodes: [
+        { ino: 100, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 101]] },
+        { ino: 101, kind: "file", mode: 0o600, size: 3, mtime: 1, data: "fixture-payload" },
+      ] };
+    },
+    async read() { reads++; reading.resolve(); await release.promise; return new Uint8Array([1, 2, 3]); },
+    async persist() {}, async flush() {}, async close() {},
+  }, { intervalMs: 0 });
+  const fixture = await localPublicationFixture(backend, false);
+  const hydrate = backend.shared.hydrate.bind(backend.shared);
+  backend.shared.hydrate = (handle, bytes) => { hydrations++; return hydrate(handle, bytes); };
+  return { ...fixture, backend, reading: reading.promise, release: release.resolve, reads: () => reads, hydrations: () => hydrations };
+}
+
+test("real paused persistent load cannot hydrate after the production domain stops", async () => {
+  const fixture = await coldPublicationFixture();
+  let loading: void | Promise<void> = undefined;
+  try {
+    const output = new Uint8Array(3).fill(42);
+    expect(fixture.root.tryRead(fixture.handle, [output], 0)).toBe(-6);
+    await fixture.reading;
+    loading = fixture.backend.prepare("read", [fixture.handle]);
+    const domain = fixture.backend.shared.publication!;
+    const before = domain.diagnostics();
+    expect(fixture.reads()).toBe(1);
+    await expectErrno(fixture.root.asyncCall("publicationStop", [fixture.grant]), 11);
+    fixture.release();
+    await loading;
+    expect(fixture.hydrations()).toBe(0);
+    expect(fixture.backend.shared.isResident(fixture.handle)).toBe(false);
+    expect(output).toEqual(new Uint8Array(3).fill(42));
+    expect(fixture.root.tryRead(fixture.handle, [output], 0)).toBe(-11);
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(-11);
+    expect(domain.diagnostics()).toMatchObject({ stopped: true, sessions: 0, pending: 0, receipts: 0, pins: 0, pinBytes: 0, inputBytes: 0 });
+    expect(before.stopped).toBe(false);
+    expect(fixture.service.resources()).toMatchObject({ clients: 0, retained: 0, responses: 0 });
+  } finally { fixture.release(); await loading; fixture.stop(); fixture.backend.dispose(); }
+});
+
+test("cancelling one cold session preserves the live peer and its real shared load", async () => {
+  const fixture = await coldPublicationFixture();
+  let loading: void | Promise<void> = undefined;
+  try {
+    const start = await fixture.cut();
+    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([8])], 0)).toBe(-6);
+    expect(fixture.sibling.tryRead(fixture.handle, [new Uint8Array(3)], 0)).toBe(-6);
+    await fixture.reading;
+    loading = fixture.backend.prepare("read", [fixture.handle]);
+    fixture.root.dispose();
+    fixture.service.sweep();
+    expect(fixture.service.resources().clients).toBe(1);
+    fixture.release();
+    await loading;
+    expect(fixture.reads()).toBe(1);
+    expect(fixture.hydrations()).toBe(1);
+    const pending = Array.from(fixture.sibling.completions.values());
+    expect(pending).toHaveLength(1);
+    await pending[0]!.value();
+    const output = new Uint8Array(3);
+    expect(fixture.sibling.tryRead(fixture.handle, [output], 0)).toBe(3);
+    expect(output).toEqual(new Uint8Array([1, 2, 3]));
+    const domain = fixture.backend.shared.publication!;
+    expect(domain.cut()).toEqual(start);
+    expect(domain.diagnostics()).toMatchObject({ stopped: false, sessions: 1, pending: 0, inputBytes: 0 });
+  } finally { fixture.release(); await loading; fixture.stop(); fixture.backend.dispose(); }
 });
