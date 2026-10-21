@@ -268,7 +268,14 @@ test("close joins every admitted sibling even when the first one rejects", async
     store.onFlush = undefined;
     const closing = track(backend.close());
     let settled = false;
-    void closing.then(() => { settled = true; }, () => { settled = true; });
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     first.released.resolve();
     await rejection(earlier);
     await new Promise<void>((done) => setImmediate(done));
