@@ -357,7 +357,48 @@ async function repeatedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuestStop", { key: "repeat" });
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
   await control(page, "workspaceGuest", { key: "cancel-parent", mode: "proc" });
-  await control(page, "workspaceDescendantCancel", { parent: "cancel-parent" });
+  await channelBarrier(page, "connect");
+  const connecting = record(await workspaceChannels(page));
+  const cancelling = control(page, "workspaceDescendantCancel", { parent: "cancel-parent" }).then(
+    () => ({ joined: true, error: "" }),
+    (error: unknown) => ({ joined: false, error: String(error) }),
+  );
+  await page.waitForFunction(() => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    return (
+      state &&
+      typeof state === "object" &&
+      Reflect.get(state, "connectHeld") === 1 &&
+      Reflect.has(globalThis, "__workspaceChildCancelled")
+    );
+  });
+  const held = record(await workspaceChannels(page));
+  equal(held.connectDelivered, connecting.connectDelivered);
+  equal(held.opened, connecting.opened);
+  const cancelled: unknown = await page.evaluate(() =>
+    Reflect.get(globalThis, "__workspaceChildCancelled"),
+  );
+  equal(record(cancelled).revoked, 1);
+  equal(record(cancelled).reservations, [[1, 2]]);
+  await page.evaluate(() => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    if (!state || typeof state !== "object") throw new Error("missing channel observer");
+    const release: unknown = Reflect.get(state, "releaseConnect");
+    if (typeof release !== "function") throw new Error("missing connect release");
+    release();
+  });
+  await page.waitForFunction((before) => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    return (
+      state && typeof state === "object" && Number(Reflect.get(state, "connectDelivered")) > before
+    );
+  }, Number(connecting.connectDelivered));
+  const result = await cancelling;
+  console.log(
+    "WORKSPACE_CONNECT_CANCEL=" +
+      JSON.stringify({ connecting, held, cancelled, after: await workspaceChannels(page), result }),
+  );
+  equal(result.joined, true);
   await control(page, "workspaceGuestStop", { key: "cancel-parent" });
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 3);
   console.log(

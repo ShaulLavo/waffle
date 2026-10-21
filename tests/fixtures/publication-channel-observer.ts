@@ -8,6 +8,11 @@ export function installWorkspaceChannelObserver(): void {
     closedPending: 0,
     cancelled: 0,
     cleanupStarted: 0,
+    connectHeld: 0,
+    connectReceived: 0,
+    connectDelivered: 0,
+    connectOpened: 0,
+    releaseConnect: () => {},
     hold: "",
     release: () => {},
   };
@@ -67,6 +72,12 @@ export function installWorkspaceChannelObserver(): void {
     for (const [event, channel] of events)
       channel.dispatchEvent(new MessageEvent("message", { data: event.data }));
   };
+  const heldConnections: { port: MessagePort; event: MessageEvent<unknown> }[] = [];
+  state.releaseConnect = () => {
+    state.connectHeld = 0;
+    for (const { port, event } of heldConnections.splice(0))
+      port.dispatchEvent(new MessageEvent("message", { data: event.data }));
+  };
   const NativePorts = MessageChannel;
   class ObservedPorts extends NativePorts {
     constructor() {
@@ -75,8 +86,23 @@ export function installWorkspaceChannelObserver(): void {
       this.port2.addEventListener("message", observeCleanup);
     }
   }
-  function observeCleanup(event: MessageEvent<unknown>): void {
-    if (message(event.data)?.stopWorkspace instanceof MessagePort) state.cleanupStarted++;
+  function observeCleanup(this: MessagePort, event: MessageEvent<unknown>): void {
+    const data = message(event.data);
+    if (data?.stopWorkspace instanceof MessagePort) state.cleanupStarted++;
+    if (!data || !("connect" in data)) return;
+    state.connectReceived++;
+    if (state.hold === "connect") {
+      state.hold = "";
+      event.stopImmediatePropagation();
+      heldConnections.push({ port: this, event });
+      state.connectHeld++;
+      return;
+    }
+    const opened = state.opened;
+    state.connectDelivered++;
+    queueMicrotask(() => {
+      state.connectOpened += state.opened - opened;
+    });
   }
   globalThis.MessageChannel = ObservedPorts;
   globalThis.BroadcastChannel = ObservedChannel;

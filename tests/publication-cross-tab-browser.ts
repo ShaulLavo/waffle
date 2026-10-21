@@ -397,6 +397,12 @@ const reservedWorkspaceChildren = new Map<string, FilesystemConnection>();
 async function cancelWorkspaceChild(connection: FilesystemConnection): Promise<void> {
   revokeFilesystem(connection);
   for (const reservation of connection.reservations) releaseFilesystemReservation(reservation);
+  Reflect.set(globalThis, "__workspaceChildCancelled", {
+    revoked: Atomics.load(new Int32Array(connection.revocations[0]!), 0),
+    reservations: connection.reservations.map((reservation) =>
+      Array.from(new Int32Array(reservation.state)),
+    ),
+  });
   try {
     await stopWorkspaceBridge(connection);
   } finally {
