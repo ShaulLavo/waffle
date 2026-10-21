@@ -163,6 +163,12 @@ imports receive guest-memory arguments and descriptor operations, not the raw
 connection or trailer views. The retained-descriptor codec and identity transport
 are trusted host machinery. Captured construction, copying and atomics prevent a
 late guest global/prototype replacement from receiving the comparison views.
-This is not authentication against code already given arbitrary raw control
-SABs, including an untrusted host integration. Such a writer can corrupt control
-memory directly and is outside this private slice's trust assumption.
+This does not protect every ordinary control view. Existing protocol revocation,
+section and wake operations, shared revocation checks and capability initialization
+still use some late global or prototype dispatch. Hostile same-realm JavaScript
+can intercept those ordinary views and obtain their backing buffers. The supported
+assumption is trusted guest-ABI use with host-exclusive trailer writes, not absence
+of raw-control-memory exposure to hostile JavaScript. An untrusted host integration
+or arbitrary raw-SAB writer can corrupt control memory directly and is outside
+this private slice. Existing captured private grant-state protections are unchanged.
+This neither claims S2/SAFE acceptance nor enables public or default operation.
