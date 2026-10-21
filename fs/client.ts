@@ -421,6 +421,7 @@ export class FilesystemClient implements FileSystem {
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
+    if (this.resident) throw new FilesystemError(58, "resident grant namespace is unsupported");
     const domain = this.shared.publication;
     const connection = this.connection.publication;
     const intent = domain ? mutationIntent(operation, args) : undefined;

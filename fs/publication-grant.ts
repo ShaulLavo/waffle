@@ -122,7 +122,7 @@ function mutation(grant: Extract<ResidentGrant, { kind: "write" | "append" }>, b
 export class ResidentGrantCell {
   readonly state: Int32Array;
   readonly payload: Uint8Array;
-  constructor(readonly grant: ResidentGrant, storage?: { state: SharedArrayBuffer; payload: SharedArrayBuffer }) {
+  constructor(readonly grant: ResidentGrant, storage?: { state: SharedArrayBuffer; payload: SharedArrayBuffer }, private claimAllowed: () => boolean = () => true) {
     this.state = new Int32Array(storage?.state ?? new SharedArrayBuffer(12));
     this.payload = new Uint8Array(storage?.payload ?? new SharedArrayBuffer(grant.effectBytes));
   }
@@ -140,6 +140,7 @@ export class ResidentGrantCell {
     let views: Uint8Array[];
     try { views = ownedViews(chunks); } catch { return -28; }
     const length = Math.min(grant.maxBytes, views.reduce((n, chunk) => n + chunk.length, 0));
+    if (!this.claimAllowed()) { this.cancel(); return -11; }
     if (Atomics.compareExchange(this.state, 0, CellState.Ready, CellState.Claimed) !== CellState.Ready) return -6;
     try {
       if (grant.kind === "read") return this.readClaimed(grant, views, length);

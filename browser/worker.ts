@@ -583,7 +583,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       args: req.args,
       env,
       fs,
-      preopens: { "/": "/" },
+      preopens: req.filesystem.residentPublication ? {} : { "/": "/" },
       reservedFds,
       stdio,
       stdout: (data) => {

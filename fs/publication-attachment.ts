@@ -10,6 +10,8 @@ import {
   type ResidentSettlement,
 } from "./publication-grant.js";
 
+import { CAPABILITY_HEADER, connectFilesystemIdentity, createFilesystemIdentity, SHARED_SEGMENT_BYTES, type FilesystemConnection } from "./protocol.js";
+
 const NativeChannel = globalThis.BroadcastChannel;
 export const continuityKey = (workspace: string): string => `waffle:publication:continuity:${workspace}`;
 const callBound = 3000;
@@ -180,12 +182,12 @@ export class ResidentGrantClient {
   private stopped = false;
   private stoppedJoin: Promise<void> | undefined;
   private preparing: Promise<void> | undefined;
-  constructor(readonly session: ResidentSession, private channel: ResidentChannel, private guard: PublicationGuard) {
+  constructor(readonly session: ResidentSession, private channel: ResidentChannel, private guard: PublicationGuard, private revoked: () => boolean = () => false) {
     channel.status = () => this.cell?.snapshot();
   }
   prepare(request: ResidentRequest): Promise<void> {
     const owned = residentRequest(request);
-    if (this.stopped) return Promise.reject(new FilesystemError(11));
+    if (this.stopped || this.revoked()) return Promise.reject(new FilesystemError(11));
     if (this.preparing) return Promise.reject(new FilesystemError(6));
     const preparing = this.prepareOwned(owned);
     this.preparing = preparing;
@@ -201,23 +203,23 @@ export class ResidentGrantClient {
       const status = await this.settle();
       if (status.kind === "pending" || status.kind === "unknown") throw new FilesystemError(6);
     }
-    if (this.stopped) throw new FilesystemError(11);
+    if (this.stopped || this.revoked()) throw new FilesystemError(11);
     const grant = residentGrant(await this.channel.call("prepare", { token: this.session.token, request }));
     if (JSON.stringify(grant.session) !== JSON.stringify(this.session)) throw new FilesystemError(11);
-    this.cell = new ResidentGrantCell(grant);
-    if (!this.stopped) return;
+    this.cell = new ResidentGrantCell(grant, undefined, () => !this.stopped && !this.revoked());
+    if (!this.stopped && !this.revoked()) return;
     this.cell.cancel();
     await this.settle();
     throw new FilesystemError(11);
   }
   tryRead(handle: number, chunks: readonly Uint8Array[], offset: number): number {
-    return this.stopped ? -11 : this.cell?.tryRead(handle, chunks, offset) ?? -6;
+    return this.stopped || this.revoked() ? -11 : this.cell?.tryRead(handle, chunks, offset) ?? -6;
   }
   tryWrite(handle: number, chunks: readonly Uint8Array[], offset: number): number {
-    return this.stopped ? -11 : this.cell?.tryWrite(handle, chunks, offset) ?? -6;
+    return this.stopped || this.revoked() ? -11 : this.cell?.tryWrite(handle, chunks, offset) ?? -6;
   }
   tryAppend(handle: number, chunks: readonly Uint8Array[]): number | { written: number; offset: number } {
-    return this.stopped ? -11 : this.cell?.tryAppend(handle, chunks) ?? -6;
+    return this.stopped || this.revoked() ? -11 : this.cell?.tryAppend(handle, chunks) ?? -6;
   }
   async settle(): Promise<ResidentSettlement> {
     const cell = this.cell;
@@ -277,7 +279,7 @@ export class ResidentAttachment {
       attempt.resources = { kind: "channel", channel, guard };
       const session = residentSession(await channel.call("open", this.descriptor));
       if (JSON.stringify(session.descriptor) !== JSON.stringify(this.descriptor)) throw new FilesystemError(11);
-      const client = new ResidentGrantClient(session, channel, guard);
+      const client = new ResidentGrantClient(session, channel, guard, this.revoked);
       attempt.resources = { kind: "client", client };
       if (signal.aborted || !this.active(attempt)) throw new FilesystemError(11);
       this.state = { kind: "current", client };
@@ -335,4 +337,20 @@ export async function attachResidentPublication(descriptor: ResidentDescriptor, 
   const client = attachment.client;
   if (!client) throw new FilesystemError(11);
   return client;
+}
+
+/** Local liveness, capability and offset metadata only. This allocates no MemFS,
+ * backend, root directory or authority publication arena. Namespace calls are unsupported. */
+export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
+  const descriptor = residentDescriptor(value);
+  const identity = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
+  identity.residentPublication = descriptor;
+  const entries = new Int32Array(identity.capabilities);
+  entries[0] = 1;
+  entries[CAPABILITY_HEADER] = descriptor.handle;
+  entries[CAPABILITY_HEADER + 1] = 0;
+  entries[CAPABILITY_HEADER + 2] = 0;
+  const connection = connectFilesystemIdentity(identity);
+  connection.server.port.close();
+  return connection.client;
 }
