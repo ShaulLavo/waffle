@@ -92,9 +92,7 @@ async function lateHandle(runtime: Runtime) {
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const identity = runtime.filesystem.createIdentity();
-  runtime.registerAdapter("late", async (context, processes) => {
-    processes.registerController(context.pid, { filesystem: identity });
+  runtime.registerAdapter("late", async () => {
     entered();
     await gate;
     return {
