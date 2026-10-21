@@ -649,7 +649,6 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   return workspaceGuestControl(operation, body);
 }
 
-/** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 async function inspectFactoryWorkspace(name: string): Promise<unknown> {
   const metadata = record(await inspectPersistentWorkspace(name));
   const database = await nativeRequest(indexedDB.open(name, 1));
@@ -755,6 +754,7 @@ async function persistentControl(operation: string, value: unknown): Promise<unk
   }
   throw new Error(`unknown persistent page operation ${operation}`);
 }
+/** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation !== "persistentBaseline" && operation.startsWith("persistent"))
     return persistentControl(operation, value);

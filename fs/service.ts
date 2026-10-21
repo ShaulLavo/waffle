@@ -488,35 +488,14 @@ export class FilesystemService {
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
       this.assertBackendAccess();
-      if (operation !== "flush" && operation !== "sync") {
-        const preparation = this.backend.prepare?.(
-          operation === "publicationPin" ? "read" : operation,
-          operation === "publicationPin" ? [args[1]] : args,
-          bytes.subarray(inputLength, inputLength + dataLength),
-        );
-        if (preparation) {
-          // Storage waits never own the serial execute queue. Re-enter through prepare:
-          // the path, capability or resident data may have changed while this read waited.
-          // A pending request's transient capabilities must survive unrelated cache churn.
-          const continuation = prepared ?? { handles: [] };
-          this.checkRequest(session, operation, args, continuation.handles);
-          prepared = continuation;
-          preparing = true;
-          const joined = preparation.then(
-            () => this.enqueue(session, id, buffer, continuation),
-            (error) => {
-              continuation.failure = { error };
-              this.enqueue(session, id, buffer, continuation);
-            },
-          );
-          session.preparations.add(joined);
-          this.preparingSessions.add(session);
-          void joined.then(
-            () => this.releasePreparation(session, joined),
-            () => this.releasePreparation(session, joined),
-          );
-          return;
-        }
+      const continuation = this.prepareRequest(
+        session, id, buffer, operation, args,
+        bytes.subarray(inputLength, inputLength + dataLength), prepared,
+      );
+      if (continuation) {
+        prepared = continuation;
+        preparing = true;
+        return;
       }
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
@@ -572,6 +551,39 @@ export class FilesystemService {
         this.sweep();
       }
     }
+  }
+  private prepareRequest(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    operation: string,
+    args: Parameters<NonNullable<FilesystemBackend["prepare"]>>[1],
+    payload: Uint8Array,
+    prepared?: PreparedRequest,
+  ): PreparedRequest | undefined {
+    if (operation === "flush" || operation === "sync") return;
+    const preparation = this.backend.prepare?.(
+      operation === "publicationPin" ? "read" : operation,
+      operation === "publicationPin" ? [args[1]] : args,
+      payload,
+    );
+    if (!preparation) return;
+    const continuation = prepared ?? { handles: [] };
+    this.checkRequest(session, operation, args, continuation.handles);
+    const joined = preparation.then(
+      () => this.enqueue(session, id, buffer, continuation),
+      (error) => {
+        continuation.failure = { error };
+        this.enqueue(session, id, buffer, continuation);
+      },
+    );
+    session.preparations.add(joined);
+    this.preparingSessions.add(session);
+    void joined.then(
+      () => this.releasePreparation(session, joined),
+      () => this.releasePreparation(session, joined),
+    );
+    return continuation;
   }
   private releasePreparation(session: Session, joined: Promise<void>): void {
     session.preparations.delete(joined);
