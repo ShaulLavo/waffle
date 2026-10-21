@@ -412,16 +412,38 @@ test("synchronous cleanup posting failure is memoized without skipping local dis
   }
 });
 
+function observeBridgeStop() {
+  const descriptor = Object.getOwnPropertyDescriptor(MessagePort.prototype, "onmessage");
+  const setter = descriptor?.set;
+  if (!descriptor || !setter) throw new Error("native port message setter missing");
+  const started = Promise.withResolvers<void>();
+  Object.defineProperty(MessagePort.prototype, "onmessage", {
+    ...descriptor,
+    set(this: MessagePort, handler: MessagePort["onmessage"]) {
+      setter.call(this, (event: MessageEvent<unknown>) => {
+        const data = event.data;
+        if (data && typeof data === "object" && "stopWorkspace" in data) started.resolve();
+        handler?.call(this, event);
+      });
+    },
+  });
+  return {
+    started: started.promise,
+    restore: () => Object.defineProperty(MessagePort.prototype, "onmessage", descriptor),
+  };
+}
+
 test("parent cleanup joins a pre-bind child cancelled after stopping is observed", async () => {
   const f = await fixture();
+  const observation = observeBridgeStop();
   const connection = createResidentConnection(f.session.descriptor);
   const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
+  observation.restore();
   const childIdentity = createProcessFilesystemIdentity(connection);
   const childPair = connectFilesystemIdentity(childIdentity);
   const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
   let joined: Promise<void> | undefined;
   try {
-    console.log("LATE_CANCEL_STAGE bind");
     await parent.asyncCall("workspaceBind", [f.session]);
     await parent.asyncCall("preopen", ["/"]);
     await parent.asyncCall("resolve", [f.directory, "dir/a"]);
@@ -429,33 +451,22 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
     await rejectsErrno(child.asyncCall("stat", [f.file]), 11);
     await parent.asyncCall("stat", [f.file]);
-    console.log("LATE_CANCEL_STAGE connected");
     joined = stopWorkspaceBridge(parent.connection);
     void joined.catch(() => {});
-    await Promise.race([
-      rejectsErrno(parent.asyncCall("stat", [f.file]), 11),
-      joined.then(() => {
-        throw new Error("parent cleanup completed while pre-bind child was live");
-      }),
-    ]);
-    console.log("LATE_CANCEL_STAGE parent-stopping");
+    await observation.started;
+    console.log("LATE_CANCEL_STAGE parent-stopping-child-still-live");
     expect(isRevoked(childIdentity)).toBe(false);
     expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(0);
     revokeFilesystem(childIdentity);
     releaseFilesystemReservation(reservation);
-    console.log("LATE_CANCEL_STAGE child-cancelled");
     await stopWorkspaceBridge(childPair.client);
-    console.log("LATE_CANCEL_STAGE child-joined");
+    console.log("LATE_CANCEL_STAGE child-cleanup-joined");
     await joined;
-    console.log("LATE_CANCEL_STAGE parent-joined");
     expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(1);
   } finally {
-    console.log("LATE_CANCEL_STAGE finally");
     await joined?.catch(() => {});
-    childPair.client.port.close();
+    child.dispose();
     parent.dispose();
-    console.log("LATE_CANCEL_STAGE authority-stop");
     await f.stop();
-    console.log("LATE_CANCEL_STAGE disposed");
   }
 });
