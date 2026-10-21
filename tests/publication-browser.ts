@@ -379,6 +379,7 @@ async function hostOperations(): Promise<void> {
     equal(Array.from((await f.fs.readFile("/new/child"))!), [6]);
     before = await f.observer.cut();
     await denied(f.fs.writeFile("/new/child", new Uint8Array([99]), { exclusive: true }), 20);
+    await denied(f.fs.drain(), 20);
     equal(await f.observer.cut(), before);
     equal(Array.from((await f.fs.readFile("/new/child"))!), [6]);
     await f.fs.move("/new/child", "/new/moved");
