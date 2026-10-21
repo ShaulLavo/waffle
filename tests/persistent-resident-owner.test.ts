@@ -388,26 +388,23 @@ for (const failure of [
   0,
   "",
 ])
-  test(
-    `owner retains original late native close failure ${String(failure)} and memoized stop with guards`,
-    async () => {
-      const owned = pendingNativeClaim({ value: failure });
-      try {
-        await owned.opened;
-        const stopped = owned.owner.stop();
-        const failed = stopped.catch((error: unknown) => error);
-        await assertPending(stopped);
-        await owned.deliver();
-        expect(await failed).toBe(failure);
-        expect(owned.owner.stop()).toBe(stopped);
-        await expect(owned.owner.stop()).rejects.toBe(failure);
-        expect(owned.closed).toBe(1);
-        expect(owned.released).toBe(0);
-      } finally {
-        await owned.close();
-      }
-    },
-  );
+  test(`owner retains original late native close failure ${String(failure)} and memoized stop with guards`, async () => {
+    const owned = pendingNativeClaim({ value: failure });
+    try {
+      await owned.opened;
+      const stopped = owned.owner.stop();
+      const failed = stopped.catch((error: unknown) => error);
+      await assertPending(stopped);
+      await owned.deliver();
+      expect(await failed).toBe(failure);
+      expect(owned.owner.stop()).toBe(stopped);
+      await expect(owned.owner.stop()).rejects.toBe(failure);
+      expect(owned.closed).toBe(1);
+      expect(owned.released).toBe(0);
+    } finally {
+      await owned.close();
+    }
+  });
 
 test("owner joins blocked native request until terminal delivery rather than releasing guards", async () => {
   const owned = pendingNativeClaim();
