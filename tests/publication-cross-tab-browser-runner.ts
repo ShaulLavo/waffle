@@ -132,6 +132,8 @@ async function run(name: string, origin: string): Promise<void> {
     console.log(
       "PASS late open cancellation joins exact session cleanup without detaching successor",
     );
+    equal(await control(first, "latePreparation"), { denied: true, count: 5, generation: 2, bytes: [9, 2, 3, 4, 5, 90, 90, 90] });
+    console.log("PASS stopped late readiness cancels exactly once before guard release, with no captured input or effects");
     equal(await control(first, "oldSettlement"), { denied: true, queries: 1, current: "ready" });
     console.log(
       "PASS duplicate old cancellation cannot erase the next READY grant from transport status tracking",

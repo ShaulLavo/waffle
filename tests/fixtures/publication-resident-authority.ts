@@ -28,23 +28,23 @@ const limits: PublicationLimits = {
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
 let handle = 0;
-let holdOpen = false,
-  heldOpen: (() => void) | undefined;
+let holdReply: "open" | "prepare" | undefined;
+let heldReply: (() => void) | undefined;
 const post = BroadcastChannel.prototype.postMessage;
 BroadcastChannel.prototype.postMessage = function (value: unknown): void {
   const data = record(value);
   const response = data.value;
   if (
-    holdOpen &&
+    holdReply &&
     data.kind === "reply" &&
     response &&
     typeof response === "object" &&
-    "descriptor" in response &&
-    "token" in response
+    (holdReply === "open" ? "descriptor" in response && "token" in response : "key" in response && "session" in response)
   ) {
-    holdOpen = false;
-    heldOpen = () => Reflect.apply(post, this, [value]);
-    self.postMessage({ event: "openHeld" });
+    const phase = holdReply;
+    holdReply = undefined;
+    heldReply = () => Reflect.apply(post, this, [value]);
+    self.postMessage({ event: `${phase}Held` });
     return;
   }
   Reflect.apply(post, this, [value]);
@@ -73,13 +73,13 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return descriptor;
   }
   if (!root || !backend || !service) throw new Error("authority not started");
-  if (operation === "holdOpen") {
-    holdOpen = true;
+  if (operation === "holdOpen" || operation === "holdPrepare") {
+    holdReply = operation === "holdOpen" ? "open" : "prepare";
     return null;
   }
-  if (operation === "releaseOpen") {
-    heldOpen?.();
-    heldOpen = undefined;
+  if (operation === "releaseOpen" || operation === "releasePrepare") {
+    heldReply?.();
+    heldReply = undefined;
     return null;
   }
   if (operation === "inspect") {

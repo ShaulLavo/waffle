@@ -247,6 +247,24 @@ async function lateAttachmentControl(): Promise<unknown> {
     await candidate.stop();
   }
 }
+async function latePreparationControl(): Promise<unknown> {
+  if (!descriptor || !authority) throw new Error("authority missing");
+  const client = await attachResidentPublication(descriptor, new AbortController().signal);
+  await authority.request("holdPrepare");
+  let denied = false;
+  const preparing = client.prepare({ kind: "write", offset: 0, maxBytes: 1 }).catch(() => { denied = true; });
+  await authority.until("prepareHeld");
+  client.invalidate();
+  const joined = client.stop();
+  try {
+    await authority.request("releasePrepare");
+    await preparing;
+    await joined;
+    const inspection = record(await authority.request("inspect"));
+    return { denied, count: inspection.count, generation: record(inspection.cut).generation, bytes: inspection.bytes };
+  } finally { await client.stop(); }
+}
+
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation === "authority") {
@@ -257,11 +275,13 @@ export async function control(operation: string, value?: unknown): Promise<unkno
     return descriptor;
   }
   if (operation === "peer") {
+    if (Object.values(record(value)).some((part) => part instanceof SharedArrayBuffer)) throw new Error("authority SAB crossed page boundary");
     descriptor = residentDescriptor(value);
     attachment = await attachResidentPublication(descriptor, new AbortController().signal);
     return { attached: true, authorityRootReceived: false };
   }
   if (operation === "lateAttachment") return lateAttachmentControl();
+  if (operation === "latePreparation") return latePreparationControl();
   if (operation === "oldSettlement") return oldSettlementControl();
   if (operation === "queuedAttachment") return queuedAttachmentControl();
   if (operation === "cancelledStartup") return cancelledStartupControl();
