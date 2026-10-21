@@ -7,7 +7,7 @@ import {
   revokeFilesystem,
   type FilesystemBackend,
 } from "../fs";
-import { HEADER, PAGE, State } from "../fs/protocol";
+import { HEADER, PAGE, State, pack } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -366,8 +366,11 @@ test("overflow payloads are drained, discarded on release, and cleared when an o
 
 test("unaligned large request buffers do not break the cancellation guard", async () => {
   const { client } = fixture();
-  const bytes = new Uint8Array(PAGE + 3).fill(91);
-  const request = client.submit("writeFile", ["/unaligned"], bytes);
+  const operation = "writeFile";
+  const args = ["/unaligned"];
+  const inputLength = pack({ operation, args, publication: undefined }).length;
+  const bytes = new Uint8Array(PAGE + 5 - (inputLength % 4)).fill(91);
+  const request = client.submit(operation, args, bytes);
   expect((request.buffer.byteLength - HEADER) % 4).not.toBe(0);
   await request.value();
   request.release();

@@ -157,7 +157,7 @@ async function read(guest: Guest, handle: number): Promise<unknown> {
   );
 }
 
-/** @browserEntry Executed in a real browser by network-browser-runner.ts. */
+/** Executed in a real browser by network-browser-runner.ts. */
 export async function networkBrowserCases(): Promise<string[]> {
   const runtime = createRuntime({
     filesystem: { workerURL: "/network-fs.js", mode: "memory" },

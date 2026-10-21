@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
-const runners = ["storage", "storage-lock", "process-recycling", "network"];
+const runners = ["storage", "storage-lock", "process-recycling", "network", "publication"];
 const fixture = `
 import { existsSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};

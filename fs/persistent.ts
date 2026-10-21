@@ -225,15 +225,22 @@ export class PersistentBackend extends MemoryBackend {
     if (pending) return pending;
     const key = this.detachedKeys.get(node.ino) ?? this.keys.get(node.ino);
     const revision = this.shared.revision(handle);
+    const shared = this.shared,
+      publication = shared.publication;
     // The asynchronous preparation owns a pin independently of the requesting capability.
     // A namespace replacement, cancellation or trim may otherwise reclaim its slot mid-read.
     this.retain(handle);
     const load = Promise.resolve()
       .then(async () => {
+        if (this.stopped || publication?.stopped || this.shared !== shared) return;
         const data = key ? await this.storage.read(key) : new Uint8Array();
         // A complete overwrite/truncate may have made this disk read obsolete. Never install
         // an old payload over newer shared bytes or metadata, even for the same inode.
         if (
+          this.stopped ||
+          publication?.stopped ||
+          this.shared !== shared ||
+          this.shared.publication !== publication ||
           this.registeredNodes.get(handle) !== node ||
           this.shared.revision(handle) !== revision ||
           this.shared.isResident(handle)

@@ -1,3 +1,10 @@
+import {
+  mutationIntent,
+  mutationValue,
+  publicationAdmission,
+  publicationCut,
+  type PublicationAdmission,
+} from "./publication.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
 import {
@@ -49,6 +56,8 @@ interface Session {
   preparingHandles: Map<number, number>;
   quiescing?: Promise<void>;
   closed?: boolean;
+  retirement?: ReturnType<typeof setTimeout>;
+  publicationPins?: Set<number>;
 }
 interface PreparedRequest {
   handles: number[];
@@ -61,8 +70,15 @@ export class FilesystemService {
   private sweeping = false;
   constructor(private backend: FilesystemBackend) {}
   connect(connection: FilesystemConnection): void {
+    if (connection.publication && !(this.backend instanceof MemoryBackend))
+      throw new FilesystemError(58, "publication requires a synchronous memory backend");
     if (this.backend instanceof MemoryBackend) {
-      this.backend.attachShared(connection.shared, connection.maxBytes, connection.segments);
+      this.backend.attachShared(
+        connection.shared,
+        connection.maxBytes,
+        connection.segments,
+        connection.publication?.buffers,
+      );
       this.backend.shared.onContention = () => this.sweep();
     }
     const session: Session = {
@@ -79,6 +95,7 @@ export class FilesystemService {
       responses: new Map(),
       pending: new Map(),
       preparingHandles: new Map(),
+      ...(connection.publication?.observer ? { publicationPins: new Set<number>() } : {}),
     };
     this.sessions.add(session);
     for (const reservation of connection.reservations) {
@@ -244,6 +261,12 @@ export class FilesystemService {
   }
   private checkRequest(session: Session, operation: string, args: any[], held?: number[]): void {
     const [a, b] = args;
+    if (operation === "publicationPin") {
+      const grant = session.connection.publication?.observer;
+      if (!grant || a !== grant) throw new FilesystemError(2);
+      if (typeof b !== "number" || !Number.isSafeInteger(b) || b < 0) throw new FilesystemError(28);
+      this.check(session, b, held);
+    }
     if (
       [
         "retain",
@@ -280,13 +303,13 @@ export class FilesystemService {
     }
     if (prepared) prepared.handles.length = 0;
   }
-  private async execute(
+  private execute(
     session: Session,
     id: number,
     operation: string,
     args: any[],
     data: Uint8Array,
-  ): Promise<unknown> {
+  ): unknown | Promise<unknown> {
     const [a, b, c] = args;
     if (operation === "take") {
       const response = session.responses.get(a);
@@ -332,11 +355,20 @@ export class FilesystemService {
       }
       return;
     }
-    let result: any;
     if (operation === "flush" || operation === "sync") {
-      await this.backend.flush?.(operation === "sync" ? a : typeof a === "string" ? a : undefined);
-      result = operation === "sync" ? 0 : undefined;
-    } else result = await this.backend.execute(operation, args, data);
+      const flushing = this.backend.flush?.(
+        operation === "sync" ? a : typeof a === "string" ? a : undefined,
+      );
+      return Promise.resolve(flushing).then(() =>
+        this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
+      );
+    }
+    const result = this.backend.execute(operation, args, data);
+    if (result instanceof Promise)
+      return result.then((value) => this.finishResult(session, id, operation, value));
+    return this.finishResult(session, id, operation, result);
+  }
+  private finishResult(session: Session, id: number, operation: string, result: any): unknown {
     const pending = session.pending.get(id);
     if (
       isRevoked(session.connection) ||
@@ -369,19 +401,23 @@ export class FilesystemService {
     let state = State.Complete;
     let mutation = false;
     let preparing = false;
+    let admission: PublicationAdmission | undefined;
     const epoch = new Int32Array(session.connection.epoch);
     try {
       if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
         throw new FilesystemError(11);
       const inputLength = cells[1]!;
       const dataLength = cells[2]!;
-      const { operation, args } = unpack(bytes.subarray(0, inputLength));
+      const input = unpack(bytes.subarray(0, inputLength));
+      const { operation, args } = input;
+      if (session.connection.publication && input.publication)
+        admission = publicationAdmission(input.publication);
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
       if (operation !== "flush" && operation !== "sync") {
         const preparation = this.backend.prepare?.(
-          operation,
-          args,
+          operation === "publicationPin" ? "read" : operation,
+          operation === "publicationPin" ? [args[1]] : args,
           bytes.subarray(inputLength, inputLength + dataLength),
         );
         if (preparation) {
@@ -404,18 +440,17 @@ export class FilesystemService {
       }
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
-      mutation = mutations.has(operation);
+      const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
+      mutation = mutations.has(operation) && !local;
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
       }
-      const value = await this.execute(
-        session,
-        id,
-        operation,
-        args,
-        bytes.subarray(inputLength, inputLength + dataLength),
-      );
+      const payload = bytes.subarray(inputLength, inputLength + dataLength);
+      const value =
+        local && operation !== "flush" && operation !== "sync"
+          ? this.executePublication(session, id, operation, args, payload, admission)
+          : await this.execute(session, id, operation, args, payload);
       const segments = this.backend.takeSharedSegments?.() ?? [];
       for (const segment of segments)
         for (const peer of this.sessions)
@@ -438,6 +473,7 @@ export class FilesystemService {
         for (const peer of this.sessions)
           peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
       if (!preparing) {
+        this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         if (mutation) {
           if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
@@ -456,6 +492,157 @@ export class FilesystemService {
         this.sweep();
       }
     }
+  }
+  private cancelPublication(session: Session, admission?: PublicationAdmission): void {
+    if (!admission || !session.connection.publication || !(this.backend instanceof MemoryBackend))
+      return;
+    this.backend.shared.publication?.cancel(session.connection.publication.session, admission);
+  }
+  private executePublication(
+    session: Session,
+    id: number,
+    operation: string,
+    args: unknown[],
+    data: Uint8Array,
+    admission?: PublicationAdmission,
+  ): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const backend = this.backend,
+      domain = backend.shared.publication!,
+      connection = session.connection.publication;
+    if (!connection) throw new FilesystemError(2);
+    backend.shared.beginServiceMutation(new Int32Array(session.connection.epoch));
+    try {
+      domain.assertLive();
+      if (operation.startsWith("publication"))
+        return this.publicationControl(session, operation, args);
+      const intent = mutationIntent(operation, args);
+      if (!intent) {
+        const value = this.execute(session, id, operation, args, data);
+        if (value instanceof Promise)
+          throw new FilesystemError(58, "publication execute must be synchronous");
+        return value;
+      }
+      if (!admission) throw new FilesystemError(28, "publication admission required");
+      domain.verify(connection.session, admission, intent, data);
+      if (intent.kind === "preopen" && !session.freeEntries.length) throw new FilesystemError(51);
+      const plan = backend.planPublication(intent, data);
+      let publication: import("./publication.js").PreparedPublication;
+      try {
+        if (
+          (intent.kind === "create" || intent.kind === "preopen") &&
+          plan.result.kind === "number" &&
+          !session.handles.has(plan.result.value) &&
+          !session.freeEntries.length
+        )
+          throw new FilesystemError(51);
+        publication = domain.prepare(admission, plan.result, plan.changes);
+      } catch (error) {
+        backend.discardPublication(plan);
+        throw error;
+      }
+      return this.applyPublication(session, id, operation, plan, publication);
+    } finally {
+      backend.shared.endServiceMutation(new Int32Array(session.connection.epoch));
+    }
+  }
+  private applyPublication(
+    session: Session,
+    id: number,
+    operation: string,
+    plan: import("./backend.js").LocalMutationPlan,
+    publication: import("./publication.js").PreparedPublication,
+  ): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const domain = this.backend.shared.publication!;
+    try {
+      domain.assertLive();
+      this.backend.applyPublication(plan);
+      domain.commit(publication);
+    } catch (error) {
+      domain.stop();
+      throw error;
+    }
+    return this.finishResult(session, id, operation, mutationValue(plan.result));
+  }
+  private publicationControl(session: Session, operation: string, args: unknown[]): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const grant = session.connection.publication?.observer;
+    if (!grant || args[0] !== grant) throw new FilesystemError(2);
+    const domain = this.backend.shared.publication!;
+    switch (operation) {
+      case "publicationCut":
+        return domain.cut();
+      case "publicationChanges": {
+        const limit = args[2];
+        if (
+          typeof limit !== "number" ||
+          !Number.isSafeInteger(limit) ||
+          limit < 1 ||
+          limit > domain.limits.logBytes
+        )
+          throw new FilesystemError(28);
+        return domain.changes(publicationCut(args[1]), limit);
+      }
+      case "publicationReceipt": {
+        const identity = args[1];
+        if (
+          !identity ||
+          typeof identity !== "object" ||
+          !("session" in identity) ||
+          !("sequence" in identity) ||
+          typeof identity.session !== "number" ||
+          typeof identity.sequence !== "number"
+        )
+          throw new FilesystemError(28);
+        return domain.lookupAny({ session: identity.session, sequence: identity.sequence });
+      }
+      case "publicationPin":
+        return this.publicationPin(session, args);
+      case "publicationReleasePin": {
+        const id = args[1];
+        if (typeof id !== "number" || !session.publicationPins?.delete(id))
+          throw new FilesystemError(28);
+        domain.releasePin(id);
+        return;
+      }
+      case "publicationDiagnostics":
+        return domain.diagnostics();
+      case "publicationStop":
+        domain.stop();
+        return;
+      default:
+        throw new FilesystemError(52);
+    }
+  }
+  private publicationPin(session: Session, args: readonly unknown[]): unknown {
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const [, handle, offset, length] = args;
+    const shared = this.backend.shared,
+      domain = shared.publication!;
+    if (
+      typeof handle !== "number" ||
+      typeof offset !== "number" ||
+      typeof length !== "number" ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > Math.floor(domain.limits.pinBytes / domain.limits.pins)
+    )
+      throw new FilesystemError(28);
+    this.check(session, handle);
+    const stat = shared.info(handle);
+    if (!stat || stat.kind !== "file") throw new FilesystemError(8);
+    const read = this.backend.execute("read", [handle, length, offset], new Uint8Array());
+    if (!(read instanceof Uint8Array)) throw new FilesystemError(29);
+    const pin = domain.pin(
+      { birthHistory: domain.buffers.history, ino: stat.ino },
+      domain.contentVersion(stat.ino),
+      read,
+    );
+    session.publicationPins!.add(pin.id);
+    return { ...pin, bytes: Array.from(pin.bytes) };
   }
   sweep(): void {
     if (this.sweeping) return;
@@ -513,9 +700,42 @@ export class FilesystemService {
     session.references.clear();
     session.responses.clear();
     session.preparingHandles.clear();
+    if (this.backend instanceof MemoryBackend)
+      for (const id of session.publicationPins ?? [])
+        this.backend.shared.publication?.releasePin(id);
+    session.publicationPins?.clear();
     session.connection.port.close();
     session.closed = true;
-    if (!session.handles.size) this.sessions.delete(session);
+    if (!session.handles.size) {
+      const publication = session.connection.publication;
+      if (publication && !this.retirePublication(session)) return;
+      this.sessions.delete(session);
+    }
+    if (
+      !this.sessions.size &&
+      this.backend instanceof MemoryBackend &&
+      this.backend.shared.publication?.stopped
+    )
+      this.backend.shared.publication.releaseStopped();
+  }
+  private retirePublication(session: Session): boolean {
+    if (!(this.backend instanceof MemoryBackend)) return true;
+    const domain = this.backend.shared.publication,
+      connection = session.connection.publication;
+    if (!domain || !connection || domain.stopped) return true;
+    try {
+      domain.closeSession(connection.session);
+    } catch (error) {
+      if (!(error instanceof FilesystemError) || error.errno !== 6) throw error;
+      session.retirement ??= setTimeout(() => {
+        session.retirement = undefined;
+        this.sweep();
+      }, 0);
+      return false;
+    }
+    if (session.retirement) clearTimeout(session.retirement);
+    session.retirement = undefined;
+    return true;
   }
   resources() {
     const backend = this.backend.resources?.() ?? {};

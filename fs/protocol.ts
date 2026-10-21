@@ -1,3 +1,5 @@
+import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
+import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { FilesystemError } from "../core/filesystem.js";
 export { FilesystemError } from "../core/filesystem.js";
 // Original shared-memory protocol. Ports schedule work; request/response bytes and completion
@@ -44,6 +46,7 @@ export const enum State {
   Overflow,
 }
 export interface FilesystemConnection {
+  publication?: PublicationConnection;
   port: MessagePort;
   epoch: SharedArrayBuffer;
   signal: SharedArrayBuffer;
@@ -81,6 +84,7 @@ export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
 export function createFilesystemIdentity(
   parent?: FilesystemIdentity,
   maxBytes = DEFAULT_SHARED_MAX_BYTES,
+  publication?: PublicationConfiguration,
 ): FilesystemIdentity {
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared = parent?.shared ?? new SharedArrayBuffer(24 * 1024 * 1024);
@@ -97,7 +101,20 @@ export function createFilesystemIdentity(
   const entries = new Int32Array(capabilities);
   entries.fill(-1);
   entries[0] = 0;
+  let domain: PublicationConnection | undefined;
+  if (parent?.publication)
+    domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
+  else if (!parent && publication) {
+    const buffers = createPublicationBuffers(publication.limits);
+    const session = new PublicationDomain(buffers, owner).openSession();
+    domain = {
+      buffers,
+      session,
+      ...(publication.observe ? { observer: crypto.randomUUID() } : {}),
+    };
+  }
   return {
+    ...(domain ? { publication: domain } : {}),
     epoch: parent?.epoch ?? new SharedArrayBuffer(4),
     // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
     signal: parent?.signal ?? new SharedArrayBuffer(4),
@@ -141,10 +158,18 @@ export function connectFilesystemIdentity(identity: FilesystemIdentity) {
     server: { ...identity, port: channel.port2 },
   };
 }
-export function createFilesystemConnection(parent?: FilesystemIdentity) {
-  return connectFilesystemIdentity(createFilesystemIdentity(parent));
+export function createFilesystemConnection(
+  parent?: FilesystemIdentity,
+  publication?: PublicationConfiguration,
+) {
+  return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
 }
 export function isRevoked(connection: FilesystemIdentity): boolean {
+  if (
+    connection.publication &&
+    Atomics.load(new Int32Array(connection.publication.buffers.control), 0)
+  )
+    return true;
   if (Atomics.load(new Int32Array(connection.ownerStates), 0)) return true;
   return connection.revocations.some((buffer) => Atomics.load(new Int32Array(buffer), 0) !== 0);
 }
@@ -212,6 +237,10 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
   Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
+  if (connection.publication)
+    new PublicationDomain(connection.publication.buffers).retireSession(
+      connection.publication.session,
+    );
   Atomics.notify(new Int32Array(connection.sections), 0);
   wake(connection);
 }

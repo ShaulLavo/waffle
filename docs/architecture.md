@@ -9,6 +9,7 @@ For a short introduction and installation example, start with [the root README](
 The package exports the browser runtime at `waffle`, with separate `waffle/core`, `waffle/fs`,
 `waffle/proc` and lightweight `waffle/proc/stub` entries. Network and terminal adapters live under
 `waffle/browser/net/*` and `waffle/browser/runtime-terminals`; core imports none of them.
+See [network ownership and transports](network.md) for the network contract.
 The [package export map](../package.json) lists the supported entry points.
 
 ## WASI adapter and filesystem contract
@@ -496,7 +497,8 @@ interrupts return EINTR without consuming the queued signal. Inject bound endpoi
 `stdio` to replace the default terminal descriptions. Generic process endpoints supply inherited
 reference counts; Bun's existing child transport remains available through its slot adapter.
 
-Imports are limited to implemented `wasi_snapshot_preview1` names and explicit `namespaces`.
+Imports are limited to implemented `wasi_snapshot_preview1` names, the built-in
+`runtime_fs.path_permissions_get` query, and explicit `namespaces`.
 An unknown namespace/name fails at linking, rather than receiving a fabricated ENOSYS stub.
 Imported memories must be supplied as `WebAssembly.Memory` values in their declared namespace;
 the host uses that memory even when the guest does not re-export it. Bun's socket slot adapter

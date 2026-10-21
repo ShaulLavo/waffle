@@ -1,5 +1,7 @@
+import type { MutationIntent, MutationResult, PublicationEffect } from "./publication.js";
+import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
-import { MemFS, type Node } from "./memory.js";
+import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
@@ -30,6 +32,47 @@ const namespaceOperations = new Set([
   "remove",
   "move",
 ]);
+interface NamespaceAction {
+  readonly kind: "namespace";
+  readonly plan: NamespacePlan;
+  readonly registered: readonly FileHandle[];
+  readonly removed: readonly { node: Node; handle: FileHandle }[];
+  readonly preopen?: string;
+}
+type LocalMutationAction =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "write";
+      readonly handle: FileHandle;
+      readonly offset: number;
+      readonly data: Uint8Array;
+      readonly mtime: number;
+    }
+  | {
+      readonly kind: "resize";
+      readonly handle: FileHandle;
+      readonly size: number;
+      readonly truncate: boolean;
+      readonly mtime: number;
+    }
+  | { readonly kind: "setMode"; readonly handle: FileHandle; readonly mode: number }
+  | { readonly kind: "setMtime"; readonly handle: FileHandle; readonly mtime: number }
+  | { readonly kind: "preopen"; readonly path: string }
+  | NamespaceAction
+  | {
+      readonly kind: "writeFile";
+      readonly namespace: NamespaceAction;
+      readonly handle: FileHandle;
+      readonly append: boolean;
+      readonly data: Uint8Array;
+      readonly offset: number;
+      readonly mtime: number;
+    };
+export interface LocalMutationPlan {
+  readonly action: LocalMutationAction;
+  readonly result: MutationResult;
+  readonly changes: readonly PublicationEffect[];
+}
 export class MemoryBackend implements FilesystemBackend {
   readonly fs: MemFS;
   constructor(fs = new MemFS()) {
@@ -42,8 +85,14 @@ export class MemoryBackend implements FilesystemBackend {
     buffer: SharedArrayBuffer,
     maxBytes?: number,
     segments: readonly SharedArrayBuffer[] = [],
+    publication?: PublicationBuffers,
   ): void {
     if (this.sharedAttached) {
+      if (
+        !!this.shared.publication !== !!publication ||
+        (publication && this.shared.publication?.buffers.history !== publication.history)
+      )
+        throw new FilesystemError(58, "filesystem publication root mismatch");
       // SAB wrappers change identity when cloned through a port. Probe a reserved header word
       // instead; connect runs synchronously on the sole service thread and guests never use it.
       const incoming = new Int32Array(buffer, 0, 16);
@@ -55,7 +104,14 @@ export class MemoryBackend implements FilesystemBackend {
       if (same) return;
       throw new Error("filesystem service cannot attach a second shared tree");
     }
-    this.shared = new SharedFilesystemState(buffer, maxBytes, undefined, segments);
+    this.shared = new SharedFilesystemState(
+      buffer,
+      maxBytes,
+      undefined,
+      segments,
+      undefined,
+      publication,
+    );
     this.sharedAttached = true;
   }
   protected sync(handle: FileHandle): void {
@@ -393,6 +449,378 @@ export class MemoryBackend implements FilesystemBackend {
       }
       default:
         throw new FilesystemError(52, `unknown filesystem operation ${operation}`);
+    }
+  }
+  /** Preflight runs under the existing global lock after all storage waits. It does not
+   * change namespace, logical size or revision. Unsupported plans fail before any effect. */
+  planPublication(intent: MutationIntent, data: Uint8Array): LocalMutationPlan {
+    const domain = this.shared.publication;
+    if (!domain) throw new FilesystemError(28);
+    domain.assertLive();
+    switch (intent.kind) {
+      case "write":
+      case "append":
+        return this.planPublicationWrite(intent, data);
+      case "resize":
+        return this.planPublicationResize(intent);
+      case "setMode":
+        return this.planPublicationMode(intent);
+      case "setMtime":
+        return this.planPublicationMtime(intent);
+      case "preopen":
+      case "mkdirp": {
+        const prepared = this.fs.planMkdirp(intent.path, domain.limits.effects);
+        const handle = this.fs.handleForNode(prepared.node);
+        return this.planNamespace(
+          prepared.plan,
+          intent.kind === "preopen" ? { kind: "number", value: handle } : { kind: "void" },
+          intent.kind === "preopen" ? intent.path : undefined,
+        );
+      }
+      case "create": {
+        this.path(intent.path);
+        const prepared = this.fs.planCreate(
+          intent.path,
+          intent.nodeKind,
+          intent.exclusive,
+          domain.limits.effects,
+        );
+        return this.planNamespace(
+          prepared.plan,
+          typeof prepared.result === "number"
+            ? { kind: "number", value: prepared.result }
+            : { kind: "create-error", errno: prepared.result.error },
+        );
+      }
+      case "link":
+      case "rename": {
+        this.path(intent.from);
+        this.path(intent.to);
+        const prepared =
+          intent.kind === "link"
+            ? this.fs.planLink(intent.from, intent.to, domain.limits.effects)
+            : this.fs.planRename(intent.from, intent.to, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "removePath": {
+        this.path(intent.path);
+        const prepared = this.fs.planRemovePath(
+          intent.path,
+          intent.directory,
+          domain.limits.effects,
+        );
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "remove": {
+        const prepared = this.fs.planRemove(intent.path, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "boolean", value: prepared.result });
+      }
+      case "move": {
+        const root = this.fs.preopen("/");
+        const from = this.fs.resolve(root, intent.from.replace(/^\//, "")),
+          to = this.fs.resolve(root, intent.to.replace(/^\//, ""));
+        if (typeof from === "number" || typeof to === "number")
+          return {
+            action: { kind: "none" },
+            result: {
+              kind: "number",
+              value: typeof from === "number" ? from : typeof to === "number" ? to : 28,
+            },
+            changes: [],
+          };
+        const prepared = this.fs.planRename(from, to, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "writeFile":
+        return this.planPublicationHostWrite(intent, data);
+      default: {
+        const exhaustive: never = intent;
+        return exhaustive;
+      }
+    }
+  }
+  private planNamespace(
+    plan: NamespacePlan,
+    result: MutationResult,
+    preopen?: string,
+  ): LocalMutationPlan {
+    const changes: PublicationEffect[] = [];
+    for (const node of plan.created)
+      changes.push({
+        kind: "inode",
+        file: this.publicationKey(node.ino),
+        nodeKind: node.kind === "dir" ? "directory" : "file",
+        mode: node.mode,
+        mtime: plan.mtime,
+      });
+    for (const edge of plan.edges)
+      changes.push({
+        kind: "entry",
+        parent: this.publicationKey(edge.parent.ino),
+        name: edge.name,
+        before: edge.before ? this.publicationKey(edge.before.ino) : null,
+        after: edge.after ? this.publicationKey(edge.after.ino) : null,
+      });
+    for (const parent of plan.parents)
+      changes.push({
+        kind: "metadata",
+        file: this.publicationKey(parent.ino),
+        mode: parent.mode,
+        mtime: plan.mtime,
+      });
+    const registered: FileHandle[] = [];
+    try {
+      for (const node of plan.created) {
+        const handle = this.fs.handleForNode(node);
+        registered.push(handle);
+        this.sync(handle);
+      }
+      const removed = plan.edges.flatMap((edge) =>
+        edge.before ? [{ node: edge.before, handle: this.fs.handleForNode(edge.before) }] : [],
+      );
+      return {
+        action: { kind: "namespace", plan, registered, removed, ...(preopen ? { preopen } : {}) },
+        result,
+        changes,
+      };
+    } catch (error) {
+      for (const handle of registered) this.shared.unlink(handle);
+      this.fs.discardNamespace(plan);
+      throw error;
+    }
+  }
+  discardPublication(plan: LocalMutationPlan): void {
+    const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
+    if (action.kind !== "namespace") return;
+    for (const handle of action.registered) this.shared.unlink(handle);
+    this.fs.discardNamespace(action.plan);
+  }
+  private planPublicationHostWrite(
+    intent: Extract<MutationIntent, { kind: "writeFile" }>,
+    data: Uint8Array,
+  ): LocalMutationPlan {
+    if (intent.append && intent.exclusive) throw new FilesystemError(28);
+    const resolved = this.fs.resolveAbsolute(intent.path);
+    if (typeof resolved === "number" && resolved !== 44) throw new FilesystemError(resolved);
+    if (typeof resolved === "number") this.checkMissingParent(intent.path);
+    if (intent.path.endsWith("/")) throw new FilesystemError(54);
+    const prepared = this.fs.planHostFile(
+      normalize(intent.path),
+      intent.exclusive,
+      this.shared.publication!.limits.effects,
+    );
+    const namespace = this.planNamespace(prepared.plan, { kind: "void" });
+    if (namespace.action.kind !== "namespace") throw new FilesystemError(29);
+    try {
+      const handle = this.fs.handleForNode(prepared.node);
+      const info = this.publicationFile(handle),
+        offset = intent.append ? info.size : 0;
+      const size = offset + data.length;
+      if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
+      this.shared.growLocked(handle, size);
+      const file = this.publicationKey(info.ino),
+        version = this.shared.publication!.nextContentVersion(info.ino);
+      const mtime = prepared.plan.mtime,
+        changes = namespace.changes.slice();
+      if (intent.append && !data.length && !changes.length)
+        return { action: { kind: "none" }, result: { kind: "void" }, changes: [] };
+      if (!intent.append && size !== info.size)
+        changes.push({ kind: "resize", file, size, version });
+      if (data.length) changes.push({ kind: "bytes", file, offset, bytes: data, size, version });
+      changes.push({ kind: "metadata", file, mode: prepared.node.mode, mtime });
+      return {
+        action: {
+          kind: "writeFile",
+          namespace: namespace.action,
+          handle,
+          append: intent.append,
+          data,
+          offset,
+          mtime,
+        },
+        result: { kind: "void" },
+        changes,
+      };
+    } catch (error) {
+      this.discardPublication(namespace);
+      throw error;
+    }
+  }
+  private applyNamespace(action: NamespaceAction): void {
+    this.fs.applyNamespace(action.plan);
+    for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
+    for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
+    for (const entry of action.removed) {
+      if (this.isLinked(entry.node)) continue;
+      this.shared.unlink(entry.handle);
+      if (this.shared.revision(entry.handle) === undefined)
+        this.shared.publication!.forgetContent(entry.node.ino);
+    }
+    if (action.preopen) this.sync(this.fs.preopen(action.preopen));
+  }
+  private publicationFile(handle: FileHandle) {
+    this.check(handle, "file");
+    const info = this.shared.info(handle)!;
+    if (info.mode !== undefined && !(info.mode & 0o200)) throw new FilesystemError(2);
+    return info;
+  }
+  private publicationKey(ino: number) {
+    return { birthHistory: this.shared.publication!.buffers.history, ino };
+  }
+  private planPublicationWrite(
+    intent: Extract<MutationIntent, { kind: "write" | "append" }>,
+    data: Uint8Array,
+  ): LocalMutationPlan {
+    const info = this.publicationFile(intent.handle);
+    const offset = intent.kind === "append" ? info.size : intent.offset;
+    const end = offset + data.length;
+    if (!Number.isSafeInteger(end)) throw new FilesystemError(28);
+    const result: MutationResult =
+      intent.kind === "append"
+        ? { kind: "append", written: data.length, offset: end }
+        : { kind: "number", value: data.length };
+    if (!data.length) return { action: { kind: "none" }, result, changes: [] };
+    this.shared.growLocked(intent.handle, end);
+    const file = this.publicationKey(info.ino),
+      mtime = Date.now();
+    return {
+      action: { kind: "write", handle: intent.handle, offset, data, mtime },
+      result,
+      changes: [
+        {
+          kind: "bytes",
+          file,
+          offset,
+          bytes: data,
+          size: Math.max(info.size, end),
+          version: this.shared.publication!.nextContentVersion(info.ino),
+        },
+        { kind: "metadata", file, mode: info.mode ?? 0o600, mtime },
+      ],
+    };
+  }
+  private planPublicationResize(
+    intent: Extract<MutationIntent, { kind: "resize" }>,
+  ): LocalMutationPlan {
+    const info = this.publicationFile(intent.handle);
+    this.shared.growLocked(intent.handle, intent.size);
+    const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
+    const file = this.publicationKey(info.ino),
+      mtime = intent.truncate ? Date.now() : info.mtime;
+    const changes: PublicationEffect[] = [];
+    if (size !== info.size)
+      changes.push({
+        kind: "resize",
+        file,
+        size,
+        version: this.shared.publication!.nextContentVersion(info.ino),
+      });
+    if (mtime !== info.mtime)
+      changes.push({ kind: "metadata", file, mode: info.mode ?? 0o600, mtime });
+    return {
+      action: {
+        kind: "resize",
+        handle: intent.handle,
+        size: intent.size,
+        truncate: intent.truncate,
+        mtime,
+      },
+      result: { kind: "number", value: 0 },
+      changes,
+    };
+  }
+  private planPublicationMode(
+    intent: Extract<MutationIntent, { kind: "setMode" }>,
+  ): LocalMutationPlan {
+    this.check(intent.handle);
+    const supported = this.fs.permissions(intent.handle).modeSupported;
+    if (intent.mode > 0xffffffff)
+      return { action: { kind: "none" }, result: { kind: "number", value: 28 }, changes: [] };
+    if (intent.mode & ~supported)
+      return { action: { kind: "none" }, result: { kind: "number", value: 58 }, changes: [] };
+    const stat = this.shared.stat(intent.handle)!;
+    const changes: PublicationEffect[] =
+      stat.mode === intent.mode
+        ? []
+        : [
+            {
+              kind: "metadata",
+              file: this.publicationKey(stat.ino),
+              mode: intent.mode,
+              mtime: stat.mtime,
+            },
+          ];
+    return {
+      action: { kind: "setMode", handle: intent.handle, mode: intent.mode },
+      result: { kind: "number", value: 0 },
+      changes,
+    };
+  }
+  private planPublicationMtime(
+    intent: Extract<MutationIntent, { kind: "setMtime" }>,
+  ): LocalMutationPlan {
+    this.check(intent.handle);
+    if (!(this.fs.permissions(intent.handle).access & 2)) throw new FilesystemError(2);
+    const stat = this.shared.stat(intent.handle)!;
+    const changes: PublicationEffect[] =
+      stat.mtime === intent.mtime
+        ? []
+        : [
+            {
+              kind: "metadata",
+              file: this.publicationKey(stat.ino),
+              mode: stat.mode ?? 0o600,
+              mtime: intent.mtime,
+            },
+          ];
+    return {
+      action: { kind: "setMtime", handle: intent.handle, mtime: intent.mtime },
+      result: { kind: "number", value: 0 },
+      changes,
+    };
+  }
+  /** Only this synchronous typed switch applies a publication-aware service mutation. */
+  applyPublication(plan: LocalMutationPlan): void {
+    const action = plan.action;
+    switch (action.kind) {
+      case "none":
+        return;
+      case "write":
+        this.shared.write(action.handle, [action.data], action.offset);
+        this.shared.setMtime(action.handle, action.mtime);
+        this.fs.setMtime(action.handle, action.mtime);
+        return;
+      case "resize":
+        this.shared.resize(action.handle, action.size, action.truncate);
+        if (action.truncate) this.shared.setMtime(action.handle, action.mtime);
+        if (action.truncate) this.shared.reclaimLocked(action.handle);
+        return;
+      case "setMode":
+        this.fs.setMode(action.handle, action.mode);
+        this.shared.setMode(action.handle, action.mode);
+        return;
+      case "setMtime":
+        this.fs.setMtime(action.handle, action.mtime);
+        this.shared.setMtime(action.handle, action.mtime);
+        return;
+      case "preopen":
+        this.sync(this.fs.preopen(action.path));
+        return;
+      case "namespace":
+        this.applyNamespace(action);
+        return;
+      case "writeFile":
+        this.applyNamespace(action.namespace);
+        if (!action.append) this.shared.resize(action.handle, 0, true);
+        if (action.data.length) this.shared.write(action.handle, [action.data], action.offset);
+        this.shared.setMtime(action.handle, action.mtime);
+        this.fs.setMtime(action.handle, action.mtime);
+        if (!action.append) this.shared.reclaimLocked(action.handle);
+        return;
+      default: {
+        const exhaustive: never = action;
+        return exhaustive;
+      }
     }
   }
   revokeOwner(owner: number, epoch?: Int32Array): void {

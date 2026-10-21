@@ -8,7 +8,7 @@ Pin an exact Git commit in your `package.json`, then run `bun install`:
 
 ```json
 {
-  "dependencies": { "waffle": "github:ShaulLavo/waffle#4087eae447fc536b6c0a78e5f14b8049be11c467" },
+  "dependencies": { "waffle": "github:ShaulLavo/waffle#fc58a532f0d7a617e631ea4b7580a190915d4ed6" },
   "trustedDependencies": ["waffle"]
 }
 ```

@@ -12,7 +12,7 @@ Add `waffle` as an exact Git dependency and trust its build step in `package.jso
 ```json
 {
   "dependencies": {
-    "waffle": "github:ShaulLavo/waffle#4087eae447fc536b6c0a78e5f14b8049be11c467"
+    "waffle": "github:ShaulLavo/waffle#fc58a532f0d7a617e631ea4b7580a190915d4ed6"
   },
   "trustedDependencies": ["waffle"]
 }
@@ -91,4 +91,7 @@ filesystem file before spawning. Read [registration and executable paths](archit
 - [Architecture and API notes](architecture.md): services, handles, processes and pipes.
 - [Host ABI](host-abi.md): guest imports, wait results and startup errors.
 - [Runtime startup](runtime-startup.md): observing initialization without console logging.
+- [Storage](storage.md) and [filesystem modes](vfs.md): persistence, ownership, and current limits.
+- [Permissions](permissions.md): supported mode bits and effective access.
+- [Networking](network.md): runtime-owned services and borrowed worker helpers.
 - [Development](development.md): repository setup, gates and further reference links.
