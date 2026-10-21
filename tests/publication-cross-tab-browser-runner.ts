@@ -478,6 +478,33 @@ async function workspaceCleanupControls(browser: Browser, origin: string): Promi
     await context.close();
   }
 }
+async function currentPersistentBaseline(page: Page): Promise<void> {
+  const result = record(await control(page, "persistentBaseline"));
+  const seeded = record(result.seeded),
+    reopened = record(result.reopened);
+  const before = record(result.before),
+    after = record(result.after);
+  equal(seeded.name, reopened.name);
+  for (const value of [seeded, reopened]) {
+    equal(value.implementation, "indexeddb");
+    equal(value.format, "waffle-indexeddb-v1");
+    equal(value.first, [11, 22, 33, 44]);
+    equal(value.second, [91, 82, 73]);
+    equal(value.mode, 0o400);
+    equal(value.size, 4);
+  }
+  equal(before.inspection, "readonly-native-no-owner-claim");
+  equal(after.inspection, before.inspection);
+  equal(after.name, before.name);
+  equal(after.format, before.format);
+  if (typeof before.epoch !== "number" || typeof after.epoch !== "number")
+    throw new Error("saved owner epochs missing");
+  equal(after.epoch, before.epoch + 1);
+  equal(after.generation, before.generation);
+  if (seeded.worker === reopened.worker) throw new Error("native owner attempts reused identity");
+  console.log("CURRENT_API_PERSISTENT_BASELINE=" + JSON.stringify(result));
+  console.log("PASS ordinary native persistent worker same-name reopen, permissions and bytes");
+}
 async function run(name: string, origin: string): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")
     throw new Error(`unknown engine ${name}`);
@@ -492,6 +519,7 @@ async function run(name: string, origin: string): Promise<void> {
       await observeDeaths(page);
       await page.goto(origin);
     }
+    await currentPersistentBaseline(first);
     const lifecycleControl = await control(first, "guardLifecycle");
     console.log("GUARD_LIFECYCLE=" + JSON.stringify(lifecycleControl));
     equal(lifecycleControl, { pending: 6, failed: 11, idleStopped: 11, queued: 11, stopped: true });
@@ -659,6 +687,7 @@ try {
       resolve(import.meta.dir, "fixtures/publication-resident-authority.ts"),
     ),
     "/resident-guest.js": await guestBundle(),
+    "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
   });
   const names = process.argv.slice(2);
   for (const name of names.length ? names : ["chromium"]) await run(name, origin);
