@@ -400,13 +400,13 @@ async function metadataAndReads(): Promise<void> {
   try {
     let before = await f.observer.cut();
     equal(f.client.resize(f.handle, 6, false), 0);
-    await group(f, before, ["resize", "metadata"]);
+    await group(f, before, ["resize"]);
     equal(f.client.stat(f.handle).size, 6);
     before = await f.observer.cut();
     equal(f.client.setMtime(f.handle, 77), 0);
     await group(f, before, ["metadata"]);
     before = await f.observer.cut();
-    equal(await f.client.asyncCall("resize", [f.handle, 3, false]), 0);
+    equal(await f.client.asyncCall("resize", [f.handle, 3, true]), 0);
     await group(f, before, ["resize", "metadata"]);
     before = await f.observer.cut();
     equal(await f.client.asyncCall("setMtime", [f.handle, 88]), 0);

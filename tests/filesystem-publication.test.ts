@@ -632,12 +632,20 @@ test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, out
     expect(resource.offset).toBe(0);
     expect(new Uint8Array(memory.buffer, 256, 3)).toEqual(new Uint8Array(3).fill(42));
     Atomics.store(root.shared.cells, 1, 0);
+    const fileLock = root.shared.fileSlot(handle) * SLOT_WORDS + 8;
+    Atomics.store(root.shared.slots, fileLock, 99);
+    expect(write(fd, 256, 1)).toBe(-6);
+    expect(read(fd, 256, 3)).toBe(-6);
+    expect(resource.offset).toBe(0);
+    expect(new Uint8Array(memory.buffer, 256, 3)).toEqual(new Uint8Array(3).fill(42));
+    Atomics.store(root.shared.slots, fileLock, 0);
     expect(await fixture.cut()).toEqual(start);
     expect(write(fd, 256, 1)).toBe(1);
     expect(resource.offset).toBe(1);
     expect((await fixture.changes(start)).publications).toHaveLength(1);
   } finally {
     Atomics.store(root.shared.cells, 1, 0);
+    Atomics.store(root.shared.slots, root.shared.fileSlot(handle) * SLOT_WORDS + 8, 0);
     descriptors.dispose();
     fixture.stop();
   }
@@ -1522,6 +1530,42 @@ test("production closed sessions cannot be resurrected by a fresh connection", a
     expect(await fixture.cut()).toEqual(cut);
   } finally {
     fresh?.dispose();
+    fixture.stop();
+  }
+});
+
+test("production append EOF growth prepares capacity but retry owns only the latest input", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    expect(await fixture.root.asyncCall("resize", [fixture.handle, PAGE, false])).toBe(0);
+    const start = await fixture.cut(),
+      revision = fixture.backend.shared.revision(fixture.handle);
+    const input = new Uint8Array([8]);
+    expect(fixture.root.tryAppend(fixture.handle, [input])).toBe(-6);
+    input[0] = 9;
+    const preparation = Array.from(fixture.root.completions.values());
+    expect(preparation).toHaveLength(1);
+    await preparation[0]!.value();
+    expect(await fixture.cut()).toEqual(start);
+    expect(fixture.backend.shared.revision(fixture.handle)).toBe(revision);
+    expect(fixture.root.stat(fixture.handle).size).toBe(PAGE);
+    expect(fixture.root.tryAppend(fixture.handle, [input])).toEqual({
+      written: 1,
+      offset: PAGE + 1,
+    });
+    const page = await fixture.changes(start);
+    requirePublicationGroups(page, 1);
+    expect(page.publications[0].changes[0]).toMatchObject({
+      kind: "bytes",
+      offset: PAGE,
+      bytes: new Uint8Array([9]),
+      size: PAGE + 1,
+    });
+    expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({
+      pending: 0,
+      inputBytes: 0,
+    });
+  } finally {
     fixture.stop();
   }
 });
