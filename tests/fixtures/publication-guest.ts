@@ -168,7 +168,8 @@ async function installService(request: ServiceSetup): Promise<void> {
   }
   const post = request.connection.port.postMessage.bind(request.connection.port);
   request.connection.port.postMessage = (message: unknown) => {
-    if (message && typeof message === "object" && "completed" in message && message.completed === responseId) {
+    if (message && typeof message === "object" && "completed" in message && (responseId === -2 || message.completed === responseId)) {
+      responseId = -1;
       heldResponse = () => post(message);
       self.postMessage({ responseHeld: true });
       return;
@@ -179,12 +180,20 @@ async function installService(request: ServiceSetup): Promise<void> {
   service.connect(request.connection);
   self.postMessage({ ready: true });
 }
-function serviceControl(request: ServiceControl): void {
-  if (request.control === "releaseLoad") releaseLoad?.();
+async function serviceControl(request: ServiceControl): Promise<void> {
+  if (request.control === "releaseLoad") {
+    releaseLoad?.();
+    await backend?.prepare?.("read", [fixtureHandle()]);
+  }
   if (request.control === "holdResponse") responseId = request.id;
   if (request.control === "deliverResponse") { heldResponse?.(); heldResponse = undefined; responseId = -1; }
   service?.sweep();
-  self.postMessage({ hydrations: hydrationCount, resident: backend?.shared.isResident(2), resources: service?.resources() });
+  self.postMessage({ hydrations: hydrationCount, resident: backend?.shared.isResident(fixtureHandle()), resources: service?.resources(), diagnostics: backend?.shared.publication?.diagnostics() });
+}
+function fixtureHandle(): number {
+  const node = backend?.fs.lookup("/file");
+  if (!node || !backend) throw new Error("Missing fixture inode");
+  return backend.fs.handleForNode(node);
 }
 function initialize(request: Setup | ServiceSetup): void {
   if (request.mode === "service") {
@@ -210,7 +219,7 @@ self.onmessage = ({ data }: MessageEvent<Setup | ServiceSetup | ServiceControl |
       initialize(data);
       return;
     }
-    if ("control" in data) { serviceControl(data); return; }
+    if ("control" in data) { void serviceControl(data).catch((error) => self.postMessage({ failure: String(error) })); return; }
     if (!guest) throw new Error("publication fixture is not initialized");
     self.postMessage(call(guest, data));
   } catch (error) {
