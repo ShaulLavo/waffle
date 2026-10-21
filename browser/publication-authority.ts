@@ -1,5 +1,9 @@
 import { FilesystemError } from "../core/filesystem.js";
-import { ResidentGrantAuthority, type ResidentOutcome, type ResidentSession } from "../fs/publication-grant.js";
+import {
+  ResidentGrantAuthority,
+  type ResidentOutcome,
+  type ResidentSession,
+} from "../fs/publication-grant.js";
 import {
   acquirePublicationGuard,
   encodeResidentSettlement,
@@ -22,35 +26,60 @@ export class ResidentAuthorityServer {
   private channel: BroadcastChannel;
   private sessions = new Map<string, ResidentSession>();
   private status = new Map<string, StatusWaiter>();
-  private outstanding: { readonly client: string; readonly token: string; readonly grant: string } | undefined;
+  private outstanding:
+    | { readonly client: string; readonly token: string; readonly grant: string }
+    | undefined;
   private queue = Promise.resolve();
   private stopped = false;
   private stopping: Promise<void> | undefined;
-  constructor(readonly authority: ResidentGrantAuthority, private guard: PublicationGuard, private bootstrap: PublicationGuard) {
+  constructor(
+    readonly authority: ResidentGrantAuthority,
+    private guard: PublicationGuard,
+    private bootstrap: PublicationGuard,
+  ) {
     this.channel = new BroadcastChannel(`waffle:resident:${authority.workspace}`);
     this.channel.onmessage = ({ data }: MessageEvent<unknown>) => {
       let message: Record<string, unknown>;
-      try { message = record(data); } catch { return; }
-      if (message.kind === "statusReply") { this.receiveStatus(message); return; }
+      try {
+        message = record(data);
+      } catch {
+        return;
+      }
+      if (message.kind === "statusReply") {
+        this.receiveStatus(message);
+        return;
+      }
       if (message.kind !== "request" || this.stopped) return;
       this.queue = this.queue.then(() => this.request(message)).catch(() => {});
     };
   }
   private receiveStatus(data: Record<string, unknown>): void {
     try {
-      const id = text(data.id), waiting = this.status.get(id);
+      const id = text(data.id),
+        waiting = this.status.get(id);
       if (!waiting || data.client !== waiting.client) return;
-      this.status.delete(id); clearTimeout(waiting.timer);
-      try { waiting.resolve(residentOutcome(data.outcome)); } catch (error) { waiting.reject(error); }
-    } catch { /* Unmatched status is not evidence of cancellation or death. */ }
+      this.status.delete(id);
+      clearTimeout(waiting.timer);
+      try {
+        waiting.resolve(residentOutcome(data.outcome));
+      } catch (error) {
+        waiting.reject(error);
+      }
+    } catch {
+      /* Unmatched status is not evidence of cancellation or death. */
+    }
   }
   private async settleOutstanding(): Promise<void> {
     const active = this.outstanding;
     if (!active) return;
     const session = this.sessions.get(active.client);
     if (!session || session.token !== active.token) throw new FilesystemError(11);
-    const id = crypto.randomUUID(), answer = Promise.withResolvers<ResidentOutcome>();
-    const timer = setTimeout(() => { this.status.delete(id); answer.reject(new FilesystemError(6)); }, 3000);
+    const id = crypto.randomUUID(),
+      answer = Promise.withResolvers<ResidentOutcome>();
+    const timer = setTimeout(() => {
+      this.status.delete(id);
+      answer.reject(new FilesystemError(6));
+    }, 3000);
     this.status.set(id, { client: active.client, ...answer, timer });
     this.channel.postMessage({ kind: "status", id, client: active.client });
     const outcome = await answer.promise;
@@ -77,7 +106,8 @@ export class ResidentAuthorityServer {
       this.sessions.delete(client);
       return null;
     }
-    const body = record(value), session = this.session(client, body.token);
+    const body = record(value),
+      session = this.session(client, body.token);
     if (operation === "prepare") {
       const request = residentRequest(body.request);
       await this.settleOutstanding();
@@ -89,18 +119,29 @@ export class ResidentAuthorityServer {
     if (operation === "settle") {
       const outcome = residentOutcome(body.outcome);
       const result = this.authority.settle(session, outcome);
-      if (result.kind !== "pending" && this.outstanding?.token === session.token && this.outstanding.grant === outcome.grant)
+      if (
+        result.kind !== "pending" &&
+        this.outstanding?.token === session.token &&
+        this.outstanding.grant === outcome.grant
+      )
         this.outstanding = undefined;
       return encodeResidentSettlement(result);
     }
     if (operation === "close") {
-      this.authority.close(session); this.sessions.delete(client); return null;
+      this.authority.close(session);
+      this.sessions.delete(client);
+      return null;
     }
     throw new FilesystemError(58);
   }
   private async request(data: Record<string, unknown>): Promise<void> {
     let client: string, id: string;
-    try { client = text(data.client); id = text(data.id); } catch { return; }
+    try {
+      client = text(data.client);
+      id = text(data.id);
+    } catch {
+      return;
+    }
     try {
       const value = await this.execute(client, text(data.operation), data.body);
       this.channel.postMessage({ kind: "reply", client, id, value });
@@ -111,7 +152,7 @@ export class ResidentAuthorityServer {
   }
   stop(): Promise<void> {
     this.stopped = true;
-    return this.stopping ??= this.stopOwned();
+    return (this.stopping ??= this.stopOwned());
   }
   private async stopOwned(): Promise<void> {
     await this.queue;
@@ -126,8 +167,16 @@ export class ResidentAuthorityServer {
 
 /** Recovery owns bootstrap first and requests exclusive workspace continuity without
  * holding an incoming shared guard. The authority's own shared guard follows recovery. */
-export async function serveResidentAuthority(authority: ResidentGrantAuthority, signal: AbortSignal): Promise<ResidentAuthorityServer> {
-  const bootstrap = await acquirePublicationGuard(`bootstrap:${authority.workspace}`, "exclusive", signal, true);
+export async function serveResidentAuthority(
+  authority: ResidentGrantAuthority,
+  signal: AbortSignal,
+): Promise<ResidentAuthorityServer> {
+  const bootstrap = await acquirePublicationGuard(
+    `bootstrap:${authority.workspace}`,
+    "exclusive",
+    signal,
+    true,
+  );
   let prospective: PublicationGuard | undefined;
   try {
     prospective = await acquirePublicationGuard(authority.workspace, "exclusive", signal, true);
@@ -136,6 +185,8 @@ export async function serveResidentAuthority(authority: ResidentGrantAuthority, 
     if (signal.aborted) throw new FilesystemError(11);
     return new ResidentAuthorityServer(authority, prospective, bootstrap);
   } catch (error) {
-    await prospective?.release(); await bootstrap.release(); throw error;
+    await prospective?.release();
+    await bootstrap.release();
+    throw error;
   }
 }

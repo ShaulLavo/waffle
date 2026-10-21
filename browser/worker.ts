@@ -366,8 +366,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     });
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
-      try { await fs.stopResidentPublication(); }
-      catch (error) { collect(error); filesystemReleased = false; }
+      try {
+        await fs.stopResidentPublication();
+      } catch (error) {
+        collect(error);
+        filesystemReleased = false;
+      }
     }
     if (!descriptorsReleased || !filesystemReleased) {
       // A failed local release cannot certify quiescence. Leave completion unpublished so

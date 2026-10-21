@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
-const runners = ["storage", "storage-lock", "process-recycling", "network", "publication", "publication-cross-tab"];
+const runners = [
+  "storage",
+  "storage-lock",
+  "process-recycling",
+  "network",
+  "publication",
+  "publication-cross-tab",
+];
 const fixture = `
 import { existsSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};

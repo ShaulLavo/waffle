@@ -656,7 +656,11 @@ export class PublicationDomain {
     }
     return versions;
   }
-  reserveResidentCapacity(admission: PublicationAdmission, result: MutationResult, changes: readonly PublicationEffect[]): void {
+  reserveResidentCapacity(
+    admission: PublicationAdmission,
+    result: MutationResult,
+    changes: readonly PublicationEffect[],
+  ): void {
     this.prepareData(admission, result, changes);
   }
   private prepareData(

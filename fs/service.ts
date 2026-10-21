@@ -574,12 +574,15 @@ export class FilesystemService {
     const domain = this.backend.shared.publication!;
     switch (operation) {
       case "publicationResident": {
-        const handle = args[1], workspace = args[2];
+        const handle = args[1],
+          workspace = args[2];
         if (typeof handle !== "number" || typeof workspace !== "string" || !workspace.length)
           throw new FilesystemError(28);
         this.check(session, handle);
         this.residentPublication ??= new ResidentGrantAuthority(
-          this.backend, new Int32Array(session.connection.epoch), workspace,
+          this.backend,
+          new Int32Array(session.connection.epoch),
+          workspace,
         );
         if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
         return this.residentPublication.retain(handle);

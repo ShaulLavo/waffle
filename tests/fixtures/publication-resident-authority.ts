@@ -1,21 +1,47 @@
-import { FilesystemClient, FilesystemService, MemoryBackend, createFilesystemConnection } from "../../fs";
+import {
+  FilesystemClient,
+  FilesystemService,
+  MemoryBackend,
+  createFilesystemConnection,
+} from "../../fs";
 import { publicationObserver, type PublicationLimits } from "../../fs/publication-internal";
 import { publicationCut } from "../../fs/publication";
-import { serveResidentAuthority, type ResidentAuthorityServer } from "../../browser/publication-authority";
+import {
+  serveResidentAuthority,
+  type ResidentAuthorityServer,
+} from "../../browser/publication-authority";
 import { record, text } from "../../fs/publication-attachment";
 
-const limits: PublicationLimits = { sessions: 16, operations: 16, inputBytes: 64,
-  argumentBytes: 512, effectBytes: 4096, effects: 16, resultBytes: 256,
-  logRecords: 8, logBytes: 32768, pins: 2, pinBytes: 256 };
+const limits: PublicationLimits = {
+  sessions: 16,
+  operations: 16,
+  inputBytes: 64,
+  argumentBytes: 512,
+  effectBytes: 4096,
+  effects: 16,
+  resultBytes: 256,
+  logRecords: 8,
+  logBytes: 32768,
+  pins: 2,
+  pinBytes: 256,
+};
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
 let handle = 0;
-let holdOpen = false, heldOpen: (() => void) | undefined;
+let holdOpen = false,
+  heldOpen: (() => void) | undefined;
 const post = BroadcastChannel.prototype.postMessage;
 BroadcastChannel.prototype.postMessage = function (value: unknown): void {
   const data = record(value);
   const response = data.value;
-  if (holdOpen && data.kind === "reply" && response && typeof response === "object" && "descriptor" in response && "token" in response) {
+  if (
+    holdOpen &&
+    data.kind === "reply" &&
+    response &&
+    typeof response === "object" &&
+    "descriptor" in response &&
+    "token" in response
+  ) {
     holdOpen = false;
     heldOpen = () => Reflect.apply(post, this, [value]);
     self.postMessage({ event: "openHeld" });
@@ -35,27 +61,51 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
     handle = file.node;
     root.retain(handle);
-    const descriptor: unknown = await root.asyncCall("publicationResident", [connection.client.publication!.observer, handle, text(body)]);
-    server = await serveResidentAuthority(service.residentPublication!, new AbortController().signal);
+    const descriptor: unknown = await root.asyncCall("publicationResident", [
+      connection.client.publication!.observer,
+      handle,
+      text(body),
+    ]);
+    server = await serveResidentAuthority(
+      service.residentPublication!,
+      new AbortController().signal,
+    );
     return descriptor;
   }
   if (!root || !backend || !service) throw new Error("authority not started");
-  if (operation === "holdOpen") { holdOpen = true; return null; }
-  if (operation === "releaseOpen") { heldOpen?.(); heldOpen = undefined; return null; }
+  if (operation === "holdOpen") {
+    holdOpen = true;
+    return null;
+  }
+  if (operation === "releaseOpen") {
+    heldOpen?.();
+    heldOpen = undefined;
+    return null;
+  }
   if (operation === "inspect") {
-    const output = new Uint8Array(8).fill(90), count = root.tryRead(handle, [output], 0);
-    return { count, bytes: Array.from(output), cut: backend.shared.publication!.cut(),
-      lock: Atomics.load(backend.shared.cells, 1), diagnostics: backend.shared.publication!.diagnostics() };
+    const output = new Uint8Array(8).fill(90),
+      count = root.tryRead(handle, [output], 0);
+    return {
+      count,
+      bytes: Array.from(output),
+      cut: backend.shared.publication!.cut(),
+      lock: Atomics.load(backend.shared.cells, 1),
+      diagnostics: backend.shared.publication!.diagnostics(),
+    };
   }
   if (operation === "bypass") {
     const read = root.tryRead(handle, [new Uint8Array(3)], 0);
     const write = root.tryWrite(handle, [new Uint8Array([77])], 0);
     let namespace = 0;
-    try { await root.asyncCall("writeFile", ["/file"], new Uint8Array([88])); }
-    catch (error) { namespace = Number(Reflect.get(Object(error), "errno")); }
+    try {
+      await root.asyncCall("writeFile", ["/file"], new Uint8Array([88]));
+    } catch (error) {
+      namespace = Number(Reflect.get(Object(error), "errno"));
+    }
     return { read, write, namespace, lock: Atomics.load(backend.shared.cells, 1) };
   }
-  if (operation === "changes") return publicationObserver(root).changes(publicationCut(body), limits.logBytes);
+  if (operation === "changes")
+    return publicationObserver(root).changes(publicationCut(body), limits.logBytes);
   if (operation === "stop") {
     root.dispose();
     await server?.stop();
@@ -65,7 +115,8 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
   throw new Error(`unsupported fixture operation ${operation}`);
 }
 self.onmessage = ({ data }: MessageEvent<unknown>) => {
-  const message = record(data), id = text(message.id);
+  const message = record(data),
+    id = text(message.id);
   void execute(text(message.operation), message.body).then(
     (value) => self.postMessage({ id, value }),
     (error: unknown) => self.postMessage({ id, failure: String(error) }),

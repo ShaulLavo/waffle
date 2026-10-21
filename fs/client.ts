@@ -257,7 +257,8 @@ export class FilesystemClient implements FileSystem {
     this.capabilities = new Int32ArrayConstructor(connection.capabilities);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.revoked = sharedRevoked(connection);
-    if (connection.residentPublication) this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
+    if (connection.residentPublication)
+      this.resident = new ResidentAttachment(connection.residentPublication, this.revoked);
     this.section = new FilesystemSection(connection, this.revoked);
     this.shared = new SharedFilesystemState(
       connection.shared,
@@ -670,13 +671,21 @@ export class FilesystemClient implements FileSystem {
   private residentIO<T>(action: () => T): T | number {
     try {
       this.section.enter();
-    } catch (error) { return -errno(error); }
-    try { return action(); } catch (error) { return -errno(error); }
-    finally { this.section.exit(); }
+    } catch (error) {
+      return -errno(error);
+    }
+    try {
+      return action();
+    } catch (error) {
+      return -errno(error);
+    } finally {
+      this.section.exit();
+    }
   }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
     if (!(offset >= 0)) return -28;
     try {
       if (!this.preparedIO(handle)) return -6;
@@ -704,7 +713,8 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
     if (!(offset >= 0)) return -28;
     try {
@@ -735,7 +745,8 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
-    if (this.resident) return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
+    if (this.resident)
+      return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
     try {
       if (!this.preparedIO(handle)) return -6;
