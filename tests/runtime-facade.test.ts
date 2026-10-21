@@ -1174,7 +1174,9 @@ test("facade initial browser graph keeps process services and interrupt compilat
   ).toBe(true);
 });
 
-test.each(["consumer", "siblings", "multiple", "late", "host", "success"])(
+test.each(["consumer", "siblings", "multiple", "late", "host", "success"].concat([
+  "falsy-undefined", "falsy-null", "falsy-false", "falsy-zero", "falsy-empty",
+]))(
   "terminal filesystem cleanup retains original %s debt in an isolated page",
   async (mode) => {
     const page = Bun.spawn(
@@ -1197,6 +1199,7 @@ test.each(["consumer", "siblings", "multiple", "late", "host", "success"])(
       console.log(`Runtime retirement stand-in receipt: ${stdout.trim()}`);
       expect(result).toMatchObject({
         sameDisposal: true,
+        disposalRejected: mode !== "success",
         synchronousDisposed: true,
         methodsClosed: true,
         stopsBeforeFence: 0,

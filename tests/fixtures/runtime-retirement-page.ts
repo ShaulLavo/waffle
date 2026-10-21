@@ -11,7 +11,15 @@ backend.fs.writeFile("/app", new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 const service = new FilesystemService(backend);
 const ports: MessagePort[] = [];
 const stops: string[] = [];
-const failures = [new Error("original first stop"), new Error("original second stop")];
+const falsyFailures = new Map<string, unknown>([
+  ["falsy-undefined", undefined],
+  ["falsy-null", null],
+  ["falsy-false", false],
+  ["falsy-zero", 0],
+  ["falsy-empty", ""],
+]);
+const falsy = mode !== undefined && falsyFailures.has(mode);
+const failures = [falsy ? falsyFailures.get(mode) : new Error("original first stop"), new Error("original second stop")];
 const previousWorker = globalThis.Worker;
 let filesystemStops = 0;
 let hostStops = 0;
@@ -129,7 +137,7 @@ async function run() {
   });
   const token = Reflect.get(globalThis, Symbol.for("waffle.runtime.owner"));
   let identity;
-  if (mode === "consumer" || mode === "success")
+  if (mode === "consumer" || mode === "success" || falsy)
     identity = retain(runtime, "first", mode !== "success");
   if (mode === "siblings") {
     identity = retain(runtime, "first", false);
@@ -154,9 +162,11 @@ async function run() {
   late?.release();
   await late?.starting;
   let rejected: unknown;
+  let disposalRejected = false;
   try {
     await disposal;
   } catch (error) {
+    disposalRejected = true;
     rejected = error;
   }
   const originals = rejected instanceof AggregateError ? rejected.errors : [rejected];
@@ -177,6 +187,7 @@ async function run() {
     sameDisposal,
     synchronousDisposed,
     methodsClosed,
+    disposalRejected,
     originalFailures: originals.map((error) => failures.indexOf(error)),
     guardHeld: Reflect.get(globalThis, Symbol.for("waffle.runtime.owner")) === token,
     filesystemDisposed: runtime.filesystem.state.status === "disposed",

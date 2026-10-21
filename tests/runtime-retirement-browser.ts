@@ -22,7 +22,10 @@ function consumerRequests(worker: Worker) {
 }
 
 /** @browserEntry */
-export async function runtimeRetirementControl(options: { attempt: string; fail: boolean }) {
+export async function runtimeRetirementControl(
+  options: { attempt: string; fail: boolean },
+  observeOriginals: () => Promise<void>,
+) {
   const runtime = createRuntime({
     filesystem: withVfsImplementation("indexeddb", {
       name: options.attempt,
@@ -63,6 +66,7 @@ export async function runtimeRetirementControl(options: { attempt: string; fail:
   });
   const connection = runtime.filesystem.connect(identity);
   const seeded = await request("start", connection);
+  await observeOriginals();
   const section = new FilesystemSection(identity);
   section.enter();
   active = true;

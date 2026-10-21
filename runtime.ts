@@ -240,6 +240,29 @@ function borrow<T extends object>(
   return Object.freeze(projection);
 }
 
+function joinStop(
+  owner: object,
+  stop: () => void | Promise<void>,
+  cleanupDebt: Map<object, Promise<void>>,
+  physicalStops: Map<object, () => void | Promise<void>>,
+): Promise<void> {
+  let joined: Promise<void>;
+  try {
+    joined = Promise.resolve(stop());
+  } catch (error) {
+    joined = Promise.reject(error);
+  }
+  cleanupDebt.set(owner, joined);
+  void joined.then(
+    () => {
+      cleanupDebt.delete(owner);
+      physicalStops.delete(owner);
+    },
+    () => {},
+  );
+  return joined;
+}
+
 /** The page is the sole owner. Duplicate bundles share only the guard, not a service locator. */
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
@@ -549,37 +572,18 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // Rejection is not a proof of quiescence. Retain consumers, filesystem and the page
         // guard until this page is destroyed rather than allowing a new owner to overlap them.
         if (failures.length !== failuresBeforeFences) throwFailures();
-        // Snapshot original callbacks before any stop can clear its owner's records.
         const stops = Array.from(physicalStops);
         const hostOwner = host;
         const hostStop = hostOwner?.dispose.bind(hostOwner);
-        const joinStop = (owner: object, stop: () => void | Promise<void>) => {
-          let joined: Promise<void>;
-          try {
-            joined = Promise.resolve(stop());
-          } catch (error) {
-            joined = Promise.reject(error);
-          }
-          cleanupDebt.set(owner, joined);
-          void joined.then(
-            () => {
-              cleanupDebt.delete(owner);
-              physicalStops.delete(owner);
-            },
-            () => {},
-          );
-          return joined;
-        };
         releaseTermination();
         const stopped = await Promise.allSettled(
-          stops.map(([owner, stop]) => joinStop(owner, stop)),
+          stops.map(([owner, stop]) => joinStop(owner, stop, cleanupDebt, physicalStops)),
         );
         for (const result of stopped) {
           if (result.status === "rejected") failures.push(result.reason);
         }
         if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
-        if (hostOwner && hostStop) await attempt(() => joinStop(hostOwner, hostStop));
-        // A rejected physical stop keeps its original owner/join and the live root.
+        if (hostOwner && hostStop) await attempt(() => joinStop(hostOwner, hostStop, cleanupDebt, physicalStops));
         if (cleanupDebt.size) throwFailures();
         handles.clear();
         consumers.clear();
