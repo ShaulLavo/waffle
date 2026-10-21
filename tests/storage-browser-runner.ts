@@ -220,86 +220,95 @@ async function retirementStorageCleanup(context: BrowserContext, attempt: string
     await cleanup.close();
   }
 }
+async function inspectRetirementArm(
+  context: BrowserContext,
+  page: Page,
+  targets: RetirementTarget[],
+  attempt: string,
+  fail: boolean,
+): Promise<void> {
+  await page.goto(origin);
+  const result = await page.evaluate(
+    async (options) => {
+      const source = "/runtime-retirement.js";
+      const control: typeof import("./runtime-retirement-browser") = await import(source);
+      return control.runtimeRetirementControl(options);
+    },
+    { attempt, fail },
+  );
+  if (!fail)
+    await retirementBounded(
+      Promise.all(targets.map((target) => target.close)),
+      "successful original targets close",
+    );
+  const native = await Promise.all(targets.map(inspectRetirementTarget));
+  const observer = await context.newPage();
+  let lockAvailable: boolean;
+  try {
+    await observer.goto(origin);
+    lockAvailable = await observer.evaluate(
+      (database) =>
+        navigator.locks.request(
+          `bun-wasm:filesystem:indexeddb:${database}`,
+          { ifAvailable: true },
+          (lock) => lock !== null,
+        ),
+      attempt,
+    );
+  } finally {
+    await observer.close();
+  }
+  console.log(
+    `Runtime retirement native receipt: ${JSON.stringify({ attempt, result, native, lockAvailable })}`,
+  );
+  if (targets.length !== 2 || result.seeded?.toString() !== "17,83,0,211")
+    throw new Error(
+      "Runtime retirement native setup did not establish both original workers and seeded data",
+    );
+  if (
+    !result.sameDisposal ||
+    !result.originalFailure ||
+    result.stops !== 1 ||
+    !result.synchronousDisposed ||
+    !result.methodsClosed ||
+    result.stopsBeforeFence !== 0 ||
+    result.stoppedInsideSection ||
+    !result.revoked
+  )
+    throw new Error(
+      "Runtime retirement original promise, failure or logical fence assertion failed",
+    );
+  if (
+    fail &&
+    (!result.guardHeld ||
+      result.filesystemStatus === "disposed" ||
+      lockAvailable ||
+      result.ping !== "alive" ||
+      native.some((target) => !target.live))
+  )
+    throw new Error(
+      "Runtime retirement retention assertion failed: original filesystem/root/page ownership released after rejected stop",
+    );
+  if (
+    !fail &&
+    (result.guardHeld ||
+      result.filesystemStatus !== "disposed" ||
+      !lockAvailable ||
+      native.some((target) => !target.closed))
+  )
+    throw new Error("Runtime retirement success cleanup assertion failed");
+}
 async function runRetirementArm(browser: Browser, name: string, fail: boolean): Promise<void> {
   const attempt = `waffle-retirement-${name}-${fail ? "failed" : "success"}-${crypto.randomUUID()}`;
   const context = await browser.newContext();
   const page = await context.newPage();
   const targets = retirementTargets(page, attempt);
   try {
-    await page.goto(origin);
-    const result = await retirementBounded(
-      page.evaluate(
-        async (options) => {
-          const source = "/runtime-retirement.js";
-          const control: typeof import("./runtime-retirement-browser") = await import(source);
-          return control.runtimeRetirementControl(options);
-        },
-        { attempt, fail },
-      ),
-      "page control",
+    await retirementBounded(
+      inspectRetirementArm(context, page, targets, attempt, fail),
+      "native case",
       45_000,
     );
-    if (!fail)
-      await retirementBounded(
-        Promise.all(targets.map((target) => target.close)),
-        "successful original targets close",
-      );
-    const native = await Promise.all(targets.map(inspectRetirementTarget));
-    const observer = await context.newPage();
-    let lockAvailable: boolean;
-    try {
-      await observer.goto(origin);
-      lockAvailable = await observer.evaluate(
-        (database) =>
-          navigator.locks.request(
-            `bun-wasm:filesystem:indexeddb:${database}`,
-            { ifAvailable: true },
-            (lock) => lock !== null,
-          ),
-        attempt,
-      );
-    } finally {
-      await observer.close();
-    }
-    console.log(
-      `Runtime retirement native receipt: ${JSON.stringify({ attempt, result, native, lockAvailable })}`,
-    );
-    if (targets.length !== 2 || result.seeded?.toString() !== "17,83,0,211")
-      throw new Error(
-        "Runtime retirement native setup did not establish both original workers and seeded data",
-      );
-    if (
-      !result.sameDisposal ||
-      !result.originalFailure ||
-      result.stops !== 1 ||
-      !result.synchronousDisposed ||
-      !result.methodsClosed ||
-      result.stopsBeforeFence !== 0 ||
-      result.stoppedInsideSection ||
-      !result.revoked
-    )
-      throw new Error(
-        "Runtime retirement original promise, failure or logical fence assertion failed",
-      );
-    if (
-      fail &&
-      (!result.guardHeld ||
-        result.filesystemStatus === "disposed" ||
-        lockAvailable ||
-        result.ping !== "alive" ||
-        native.some((target) => !target.live))
-    )
-      throw new Error(
-        "Runtime retirement retention assertion failed: original filesystem/root/page ownership released after rejected stop",
-      );
-    if (
-      !fail &&
-      (result.guardHeld ||
-        result.filesystemStatus !== "disposed" ||
-        !lockAvailable ||
-        native.some((target) => !target.closed))
-    )
-      throw new Error("Runtime retirement success cleanup assertion failed");
   } finally {
     try {
       await retirementBounded(page.close(), "original page destruction");
@@ -307,12 +316,15 @@ async function runRetirementArm(browser: Browser, name: string, fail: boolean): 
         Promise.all(targets.map((target) => target.close)),
         "original target destruction",
       );
-      const cleanup = await retirementStorageCleanup(context, attempt);
+      const cleanup = await retirementBounded(
+        retirementStorageCleanup(context, attempt),
+        "cleanup page and native database",
+      );
       console.log(
         `Runtime retirement cleanup receipt: ${JSON.stringify({ attempt, targets: targets.map((target) => ({ url: target.url, closed: target.closed })), cleanup })}`,
       );
     } finally {
-      await context.close();
+      await retirementBounded(context.close(), "test context destruction");
     }
   }
 }
