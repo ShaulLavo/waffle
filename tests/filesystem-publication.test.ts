@@ -45,7 +45,7 @@ test("local publication orders real host, WASI and direct writers without a nudg
   try {
     let cut = await observer.cut();
     await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([1, 2, 3]));
-    cut = await oracleSuccess(observer, cut, ["resize", "bytes", "metadata"]);
+    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [1, 2, 3]);
     new Uint8Array(memory.buffer, 256, 1)[0] = 4;
     expect(guestFunction(guest, "fd_pwrite")(fd, 0, 1, 1n, 32)).toBe(0);
@@ -1382,7 +1382,7 @@ test("production append admits one EOF prefix and empty writes retain exact no-e
     expect(lookup).toMatchObject({ kind: "committed", receipt: { cut: committed, result: { kind: "number", value: 0 } } });
     expect(fixture.root[localPublication]("write", [fixture.handle, 0], new Uint8Array(), admission.admission.id).kind).toBe("duplicate");
     expect(await observer.cut()).toEqual(committed);
-    oracleCurrent([fixture.root, fixture.sibling], fixture.handle, [1, 2, 3].concat(Array(64).fill(8)));
+    oracleCurrent([fixture.root, fixture.sibling], fixture.handle, [1, 2, 3].concat(Array.from({ length: 64 }, () => 8)));
   } finally {
     fixture.stop();
   }

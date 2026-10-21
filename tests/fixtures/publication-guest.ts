@@ -1,10 +1,11 @@
-import { FilesystemClient, type FilesystemConnection } from "../../fs";
+import { FilesystemClient, FilesystemService, MemoryBackend, type FilesystemConnection } from "../../fs";
 import { Wasi } from "../../core/wasi";
 import { DescriptorTable, type Resource } from "../../core/descriptors";
 import { shareFileResource } from "../../core/open-file";
 import { ProcessABI, type ProcessService } from "../../proc/abi";
 import { createSignalState } from "../../proc/signals";
 import { outcomeWord } from "../../proc/outcome";
+import { PersistentBackend } from "../../fs/persistent";
 import { guestFunction, publicationProcModule, publicationWasiModule } from "./publication-wasm";
 
 interface Setup {
@@ -13,7 +14,7 @@ interface Setup {
   readonly admissionGate?: SharedArrayBuffer;
 }
 interface Call {
-  readonly operation: "write" | "read" | "append";
+  readonly operation: "write" | "offsetWrite" | "read" | "append" | "directWrite" | "directAppend" | "inspect";
   readonly byte: number;
 }
 function unusedService(): ProcessService {
@@ -97,6 +98,15 @@ function setup({ connection, mode }: Setup) {
   return { client, memory, resource, fd, instance, descriptors, mode };
 }
 function call(guest: ReturnType<typeof setup>, request: Call) {
+  if (request.operation === "inspect") {
+    const output = new Uint8Array(128);
+    const result = guest.client.tryRead(guest.resource.handle, [output], 0);
+    return { result, bytes: Array.from(output.subarray(0, Math.max(0, result))) };
+  }
+  if (request.operation === "directWrite")
+    return guest.client.tryWrite(guest.resource.handle, [new Uint8Array([request.byte])], 0);
+  if (request.operation === "directAppend")
+    return guest.client.tryAppend(guest.resource.handle, [new Uint8Array([request.byte])]);
   const bytes = new Uint8Array(guest.memory.buffer, 256, 1);
   bytes[0] = request.byte;
   const view = new DataView(guest.memory.buffer);
@@ -104,10 +114,13 @@ function call(guest: ReturnType<typeof setup>, request: Call) {
   view.setUint32(4, 1, true);
   view.setUint32(32, 0xdeadbeef, true);
   let result: number;
+  guest.resource.append = request.operation === "append";
   if (guest.mode === "proc")
-    result = guestFunction(guest.instance, request.operation)(guest.fd, 256, 1);
+    result = guestFunction(guest.instance, request.operation === "read" ? "read" : "write")(guest.fd, 256, 1);
   else if (request.operation === "read")
     result = guestFunction(guest.instance, "fd_read")(guest.fd, 0, 1, 32);
+  else if (request.operation === "offsetWrite" || request.operation === "append")
+    result = guestFunction(guest.instance, "fd_write")(guest.fd, 0, 1, 32);
   else result = guestFunction(guest.instance, "fd_pwrite")(guest.fd, 0, 1, 0n, 32);
   return { result, offset: guest.resource.offset, byte: bytes[0], count: view.getUint32(32, true) };
 }
@@ -123,21 +136,81 @@ function pauseAdmission(connection: FilesystemConnection, buffer: SharedArrayBuf
     while (!Atomics.load(gate, 0)) Atomics.wait(gate, 0, 0);
   };
 }
+interface ServiceSetup {
+  readonly connection: FilesystemConnection;
+  readonly mode: "service";
+  readonly cold?: boolean;
+}
+type ServiceControl = { readonly control: "releaseLoad" | "serviceState" | "deliverResponse" } |
+  { readonly control: "holdResponse"; readonly id: number };
+let service: FilesystemService | undefined;
+let backend: MemoryBackend | undefined;
+let releaseLoad: (() => void) | undefined;
+let hydrationCount = 0;
+let heldResponse: (() => void) | undefined;
+let responseId = -1;
+async function installService(request: ServiceSetup): Promise<void> {
+  if (request.cold) {
+    const pending = new Promise<void>((resolve) => { releaseLoad = resolve; });
+    backend = await PersistentBackend.open({
+      async load() { return { version: 1, generation: 1, root: 100, nodes: [
+        { ino: 100, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 101]] },
+        { ino: 101, kind: "file", mode: 0o600, size: 3, mtime: 1, data: "fixture-payload" },
+      ] }; },
+      async read() { self.postMessage({ reading: true }); await pending; return new Uint8Array([1, 2, 3]); },
+      async persist() {}, async flush() {}, async close() {},
+    }, { intervalMs: 0 });
+    const hydrate = backend.shared.hydrate.bind(backend.shared);
+    backend.shared.hydrate = (handle, bytes) => { hydrationCount++; return hydrate(handle, bytes); };
+  } else {
+    backend = new MemoryBackend();
+    backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  }
+  const post = request.connection.port.postMessage.bind(request.connection.port);
+  request.connection.port.postMessage = (message: unknown) => {
+    if (message && typeof message === "object" && "completed" in message && message.completed === responseId) {
+      heldResponse = () => post(message);
+      self.postMessage({ responseHeld: true });
+      return;
+    }
+    post(message);
+  };
+  service = new FilesystemService(backend);
+  service.connect(request.connection);
+  self.postMessage({ ready: true });
+}
+function serviceControl(request: ServiceControl): void {
+  if (request.control === "releaseLoad") releaseLoad?.();
+  if (request.control === "holdResponse") responseId = request.id;
+  if (request.control === "deliverResponse") { heldResponse?.(); heldResponse = undefined; responseId = -1; }
+  service?.sweep();
+  self.postMessage({ hydrations: hydrationCount, resident: backend?.shared.isResident(2), resources: service?.resources() });
+}
+function initialize(request: Setup | ServiceSetup): void {
+  if (request.mode === "service") {
+    void installService(request).catch((error) => self.postMessage({ failure: String(error) }));
+    return;
+  }
+  guest = setup(request);
+  if (request.admissionGate) pauseAdmission(request.connection, request.admissionGate);
+  self.postMessage({ ready: true });
+}
 let guest: ReturnType<typeof setup> | undefined;
-self.onmessage = ({ data }: MessageEvent<Setup | Call | "stop">) => {
+self.onmessage = ({ data }: MessageEvent<Setup | ServiceSetup | ServiceControl | Call | "stop">) => {
   try {
     if (data === "stop") {
+      service?.dispose();
+      if (backend instanceof PersistentBackend) backend.dispose();
       guest?.descriptors.dispose();
       guest?.client.dispose();
       self.postMessage({ stopped: true });
       return;
     }
     if ("connection" in data) {
-      guest = setup(data);
-      if (data.admissionGate) pauseAdmission(data.connection, data.admissionGate);
-      self.postMessage({ ready: true });
+      initialize(data);
       return;
     }
+    if ("control" in data) { serviceControl(data); return; }
     if (!guest) throw new Error("publication fixture is not initialized");
     self.postMessage(call(guest, data));
   } catch (error) {
