@@ -19,7 +19,9 @@ let hostEmpty = false;
 let stopInsideSection = false;
 let active = false;
 let releaseFirst!: () => void;
-const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+const firstGate = new Promise<void>((resolve) => {
+  releaseFirst = resolve;
+});
 
 globalThis.Worker = class {
   addEventListener() {}
@@ -46,13 +48,17 @@ const processHost: NonNullable<RuntimeOptions["processHost"]> = (options) => {
     return host;
   }
   const supervisor = new ProcessSupervisor({
-    registry: options.registry, table: options.table, launch: options.launch,
+    registry: options.registry,
+    table: options.table,
+    launch: options.launch,
   });
   return {
     ready: async () => supervisor,
     suspend: () => supervisor.dispose(),
     quiesce: async () => {},
-    dispose: async () => { hostStops++; },
+    dispose: async () => {
+      hostStops++;
+    },
   } as Awaited<ReturnType<NonNullable<RuntimeOptions["processHost"]>>>;
 };
 
@@ -61,7 +67,9 @@ function retain(runtime: Runtime, label: string, fail: boolean, delayed = false)
   let unregister = () => {};
   unregister = runtime.retainConsumer({
     filesystem: identity,
-    revoke() { unregister(); },
+    revoke() {
+      unregister();
+    },
     async stop() {
       unregister();
       stops.push(label);
@@ -78,23 +86,38 @@ function retain(runtime: Runtime, label: string, fail: boolean, delayed = false)
 async function lateHandle(runtime: Runtime) {
   let entered!: () => void;
   let release!: () => void;
-  const admitted = new Promise<void>((resolve) => { entered = resolve; });
-  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const admitted = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const identity = runtime.filesystem.createIdentity();
   runtime.registerAdapter("late", async (context, processes) => {
     processes.registerController(context.pid, { filesystem: identity });
     entered();
     await gate;
-    return { terminate() { stops.push("handle"); throw failures[0]; } };
+    return {
+      terminate() {
+        stops.push("handle");
+        throw failures[0];
+      },
+    };
   });
   runtime.registerProgram("/app", {
-    adapter: "late", cooperative: true,
+    adapter: "late",
+    cooperative: true,
     module: new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])),
   });
   const supervisor = await (await runtime.processes()).ready();
   const root = supervisor.createRoot();
   const child = supervisor.reserveSpawn(root, {
-    executable: "/app", argv: [], env: {}, cwd: "/", job: 0, fds: [],
+    executable: "/app",
+    argv: [],
+    env: {},
+    cwd: "/",
+    job: 0,
+    fds: [],
   });
   const starting = supervisor.start(child);
   await admitted;
@@ -108,7 +131,8 @@ async function run() {
   });
   const token = Reflect.get(globalThis, Symbol.for("waffle.runtime.owner"));
   let identity;
-  if (mode === "consumer" || mode === "success") identity = retain(runtime, "first", mode !== "success");
+  if (mode === "consumer" || mode === "success")
+    identity = retain(runtime, "first", mode !== "success");
   if (mode === "siblings") {
     identity = retain(runtime, "first", false);
     retain(runtime, "second", true);
@@ -132,13 +156,29 @@ async function run() {
   late?.release();
   await late?.starting;
   let rejected: unknown;
-  try { await disposal; } catch (error) { rejected = error; }
+  try {
+    await disposal;
+  } catch (error) {
+    rejected = error;
+  }
   const originals = rejected instanceof AggregateError ? rejected.errors : [rejected];
   let methodsClosed = false;
-  try { runtime.filesystem.createIdentity(); } catch { methodsClosed = true; }
+  try {
+    runtime.filesystem.createIdentity();
+  } catch {
+    methodsClosed = true;
+  }
   return {
-    mode, filesystemStops, hostStops, hostEmpty, stops, stopsBeforeFence,
-    stopInsideSection, sameDisposal, synchronousDisposed, methodsClosed,
+    mode,
+    filesystemStops,
+    hostStops,
+    hostEmpty,
+    stops,
+    stopsBeforeFence,
+    stopInsideSection,
+    sameDisposal,
+    synchronousDisposed,
+    methodsClosed,
     originalFailures: originals.map((error) => failures.indexOf(error)),
     guardHeld: Reflect.get(globalThis, Symbol.for("waffle.runtime.owner")) === token,
     filesystemDisposed: runtime.filesystem.state.status === "disposed",
