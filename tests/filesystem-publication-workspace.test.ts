@@ -13,6 +13,7 @@ import {
   residentDescriptor,
   residentSession,
   sameWorkspaceBacking,
+  stopWorkspaceBridge,
 } from "../fs/publication-attachment";
 import {
   CAPABILITY_HEADER,
@@ -236,6 +237,27 @@ test("repeated joined resident stop never posts cancellation on its closed chann
   }
 });
 
+function observeTransferStores(
+  connection: Parameters<typeof isRevoked>[0],
+  child: Parameters<typeof isRevoked>[0],
+  sourceCount: number,
+  targetCount: number,
+  changed: string[],
+): void {
+  const originalStore = Atomics.store;
+  Atomics.store = new Proxy(originalStore, {
+    apply(target, receiver, args) {
+      const result = Reflect.apply(target, receiver, args);
+      if (isRevoked(connection)) changed.push("service revocation");
+      if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount)
+        changed.push("source capability header");
+      if (Atomics.load(new Int32Array(child.capabilities), 0) !== targetCount)
+        changed.push("target capability header");
+      return result;
+    },
+  });
+}
+
 test("legitimate workspace reservation transfer never changes live ownership controls", async () => {
   const f = await fixture();
   const connection = createResidentConnection(f.session.descriptor);
@@ -257,17 +279,7 @@ test("legitimate workspace reservation transfer never changes live ownership con
     reservation = parent.reserve(f.file, childIdentity);
     const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
     const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
-    Atomics.store = new Proxy(originalStore, {
-      apply(target, receiver, args) {
-        const result = Reflect.apply(target, receiver, args);
-        if (isRevoked(connection)) changed.push("service revocation");
-        if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount)
-          changed.push("source capability header");
-        if (Atomics.load(new Int32Array(childIdentity.capabilities), 0) !== targetCount)
-          changed.push("target capability header");
-        return result;
-      },
-    });
+    observeTransferStores(connection, childIdentity, sourceCount, targetCount, changed);
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
     await child.asyncCall("workspaceBind", [childSession]);
     childBound = true;
@@ -282,8 +294,8 @@ test("legitimate workspace reservation transfer never changes live ownership con
   } finally {
     Atomics.store = originalStore;
     if (reservation) parent.releaseReservation(reservation);
-    if (childBound) await child.asyncCall("workspaceBridgeStop");
-    await parent.asyncCall("workspaceBridgeStop");
+    if (childBound) await stopWorkspaceBridge(child.connection);
+    await stopWorkspaceBridge(parent.connection);
     child.dispose();
     parent.dispose();
     await childChannel.call("close", { token: childSession.token });

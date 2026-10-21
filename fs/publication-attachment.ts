@@ -45,6 +45,8 @@ import {
 } from "./protocol.js";
 
 const NativeChannel = globalThis.BroadcastChannel;
+const NativeMessageChannel = globalThis.MessageChannel;
+const NativeMessagePort = globalThis.MessagePort;
 const continuityKey = (workspace: string): string => `waffle:publication:continuity:${workspace}`;
 const callBound = 3000;
 
@@ -224,6 +226,7 @@ export class ResidentChannel {
   readonly id = crypto.randomUUID();
   readonly channel: BroadcastChannel;
   private pending = new Map<string, PendingCall>();
+  private unconfirmed = false;
   status: (() => ResidentOutcome | undefined) | undefined;
   constructor(workspace: string) {
     this.channel = new NativeChannel(`waffle:resident:${workspace}`);
@@ -262,6 +265,7 @@ export class ResidentChannel {
     const id = crypto.randomUUID();
     const answer = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
+      this.unconfirmed = true;
       this.pending.delete(id);
       this.channel.postMessage({ kind: "cancel", client: this.id, id });
       answer.reject(new FilesystemError(6));
@@ -277,6 +281,9 @@ export class ResidentChannel {
     const cancel = () => this.channel.postMessage({ kind: "cancel", client: this.id, id });
     signal?.addEventListener("abort", cancel, { once: true });
     return answer.promise.finally(() => signal?.removeEventListener("abort", cancel));
+  }
+  assertSettled(): void {
+    if (this.unconfirmed || this.pending.size) throw new FilesystemError(6);
   }
   cancelSession(token: string): void {
     this.channel.postMessage({ kind: "cancelSession", token });
@@ -598,6 +605,42 @@ function identity(value: unknown): MutationId {
   const data = record(value);
   return { session: integer(data.session), sequence: integer(data.sequence) };
 }
+type WorkspaceCleanupResult =
+  | { readonly kind: "workspace-stopped" }
+  | { readonly kind: "workspace-stop-failed"; readonly errno: number };
+
+function receiveWorkspaceCleanup(
+  value: unknown,
+  answer: ReturnType<typeof Promise.withResolvers<void>>,
+): void {
+  try {
+    const result = record(value);
+    if (result.kind === "workspace-stopped") answer.resolve();
+    else if (result.kind === "workspace-stop-failed")
+      answer.reject(new FilesystemError(integer(result.errno, 76)));
+    else answer.reject(new FilesystemError(28));
+  } catch (error) {
+    answer.reject(error);
+  }
+}
+/** Join only this connection's local bridge after its data identity is revoked. */
+export async function stopWorkspaceBridge(connection: FilesystemConnection): Promise<void> {
+  const ports = new NativeMessageChannel();
+  const answer = Promise.withResolvers<void>();
+  const timer = setTimeout(() => answer.reject(new FilesystemError(6)), callBound);
+  try {
+    ports.port1.onmessage = ({ data }: MessageEvent<unknown>) =>
+      receiveWorkspaceCleanup(data, answer);
+    ports.port1.onmessageerror = () => answer.reject(new FilesystemError(29));
+    ports.port1.start();
+    connection.port.postMessage({ stopWorkspace: ports.port2 }, [ports.port2]);
+    await answer.promise;
+  } finally {
+    clearTimeout(timer);
+    ports.port1.close();
+    ports.port2.close();
+  }
+}
 interface BridgeOperation {
   readonly abort: AbortController;
   readonly buffer: SharedArrayBuffer;
@@ -615,11 +658,13 @@ class WorkspaceBridge {
   private bound: Promise<void> = Promise.resolve();
   private children = new Set<WorkspaceBridge>();
   private transfer = Promise.withResolvers<void>();
+  private stopping: Promise<void> | undefined;
   constructor(
     private connection: FilesystemConnection,
     private parent?: BridgeParent,
   ) {
     this.channel = new ResidentChannel(connection.residentPublication!.workspace);
+    void this.transfer.promise.catch(() => {});
     connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
     connection.port.start();
   }
@@ -639,7 +684,10 @@ class WorkspaceBridge {
     if (this.children.size >= 16) throw new FilesystemError(6);
     const bridge = new WorkspaceBridge(child, { bridge: this, handles });
     this.children.add(bridge);
-    void bridge.transfer.promise.finally(() => this.children.delete(bridge));
+    void bridge.transfer.promise.then(
+      () => this.children.delete(bridge),
+      () => {},
+    );
     if (!handles.length) bridge.transfer.resolve();
   }
   private validateReservation(
@@ -674,6 +722,11 @@ class WorkspaceBridge {
     }
   }
   private message(data: Record<string, unknown>): void {
+    if ("stopWorkspace" in data) return this.replyStopped(data.stopWorkspace);
+    if (this.stopping) {
+      if (data.buffer instanceof SharedArrayBuffer) this.fail(integer(data.id), data.buffer, 11);
+      return;
+    }
     if ("connect" in data) return this.connect(data.connect);
     if ("discard" in data) {
       const id = integer(data.discard);
@@ -783,17 +836,42 @@ class WorkspaceBridge {
     Atomics.store(entries, free + 1, 0);
     Atomics.add(entries, 0, 1);
   }
-  private async stop(id: number): Promise<void> {
-    for (const [key, pending] of this.pending) if (key !== id) pending.abort.abort();
-    await Promise.all(
-      Array.from(this.pending, ([key, pending]) =>
-        key === id ? Promise.resolve() : pending.joined,
-      ),
+  private replyStopped(value: unknown): void {
+    if (!(value instanceof NativeMessagePort)) throw new FilesystemError(28);
+    const stopped = this.stop();
+    void stopped.then(
+      () => this.cleanupReply(value, { kind: "workspace-stopped" }),
+      (error: unknown) =>
+        this.cleanupReply(value, {
+          kind: "workspace-stop-failed",
+          errno: error instanceof FilesystemError ? error.errno : 29,
+        }),
     );
+  }
+  private cleanupReply(port: MessagePort, result: WorkspaceCleanupResult): void {
+    try {
+      port.postMessage(result);
+    } finally {
+      port.close();
+    }
+  }
+  private stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    const answer = Promise.withResolvers<void>();
+    this.stopping = answer.promise;
+    void this.stopOwned().then(answer.resolve, answer.reject);
+    return this.stopping;
+  }
+  private async stopOwned(): Promise<void> {
+    for (const pending of this.pending.values()) pending.abort.abort();
+    await Promise.all(Array.from(this.pending.values(), (pending) => pending.joined));
+    await this.bound;
+    this.channel.assertSettled();
     for (const child of this.children) child.cancelTransferred();
     await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
     this.responses.clear();
     this.channel.close();
+    this.connection.port.close();
   }
   private async execute(id: number, buffer: SharedArrayBuffer, signal: AbortSignal): Promise<void> {
     const cells = new Int32Array(buffer, 0, HEADER / 4);
@@ -806,6 +884,7 @@ class WorkspaceBridge {
     if (!Array.isArray(call.args)) throw new FilesystemError(28);
     if (operation === "workspaceBind") {
       this.bound = this.bind(call.args[0]);
+      void this.bound.catch((error: unknown) => this.transfer.reject(error));
       await this.bound;
       return this.complete(id, buffer, undefined);
     }
@@ -818,10 +897,6 @@ class WorkspaceBridge {
       const part = response.slice(at, at + count);
       if (at + count >= response.length) this.responses.delete(key);
       return this.complete(id, buffer, part);
-    }
-    if (operation === "workspaceBridgeStop") {
-      await this.stop(id);
-      return this.complete(id, buffer, undefined);
     }
     await this.bound;
     const session = this.session;

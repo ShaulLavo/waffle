@@ -58,13 +58,16 @@ export class ResidentAuthorityServer {
         return;
       }
       if (message.kind === "cancelSession") {
-        for (const active of this.requests.values())
-          if (active.token === message.token) active.abort.abort();
+        this.cancelSession(message.token);
         return;
       }
       if (message.kind !== "request" || this.stopped) return;
       this.admit(message);
     };
+  }
+  private cancelSession(token: unknown): void {
+    for (const active of this.requests.values())
+      if (active.token === token) active.abort.abort();
   }
   private admit(message: Record<string, unknown>): void {
     let client: string, id: string;

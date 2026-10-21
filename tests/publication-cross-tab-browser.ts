@@ -27,6 +27,7 @@ class FixtureWorker {
   constructor(
     path: string,
     private expectedStartupFailure = false,
+    private expectedCleanupFailure = false,
   ) {
     this.url = new URL(`${path}?worker=${crypto.randomUUID()}`, location.href).href;
     this.worker = new Worker(this.url, { type: "module" });
@@ -35,16 +36,16 @@ class FixtureWorker {
     this.worker.onmessageerror = () => this.fail(new Error("invalid worker clone"));
   }
   private receive(data: Record<string, unknown>): void {
-    if (data.type === "exit") {
-      this.events.set("exit", data);
-      this.waiting.get("exit")?.resolve(data);
+    if (data.type === "exit" || data.type === "cleanup-error" || data.type === "error") {
+      this.events.set(data.type, data);
+      this.waiting.get(data.type)?.resolve(data);
     }
     if (typeof data.event === "string") {
       this.events.set(data.event, data);
       this.waiting.get(data.event)?.resolve(data);
     }
     if (
-      data.type === "cleanup-error" ||
+      (data.type === "cleanup-error" && !this.expectedCleanupFailure) ||
       data.event === "failure" ||
       (data.type === "error" && !this.expectedStartupFailure)
     )
@@ -95,6 +96,9 @@ class FixtureWorker {
       clearTimeout(timer);
       this.waiting.delete(event);
     }
+  }
+  observed(event: string): boolean {
+    return this.events.has(event);
   }
   async terminate(): Promise<void> {
     const observed = Reflect.get(globalThis, "__publicationWaitForClose");
@@ -251,6 +255,21 @@ async function cancelledStartupControl(): Promise<unknown> {
     await exclusive.release();
   }
 }
+async function cancelledWorkspaceStartup(): Promise<unknown> {
+  const workspace = `workspace-startup-${crypto.randomUUID()}`;
+  const guard = await acquirePublicationGuard(workspace, "exclusive", new AbortController().signal);
+  const connection = createResidentConnection({ kind: "workspace", workspace, instance: "cancelled", epoch: 1, description: "never-opened", handle: 1 });
+  const worker = new FixtureWorker("/resident-guest.js", true);
+  try {
+    await worker.request("start", { mode: "wasi", connection }, [connection.port]);
+    revokeFilesystem(connection);
+    const finished = await worker.until("finished");
+    return { finished, exit: worker.observed("exit"), cleanupError: worker.observed("cleanup-error") };
+  } finally {
+    await worker.terminate();
+    await guard.release();
+  }
+}
 async function oldSettlementControl(): Promise<unknown> {
   if (!descriptor) throw new Error("descriptor missing");
   const guard = await acquirePublicationGuard(
@@ -359,6 +378,7 @@ async function latePreparationControl(): Promise<unknown> {
 }
 
 async function workspaceControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "workspaceCancelledStartup") return cancelledWorkspaceStartup();
   if (operation === "workspaceAuthority") {
     authority = new FixtureWorker("/resident-authority.js");
     return residentDescriptor(await authority.request("workspaceStart", text(value)));
@@ -394,13 +414,17 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   }
   if (operation === "workspaceGuest") {
     if (!descriptor) throw new Error("missing workspace descriptor");
-    const worker = new FixtureWorker("/resident-guest.js"),
+    const worker = new FixtureWorker(
+        "/resident-guest.js",
+        body.failSetup === true,
+        body.cleanupFailure === true,
+      ),
       connection = createResidentConnection(descriptor);
     guests.set(text(body.key), { worker, connection });
-    await worker.request("start", { mode: text(body.mode), connection }, [connection.port]);
-    return worker.until("ready");
+    await worker.request("start", { mode: text(body.mode), connection, failSetup: body.failSetup }, [connection.port]);
+    return worker.until(body.failSetup === true ? "finished" : "ready");
   }
-  if (operation === "workspaceDescendant") {
+  if (operation === "workspaceDescendant" || operation === "workspaceDescendantQueue") {
     const parent = guests.get(text(body.parent));
     if (!parent) throw new Error("missing source guest");
     const inherited = record(await parent.worker.request("descendantCodec"));
@@ -410,10 +434,25 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [
       connection.port,
     ]);
+    if (operation === "workspaceDescendantQueue") return null;
     return worker.until("ready");
   }
   const guest = guests.get(text(body.key));
   if (!guest) throw new Error("missing workspace guest");
+  if (operation === "workspaceGuestStatus")
+    return { exit: guest.worker.observed("exit"), finished: guest.worker.observed("finished"), cleanupError: guest.worker.observed("cleanup-error") };
+  if (operation === "workspaceGuestReady") return guest.worker.until("ready");
+  if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
+  if (operation === "workspaceGuestRevoke") {
+    revokeFilesystem(guest.connection);
+    return null;
+  }
+  if (operation === "workspaceGuestCleanupError") return guest.worker.until("cleanup-error");
+  if (operation === "workspaceGuestDeath") {
+    await guest.worker.terminate();
+    guests.delete(text(body.key));
+    return null;
+  }
   if (operation === "workspaceGuestStop") {
     await guest.worker.request("stop");
     const exit = await guest.worker.until("exit");

@@ -98,6 +98,7 @@ async function start(request: {
   connection: FilesystemConnection;
   handle?: number;
   token?: unknown;
+  failSetup?: boolean;
 }): Promise<void> {
   mode = text(request.mode);
   const connection = request.connection;
@@ -111,6 +112,7 @@ async function start(request: {
   await bootstrap(req, {
     setup() {
       setupCount++;
+      if (request.failSetup) throw new Error("intentional workspace setup failure");
     },
     namespaces: () => ({ env: { memory } }),
     beforeBindings(context) {
@@ -237,6 +239,20 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return { connection: connection.client, token };
   }
   if (operation === "workspace") return workspaceCall(body);
+  if (operation === "beginPending") {
+    if (!resource) throw new Error("missing pending handle");
+    void current.fs.asyncCall("stat", [resource.handle]).then(
+      () => self.postMessage({ event: "pendingSettled" }),
+      () => self.postMessage({ event: "pendingSettled" }),
+    );
+    return null;
+  }
+  if (operation === "repeatStop") {
+    await current.fs.stopResidentPublication();
+    current.fs.dispose();
+    await current.fs.stopResidentPublication();
+    return null;
+  }
   if (operation === "observerDenied") {
     let denied = 0;
     try {
@@ -271,7 +287,7 @@ type GuestMessage =
   | {
       id: string;
       operation: "start";
-      body: { mode: string; connection: FilesystemConnection; handle?: number; token?: unknown };
+      body: { mode: string; connection: FilesystemConnection; handle?: number; token?: unknown; failSetup?: boolean };
     }
   | {
       id: string;
@@ -282,6 +298,8 @@ type GuestMessage =
         | "descendantCodec"
         | "workspace"
         | "observerDenied"
+        | "beginPending"
+        | "repeatStop"
         | "offset"
         | "prepareDenied"
         | "armClaim"

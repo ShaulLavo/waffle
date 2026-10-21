@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import type { Browser, Page } from "playwright";
+import { installWorkspaceChannelObserver } from "./fixtures/publication-channel-observer";
 
 const lifecycle = new BrowserRunnerLifecycle(180_000);
 function equal(actual: unknown, expected: unknown): void {
@@ -58,30 +59,32 @@ async function guestBundle(): Promise<Blob> {
   return build.outputs[0]!;
 }
 async function observeWorkspaceChannels(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const counts = { opened: 0, closed: 0 };
-    const NativeChannel = BroadcastChannel;
-    class ObservedChannel extends NativeChannel {
-      private closed = false;
-      constructor(name: string) {
-        super(name);
-        if (name.startsWith("waffle:resident:")) counts.opened++;
-      }
-      close(): void {
-        if (!this.closed && this.name.startsWith("waffle:resident:")) counts.closed++;
-        this.closed = true;
-        super.close();
-      }
-    }
-    globalThis.BroadcastChannel = ObservedChannel;
-    Reflect.set(globalThis, "__workspaceChannelCounts", counts);
-  });
+  await page.addInitScript(installWorkspaceChannelObserver);
 }
 async function workspaceChannels(page: Page): Promise<unknown> {
   return page.evaluate(() => {
     const counts: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
     if (!counts || typeof counts !== "object") throw new Error("channel observer missing");
-    return Object.fromEntries(Object.entries(counts));
+    return Object.fromEntries(Object.entries(counts).filter(([, value]) => typeof value !== "function"));
+  });
+}
+async function channelBarrier(page: Page, action: string): Promise<void> {
+  await page.evaluate((action) => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    if (!state || typeof state !== "object") throw new Error("channel observer missing");
+    if (action !== "release") {
+      Reflect.set(state, "hold", action);
+      return;
+    }
+    const release: unknown = Reflect.get(state, "release");
+    if (typeof release !== "function") throw new Error("channel release missing");
+    release();
+  }, action);
+}
+async function heldChannel(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    return state && typeof state === "object" && Reflect.get(state, "held") === 1;
   });
 }
 async function workspacePage(

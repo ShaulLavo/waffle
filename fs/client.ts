@@ -1,4 +1,4 @@
-import { ResidentAttachment } from "./publication-attachment.js";
+import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
 import {
   mutationIntent,
@@ -254,6 +254,7 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
+  private workspaceStop: Promise<void> | undefined;
   constructor(readonly connection: FilesystemConnection) {
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
@@ -280,9 +281,17 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "workspace")
       await this.asyncCall("workspaceBind", [this.residentPublicationClient().session]);
   }
+  private beginWorkspaceStop(): Promise<void> | undefined {
+    if (this.connection.residentPublication?.kind !== "workspace") return;
+    if (!this.workspaceStop) {
+      this.workspaceStop = stopWorkspaceBridge(this.connection);
+      void this.workspaceStop.catch(() => {});
+    }
+    return this.workspaceStop;
+  }
   async stopResidentPublication(): Promise<void> {
-    if (this.connection.residentPublication?.kind === "workspace" && this.resident?.client)
-      await this.asyncCall("workspaceBridgeStop");
+    this.resident?.invalidate();
+    await this.beginWorkspaceStop();
     await this.resident?.stop();
   }
   residentPublicationClient() {
@@ -515,6 +524,7 @@ export class FilesystemClient implements FileSystem {
   }
   dispose(): void {
     this.resident?.invalidate();
+    this.beginWorkspaceStop();
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
     mapForEach(this.completions, (completion) => completion.cancel());
