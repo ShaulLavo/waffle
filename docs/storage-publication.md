@@ -1,7 +1,7 @@
-# Internal local publication checkpoint
+# Internal local publication contract
 
-Status: incomplete and not accepted for consumer use. No public API or default
-storage behavior changes. The required unified production oracle remains red.
+This opt-in capability is internal and not accepted for consumer use. It changes
+no public API, default storage behavior, descriptor or persisted format.
 
 The private `localPublication` symbol enables fixed shared arenas on one root.
 Forks share its history and receive distinct writer sessions, never the root
@@ -29,16 +29,25 @@ arena lock carries the real owner token. The existing authority's proven-dead
 reap path repairs that owner's lock. A slow or frozen live owner is not stolen.
 No section is held across asynchronous preparation or transport by this domain.
 
-## Evidence and remaining work
+## Controls and limits
 
-Focused tests exercise the real MemoryBackend family, client/service/direct
-paths, retained descriptions, exact receipts, paused persistent reads, and
-exported WASI/runtime_proc Wasm functions. Worker lifecycle tests pause actual
-admission and observe the native worker close event before a proven-dead reap.
+The mandatory unified oracle in `tests/filesystem-publication.test.ts` interleaves
+actual host calls, exported WASI `fd_pwrite` and `fd_write`, and resident direct
+writers from separate connections. It checks the complete group and receipt
+synchronously before any observer transport await, then checks current reads.
+There is no publication-specific nudge to drop. Completion and segment delivery
+remain enabled, and explicit observer reads do not depend on notifications.
 
-The supplemental same-root browser fixture covers a subset in Chromium,
-Firefox and WebKit. It is not the complete required browser matrix. Complete
-local path/lifecycle acceptance, the unified oracle, source-quality and all
-required full gates still block a review-ready PR. This checkpoint does not
-approve S1/S2, cross-tab topology, SAFE, persisted publication metadata, packed
-storage, public transactions, indexing/search, performance or consumer pins.
+The local tests and `tests/publication-browser.ts` cover namespace operations,
+retained descriptions, permissions, bounded prefixes, exact and retired receipts,
+immutable pins, history gaps, cold-load cancellation and domain stop. They also
+cover lost replies after commit and rejection of stopped late replies. Actual
+worker admission tests refuse live-holder stealing and observe native worker
+closure before proven-dead reap. The browser runner is part of the registered
+Chromium, Firefox and sequential WebKit matrix.
+
+These controls use one existing root and separate workers, not independent tabs.
+They do not approve S1/S2, cross-tab topology, SAFE, persisted publication metadata,
+packed storage, public transactions, indexing/search, aggregate memory bounds,
+above-RAM range reads, performance or consumer pins. Real Safari, iOS, owner freeze
+and physical power-cut behavior remain unverified by this unit.

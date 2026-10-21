@@ -8,7 +8,7 @@ Pin an exact Git commit in your `package.json`, then run `bun install`:
 
 ```json
 {
-  "dependencies": { "waffle": "github:ShaulLavo/waffle#4087eae447fc536b6c0a78e5f14b8049be11c467" },
+  "dependencies": { "waffle": "github:ShaulLavo/waffle#fc58a532f0d7a617e631ea4b7580a190915d4ed6" },
   "trustedDependencies": ["waffle"]
 }
 ```
@@ -23,7 +23,9 @@ const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: 
 try {
   await runtime.filesystem.writeFile("/hello.txt", "hello from Waffle");
   console.log(new TextDecoder().decode(await runtime.filesystem.readFile("/hello.txt")));
-} finally { await runtime.dispose(); }
+} finally {
+  await runtime.dispose();
+}
 ```
 
 [Site](https://waffle.shaulavo.dev/) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Host ABI](docs/host-abi.md) · [Startup](docs/runtime-startup.md) · [Storage](docs/storage.md) · [Development](docs/development.md)

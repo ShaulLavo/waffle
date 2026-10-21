@@ -158,9 +158,9 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 ## 10. Bounded permissions prerequisite for shell consumers
 
 - **DERIVED [R1]**: bash-web already shares one test evaluator for `test` and `[[ ]]`. Its guest decodes standard Preview1 filestat without mode bits or effective access. Waffle pin `33ece68f9f484d99b8a57a675de71d847e248051` supplies kind, inode, size and mtime only. The program-registry executable-admission query is not pathname read/write permission. Successful open is not permission metadata.
-- **DERIVED [R1, O]**: A separate bounded Waffle unit must define authoritative mode bits, or a supported-mask plus values, and effective-caller read/write/search-or-execute results. Distinguish denied, missing and unsupported. Carry the contract through the worker filesystem and a guest-visible query without changing standard Preview1 filestat layout. Numeric users and a general Unix permission or symlink implementation are not prerequisites. Explicitly report unsupported symlink semantics where unavailable.
-- **DERIVED [R1]**: First controls cover existing and missing files and directories, actual denial, unsupported fields, supported-mask meaning and effective-caller semantics. Consumers populate their existing metadata fields only after the runtime contract lands and exact pins change together. No open-based inference, fake chmod, hardcoded permission answers, frozen exclusions or new skips.
-- **DERIVED [R1]**: Preserve `oils:builtin-bracket:280`, `bashkit-suite:test-operators:32` and `bashkit-suite:test-operators:40` as the blocked cases. They need sticky-bit, effective read and effective write metadata respectively. No fresh replay or score improvement is claimed. bash-web's compatibility and diagnostic-snapshot/PR23 ownership remains outside this runtime batch.
+- **DERIVED [R1, O]**: P1 is accepted at Waffle `a7dddbf3255c1a344a4fb1d09a1c8779cb244629`, with exact-main CI `39518007989` successful. [The permissions contract](../docs/permissions.md) provides supported masks, authoritative mode bits and effective read/write/search-or-execute results through the worker and guest query. It distinguishes denied, missing and unsupported without changing Preview1 filestat. Numeric users, general Unix permissions and symlink semantics remain unsupported.
+- **DERIVED [R1, O]**: Shell R1 delivery is accepted at bash-web `50ab6a7`, consuming exact Waffle `fc58a532f0d7a617e631ea4b7580a190915d4ed6`. Shell main runs `39533414963` and `39533414851` passed all six jobs. No open-based inference, fake chmod, hardcoded permission answers, frozen exclusions or new skips were authorized. This current permissions delivery does not complete later certified-storage delivery.
+- **DERIVED [R1]**: Preserve `oils:builtin-bracket:280`, `bashkit-suite:test-operators:32` and `bashkit-suite:test-operators:40` as the historically blocked cases. They identified sticky-bit, effective read and effective write metadata respectively. Their original evidence remains unchanged; accepted permissions delivery is not a new compatibility score or a claim that unsupported sticky bits now work. bash-web's compatibility and diagnostic-snapshot/PR23 ownership remains outside this runtime batch.
 
 ## 11. Retention and cleanup ownership
 
@@ -171,20 +171,20 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 - **DERIVED [R1, O]**: Preserve the R1 permissions report and immutable source anchors until the bounded prerequisite and separately owned bash-web integration resolve the blocker, or the owner abandons it. The shell lane already removed its only task-created worktree. Preserve unrelated diagnostics and report material.
 - **DERIVED [O; AGENTS.md]**: Verify current clean Git status and worktree registration before source removal. Use `git worktree remove`, never prune shared build trees or caches. The completion sizes above are receipt-time values, not a claim that later allocation sizes cannot change. Every new run owns fresh all-path teardown and verifies it on its actual host.
 
-### Local publication author checkpoint, 2026-10-21
+### Internal local publication unit, 2026-10-21
 
-Status: Approved implementation, incomplete. The exclusive
-`storage/publication-local` branch contains opt-in production local publication,
-actual MemFS namespace plans, real guest controls and a supplemental browser
-runner. It is not review-ready or S1/S2 acceptance. See
-[the internal checkpoint contract](../docs/storage-publication.md).
+Status: Approved implementation for independent review and integration. The
+`storage/publication-local` branch adds opt-in publication to the existing root,
+not a new public storage mode. See [the internal contract](../docs/storage-publication.md).
 
-The original compile-valid missing-publication oracle remains red with errno52.
-The supplemental browser checkpoint `6041ef9` passed six controls per engine,
-not the full browser matrix. Admission lifecycle control `d74ef19` reproduced
-premature quiescence and a stranded arena after observing actual worker exit.
-The correction at `19284c0` passed both lifecycle controls; its broader focused
-run exposed a test expecting rejection where resolve returns errno2 as a value.
-Exact immutable results and original failures are retained under
-`/work/reports/waffle-finish-20261021/storage-publication-local/author/`.
-Full local acceptance and required gates remain blocking. No consumer changes.
+The compiling baseline oracle failed with errno52 at `dcf989f`. The enabled
+unified host/WASI/direct oracle passes in the unfiltered 34-test local file at
+`2ef6d82`. The production browser runner at `2c46058` passes 15 grouped controls
+in Chromium, Firefox and WebKit. It uses separate workers, not independent tabs.
+Admission tests observe native worker closure before proven-dead reap.
+
+Original failed and invalid candidates remain under
+`/work/reports/waffle-finish-20261021/storage-publication-local/author/` and
+`/work/reports/waffle-finish-20261021/storage-publication-complete-r1/author/`.
+Required full gates, independent review, merge and postmerge verification remain
+separate obligations. No consumer changes or S1/S2 acceptance follow from this unit.

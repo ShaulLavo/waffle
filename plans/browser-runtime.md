@@ -21,7 +21,7 @@ stable duplicate-bundle ownership guard last.
 
 ### Codec-construction failure ownership
 
-Status: **Implemented, awaiting review**. Reproduced on 2026-10-21 against main
+Status: **Merged in [PR41](https://github.com/ShaulLavo/waffle/pull/41)**. Reproduced on 2026-10-21 against main
 `15ba700268b6199e22ef61aa0d9464798c0d9562`, with test-only commits `56ae6de` and
 `f55598c`. Missing filesystem metadata produced confirmation `0`, job pending `1`,
 an open writer lifetime, no reader hangup and no launch. The original diagnostic
@@ -50,7 +50,7 @@ Original observations and gate evidence are retained under
 
 ### Rejected duplicates during queued admission
 
-Status: **Implemented, awaiting review**. The same baseline reproduced synchronous
+Status: **Merged in [PR41](https://github.com/ShaulLavo/waffle/pull/41)**. The same baseline reproduced synchronous
 external rejection between `runtimeMessage(spawn, parentPid)` and its first await.
 The duplicate selected SIGKILL, closed the accepted writer, cleared job pending
 membership and prevented launch. Test-only commit `f55598c` preserves the red control.
@@ -88,6 +88,10 @@ path. The permanent `admission review r2` controls cover incoming and external
 foreign rejection before local admission. Original thirteen-case reviewer controls
 and failing-first evidence remain under
 `/work/reports/waffle-finish-20261021/admission/repair-r2/`.
+
+PR41 merged as `7be9014cac046daf9c6ab06e367a8c4e03e0521f`. Exact-main CI run
+`39519747254` passed all five jobs. These admission repairs do not accept the
+remaining storage requirements.
 
 ## Storage and networking
 
