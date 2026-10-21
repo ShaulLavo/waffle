@@ -36,6 +36,7 @@ import {
   wakeWorkerProcess,
   workerProcessDirectoryId,
   workerProcessState,
+  type WorkerDescriptorCodec,
   type WorkerProcessMessage,
   type WorkerProcessTransport,
 } from "../proc/worker-client.js";
@@ -140,6 +141,10 @@ export class BrowserProcessBroker {
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
   private readonly startupDiagnostics = new Set<Promise<void>>();
+  private readonly rejectedTransfers = new Map<string, Promise<void>>();
+  private cleanupCodec?: WorkerDescriptorCodec;
+  private readonly acquiredProcesses = new Map<number, string>();
+  private readonly stopTrackingConsumers: () => void;
   private readonly accesses = new WorkerExecutableAccess({
     active: (sender) => !this.suspended && !isRevoked(this.filesystem(sender)),
     check: async (_sender, path, cwd, active) => {
@@ -153,16 +158,18 @@ export class BrowserProcessBroker {
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(),
       codec: (transport) => this.descriptorCodec(transport),
+      discard: (token) => this.discardCodec().discard(token),
       onPipe: (handle) =>
         this.pipes.attach(handle as import("../proc/pipes.js").PipeEndpointHandle),
       pumpPipes: () => this.pipes.pump(),
       onError: (error) => this.report(error),
       onAdmission: options.onProcessAdmission,
-      quiesce: (pid, transport) =>
-        options.filesystem
-          .quiesce(this.filesystem(transport))
-          .then(() => this.collectRuntimeProcess(pid, workerProcessDirectoryId(transport))),
+      onAdmitted: (transport) => this.acquireProcess(transport),
+      quiesce: (_pid, transport) => this.quiesceUnstarted(transport),
     });
+    this.stopTrackingConsumers = options.table.onRemove((record) =>
+      this.releaseAcquiredProcess(record.pid),
+    );
   }
   ready(): Promise<ProcessSupervisor> {
     return (this.activation ??= (this.options.activate?.() ?? import("../proc/index.js")).then(
@@ -187,6 +194,7 @@ export class BrowserProcessBroker {
             });
             const settled = () => {
               this.pendingLaunches?.delete(context.pid);
+              this.releaseAcquiredProcess(context.pid);
               acquireLaunch();
               settleLaunch();
             };
@@ -287,6 +295,7 @@ export class BrowserProcessBroker {
         });
         supervisor.onProcessQuiescent((event) => {
           this.fences.delete(event.pid);
+          this.releaseAcquiredProcess(event.pid);
         });
         supervisor.onJobReap(() => this.retireRoots());
         for (const root of this.reservedRoots.values())
@@ -306,6 +315,7 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     if (this.controllers.has(pid)) throw new Error(`Process ${pid} already has a controller`);
     this.controllers.set(pid, controller);
+    this.acquireController(pid);
     if (this.supervisor?.get(pid))
       this.supervisor.registerRevocation(pid, () => this.revokeController(pid));
   }
@@ -403,6 +413,7 @@ export class BrowserProcessBroker {
       this.outputs.delete(pid);
       this.registries.delete(pid);
       this.fences.delete(pid);
+      this.releaseAcquiredProcess(pid);
       try {
         controller?.retired?.();
       } catch (error) {
@@ -468,7 +479,31 @@ export class BrowserProcessBroker {
   private filesystem(transport: WorkerProcessTransport): FilesystemIdentity {
     const identity = (transport.data as { filesystem?: FilesystemIdentity } | undefined)
       ?.filesystem;
-    if (!identity) throw new TypeError("runtime process has no filesystem identity");
+    if (
+      !identity ||
+      typeof identity !== "object" ||
+      !Number.isSafeInteger(identity.owner) ||
+      identity.owner <= 0 ||
+      ![
+        identity.epoch,
+        identity.signal,
+        identity.shared,
+        identity.capabilities,
+        identity.sections,
+        identity.ownerStates,
+      ].every((buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4) ||
+      identity.ownerStates.byteLength < (identity.owner + 1) * 4 ||
+      !Array.isArray(identity.revocations) ||
+      !identity.revocations.length ||
+      !identity.revocations.every(
+        (buffer) => buffer instanceof SharedArrayBuffer && buffer.byteLength >= 4,
+      ) ||
+      !Array.isArray(identity.segments) ||
+      !identity.segments.every((buffer) => buffer instanceof SharedArrayBuffer) ||
+      !Array.isArray(identity.reservations) ||
+      !Number.isFinite(identity.maxBytes)
+    )
+      throw new TypeError("runtime process has no valid filesystem identity");
     return identity;
   }
   private descriptorCodec(transport: WorkerProcessTransport) {
@@ -480,6 +515,74 @@ export class BrowserProcessBroker {
         output: (fd, bytes) => this.outputFor(workerProcessState(transport).pid)?.(fd, bytes),
       }),
     );
+  }
+  private discardCodec() {
+    return (this.cleanupCodec ??= this.pipes.codec(
+      createRuntimeTerminalCodec({
+        fallback: createFilesystemDescriptorCodec(undefined, undefined, () =>
+          this.options.filesystem.sweep?.(),
+        ),
+      }),
+    ));
+  }
+  private processLifetime(transport: WorkerProcessTransport): string {
+    return `${workerProcessDirectoryId(transport)}:${transport.slot}:${transport.pid}`;
+  }
+  private runtimeProcessLifetime(pid: number): string | undefined {
+    // Only adopted directories can resolve a controller registered before publication.
+    for (const root of this.roots.values()) {
+      const state = Array.from(directoryProcesses(root.directory)).find(
+        (state) => state.pid === pid,
+      );
+      if (state) return `${workerProcessDirectoryId(root)}:${state.slot}:${pid}`;
+    }
+    return undefined;
+  }
+  private acquireProcess(transport: WorkerProcessTransport): void {
+    const lifetime = this.processLifetime(transport);
+    const acquired = this.acquiredProcesses.get(transport.pid);
+    if (acquired && acquired !== lifetime)
+      throw new Error("process consumer belongs to another lifetime");
+    this.acquiredProcesses.set(transport.pid, lifetime);
+  }
+  private acquireController(pid: number): void {
+    if (this.acquiredProcesses.has(pid) || !this.controllers.has(pid)) return;
+    const lifetime = this.runtimeProcessLifetime(pid);
+    if (lifetime) this.acquiredProcesses.set(pid, lifetime);
+  }
+  private releaseAcquiredProcess(pid: number): void {
+    if (
+      this.options.table.get(pid) ||
+      this.controllers.has(pid) ||
+      this.children.has(pid) ||
+      this.launches?.has(pid) ||
+      this.pendingLaunches?.has(pid) ||
+      this.fences.has(pid)
+    )
+      return;
+    this.acquiredProcesses.delete(pid);
+  }
+  private async quiesceUnstarted(transport: WorkerProcessTransport): Promise<void> {
+    // prepareSpawn may register before publication; resolve against our adopted roots.
+    this.acquireController(transport.pid);
+    const acquired = this.acquiredProcesses.get(transport.pid) === this.processLifetime(transport);
+    let filesystem: FilesystemIdentity | undefined;
+    try {
+      filesystem = this.filesystem(transport);
+    } catch (error) {
+      // Invalid metadata proves nothing about an acquired consumer, but foreign PID
+      // aliases never inherit a local lifetime's physical cleanup obligations.
+      if (acquired) throw error;
+    }
+    const pending: Promise<void>[] = [];
+    if (filesystem) {
+      this.options.filesystem.revoke(filesystem);
+      pending.push(this.options.filesystem.quiesce(filesystem));
+    }
+    // The payload's identity cannot replace a controller's distinct identity or adapter fence.
+    if (acquired) pending.push(Promise.resolve(this.quiesceProcess(transport.pid)));
+    await Promise.all(pending);
+    this.collectRuntimeProcess(transport.pid, workerProcessDirectoryId(transport));
   }
   private outputFor(pid: number): RuntimeRootOptions["output"] {
     const rootPid = this.options.table.get(pid)?.rootPid;
@@ -548,14 +651,8 @@ export class BrowserProcessBroker {
         }
       }
     }
-    if (
-      (!sender && !retainedNotice) ||
-      this.suspended ||
-      (sender &&
-        message.operation !== "reap-job" &&
-        message.operation !== "reap-process" &&
-        (result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)))))
-    ) {
+    const revoked = this.senderRevoked(message, senderPid, sender, result);
+    if ((!sender && !retainedNotice) || this.suspended || revoked) {
       this.rejectMessage(
         message,
         senderPid,
@@ -585,6 +682,22 @@ export class BrowserProcessBroker {
     await this.transport.handle(message, senderPid);
     this.retireRoots();
     if (message.operation !== "pipe") this.watch();
+  }
+  private senderRevoked(
+    message: WorkerProcessMessage,
+    senderPid: number,
+    sender: WorkerProcessTransport | undefined,
+    result: ReturnType<typeof readOutcome>,
+  ): boolean {
+    if (!sender || message.operation === "reap-job" || message.operation === "reap-process")
+      return false;
+    try {
+      return result?.kind === "signaled" || (!result && isRevoked(this.filesystem(sender)));
+    } catch (error) {
+      // Sender validation owns rejection cleanup for any incoming transferred resources.
+      this.rejectMessage(message, senderPid, "sender-revoked");
+      throw error;
+    }
   }
   rejectRuntimeMessage(
     message: WorkerProcessMessage,
@@ -658,36 +771,45 @@ export class BrowserProcessBroker {
         return;
       throw error;
     }
-    const existing = this.transport.getIdentity(state.pid);
-    if (existing && workerProcessDirectoryId(existing) === workerProcessDirectoryId(transport)) {
+    const directory = workerProcessDirectoryId(transport);
+    const key = `${directory}:${state.pid}`;
+    if (this.transport.getIdentity(state.pid, directory) || this.rejectedTransfers.has(key)) {
       this.traceSpawn(message, "dropped", "already-registered");
       return;
     }
     this.traceSpawn(message, "rejected", reason);
     requestSignal(state.signals, 9);
     this.revokeRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
-    const identity = this.filesystem(transport);
-    this.options.filesystem.revoke(identity);
-    const codec = this.descriptorCodec(transport);
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const pending = new Promise<void>((accept, fail) => {
+      resolve = accept;
+      reject = fail;
+    });
+    this.rejectedTransfers.set(key, pending);
+    void this.releaseRejectedTransfer(transport).then(resolve, reject);
+    void pending.then(
+      () => this.rejectedTransfers.delete(key),
+      (error) => this.report(error),
+    );
+  }
+  private async releaseRejectedTransfer(transport: WorkerProcessTransport): Promise<void> {
     let cleaned = true;
-    for (const token of transport.resources)
+    const codec = this.discardCodec();
+    for (const token of transport.resources) {
       try {
         codec.discard(token);
       } catch (error) {
         cleaned = false;
         this.report(error);
       }
+    }
     wakeWorkerProcess(transport);
-    void this.options.filesystem
-      .quiesce(identity)
-      .then(() => {
-        if (!cleaned) return;
-        this.collectRuntimeProcess(state.pid, workerProcessDirectoryId(transport));
-        controlStore(state.confirmed, 0, 1);
-        confirmWorkerProcessJob(transport);
-      })
-      .catch((error) => this.report(error));
+    await this.quiesceUnstarted(transport);
+    if (!cleaned) return;
+    controlStore(workerProcessState(transport).confirmed, 0, 1);
+    confirmWorkerProcessJob(transport);
   }
+
   transportFor(pid: number): WorkerProcessTransport | undefined {
     return this.transport.get(pid);
   }
@@ -985,6 +1107,7 @@ export class BrowserProcessBroker {
     this.quiescedControllers.delete(pid);
     this.revokedControllers?.delete(pid);
     this.fences.delete(pid);
+    this.releaseAcquiredProcess(pid);
     try {
       controller?.retired?.();
     } catch (error) {
@@ -1177,6 +1300,8 @@ export class BrowserProcessBroker {
     this.supervisor?.dispose();
   }
   async quiesce(): Promise<void> {
+    await this.transport.settled();
+    await Promise.all(this.rejectedTransfers.values());
     const pids = new Set(
       Array.from(this.options.table.values(), (record) => record.pid).concat(
         Array.from(this.controllers.keys()),
@@ -1258,6 +1383,8 @@ export class BrowserProcessBroker {
       this.launches?.clear();
       this.pendingLaunches?.clear();
       this.fences.clear();
+      this.acquiredProcesses.clear();
+      this.stopTrackingConsumers();
       if (errors.length) throw new AggregateError(errors, "Process broker cleanup failed");
     })().then(resolve, reject);
     return disposal;
