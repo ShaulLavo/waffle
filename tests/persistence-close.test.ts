@@ -65,6 +65,12 @@ type Fixture = {
   reopen(): Promise<PersistentBackend>;
 };
 
+function trackFixturePromise(pending: Promise<void>[], promise: Promise<void>): Promise<void> {
+  void promise.catch(() => {});
+  pending.push(promise);
+  return promise;
+}
+
 async function withBackend(
   run: (fixture: Fixture) => Promise<void>,
   intervalMs = 0,
@@ -84,11 +90,7 @@ async function withBackend(
         gates.push(gate);
         return gate;
       },
-      track(promise) {
-        void promise.catch(() => {});
-        pending.push(promise);
-        return promise;
-      },
+      track: (promise) => trackFixturePromise(pending, promise),
       async reopen() {
         const reopened = await PersistentBackend.open(store, { intervalMs: 0 });
         backends.push(reopened);

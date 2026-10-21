@@ -145,15 +145,23 @@ function fixture() {
     async close() {
       for (const release of releases) release();
       await Promise.allSettled(joins);
-      client?.dispose();
-      service.dispose();
+      const cleanup: (() => void)[] = [];
+      if (client) cleanup.push(client.dispose.bind(client));
+      cleanup.push(service.dispose.bind(service));
       for (const connection of connections) {
-        connection.client.port.close();
-        connection.server.port.close();
+        cleanup.push(connection.client.port.close.bind(connection.client.port));
+        cleanup.push(connection.server.port.close.bind(connection.server.port));
       }
       // Failed shutdown deliberately retains its owner. The fixture alone owns these
       // memory pins; releasing them here is teardown, never a successful service drain.
-      releaseFixturePins(backend);
+      cleanup.push(releaseFixturePins.bind(undefined, backend));
+      const outcomes: PromiseSettledResult<void>[] = [];
+      for (const release of cleanup) outcomes.push(await outcome(Promise.resolve().then(release)));
+      const failures = outcomes
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "filesystem fixture cleanup failed");
     },
     connect() {
       service.connect(root.server);
