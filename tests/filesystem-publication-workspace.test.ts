@@ -183,13 +183,13 @@ test("legitimate workspace reservation transfer never changes live ownership con
     reservation = parent.reserve(f.file, childIdentity);
     const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
     const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
-    Atomics.store = ((...args: Parameters<typeof Atomics.store>) => {
-      const result = originalStore(...args);
+    Atomics.store = new Proxy(originalStore, { apply(target, receiver, args) {
+      const result = Reflect.apply(target, receiver, args);
       if (isRevoked(connection)) changed.push("service revocation");
       if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount) changed.push("source capability header");
       if (Atomics.load(new Int32Array(childIdentity.capabilities), 0) !== targetCount) changed.push("target capability header");
       return result;
-    });
+    } });
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
     await child.asyncCall("workspaceBind", [childSession]);
     childBound = true;
