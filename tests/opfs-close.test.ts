@@ -239,7 +239,7 @@ const reasons: { label: string; reason: unknown }[] = [
       expect(storage.resources().opfsCachedHandles).toBe(1);
       expect(fixture.locks.held).toBe(true);
       expect(fixture.locks.releases).toBe(0);
-      expect((await outcome(fixture.track(storage.read("key:0"))))).status).toBe("rejected");
+      expect((await outcome(fixture.track(storage.read("key:0")))).status).toBe("rejected");
       rejected(await outcome(storage.close()), reason);
       expect(failed!.attempts).toBe(1);
     }));
