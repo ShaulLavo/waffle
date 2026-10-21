@@ -6,7 +6,11 @@ import {
 import { shareFileResource } from "../../core/open-file";
 import type { Resource } from "../../core/descriptors";
 import { createWorkerProcessTransport } from "../../proc/worker-client";
-import type { FilesystemConnection } from "../../fs/protocol";
+import {
+  createProcessFilesystemIdentity,
+  connectFilesystemIdentity,
+  type FilesystemConnection,
+} from "../../fs/protocol";
 import { integer, record, residentRequest, text } from "../../fs/publication-attachment";
 import { guestFunction, publicationProcModule, publicationWasiModule } from "./publication-wasm";
 
@@ -152,7 +156,16 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return null;
   }
   if (operation === "defensiveResult") return defensiveResult();
-  if (operation === "descendant") return current.fs.fork();
+  if (operation === "descendant") {
+    if (!resource) throw new Error("missing inherited file");
+    const identity = createProcessFilesystemIdentity(current.fs.connection);
+    current.fs.reserve(resource.handle, identity);
+    const connection = connectFilesystemIdentity(identity);
+    current.fs.connection.port.postMessage({ connect: connection.server }, [
+      connection.server.port,
+    ]);
+    return connection.client;
+  }
   if (operation === "prepare") {
     await current.fs.residentPublicationClient().prepare(residentRequest(body));
     return null;
