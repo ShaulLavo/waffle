@@ -489,8 +489,13 @@ export class FilesystemService {
       if (prepared?.failure) throw prepared.failure.error;
       this.assertBackendAccess();
       const continuation = this.prepareRequest(
-        session, id, buffer, operation, args,
-        bytes.subarray(inputLength, inputLength + dataLength), prepared,
+        session,
+        id,
+        buffer,
+        operation,
+        args,
+        bytes.subarray(inputLength, inputLength + dataLength),
+        prepared,
       );
       if (continuation) {
         prepared = continuation;
