@@ -208,6 +208,10 @@ function captureWorkerHost(host: RuntimeWorkerHost) {
   return { postToHost, addListener, removeListener };
 }
 
+function residentPreopens(filesystem: FilesystemConnection): Record<string, string> {
+  return filesystem.residentPublication ? {} : { "/": "/" };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -587,7 +591,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       args: req.args,
       env,
       fs,
-      preopens: req.filesystem.residentPublication ? {} : { "/": "/" },
+      preopens: residentPreopens(req.filesystem),
       reservedFds,
       stdio,
       stdout: (data) => {
