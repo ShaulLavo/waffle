@@ -145,7 +145,7 @@ function pauseAdmission(connection: FilesystemConnection, buffer: SharedArrayBuf
   const gate = new Int32Array(buffer);
   const original = Atomics.compareExchange;
   Atomics.compareExchange = function (array, index, expected, replacement) {
-    const previous = original(array, index, expected, replacement);
+    const previous = Reflect.apply(original, Atomics, [array, index, expected, replacement]);
     if (array.buffer !== control || index !== 1 || expected !== 0 || previous !== 0)
       return previous;
     Atomics.compareExchange = original;
