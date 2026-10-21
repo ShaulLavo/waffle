@@ -422,7 +422,8 @@ function observeBridgeStop() {
     set(this: MessagePort, handler: MessagePort["onmessage"]) {
       setter.call(this, (event: MessageEvent<unknown>) => {
         const data = event.data;
-        if (data && typeof data === "object" && "stopWorkspace" in data) started.resolve();
+        if (data && typeof data === "object" && "stopWorkspace" in data)
+          setTimeout(started.resolve, 0);
         handler?.call(this, event);
       });
     },
