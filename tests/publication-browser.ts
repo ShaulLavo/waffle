@@ -34,6 +34,7 @@ function message(worker: Worker, value: unknown, transfer: Transferable[] = []):
     worker.postMessage(value, transfer);
   });
 }
+/** @browserEntry Executed by the publication browser runner through its bundled URL. */
 export async function runPublicationBrowser(): Promise<string[]> {
   const passed: string[] = [];
   const ordinary = new SharedFilesystem({ mode: "memory", workerURL: "/fs-worker.js" });

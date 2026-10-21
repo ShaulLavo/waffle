@@ -83,13 +83,12 @@ async function oracleSuccess(
   requirePublicationGroups(page, 1);
   if (page.kind !== "changes") throw new Error("missing complete publication group");
   const group = page.publications[0]!;
-  expect(group.cut).toEqual({ history: previous.history, generation: previous.generation + 1 });
+  expect(group.receipt.cut).toEqual({ history: previous.history, generation: previous.generation + 1 });
   expect(group.changes.map((effect) => effect.kind)).toEqual(kinds);
-  expect(group.receipt.cut).toEqual(group.cut);
   expect(group.receipt.durability).toEqual({ kind: "untracked" });
   expect(await observer.receipt(group.receipt.id)).toEqual({ kind: "committed", receipt: group.receipt });
-  expect(await observer.cut()).toEqual(group.cut);
-  return group.cut;
+  expect(await observer.cut()).toEqual(group.receipt.cut);
+  return group.receipt.cut;
 }
 function oracleCurrent(clients: readonly FilesystemClient[], handle: number, expected: readonly number[]): void {
   for (const client of clients) {

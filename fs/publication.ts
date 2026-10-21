@@ -95,7 +95,7 @@ export interface PublicationReceipt {
   readonly result: MutationResult;
   readonly durability: { readonly kind: "untracked" };
 }
-export interface Publication {
+interface Publication {
   readonly receipt: PublicationReceipt;
   readonly changes: readonly PublicationEffect[];
 }
@@ -1126,23 +1126,6 @@ export function mutationIntent(
     default:
       return undefined;
   }
-}
-export function mutationResult(value: unknown): MutationResult {
-  if (value === undefined) return { kind: "void" };
-  if (typeof value === "number") return { kind: "number", value };
-  if (typeof value === "boolean") return { kind: "boolean", value };
-  if (value && typeof value === "object" && "error" in value && typeof value.error === "number")
-    return { kind: "error", errno: value.error };
-  if (
-    value &&
-    typeof value === "object" &&
-    "written" in value &&
-    typeof value.written === "number" &&
-    "offset" in value &&
-    typeof value.offset === "number"
-  )
-    return { kind: "append", written: value.written, offset: value.offset };
-  throw new FilesystemError(29, "invalid publication mutation result");
 }
 export function forkPublication(
   connection: PublicationConnection,
