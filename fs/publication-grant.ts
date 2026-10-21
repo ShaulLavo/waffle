@@ -192,7 +192,8 @@ export class ResidentGrantCell {
       case CellState.Stopped: return { kind: "stopped", grant };
       case CellState.Committed:
         if (this.grant.kind === "read") return { kind: "read", grant, count: this.state[1]!, cut: this.grant.cut };
-        return { kind: "committed", grant, publication: decodeEffects(this.payload.slice(0, this.state[1]!)) };
+        try { return { kind: "committed", grant, publication: decodeEffects(this.payload.slice(0, this.state[1]!)) }; }
+        catch { Atomics.store(this.state, 0, CellState.Stopped); return { kind: "stopped", grant }; }
       default: throw new FilesystemError(29);
     }
   }
@@ -241,8 +242,11 @@ export class ResidentGrantAuthority {
   }
   private session(value: ResidentSession): AuthoritySession {
     const owner = this.sessions.get(value.token);
-    if (!owner || owner.value.session.serial !== value.session.serial || owner.value.descriptor.description !== value.descriptor.description)
+    if (!owner || owner.value.session.slot !== value.session.slot || owner.value.session.serial !== value.session.serial)
       throw new FilesystemError(11);
+    const expected = owner.value.descriptor, actual = value.descriptor;
+    if (expected.workspace !== actual.workspace || expected.instance !== actual.instance || expected.epoch !== actual.epoch ||
+        expected.description !== actual.description || expected.handle !== actual.handle) throw new FilesystemError(11);
     return owner;
   }
   prepare(session: ResidentSession, request: ResidentRequest): ResidentGrant {
@@ -289,7 +293,7 @@ export class ResidentGrantAuthority {
         ...base, kind, id, version: this.domain.nextContentVersion(base.file.ino),
       };
       const worst = mutation(grant, new Uint8Array(base.maxBytes), Number.MAX_SAFE_INTEGER);
-      encodeEffects(worst.receipt, worst.changes, base.effectBytes);
+      this.domain.reserveResidentCapacity(result.admission, worst.receipt.result, worst.changes);
       if (encoder.encode(JSON.stringify(worst.receipt.result)).length > base.resultBytes) throw new FilesystemError(6);
       this.domain.reserveResidentGrant(serial);
       this.outstanding = { kind: "issued", serial, grant, admission: result.admission };

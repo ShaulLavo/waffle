@@ -656,7 +656,10 @@ export class PublicationDomain {
     }
     return versions;
   }
-  prepare(
+  reserveResidentCapacity(admission: PublicationAdmission, result: MutationResult, changes: readonly PublicationEffect[]): void {
+    this.prepareData(admission, result, changes);
+  }
+  private prepareData(
     admission: PublicationAdmission,
     result: MutationResult,
     changes: readonly PublicationEffect[],
@@ -676,7 +679,7 @@ export class PublicationDomain {
       result,
       durability: { kind: "untracked" },
     };
-    const prepared = {
+    return {
       admission,
       receipt,
       result: json(result, this.limits.resultBytes),
@@ -684,6 +687,13 @@ export class PublicationDomain {
       changed: changes.length > 0,
       versions: this.prepareVersions(changes),
     };
+  }
+  prepare(
+    admission: PublicationAdmission,
+    result: MutationResult,
+    changes: readonly PublicationEffect[],
+  ): PreparedPublication {
+    const prepared = this.prepareData(admission, result, changes);
     const base = this.checkAdmission(admission);
     if (
       Atomics.compareExchange(

@@ -43,11 +43,11 @@ test("the production service issues a private retained resident descriptor", asy
 
 import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
 
-async function residentFixture() {
+async function residentFixture(configuration = limits) {
   const backend = new MemoryBackend();
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
-  const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  const connection = createFilesystemConnection(undefined, { limits: configuration, observe: true });
   service.connect(connection.server);
   const root = new FilesystemClient(connection.client);
   const directory: number = await root.asyncCall("preopen", ["/"]);
@@ -175,4 +175,29 @@ test("retained grant identity survives rename and unlink, while mode denial rema
     expect(f.root.tryRead(f.handle, [output], 0)).toBe(4);
     expect(Array.from(output)).toEqual([1, 2, 3, 6]);
   } finally { f.stop(); }
+});
+
+
+test("READY reserves effect capacity and exact session identity before any remote success", async () => {
+  const f = await residentFixture({ ...limits, effects: 1 });
+  try {
+    const before = await f.observer.cut();
+    expect(() => f.authority.prepare(f.session, { kind: "append", maxBytes: 1 })).toThrow();
+    expect(f.backend.shared.publication!.diagnostics().pending).toBe(0);
+    expect(await f.observer.cut()).toEqual(before);
+    const output = new Uint8Array(3);
+    expect(f.root.tryRead(f.handle, [output], 0)).toBe(3);
+    expect(Array.from(output)).toEqual([1, 2, 3]);
+  } finally { f.stop(); }
+  const live = await residentFixture();
+  try {
+    const changed = { ...live.session, descriptor: { ...live.session.descriptor, epoch: 2 } };
+    expect(() => live.authority.prepare(changed, { kind: "write", offset: 0, maxBytes: 1 })).toThrow();
+    const cell = new ResidentGrantCell(live.authority.prepare(live.session, { kind: "write", offset: 0, maxBytes: 1 }));
+    expect(cell.tryWrite(live.handle, [new Uint8Array([9])], 0)).toBe(1);
+    cell.payload.fill(0);
+    expect(cell.snapshot().kind).toBe("stopped");
+    expect(() => live.authority.settle(live.session, cell.snapshot())).toThrow();
+    expect(live.backend.shared.publication!.stopped).toBe(true);
+  } finally { live.stop(); }
 });
