@@ -114,8 +114,12 @@ function outcome<T>(done: Promise<T>): Promise<PromiseSettledResult<T>> {
 async function expectPending(done: Promise<unknown>): Promise<void> {
   let settled = false;
   void done.then(
-    () => { settled = true; },
-    () => { settled = true; },
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
   );
   await checkpoint();
   expect(settled).toBe(false);
@@ -164,7 +168,10 @@ test("shutdown waits for an independently connected child's distinct section", a
   owned.connections.push(child);
   const section = new FilesystemSection(child.client);
   let held = false;
-  owned.releases.push(() => { if (held) section.exit(); held = false; });
+  owned.releases.push(() => {
+    if (held) section.exit();
+    held = false;
+  });
   try {
     owned.connect();
     owned.service.connect(child.server);
@@ -199,10 +206,12 @@ for (const operation of ["prepare", "flush", "sync"] as const)
         return held.run();
       };
       owned.backend.onFlush = () => held.run();
-      const request = outcome(client.asyncCall(
-        operation === "prepare" ? "listFiles" : operation,
-        operation === "prepare" ? ["/"] : operation === "sync" ? [directory] : [],
-      ));
+      const request = outcome(
+        client.asyncCall(
+          operation === "prepare" ? "listFiles" : operation,
+          operation === "prepare" ? ["/"] : operation === "sync" ? [directory] : [],
+        ),
+      );
       owned.joins.push(request);
       await held.started;
       const stopping = owned.service.shutdown();
@@ -276,7 +285,10 @@ test("late request traffic cancels and wakes without new backend work", async ()
   const owned = fixture();
   const section = new FilesystemSection(owned.root.client);
   let held = false;
-  owned.releases.push(() => { if (held) section.exit(); held = false; });
+  owned.releases.push(() => {
+    if (held) section.exit();
+    held = false;
+  });
   try {
     owned.connect();
     section.enter();
@@ -284,7 +296,9 @@ test("late request traffic cancels and wakes without new backend work", async ()
     const stopping = owned.service.shutdown();
     owned.joins.push(stopping);
     let prepares = 0;
-    owned.backend.onPrepare = () => { prepares++; };
+    owned.backend.onPrepare = () => {
+      prepares++;
+    };
     const input = pack({ operation: "listFiles", args: ["/"] });
     const buffer = new SharedArrayBuffer(HEADER + 1024);
     const cells = new Int32Array(buffer, 0, HEADER / 4);
@@ -316,7 +330,10 @@ async function reserveFile(owned: ReturnType<typeof fixture>) {
   const client = owned.connect();
   await client.asyncCall("writeFile", ["/file"], new Uint8Array([1]));
   const directory: number = await client.asyncCall("preopen", ["/"]);
-  const path: { node: number; parent: number } = await client.asyncCall("resolve", [directory, "file"]);
+  const path: { node: number; parent: number } = await client.asyncCall("resolve", [
+    directory,
+    "file",
+  ]);
   client.retain(path.node);
   const identity = createProcessFilesystemIdentity(client.connection);
   const reservation = client.reserve(path.node, identity);
@@ -445,7 +462,7 @@ test("failed detached barriers still join safe siblings and aggregate in admissi
   const later = new Error("second");
   try {
     const client = owned.connect();
-    owned.backend.onFlush = (target) => target === "/first" ? first.run() : second.run();
+    owned.backend.onFlush = (target) => (target === "/first" ? first.run() : second.run());
     const a = outcome(client.asyncCall("flush", ["/first"]));
     const b = outcome(client.asyncCall("flush", ["/second"]));
     owned.joins.push(a, b);
@@ -544,7 +561,9 @@ test("worker failure ACK keeps a nonempty diagnostic for an empty original rejec
   const messages: unknown[] = [];
   const scope: Parameters<typeof installFilesystemWorker>[0] = {
     onmessage: null,
-    postMessage: (message) => { messages.push(message); },
+    postMessage: (message) => {
+      messages.push(message);
+    },
   };
   const pair = createFilesystemConnection();
   try {
@@ -554,8 +573,11 @@ test("worker failure ACK keeps a nonempty diagnostic for an empty original rejec
     await checkpoint();
     scope.onmessage?.(new MessageEvent("message", { data: { dispose: true } }));
     await checkpoint();
-    const terminal = messages.find((message) =>
-      typeof message === "object" && message !== null && Reflect.get(message, "type") === "filesystem-disposed",
+    const terminal = messages.find(
+      (message) =>
+        typeof message === "object" &&
+        message !== null &&
+        Reflect.get(message, "type") === "filesystem-disposed",
     );
     if (typeof terminal !== "object" || terminal === null) throw new Error("missing shutdown ACK");
     expect(Reflect.get(terminal, "error")).toBeTruthy();

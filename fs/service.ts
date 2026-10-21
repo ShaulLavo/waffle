@@ -252,7 +252,12 @@ export class FilesystemService {
       () => this.runningRequests.delete(request),
       () => this.runningRequests.delete(request),
     );
-    this.queue = barrier ? previous.then(() => {}) : request.then(() => {}, () => {});
+    this.queue = barrier
+      ? previous.then(() => {})
+      : request.then(
+          () => {},
+          () => {},
+        );
   }
   private trackWork<T>(session: Session, done: Promise<T>): Promise<T> {
     this.work.set(done, session);
@@ -264,12 +269,18 @@ export class FilesystemService {
   }
   private enqueueMaintenance(session: Session, run: () => void): void {
     const done = this.trackWork(session, this.queue.then(run));
-    this.queue = done.then(() => {}, () => {});
+    this.queue = done.then(
+      () => {},
+      () => {},
+    );
   }
   private refuseConnection(connection: FilesystemConnection): void {
-    if (connection.reservations.some((reservation) =>
-      Atomics.load(new Int32Array(reservation.state), 1) === 0,
-    )) this.refusedConnections.add(connection);
+    if (
+      connection.reservations.some(
+        (reservation) => Atomics.load(new Int32Array(reservation.state), 1) === 0,
+      )
+    )
+      this.refusedConnections.add(connection);
     revokeFilesystem(connection);
     connection.port.close();
   }
@@ -983,9 +994,14 @@ export class FilesystemService {
       resolve = yes;
       reject = no;
     });
-    const sessions = Array.from(new Set(
-      Array.from(this.sessions).concat(Array.from(this.preparingSessions), Array.from(this.work.values())),
-    ));
+    const sessions = Array.from(
+      new Set(
+        Array.from(this.sessions).concat(
+          Array.from(this.preparingSessions),
+          Array.from(this.work.values()),
+        ),
+      ),
+    );
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
@@ -994,17 +1010,27 @@ export class FilesystemService {
     return done;
   }
   private async shutdownFence(session: Session): Promise<void> {
+    const quiescing = session.quiescing ?? Promise.resolve();
     revokeFilesystemService(session.connection);
-    await waitForFilesystemQuiescence(session.connection);
-    await session.quiescing;
+    const results = await Promise.allSettled([
+      waitForFilesystemQuiescence(session.connection),
+      quiescing,
+    ]);
+    const failures: unknown[] = [];
+    this.collectFailures(results, failures);
+    this.throwShutdownFailures(failures);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];
     this.collectFailures(await Promise.allSettled(fences), failures);
     await this.drainShutdownWork(failures);
-    if (this.residentPublication || owner.sessions.some((session) =>
-      session.connection.publication || session.connection.residentPublication,
-    )) failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));
+    if (
+      this.residentPublication ||
+      owner.sessions.some(
+        (session) => session.connection.publication || session.connection.residentPublication,
+      )
+    )
+      failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));
     this.throwShutdownFailures(failures);
     for (const session of owner.sessions) {
       try {
@@ -1013,11 +1039,15 @@ export class FilesystemService {
         failures.push(error);
       }
     }
-    if (!failures.length && Array.from(this.refusedConnections).some((connection) =>
-      connection.reservations.some((reservation) =>
-        Atomics.load(new Int32Array(reservation.state), 1) === 0,
-      ),
-    )) failures.push(new FilesystemError(6, "filesystem has unresolved refused transfers"));
+    if (
+      !failures.length &&
+      Array.from(this.refusedConnections).some((connection) =>
+        connection.reservations.some(
+          (reservation) => Atomics.load(new Int32Array(reservation.state), 1) === 0,
+        ),
+      )
+    )
+      failures.push(new FilesystemError(6, "filesystem has unresolved refused transfers"));
     this.throwShutdownFailures(failures);
     await this.backend.close?.();
   }
@@ -1036,15 +1066,17 @@ export class FilesystemService {
   }
   private async releaseShutdownSession(session: Session): Promise<void> {
     for (;;) {
-      await waitForFilesystemQuiescence(session.connection);
-      await session.quiescing;
+      await this.shutdownFence(session);
       this.releaseSession(session);
       if (!session.quiescing) break;
     }
     if (this.sessions.has(session))
       throw new FilesystemError(6, "filesystem session retains unresolved transfers");
   }
-  private collectFailures(results: readonly PromiseSettledResult<unknown>[], failures: unknown[]): void {
+  private collectFailures(
+    results: readonly PromiseSettledResult<unknown>[],
+    failures: unknown[],
+  ): void {
     for (const result of results) if (result.status === "rejected") failures.push(result.reason);
   }
   private throwShutdownFailures(failures: readonly unknown[]): void {
