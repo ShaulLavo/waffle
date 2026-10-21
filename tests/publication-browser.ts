@@ -364,7 +364,7 @@ async function hostOperations(): Promise<void> {
   try {
     let before = await f.observer.cut();
     await f.fs.writeFile("/file", new Uint8Array([8, 9]));
-    await group(f, before, ["bytes", "resize", "metadata"]);
+    await group(f, before, ["resize", "bytes", "metadata"]);
     equal(Array.from((await f.fs.readFile("/file"))!), [8, 9]);
     before = await f.observer.cut();
     await f.fs.writeFile("/file", new Uint8Array([7]), true);
