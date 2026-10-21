@@ -16,8 +16,21 @@ interface Call {
   readonly byte: number;
 }
 function unusedService(): ProcessService {
-  const unused = (): never => { throw new Error("unexpected fixture process call"); };
-  return { spawn: unused, startStatus: unused, waitJob: unused, jobEmpty: unused, wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
+  const unused = (): never => {
+    throw new Error("unexpected fixture process call");
+  };
+  return {
+    spawn: unused,
+    startStatus: unused,
+    waitJob: unused,
+    jobEmpty: unused,
+    wait: unused,
+    childExited: unused,
+    kill: unused,
+    killJob: unused,
+    jobOf: unused,
+    defaultSignal: unused,
+  };
 }
 function setup({ connection, mode }: Setup) {
   const client = new FilesystemClient(connection);
@@ -25,11 +38,27 @@ function setup({ connection, mode }: Setup) {
   const path: { node: number } = client.call("resolve", [directory, "file"]);
   client.retain(path.node);
   const memory = new WebAssembly.Memory({ initial: 4 });
-  const resource: Extract<Resource, {kind: "file"}> = { kind: "file", handle: path.node, offset: 0, append: false };
+  const resource: Extract<Resource, { kind: "file" }> = {
+    kind: "file",
+    handle: path.node,
+    offset: 0,
+    append: false,
+  };
   shareFileResource(resource, connection);
   const rights = (1n << 1n) | (1n << 2n) | (1n << 6n);
   if (mode === "wasi") {
-    const wasi = new Wasi({ args: [], env: {}, fs: client, preopens: {}, namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() { throw new Error("fixture WASI slept"); } });
+    const wasi = new Wasi({
+      args: [],
+      env: {},
+      fs: client,
+      preopens: {},
+      namespaces: { env: { memory } },
+      stdout() {},
+      stderr() {},
+      sleep() {
+        throw new Error("fixture WASI slept");
+      },
+    });
     const module = publicationWasiModule();
     const instance = new WebAssembly.Instance(module, wasi.imports(module));
     wasi.start(instance);
@@ -39,13 +68,31 @@ function setup({ connection, mode }: Setup) {
   const descriptors = new DescriptorTable();
   const fd = descriptors.open(resource, rights, 0n);
   const abi = new ProcessABI({
-    memory, descriptors, fs: client, pid: 7, service: unusedService(),
-    signals: { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() },
-    wait() { throw new Error("nonblocking fixture slept"); },
+    memory,
+    descriptors,
+    fs: client,
+    pid: 7,
+    service: unusedService(),
+    signals: {
+      signalState: createSignalState(),
+      interrupt: new Int32Array(new SharedArrayBuffer(4)),
+      requestedSignal: new Int32Array(new SharedArrayBuffer(4)),
+      outcome: outcomeWord(),
+    },
+    wait() {
+      throw new Error("nonblocking fixture slept");
+    },
   });
-  const instance = new WebAssembly.Instance(publicationProcModule(), { env: { memory }, runtime_proc: abi.imports });
-  client.call = () => { throw new Error("nonblocking fixture used blocking RPC"); };
-  client.shared.onContention = () => { throw new Error("nonblocking fixture spun"); };
+  const instance = new WebAssembly.Instance(publicationProcModule(), {
+    env: { memory },
+    runtime_proc: abi.imports,
+  });
+  client.call = () => {
+    throw new Error("nonblocking fixture used blocking RPC");
+  };
+  client.shared.onContention = () => {
+    throw new Error("nonblocking fixture spun");
+  };
   return { client, memory, resource, fd, instance, descriptors, mode };
 }
 function call(guest: ReturnType<typeof setup>, request: Call) {
@@ -56,8 +103,10 @@ function call(guest: ReturnType<typeof setup>, request: Call) {
   view.setUint32(4, 1, true);
   view.setUint32(32, 0xdeadbeef, true);
   let result: number;
-  if (guest.mode === "proc") result = guestFunction(guest.instance, request.operation)(guest.fd, 256, 1);
-  else if (request.operation === "read") result = guestFunction(guest.instance, "fd_read")(guest.fd, 0, 1, 32);
+  if (guest.mode === "proc")
+    result = guestFunction(guest.instance, request.operation)(guest.fd, 256, 1);
+  else if (request.operation === "read")
+    result = guestFunction(guest.instance, "fd_read")(guest.fd, 0, 1, 32);
   else result = guestFunction(guest.instance, "fd_pwrite")(guest.fd, 0, 1, 0n, 32);
   return { result, offset: guest.resource.offset, byte: bytes[0], count: view.getUint32(32, true) };
 }
@@ -77,5 +126,7 @@ self.onmessage = ({ data }: MessageEvent<Setup | Call | "stop">) => {
     }
     if (!guest) throw new Error("publication fixture is not initialized");
     self.postMessage(call(guest, data));
-  } catch (error) { self.postMessage({ failure: String(error) }); }
+  } catch (error) {
+    self.postMessage({ failure: String(error) });
+  }
 };

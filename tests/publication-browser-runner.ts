@@ -3,9 +3,14 @@ import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycl
 
 const lifecycle = new BrowserRunnerLifecycle(180_000);
 async function run(name: string, origin: string): Promise<void> {
-  if (name !== "chromium" && name !== "firefox" && name !== "webkit") throw new Error(`Unknown browser: ${name}`);
+  if (name !== "chromium" && name !== "firefox" && name !== "webkit")
+    throw new Error(`Unknown browser: ${name}`);
   const previousTmp = process.env.TMPDIR;
-  if (name === "firefox" && process.platform === "linux") process.env.TMPDIR = await lifecycle.directory(process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm", "waffle-ff-");
+  if (name === "firefox" && process.platform === "linux")
+    process.env.TMPDIR = await lifecycle.directory(
+      process.env.WAFFLE_BROWSER_SHM_ROOT ?? "/dev/shm",
+      "waffle-ff-",
+    );
   const browser = await lifecycle.launch(name);
   try {
     const page = await browser.newPage();
@@ -33,4 +38,6 @@ try {
   });
   const names = process.argv.slice(2);
   for (const name of names.length ? names : ["chromium"]) await run(name, origin);
-} finally { await lifecycle.close(); }
+} finally {
+  await lifecycle.close();
+}

@@ -225,7 +225,8 @@ export class PersistentBackend extends MemoryBackend {
     if (pending) return pending;
     const key = this.detachedKeys.get(node.ino) ?? this.keys.get(node.ino);
     const revision = this.shared.revision(handle);
-    const shared = this.shared, publication = shared.publication;
+    const shared = this.shared,
+      publication = shared.publication;
     // The asynchronous preparation owns a pin independently of the requesting capability.
     // A namespace replacement, cancellation or trim may otherwise reclaim its slot mid-read.
     this.retain(handle);

@@ -270,7 +270,12 @@ export class SharedFilesystem {
     await waitForFilesystemQuiescence(connection);
     this.reap(connection);
   }
-  private async request(operation: string, args: unknown[] = [], bytes?: Uint8Array, publication?: PublicationAdmission): Promise<any> {
+  private async request(
+    operation: string,
+    args: unknown[] = [],
+    bytes?: Uint8Array,
+    publication?: PublicationAdmission,
+  ): Promise<any> {
     this.assertLive();
     try {
       return await this.client.asyncCall(operation, args, bytes, publication);
@@ -282,12 +287,20 @@ export class SharedFilesystem {
     }
   }
   private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
-    const admission = this.client.shared.publication ? this.client[localPublication](operation, args, bytes ?? new Uint8Array()) : undefined;
+    const admission = this.client.shared.publication
+      ? this.client[localPublication](operation, args, bytes ?? new Uint8Array())
+      : undefined;
     const owned = admission?.kind === "admitted" ? admission.input : bytes;
     const publication = admission?.kind === "admitted" ? admission.admission : undefined;
-    const result = this.writes.then(() => admission?.kind === "duplicate" ? mutationValue(admission.receipt.result) : this.request(operation, args, owned, publication)).finally(() => {
-      if (publication) this.client.cancelPublication(publication);
-    });
+    const result = this.writes
+      .then(() =>
+        admission?.kind === "duplicate"
+          ? mutationValue(admission.receipt.result)
+          : this.request(operation, args, owned, publication),
+      )
+      .finally(() => {
+        if (publication) this.client.cancelPublication(publication);
+      });
     // Keep ordering after an error, while returning the failure to the caller that owns it.
     this.writes = result.catch((error) => {
       this.failure ??= error;

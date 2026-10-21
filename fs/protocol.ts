@@ -106,7 +106,11 @@ export function createFilesystemIdentity(
   else if (!parent && publication) {
     const buffers = createPublicationBuffers(publication.limits);
     const session = new PublicationDomain(buffers).openSession();
-    domain = { buffers, session, ...(publication.observe ? { observer: crypto.randomUUID() } : {}) };
+    domain = {
+      buffers,
+      session,
+      ...(publication.observe ? { observer: crypto.randomUUID() } : {}),
+    };
   }
   return {
     ...(domain ? { publication: domain } : {}),
@@ -153,11 +157,18 @@ export function connectFilesystemIdentity(identity: FilesystemIdentity) {
     server: { ...identity, port: channel.port2 },
   };
 }
-export function createFilesystemConnection(parent?: FilesystemIdentity, publication?: PublicationConfiguration) {
+export function createFilesystemConnection(
+  parent?: FilesystemIdentity,
+  publication?: PublicationConfiguration,
+) {
   return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
 }
 export function isRevoked(connection: FilesystemIdentity): boolean {
-  if (connection.publication && Atomics.load(new Int32Array(connection.publication.buffers.control), 0)) return true;
+  if (
+    connection.publication &&
+    Atomics.load(new Int32Array(connection.publication.buffers.control), 0)
+  )
+    return true;
   if (Atomics.load(new Int32Array(connection.ownerStates), 0)) return true;
   return connection.revocations.some((buffer) => Atomics.load(new Int32Array(buffer), 0) !== 0);
 }

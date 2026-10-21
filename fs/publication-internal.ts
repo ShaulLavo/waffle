@@ -1,5 +1,11 @@
 import type { FilesystemClient } from "./client.js";
-import type { ChangePage, MutationId, PublicationCut, PublicationPin, ReceiptLookup } from "./publication.js";
+import type {
+  ChangePage,
+  MutationId,
+  PublicationCut,
+  PublicationPin,
+  ReceiptLookup,
+} from "./publication.js";
 
 /** Internal experiment switch. It is deliberately absent from package exports. */
 export const localPublication = Symbol("waffle.local-publication");
@@ -62,11 +68,20 @@ export function publicationObserver(client: FilesystemClient) {
   if (!grant) throw new Error("Publication observer was not granted");
   return {
     cut: (): Promise<PublicationCut> => client.asyncCall("publicationCut", [grant]),
-    changes: (after: PublicationCut, bytes: number): Promise<ChangePage> => client.asyncCall("publicationChanges", [grant, after, bytes]),
-    receipt: (id: MutationId): Promise<ReceiptLookup> => client.asyncCall("publicationReceipt", [grant, id]),
-    pin: (handle: number, offset: number, length: number): Promise<Omit<PublicationPin, "bytes"> & {readonly bytes: readonly number[]}> => client.asyncCall("publicationPin", [grant, handle, offset, length]),
-    releasePin: (id: number): Promise<void> => client.asyncCall("publicationReleasePin", [grant, id]),
-    diagnostics: (): Promise<PublicationDiagnostics> => client.asyncCall("publicationDiagnostics", [grant]),
+    changes: (after: PublicationCut, bytes: number): Promise<ChangePage> =>
+      client.asyncCall("publicationChanges", [grant, after, bytes]),
+    receipt: (id: MutationId): Promise<ReceiptLookup> =>
+      client.asyncCall("publicationReceipt", [grant, id]),
+    pin: (
+      handle: number,
+      offset: number,
+      length: number,
+    ): Promise<Omit<PublicationPin, "bytes"> & { readonly bytes: readonly number[] }> =>
+      client.asyncCall("publicationPin", [grant, handle, offset, length]),
+    releasePin: (id: number): Promise<void> =>
+      client.asyncCall("publicationReleasePin", [grant, id]),
+    diagnostics: (): Promise<PublicationDiagnostics> =>
+      client.asyncCall("publicationDiagnostics", [grant]),
     stop: (): Promise<void> => client.asyncCall("publicationStop", [grant]),
   };
 }
