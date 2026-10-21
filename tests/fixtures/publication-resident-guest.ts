@@ -115,7 +115,7 @@ async function start(request: {
     namespaces: () => ({ env: { memory } }),
     beforeBindings(context) {
       if (request.token) {
-        const description = createFilesystemDescriptorCodec(context.fs).import(request.token);
+        const description = createFilesystemDescriptorCodec(context.fs).import(request.token, 2);
         if (description.resource.kind !== "file") throw new Error("missing inherited file");
         resource = description.resource;
         fd = context.wasi.descriptors.add(description, { rightsBase: (1n << 1n) | (1n << 2n) | (1n << 6n) | (1n << 21n), rightsInheriting: 0n });
@@ -204,7 +204,7 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     const identity = createProcessFilesystemIdentity(current.fs.connection);
     const descriptor = current.wasi.descriptors.get(fd);
     if (!descriptor) throw new Error("missing real descriptor");
-    const token = createFilesystemDescriptorCodec(current.fs, identity).export(descriptor);
+    const token = createFilesystemDescriptorCodec(current.fs, identity).export(descriptor, 2);
     const connection = connectFilesystemIdentity(identity);
     current.fs.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
     return { connection: connection.client, token };
