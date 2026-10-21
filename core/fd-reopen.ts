@@ -1,5 +1,6 @@
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
 import type { FileSystem } from "./filesystem.js";
+import { normalize } from "./path.js";
 
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
@@ -60,10 +61,88 @@ function reopenShared(
 }
 
 /** These names are process-local WASI paths, never entries in the shared filesystem. */
-export function descriptorPath(path: string): number | undefined {
+function descriptorPath(path: string): number | undefined {
   if (path === "/dev/stdin") return 0;
   if (path === "/dev/stdout") return 1;
   if (path === "/dev/stderr") return 2;
   const match = /^\/(?:dev\/fd|proc\/self\/fd)\/(\d+)$/.exec(path);
   return match ? Number(match[1]) : undefined;
+}
+
+interface PathEntry {
+  prefix: string;
+  kind: "file" | "directory";
+  handle?: number;
+  source?: number;
+}
+const virtualDirectories = new Set(["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"]);
+
+function lookupEntry(
+  table: DescriptorTable,
+  fs: FileSystem,
+  parent: PathEntry,
+  name: string,
+): PathEntry | number {
+  const prefix = `${parent.prefix}/${name}`;
+  const source = descriptorPath(prefix);
+  if (source !== undefined) {
+    const resource = table.get(source)?.resource;
+    if (!resource) return 44;
+    return {
+      prefix,
+      source,
+      kind: resource.kind === "directory" ? "directory" : "file",
+      handle:
+        resource.kind === "directory" || resource.kind === "file" ? resource.handle : undefined,
+    };
+  }
+  const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name);
+  if (typeof path === "number") return path;
+  if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
+  if (virtualDirectories.has(prefix)) return { prefix, kind: "directory" };
+  return 44;
+}
+
+function searchEntry(fs: FileSystem, entry: PathEntry): number {
+  if (entry.kind !== "directory") return 54;
+  if (entry.handle === undefined) return 0;
+  const result = fs.resolve(entry.handle, ".");
+  return typeof result === "number" ? result : 0;
+}
+
+/** Undefined delegates ordinary paths unchanged, without per-component service calls. */
+export function resolveDescriptorPath(
+  table: DescriptorTable,
+  fs: FileSystem,
+  directory: Descriptor,
+  path: string,
+): { source: number } | number | undefined {
+  // Normalization only selects candidates. The walker below authorizes the ORIGINAL path:
+  // canceled components, root escape and terminal slashes/dots are never discarded there.
+  if (!path.includes("dev") && !path.includes("proc")) return undefined;
+  if (descriptorPath(normalize(path)) === undefined) return undefined;
+  if (directory.resource.kind !== "directory") return undefined;
+  const handle = directory.resource.handle;
+  if (directory.preopen !== "/" && fs.stat(handle).ino !== fs.stat(fs.preopen("/")).ino)
+    return undefined;
+  let current: PathEntry = { prefix: "", kind: "directory", handle };
+  const parents: PathEntry[] = [];
+  for (const part of path.split("/")) {
+    if (!part) continue;
+    const error = searchEntry(fs, current);
+    if (error) return error;
+    if (part === ".") continue;
+    if (part === "..") {
+      const parent = parents.pop();
+      if (!parent) return 63;
+      current = parent;
+      continue;
+    }
+    const next = lookupEntry(table, fs, current, part);
+    if (typeof next === "number") return next;
+    parents.push(current);
+    current = next;
+  }
+  if (path.endsWith("/") && current.kind !== "directory") return 54;
+  return current.source === undefined ? undefined : { source: current.source };
 }

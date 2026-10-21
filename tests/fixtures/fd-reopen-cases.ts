@@ -285,6 +285,57 @@ for (const parent of ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"]
   });
 }
 
+const traversalShapes = [
+  { shape: "noaccess/../%", error: 2 },
+  { shape: "../%", error: 63 },
+  { shape: "parent//../%", error: 0 },
+  { shape: "parent/./../%", error: 0 },
+  { shape: "%/", error: undefined },
+  { shape: "%/.", error: undefined },
+];
+const traversalCases = [
+  "dev/fd/N",
+  "proc/self/fd/N",
+  "dev/stdout",
+  "/dev/fd/N",
+  "/proc/self/fd/N",
+  "/dev/stdout",
+].flatMap((alias) =>
+  ["file", "directory"].flatMap((kind) =>
+    traversalShapes.map((entry) => ({ alias, kind, ...entry })),
+  ),
+);
+for (const { alias, kind, shape, error } of traversalCases) {
+  test(`${alias} ${kind} traversal ${shape} matches ordinary paths without failed truncation`, (f) => {
+    const file = seed(f);
+    const root = f.wasi.descriptors.get(f.root)!;
+    const source =
+      kind === "file"
+        ? file
+        : f.wasi.descriptors.open(
+            { kind: "directory", handle: f.fs.preopen("/target") },
+            root.rightsBase,
+            root.rightsInheriting,
+          );
+    f.wasi.descriptors.inherit(1, f.wasi.descriptors.get(source)!);
+    const name = alias.replace("N", String(source));
+    equal(f.tryPath(name), 0);
+    f.fs.preopen("/parent");
+    equal(f.fs.setMode(f.fs.preopen("/noaccess"), 0o600), 0);
+    const flags = kind === "file" ? 8 : 0;
+    const rights = kind === "file" ? WRITE : READ;
+    const expected = error ?? (kind === "file" ? 54 : 0);
+    equal(
+      f.tryPath(shape.replace("%", kind === "file" ? "file" : "target"), flags, rights),
+      expected,
+    );
+    if (expected) equal(f.read(f.reopen(file)), "abcdef");
+    f.fs.writeFile("/file", "abcdef");
+    equal(f.tryPath(shape.replace("%", name), flags, rights), expected);
+    if (expected) equal(f.read(f.reopen(file)), "abcdef");
+  });
+}
+
 for (const path of ["/dev/fd/N", "/proc/self/fd/N", "dev/fd/N", "proc/self/fd/N"]) {
   test(`path_open ${path} resolves the caller's descriptor, not shared MemFS`, (f) => {
     const source = seed(f);

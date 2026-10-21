@@ -1,5 +1,4 @@
-import { descriptorPath, reopenDescriptor } from "./fd-reopen.js";
-import { normalize } from "./path.js";
+import { resolveDescriptorPath, reopenDescriptor } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
@@ -280,28 +279,6 @@ export class Wasi {
       if (error instanceof FilesystemError) return error.errno;
       throw error;
     }
-  }
-
-  private descriptorPath(fd: number, path: string): number | undefined {
-    const dir = this.descriptors.get(fd);
-    if (dir?.resource.kind !== "directory") return undefined;
-    const fs = this.opts.fs;
-    if (dir.preopen !== "/" && fs.stat(dir.resource.handle).ino !== fs.stat(fs.preopen("/")).ino)
-      return undefined;
-    return descriptorPath(normalize(path));
-  }
-
-  private descriptorPathAccess(directory: number, path: string): number {
-    let prefix = ".";
-    const parents = ["."].concat(normalize(path).split("/").slice(1, -1));
-    for (const part of parents) {
-      prefix += `/${part}`;
-      const resolved = this.opts.fs.resolve(directory, `${prefix}/.`);
-      if (typeof resolved !== "number") continue;
-      // Missing ancestors belong to the virtual namespace; existing ones still enforce search.
-      return resolved === ENOENT ? SUCCESS : resolved;
-    }
-    return SUCCESS;
   }
 
   private openDescriptorPath(
@@ -899,12 +876,11 @@ export class Wasi {
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
         const name = this.str(ptr, len);
-        const source = this.descriptorPath(fd, name);
-        if (source !== undefined) {
-          const error = this.descriptorPathAccess(dir.resource.handle, name);
-          if (error) return error;
+        const alias = resolveDescriptorPath(this.descriptors, this.opts.fs, dir, name);
+        if (typeof alias === "number") return alias;
+        if (alias !== undefined) {
           return this.openDescriptorPath(
-            source,
+            alias.source,
             oflags,
             fdflags,
             rightsBase,
@@ -912,7 +888,7 @@ export class Wasi {
             fdOut,
           );
         }
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_OPEN);
+        const path = this.opts.fs.resolve(dir.resource.handle, name);
         if (typeof path === "number") return path;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;

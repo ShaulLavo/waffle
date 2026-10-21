@@ -86,7 +86,10 @@ WASI `path_open` recognizes `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/
 and `/dev/stderr`, plus normalized relative equivalents, only through the `/` preopen
 or a directory binding for the filesystem root. Other directory bindings use ordinary
 filesystem resolution. Root and any existing real ancestor directories still require
-search permission; absent ancestors belong to the virtual namespace. They resolve
+search permission; absent ancestors belong to the virtual namespace. Traversal checks
+components before processing `.` or `..`; escaping the capability root returns `EPERM`
+(63), just as ordinary filesystem resolution does. A trailing slash or `/.`
+requires a directory source (`ENOTDIR`, 54, otherwise), before any truncation. They resolve
 against the **calling process's current descriptor table**, including inherited/remapped
 stdio and fd 3 when the root preopen has moved. They use the same reopen operation,
 while also checking the path-open directory's rights and the requested inheriting rights.
