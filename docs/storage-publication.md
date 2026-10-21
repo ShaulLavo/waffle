@@ -110,7 +110,9 @@ A `workspace` resident descriptor also routes namespace and metadata calls throu
 that same authority. Independent pages receive no authority root buffers. Each
 page owns an asynchronous local bridge; actual guests use their existing
 synchronous completion transport to that bridge. File-only descriptors still
-have no namespace preopen. Attachment and joined-stop ordering are unchanged.
+have no namespace preopen. The actual worker keeps its dispose-before-joined-stop
+ordering. Local bridge cleanup has a separate private reply port, so revoking the
+guest identity and closing its ordinary sender cannot skip that cleanup.
 
 The authority creates each service identity from its actual root. Resolve,
 lookup, stat, permissions, readdir and blocking reads reach current service
@@ -132,6 +134,18 @@ Queued cancellation reaches the actual service completion. Stop joins service
 preparation and reservation transfer before releasing its continuity guard.
 Prepared leaf grants still provide immediate nonblocking I/O; EAGAIN owns no
 caller input and schedules no later syscall. No second writable tree is created.
+
+Both stop-first and dispose-first synchronously invalidate leaf admission. The
+client starts one cleanup exchange before closing its ordinary port and memoizes
+its result, including failure. The bridge stops admitting data and children before
+awaiting owned operations. It joins real authority replies and started descriptor
+adoption, then clears retained responses and closes its channel and server port.
+Cancelling an unaccepted reservation cannot cancel an accepted independent child.
+Only successful bridge cleanup proceeds to the separate resident session close
+and continuity release. Local transport timeout is not proof of authority
+completion. Failed cleanup retains the worker guard and cannot publish exit ACK.
+File-only sessions may prepare only their issued retained handle; workspace handle
+overrides still require the authority session's actual capability ownership.
 
 The extended cross-tab runner keeps the resident pilot controls and adds genuine
 WASI namespace operations, retained-file metadata, runtime_proc I/O, codec offset
