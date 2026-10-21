@@ -36,7 +36,7 @@ export interface Stream {
   revoke?(): void;
 }
 export type Resource =
-  | { kind: "file"; handle: FileHandle; offset: number; append: boolean }
+  | { kind: "file"; handle: FileHandle; offset: number; append: boolean; fdflags?: number }
   | { kind: "directory"; handle: FileHandle }
   | Stream;
 
@@ -83,6 +83,14 @@ export class DescriptorTable {
   get(fd: number): Descriptor | undefined {
     return mapGet(this.entries, fd);
   }
+  /** The caller's live root capability, including any guest rights reductions. */
+  rootPreopen(): Descriptor | undefined {
+    let root: Descriptor | undefined;
+    mapForEach(this.entries, (entry) => {
+      if (entry.preopen === "/" && entry.resource.kind === "directory") root = entry;
+    });
+    return root;
+  }
   /** Non-consuming runtime_proc classification; independent of rights and preview1 filetype. */
   kind(fd: number): number {
     const entry = mapGet(this.entries, fd);
@@ -107,6 +115,7 @@ export class DescriptorTable {
     if (mapSize(this.entries) > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     let fd = this.next;
     while (mapHas(this.entries, fd)) fd = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    this.next = fd;
     return this.addAt(fd, description, rights);
   }
   /** Add a descriptor at an exact number without replacing an existing entry. */
@@ -121,7 +130,7 @@ export class DescriptorTable {
     if (mapSize(this.entries) > MAX_DESCRIPTOR) throw new RangeError("descriptor table is full");
     description.retain();
     mapSet(this.entries, fd, { ...rights, description, resource: description.resource });
-    this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    if (fd === this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
     return fd;
   }
   open(
@@ -183,7 +192,7 @@ export class DescriptorTable {
       rightsBase: source.rightsBase,
       rightsInheriting: source.rightsInheriting,
     });
-    if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    if (fd === this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
   }
   /** Restore a complete descriptor binding, including preopen metadata, after a failed transaction. */
   restore(fd: number, source: Descriptor): void {
@@ -192,12 +201,13 @@ export class DescriptorTable {
     source.description.retain();
     this.close(fd);
     mapSet(this.entries, fd, { ...source, resource: source.description.resource });
-    if (fd >= this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
+    if (fd === this.next) this.next = fd === MAX_DESCRIPTOR ? 0 : fd + 1;
   }
   close(fd: number): boolean {
     const entry = mapGet(this.entries, fd);
     if (!entry) return false;
     mapDelete(this.entries, fd);
+    this.next = Math.min(this.next, fd);
     entry.description.drop();
     return true;
   }
@@ -208,6 +218,7 @@ export class DescriptorTable {
     this.close(to);
     mapSet(this.entries, to, entry);
     mapDelete(this.entries, from);
+    this.next = Math.min(this.next, from);
     return true;
   }
   dispose(): void {

@@ -1,3 +1,4 @@
+import { reopenDescriptor } from "../core/fd-reopen.js";
 import {
   arrayAppend,
   isSharedArrayBuffer,
@@ -171,6 +172,16 @@ export class ProcessABI {
       pipe: (ptr) => this.result(() => this.pipe(ptr!)),
       dup: (fd) => options.descriptors.dup(fd! >>> 0),
       fd_kind: (fd) => options.descriptors.kind(fd! >>> 0),
+      fd_reopen: (
+        fd: number,
+        oflags: number,
+        fdflags: number,
+        base: bigint | number,
+        out: number,
+      ) => {
+        const result = this.result(() => this.reopen(fd, oflags, fdflags, BigInt(base), out));
+        return result < 0 ? -result : 0;
+      },
       read: (fd, ptr, length) => this.result(() => this.io(false, fd!, ptr!, length!)),
       write: (fd, ptr, length) => this.result(() => this.io(true, fd!, ptr!, length!)),
       wait: (pid, ptr) => this.result(() => this.wait(pid!, ptr!)),
@@ -194,6 +205,20 @@ export class ProcessABI {
       signal: (signal, mode) => this.signal(signal!, mode!),
       default_signal: (signal) => this.result(() => this.defaultSignal(signal!)),
     };
+  }
+  private reopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
+    const view = this.view(out, 4);
+    const result = reopenDescriptor(
+      this.options.descriptors,
+      this.options.fs,
+      fd >>> 0,
+      oflags,
+      fdflags,
+      base,
+    );
+    if (result < 0) return result;
+    view.setUint32(0, result, true);
+    return 0;
   }
   private result(operation: () => number): number {
     try {
