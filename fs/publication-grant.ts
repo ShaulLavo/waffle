@@ -77,6 +77,10 @@ function bounded(value: number, maximum: number): number {
     throw new FilesystemError(28);
   return value;
 }
+function canonical(publication: ResidentPublication, bound: number): Uint8Array {
+  const decoded = decodeEffects(encodeEffects(publication.receipt, publication.changes, bound));
+  return encodeEffects(decoded.receipt, decoded.changes, bound);
+}
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
@@ -231,7 +235,7 @@ export class ResidentGrantAuthority {
     return this.boundary(0, () => {
       const value = { descriptor: { ...retained }, session: this.domain.openSession(), token: crypto.randomUUID() };
       this.sessions.set(value.token, { value, last: undefined });
-      return value;
+      return structuredClone(value);
     });
   }
   private session(value: ResidentSession): AuthoritySession {
@@ -244,7 +248,7 @@ export class ResidentGrantAuthority {
     const kind = request.kind, maxBytes = bounded(request.maxBytes, this.domain.limits.inputBytes);
     const offset = kind === "append" ? 0 : bounded(request.offset, Number.MAX_SAFE_INTEGER);
     const owner = this.session(session);
-    return this.boundary(0, () => this.issue(owner, { kind, maxBytes, offset }));
+    return this.boundary(0, () => structuredClone(this.issue(owner, { kind, maxBytes, offset })));
   }
   private issue(owner: AuthoritySession, request: { kind: ResidentRequest["kind"]; maxBytes: number; offset: number }): ResidentGrant {
     if (this.outstanding.kind !== "idle") throw new FilesystemError(6);
@@ -329,7 +333,7 @@ export class ResidentGrantAuthority {
     bounded(bytes.length, grant.maxBytes);
     const mtime = metadata?.kind === "metadata" ? bounded(metadata.mtime, Number.MAX_SAFE_INTEGER) : grant.stat.mtime;
     const expected = mutation(grant, bytes, mtime);
-    if (!sameBytes(encodeEffects(expected.receipt, expected.changes, grant.effectBytes), encodeEffects(publication.receipt, publication.changes, grant.effectBytes))) {
+    if (!sameBytes(canonical(expected, grant.effectBytes), canonical(publication, grant.effectBytes))) {
       this.domain.stop(); throw new FilesystemError(29);
     }
     this.domain.finishResidentInput(admission, bytes);
