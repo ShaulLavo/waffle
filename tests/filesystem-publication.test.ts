@@ -602,6 +602,7 @@ test("production namespace rename and unlink preserve distinct retained file ide
     const resolve = (name: string) => fixture.root.asyncCall("resolve", [directory, name]);
     const target = await fixture.root.asyncCall("create", [await resolve("target"), "file", true]);
     fixture.root.retain(target);
+    await fixture.root.asyncCall("grow", [target, 1]);
     expect(fixture.root.tryWrite(target, [new Uint8Array([4])], 0)).toBe(1);
     const sourceKey = fixture.root.shared.stat(fixture.handle)!.ino;
     const targetKey = fixture.root.shared.stat(target)!.ino;
@@ -636,6 +637,7 @@ test("production recursive removal publishes every edge and retained directory c
     const path = await fixture.root.asyncCall("resolve", [parent, "leaf"]);
     const file = await fixture.root.asyncCall("create", [path, "file", true]);
     fixture.root.retain(file);
+    await fixture.root.asyncCall("grow", [file, 1]);
     expect(fixture.root.tryWrite(file, [new Uint8Array([7])], 0)).toBe(1);
     const before = await fixture.cut();
     expect(await fixture.root.asyncCall("remove", ["/tree"])).toBe(true);
