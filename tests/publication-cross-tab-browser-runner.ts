@@ -65,7 +65,9 @@ async function workspaceChannels(page: Page): Promise<unknown> {
   return page.evaluate(() => {
     const counts: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
     if (!counts || typeof counts !== "object") throw new Error("channel observer missing");
-    return Object.fromEntries(Object.entries(counts).filter(([, value]) => typeof value !== "function"));
+    return Object.fromEntries(
+      Object.entries(counts).filter(([, value]) => typeof value !== "function"),
+    );
   });
 }
 async function channelBarrier(page: Page, action: string): Promise<void> {
@@ -285,10 +287,16 @@ async function startupCleanup(page: Page): Promise<void> {
   equal(cancelled.cleanupError, false);
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
   await control(page, "workspaceGuest", { key: "setup-failed", mode: "wasi", failSetup: true });
-  equal(record(await control(page, "workspaceGuestTerminal", { key: "setup-failed", event: "error" })).type, "error");
+  equal(
+    record(await control(page, "workspaceGuestTerminal", { key: "setup-failed", event: "error" }))
+      .type,
+    "error",
+  );
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 2);
   await control(page, "workspaceGuestDeath", { key: "setup-failed" });
-  console.log("PASS actual workspace startup cancellation and setup failure close their owned bridges");
+  console.log(
+    "PASS actual workspace startup cancellation and setup failure close their owned bridges",
+  );
 }
 async function pendingCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "pending", mode: "proc" });
@@ -306,13 +314,19 @@ async function pendingCleanup(page: Page): Promise<void> {
   equal(after.closed, Number(before.closed) + 1);
   equal(after.pending, 0);
   equal(after.closedPending, 0);
-  console.log("PASS actual workspace exit waits for the native pending authority reply before channel close and exit ACK");
+  console.log(
+    "PASS actual workspace exit waits for the native pending authority reply before channel close and exit ACK",
+  );
 }
 async function transferCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "parent", mode: "proc" });
   const before = record(await workspaceChannels(page));
   await channelBarrier(page, "workspaceAdopt");
-  await control(page, "workspaceDescendantQueue", { parent: "parent", key: "living-child", mode: "proc" });
+  await control(page, "workspaceDescendantQueue", {
+    parent: "parent",
+    key: "living-child",
+    mode: "proc",
+  });
   await heldChannel(page);
   await control(page, "workspaceGuestSignalStop", { key: "parent" });
   // A fresh channel query gives the page/worker event queues a real round trip, not a sleep.
@@ -324,11 +338,16 @@ async function transferCleanup(page: Page): Promise<void> {
   await joinedGuestStop(page, "parent");
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 1);
   await workspaceGuest(page, "living-child", "prepare", { kind: "read", offset: 0, maxBytes: 1 });
-  equal(record(await workspaceGuest(page, "living-child", "call", { kind: "read", bytes: [88] })).bytes, [10]);
+  equal(
+    record(await workspaceGuest(page, "living-child", "call", { kind: "read", bytes: [88] })).bytes,
+    [10],
+  );
   await control(page, "workspaceGuestStop", { key: "living-child" });
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 2);
   equal(record(await workspaceChannels(page)).closedPending, 0);
-  console.log("PASS actual workspace exit joins codec adoption while the accepted independent child survives and reads");
+  console.log(
+    "PASS actual workspace exit joins codec adoption while the accepted independent child survives and reads",
+  );
 }
 async function repeatedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "repeat", mode: "proc" });
@@ -341,7 +360,9 @@ async function repeatedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceDescendantCancel", { parent: "cancel-parent" });
   await control(page, "workspaceGuestStop", { key: "cancel-parent" });
   equal(record(await workspaceChannels(page)).closed, Number(before.closed) + 3);
-  console.log("PASS repeated stop/dispose stays revoked and closes once; unaccepted codec reservation cancellation joins separately");
+  console.log(
+    "PASS repeated stop/dispose stays revoked and closes once; unaccepted codec reservation cancellation joins separately",
+  );
 }
 async function failedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "lost", mode: "proc", cleanupFailure: true });
@@ -351,7 +372,11 @@ async function failedCleanup(page: Page): Promise<void> {
   await heldChannel(page);
   await control(page, "workspaceGuestSignalStop", { key: "lost" });
   await waitForCancellation(page, Number(before.cancelled));
-  equal(record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "cleanup-error" })).type, "cleanup-error");
+  equal(
+    record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "cleanup-error" }))
+      .type,
+    "cleanup-error",
+  );
   equal(record(await control(page, "workspaceGuestStatus", { key: "lost" })).exit, false);
   equal(record(await workspaceChannels(page)).closed, before.closed);
   await control(page, "workspaceStop");
@@ -360,7 +385,9 @@ async function failedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuestDeath", { key: "lost" });
   equal(await control(page, "exclusive"), true);
   await channelBarrier(page, "release");
-  console.log("PASS lost workspace reply emits cleanup-error without exit ACK/channel close; native worker death alone releases retained continuity");
+  console.log(
+    "PASS lost workspace reply emits cleanup-error without exit ACK/channel close; native worker death alone releases retained continuity",
+  );
 }
 async function workspaceCleanupControls(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext();

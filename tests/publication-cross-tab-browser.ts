@@ -263,13 +263,24 @@ async function cancelledStartupControl(): Promise<unknown> {
 async function cancelledWorkspaceStartup(): Promise<unknown> {
   const workspace = `workspace-startup-${crypto.randomUUID()}`;
   const guard = await acquirePublicationGuard(workspace, "exclusive", new AbortController().signal);
-  const connection = createResidentConnection({ kind: "workspace", workspace, instance: "cancelled", epoch: 1, description: "never-opened", handle: 1 });
+  const connection = createResidentConnection({
+    kind: "workspace",
+    workspace,
+    instance: "cancelled",
+    epoch: 1,
+    description: "never-opened",
+    handle: 1,
+  });
   const worker = new FixtureWorker("/resident-guest.js", true);
   try {
     await worker.request("start", { mode: "wasi", connection }, [connection.port]);
     revokeFilesystem(connection);
     const finished = await worker.until("finished");
-    return { finished, exit: worker.observed("exit"), cleanupError: worker.observed("cleanup-error") };
+    return {
+      finished,
+      exit: worker.observed("exit"),
+      cleanupError: worker.observed("cleanup-error"),
+    };
   } finally {
     await worker.terminate();
     await guard.release();
@@ -426,7 +437,11 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
       ),
       connection = createResidentConnection(descriptor);
     guests.set(text(body.key), { worker, connection });
-    await worker.request("start", { mode: text(body.mode), connection, failSetup: body.failSetup }, [connection.port]);
+    await worker.request(
+      "start",
+      { mode: text(body.mode), connection, failSetup: body.failSetup },
+      [connection.port],
+    );
     return worker.until(body.failSetup === true ? "finished" : "ready");
   }
   if (operation === "workspaceDescendantCancel") {
@@ -456,7 +471,11 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   const guest = guests.get(text(body.key));
   if (!guest) throw new Error("missing workspace guest");
   if (operation === "workspaceGuestStatus")
-    return { exit: guest.worker.observed("exit"), finished: guest.worker.observed("finished"), cleanupError: guest.worker.observed("cleanup-error") };
+    return {
+      exit: guest.worker.observed("exit"),
+      finished: guest.worker.observed("finished"),
+      cleanupError: guest.worker.observed("cleanup-error"),
+    };
   if (operation === "workspaceGuestTerminal") {
     const terminal = await guest.worker.until(text(body.event));
     await guest.worker.until("finished");

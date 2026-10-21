@@ -295,7 +295,13 @@ type GuestMessage =
   | {
       id: string;
       operation: "start";
-      body: { mode: string; connection: FilesystemConnection; handle?: number; token?: unknown; failSetup?: boolean };
+      body: {
+        mode: string;
+        connection: FilesystemConnection;
+        handle?: number;
+        token?: unknown;
+        failSetup?: boolean;
+      };
     }
   | {
       id: string;

@@ -66,8 +66,7 @@ export class ResidentAuthorityServer {
     };
   }
   private cancelSession(token: unknown): void {
-    for (const active of this.requests.values())
-      if (active.token === token) active.abort.abort();
+    for (const active of this.requests.values()) if (active.token === token) active.abort.abort();
   }
   private admit(message: Record<string, unknown>): void {
     let client: string, id: string;

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
-import { ResidentChannel, residentGrant, residentSession, encodeResidentOutcome } from "../fs/publication-attachment";
+import {
+  ResidentChannel,
+  residentGrant,
+  residentSession,
+  encodeResidentOutcome,
+} from "../fs/publication-attachment";
 import {
   FilesystemClient,
   FilesystemService,
@@ -570,14 +575,17 @@ test("claim constructors, copies and paired codec bypass late prototype hooks", 
   }
 });
 
-
 async function attemptOtherFileGrant(channel: ResidentChannel, token: string, handle: number) {
   let issued = false;
   let failure: unknown;
   try {
-    const grant = residentGrant(await channel.call("prepare", {
-      token, handle, request: { kind: "read", offset: 0, maxBytes: 1 },
-    }));
+    const grant = residentGrant(
+      await channel.call("prepare", {
+        token,
+        handle,
+        request: { kind: "read", offset: 0, maxBytes: 1 },
+      }),
+    );
     issued = true;
     const cell = new ResidentGrantCell(grant);
     cell.cancel();
@@ -594,7 +602,9 @@ test("file-only authority rejects another retained file handle without issuing a
   const directory: number = await f.root.asyncCall("preopen", ["/"]);
   const other: { node: number } = await f.root.asyncCall("resolve", [directory, "other"]);
   const descriptor = await f.root.asyncCall("publicationResident", [
-    f.connection.client.publication!.observer, f.handle, `file-bound-${crypto.randomUUID()}`,
+    f.connection.client.publication!.observer,
+    f.handle,
+    `file-bound-${crypto.randomUUID()}`,
   ]);
   const authority = f.service.residentPublication!;
   authority.activate();
