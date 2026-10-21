@@ -256,7 +256,13 @@ test("production publication content paths publish before direct and service suc
     console.info("publication phase: forbidden sibling control");
     await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
     console.info("publication phase: missing root grant");
+    const listener = root.connection.port.onmessage;
+    root.connection.port.onmessage = (event) => {
+      console.info("publication received root message", event.data);
+      listener?.call(root.connection.port, event);
+    };
     const missing = root.submit("publicationCut");
+    void missing.value().then(() => console.info("unexpected control success"), (error: unknown) => console.info("publication raw rejection", error));
     const probe = setTimeout(() => console.info("publication completion probe", {
       cells: Array.from(missing.cells), pending: Array.from(root.completions.keys()),
       global: Atomics.load(root.shared.cells, 1), resources: fixture.service.resources(),
