@@ -157,6 +157,7 @@ export function createFilesystemConnection(parent?: FilesystemIdentity, publicat
   return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
 }
 export function isRevoked(connection: FilesystemIdentity): boolean {
+  if (connection.publication && Atomics.load(new Int32Array(connection.publication.buffers.control), 0)) return true;
   if (Atomics.load(new Int32Array(connection.ownerStates), 0)) return true;
   return connection.revocations.some((buffer) => Atomics.load(new Int32Array(buffer), 0) !== 0);
 }

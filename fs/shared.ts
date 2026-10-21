@@ -1,3 +1,5 @@
+import { PublicationDomain, type PublicationAdmission, type PreparedPublication } from "./publication.js";
+import type { PublicationBuffers, PublicationConnection } from "./publication-internal.js";
 import type { FileHandle, FileStat } from "../core/index.js";
 import {
   PAGE,
@@ -101,6 +103,8 @@ export class SharedFilesystemState {
   private readonly firstBytes: Uint8Array;
   private readonly pageViews: (Uint8Array | undefined)[] = [];
   private serviceMutation = false;
+  private currentOwner: number | undefined;
+  readonly publication?: PublicationDomain;
   onContention?: () => void;
   constructor(
     readonly buffer: SharedArrayBuffer = SharedFilesystemState.createBuffer(),
@@ -108,7 +112,9 @@ export class SharedFilesystemState {
     readonly lockOwner = SERVICE_OWNER,
     segments: readonly SharedArrayBuffer[] = [],
     private readonly section?: FilesystemSection,
+    publication?: PublicationBuffers,
   ) {
+    if (publication) this.publication = new PublicationDomain(publication);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
       Atomics.store(this.cells, USED_PAGES, 0);
@@ -229,6 +235,7 @@ export class SharedFilesystemState {
   ): void {
     for (;;) {
       if (revoked?.()) throw new FilesystemError(11);
+      this.publication?.assertLive();
       this.onContention?.();
       if (Atomics.compareExchange(cells, index, 0, owner) === 0) return;
     }
@@ -291,9 +298,13 @@ export class SharedFilesystemState {
   ): T {
     this.globalLock(revoked, owner);
     if (epoch) Atomics.add(epoch, 0, 1);
+    const previous = this.currentOwner;
+    this.currentOwner = owner;
     try {
+      this.publication?.assertLive();
       return fn();
     } finally {
+      this.currentOwner = previous;
       if (epoch) Atomics.add(epoch, 0, 1);
       this.globalUnlock(owner);
     }
@@ -567,7 +578,10 @@ export class SharedFilesystemState {
       this.globalUnlock();
     }
   }
-  info(
+  info(handle: FileHandle, revoked?: () => boolean, owner = this.lockOwner): SharedFileInfo | undefined {
+    return this.current(false, revoked, owner, () => this.infoLocked(handle, revoked, owner));
+  }
+  private infoLocked(
     handle: FileHandle,
     revoked?: () => boolean,
     owner = this.lockOwner,
@@ -594,6 +608,9 @@ export class SharedFilesystemState {
     }
   }
   stat(handle: FileHandle, revoked?: () => boolean, owner = this.lockOwner): FileStat | undefined {
+    return this.current(false, revoked, owner, () => this.statLocked(handle, revoked, owner));
+  }
+  private statLocked(handle: FileHandle, revoked?: () => boolean, owner = this.lockOwner): FileStat | undefined {
     const slot = this.findSlot(handle);
     if (!slot) return undefined;
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
@@ -684,7 +701,27 @@ export class SharedFilesystemState {
   /** Client read of an open file from its cached slot: one file lock, one revocation check after
    * locking, then a coherent copy straight into the guest iovecs. Every size change holds the
    * same lock, so the copy is the file's content at one instant. */
-  directRead(
+  current<T>(nonblocking: boolean, revoked: (() => boolean) | undefined, owner: number, read: () => T): T {
+    if (!this.publication) return read();
+    if ((this.serviceMutation && owner === SERVICE_OWNER) || this.currentOwner === owner) { this.publication.assertLive(); return read(); }
+    this.section?.enter();
+    let held = false;
+    try {
+      held = Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) === 0;
+      if (!held && nonblocking) throw new FilesystemError(6);
+      if (!held) { this.contend(this.cells, GLOBAL_LOCK, revoked, owner); held = true; }
+      if (revoked?.()) throw new FilesystemError(11);
+      this.publication.assertLive();
+      return read();
+    } finally {
+      if (held) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
+      this.section?.exit();
+    }
+  }
+  directRead(slot: number, handle: FileHandle, chunks: readonly Uint8Array[], offset: number, revoked: () => boolean, owner: number, nonblocking = false): number {
+    return this.current(nonblocking, revoked, owner, () => this.directReadLocked(slot, handle, chunks, offset, revoked, owner, nonblocking));
+  }
+  private directReadLocked(
     slot: number,
     handle: FileHandle,
     chunks: readonly Uint8Array[],
@@ -750,7 +787,7 @@ export class SharedFilesystemState {
       file = false;
     try {
       if (revoked()) throw new FilesystemError(11);
-      if (writing) {
+      if (writing || this.publication) {
         global = Atomics.compareExchange(this.cells, GLOBAL_LOCK, 0, owner) === 0;
         if (!global) return false;
       }
@@ -799,6 +836,7 @@ export class SharedFilesystemState {
     revoked: () => boolean,
     owner: number,
     nonblocking = false,
+    admission?: PublicationAdmission,
   ): number {
     const cells = this.cells,
       slots = this.slots,
@@ -826,21 +864,26 @@ export class SharedFilesystemState {
         this.checkAccess(slot, 2);
         const size = slots[base + FILE_SIZE]!;
         const at = append ? size : offset;
-        if (!total) return at;
+        this.publication?.assertLive();
+        if (this.publication && !admission) throw new FilesystemError(28, "publication admission required");
+        if (!total) {
+          if (this.publication && admission) {
+            this.publication.verifyAdmission(admission, append ? { kind: "append", handle } : { kind: "write", handle, offset }, new Uint8Array());
+            this.publication.commit(this.publication.prepare(admission, append ? { kind: "append", written: 0, offset: at } : { kind: "number", value: 0 }, []));
+          }
+          return at;
+        }
         const end = at + total;
         if (!(slots[base + REVISION_STATE]! & RESIDENT) || end > slots[base + CAPACITY]! * PAGE)
           return -Math.max(1, end);
         // Resolve every backing page before the first byte is committed. A retry must never
         // hide a partial write when a segment is not yet available.
-        if (nonblocking)
+        if (nonblocking || this.publication)
           for (let page = Math.floor(at / PAGE); page < Math.ceil(end / PAGE); page++)
             this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
-        this.copyChunks(slot, chunks, at);
-        if (end > size) slots[base + FILE_SIZE] = end;
         const mtime = Date.now();
-        slots[base + MTIME_LOW] = mtime >>> 0;
-        slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
-        this.changed(slot);
+        const prepared = this.prepareDirectPublication(slot, chunks, append, at, end, size, mtime, admission);
+        this.commitDirectBytes(slot, prepared ? [prepared.bytes] : chunks, at, end, size, mtime, prepared?.publication);
         return end;
       } finally {
         Atomics.compareExchange(slots, lock, owner, 0);
@@ -850,6 +893,37 @@ export class SharedFilesystemState {
       Atomics.compareExchange(cells, GLOBAL_LOCK, owner, 0);
       this.section?.exit();
     }
+  }
+  private commitDirectBytes(slot: number, chunks: readonly Uint8Array[], at: number, end: number, size: number, mtime: number, publication?: PreparedPublication): void {
+    const base = slot * SLOT_WORDS;
+    try {
+      this.copyChunks(slot, chunks, at);
+      if (end > size) this.slots[base + FILE_SIZE] = end;
+      this.slots[base + MTIME_LOW] = mtime >>> 0;
+      this.slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
+      this.changed(slot);
+      if (publication) this.publication!.commit(publication);
+    } catch (error) {
+      // Once a byte may have changed, failure is unknown, never a no-effect retry.
+      this.publication?.stop();
+      throw error;
+    }
+  }
+  private prepareDirectPublication(slot: number, chunks: readonly Uint8Array[], append: boolean, at: number, end: number, oldSize: number, mtime: number, admission?: PublicationAdmission): { publication: PreparedPublication; bytes: Uint8Array } | undefined {
+    const domain = this.publication;
+    if (!domain) return;
+    if (!admission) throw new FilesystemError(28, "publication admission required");
+    if (end - at > domain.limits.inputBytes) throw new FilesystemError(6, "publication input bound exceeded");
+    const bytes = new Uint8Array(end - at);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    domain.verifyAdmission(admission, append ? { kind: "append", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1 } : { kind: "write", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1, offset: at }, bytes);
+    const file = { birthHistory: domain.buffers.history, ino: this.slots[slot * SLOT_WORDS + INO]! };
+    const publication = domain.prepare(admission, append ? { kind: "append", written: bytes.length, offset: end } : { kind: "number", value: bytes.length }, [
+      { kind: "bytes", file, offset: at, bytes, size: Math.max(oldSize, end), version: domain.cut().generation + 1 },
+      { kind: "metadata", file, mode: this.slots[slot * SLOT_WORDS + MODE]!, mtime },
+    ]);
+    return { publication, bytes };
   }
   directWrite(
     slot: number,
@@ -861,6 +935,7 @@ export class SharedFilesystemState {
     revoked: () => boolean,
     owner: number,
     nonblocking = false,
+    admission?: PublicationAdmission,
   ): number | undefined {
     return this.direct(
       slot,
@@ -873,6 +948,7 @@ export class SharedFilesystemState {
       revoked,
       owner,
       nonblocking,
+      admission,
     ) < 0
       ? undefined
       : total;
@@ -886,6 +962,7 @@ export class SharedFilesystemState {
     revoked: () => boolean,
     owner: number,
     nonblocking = false,
+    admission?: PublicationAdmission,
   ): { written: number; offset: number } | number {
     const end = this.direct(
       slot,
@@ -898,6 +975,7 @@ export class SharedFilesystemState {
       revoked,
       owner,
       nonblocking,
+      admission,
     );
     return end < 0 ? -end : { written: total, offset: end };
   }
@@ -1244,10 +1322,12 @@ export class SharedFilesystemState {
 export function sharedRevoked(connection: {
   revocations: SharedArrayBuffer[];
   ownerStates: SharedArrayBuffer;
+  publication?: PublicationConnection;
 }): () => boolean {
   const words = [new Int32Array(connection.ownerStates, 0, 1)].concat(
     connection.revocations.map((buffer) => new Int32Array(buffer)),
   );
+  if (connection.publication) words.push(new Int32Array(connection.publication.buffers.control, 0, 1));
   return () => {
     for (let i = 0; i < words.length; i++) if (Atomics.load(words[i]!, 0) !== 0) return true;
     return false;

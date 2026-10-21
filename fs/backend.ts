@@ -1,3 +1,4 @@
+import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
@@ -42,6 +43,7 @@ export class MemoryBackend implements FilesystemBackend {
     buffer: SharedArrayBuffer,
     maxBytes?: number,
     segments: readonly SharedArrayBuffer[] = [],
+    publication?: PublicationBuffers,
   ): void {
     if (this.sharedAttached) {
       // SAB wrappers change identity when cloned through a port. Probe a reserved header word
@@ -55,7 +57,7 @@ export class MemoryBackend implements FilesystemBackend {
       if (same) return;
       throw new Error("filesystem service cannot attach a second shared tree");
     }
-    this.shared = new SharedFilesystemState(buffer, maxBytes, undefined, segments);
+    this.shared = new SharedFilesystemState(buffer, maxBytes, undefined, segments, undefined, publication);
     this.sharedAttached = true;
   }
   protected sync(handle: FileHandle): void {

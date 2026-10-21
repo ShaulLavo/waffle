@@ -64,6 +64,7 @@ export type ChangePage =
   | { readonly kind: "gap"; readonly current: PublicationCut };
 export interface PublicationAdmission {
   readonly slot: number;
+  readonly ticket: number;
   readonly id: MutationId;
 }
 export type AdmissionResult =
@@ -89,13 +90,15 @@ const SESSION_WORDS = 4;
 const OP_WORDS = 9;
 const LOG_WORDS = 3;
 const PIN_WORDS = 3;
-const enum Control { Stopped, ArenaLock, Serial, GenerationLow, GenerationHigh, LogNext, LogCount, PinSerial }
+const enum Control { Stopped, ArenaLock, Serial, GenerationLow, GenerationHigh, LogNext, LogCount, PinSerial, OperationSerial }
 const enum Session { Serial, Next, Retired, Open }
 const enum Op { State, Session, Sequence, Arguments, Input, Result, GenerationLow, GenerationHigh, Reserved }
-const enum Status { Free, Pending, Committed }
+const enum Status { Free, Pending, Committing, Committed, Cancelling }
+const MAX_COUNTER = 0x7ffffffe;
+const STATUS_MASK = 7;
+const MAX_OPERATION = Math.floor(MAX_COUNTER / 8);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const MAX_COUNTER = 0x7ffffffe;
 
 function bounded(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_COUNTER)
@@ -106,7 +109,7 @@ function validateLimits(limits: PublicationLimits): PublicationLimits {
   for (const value of Object.values(limits)) bounded(value);
   if (limits.effectBytes > Math.floor(limits.logBytes / limits.logRecords))
     throw new RangeError("publication log record cannot hold the effect bound");
-  const allocation = limits.operations * (limits.inputBytes + limits.argumentBytes + limits.resultBytes);
+  const allocation = limits.operations * (limits.inputBytes + limits.argumentBytes + limits.resultBytes + OP_WORDS * 4) + limits.sessions * SESSION_WORDS * 4 + limits.logRecords * LOG_WORDS * 4 + limits.logBytes + limits.pins * PIN_WORDS * 4 + limits.pinBytes + CONTROL_WORDS * 4;
   if (!Number.isSafeInteger(allocation) || allocation > MAX_COUNTER)
     throw new RangeError("publication arena is too large");
   return Object.freeze({ ...limits });
@@ -252,7 +255,11 @@ export class PublicationDomain {
     if (id.sequence <= this.sessions[sessionBase + Session.Retired]!) throw new FilesystemError(11, "publication identity retired");
     const previous = this.operation(id);
     if (previous >= 0) return this.duplicate(previous, args, input);
+    const serial = this.control[Control.OperationSerial]! + 1;
+    if (serial > MAX_OPERATION) { this.stop(); throw new FilesystemError(33); }
     const slot = this.available(session);
+    this.control[Control.OperationSerial] = serial;
+    const ticket = serial * 8;
     const base = slot * OP_WORDS;
     const at = this.inputAt(slot);
     this.inputs.set(args, at);
@@ -261,16 +268,31 @@ export class PublicationDomain {
     this.operations[base + Op.Sequence] = id.sequence;
     this.operations[base + Op.Arguments] = args.length;
     this.operations[base + Op.Input] = input.length;
-    Atomics.store(this.operations, base + Op.State, Status.Pending);
-    return { kind: "admitted", admission: { slot, id }, input: this.inputs.slice(at + this.limits.argumentBytes, at + this.limits.argumentBytes + input.length) };
+    this.operations[base + Op.Reserved] = 0;
+    Atomics.store(this.operations, base + Op.State, ticket + Status.Pending);
+    return { kind: "admitted", admission: { slot, ticket, id }, input: this.inputs.slice(at + this.limits.argumentBytes, at + this.limits.argumentBytes + input.length) };
   }
   private duplicate(slot: number, args: Uint8Array, input: Uint8Array): AdmissionResult {
     const base = slot * OP_WORDS, at = this.inputAt(slot);
+    if (this.operations[base + Op.Reserved]) throw new FilesystemError(11, "publication identity retired");
     if (!same(this.inputs.subarray(at, at + this.operations[base + Op.Arguments]!), args) || !same(this.inputs.subarray(at + this.limits.argumentBytes, at + this.limits.argumentBytes + this.operations[base + Op.Input]!), input))
       throw new FilesystemError(28, "conflicting publication identity");
-    if (this.operations[base + Op.Reserved]) throw new FilesystemError(11, "publication identity retired");
-    if (this.operations[base + Op.State] !== Status.Committed) throw new FilesystemError(6, "publication identity is pending");
+    if ((this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed) throw new FilesystemError(6, "publication identity is pending");
     return { kind: "duplicate", receipt: this.receiptAt(slot) };
+  }
+  verify(session: PublicationSession, admission: PublicationAdmission, intent: MutationIntent, input: Uint8Array): void {
+    this.session(session);
+    if (admission.id.session !== session.serial) throw new FilesystemError(11);
+    this.verifyAdmission(admission, intent, input);
+  }
+  verifyAdmission(admission: PublicationAdmission, intent: MutationIntent, input: Uint8Array): void {
+    const base = this.checkAdmission(admission), at = this.inputAt(admission.slot);
+    if (!same(json(intent, this.limits.argumentBytes), this.inputs.subarray(at, at + this.operations[base + Op.Arguments]!)) || !same(input, this.inputs.subarray(at + this.limits.argumentBytes, at + this.limits.argumentBytes + this.operations[base + Op.Input]!))) throw new FilesystemError(28, "conflicting publication intent");
+  }
+  lookupAny(id: MutationId): ReceiptLookup {
+    for (let slot = 0; slot < this.limits.sessions; slot++)
+      if (this.sessions[slot * SESSION_WORDS + Session.Serial] === id.session && this.sessions[slot * SESSION_WORDS + Session.Open]) return this.lookup({ slot, serial: id.session }, id);
+    return { kind: "unknown" };
   }
   private available(session: PublicationSession): number {
     let oldest = -1;
@@ -283,7 +305,7 @@ export class PublicationDomain {
       sequence = this.operations[base + Op.Sequence]!;
       oldest = slot;
     }
-    if (oldest < 0 || this.operations[oldest * OP_WORDS + Op.State] !== Status.Committed) throw new FilesystemError(6, "publication operation bound exceeded");
+    if (oldest < 0 || (this.operations[oldest * OP_WORDS + Op.State]! & STATUS_MASK) !== Status.Committed) throw new FilesystemError(6, "publication operation bound exceeded");
     this.sessions[session.slot * SESSION_WORDS + Session.Retired] = sequence;
     this.clearOperation(oldest);
     return oldest;
@@ -298,10 +320,11 @@ export class PublicationDomain {
     this.assertLive();
     return { history: this.buffers.history, generation: number(this.control[Control.GenerationLow]!, this.control[Control.GenerationHigh]!) };
   }
-  private checkAdmission(admission: PublicationAdmission): number {
+  private checkAdmission(admission: PublicationAdmission, state = Status.Pending): number {
     this.assertLive();
+    if (!Number.isInteger(admission.slot) || admission.slot < 0 || admission.slot >= this.limits.operations) throw new FilesystemError(28);
     const base = admission.slot * OP_WORDS;
-    if (this.operations[base + Op.State] !== Status.Pending || this.operations[base + Op.Session] !== admission.id.session || this.operations[base + Op.Sequence] !== admission.id.sequence) throw new FilesystemError(11);
+    if (this.operations[base + Op.State] !== admission.ticket + state || this.operations[base + Op.Session] !== admission.id.session || this.operations[base + Op.Sequence] !== admission.id.sequence) throw new FilesystemError(11);
     return base;
   }
   prepare(admission: PublicationAdmission, result: MutationResult, changes: readonly PublicationEffect[]): PreparedPublication {
@@ -311,12 +334,15 @@ export class PublicationDomain {
     const generation = cut.generation + (changes.length ? 1 : 0);
     if (!Number.isSafeInteger(generation)) { this.stop(); throw new FilesystemError(33); }
     const receipt: PublicationReceipt = { id: admission.id, cut: { ...cut, generation }, result, durability: { kind: "untracked" } };
-    return { admission, receipt, result: json(result, this.limits.resultBytes), effects: encodeEffects(receipt, changes, this.limits.effectBytes), changed: changes.length > 0 };
+    const prepared = { admission, receipt, result: json(result, this.limits.resultBytes), effects: encodeEffects(receipt, changes, this.limits.effectBytes), changed: changes.length > 0 };
+    const base = this.checkAdmission(admission);
+    if (Atomics.compareExchange(this.operations, base + Op.State, admission.ticket + Status.Pending, admission.ticket + Status.Committing) !== admission.ticket + Status.Pending) throw new FilesystemError(11);
+    return prepared;
   }
   /** All potentially failing work is in prepare. Invoke immediately after synchronous effects,
    * before releasing the same filesystem global lock. No callbacks or encoding occur here. */
   commit(prepared: PreparedPublication): PublicationReceipt {
-    const base = this.checkAdmission(prepared.admission);
+    const base = this.checkAdmission(prepared.admission, Status.Committing);
     const generation = prepared.receipt.cut.generation;
     const current = this.cut().generation;
     if (generation !== current + (prepared.changed ? 1 : 0)) { this.stop(); throw new FilesystemError(29); }
@@ -328,7 +354,7 @@ export class PublicationDomain {
     if (prepared.changed) this.appendLog(prepared.effects, low, high);
     this.control[Control.GenerationLow] = low;
     this.control[Control.GenerationHigh] = high;
-    Atomics.store(this.operations, base + Op.State, Status.Committed);
+    Atomics.store(this.operations, base + Op.State, prepared.admission.ticket + Status.Committed);
     return prepared.receipt;
   }
   private appendLog(effects: Uint8Array, low: number, high: number): void {
@@ -342,15 +368,16 @@ export class PublicationDomain {
     this.control[Control.LogCount] = Math.min(this.limits.logRecords, this.control[Control.LogCount]! + 1);
   }
   cancel(session: PublicationSession, admission: PublicationAdmission): void {
-    this.arena(() => {
-      this.session(session);
-      const base = this.checkAdmission(admission);
-      this.operations[base + Op.Input] = 0;
-      // A cancelled identity is retired, never reset to an executable free slot.
-      this.operations[base + Op.Result] = 0;
-      this.operations[base + Op.Reserved] = 1;
-      Atomics.store(this.operations, base + Op.State, Status.Committed);
-    });
+    const base = admission.slot * OP_WORDS;
+    if (admission.id.session !== session.serial || this.operations[base + Op.Session] !== session.serial || this.operations[base + Op.Sequence] !== admission.id.sequence) return;
+    if (Atomics.compareExchange(this.operations, base + Op.State, admission.ticket + Status.Pending, admission.ticket + Status.Cancelling) !== admission.ticket + Status.Pending) return;
+    const at = this.inputAt(admission.slot);
+    this.inputs.fill(0, at, at + this.limits.argumentBytes + this.limits.inputBytes);
+    this.operations[base + Op.Input] = 0;
+    this.operations[base + Op.Arguments] = 0;
+    this.operations[base + Op.Result] = 0;
+    this.operations[base + Op.Reserved] = 1;
+    Atomics.store(this.operations, base + Op.State, admission.ticket + Status.Committed);
   }
   lookup(session: PublicationSession, id: MutationId): ReceiptLookup {
     return this.arena(() => {
@@ -360,7 +387,7 @@ export class PublicationDomain {
       const slot = this.operation(id);
       if (slot < 0) return { kind: "unknown" };
       if (this.operations[slot * OP_WORDS + Op.Reserved]) return { kind: "retired" };
-      return this.operations[slot * OP_WORDS + Op.State] === Status.Committed ? { kind: "committed", receipt: this.receiptAt(slot) } : { kind: "pending" };
+      return (this.operations[slot * OP_WORDS + Op.State]! & STATUS_MASK) === Status.Committed ? { kind: "committed", receipt: this.receiptAt(slot) } : { kind: "pending" };
     });
   }
   changes(after: PublicationCut, limitBytes: number): ChangePage {
@@ -440,9 +467,9 @@ export class PublicationDomain {
     let sessions = 0, pending = 0, receipts = 0, inputBytes = 0, pins = 0, pinBytes = 0;
     for (let slot = 0; slot < this.limits.sessions; slot++) if (this.sessions[slot * SESSION_WORDS + Session.Open]) sessions++;
     for (let slot = 0; slot < this.limits.operations; slot++) {
-      const state = this.operations[slot * OP_WORDS + Op.State];
-      if (state === Status.Pending) pending++;
-      if (state === Status.Committed) receipts++;
+      const state = this.operations[slot * OP_WORDS + Op.State]! & STATUS_MASK;
+      if (state === Status.Pending || state === Status.Committing) pending++;
+      if (state === Status.Committed && !this.operations[slot * OP_WORDS + Op.Reserved]) receipts++;
       if (state) inputBytes += this.operations[slot * OP_WORDS + Op.Input]!;
     }
     for (let slot = 0; slot < this.limits.pins; slot++) {
@@ -512,6 +539,46 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   const range = value.bytes;
   if (!range || typeof range !== "object" || !("at" in range) || typeof range.at !== "number" || !("length" in range) || typeof range.length !== "number" || range.at < 0 || range.length < 0 || range.at + range.length > tail.length) throw new FilesystemError(29);
   return { kind: "bytes", file, size: value.size, version: value.version, offset: value.offset, bytes: tail.slice(range.at, range.at + range.length) };
+}
+function integer(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new FilesystemError(28);
+  return value;
+}
+function text(value: unknown): string {
+  if (typeof value !== "string") throw new FilesystemError(28);
+  return value;
+}
+function path(value: unknown): ResolvedPath {
+  if (!value || typeof value !== "object" || !("name" in value) || !("parent" in value) || !("node" in value)) throw new FilesystemError(28);
+  return { parent: value.parent === undefined ? undefined : integer(value.parent), node: value.node === undefined ? undefined : integer(value.node), name: text(value.name), trailingSlash: "trailingSlash" in value && value.trailingSlash === true, terminalDot: "terminalDot" in value && value.terminalDot === true };
+}
+/** Normalize the legacy string boundary once, before admission or asynchronous preparation. */
+export function mutationIntent(operation: string, args: readonly unknown[]): MutationIntent | undefined {
+  const [a, b, c] = args;
+  switch (operation) {
+    case "write": return { kind: "write", handle: integer(a), offset: integer(b) };
+    case "append": return { kind: "append", handle: integer(a) };
+    case "resize": return { kind: "resize", handle: integer(a), size: integer(b), truncate: c === true };
+    case "setMode": return { kind: "setMode", handle: integer(a), mode: integer(b) };
+    case "setMtime": return { kind: "setMtime", handle: integer(a), mtime: integer(b) };
+    case "preopen": case "mkdirp": case "remove": return { kind: operation, path: text(a) };
+    case "writeFile": return { kind: "writeFile", path: text(a), append: b === true, exclusive: c === true };
+    case "move": return { kind: "move", from: text(a), to: text(b) };
+    case "create":
+      if (b !== "file" && b !== "directory") throw new FilesystemError(28);
+      return { kind: "create", path: path(a), nodeKind: b, exclusive: c !== false };
+    case "link": case "rename": return { kind: operation, from: path(a), to: path(b) };
+    case "removePath": return { kind: "removePath", path: path(a), directory: b === true };
+    default: return undefined;
+  }
+}
+export function mutationResult(value: unknown): MutationResult {
+  if (value === undefined) return { kind: "void" };
+  if (typeof value === "number") return { kind: "number", value };
+  if (typeof value === "boolean") return { kind: "boolean", value };
+  if (value && typeof value === "object" && "error" in value && typeof value.error === "number") return { kind: "error", errno: value.error };
+  if (value && typeof value === "object" && "written" in value && typeof value.written === "number" && "offset" in value && typeof value.offset === "number") return { kind: "append", written: value.written, offset: value.offset };
+  throw new FilesystemError(29, "invalid publication mutation result");
 }
 export function forkPublication(connection: PublicationConnection): PublicationConnection {
   const domain = new PublicationDomain(connection.buffers);
