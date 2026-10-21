@@ -142,6 +142,7 @@ import {
   localPublication,
   publicationObserver,
   type PublicationLimits,
+  type PublicationBuffers,
 } from "../fs/publication-internal";
 import { PAGE, reapFilesystem } from "../fs/protocol";
 
@@ -1588,4 +1589,132 @@ test("production append EOF growth prepares capacity but retry owns only the lat
   } finally {
     fixture.stop();
   }
+});
+
+import {
+  connectFilesystemIdentity,
+  createProcessFilesystemIdentity,
+  type FilesystemIdentity,
+} from "../fs/protocol";
+import { atomicsLoad, reflectApply, typedArrayBuffer } from "../proc/intrinsics";
+
+function cancelUnconnectedIdentity(identity: FilesystemIdentity): void {
+  revokeFilesystem(identity);
+  reapFilesystem(identity);
+}
+
+test("cancelled unconnected publication identities release bounded sessions without retiring a living peer", async () => {
+  const backend = new MemoryBackend();
+  backend.fs.writeFile("/file", new Uint8Array([1]));
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection(undefined, {
+    limits: { ...limits, sessions: 3 },
+  });
+  service.connect(connection.server);
+  const root = new FilesystemClient(connection.client);
+  const peer = new FilesystemClient(root.fork());
+  const domain = backend.shared.publication!;
+  let next: FilesystemClient | undefined;
+  try {
+    const directory = await peer.asyncCall("preopen", ["/"]);
+    const path = await peer.asyncCall("resolve", [directory, "file"]);
+    peer.retain(path.node);
+    const baseline = domain.diagnostics().sessions;
+    expect(baseline).toBe(2);
+    for (let index = 0; index < 24; index++) {
+      const cancelled = createProcessFilesystemIdentity(root.connection);
+      cancelUnconnectedIdentity(cancelled);
+      cancelUnconnectedIdentity(cancelled);
+      service.sweep();
+      expect(domain.diagnostics().sessions).toBe(baseline);
+      expect(service.resources().clients).toBe(2);
+      expect(peer.tryWrite(path.node, [new Uint8Array([index])], 0)).toBe(1);
+    }
+    const cancelled = createProcessFilesystemIdentity(root.connection);
+    const arena = new Int32Array(connection.client.publication!.buffers.control);
+    Atomics.store(arena, 1, peer.connection.owner);
+    try {
+      cancelUnconnectedIdentity(cancelled);
+      expect(Atomics.load(arena, 1)).toBe(peer.connection.owner);
+      expect(domain.diagnostics().sessions).toBe(baseline);
+    } finally {
+      Atomics.store(arena, 1, 0);
+    }
+    const connected = connectFilesystemIdentity(createProcessFilesystemIdentity(root.connection));
+    service.connect(connected.server);
+    next = new FilesystemClient(connected.client);
+    expect(await next.asyncCall("preopen", ["/"])).toBeNumber();
+    cancelUnconnectedIdentity(cancelled);
+    expect(domain.diagnostics().sessions).toBe(baseline + 1);
+    expect(await next.asyncCall("preopen", ["/"])).toBeNumber();
+    next.dispose();
+    service.sweep();
+    expect(domain.diagnostics().sessions).toBe(baseline);
+    const output = new Uint8Array(1);
+    expect(peer.tryRead(path.node, [output], 0)).toBe(1);
+    expect(output[0]).toBe(23);
+  } finally {
+    next?.dispose();
+    peer.dispose();
+    root.dispose();
+    service.dispose();
+  }
+  expect(service.resources().clients).toBe(0);
+});
+
+type PrivateCopyObservation = { destination: string; global: number; arena: number };
+async function observePrivatePublicationCopies(enabled: boolean): Promise<PrivateCopyObservation[]> {
+  const backend = new MemoryBackend();
+  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection(
+    undefined,
+    enabled ? { limits, observe: true } : undefined,
+  );
+  service.connect(connection.server);
+  const client = new FilesystemClient(connection.client);
+  const calls: PrivateCopyObservation[] = [];
+  const original = Uint8Array.prototype.set;
+  const buffers = connection.client.publication?.buffers;
+  const control = buffers ? new Int32Array(buffers.control) : undefined;
+  const global = new Int32Array(connection.client.shared);
+  try {
+    const directory = await client.asyncCall("preopen", ["/"]);
+    const path = await client.asyncCall("resolve", [directory, "file"]);
+    client.retain(path.node);
+    Uint8Array.prototype.set = function (source: ArrayLike<number>, offset?: number): void {
+      const destination = publicationCopyDestination(typedArrayBuffer(this), buffers);
+      if (destination)
+        calls.push({ destination, global: atomicsLoad(global, 1), arena: control ? atomicsLoad(control, 1) : 0 });
+      reflectApply(original, this, [source, offset]);
+    };
+    expect(client.tryWrite(path.node, [new Uint8Array([9])], 0)).toBe(1);
+    expect(await client.asyncCall("write", [path.node, 1], new Uint8Array([8]))).toBe(1);
+    if (enabled)
+      await client.asyncCall("publicationPin", [connection.client.publication!.observer, path.node, 0, 3]);
+    Uint8Array.prototype.set = original;
+    const output = new Uint8Array(3);
+    expect(client.tryRead(path.node, [output], 0)).toBe(3);
+    expect(Array.from(output)).toEqual([9, 8, 3]);
+    return calls;
+  } finally {
+    Uint8Array.prototype.set = original;
+    client.dispose();
+    service.dispose();
+  }
+}
+function publicationCopyDestination(
+  destination: ArrayBufferLike,
+  buffers: PublicationBuffers | undefined,
+): string | undefined {
+  if (!buffers) return;
+  if (destination === buffers.inputs) return "admission-input";
+  if (destination === buffers.results) return "receipt-result";
+  if (destination === buffers.logData) return "publication-log";
+  if (destination === buffers.pinData) return "publication-pin";
+}
+
+test("private publication copies never invoke mutable native-copy observers under locks", async () => {
+  expect(await observePrivatePublicationCopies(false)).toEqual([]);
+  expect(await observePrivatePublicationCopies(true)).toEqual([]);
 });
