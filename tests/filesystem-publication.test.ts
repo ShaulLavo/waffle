@@ -6,6 +6,13 @@ import {
   createFilesystemConnection,
 } from "../fs";
 
+async function expectErrno(action: Promise<unknown>, expected: number): Promise<void> {
+  let error: unknown;
+  try { await action; }
+  catch (value) { error = value; }
+  expect(error).toMatchObject({ errno: expected });
+}
+
 test("local publication orders real host, WASI and direct writers without a nudge", async () => {
   const service = new FilesystemService(new MemoryBackend());
   const connection = createFilesystemConnection();
@@ -218,11 +225,6 @@ async function localPublicationFixture() {
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
-  const post = connection.server.port.postMessage.bind(connection.server.port);
-  connection.server.port.postMessage = (message: unknown, transfer?: Transferable[]) => {
-    console.info("publication service posting", message);
-    post(message, transfer ?? []);
-  };
   service.connect(connection.server);
   const root = new FilesystemClient(connection.client);
   const sibling = new FilesystemClient(root.fork());
@@ -243,29 +245,20 @@ test("production publication content paths publish before direct and service suc
   const fixture = await localPublicationFixture();
   const { root, sibling, handle, cut, changes } = fixture;
   try {
-    console.info("publication phase: initial cut");
     const start = await cut();
-    console.info("publication phase: direct write");
     expect(root.tryWrite(handle, [new Uint8Array([9, 8])], 0)).toBe(2);
     const output = new Uint8Array(3);
     expect(sibling.tryRead(handle, [output], 0)).toBe(3);
     expect(output).toEqual(new Uint8Array([9, 8, 3]));
-    console.info("publication phase: service append");
     expect(await root.asyncCall("append", [handle], new Uint8Array([7]))).toEqual({ written: 1, offset: 4 });
-    console.info("publication phase: explicit changes");
     const page = await changes(start);
     expect(page.kind).toBe("changes");
     expect(page.publications).toHaveLength(2);
     expect(page.publications.map((publication: { changes: unknown[] }) => publication.changes.length)).toEqual([2, 2]);
     expect(page.publications.map((publication: { receipt: { cut: { generation: number } } }) => publication.receipt.cut.generation)).toEqual([1, 2]);
-    console.info("publication phase: forbidden sibling control");
-    await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
-    console.info("publication phase: missing root grant with ordinary await");
-    let rejection: unknown;
-    try { await root.asyncCall("publicationCut"); }
-    catch (error) { rejection = error; }
-    expect(rejection).toMatchObject({ errno: 2 });
-  } finally { console.info("publication phase: teardown"); fixture.stop(); }
+    await expectErrno(sibling.asyncCall("publicationCut", [fixture.grant]), 2);
+    await expectErrno(root.asyncCall("publicationCut"), 2);
+  } finally { fixture.stop(); }
 });
 
 test("production publication try I/O owns no byte work on EAGAIN and admits one bounded prefix", async () => {
@@ -299,11 +292,8 @@ test("production publication rejects unimplemented namespace plans before change
   const fixture = await localPublicationFixture();
   try {
     const start = await fixture.cut();
-    let rejection: unknown;
-    try { await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])); }
-    catch (error) { rejection = error; }
-    expect(rejection).toMatchObject({ errno: 52 });
-    await expect(fixture.root.asyncCall("mkdirp", ["/missing/child"])).rejects.toMatchObject({ errno: 52 });
+    await expectErrno(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 52);
+    await expectErrno(fixture.root.asyncCall("mkdirp", ["/missing/child"]), 52);
     expect(await fixture.cut()).toEqual(start);
     expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([1, 2, 3]));
     expect(fixture.backend.fs.lookup("/missing")).toBeUndefined();
@@ -359,8 +349,8 @@ test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, out
 
 test("real WASI exported Wasm functions publish positioned and offset writes", async () => {
   const fixture = await localPublicationFixture();
-  const wasi = new Wasi({ args: [], env: {}, fs: fixture.root, preopens: {}, stdout() {}, stderr() {}, sleep() {} });
   const memory = new WebAssembly.Memory({ initial: 4 });
+  const wasi = new Wasi({ args: [], env: {}, fs: fixture.root, preopens: {}, namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() {} });
   const module = publicationWasiModule();
   const guest = new WebAssembly.Instance(module, { ...wasi.imports(module), env: { memory } });
   const resource = { kind: "file", handle: fixture.handle, offset: 0, append: false } as const;
@@ -382,15 +372,14 @@ test("real WASI exported Wasm functions publish positioned and offset writes", a
 });
 
 
-test("completion failure diagnostic without publication", async () => {
+test("uninstrumented completion errors preserve ordinary delivery", async () => {
   const service = new FilesystemService(new MemoryBackend());
   const connection = createFilesystemConnection();
   service.connect(connection.server);
   const root = new FilesystemClient(connection.client);
   try {
     for (let index = 0; index < 3; index++) {
-      console.info("legacy failure diagnostic", index);
-      await expect(root.asyncCall("unknown-operation")).rejects.toMatchObject({ errno: 52 });
+      await expectErrno(root.asyncCall("unknown-operation"), 52);
     }
   } finally { root.dispose(); service.dispose(); }
 });
