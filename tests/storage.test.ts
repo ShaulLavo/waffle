@@ -336,3 +336,78 @@ test("IndexedDB retains the original debt before native request and preserves a 
   await expect(originalDebt!).rejects.toBe(failure);
   expect(closed).toBe(1);
 });
+
+for (const whenBusy of ["wait", "takeover"] as const)
+  test(`IndexedDB ${whenBusy} request setup failure joins the original started epoch transaction`, async () => {
+    const failure = new Error("synchronous epoch request setup failure");
+    const retired = Promise.withResolvers<void>();
+    let debt: Promise<void> | undefined;
+    let debtSettled = false;
+    let closed = 0;
+    let aborted = 0;
+    let terminal = false;
+    const transaction = {
+      onabort: null as IDBTransaction["onabort"],
+      oncomplete: null as IDBTransaction["oncomplete"],
+      abort() {
+        aborted++;
+      },
+      objectStore() {
+        return {
+          get() {
+            throw failure;
+          },
+        };
+      },
+    } as unknown as IDBTransaction;
+    const database = {
+      objectStoreNames: { length: 3, contains: () => true },
+      transaction: () => transaction,
+      close() {
+        closed++;
+      },
+    } as unknown as IDBDatabase;
+    const opening = { result: database } as IDBOpenDBRequest;
+    const locks: StorageLockManager = {
+      async request(_name, _options, callback) {
+        try {
+          return await callback({});
+        } finally {
+          retired.resolve();
+        }
+      },
+    };
+    const result = IndexedDBStorage.open("setup-failure", {
+      whenBusy,
+      indexedDB: { open: () => opening } as unknown as IDBFactory,
+      locks,
+      retainOpeningDebt(original) {
+        debt = original;
+        void original.then(
+          () => {
+            debtSettled = true;
+          },
+          () => {
+            debtSettled = true;
+          },
+        );
+      },
+    }).catch((error: unknown) => error);
+    try {
+      opening.onsuccess!(new Event("success"));
+      await retired.promise;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(debtSettled).toBe(false);
+      expect(closed).toBe(0);
+      expect(aborted).toBeGreaterThan(0);
+      transaction.onabort!(new Event("abort"));
+      terminal = true;
+      expect(await result).toBe(failure);
+      await debt;
+      expect(closed).toBe(1);
+    } finally {
+      if (!terminal) transaction.oncomplete!(new Event("complete"));
+      await result;
+      await debt;
+    }
+  });

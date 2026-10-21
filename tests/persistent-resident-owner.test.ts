@@ -217,7 +217,7 @@ test("persistent server drain keeps authority live until separate finalization",
 import { createPersistentResidentOwner } from "../browser/persistent-resident-owner";
 
 /** Native API stand-ins exercise the real owner/opener, not browser scheduling. */
-function pendingNativeClaim(closeFailure?: Error) {
+function pendingNativeClaim(closeFailure?: Error, setupFailure?: Error) {
   const originals = new Map(
     ["location", "navigator", "indexedDB"].map((key) => [
       key,
@@ -230,8 +230,22 @@ function pendingNativeClaim(closeFailure?: Error) {
   let claimSignal: AbortSignal | undefined;
   let closed = 0;
   let released = 0;
+  const claimRetired = Promise.withResolvers<void>();
+  const transaction = {
+    onabort: null as IDBTransaction["onabort"],
+    oncomplete: null as IDBTransaction["oncomplete"],
+    abort() {},
+    objectStore() {
+      return {
+        get() {
+          throw setupFailure;
+        },
+      };
+    },
+  } as unknown as IDBTransaction;
   const opened = Promise.withResolvers<void>();
   const database = {
+    transaction: () => transaction,
     objectStoreNames: {
       length: 3,
       contains: (name: string) => ["metadata", "journal", "data"].includes(name),
@@ -249,6 +263,10 @@ function pendingNativeClaim(closeFailure?: Error) {
           released++;
         });
       claimSignal = options.signal;
+      if (setupFailure)
+        return Promise.resolve(callback({ name, mode: "exclusive" })).finally(() =>
+          claimRetired.resolve(),
+        );
       const abort = () => pending.reject(claimSignal?.reason);
       claimSignal?.addEventListener("abort", abort, { once: true });
       requested.resolve();
@@ -287,6 +305,11 @@ function pendingNativeClaim(closeFailure?: Error) {
     owner,
     readiness,
     requested: requested.promise,
+    claimRetired: claimRetired.promise,
+    settleTransaction(aborted: boolean) {
+      if (aborted) transaction.onabort!(new Event("abort"));
+      else transaction.oncomplete!(new Event("complete"));
+    },
     opened: opened.promise,
     get released() {
       return released;
@@ -405,6 +428,30 @@ test("terminal native request error without a delivered DB is not failed cleanup
     expect(owned.closed).toBe(0);
     expect(owned.released).toBe(2);
   } finally {
+    await owned.close();
+  }
+});
+
+test("epoch request setup failure retains owner guards until the original transaction retires", async () => {
+  const failure = new Error("synchronous owner epoch request setup failure");
+  const owned = pendingNativeClaim(undefined, failure);
+  let terminal = false;
+  try {
+    await owned.deliver();
+    await owned.claimRetired;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(owned.closed).toBe(0);
+    expect(owned.released).toBe(0);
+    owned.settleTransaction(true);
+    terminal = true;
+    expect(await owned.readiness).toBe(failure);
+    const stopped = owned.owner.stop();
+    expect(owned.owner.stop()).toBe(stopped);
+    await stopped;
+    expect(owned.closed).toBe(1);
+    expect(owned.released).toBe(2);
+  } finally {
+    if (!terminal) owned.settleTransaction(false);
     await owned.close();
   }
 });
