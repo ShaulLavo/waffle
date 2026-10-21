@@ -174,42 +174,38 @@ export class SharedFilesystem {
     return this._state;
   }
   private receiveMessage(event: MessageEvent, onStartupStage?: RuntimeStartupObserver): void {
-  if (event.data?.type === "filesystem-disposed") {
-    if (
-      this.ordinaryReady() &&
-      "error" in event.data &&
-      typeof event.data.error !== "string"
-    )
+    if (event.data?.type === "filesystem-disposed") {
+      if (this.ordinaryReady() && "error" in event.data && typeof event.data.error !== "string")
+        return;
+      this.finishDisposal?.(
+        typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
+      );
       return;
-    this.finishDisposal?.(
-      typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
-    );
-    return;
-  }
-  if (this.stopped || (this.disposal && !this.ordinaryReady())) return;
-  if (event.data?.type === "filesystem-ownership-lost") {
-    this.ownershipLost = true;
-    this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
-    this.onOwnershipLost?.();
-    return;
-  }
-  const error = workerError(event.data);
-  if (error) {
-    this.fail(error);
-    return;
-  }
-  if (this.disposal) return;
-  if (
-    event.data?.type === "filesystem-state" &&
-    (event.data.status === "waiting" || event.data.status === "ready")
-  ) {
-    if (event.data.status === "ready") this.startupComplete = true;
-    this.setState(event.data.status);
-    return;
-  }
-  if (onStartupStage && isWorkerStartupMessage(event.data)) {
-    reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
-  }
+    }
+    if (this.stopped || (this.disposal && !this.ordinaryReady())) return;
+    if (event.data?.type === "filesystem-ownership-lost") {
+      this.ownershipLost = true;
+      this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
+      this.onOwnershipLost?.();
+      return;
+    }
+    const error = workerError(event.data);
+    if (error) {
+      this.fail(error);
+      return;
+    }
+    if (this.disposal) return;
+    if (
+      event.data?.type === "filesystem-state" &&
+      (event.data.status === "waiting" || event.data.status === "ready")
+    ) {
+      if (event.data.status === "ready") this.startupComplete = true;
+      this.setState(event.data.status);
+      return;
+    }
+    if (onStartupStage && isWorkerStartupMessage(event.data)) {
+      reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
+    }
   }
   private setState(status: SharedFilesystemStatus, error?: Error): void {
     if (this._state.status === status && this._state.error === error) return;
