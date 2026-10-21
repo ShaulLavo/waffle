@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
 import * as shared from "../fs/shared.ts";
 import * as native from "../proc/intrinsics.ts";
+import { localPublication } from "../fs/publication-internal.ts";
+import { mutationIntent } from "../fs/publication.ts";
 import { CAPABILITY_HEADER, CAPABILITY_WORDS } from "../fs/protocol";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -38,6 +40,8 @@ class TrackingBackend extends MemoryBackend {
 function isolatedClient() {
   const hooks = { compareExchange: native.atomicsCompareExchange };
   const bindings = {
+    localPublication,
+    mutationIntent,
     ...protocol,
     ...shared,
     ...native,

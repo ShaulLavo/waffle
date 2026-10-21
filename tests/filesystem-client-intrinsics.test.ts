@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import type { FilesystemClient, FilesystemCompletion } from "../fs/client.ts";
 import * as protocol from "../fs/protocol.ts";
 import * as native from "../proc/intrinsics.ts";
+import { localPublication } from "../fs/publication-internal.ts";
+import { mutationIntent } from "../fs/publication.ts";
 import { poisonProcessIntrinsics, type IntrinsicsReport } from "./fixtures/process-intrinsics.ts";
 
 const clientSource = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -68,6 +70,8 @@ function fixture() {
     }),
   };
   const bindings = {
+    localPublication,
+    mutationIntent,
     ...protocol,
     ...captures,
     pack: () => new native.Uint8ArrayConstructor(),
