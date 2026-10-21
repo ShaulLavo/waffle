@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { ResidentAuthorityServer } from "../browser/publication-authority";
+import { ResidentChannel, residentGrant, residentSession, encodeResidentOutcome } from "../fs/publication-attachment";
 import {
   FilesystemClient,
   FilesystemService,
@@ -564,6 +566,48 @@ test("claim constructors, copies and paired codec bypass late prototype hooks", 
     expect(intercepted).toBe(0);
   } finally {
     restoreClaimHooks(restorations);
+    f.stop();
+  }
+});
+
+
+test("file-only authority rejects another retained file handle without issuing a grant", async () => {
+  const f = await rootFixture();
+  await f.root.asyncCall("writeFile", ["/other"], new Uint8Array([9]));
+  const directory: number = await f.root.asyncCall("preopen", ["/"]);
+  const other: { node: number } = await f.root.asyncCall("resolve", [directory, "other"]);
+  const descriptor = await f.root.asyncCall("publicationResident", [
+    f.connection.client.publication!.observer, f.handle, `file-bound-${crypto.randomUUID()}`,
+  ]);
+  const authority = f.service.residentPublication!;
+  authority.activate();
+  const guard = { release: () => Promise.resolve() };
+  const server = new ResidentAuthorityServer(authority, guard, guard);
+  const channel = new ResidentChannel(authority.workspace);
+  const session = residentSession(await channel.call("open", descriptor));
+  const before = f.backend.shared.publication!.cut();
+  let issued = false;
+  let failure: unknown;
+  try {
+    try {
+      const grant = residentGrant(await channel.call("prepare", {
+        token: session.token, handle: other.node,
+        request: { kind: "read", offset: 0, maxBytes: 1 },
+      }));
+      issued = true;
+      const cell = new ResidentGrantCell(grant);
+      cell.cancel();
+      await channel.call("settle", { token: session.token, outcome: encodeResidentOutcome(cell.snapshot()) });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ errno: 8 });
+    expect(issued).toBe(false);
+    expect(f.backend.shared.publication!.cut()).toEqual(before);
+  } finally {
+    await channel.call("close", { token: session.token });
+    channel.close();
+    await server.stop();
     f.stop();
   }
 });

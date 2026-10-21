@@ -26,7 +26,7 @@ function fixture() {
     shared: new native.SharedArrayBufferConstructor(4),
     segments: [],
     capabilities: new native.SharedArrayBufferConstructor(
-      (protocol.CAPABILITY_HEADER + 2 * protocol.CAPABILITY_WORDS) * 4,
+      protocol.CAPABILITY_LENGTH * 4,
     ),
     sections: new native.SharedArrayBufferConstructor(4),
     owner: 1,
