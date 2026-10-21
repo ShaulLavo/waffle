@@ -1,6 +1,7 @@
 import { SharedFilesystem } from "../browser/shared-fs.js";
 import {
   FilesystemClient,
+  type FilesystemCompletion,
   createFilesystemConnection,
   revokeFilesystem,
   reapFilesystem,
@@ -74,6 +75,23 @@ function message(worker: Worker, value: unknown, transfer: Transferable[] = []):
   const pending = response(worker);
   worker.postMessage(value, transfer);
   return pending;
+}
+// Delay native request delivery until the real completion waiter is registered.
+function holdRequest(client: FilesystemClient, submit: () => FilesystemCompletion) {
+  const port = client.connection.port;
+  const post = port.postMessage.bind(port);
+  let send: (() => void) | undefined;
+  port.postMessage = (request: unknown) => {
+    if (send) throw new Error("Expected one held request");
+    send = () => post(request);
+  };
+  try {
+    const completion = submit();
+    if (!send) throw new Error("Missing held request");
+    return { completion, send };
+  } finally {
+    port.postMessage = post;
+  }
 }
 interface WorkerOwner {
   readonly worker: Worker;
@@ -735,15 +753,13 @@ async function responseLoss(): Promise<void> {
     if (admitted.kind !== "admitted") throw new Error("Expected admission");
     await message(f.owner.worker, { control: "holdResponse", id: -2 });
     const held = response(f.owner.worker);
-    const completion = f.client.submit(
-      "write",
-      args,
-      admitted.input,
-      undefined,
-      admitted.admission,
+    const { completion, send } = holdRequest(f.client, () =>
+      f.client.submit("write", args, admitted.input, undefined, admitted.admission),
     );
+    equal(completion.ready, false);
     const value = completion.value();
     const rejected = denied(value, 11);
+    send();
     equal(await held, { responseHeld: true });
     const receipt = await f.observer.receipt(admitted.admission.id);
     if (receipt.kind !== "committed") throw new Error("Lost response lost the receipt");
@@ -776,13 +792,15 @@ async function lateStoppedReply(): Promise<void> {
     const before = cursor;
     await message(f.owner.worker, { control: "holdResponse", id: -2 });
     const held = response(f.owner.worker);
-    const completion = f.client.submit("publicationCut", [
-      f.client.connection.publication?.observer,
-    ]);
+    const { completion, send } = holdRequest(f.client, () =>
+      f.client.submit("publicationCut", [f.client.connection.publication?.observer]),
+    );
+    equal(completion.ready, false);
     const value = completion.value().then((cut) => {
       cursor = cut;
     });
     const rejected = denied(value, 11);
+    send();
     equal(await held, { responseHeld: true });
     await denied(f.observer.stop(), 11);
     await rejected;
