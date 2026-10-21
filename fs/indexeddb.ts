@@ -138,12 +138,10 @@ function requestStorageLock<T>(
     return Promise.reject(error);
   }
 }
-function allocateEpoch(database: IDBDatabase): {
-  transaction: IDBTransaction;
-  done: Promise<number>;
-} {
-  const transaction = database.transaction("metadata", "readwrite", { durability: "strict" });
-  const completedEpoch = completed(transaction);
+function allocateEpoch(
+  transaction: IDBTransaction,
+  completedEpoch: Promise<void>,
+): Promise<number> {
   let epoch = 0;
   const request = transaction.objectStore("metadata").get("epoch");
   request.onsuccess = () => {
@@ -158,7 +156,7 @@ function allocateEpoch(database: IDBDatabase): {
     epoch = (typeof previous === "number" ? previous : 0) + 1;
     transaction.objectStore("metadata").put(epoch, "epoch");
   };
-  return { transaction, done: completedEpoch.then(() => epoch) };
+  return completedEpoch.then(() => epoch);
 }
 interface Journal {
   version: 1;
@@ -460,7 +458,7 @@ export class IndexedDBStorage implements StorageBackend {
       refused = reject;
     });
     let owner: IndexedDBStorage | undefined, allocation: IDBTransaction | undefined;
-    let allocationDone: Promise<number> | undefined;
+    let allocationDone: Promise<void> | undefined;
     let lost = false;
     let granted = false;
     // Once granted, Web Locks no longer observes abort. Retire an in-flight epoch
@@ -492,10 +490,9 @@ export class IndexedDBStorage implements StorageBackend {
         reportRuntimeStartup(options.onStartupStage, "filesystem-lock-acquired");
         reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-requested");
         if (signal?.aborted) throw signal.reason;
-        const epoch = allocateEpoch(db);
-        allocation = epoch.transaction;
-        allocationDone = epoch.done;
-        const value = await allocationDone;
+        allocation = db.transaction("metadata", "readwrite", { durability: "strict" });
+        allocationDone = completed(allocation);
+        const value = await allocateEpoch(allocation, allocationDone);
         reportRuntimeStartup(options.onStartupStage, "filesystem-epoch-resolved");
         allocation = undefined;
         if (lost) return;
