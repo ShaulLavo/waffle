@@ -155,7 +155,7 @@ test("repeated joined resident stop never posts cancellation on its closed chann
   try {
     const channel = new ResidentChannel(f.session.descriptor.workspace);
     const session = residentSession(await channel.call("open", f.session.descriptor));
-    const client = new ResidentGrantClient(channel, session, () => false);
+    const client = new ResidentGrantClient(session, channel, { release: () => Promise.resolve() });
     await client.stop();
     await client.stop();
   } finally { await f.stop(); }

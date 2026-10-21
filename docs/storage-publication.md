@@ -96,10 +96,46 @@ reads after ACK without a commit nudge, bounded prefixes, exact import, local
 exclusion, late attachment cleanup and separately observed native worker death.
 Passing focused controls is not full matrix or production acceptance. The
 current source report records which stages actually passed and every preserved
-red. Cold files, growth beyond the resident bound and namespace operations on a
-private attachment are explicitly unsupported. No SAFE, durable history,
+red. Cold files and growth beyond the resident bound are explicitly unsupported.
+File-only attachments still reject namespace operations. No SAFE, durable history,
 consumer pin, public API or S1/S2 acceptance follows.
 
 A fresh resident connection reuses the full root-format allocation. It costs
 25,477,140 bytes before JavaScript objects, ports and shared offsets, despite
 creating no second MemFS. This is byte accounting, not aggregate memory acceptance.
+
+## Private workspace transport
+
+A `workspace` resident descriptor also routes namespace and metadata calls through
+that same authority. Independent pages receive no authority root buffers. Each
+page owns an asynchronous local bridge; actual guests use their existing
+synchronous completion transport to that bridge. File-only descriptors still
+have no namespace preopen. Attachment and joined-stop ordering are unchanged.
+
+The authority creates each service identity from its actual root. Resolve,
+lookup, stat, permissions, readdir and blocking reads reach current service
+execution, not the page's synthetic metadata or path caches. Returned handles
+keep bounded authority-side capability pins until that session stops. They keep
+the same inode through rename, replacement and unlink. Same-page descendants use
+the existing codec's exact reservation and shared offset cell. Independent pages
+do not share open-description offsets.
+
+Namespace mutations use authority-minted session identities, separate from
+transport correlation. An exact duplicate returns its original receipt; changed
+input conflicts. Own-session receipt queries recover outcomes without repeating
+the mutation. Raw changes, arbitrary receipt lookup, diagnostics, pins and domain
+stop remain on the authority's non-inherited observer route. Neither the
+workspace descriptor nor ordinary guests inherit that grant.
+
+Requests, input, pending results and retained capabilities have fixed limits.
+Queued cancellation reaches the actual service completion. Stop joins service
+preparation and reservation transfer before releasing its continuity guard.
+Prepared leaf grants still provide immediate nonblocking I/O; EAGAIN owns no
+caller input and schedules no later syscall. No second writable tree is created.
+
+The extended cross-tab runner keeps the resident pilot controls and adds genuine
+WASI namespace operations, retained-file metadata, runtime_proc I/O, codec offset
+transfer, current reads after a lost nudge, observer denial and receipt recovery.
+The source report records executed results. This remains a private MemoryBackend
+slice, not S1/S2, SAFE, public-mode or whole-project acceptance. Cold range loading,
+growth beyond admitted bounds, durable history and consumer pins stay separate.
