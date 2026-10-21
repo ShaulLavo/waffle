@@ -256,7 +256,14 @@ test("production publication content paths publish before direct and service suc
     console.info("publication phase: forbidden sibling control");
     await expect(sibling.asyncCall("publicationCut", [fixture.grant])).rejects.toMatchObject({ errno: 2 });
     console.info("publication phase: missing root grant");
-    await expect(root.asyncCall("publicationCut")).rejects.toMatchObject({ errno: 2 });
+    const missing = root.submit("publicationCut");
+    const probe = setTimeout(() => console.info("publication completion probe", {
+      cells: Array.from(missing.cells), pending: Array.from(root.completions.keys()),
+      global: Atomics.load(root.shared.cells, 1), resources: fixture.service.resources(),
+      domain: fixture.backend.shared.publication!.diagnostics(),
+    }), 25);
+    try { await expect(missing.value()).rejects.toMatchObject({ errno: 2 }); }
+    finally { clearTimeout(probe); missing.release(); }
   } finally { console.info("publication phase: teardown"); fixture.stop(); }
 });
 

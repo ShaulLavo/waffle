@@ -396,6 +396,13 @@ export class FilesystemClient implements FileSystem {
       data = admitted.input;
     }
     if (domain && connection && intent && publication) domain.verify(connection.session, publication, intent, data);
+    try { return this.submitPrepared(operation, args, data, capacity, publication); }
+    catch (error) {
+      if (publication && connection) domain!.cancel(connection.session, publication);
+      throw error;
+    }
+  }
+  private submitPrepared(operation: string, args: unknown[], data: Uint8Array, capacity: number, publication?: PublicationAdmission): FilesystemCompletion {
     const input = pack({ operation, args, publication });
     const buffer = new SharedArrayBufferConstructor(
       HEADER + Math.max(input.length + data.length, capacity),
@@ -406,7 +413,8 @@ export class FilesystemClient implements FileSystem {
     typedArraySet(new Uint8ArrayConstructor(buffer, HEADER), input);
     typedArraySet(new Uint8ArrayConstructor(buffer, HEADER + input.length), data);
     mapSet(this.completions, completion.id, completion);
-    this.connection.port.postMessage({ id: completion.id, buffer });
+    try { this.connection.port.postMessage({ id: completion.id, buffer }); }
+    catch (error) { mapDelete(this.completions, completion.id); throw error; }
     return completion;
   }
   cancelPublication(admission: PublicationAdmission): void {
