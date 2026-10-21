@@ -7,6 +7,7 @@ export function installWorkspaceChannelObserver(): void {
     held: 0,
     closedPending: 0,
     cancelled: 0,
+    cleanupStarted: 0,
     hold: "",
     release: () => {},
   };
@@ -66,6 +67,18 @@ export function installWorkspaceChannelObserver(): void {
     for (const [event, channel] of events)
       channel.dispatchEvent(new MessageEvent("message", { data: event.data }));
   };
+  const NativePorts = MessageChannel;
+  class ObservedPorts extends NativePorts {
+    constructor() {
+      super();
+      this.port1.addEventListener("message", observeCleanup);
+      this.port2.addEventListener("message", observeCleanup);
+    }
+  }
+  function observeCleanup(event: MessageEvent<unknown>): void {
+    if (message(event.data)?.stopWorkspace instanceof MessagePort) state.cleanupStarted++;
+  }
+  globalThis.MessageChannel = ObservedPorts;
   globalThis.BroadcastChannel = ObservedChannel;
   Reflect.set(globalThis, "__workspaceChannelCounts", state);
 }

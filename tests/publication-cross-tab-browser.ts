@@ -393,6 +393,16 @@ async function latePreparationControl(): Promise<unknown> {
   }
 }
 
+const reservedWorkspaceChildren = new Map<string, FilesystemConnection>();
+async function cancelWorkspaceChild(connection: FilesystemConnection): Promise<void> {
+  revokeFilesystem(connection);
+  for (const reservation of connection.reservations) releaseFilesystemReservation(reservation);
+  try {
+    await stopWorkspaceBridge(connection);
+  } finally {
+    connection.port.close();
+  }
+}
 async function workspaceControl(operation: string, value: unknown): Promise<unknown> {
   if (operation === "workspaceCancelledStartup") return cancelledWorkspaceStartup();
   if (operation === "workspaceAuthority") {
@@ -444,15 +454,24 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     );
     return worker.until(body.failSetup === true ? "finished" : "ready");
   }
-  if (operation === "workspaceDescendantCancel") {
+  if (operation === "workspaceDescendantCancelReserved") {
+    const key = text(body.key),
+      connection = reservedWorkspaceChildren.get(key);
+    if (!connection) throw new Error("missing reserved workspace child");
+    reservedWorkspaceChildren.delete(key);
+    await cancelWorkspaceChild(connection);
+    return null;
+  }
+  if (operation === "workspaceDescendantCancel" || operation === "workspaceDescendantReserve") {
     const parent = guests.get(text(body.parent));
     if (!parent) throw new Error("missing source guest");
     const inherited = record(await parent.worker.request("descendantCodec"));
     const connection = inherited.connection as FilesystemConnection;
-    revokeFilesystem(connection);
-    for (const reservation of connection.reservations) releaseFilesystemReservation(reservation);
-    await stopWorkspaceBridge(connection);
-    connection.port.close();
+    if (operation === "workspaceDescendantReserve") {
+      reservedWorkspaceChildren.set(text(body.key), connection);
+      return null;
+    }
+    await cancelWorkspaceChild(connection);
     return null;
   }
   if (operation === "workspaceDescendant" || operation === "workspaceDescendantQueue") {

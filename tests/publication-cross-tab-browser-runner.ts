@@ -364,6 +364,29 @@ async function repeatedCleanup(page: Page): Promise<void> {
     "PASS repeated stop/dispose stays revoked and closes once; unaccepted codec reservation cancellation joins separately",
   );
 }
+async function lateReservationCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "late-parent", mode: "proc" });
+  await control(page, "workspaceDescendantReserve", { parent: "late-parent", key: "late-child" });
+  const before = record(await workspaceChannels(page));
+  await control(page, "workspaceGuestSignalStop", { key: "late-parent" });
+  await page.waitForFunction((before) => {
+    const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    return (
+      state && typeof state === "object" && Number(Reflect.get(state, "cleanupStarted")) > before
+    );
+  }, Number(before.cleanupStarted));
+  equal(record(await control(page, "workspaceGuestStatus", { key: "late-parent" })).exit, false);
+  equal(record(await workspaceChannels(page)).closed, before.closed);
+  await control(page, "workspaceDescendantCancelReserved", { key: "late-child" });
+  await joinedGuestStop(page, "late-parent");
+  const after = record(await workspaceChannels(page));
+  equal(after.closed, Number(before.closed) + 2);
+  equal(after.pending, 0);
+  equal(after.closedPending, 0);
+  console.log(
+    "PASS observed actual parent cleanup joins later pre-bind child cancellation before closed-once exit ACK",
+  );
+}
 async function failedCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "lost", mode: "proc", cleanupFailure: true });
   const before = record(await workspaceChannels(page));
@@ -403,6 +426,7 @@ async function workspaceCleanupControls(browser: Browser, origin: string): Promi
     await pendingCleanup(page);
     await transferCleanup(page);
     await repeatedCleanup(page);
+    await lateReservationCleanup(page);
     await failedCleanup(page);
   } finally {
     await context.close();

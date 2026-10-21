@@ -27,6 +27,8 @@ import {
   createFilesystemIdentity,
   createProcessFilesystemIdentity,
   isRevoked,
+  revokeFilesystem,
+  releaseFilesystemReservation,
 } from "../fs/protocol";
 import type { PublicationLimits } from "../fs/publication-internal";
 
@@ -407,5 +409,37 @@ test("synchronous cleanup posting failure is memoized without skipping local dis
   } finally {
     pair.client.port.close();
     pair.server.port.close();
+  }
+});
+
+test("parent cleanup joins a pre-bind child cancelled after stopping is observed", async () => {
+  const f = await fixture();
+  const connection = createResidentConnection(f.session.descriptor);
+  const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
+  const childIdentity = createProcessFilesystemIdentity(connection);
+  const childPair = connectFilesystemIdentity(childIdentity);
+  let joined: Promise<void> | undefined;
+  try {
+    await parent.asyncCall("workspaceBind", [f.session]);
+    await parent.asyncCall("preopen", ["/"]);
+    await parent.asyncCall("resolve", [f.directory, "dir/a"]);
+    const reservation = parent.reserve(f.file, childIdentity);
+    connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
+    await parent.asyncCall("stat", [f.file]);
+    joined = stopWorkspaceBridge(parent.connection);
+    void joined.catch(() => {});
+    await rejectsErrno(parent.asyncCall("stat", [f.file]), 11);
+    expect(isRevoked(childIdentity)).toBe(false);
+    expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(0);
+    revokeFilesystem(childIdentity);
+    releaseFilesystemReservation(reservation);
+    await stopWorkspaceBridge(childPair.client);
+    await joined;
+    expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(1);
+  } finally {
+    await joined?.catch(() => {});
+    childPair.client.port.close();
+    parent.dispose();
+    await f.stop();
   }
 });
