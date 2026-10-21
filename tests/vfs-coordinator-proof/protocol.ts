@@ -56,7 +56,14 @@ export type Reply =
   | { kind: "ok"; cursor: Cursor; result: unknown }
   | { kind: "error"; code: string; message: string };
 export type Command =
-  | { kind: "initialize"; workspace: string; arm: Arm; token: string; expected: number; attempt: string }
+  | {
+      kind: "initialize";
+      workspace: string;
+      arm: Arm;
+      token: string;
+      expected: number;
+      attempt: string;
+    }
   | { kind: "cancel-initialize"; attempt: string }
   | { kind: "request"; request: Request }
   | { kind: "release"; gate: string }

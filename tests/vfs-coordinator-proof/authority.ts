@@ -25,7 +25,10 @@ let instance = crypto.randomUUID();
 let workspaceName: string | undefined;
 const events: unknown[] = [];
 const ports = new Set<MessagePort>();
-const initializations = new Map<string, { port: MessagePort; controller: AbortController; timer: ReturnType<typeof setTimeout> }>();
+const initializations = new Map<
+  string,
+  { port: MessagePort; controller: AbortController; timer: ReturnType<typeof setTimeout> }
+>();
 const counters = {
   strict: 0,
   relaxed: 0,
@@ -92,23 +95,35 @@ async function acquireVolatile(workspace: string, signal: AbortSignal): Promise<
   signal.throwIfAborted();
   const ready = Promise.withResolvers<() => void>();
   const held = Promise.withResolvers<void>();
-  const aborted = () => { held.resolve(); ready.reject(signal.reason); };
+  const aborted = () => {
+    held.resolve();
+    ready.reject(signal.reason);
+  };
   const release = () => {
     signal.removeEventListener("abort", aborted);
     held.resolve();
   };
   signal.addEventListener("abort", aborted, { once: true });
-  void navigator.locks.request(`e5-volatile:${workspace}`, { ifAvailable: true }, (lock) => {
-    trace({ phase: "volatile-lock-result", acquired: Boolean(lock), instance });
-    if (!lock) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
-    signal.throwIfAborted();
-    ready.resolve(release);
-    return held.promise;
-  }).catch(ready.reject);
-  try { return await ready.promise; }
-  catch (error) { release(); throw error; }
+  void navigator.locks
+    .request(`e5-volatile:${workspace}`, { ifAvailable: true }, (lock) => {
+      trace({ phase: "volatile-lock-result", acquired: Boolean(lock), instance });
+      if (!lock) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
+      signal.throwIfAborted();
+      ready.resolve(release);
+      return held.promise;
+    })
+    .catch(ready.reject);
+  try {
+    return await ready.promise;
+  } catch (error) {
+    release();
+    throw error;
+  }
 }
-async function initialize(command: Extract<Command, { kind: "initialize" }>, signal: AbortSignal): Promise<Reply> {
+async function initialize(
+  command: Extract<Command, { kind: "initialize" }>,
+  signal: AbortSignal,
+): Promise<Reply> {
   signal.throwIfAborted();
   const from = instance;
   if (state) {
@@ -135,11 +150,16 @@ async function initialize(command: Extract<Command, { kind: "initialize" }>, sig
     claimedDatabase = await openDatabase(command.workspace, signal);
     requireInstance(from);
     signal.throwIfAborted();
-    const claimed = await transaction(claimedDatabase, "strict", (saved) => {
-      requireInstance(from);
-      signal.throwIfAborted();
-      return claim(saved, command);
-    }, signal);
+    const claimed = await transaction(
+      claimedDatabase,
+      "strict",
+      (saved) => {
+        requireInstance(from);
+        signal.throwIfAborted();
+        return claim(saved, command);
+      },
+      signal,
+    );
     requireInstance(from);
     signal.throwIfAborted();
     db = claimedDatabase;
@@ -345,7 +365,10 @@ async function response(control: Command, result: Reply): Promise<Reply> {
 function initialization(port: MessagePort, control: Command) {
   const controller = new AbortController();
   if (control.kind !== "initialize") return { controller, finish: () => {} };
-  const timer = setTimeout(() => controller.abort(new Error("UNAVAILABLE: initialize deadline")), 3000);
+  const timer = setTimeout(
+    () => controller.abort(new Error("UNAVAILABLE: initialize deadline")),
+    3000,
+  );
   const owner = { port, controller, timer };
   initializations.set(control.attempt, owner);
   const finish = () => {
@@ -356,7 +379,8 @@ function initialization(port: MessagePort, control: Command) {
 }
 function cancelInitialization(port: MessagePort, attempt: string): void {
   const owner = initializations.get(attempt);
-  if (owner?.port === port) owner.controller.abort(new Error("UNAVAILABLE: initialization cancelled"));
+  if (owner?.port === port)
+    owner.controller.abort(new Error("UNAVAILABLE: initialization cancelled"));
 }
 function deliver(port: MessagePort, envelope: Envelope): void {
   const control = envelope.command;
@@ -421,7 +445,10 @@ function deliver(port: MessagePort, envelope: Envelope): void {
     return;
   }
   if (control.kind === "initialize" && initializations.has(control.attempt)) {
-    post(port, { id: envelope.id, result: failure(new Error("OP_ID_CONFLICT: initialization identity")) });
+    post(port, {
+      id: envelope.id,
+      result: failure(new Error("OP_ID_CONFLICT: initialization identity")),
+    });
     return;
   }
   const admission = initialization(port, control);

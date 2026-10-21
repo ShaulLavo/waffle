@@ -1,3 +1,4 @@
+import { blockedOpen, committedClaim, uncommittedClaim } from "./interruptions-database.js";
 import { ProofClient } from "./client.js";
 import { openDatabase } from "./database.js";
 import type { Reply } from "./protocol.js";
@@ -82,6 +83,7 @@ async function snapshot(): Promise<string> {
   return serialized({ authority: client.authority, cursor: client.cursor, state: detail.state });
 }
 const interruptions = {
+  blockedOpen, committedClaim, uncommittedClaim,
   client,
   holdBootstrap,
   holdRegistry,

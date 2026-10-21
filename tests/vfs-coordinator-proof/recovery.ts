@@ -86,10 +86,15 @@ export class IntentLedger {
     const fingerprint = JSON.stringify({ actor: request.actor, operation: request.operation });
     if (fingerprint !== intent.fingerprint || request.history !== intent.request.history) return;
     const result = reply.kind === "ok" ? reply.result : undefined;
-    const matching = result && typeof result === "object" &&
-      "key" in result && result.key === `${request.client}:${request.sequence}` &&
-      "fingerprint" in result && result.fingerprint === intent.fingerprint &&
-      "history" in result && result.history === intent.request.history;
+    const matching =
+      result &&
+      typeof result === "object" &&
+      "key" in result &&
+      result.key === `${request.client}:${request.sequence}` &&
+      "fingerprint" in result &&
+      result.fingerprint === intent.fingerprint &&
+      "history" in result &&
+      result.history === intent.request.history;
     intent.outcome = matching ? "resolved" : "unknown";
   }
   unresolved(): string[] {

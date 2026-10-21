@@ -24,9 +24,16 @@ import {
 class RecoveryAttempt {
   readonly id = crypto.randomUUID();
   readonly controller = new AbortController();
-  readonly timer = setTimeout(() => this.controller.abort(new Error("UNAVAILABLE: recovery deadline")), 3000);
-  finish(): void { clearTimeout(this.timer); }
-  cancel(): void { this.controller.abort(new Error("FENCED: attempt superseded or detached")); }
+  readonly timer = setTimeout(
+    () => this.controller.abort(new Error("UNAVAILABLE: recovery deadline")),
+    3000,
+  );
+  finish(): void {
+    clearTimeout(this.timer);
+  }
+  cancel(): void {
+    this.controller.abort(new Error("FENCED: attempt superseded or detached"));
+  }
 }
 export class ProofClient {
   readonly client = crypto.randomUUID();
@@ -62,7 +69,12 @@ export class ProofClient {
       return await work(attempt);
     } catch (error) {
       if (this.attempt === attempt && this.authority.kind !== "detached")
-        this.authority = { kind: "unavailable", instance: observed(this.authority), previous: accepted(this.authority), reason: String(error) };
+        this.authority = {
+          kind: "unavailable",
+          instance: observed(this.authority),
+          previous: accepted(this.authority),
+          reason: String(error),
+        };
       return failure(error);
     } finally {
       attempt.finish();
@@ -72,17 +84,22 @@ export class ProofClient {
   async recover(): Promise<Reply> {
     const connection = this.connection;
     if (!connection || !this.worker) return failure(new Error("UNAVAILABLE: no retained port"));
-    return this.runAttempt((attempt) => navigator.locks.request(
-      `e5-bootstrap:${connection.workspace}`,
-      { signal: attempt.controller.signal },
-      () => this.recoverRetained(connection, attempt),
-    ));
+    return this.runAttempt((attempt) =>
+      navigator.locks.request(
+        `e5-bootstrap:${connection.workspace}`,
+        { signal: attempt.controller.signal },
+        () => this.recoverRetained(connection, attempt),
+      ),
+    );
   }
-  private async recoverRetained(connection: {
-    workspace: string;
-    arm: Arm;
-    token: string;
-  }, attempt: RecoveryAttempt): Promise<Reply> {
+  private async recoverRetained(
+    connection: {
+      workspace: string;
+      arm: Arm;
+      token: string;
+    },
+    attempt: RecoveryAttempt,
+  ): Promise<Reply> {
     this.validateAttempt(attempt);
     if (this.connection !== connection || !this.worker)
       return failure(new Error("FENCED: recovery attachment changed before admission"));
@@ -93,12 +110,16 @@ export class ProofClient {
     const head = await readRegistry(connection.workspace, attempt.controller.signal);
     this.validateRecovery(connection, worker, attempt, expectedInstance);
     const claimedInstance = observed(this.authority);
-    const reply = await this.send({
-      kind: "initialize",
-      ...connection,
-      expected: head?.epoch ?? 0,
-      attempt: attempt.id,
-    }, 3000, attempt.controller.signal);
+    const reply = await this.send(
+      {
+        kind: "initialize",
+        ...connection,
+        expected: head?.epoch ?? 0,
+        attempt: attempt.id,
+      },
+      3000,
+      attempt.controller.signal,
+    );
     this.validateRecovery(connection, worker, attempt, claimedInstance);
     const instance = observed(this.authority);
     if (reply.kind === "error" || !instance) {
@@ -138,10 +159,7 @@ export class ProofClient {
     instance: string | undefined,
   ): void {
     this.validateAttempt(attempt);
-    if (
-      this.connection !== connection ||
-      this.worker !== worker
-    )
+    if (this.connection !== connection || this.worker !== worker)
       throw new Error("FENCED: recovery attachment changed");
     if (this.authority.kind !== "recovering" || (instance && observed(this.authority) !== instance))
       throw new Error("FENCED: recovery instance changed across await");
@@ -151,13 +169,20 @@ export class ProofClient {
     if (this.attempt !== attempt) throw new Error("FENCED: obsolete recovery attempt");
   }
   async connect(workspace: string, arm: Arm, replace = false): Promise<Reply> {
-    return this.runAttempt((attempt) => navigator.locks.request(
-      `e5-bootstrap:${workspace}`,
-      { signal: attempt.controller.signal },
-      () => this.attach(workspace, arm, replace, attempt),
-    ));
+    return this.runAttempt((attempt) =>
+      navigator.locks.request(
+        `e5-bootstrap:${workspace}`,
+        { signal: attempt.controller.signal },
+        () => this.attach(workspace, arm, replace, attempt),
+      ),
+    );
   }
-  private async attach(workspace: string, arm: Arm, replace: boolean, attempt: RecoveryAttempt): Promise<Reply> {
+  private async attach(
+    workspace: string,
+    arm: Arm,
+    replace: boolean,
+    attempt: RecoveryAttempt,
+  ): Promise<Reply> {
     this.validateAttempt(attempt);
     const head = await readRegistry(workspace, attempt.controller.signal);
     this.validateAttempt(attempt);
@@ -243,7 +268,11 @@ export class ProofClient {
         resolve(reply);
       };
       const cancel = () => {
-        if (command.kind === "initialize") worker.port.postMessage({ id, command: { kind: "cancel-initialize", attempt: command.attempt } });
+        if (command.kind === "initialize")
+          worker.port.postMessage({
+            id,
+            command: { kind: "cancel-initialize", attempt: command.attempt },
+          });
       };
       const aborted = () => {
         cancel();
@@ -252,7 +281,9 @@ export class ProofClient {
       const timer = setTimeout(() => {
         cancel();
         this.fault(`response deadline: ${command.kind}`);
-        settle(unsettled(command.kind === "request" ? command.request : undefined, "response deadline"));
+        settle(
+          unsettled(command.kind === "request" ? command.request : undefined, "response deadline"),
+        );
       }, timeoutMs);
       this.pending.set(id, { instance: observed(this.authority), command, settle });
       signal?.addEventListener("abort", aborted, { once: true });

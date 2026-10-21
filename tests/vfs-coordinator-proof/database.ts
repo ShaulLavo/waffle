@@ -3,14 +3,22 @@ import type { Arm, State } from "./protocol.js";
 
 const opening = new Set<IDBOpenDBRequest>();
 function abortTransaction(tx: IDBTransaction): void {
-  try { tx.abort(); }
-  catch (error) {
+  try {
+    tx.abort();
+  } catch (error) {
     if (error instanceof DOMException && error.name === "InvalidStateError") return;
     throw error;
   }
 }
-function finishOpen(request: IDBOpenDBRequest, signal: AbortSignal | undefined, resolve: (db: IDBDatabase) => void): void {
-  if (signal?.aborted) { request.result.close(); return; }
+function finishOpen(
+  request: IDBOpenDBRequest,
+  signal: AbortSignal | undefined,
+  resolve: (db: IDBDatabase) => void,
+): void {
+  if (signal?.aborted) {
+    request.result.close();
+    return;
+  }
   resolve(request.result);
 }
 export function openDatabase(workspace: string, signal?: AbortSignal): Promise<IDBDatabase> {
@@ -20,13 +28,19 @@ export function openDatabase(workspace: string, signal?: AbortSignal): Promise<I
     const request = indexedDB.open(workspace, 1);
     opening.add(request);
     const aborted = () => reject(signal?.reason);
-    const cleanup = () => { signal?.removeEventListener("abort", aborted); opening.delete(request); };
+    const cleanup = () => {
+      signal?.removeEventListener("abort", aborted);
+      opening.delete(request);
+    };
     signal?.addEventListener("abort", aborted, { once: true });
     request.onupgradeneeded = () => {
       if (signal?.aborted) request.transaction?.abort();
       else request.result.createObjectStore("workspace");
     };
-    request.onerror = () => { cleanup(); reject(request.error); };
+    request.onerror = () => {
+      cleanup();
+      reject(request.error);
+    };
     request.onsuccess = () => {
       cleanup();
       finishOpen(request, signal, resolve);
@@ -87,8 +101,14 @@ export function transaction<T>(
     const aborted = () => abortTransaction(tx);
     const cleanup = () => signal?.removeEventListener("abort", aborted);
     signal?.addEventListener("abort", aborted, { once: true });
-    tx.oncomplete = () => { cleanup(); resolve(result); };
-    tx.onabort = () => { cleanup(); reject(problem ?? signal?.reason ?? tx.error ?? new Error("ABORT")); };
+    tx.oncomplete = () => {
+      cleanup();
+      resolve(result);
+    };
+    tx.onabort = () => {
+      cleanup();
+      reject(problem ?? signal?.reason ?? tx.error ?? new Error("ABORT"));
+    };
     const get = store.get("head");
     const success = (value: T) => {
       result = value;
@@ -102,7 +122,10 @@ export function transaction<T>(
     };
   });
 }
-export async function readRegistry(workspace: string, signal?: AbortSignal): Promise<State | undefined> {
+export async function readRegistry(
+  workspace: string,
+  signal?: AbortSignal,
+): Promise<State | undefined> {
   const db = await openDatabase(workspace, signal);
   try {
     return await transaction(db, "relaxed", (state) => ({ result: state }), signal);
