@@ -1646,10 +1646,10 @@ test("cancelled unconnected publication identities release bounded sessions with
     service.connect(connected.server);
     next = new FilesystemClient(connected.client);
     expect(next.connection.publication!.session.slot).toBe(cancelled.publication!.session.slot);
-    expect(await next.asyncCall("preopen", ["/"])).toBeNumber();
+    expect(await next.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([23]));
     cancelUnconnectedIdentity(cancelled);
     expect(domain.diagnostics().sessions).toBe(baseline + 1);
-    expect(await next.asyncCall("preopen", ["/"])).toBeNumber();
+    expect(await next.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([23]));
     next.dispose();
     service.sweep();
     expect(domain.diagnostics().sessions).toBe(baseline);

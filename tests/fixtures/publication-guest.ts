@@ -141,15 +141,17 @@ function call(guest: ReturnType<typeof setup>, request: Call) {
   return { result, offset: guest.resource.offset, byte: bytes[0], count: view.getUint32(32, true) };
 }
 function pauseAdmission(connection: FilesystemConnection, buffer: SharedArrayBuffer): void {
-  const inputs = connection.publication?.buffers.inputs;
+  const control = connection.publication?.buffers.control;
   const gate = new Int32Array(buffer);
-  const original = Uint8Array.prototype.set;
-  Uint8Array.prototype.set = function (source: ArrayLike<number>, offset?: number): void {
-    Reflect.apply(original, this, [source, offset]);
-    if (this.buffer !== inputs) return;
-    Uint8Array.prototype.set = original;
+  const original = Atomics.compareExchange;
+  Atomics.compareExchange = function (array, index, expected, replacement) {
+    const previous = original(array, index, expected, replacement);
+    if (array.buffer !== control || index !== 1 || expected !== 0 || previous !== 0)
+      return previous;
+    Atomics.compareExchange = original;
     self.postMessage({ admissionHeld: true });
     while (!Atomics.load(gate, 0)) Atomics.wait(gate, 0, 0);
+    return previous;
   };
 }
 interface ServiceSetup {
