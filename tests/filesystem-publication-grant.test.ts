@@ -355,17 +355,19 @@ test("reference cleanup cannot lend its access to a reentrant readiness probe", 
   let readiness: boolean | undefined;
   let inheritedFailure: unknown;
   try {
-    Atomics.load = function (...args: Parameters<typeof Atomics.load>) {
-      Atomics.load = load;
-      readiness = shared.directReadiness(
-        slot,
-        f.handle,
-        false,
-        () => false,
-        f.root.connection.owner,
-      );
-      return Reflect.apply(load, Atomics, args);
-    };
+    Atomics.load = new Proxy(load, {
+      apply(target, receiver, args) {
+        Atomics.load = load;
+        readiness = shared.directReadiness(
+          slot,
+          f.handle,
+          false,
+          () => false,
+          f.root.connection.owner,
+        );
+        return Reflect.apply(target, receiver, args);
+      },
+    });
     Atomics.compareExchange = ((
       array: Int32Array,
       index: number,

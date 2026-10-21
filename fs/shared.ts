@@ -768,6 +768,7 @@ export class SharedFilesystemState {
   ): T {
     if (!this.publication) return read();
     if ((this.serviceMutation && owner === SERVICE_OWNER) || this.currentOwner === owner) {
+      this.publication.assertLive();
       this.publication.assertAccess();
       return read();
     }
