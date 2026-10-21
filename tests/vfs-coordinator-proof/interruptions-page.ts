@@ -82,7 +82,12 @@ async function snapshot(): Promise<string> {
     throw new Error("Invalid inspection");
   const detail = inspection.result;
   if (!("state" in detail)) throw new Error("Missing inspected state");
-  return serialized({ authority: client.authority, cursor: client.cursor, state: detail.state, connection: client.attachment() });
+  return serialized({
+    authority: client.authority,
+    cursor: client.cursor,
+    state: detail.state,
+    connection: client.attachment(),
+  });
 }
 const interruptions = {
   blockedOpen,
