@@ -635,7 +635,6 @@ test("a failed original session release retains its pin and still attempts safe 
   }
 });
 
-
 test("F1 shutdown recovers later proven-dead locks before an earlier session release", async () => {
   const owned = fixture();
   const child = connectFilesystemIdentity(createProcessFilesystemIdentity(owned.root.client));
@@ -796,13 +795,10 @@ async function rejectedQuiescing(reason: unknown, reentrant: boolean): Promise<v
 const quiescingReasons = [new Error("original quiescing sweep"), undefined, null, false, 0, ""];
 for (const [index, reason] of quiescingReasons.entries()) {
   test(`F3 original cleared quiescing rejection ${index} survives later shutdown`, () =>
-    rejectedQuiescing(reason, false),
-  );
+    rejectedQuiescing(reason, false));
   test(`F3 original cleared quiescing rejection ${index} survives reentrant shutdown`, () =>
-    rejectedQuiescing(reason, true),
-  );
+    rejectedQuiescing(reason, true));
 }
-
 
 test("F1 service revocation alone does not authorize dead-owner recovery", async () => {
   const owned = fixture();
