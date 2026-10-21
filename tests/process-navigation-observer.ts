@@ -17,8 +17,6 @@ type EngineSummary = {
   counts: Record<string, number>;
 };
 
-// Leave ample room below 256 KiB for serialization and event/string overhead.
-// Retain recent events, including the preceding context's retirement, not whole runs.
 const retainedBudget = 32 * 1024;
 const events: { json: string; cost: number }[] = [];
 let retainedCost = 0;
@@ -106,8 +104,6 @@ export function finishNavigationEngine(): void {
   summary = undefined;
 }
 
-// The server sees no Playwright request ID. Attribution is only to the active
-// window; the server request ordinal is deliberately not a client request ID.
 export function observeRootHandler(phase: "entry" | "response-return"): void {
   if (phase === "entry") serverOrdinal++;
   current?.record(`server-root-${phase}`, {
