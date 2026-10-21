@@ -650,6 +650,10 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
       await page.goto(origin);
     }
     await control(owner, "persistentSeed", name);
+    await pendingClaimControl(owner, holder, name);
+    await lateRequestControl(owner, holder, false);
+    await lateRequestControl(owner, holder, true);
+    await epochCancellationControl(owner, name);
     const before = await control(owner, "persistentInspect", name);
     await control(holder, "persistentHold", name);
     for (const attempt of ["first-live-holder", "second-explicit-live-holder"]) {
@@ -720,13 +724,6 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     console.log(
       "PASS failed native close stays failed; surviving real attachment blocks replacement until genuine realm destruction",
     );
-    const pendingHolder = await context.newPage();
-    await observeDeaths(pendingHolder);
-    await pendingHolder.goto(origin);
-    await pendingClaimControl(owner, pendingHolder, name);
-    await lateRequestControl(owner, pendingHolder, false);
-    await lateRequestControl(owner, pendingHolder, true);
-    await epochCancellationControl(owner, name);
     await control(owner, "persistentDelete", name);
   } finally {
     await context.close();
