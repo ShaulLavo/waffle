@@ -1,25 +1,17 @@
 import { bootstrap, type RuntimeWorkerRequest, type WorkerExecutionContext } from "../../browser/worker";
 import { shareFileResource } from "../../core/open-file";
 import type { Resource } from "../../core/descriptors";
-import { ProcessABI, type ProcessService } from "../../proc/abi";
-import { createSignalState } from "../../proc/signals";
-import { outcomeWord } from "../../proc/outcome";
+import { createWorkerProcessTransport } from "../../proc/worker-client";
 import type { FilesystemConnection } from "../../fs/protocol";
 import { integer, record, residentRequest, text } from "../../fs/publication-attachment";
 import { guestFunction, publicationProcModule, publicationWasiModule } from "./publication-wasm";
 
 let current: WorkerExecutionContext | undefined;
 let resource: Extract<Resource, { kind: "file" }> | undefined;
-let abi: ProcessABI | undefined;
 let fd = 0, mode = "wasi", setupCount = 0;
 let finish: (() => void) | undefined;
 let claimGate: Int32Array | undefined;
 const memory = new WebAssembly.Memory({ initial: 4 });
-function unusedService(): ProcessService {
-  const unused = (): never => { throw new Error("unexpected process fixture operation"); };
-  return { spawn: unused, startStatus: unused, waitJob: unused, jobEmpty: unused,
-    wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
-}
 function call(body: unknown): unknown {
   if (!current || !resource) throw new Error("guest not started");
   const request = record(body), kind = text(request.kind);
@@ -43,7 +35,8 @@ async function start(request: { mode: string; connection: FilesystemConnection }
   mode = text(request.mode);
   const connection = request.connection;
   const req: RuntimeWorkerRequest = { filesystem: connection, args: [], env: {},
-    module: mode === "proc" ? publicationProcModule() : publicationWasiModule() };
+    module: mode === "proc" ? publicationProcModule() : publicationWasiModule(),
+    runtimeProcess: mode === "proc" ? createWorkerProcessTransport() : undefined };
   await bootstrap(req, {
     setup() { setupCount++; },
     namespaces: () => ({ env: { memory } }),
@@ -53,13 +46,9 @@ async function start(request: { mode: string; connection: FilesystemConnection }
       context.fs.retain(descriptor.handle);
       resource = { kind: "file", handle: descriptor.handle, offset: 0, append: false };
       shareFileResource(resource, connection);
-      fd = context.wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
-      abi = new ProcessABI({ memory, descriptors: context.wasi.descriptors, fs: context.fs, pid: 7,
-        service: unusedService(), signals: { signalState: createSignalState(),
-          interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() },
-        wait() { throw new Error("resident syscall waited"); } });
+      fd = context.wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n,
+        () => context.fs.release(descriptor.handle));
     },
-    imports(imports) { return mode === "proc" ? { ...imports, runtime_proc: abi!.imports } : imports; },
     async run(context) {
       current = context;
       const done = Promise.withResolvers<void>(); finish = done.resolve;

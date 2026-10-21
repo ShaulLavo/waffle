@@ -73,6 +73,8 @@ async function run(origin: string): Promise<void> {
     equal(changes.publications.length, 2);
     equal(record(record(record(changes.publications[1]).receipt).result), { kind: "append", written: 2, offset: 5 });
     console.log("PASS independent pages, real runtime_proc writes/append and Preview1 current read, no root SAB transfer, no commit nudge, exact two groups");
+    equal(await control(first, "oldSettlement"), { denied: true, queries: 1, current: "ready" });
+    console.log("PASS duplicate old cancellation cannot erase the next READY grant from transport status tracking");
     equal(await control(first, "queuedAttachment"), { accepted: false, joined: true });
     equal(record(await control(first, "cancelledStartup")).setupCount, 0);
     console.log("PASS queued acquisition cancellation joins cleanup and actual cancelled bootstrap never reaches setup");

@@ -48,7 +48,7 @@ export function residentSession(value: unknown): ResidentSession {
   return { descriptor: residentDescriptor(data.descriptor), token: text(data.token),
     session: { slot: integer(session.slot), serial: integer(session.serial) } };
 }
-function residentGrant(value: unknown): ResidentGrant {
+export function residentGrant(value: unknown): ResidentGrant {
   const data = record(value), stat = record(data.stat), file = record(data.file);
   if (stat.kind !== "file") throw new FilesystemError(28);
   const base = { key: text(data.key), session: residentSession(data.session),

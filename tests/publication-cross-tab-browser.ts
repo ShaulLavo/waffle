@@ -1,6 +1,7 @@
-import { acquirePublicationGuard, createResidentConnection, record, residentDescriptor, residentRequest, ResidentAttachment, text } from "../fs/publication-attachment";
+import { acquirePublicationGuard, attachResidentPublication, createResidentConnection, encodeResidentOutcome, record, residentDescriptor, residentGrant, residentRequest, residentSession, ResidentAttachment, ResidentChannel, text } from "../fs/publication-attachment";
 import { revokeFilesystem, type FilesystemConnection } from "../fs/protocol";
-import type { ResidentDescriptor } from "../fs/publication-grant";
+import { ResidentGrantCell, type ResidentDescriptor } from "../fs/publication-grant";
+import type { ResidentGrantClient } from "../fs/publication-attachment";
 
 class FixtureWorker {
   readonly worker: Worker;
@@ -58,7 +59,7 @@ class FixtureWorker {
     await joined;
   }
 }
-let authority: FixtureWorker | undefined, attachment: ResidentAttachment | undefined;
+let authority: FixtureWorker | undefined, attachment: ResidentAttachment | ResidentGrantClient | undefined;
 let descriptor: ResidentDescriptor | undefined;
 const guests = new Map<string, { worker: FixtureWorker; connection: FilesystemConnection }>();
 let claimGate: Int32Array | undefined;
@@ -94,6 +95,34 @@ async function cancelledStartupControl(): Promise<unknown> {
     return await worker.until("finished");
   } finally { await worker.terminate(); await exclusive.release(); }
 }
+async function oldSettlementControl(): Promise<unknown> {
+  if (!descriptor) throw new Error("descriptor missing");
+  const guard = await acquirePublicationGuard(descriptor.workspace, "shared", new AbortController().signal);
+  const channel = new ResidentChannel(descriptor.workspace);
+  const session = residentSession(await channel.call("open", descriptor));
+  let active: ResidentGrantCell | undefined, queries = 0;
+  channel.status = () => { queries++; return active?.snapshot(); };
+  try {
+    const request = { kind: "write", offset: 0, maxBytes: 1 };
+    active = new ResidentGrantCell(residentGrant(await channel.call("prepare", { token: session.token, request })));
+    active.cancel();
+    const previous = encodeResidentOutcome(active.snapshot());
+    await channel.call("settle", { token: session.token, outcome: previous });
+    active = new ResidentGrantCell(residentGrant(await channel.call("prepare", { token: session.token, request })));
+    await channel.call("settle", { token: session.token, outcome: previous });
+    let denied = false;
+    try { await channel.call("prepare", { token: session.token, request }); } catch { denied = true; }
+    const result = { denied, queries, current: active.snapshot().kind };
+    active.cancel();
+    await channel.call("settle", { token: session.token, outcome: encodeResidentOutcome(active.snapshot()) });
+    return result;
+  } finally {
+    await channel.call("close", { token: session.token });
+    channel.close();
+    await guard.release();
+  }
+}
+/** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation === "authority") {
     authority = new FixtureWorker("/resident-authority.js");
@@ -104,10 +133,10 @@ export async function control(operation: string, value?: unknown): Promise<unkno
   }
   if (operation === "peer") {
     descriptor = residentDescriptor(value);
-    attachment = new ResidentAttachment(descriptor, () => false);
-    await attachment.attach();
+    attachment = await attachResidentPublication(descriptor, new AbortController().signal);
     return { attached: true, authorityRootReceived: false };
   }
+  if (operation === "oldSettlement") return oldSettlementControl();
   if (operation === "queuedAttachment") return queuedAttachmentControl();
   if (operation === "cancelledStartup") return cancelledStartupControl();
   if (operation === "startGuest") return startGuest(text(value));
