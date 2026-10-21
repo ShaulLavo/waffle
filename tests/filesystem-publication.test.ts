@@ -44,6 +44,7 @@ test("local publication orders real host, WASI and direct writers without a nudg
 
 import { PublicationDomain, createPublicationBuffers } from "../fs/publication";
 import type { PublicationLimits } from "../fs/publication-internal";
+import { PAGE, reapFilesystem } from "../fs/protocol";
 
 const limits: PublicationLimits = {
   sessions: 4, operations: 8, inputBytes: 64, argumentBytes: 512,
@@ -320,7 +321,7 @@ test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, out
   const descriptors = new DescriptorTable();
   const resource = { kind: "file", handle, offset: 0, append: false } as const;
   shareFileResource(resource, root.connection);
-  const fd = descriptors.open(resource, (1n << 1n) | (1n << 6n), 0n);
+  const fd = descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
   const memory = new WebAssembly.Memory({ initial: 4 });
   const abi = new ProcessABI({
     memory, descriptors, fs: root, pid: 1, service: unusedProcessService(),
@@ -355,7 +356,7 @@ test("real WASI exported Wasm functions publish positioned and offset writes", a
   const guest = new WebAssembly.Instance(module, { ...wasi.imports(module), env: { memory } });
   const resource = { kind: "file", handle: fixture.handle, offset: 0, append: false } as const;
   shareFileResource(resource, fixture.root.connection);
-  const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 6n), 0n);
+  const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
   wasi.start(guest);
   try {
     const start = await fixture.cut();
@@ -382,4 +383,87 @@ test("uninstrumented completion errors preserve ordinary delivery", async () => 
       await expectErrno(root.asyncCall("unknown-operation"), 52);
     }
   } finally { root.dispose(); service.dispose(); }
+});
+
+function workerMessage(worker: Worker): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => resolve(data);
+    worker.onerror = reject;
+  });
+}
+
+test("separate real Wasm workers publish to the same production root and keep try I/O nonblocking", async () => {
+  const fixture = await localPublicationFixture();
+  const workers: Worker[] = [];
+  const connections: ReturnType<FilesystemClient["fork"]>[] = [];
+  try {
+    const start = await fixture.cut();
+    for (const mode of ["wasi", "proc"]) {
+      const worker = new Worker(new URL("./fixtures/publication-guest.ts", import.meta.url).href);
+      workers.push(worker);
+      const connection = fixture.root.fork();
+      connections.push(connection);
+      const message = workerMessage(worker);
+      worker.postMessage({ connection, mode }, [connection.port]);
+      expect(await message).toEqual({ ready: true });
+    }
+    let message = workerMessage(workers[0]!);
+    workers[0]!.postMessage({ operation: "write", byte: 8 });
+    expect(await message).toEqual({ result: 0, offset: 0, byte: 8, count: 1 });
+    expect((await fixture.changes(start)).publications).toHaveLength(1);
+    const committed = await fixture.cut();
+    Atomics.store(fixture.root.shared.cells, 1, 99);
+    message = workerMessage(workers[1]!);
+    workers[1]!.postMessage({ operation: "write", byte: 9 });
+    expect(await message).toEqual({ result: -6, offset: 0, byte: 9, count: 0xdeadbeef });
+    message = workerMessage(workers[1]!);
+    workers[1]!.postMessage({ operation: "read", byte: 42 });
+    expect(await message).toEqual({ result: -6, offset: 0, byte: 42, count: 0xdeadbeef });
+    Atomics.store(fixture.root.shared.cells, 1, 0);
+    expect(await fixture.cut()).toEqual(committed);
+    message = workerMessage(workers[1]!);
+    workers[1]!.postMessage({ operation: "write", byte: 9 });
+    expect(await message).toEqual({ result: 1, offset: 1, byte: 9, count: 0xdeadbeef });
+    const page = await fixture.changes(start);
+    expect(page.publications).toHaveLength(2);
+    expect(page.publications[0].receipt.id.session).not.toBe(page.publications[1].receipt.id.session);
+    const bytes = new Uint8Array(3);
+    expect(fixture.sibling.tryRead(fixture.handle, [bytes], 0)).toBe(3);
+    expect(bytes).toEqual(new Uint8Array([9, 2, 3]));
+    for (const worker of workers) {
+      message = workerMessage(worker);
+      worker.postMessage("stop");
+      expect(await message).toEqual({ stopped: true });
+    }
+  } finally {
+    Atomics.store(fixture.root.shared.cells, 1, 0);
+    for (const worker of workers) worker.terminate();
+    for (const connection of connections) reapFilesystem(connection);
+    fixture.stop();
+  }
+});
+
+test("production publication growth prepares no bytes and retry captures the new input", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const start = await fixture.cut();
+    const revision = fixture.backend.shared.revision(fixture.handle);
+    const bytes = new Uint8Array([8]);
+    expect(fixture.root.tryWrite(fixture.handle, [bytes], PAGE)).toBe(-6);
+    expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({ pending: 0, inputBytes: 0 });
+    bytes[0] = 9;
+    const pending = Array.from(fixture.root.completions.values());
+    expect(pending).toHaveLength(1);
+    await pending[0]!.value();
+    expect(await fixture.cut()).toEqual(start);
+    expect(fixture.backend.shared.stat(fixture.handle)?.size).toBe(3);
+    expect(fixture.backend.shared.revision(fixture.handle)).toBe(revision);
+    expect(fixture.root.tryWrite(fixture.handle, [bytes], PAGE)).toBe(1);
+    const output = new Uint8Array(1);
+    expect(fixture.sibling.tryRead(fixture.handle, [output], PAGE)).toBe(1);
+    expect(output).toEqual(new Uint8Array([9]));
+    const page = await fixture.changes(start);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].receipt.result).toEqual({ kind: "number", value: 1 });
+  } finally { fixture.stop(); }
 });
