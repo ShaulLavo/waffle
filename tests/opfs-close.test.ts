@@ -32,7 +32,9 @@ class AccessStandIn {
   fault: CloseFault = { kind: "none" };
   onClose?: () => void;
   constructor(readonly file: FileStandIn) {}
-  getSize(): number { return this.file.bytes.length; }
+  getSize(): number {
+    return this.file.bytes.length;
+  }
   read(buffer: Uint8Array, options: { at: number }): number {
     const bytes = this.file.bytes.subarray(options.at, options.at + buffer.length);
     buffer.set(bytes);
@@ -42,7 +44,9 @@ class AccessStandIn {
     this.file.bytes.set(buffer, options.at);
     return buffer.length;
   }
-  truncate(size: number): void { this.file.bytes = new Uint8Array(size); }
+  truncate(size: number): void {
+    this.file.bytes = new Uint8Array(size);
+  }
   flush(): void {
     this.file.fixture.events.push(`flush:${this.file.name}`);
     this.file.onFlush?.();
@@ -68,9 +72,16 @@ class FileStandIn implements FileSystemFileHandle {
   beforeOpen?: () => Promise<void>;
   onAccess?: (access: AccessStandIn) => void;
   onFlush?: () => void;
-  constructor(readonly name: string, readonly fixture: Fixture) {}
-  async isSameEntry(other: FileSystemHandle): Promise<boolean> { return this === other; }
-  async getFile(): Promise<File> { return new File([this.bytes], this.name); }
+  constructor(
+    readonly name: string,
+    readonly fixture: Fixture,
+  ) {}
+  async isSameEntry(other: FileSystemHandle): Promise<boolean> {
+    return this === other;
+  }
+  async getFile(): Promise<File> {
+    return new File([this.bytes], this.name);
+  }
   async createWritable(): Promise<FileSystemWritableFileStream> {
     throw new Error("Writable streams are not used by this fixture");
   }
@@ -91,17 +102,29 @@ function directoryIterator<T>(values: Iterable<T>): FileSystemDirectoryHandleAsy
       if (result.done) return { done: true, value: undefined };
       return { done: false, value: result.value };
     },
-    [Symbol.asyncIterator]() { return this; },
-    async [Symbol.asyncDispose](): Promise<void> { iterator.return?.(); },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    async [Symbol.asyncDispose](): Promise<void> {
+      iterator.return?.();
+    },
   };
 }
 
 class DirectoryStandIn implements FileSystemDirectoryHandle {
   readonly kind = "directory";
   readonly children = new Map<string, DirectoryStandIn | FileStandIn>();
-  constructor(readonly name: string, readonly fixture: Fixture) {}
-  async isSameEntry(other: FileSystemHandle): Promise<boolean> { return this === other; }
-  async getDirectoryHandle(name: string, options?: FileSystemGetDirectoryOptions): Promise<DirectoryStandIn> {
+  constructor(
+    readonly name: string,
+    readonly fixture: Fixture,
+  ) {}
+  async isSameEntry(other: FileSystemHandle): Promise<boolean> {
+    return this === other;
+  }
+  async getDirectoryHandle(
+    name: string,
+    options?: FileSystemGetDirectoryOptions,
+  ): Promise<DirectoryStandIn> {
     const existing = this.children.get(name);
     if (existing instanceof DirectoryStandIn) return existing;
     if (!options?.create) throw new DOMException("Missing directory", "NotFoundError");
@@ -118,16 +141,28 @@ class DirectoryStandIn implements FileSystemDirectoryHandle {
     this.fixture.files.push(file);
     return file;
   }
-  async removeEntry(name: string): Promise<void> { this.children.delete(name); }
-  async resolve(): Promise<string[] | null> { return null; }
-  entries(): FileSystemDirectoryHandleAsyncIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]> {
+  async removeEntry(name: string): Promise<void> {
+    this.children.delete(name);
+  }
+  async resolve(): Promise<string[] | null> {
+    return null;
+  }
+  entries(): FileSystemDirectoryHandleAsyncIterator<
+    [string, FileSystemFileHandle | FileSystemDirectoryHandle]
+  > {
     return directoryIterator(this.children.entries());
   }
-  keys(): FileSystemDirectoryHandleAsyncIterator<string> { return directoryIterator(this.children.keys()); }
-  values(): FileSystemDirectoryHandleAsyncIterator<FileSystemFileHandle | FileSystemDirectoryHandle> {
+  keys(): FileSystemDirectoryHandleAsyncIterator<string> {
+    return directoryIterator(this.children.keys());
+  }
+  values(): FileSystemDirectoryHandleAsyncIterator<
+    FileSystemFileHandle | FileSystemDirectoryHandle
+  > {
     return directoryIterator(this.children.values());
   }
-  [Symbol.asyncIterator]() { return this.entries(); }
+  [Symbol.asyncIterator]() {
+    return this.entries();
+  }
 }
 
 class LockStandIn implements StorageLockManager {
@@ -135,7 +170,11 @@ class LockStandIn implements StorageLockManager {
   releases = 0;
   readonly forced = deferred<never>();
   readonly requests: Promise<unknown>[] = [];
-  request<T>(_name: string, options: { mode: "exclusive"; signal?: AbortSignal }, callback: (lock: unknown | null) => Promise<T>): Promise<T> {
+  request<T>(
+    _name: string,
+    options: { mode: "exclusive"; signal?: AbortSignal },
+    callback: (lock: unknown | null) => Promise<T>,
+  ): Promise<T> {
     if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.held) throw new Error("Fixture must not steal a lock");
     this.held = true;
@@ -173,7 +212,9 @@ class Fixture {
     return gate;
   }
   async open(options: OpfsStorageOptions = {}): Promise<OpfsStorage> {
-    const owner = await this.track(OpfsStorage.open("close-test", { root: this.root, locks: this.locks, ...options }));
+    const owner = await this.track(
+      OpfsStorage.open("close-test", { root: this.root, locks: this.locks, ...options }),
+    );
     this.owners.push(owner);
     return owner;
   }
@@ -182,7 +223,9 @@ class Fixture {
     if (!file) throw new Error(`Fixture file missing: ${name}`);
     return file;
   }
-  live(): AccessStandIn[] { return this.accesses.filter((access) => access.active); }
+  live(): AccessStandIn[] {
+    return this.accesses.filter((access) => access.active);
+  }
   async cleanup(): Promise<void> {
     for (const gate of this.gates) gate.resolve();
     await Promise.all(this.work);
@@ -198,8 +241,11 @@ class Fixture {
 
 async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<void> {
   const fixture = new Fixture();
-  try { await run(fixture); }
-  finally { await fixture.cleanup(); }
+  try {
+    await run(fixture);
+  } finally {
+    await fixture.cleanup();
+  }
 }
 
 function encoded(value: string): string {
@@ -220,10 +266,13 @@ function batch(generation = 1, count = 2): PersistenceBatch {
 async function cached(fixture: Fixture, count = 2, cacheSize = 4) {
   const storage = await fixture.open({ handleCacheSize: cacheSize, createConcurrency: 2 });
   await fixture.track(storage.persist(batch(1, count)));
-  for (let index = 0; index < Math.min(count, cacheSize); index++) await fixture.track(storage.read(`key:${index}`));
+  for (let index = 0; index < Math.min(count, cacheSize); index++)
+    await fixture.track(storage.read(`key:${index}`));
   return storage;
 }
-function fault(reason: unknown): CloseFault { return { kind: "throw", reason }; }
+function fault(reason: unknown): CloseFault {
+  return { kind: "throw", reason };
+}
 const reasons: { label: string; reason: unknown }[] = [
   { label: "Error", reason: new Error("physical close failed") },
   { label: "undefined", reason: undefined },
@@ -236,8 +285,9 @@ const reasons: { label: string; reason: unknown }[] = [
   { label: "empty string", reason: "" },
 ];
 
-  for (const { label, reason } of reasons) {
-    test(`cached failed original retains exact ${label}, count and lock without retry`, () => withFixture(async (fixture) => {
+for (const { label, reason } of reasons) {
+  test(`cached failed original retains exact ${label}, count and lock without retry`, () =>
+    withFixture(async (fixture) => {
       const storage = await cached(fixture);
       const [failed, sibling] = fixture.live();
       failed!.fault = fault(reason);
@@ -256,12 +306,16 @@ const reasons: { label: string; reason: unknown }[] = [
       rejected(await outcome(storage.close()), reason);
       expect(failed!.attempts).toBe(1);
     }));
-  }
+}
 
-  test("reentrant physical callbacks see the same terminal promise and safe siblings finish", () => withFixture(async (fixture) => {
+test("reentrant physical callbacks see the same terminal promise and safe siblings finish", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture);
     const seen: Promise<void>[] = [];
-    for (const access of fixture.live()) access.onClose = () => { seen.push(storage.close()); };
+    for (const access of fixture.live())
+      access.onClose = () => {
+        seen.push(storage.close());
+      };
     const closing = fixture.track(storage.close());
     await closing;
     expect(seen).toEqual([closing, closing]);
@@ -271,7 +325,8 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.releases).toBe(1);
   }));
 
-  test("failed eviction keeps its cached original, prevents replacement and blocks queued starts", () => withFixture(async (fixture) => {
+test("failed eviction keeps its cached original, prevents replacement and blocks queued starts", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture, 2, 1);
     const failed = fixture.live()[0]!;
     const reason = new Error("eviction close failed");
@@ -289,11 +344,14 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.held).toBe(true);
   }));
 
-  test("transient metadata flush failure retains its original and closes cached siblings", () => withFixture(async (fixture) => {
+test("transient metadata flush failure retains its original and closes cached siblings", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture);
     const snapshot = fixture.files.find((file) => file.name.startsWith("snapshot-1-"))!;
     const reason = undefined;
-    snapshot.onAccess = (access) => { access.fault = fault(reason); };
+    snapshot.onAccess = (access) => {
+      access.fault = fault(reason);
+    };
     expect((await outcome(fixture.track(storage.flush()))).status).toBe("rejected");
     const original = fixture.live().find((access) => access.file === snapshot)!;
     rejected(await outcome(fixture.track(storage.close())), reason);
@@ -304,7 +362,8 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.held).toBe(true);
   }));
 
-  test("transient payload throw-undefined joins its in-flight sibling before terminal rejection", () => withFixture(async (fixture) => {
+test("transient payload throw-undefined joins its in-flight sibling before terminal rejection", () =>
+  withFixture(async (fixture) => {
     const storage = await fixture.open({ createConcurrency: 2 });
     await fixture.track(storage.load());
     const workspace = Array.from(fixture.root.children.values())[0];
@@ -314,13 +373,25 @@ const reasons: { label: string; reason: unknown }[] = [
     const second = await data.getFileHandle(`p-${encoded("key:1")}`, { create: true });
     const entered = fixture.gate();
     const release = fixture.gate();
-    first.onAccess = (access) => { access.fault = fault(undefined); };
-    second.beforeOpen = () => { entered.resolve(); return release.promise; };
+    first.onAccess = (access) => {
+      access.fault = fault(undefined);
+    };
+    second.beforeOpen = () => {
+      entered.resolve();
+      return release.promise;
+    };
     const saving = fixture.track(storage.persist(batch()));
     await entered.promise;
     const closing = fixture.track(storage.close());
     let settled = false;
-    void closing.then(() => { settled = true; }, () => { settled = true; });
+    void closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     await Promise.resolve();
     expect(settled).toBe(false);
     release.resolve();
@@ -336,11 +407,14 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.files.some((file) => file.name.startsWith("snapshot-1-"))).toBe(false);
   }));
 
-  test("failed known-payload verification retains its transient original", () => withFixture(async (fixture) => {
+test("failed known-payload verification retains its transient original", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture, 1);
     const file = fixture.file(`p-${encoded("key:0")}`);
     const reason = false;
-    file.onAccess = (access) => { access.fault = fault(reason); };
+    file.onAccess = (access) => {
+      access.fault = fault(reason);
+    };
     expect((await outcome(fixture.track(storage.persist(batch(2, 1))))).status).toBe("rejected");
     rejected(await outcome(fixture.track(storage.close())), reason);
     expect(storage.resources().opfsHandles).toBe(1);
@@ -349,7 +423,8 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.held).toBe(true);
   }));
 
-  test("failed-open cleanup cannot discard a format-marker original", () => withFixture(async (fixture) => {
+test("failed-open cleanup cannot discard a format-marker original", () =>
+  withFixture(async (fixture) => {
     const storage = await fixture.open();
     const workspace = Array.from(fixture.root.children.values())[0];
     if (!(workspace instanceof DirectoryStandIn)) throw new Error("Workspace missing");
@@ -357,12 +432,17 @@ const reasons: { label: string; reason: unknown }[] = [
     const { OPFS_FORMAT } = await import("../fs/vfs-format");
     const marker = await metadata.getFileHandle(`format-${OPFS_FORMAT}`, { create: true });
     const reason = null;
-    marker.onAccess = (access) => { access.fault = fault(reason); };
+    marker.onAccess = (access) => {
+      access.fault = fault(reason);
+    };
     // Remove the entry until initialize creates it, keeping the selected stand-in file.
     metadata.children.delete(marker.name);
     const getFile = metadata.getFileHandle.bind(metadata);
     metadata.getFileHandle = async (name, options) => {
-      if (name === marker.name) { metadata.children.set(name, marker); return marker; }
+      if (name === marker.name) {
+        metadata.children.set(name, marker);
+        return marker;
+      }
       return getFile(name, options);
     };
     expect((await outcome(fixture.track(storage.load()))).status).toBe("rejected");
@@ -372,7 +452,8 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.held).toBe(true);
   }));
 
-  test("ordinary close drains pre-admitted work but rejects new admission", () => withFixture(async (fixture) => {
+test("ordinary close drains pre-admitted work but rejects new admission", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture, 1);
     const file = fixture.file(`p-${encoded("key:0")}`);
     const before = fixture.accesses.length;
@@ -389,7 +470,8 @@ const reasons: { label: string; reason: unknown }[] = [
     expect(fixture.locks.releases).toBe(1);
   }));
 
-  test("ordinary persistence failure stays retryable and cap and durable order remain", () => withFixture(async (fixture) => {
+test("ordinary persistence failure stays retryable and cap and durable order remain", () =>
+  withFixture(async (fixture) => {
     const storage = await cached(fixture, 4, 1);
     expect((await outcome(fixture.track(storage.persist(batch(1, 4))))).status).toBe("rejected");
     await fixture.track(storage.persist(batch(2, 4)));
@@ -398,13 +480,16 @@ const reasons: { label: string; reason: unknown }[] = [
     const flushes = fixture.events.filter((event) => event.startsWith("flush:"));
     expect(flushes.slice(0, 4).every((event) => event.startsWith("flush:p-"))).toBe(true);
     expect(flushes[4]?.startsWith("flush:snapshot-2-")).toBe(true);
-    expect(storage.resources().opfsPeakHandles).toBeLessThanOrEqual(storage.resources().opfsHandleLimit!);
+    expect(storage.resources().opfsPeakHandles).toBeLessThanOrEqual(
+      storage.resources().opfsHandleLimit!,
+    );
     await fixture.track(storage.close());
     expect(storage.resources().opfsHandles).toBe(0);
     expect(fixture.locks.releases).toBe(1);
   }));
 
-  test("startup abort acquires no handle and no lock", () => withFixture(async (fixture) => {
+test("startup abort acquires no handle and no lock", () =>
+  withFixture(async (fixture) => {
     const controller = new AbortController();
     const reason = new DOMException("Canceled", "AbortError");
     controller.abort(reason);
