@@ -1,3 +1,4 @@
+import { ParkingGates } from "./parking.js";
 import { openDatabase, initial, transaction } from "./database.js";
 import { perform, bumpVersions, enforceBounds } from "./filesystem.js";
 import {
@@ -18,7 +19,8 @@ let stopped = false;
 let tail = Promise.resolve();
 let pending = 0;
 let unlock: (() => void) | undefined;
-const gates = new Map<string, () => void>();
+const parking = new ParkingGates();
+const gates = parking.gates;
 let instance = crypto.randomUUID();
 let workspaceName: string | undefined;
 const events: unknown[] = [];
@@ -278,17 +280,7 @@ function announce(request: Request): void {
 }
 function park(gate: string): Promise<void> {
   trace({ phase: "parked", gate });
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      gates.delete(gate);
-      resolve();
-    }, 5000);
-    gates.set(gate, () => {
-      clearTimeout(timer);
-      gates.delete(gate);
-      resolve();
-    });
-  });
+  return parking.park(gate);
 }
 async function drain(): Promise<Reply> {
   const from = instance;
@@ -355,7 +347,7 @@ function deliver(port: MessagePort, envelope: Envelope): void {
     return;
   }
   if (control.kind === "release") {
-    gates.get(control.gate)?.();
+    parking.release(control.gate);
     post(port, {
       id: envelope.id,
       result: { kind: "ok", cursor: cursor(current()), result: "released" },
@@ -368,7 +360,7 @@ function deliver(port: MessagePort, envelope: Envelope): void {
       result: {
         kind: "ok",
         cursor: cursor(state ?? initial("fenced-safe")),
-        result: { instance, initialized: Boolean(state), events, counters },
+        result: { instance, initialized: Boolean(state), pending, gates: gates.size, state, events, counters },
       },
     });
     return;
