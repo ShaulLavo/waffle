@@ -1240,7 +1240,7 @@ async function heldAdmissionWorker(root: FilesystemClient) {
   const connection = root.fork();
   const gate = new Int32Array(new SharedArrayBuffer(4));
   let message = workerMessage(worker);
-  worker.postMessage({ connection, mode: "proc", admissionGate: gate.buffer }, [connection.port]);
+  worker.postMessage({ connection, mode: "wasi", admissionGate: gate.buffer }, [connection.port]);
   expect(await message).toEqual({ ready: true });
   message = workerMessage(worker);
   worker.postMessage({ operation: "write", byte: 88 });
@@ -1267,7 +1267,7 @@ test("production active admission remains fenced through live revocation without
     const prematurelySettled = settled;
     const message = workerMessage(held.worker);
     releaseAdmissionGate(held.gate);
-    expect(await message).toEqual({ result: -11, offset: 0, byte: 88, count: 0xdeadbeef });
+    expect(await message).toEqual({ result: 11, offset: 0, byte: 88, count: 0xdeadbeef });
     await waiting;
     fixture.service.sweep();
     expect(await fixture.cut()).toEqual(start);
