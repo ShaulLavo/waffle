@@ -473,11 +473,7 @@ export class FilesystemService {
         for (const peer of this.sessions)
           peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
       if (!preparing) {
-        if (admission && session.connection.publication && this.backend instanceof MemoryBackend)
-          this.backend.shared.publication?.cancel(
-            session.connection.publication.session,
-            admission,
-          );
+        this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         if (mutation) {
           if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
@@ -496,6 +492,11 @@ export class FilesystemService {
         this.sweep();
       }
     }
+  }
+  private cancelPublication(session: Session, admission?: PublicationAdmission): void {
+    if (!admission || !session.connection.publication || !(this.backend instanceof MemoryBackend))
+      return;
+    this.backend.shared.publication?.cancel(session.connection.publication.session, admission);
   }
   private executePublication(
     session: Session,

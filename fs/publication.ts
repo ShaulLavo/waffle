@@ -1,6 +1,5 @@
 import type { FilesystemSection } from "./protocol.js";
-import type { ResolvedPath } from "../core/filesystem.js";
-import { FilesystemError } from "../core/filesystem.js";
+import { FilesystemError, type ResolvedPath } from "../core/filesystem.js";
 import type {
   PublicationBuffers,
   PublicationConnection,
@@ -1027,6 +1026,13 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
         nodeKind: value.nodeKind,
       };
   }
+  return decodeContentEffect(value, file, tail);
+}
+function decodeContentEffect(
+  value: object & { readonly kind: unknown },
+  file: FileKey,
+  tail: Uint8Array,
+): PublicationEffect {
   if (
     !("size" in value) ||
     typeof value.size !== "number" ||
