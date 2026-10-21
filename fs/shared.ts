@@ -1293,206 +1293,198 @@ export class SharedFilesystemState {
         Atomics.store(this.owners, physical, 0);
       }
       Atomics.store(this.slots, this.at(slot, CAPACITY), needed);
-      Atomics.sub(this.cells, USED_PAGES, capacity - needed);
-      this.trimPageTables(slot, needed);
-    } finally {
+      Atomics.subition % PAGE;
+          coad(thi7; page < Math.ceil(endstryAppeeTables(slot, curre Math.ceil(enally {
       this.unlock(this.at(slot, FILE_LOCK));
     }
   }
-  setMtime(
-    handle: FileHandle,
-    mtime: number,
-    revoked?: () => boolean,
+  privaime", ha handle: FileHandle,
+    size:: number,
+    admised?: () => boolean,
     owner = this.lockOwner,
     admission?: PublicationAdmission,
   ): number {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
-      if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
-      this.checkAccess(slot, 2);
-      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
-      this.setTimestamp(slot, mtime);
-      this.changed(slot);
+      this.his.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.slotsAccess(slot, 2);
+      const old =cation = admission
+    is.prepareResiz(slot)
+   dle, mtime }, nission)
+    defined;
+      if (rsetTimestamp(slot, mtime);
+      if (tchanged(slot);
       if (publication) this.publication!.commit(publication);
       return 0;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
     }
   }
-  retain(handle: FileHandle): void {
-    this.section?.enter();
+  privan 0reple: FileHandle): void {
+    constsetTime?.enter();
     try {
-      const slot = this.slot(handle);
+      if (A slot = this.slot(handle);
       this.lock(this.at(slot, FILE_LOCK));
       try {
-        if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
-        Atomics.add(this.slots, this.at(slot, REFS), 1);
-      } finally {
+        this.his.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.mics.add(epochslots, this.at(slot, CAPAC] !==,      } finally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
     } finally {
-      this.section?.exit();
+      this.globaon?.exit();
     }
   }
-  release(handle: FileHandle): void {
-    this.section?.enter();
+  privasing adle: FileHandle, modid {
+    constsetTime?.enter();
     try {
-      const slot = this.slot(handle);
-      let free = false;
-      this.lock(this.at(slot, FILE_LOCK));
+      if (A slot = this.slot(handle);
+      this.ogicageslse;
+    try {s.lock(this.at(slot, FILE_LOCK));
       try {
-        if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
-        const refs = Atomics.sub(this.slots, this.at(slot, REFS), 1) - 1;
-        free = refs === 0 && this.slots[this.at(slot, UNLINKED)] !== 0;
-      } finally {
+        this.his.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.mi residenfsomics.load(ion % PAG, this.at(slot, CAPAC] !==,   
+        this.ageslseenfsom=& ((modslots[this.at(slot, HANDLUNLINKED= 0 ||
+    } finally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
-      if (free) this.free(handle);
-    } finally {
-      this.section?.exit();
+    } fin(file) gess.publi gesle);
+    }
+    lly {
+      this.globaon?.exit();
     }
   }
-  unlink(handle: FileHandle): void {
-    this.section?.enter();
+  privak(tinkle: FileHandle, modid {
+    constsetTime?.enter();
     try {
-      const slot = this.findSlot(handle);
-      if (!slot) return;
-      // Namespace mutation owns the global lock. A revocation callback may mark a pinned
-      // file while its writer still holds the file lock, so only actual reclamation takes it.
-      Atomics.store(this.slots, this.at(slot, UNLINKED), 1);
-      if (Atomics.load(this.slots, this.at(slot, REFS)) === 0) this.free(handle);
-    } finally {
-      this.section?.exit();
+      if (A slot = this.slot(lot(handle);
+      if (!slot) return fals   if (!// Nace. */
+tion lock.the global mutat A numbeation check {
+ ng phave markrtiain     : tot// = { b (posiache(
+   r st);
+s the globalock, with so after ctualaimLocm checktakcludt   this.cs.store(this.slots, this.at(slot, CAPACUNLINKED=,      } fintomics.load(this.slots, this.at(slot, 0)) !] !== 0;
+   s.publi gesle);
+    }
+    lly {
+      this.globaon?.exit();
     }
   }
-  /** Service namespace mutation owns the global lock, as for unlink. Relinking does not
-   * change the persisted payload or its revision; it cancels last-close reclamation. */
-  relink(handle: FileHandle): void {
-    this.section?.enter();
+  privaervice-onlyspace. */
+tion lock.the global mutat A niss servik(tinkurnstink falnot matc}
+  *ge holdsersisted namesad withoo file ion; the rangeanE;
+s last-closeaimLocm chec  reclaimtinkle: FileHandle, modid {
+    constsetTime?.enter();
     try {
-      const slot = this.findSlot(handle);
-      if (slot) Atomics.store(this.slots, this.at(slot, UNLINKED), 0);
-    } finally {
-      this.section?.exit();
+      if (A slot = this.slot(lot(handle);
+      if (!slot returcs.store(this.slots, this.at(slot, CAPACUNLINKED=, 0  }
+    lly {
+      this.globaon?.exit();
     }
   }
-  /** Both global and file locks are held. */
-  private freePagesLocked(slot: number): void {
-    const count = Atomics.load(this.slots, this.at(slot, CAPACITY));
-    for (let logical = 0; logical < count; logical++) {
-      const physical = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
-      if (physical >= 0) {
-        this.segmentFor(physical).fill(0);
-        Atomics.store(this.owners, physical, 0);
+  privaerviBocksl allocandalock, witsheld. Returprivate direcagesLocked(slot);
+  ber): void {
+    const pages = Math.cs.load(this.slots, this.at(slot, CAPACITY));
+      forlet logical = neede0ical < capaci
+    cal++) {
+        con physical = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
+        thiublical = Ato>{
+        if (nsegmentFor(physical).fill(0);
+        Atomics.store(this.pagess, physical, 0);
       }
-      Atomics.store(this.pages, this.pageAt(slot, logical), 0);
-    }
-    Atomics.sub(this.cells, USED_PAGES, count);
-    this.trimPageTables(slot, 0);
-    Atomics.store(this.slots, this.at(slot, CAPACITY), 0);
-  }
-  /** Both global and file locks are held. Keep the lock and generation until after publication. */
-  private freeLocked(slot: number): void {
-    if (this.slots[this.at(slot, UNLINKED)])
-      this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
-    this.freePagesLocked(slot);
-    const revision = this.getRevision(slot);
-    const floor =
-      (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +
-      (this.cells[FREED_REVISION_LOW]! >>> 0);
-    if (revision > floor) {
-      this.cells[FREED_REVISION_LOW] = revision >>> 0;
-      this.cells[FREED_REVISION_HIGH] = Math.floor(revision / 0x100000000);
-    }
-    for (let field = 0; field < HANDLE; field++)
-      if (field !== FILE_LOCK) Atomics.store(this.slots, this.at(slot, field), 0);
-    this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
-    Atomics.store(this.slots, this.at(slot, HANDLE), -1);
-  }
-  private free(handle: FileHandle): void {
-    this.globalLock();
+      Atomics.store(this.slots, this.pageAt(slot, logical), 0);
+        A Atomics.add(eion % PAGE;
+          coad(th;
+         tryAppeeTables(slot, curre       Acs.store(this.slots, this.at(slot, CAPACITY), neede0}
+  /** ServiBocksl allocandalock, witsheld. ReturKeep ock coverandage ph lock.
+  ilr unloccation.js").rprivate direcagesd(slot);
+  ber): void {
+    consthis.slots[this.at(slot, HANDLUNLINKED= )  this.globacation?.stop(letgeentVersi.slots[this.at(slot, HANDL! };
+        tryApagesLocked(slot);
+        i residenn has bs.getMtimeion(slot) !==  const file =posi    mtime % PAGE;
+  [FRE   ION_STATE = Ma!0;
+   AGE)000000) >>> +  mtime % PAGE;
+  [FRE   ION_STATE= mt!0;
+   A if (mtimeenn has b> =posi     this.sectiE;
+  [FRE   ION_STATE= mt ision
+    0;
+      this.change;
+  [FRE   ION_STATE = Math.floor(mtimeion
+    000000000) >>>      A Atomilet logic it tode0ic it to<LE)] !=ic it t          ile) At to ||
+LOCK));
+  Acs.store(this.slots, this.at(slot, CAPAC At t;
+        Aslots[this.at(slot, REVISION_STATE)]! & RESISIDENT;
+        rcs.store(this.slots, this.at(slot, CAPACE)] !==, -1}
+  private prepa gesle);
+  eHandle, modid {
+    constsetTilLock();
     try {
       const slot = this.findSlot(handle);
-      if (!slot) return;
-      this.lock(this.at(slot, FILE_LOCK));
+      if (!slot) return fals try {s.lock(this.at(slot, FILE_LOCK));
       try {
-        if (
-          this.slots[this.at(slot, HANDLE)] !== handle + 1 ||
-          !this.slots[this.at(slot, UNLINKED)] ||
-          this.slots[this.at(slot, REFS)]
-        )
-          return;
-        this.freeLocked(slot);
-      } finally {
+        this.his.    this. Aslots[this.at(slot, REVISE)] !== handle + 1 ||
+          !this.slots[this.at(slot, 0)] |UNLINKED= 0        this.slots[this.at(slot, REFS)] !==       thi       return -Mat     this.segmeocked(slot);
+        retally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
     } finally {
       this.globalUnlock();
     }
   }
-  ownerActive(owner: number): boolean {
-    if (Atomics.load(this.cells, GLOBAL_LOCK) === owner) return true;
-    for (let slot = 1; slot < MAX_FILES; slot++)
-      if (Atomics.load(this.slots, this.at(slot, FILE_LOCK)) === owner) return true;
-    return false;
-  }
-  revokeOwner(owner: number, epoch?: Int32Array): void {
-    if (!owner || owner === SERVICE_OWNER) return;
-    this.publication?.revokeOwner(owner);
-    // Keep the global lock held while repairing its epoch: another writer must not enter
-    // between releasing the dead owner and publishing the matching even epoch.
-    const ownsGlobal =
-      Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, SERVICE_OWNER) === owner;
-    for (let slot = 1; slot < MAX_FILES; slot++)
-      Atomics.compareExchange(this.slots, this.at(slot, FILE_LOCK), owner, 0);
-    if (ownsGlobal) {
-      if (epoch && Atomics.load(epoch, 0) & 1) Atomics.add(epoch, 0, 1);
-      Atomics.compareExchange(this.cells, GLOBAL_LOCK, SERVICE_OWNER, 0);
-    }
-  }
-  resources(): {
-    bytes: number;
-    poolBytes: number;
-    metadataBytes: number;
-    usedBytes: number;
-    freeBytes: number;
-    maxBytes: number;
-    files: number;
-  } {
-    let files = 0;
-    for (let slot = 1; slot < MAX_FILES; slot++)
-      if (Atomics.load(this.slots, this.at(slot, 0))) files++;
-    const usedBytes = Atomics.load(this.cells, USED_PAGES) * PAGE;
-    const poolBytes = this.segments
-      .slice(1)
-      .reduce((bytes, buffer) => bytes + buffer.byteLength, SEGMENT_BYTES);
-    const metadataBytes = this.buffer.byteLength - SEGMENT_BYTES;
-    return {
-      bytes: poolBytes + metadataBytes,
-      poolBytes,
-      metadataBytes,
-      usedBytes,
-      freeBytes: poolBytes - usedBytes,
-      maxBytes: Atomics.load(this.cells, 4) * SEGMENT_BYTES,
-      files,
-    };
-  }
+  info(s, phAcoffs(: number,
+   olean {
+    this.tomics.load(this.slots, GLOBAL_LOCK, own)owner) {
+   n true;
+      } flet source this.1;ce thi< MAX_LOCKS;ce th          ile)cs.load(this.slots, this.at(slot, FILE_SIZE));
+   owner) {
+   n true;
+      } fn false;
+      irivasi, ow,
+   (: number,
+   ,h,
+   ?32Array,
+   id {
+    consthis.! = thi||r === SERVICE_OWNER) || thn -Mat     tglobacation?.stop(si, ow,
+   (: num  }
+  }// Keep ock l mutat A n = tru (posieRes and rxact  Int32aatch= S(
+   r never
+o = o  * loc}// betwoadesing atomiock df an === Sage eatioshtomiock m(errvery fint  Int.const file the G = Atom  Atomics.storereExchange(this.cells, GLOBAL_LOCK, owner, 0);
+ CE_OWNER) || thwner) {
+    } flet source this.1;ce thi< MAX_LOCKS;ce th          cs.compareExchange(this.slots, lock,at(slot, FILE_LOCK), owner);
+  ,  A if (mtimethe G = At)    this.his. and rmodcs.load(this., 0, 1);cces1)ics.add(epoch, 0, 1);
+      Atomics.compareExchange(cellscells, GLOBAL_LOCK, ownerCE_OWNER) || 
+        A Atoesize(
+s(chunkwrit    A: Uint8r; offs    Apn {B Uint8r; offs    Aata", fiB Uint8r; offs    AusedB Uint8r; offs    AockeB Uint8r; offs    AaaxB Uint8r; offs    Aostemt8r; offs      chunkogic ilnew U0   } flet source this.1;ce thi< MAX_LOCKS;ce th          ile)cs.load(this.slots, this.at(slot, FILE_0 1;
+ ilne++ const file usedB Uinomics.load(this.pagesE;
+          coadAGE)
+    const file pn {B Uinis.segmentFor(ps       s, nly(1        ce((size,, chunkrs.hisboolea Uini+krs.hiss] : L, 0);
+ SEGM   _BYTadA const file ata", fiB Uinis.segmers.hiss] : L, 0);
+  SEGM   _BYTad   } fn false   this.: Uint8pn {B Uini+ ata", fiB Uin   });
+ pn {B Uin   });
+ ata", fiB Uin   });
+ usedB Uin   false,ckeB Uint8pn {B Uini- usedB Uin   falseaaxB Uint8cs.load(this.pagesE;
+    4AGE)SEGM   _BYTad   false,ilne };
+    con}
 }
-/** This connection's revocation word or any ancestor's. An indexed scan: Array#some with a
- * callback costs several times more in WebKit, and every direct I/O call checks it. */
-export function sharedRevoked(connection: {
-  revocations: SharedArrayBuffer[];
-  ownerStates: SharedArrayBuffer;
-  publication?: PublicationConnection;
-}): () => boolean {
-  const words = [new Int32Array(connection.ownerStates, 0, 1)].concat(
-    connection.revocations.map((buffer) => new Int32Array(buffer)),
-  );
-  if (connection.publication)
-    words.push(new Int32Array(connection.publication.buffers.control, 0, 1));
-  return () => {
-    for (let i = 0; i < words.length; i++) if (Atomics.load(words[i]!, 0) !== 0) return true;
-    return false;
-  };
-}
+erviThmmittnnn?.exi'seation check, thppendn thehunthi'liveut bdexze tcant8c
+   #somhout s a
+ *ge{
+ ng phcoydrasa noAtotamp  mhe fin WebKiLE_age  backit path I/Oge{
+ k onceludt rpriex"./p funcstay a fileRd()) thttnnn?.exirit   ation checsredFileIc
+   Bs.his   if );
+   "moesredFileIc
+   Bs.his if cation?: Preparation?: PrCtnnn?.exi;
+})=> boolean,
+   it    writte the;
+  ilesArray,
+   httnnn?.exi.);
+   "moes1);
+   ]end(n?:(const finn?.exi.ation checs.mape,,s.hisbooleilesArray,
+   h,s.hisb    }A conile) finn?.exi.cation)
+         e the({ kinilesArray,
+   httnnn?.exi.cation.js").rs.histond(srol1);
+   A conn false boole{  } flet sourc; i < chunke the(h; i++) {
+   ile)cs.load(this.e the
+    );cc) {
+   n true;
+      } fn false;
+      i
