@@ -521,7 +521,11 @@ export class MemoryBackend implements FilesystemBackend {
     this.fs.applyNamespace(action.plan);
     for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
     for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
-    for (const entry of action.removed) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
+    for (const entry of action.removed) {
+      if (this.isLinked(entry.node)) continue;
+      this.shared.unlink(entry.handle);
+      if (this.shared.revision(entry.handle) === undefined) this.shared.publication!.forgetContent(entry.node.ino);
+    }
     if (action.preopen) this.sync(this.fs.preopen(action.preopen));
   }
   private publicationFile(handle: FileHandle) {

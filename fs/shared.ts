@@ -1258,7 +1258,7 @@ export class SharedFilesystemState {
   }
   /** Both global and file locks are held. Keep the lock and generation until after publication. */
   private freeLocked(slot: number): void {
-    this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
+    if (this.slots[this.at(slot, UNLINKED)]) this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
     const revision = this.getRevision(slot);
     const floor =

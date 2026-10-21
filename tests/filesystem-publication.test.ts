@@ -776,10 +776,12 @@ test("production publication oracle detects a disabled direct commit and a stale
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
     expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([9, 2, 3]));
     expect(() => requirePublicationGroups({kind: "changes", publications: []}, 1)).toThrow("missing complete publication group");
-    expect(() => requirePublicationGroups(fixture.backend.shared.publication!.changes(start, limits.logBytes), 1)).toThrow("missing complete publication group");
+    const missing = await fixture.changes(start);
+    expect(() => requirePublicationGroups(missing, 1)).toThrow("missing complete publication group");
     domain.commit = commit;
     for (const byte of [6, 7, 8]) expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([byte])], 0)).toBe(1);
-    expect(() => requirePublicationGroups(fixture.backend.shared.publication!.changes(start, limits.logBytes), 3)).toThrow("publication history gap");
+    const stale = await fixture.changes(start);
+    expect(() => requirePublicationGroups(stale, 3)).toThrow("publication history gap");
   } finally { domain.commit = commit; fixture.stop(); }
 });
 
@@ -808,5 +810,27 @@ test("production current cached and host reads recheck traversal permissions and
     expect((await fixture.root.asyncCall("readFile", ["/dir/child"]))).toEqual(new Uint8Array([4, 0]));
     expect((await fixture.root.asyncCall("lookup", ["/dir"])).children.size).toBe(1);
     expect((await fixture.changes(before)).kind).toBe("gap");
+  } finally { fixture.stop(); }
+});
+
+
+test("production no-effect receipts do not advance cuts and clean slot eviction preserves content versions", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const before = await fixture.cut();
+    const receipts = fixture.backend.shared.publication!.diagnostics().receipts;
+    expect(await fixture.root.asyncCall("write", [fixture.handle, 0], new Uint8Array())).toBe(0);
+    expect(fixture.root.tryAppend(fixture.handle, [])).toEqual({written: 0, offset: 3});
+    expect(await fixture.cut()).toEqual(before);
+    expect(fixture.backend.shared.publication!.diagnostics().receipts).toBe(receipts + 2);
+    await fixture.root.asyncCall("writeFile", ["/idle"], new Uint8Array([5]));
+    const node = fixture.backend.fs.lookup("/idle")!;
+    const handle = fixture.backend.fs.handleForNode(node);
+    const domain = fixture.backend.shared.publication!, revision = fixture.backend.shared.revision(handle)!;
+    expect(domain.contentVersion(node.ino)).toBe(1);
+    expect(fixture.backend.shared.evict(handle, revision)).toBe(true);
+    expect(domain.contentVersion(node.ino)).toBe(1);
+    expect(await fixture.root.asyncCall("remove", ["/idle"])).toBe(true);
+    expect(domain.contentVersion(node.ino)).toBe(0);
   } finally { fixture.stop(); }
 });
