@@ -71,9 +71,18 @@ export class FilesystemService {
   private sessions = new Set<Session>();
   private queue = Promise.resolve();
   private sweeping = false;
+  private ownerStopping = false;
+  private ownerDraining: Promise<void> | undefined;
+  private runningRequests = new Set<Promise<void>>();
+  private preparingSessions = new Set<Session>();
   residentPublication: ResidentGrantAuthority | undefined;
   constructor(private backend: FilesystemBackend) {}
   connect(connection: FilesystemConnection): void {
+    if (this.ownerStopping) {
+      revokeFilesystem(connection);
+      connection.port.close();
+      throw new FilesystemError(11);
+    }
     if (connection.publication && !(this.backend instanceof MemoryBackend))
       throw new FilesystemError(58, "publication requires a synchronous memory backend");
     if (this.backend instanceof MemoryBackend) {
@@ -223,8 +232,13 @@ export class FilesystemService {
     }
     this.queue = this.queue.then(() => {
       const request = this.request(session, id, buffer, prepared);
+      this.runningRequests.add(request);
+      void request.then(
+        () => this.runningRequests.delete(request),
+        () => this.runningRequests.delete(request),
+      );
       if (!barrier) return request;
-      void request;
+      void request.catch(() => {});
     });
   }
   private pin(session: Session, handle: number | undefined, preopen = false): void {
@@ -496,7 +510,11 @@ export class FilesystemService {
             },
           );
           session.preparations.add(joined);
-          void joined.finally(() => session.preparations.delete(joined));
+          this.preparingSessions.add(session);
+          void joined.then(
+            () => this.releasePreparation(session, joined),
+            () => this.releasePreparation(session, joined),
+          );
           return;
         }
       }
@@ -554,6 +572,10 @@ export class FilesystemService {
         this.sweep();
       }
     }
+  }
+  private releasePreparation(session: Session, joined: Promise<void>): void {
+    session.preparations.delete(joined);
+    if (!session.preparations.size) this.preparingSessions.delete(session);
   }
   private cancelPublication(session: Session, admission?: PublicationAdmission): void {
     if (!admission || !session.connection.publication || !(this.backend instanceof MemoryBackend))
@@ -851,6 +873,33 @@ export class FilesystemService {
       metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
       bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
     };
+  }
+  drainForOwner(): Promise<void> {
+    if (this.ownerDraining) return this.ownerDraining;
+    this.ownerStopping = true;
+    // Keep actual records before revocation can sweep them out of the service set.
+    const sessions = Array.from(
+      new Set(Array.from(this.sessions).concat(Array.from(this.preparingSessions))),
+    );
+    const quiescence = sessions.flatMap((session) =>
+      session.quiescing ? [session.quiescing] : [],
+    );
+    const waits = quiescence.concat(sessions.map((session) => waitForFilesystemQuiescence(session.connection)));
+    return (this.ownerDraining = this.drainOwnerWork(sessions, waits));
+  }
+  private async drainOwnerWork(sessions: Session[], quiescence: Promise<void>[]): Promise<void> {
+    await Promise.all(quiescence);
+    await this.queue;
+    await Promise.all(sessions.flatMap((session) => Array.from(session.preparations)));
+    await this.queue;
+    await Promise.all(Array.from(this.runningRequests));
+    await this.queue;
+    this.sweep();
+    if (
+      this.runningRequests.size ||
+      sessions.some((session) => session.preparations.size || session.pending.size)
+    )
+      throw new FilesystemError(6, "filesystem owner still has pending work");
   }
   dispose(): void {
     this.residentPublication?.dispose();
