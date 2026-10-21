@@ -218,6 +218,11 @@ async function localPublicationFixture() {
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  const post = connection.server.port.postMessage.bind(connection.server.port);
+  connection.server.port.postMessage = (message: unknown, transfer?: Transferable[]) => {
+    console.info("publication service posting", message);
+    post(message, transfer ?? []);
+  };
   service.connect(connection.server);
   const root = new FilesystemClient(connection.client);
   const sibling = new FilesystemClient(root.fork());
@@ -311,4 +316,88 @@ test("production publication rejects unimplemented namespace plans before change
     expect(fixture.backend.fs.lookup("/missing")).toBeUndefined();
     expect(fixture.backend.shared.publication!.diagnostics().pending).toBe(0);
   } finally { fixture.stop(); }
+});
+
+import { Wasi } from "../core/wasi";
+import { DescriptorTable } from "../core/descriptors";
+import { shareFileResource } from "../core/open-file";
+import { ProcessABI, type ProcessService } from "../proc/abi";
+import { createSignalState } from "../proc/signals";
+import { outcomeWord } from "../proc/outcome";
+import { guestFunction, publicationProcModule, publicationWasiModule } from "./fixtures/publication-wasm";
+
+function unusedProcessService(): ProcessService {
+  const unused = (): never => { throw new Error("unexpected process service call"); };
+  return { spawn: unused, startStatus: unused, waitJob: unused, jobEmpty: unused, wait: unused, childExited: unused, kill: unused, killJob: unused, jobOf: unused, defaultSignal: unused };
+}
+
+test("real runtime_proc Wasm publication I/O returns EAGAIN without offsets, output or events", async () => {
+  const fixture = await localPublicationFixture();
+  const { root, handle } = fixture;
+  const descriptors = new DescriptorTable();
+  const resource = { kind: "file", handle, offset: 0, append: false } as const;
+  shareFileResource(resource, root.connection);
+  const fd = descriptors.open(resource, (1n << 1n) | (1n << 6n), 0n);
+  const memory = new WebAssembly.Memory({ initial: 4 });
+  const abi = new ProcessABI({
+    memory, descriptors, fs: root, pid: 1, service: unusedProcessService(),
+    signals: { signalState: createSignalState(), interrupt: new Int32Array(new SharedArrayBuffer(4)), requestedSignal: new Int32Array(new SharedArrayBuffer(4)), outcome: outcomeWord() },
+    wait() { throw new Error("nonblocking Wasm slept"); },
+  });
+  const guest = new WebAssembly.Instance(publicationProcModule(), { env: { memory }, runtime_proc: abi.imports });
+  const write = guestFunction(guest, "write"), read = guestFunction(guest, "read");
+  root.call = () => { throw new Error("nonblocking Wasm used blocking RPC"); };
+  root.shared.onContention = () => { throw new Error("nonblocking Wasm spun"); };
+  try {
+    const start = await fixture.cut();
+    new Uint8Array(memory.buffer, 256, 3).fill(42);
+    Atomics.store(root.shared.cells, 1, 99);
+    expect(write(fd, 256, 1)).toBe(-6);
+    expect(read(fd, 256, 3)).toBe(-6);
+    expect(resource.offset).toBe(0);
+    expect(new Uint8Array(memory.buffer, 256, 3)).toEqual(new Uint8Array(3).fill(42));
+    Atomics.store(root.shared.cells, 1, 0);
+    expect(await fixture.cut()).toEqual(start);
+    expect(write(fd, 256, 1)).toBe(1);
+    expect(resource.offset).toBe(1);
+    expect((await fixture.changes(start)).publications).toHaveLength(1);
+  } finally { Atomics.store(root.shared.cells, 1, 0); descriptors.dispose(); fixture.stop(); }
+});
+
+test("real WASI exported Wasm functions publish positioned and offset writes", async () => {
+  const fixture = await localPublicationFixture();
+  const wasi = new Wasi({ args: [], env: {}, fs: fixture.root, preopens: {}, stdout() {}, stderr() {}, sleep() {} });
+  const memory = new WebAssembly.Memory({ initial: 4 });
+  const module = publicationWasiModule();
+  const guest = new WebAssembly.Instance(module, { ...wasi.imports(module), env: { memory } });
+  const resource = { kind: "file", handle: fixture.handle, offset: 0, append: false } as const;
+  shareFileResource(resource, fixture.root.connection);
+  const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 6n), 0n);
+  wasi.start(guest);
+  try {
+    const start = await fixture.cut();
+    const view = new DataView(memory.buffer);
+    view.setUint32(0, 256, true); view.setUint32(4, 2, true);
+    new Uint8Array(memory.buffer, 256, 2).set([8, 9]);
+    expect(guestFunction(guest, "fd_pwrite")(fd, 0, 1, 1n, 32)).toBe(0);
+    expect(view.getUint32(32, true)).toBe(2);
+    expect(resource.offset).toBe(0);
+    expect(guestFunction(guest, "fd_write")(fd, 0, 1, 32)).toBe(0);
+    expect(resource.offset).toBe(2);
+    expect((await fixture.changes(start)).publications).toHaveLength(2);
+  } finally { wasi.descriptors.dispose(); fixture.stop(); }
+});
+
+
+test("completion failure diagnostic without publication", async () => {
+  const service = new FilesystemService(new MemoryBackend());
+  const connection = createFilesystemConnection();
+  service.connect(connection.server);
+  const root = new FilesystemClient(connection.client);
+  try {
+    for (let index = 0; index < 3; index++) {
+      console.info("legacy failure diagnostic", index);
+      await expect(root.asyncCall("unknown-operation")).rejects.toMatchObject({ errno: 52 });
+    }
+  } finally { root.dispose(); service.dispose(); }
 });
