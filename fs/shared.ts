@@ -287,6 +287,7 @@ export class SharedFilesystemState {
     owner = this.lockOwner,
     nonblocking = false,
     access: "data" | "activation" | "release" = "data",
+    revocation: "global" | "file" = "global",
   ): void {
     if (this.serviceMutation && owner === SERVICE_OWNER) {
       this.assertLockAccess(access);
@@ -299,7 +300,7 @@ export class SharedFilesystemState {
       if (!held && nonblocking) throw new FilesystemError(6);
       if (!held) this.contend(this.cells, GLOBAL_LOCK, revoked, owner);
       held = true;
-      if (revoked?.()) throw new FilesystemError(11);
+      if (revocation === "global" && revoked?.()) throw new FilesystemError(11);
       this.assertLockAccess(access);
       this.globalOwner = owner;
     } catch (error) {
@@ -923,7 +924,7 @@ export class SharedFilesystemState {
     const slots = this.slots,
       base = slot * SLOT_WORDS,
       lock = base + FILE_LOCK;
-    this.globalLock(revoked, owner, nonblocking);
+    this.globalLock(revoked, owner, nonblocking, "data", "file");
     Atomics.add(epoch, 0, 1);
     try {
       if (Atomics.compareExchange(slots, lock, 0, owner) !== 0) {
