@@ -876,6 +876,7 @@ class WorkspaceBridge {
     this.responses.clear();
     this.channel.close();
     this.connection.port.close();
+    if (!this.bindingStarted) this.transfer.resolve();
   }
   private async execute(id: number, buffer: SharedArrayBuffer, signal: AbortSignal): Promise<void> {
     const cells = new Int32Array(buffer, 0, HEADER / 4);
