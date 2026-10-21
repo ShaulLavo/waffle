@@ -420,26 +420,35 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
   const childPair = connectFilesystemIdentity(childIdentity);
   let joined: Promise<void> | undefined;
   try {
+    console.log("LATE_CANCEL_STAGE bind");
     await parent.asyncCall("workspaceBind", [f.session]);
     await parent.asyncCall("preopen", ["/"]);
     await parent.asyncCall("resolve", [f.directory, "dir/a"]);
     const reservation = parent.reserve(f.file, childIdentity);
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
     await parent.asyncCall("stat", [f.file]);
+    console.log("LATE_CANCEL_STAGE connected");
     joined = stopWorkspaceBridge(parent.connection);
     void joined.catch(() => {});
     await rejectsErrno(parent.asyncCall("stat", [f.file]), 11);
+    console.log("LATE_CANCEL_STAGE parent-stopping");
     expect(isRevoked(childIdentity)).toBe(false);
     expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(0);
     revokeFilesystem(childIdentity);
     releaseFilesystemReservation(reservation);
+    console.log("LATE_CANCEL_STAGE child-cancelled");
     await stopWorkspaceBridge(childPair.client);
+    console.log("LATE_CANCEL_STAGE child-joined");
     await joined;
+    console.log("LATE_CANCEL_STAGE parent-joined");
     expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(1);
   } finally {
+    console.log("LATE_CANCEL_STAGE finally");
     await joined?.catch(() => {});
     childPair.client.port.close();
     parent.dispose();
+    console.log("LATE_CANCEL_STAGE authority-stop");
     await f.stop();
+    console.log("LATE_CANCEL_STAGE disposed");
   }
 });
