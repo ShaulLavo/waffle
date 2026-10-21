@@ -323,3 +323,248 @@ test("service fd_sync forwards the checked file identity rather than flushing ev
     service.dispose();
   }
 });
+
+class CompletionGate {
+  readonly entered = Promise.withResolvers<void>();
+  readonly released = Promise.withResolvers<void>();
+  async wait(): Promise<void> {
+    this.entered.resolve();
+    await this.released.promise;
+  }
+}
+
+class CompletionStore extends Store {
+  readonly persistGate = new CompletionGate();
+  readonly flushGate = new CompletionGate();
+  generations: number[] = [];
+  events: string[] = [];
+  holdFlush = false;
+  persistError?: Error;
+  flushError?: Error;
+  closed = false;
+  onClose?: () => Promise<void>;
+  override async persist(batch: PersistenceBatch): Promise<void> {
+    this.generations.push(batch.generation);
+    const failure = this.persistError;
+    if (!failure) await super.persist(batch);
+    this.events.push("persist");
+    await this.persistGate.wait();
+    if (failure) throw failure;
+  }
+  override async flush(keys?: readonly string[]): Promise<void> {
+    await super.flush(keys);
+    if (this.holdFlush) await this.flushGate.wait();
+    if (this.flushError) throw this.flushError;
+    this.events.push("flush");
+  }
+  override async close(): Promise<void> {
+    this.events.push("close");
+    this.closed = true;
+    await this.onClose?.();
+  }
+}
+
+type TrackCompletion = (promise: Promise<void>) => Promise<void>;
+async function withCompletionStore(
+  run: (
+    store: CompletionStore,
+    backend: PersistentBackend,
+    track: TrackCompletion,
+  ) => Promise<void>,
+): Promise<void> {
+  const store = new CompletionStore();
+  const backend = await PersistentBackend.open(store, { intervalMs: 0 });
+  const pending: Promise<void>[] = [];
+  const track: TrackCompletion = (promise) => {
+    void promise.catch(() => {});
+    pending.push(promise);
+    return promise;
+  };
+  try {
+    await run(store, backend, track);
+  } finally {
+    store.persistGate.released.resolve();
+    store.flushGate.released.resolve();
+    await Promise.allSettled(pending);
+    backend.dispose();
+    if (!store.closed) await store.close();
+  }
+}
+
+async function expectSaved(store: Store, path: string, text: string): Promise<void> {
+  const reopened = await PersistentBackend.open(store, { intervalMs: 0 });
+  try {
+    await reopened.prepare("readFile", [path]);
+    expect(reopened.execute("readFile", [path], new Uint8Array())).toEqual(encode(text));
+  } finally {
+    reopened.dispose();
+  }
+}
+
+const closedPersistence = "filesystem persistence backend is closed";
+
+test("disposed checkpoint rejects a persist completion that already reached storage", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    const saving = track(backend.flush());
+    await store.persistGate.entered.promise;
+    backend.dispose();
+    store.persistGate.released.resolve();
+    await Promise.allSettled([saving]);
+    await expect(saving, `payload flushes after disposal: ${store.syncs.length}`).rejects.toThrow(
+      closedPersistence,
+    );
+    expect(store.syncs).toEqual([]);
+    await expectSaved(store, "/checkpoint", "saved");
+  });
+});
+
+test("live checkpoint completes its held persist response and requested barrier", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    const saving = track(backend.flush());
+    await store.persistGate.entered.promise;
+    expect(store.syncs).toEqual([]);
+    store.persistGate.released.resolve();
+    await saving;
+    expect(store.syncs).toEqual([undefined]);
+    backend.dispose();
+    await expectSaved(store, "/checkpoint", "saved");
+  });
+});
+
+for (const failure of [undefined, new Error("held payload failure")])
+  test(`disposed file flush preserves ${failure ? "the storage failure" : "closed rejection"}`, async () => {
+    await withCompletionStore(async (store, backend, track) => {
+      store.persistGate.released.resolve();
+      store.holdFlush = true;
+      store.flushError = failure;
+      backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+      const saving = track(backend.flush("/checkpoint"));
+      await store.flushGate.entered.promise;
+      backend.dispose();
+      store.flushGate.released.resolve();
+      if (failure) await expect(saving).rejects.toBe(failure);
+      else await expect(saving).rejects.toThrow(closedPersistence);
+      expect(store.generations).toEqual([1]);
+      expect(store.syncs).toHaveLength(1);
+      expect(store.syncs[0]).toHaveLength(1);
+      await expectSaved(store, "/checkpoint", "saved");
+    });
+  });
+
+test("disposed no-change flush rejects after its only payload barrier", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    store.persistGate.released.resolve();
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    await backend.checkpoint();
+    store.holdFlush = true;
+    const saving = track(backend.flush());
+    await store.flushGate.entered.promise;
+    backend.dispose();
+    store.flushGate.released.resolve();
+    await expect(saving).rejects.toThrow(closedPersistence);
+    expect(store.generations).toEqual([1]);
+    expect(store.syncs).toEqual([undefined]);
+  });
+});
+
+test("disposed no-change checkpoint rejects behind a held changed checkpoint", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    const changed = track(backend.checkpoint());
+    await store.persistGate.entered.promise;
+    const unchanged = track(backend.checkpoint());
+    backend.dispose();
+    store.persistGate.released.resolve();
+    await expect(changed).rejects.toThrow(closedPersistence);
+    await expect(unchanged).rejects.toThrow(closedPersistence);
+    expect(store.generations).toEqual([1]);
+    expect(store.syncs).toEqual([]);
+  });
+});
+
+test("disposal rejects all queued captures without starting later storage work", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    backend.execute("writeFile", ["/first"], encode("first"));
+    const first = track(backend.flush());
+    await store.persistGate.entered.promise;
+    backend.execute("writeFile", ["/later"], encode("later"));
+    const second = track(backend.checkpoint());
+    backend.execute("writeFile", ["/last"], encode("last"));
+    const third = track(backend.flush());
+    backend.dispose();
+    store.persistGate.released.resolve();
+    for (const pending of [first, second, third])
+      await expect(pending).rejects.toThrow(closedPersistence);
+    await expect(backend.checkpoint()).rejects.toThrow(closedPersistence);
+    expect(store.generations).toEqual([1]);
+    expect(store.syncs).toEqual([]);
+  });
+});
+
+for (const disposed of [false, true])
+  test(`persist failure keeps its original error while ${disposed ? "disposed" : "live retry restores queued dirty captures"}`, async () => {
+    await withCompletionStore(async (store, backend, track) => {
+      const failure = new Error("held persist failure");
+      store.persistError = failure;
+      backend.execute("writeFile", ["/first"], encode("first"));
+      const first = track(backend.checkpoint());
+      await store.persistGate.entered.promise;
+      backend.execute("writeFile", ["/first"], encode("now"));
+      backend.execute("writeFile", ["/later"], encode("later"));
+      const second = track(backend.checkpoint());
+      if (disposed) backend.dispose();
+      store.persistGate.released.resolve();
+      await expect(first).rejects.toBe(failure);
+      await expect(second).rejects.toThrow(
+        disposed ? closedPersistence : "invalidated by a failed commit",
+      );
+      expect(store.generations).toEqual([1]);
+      if (disposed) return;
+      store.persistError = undefined;
+      await backend.flush();
+      expect(store.generations).toEqual([1, 1]);
+      backend.dispose();
+      await expectSaved(store, "/first", "now");
+      await expectSaved(store, "/later", "later");
+    });
+  });
+
+test("earlier payload barrier survives a later live persist failure", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    store.persistGate.released.resolve();
+    store.holdFlush = true;
+    backend.execute("writeFile", ["/checkpoint"], encode("first"));
+    const earlier = track(backend.flush("/checkpoint"));
+    await store.flushGate.entered.promise;
+    const failure = new Error("later persist failure");
+    store.persistError = failure;
+    backend.execute("writeFile", ["/checkpoint"], encode("latest"));
+    await expect(track(backend.checkpoint())).rejects.toBe(failure);
+    store.flushGate.released.resolve();
+    await earlier;
+    expect(store.generations).toEqual([1, 2]);
+    expect(store.syncs).toHaveLength(1);
+    store.persistError = undefined;
+    await backend.flush();
+    expect(store.generations).toEqual([1, 2, 2]);
+    backend.dispose();
+    await expectSaved(store, "/checkpoint", "latest");
+  });
+});
+
+test("ordinary close saves then disposes before closing storage", async () => {
+  await withCompletionStore(async (store, backend, track) => {
+    store.persistGate.released.resolve();
+    backend.execute("writeFile", ["/checkpoint"], encode("saved"));
+    store.onClose = async () => {
+      await expect(backend.checkpoint()).rejects.toThrow(closedPersistence);
+    };
+    await track(backend.close());
+    expect(store.events).toEqual(["persist", "flush", "close"]);
+    expect(store.closed).toBe(true);
+    expect(store.generations).toEqual([1]);
+    expect(store.syncs).toEqual([undefined]);
+  });
+});
