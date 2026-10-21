@@ -1,3 +1,4 @@
+import { ResidentGrantAuthority } from "./publication-grant.js";
 import {
   mutationIntent,
   mutationValue,
@@ -68,6 +69,7 @@ export class FilesystemService {
   private sessions = new Set<Session>();
   private queue = Promise.resolve();
   private sweeping = false;
+  residentPublication: ResidentGrantAuthority | undefined;
   constructor(private backend: FilesystemBackend) {}
   connect(connection: FilesystemConnection): void {
     if (connection.publication && !(this.backend instanceof MemoryBackend))
@@ -571,6 +573,17 @@ export class FilesystemService {
     if (!grant || args[0] !== grant) throw new FilesystemError(2);
     const domain = this.backend.shared.publication!;
     switch (operation) {
+      case "publicationResident": {
+        const handle = args[1], workspace = args[2];
+        if (typeof handle !== "number" || typeof workspace !== "string" || !workspace.length)
+          throw new FilesystemError(28);
+        this.check(session, handle);
+        this.residentPublication ??= new ResidentGrantAuthority(
+          this.backend, new Int32Array(session.connection.epoch), workspace,
+        );
+        if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
+        return this.residentPublication.retain(handle);
+      }
       case "publicationCut":
         return domain.cut();
       case "publicationChanges": {
@@ -765,6 +778,7 @@ export class FilesystemService {
     };
   }
   dispose(): void {
+    this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
   }
   async shutdown(): Promise<void> {

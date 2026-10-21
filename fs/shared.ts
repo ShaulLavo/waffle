@@ -282,8 +282,14 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
-  beginServiceMutation(epoch: Int32Array): void {
+  beginServiceMutation(epoch: Int32Array, residentGrant = 0): void {
     this.globalLock();
+    try {
+      this.publication?.assertCurrent(residentGrant);
+    } catch (error) {
+      this.globalUnlock();
+      throw error;
+    }
     this.serviceMutation = true;
     Atomics.add(epoch, 0, 1);
   }
@@ -306,7 +312,7 @@ export class SharedFilesystemState {
     const previous = this.currentOwner;
     this.currentOwner = owner;
     try {
-      this.publication?.assertLive();
+      this.publication?.assertCurrent();
       return fn();
     } finally {
       this.currentOwner = previous;
@@ -735,7 +741,7 @@ export class SharedFilesystemState {
         held = true;
       }
       if (revoked?.()) throw new FilesystemError(11);
-      this.publication.assertLive();
+      this.publication.assertCurrent();
       return read();
     } finally {
       if (held) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
@@ -898,7 +904,7 @@ export class SharedFilesystemState {
         this.checkAccess(slot, 2);
         const size = slots[base + FILE_SIZE]!;
         const at = append ? size : offset;
-        this.publication?.assertLive();
+        this.publication?.assertCurrent();
         if (this.publication && !admission)
           throw new FilesystemError(28, "publication admission required");
         if (!total) {

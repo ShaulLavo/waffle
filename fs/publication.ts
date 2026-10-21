@@ -157,6 +157,7 @@ const enum Control {
   LogCount,
   PinSerial,
   OperationSerial,
+  ResidentGrant,
 }
 const enum Session {
   Serial,
@@ -305,6 +306,28 @@ export class PublicationDomain {
   }
   assertLive(): void {
     if (this.stopped) throw new FilesystemError(11);
+  }
+  /** A remote publication owns exclusion, never the filesystem lock, while away. */
+  assertCurrent(grant = 0): void {
+    this.assertLive();
+    const outstanding = Atomics.load(this.control, Control.ResidentGrant);
+    if (outstanding !== 0 && outstanding !== grant) throw new FilesystemError(6);
+  }
+  reserveResidentGrant(grant: number): void {
+    this.assertLive();
+    if (Atomics.compareExchange(this.control, Control.ResidentGrant, 0, grant) !== 0)
+      throw new FilesystemError(6);
+  }
+  releaseResidentGrant(grant: number): void {
+    if (Atomics.compareExchange(this.control, Control.ResidentGrant, grant, 0) !== grant)
+      throw new FilesystemError(29);
+  }
+  /** The authority reserved this operation's full input arena before issuing READY. */
+  finishResidentInput(admission: PublicationAdmission, input: Uint8Array): void {
+    const base = this.checkAdmission(admission);
+    if (input.length > this.operations[base + Op.Input]!) throw new FilesystemError(28);
+    typedArraySet(this.inputs, input, this.inputAt(admission.slot) + this.limits.argumentBytes);
+    this.operations[base + Op.Input] = input.length;
   }
   private admitted<T>(action: () => T): T {
     this.section?.enter();
@@ -912,7 +935,7 @@ export class PublicationDomain {
 
 // Effects use one bounded JSON header and raw byte tails. Encoding finishes before the first
 // visible effect. The log stores owned copies; decoded byte ranges never alias shared storage.
-function encodeEffects(
+export function encodeEffects(
   receipt: PublicationReceipt,
   changes: readonly PublicationEffect[],
   bound: number,
@@ -939,7 +962,7 @@ function encodeEffects(
   }
   return bytes;
 }
-function decodeEffects(bytes: Uint8Array): Publication {
+export function decodeEffects(bytes: Uint8Array): Publication {
   const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
   // This is the private paired codec, not a guest RPC argument. Validate before narrowing.
   const value: unknown = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length)));
