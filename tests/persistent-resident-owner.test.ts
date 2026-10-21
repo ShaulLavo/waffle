@@ -213,3 +213,105 @@ test("persistent server drain keeps authority live until separate finalization",
     await owned.close();
   }
 });
+
+import { createPersistentResidentOwner } from "../browser/persistent-resident-owner";
+
+/** Native API stand-ins exercise the real owner/opener, not browser scheduling. */
+function pendingNativeClaim() {
+  const originals = new Map(
+    ["location", "navigator", "indexedDB"].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+  );
+  const requested = Promise.withResolvers<void>();
+  const pending = Promise.withResolvers<never>();
+  let claimSignal: AbortSignal | undefined;
+  let closed = 0;
+  const database = {
+    objectStoreNames: {
+      length: 3,
+      contains: (name: string) => ["metadata", "journal", "data"].includes(name),
+    },
+    close() {
+      closed++;
+    },
+  } as unknown as IDBDatabase;
+  const opening = { result: database } as IDBOpenDBRequest;
+  const locks = {
+    request(name: string, options: LockOptions, callback: LockGrantedCallback) {
+      if (!name.startsWith("bun-wasm:filesystem:indexeddb:"))
+        return Promise.resolve(callback({ name, mode: "exclusive" }));
+      claimSignal = options.signal;
+      const abort = () => pending.reject(claimSignal?.reason);
+      claimSignal?.addEventListener("abort", abort, { once: true });
+      requested.resolve();
+      return pending.promise.finally(() => claimSignal?.removeEventListener("abort", abort));
+    },
+  };
+  const values = {
+    location: { origin: "https://owner-unit.test" },
+    navigator: { locks },
+    indexedDB: { open: () => opening },
+  };
+  for (const [key, value] of Object.entries(values))
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  const owner = createPersistentResidentOwner(
+    {
+      kind: "initial-open",
+      runtimeLifetime: "unit-lifetime",
+      attempt: crypto.randomUUID(),
+      selected: {
+        origin: values.location.origin,
+        name: `unit-pending-${crypto.randomUUID()}`,
+        implementation: "indexeddb",
+        format: "waffle-indexeddb-v1",
+      },
+      publication: { limits },
+    },
+    new AbortController().signal,
+  );
+  const readiness = owner.ready.catch((error: unknown) => error);
+  return {
+    owner,
+    readiness,
+    requested: requested.promise,
+    get claimSignal() {
+      return claimSignal;
+    },
+    get closed() {
+      return closed;
+    },
+    async deliver() {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      opening.onsuccess!(new Event("success"));
+    },
+    async close() {
+      pending.reject(new DOMException("fixture retirement", "AbortError"));
+      await owner.stop();
+      await readiness;
+      for (const [key, descriptor] of originals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    },
+  };
+}
+
+test("owner cancellation reaches an ungranted native claim without retiring its live holder stand-in", async () => {
+  const owned = pendingNativeClaim();
+  const holderAlive = true;
+  try {
+    await owned.deliver();
+    await owned.requested;
+    const stopped = owned.owner.stop();
+    expect(owned.owner.stop()).toBe(stopped);
+    expect(owned.claimSignal?.aborted).toBe(true);
+    await stopped;
+    expect(holderAlive).toBe(true);
+    expect(owned.closed).toBe(1);
+    expect(await owned.readiness).toMatchObject({ errno: 11 });
+  } finally {
+    await owned.close();
+  }
+});
