@@ -340,8 +340,10 @@ async function growth(): Promise<void> {
     equal(await f.client.asyncCall("resize", [f.handle, PAGE * 2, false]), 0);
     const appendCut = await f.observer.cut(),
       appendRevision = f.client.shared.revision(f.handle);
+    const ownedBefore = (await f.observer.diagnostics()).inputBytes;
     bytes[0] = 10;
     equal(f.client.tryAppend(f.handle, [bytes]), -6);
+    equal((await f.observer.diagnostics()).inputBytes, ownedBefore);
     bytes[0] = 11;
     const appendPreparation = Array.from(f.client.completions.values());
     equal(appendPreparation.length, 1);
@@ -353,6 +355,35 @@ async function growth(): Promise<void> {
     await group(f, appendCut, ["bytes", "metadata"]);
     equal(f.client.tryRead(f.handle, [output], PAGE * 2), 1);
     equal(Array.from(output), [11]);
+  } finally {
+    await f.stop();
+  }
+}
+async function hostOperations(): Promise<void> {
+  const f = await memoryFixture();
+  try {
+    let before = await f.observer.cut();
+    await f.fs.writeFile("/file", new Uint8Array([8, 9]));
+    await group(f, before, ["bytes", "resize", "metadata"]);
+    equal(Array.from((await f.fs.readFile("/file"))!), [8, 9]);
+    before = await f.observer.cut();
+    await f.fs.writeFile("/file", new Uint8Array([7]), true);
+    const appended = await group(f, before, ["bytes", "metadata"]);
+    equal(field(appended.changes[0], "offset"), 2);
+    equal(Array.from((await f.fs.readFile("/file"))!), [8, 9, 7]);
+    before = await f.observer.cut();
+    await f.fs.writeFile("/new/child", new Uint8Array([6]), { exclusive: true });
+    const created = await group(f, before);
+    equal(created.changes.filter((effect) => effect.kind === "inode").length, 2);
+    equal(created.changes.filter((effect) => effect.kind === "entry").length, 2);
+    equal(Array.from((await f.fs.readFile("/new/child"))!), [6]);
+    before = await f.observer.cut();
+    await denied(f.fs.writeFile("/new/child", new Uint8Array([99]), { exclusive: true }), 20);
+    equal(await f.observer.cut(), before);
+    equal(Array.from((await f.fs.readFile("/new/child"))!), [6]);
+    await f.fs.move("/new/child", "/new/moved");
+    await group(f, before);
+    equal(await f.fs.listFiles(), ["/file", "/new/moved"]);
   } finally {
     await f.stop();
   }
@@ -814,6 +845,10 @@ export async function runPublicationBrowser(): Promise<string[]> {
       nonblocking,
     ],
     ["growth owns no guest bytes or logical revision before retry", growth],
+    [
+      "host replace append exclusive create and move each publish one complete group",
+      hostOperations,
+    ],
     [
       "namespace groups retain distinct inode identities across rename link unlink and recursive removal",
       namespace,

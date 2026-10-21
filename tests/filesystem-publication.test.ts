@@ -1557,6 +1557,10 @@ test("production append EOF growth prepares capacity but retry owns only the lat
       revision = fixture.backend.shared.revision(fixture.handle);
     const input = new Uint8Array([8]);
     expect(fixture.root.tryAppend(fixture.handle, [input])).toBe(-6);
+    expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({
+      pending: 0,
+      inputBytes: 0,
+    });
     input[0] = 9;
     const preparation = Array.from(fixture.root.completions.values());
     expect(preparation).toHaveLength(1);
@@ -1576,9 +1580,10 @@ test("production append EOF growth prepares capacity but retry owns only the lat
       bytes: new Uint8Array([9]),
       size: PAGE + 1,
     });
+    // A committed receipt retains its exact byte for duplicate/conflict checks.
     expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({
       pending: 0,
-      inputBytes: 0,
+      inputBytes: 1,
     });
   } finally {
     fixture.stop();
