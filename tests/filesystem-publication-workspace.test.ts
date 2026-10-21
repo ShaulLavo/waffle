@@ -418,6 +418,7 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
   const parent = new FilesystemClient({ ...connection, residentPublication: undefined });
   const childIdentity = createProcessFilesystemIdentity(connection);
   const childPair = connectFilesystemIdentity(childIdentity);
+  const child = new FilesystemClient({ ...childPair.client, residentPublication: undefined });
   let joined: Promise<void> | undefined;
   try {
     console.log("LATE_CANCEL_STAGE bind");
@@ -426,11 +427,17 @@ test("parent cleanup joins a pre-bind child cancelled after stopping is observed
     await parent.asyncCall("resolve", [f.directory, "dir/a"]);
     const reservation = parent.reserve(f.file, childIdentity);
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
+    await rejectsErrno(child.asyncCall("stat", [f.file]), 11);
     await parent.asyncCall("stat", [f.file]);
     console.log("LATE_CANCEL_STAGE connected");
     joined = stopWorkspaceBridge(parent.connection);
     void joined.catch(() => {});
-    await rejectsErrno(parent.asyncCall("stat", [f.file]), 11);
+    await Promise.race([
+      rejectsErrno(parent.asyncCall("stat", [f.file]), 11),
+      joined.then(() => {
+        throw new Error("parent cleanup completed while pre-bind child was live");
+      }),
+    ]);
     console.log("LATE_CANCEL_STAGE parent-stopping");
     expect(isRevoked(childIdentity)).toBe(false);
     expect(Atomics.load(new Int32Array(reservation.state), 0)).toBe(0);
