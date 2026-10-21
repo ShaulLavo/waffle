@@ -118,7 +118,7 @@ export class SharedFilesystemState {
     private readonly section?: FilesystemSection,
     publication?: PublicationBuffers,
   ) {
-    if (publication) this.publication = new PublicationDomain(publication);
+    if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
       Atomics.store(this.cells, USED_PAGES, 0);
@@ -1432,6 +1432,7 @@ export class SharedFilesystemState {
   }
   revokeOwner(owner: number, epoch?: Int32Array): void {
     if (!owner || owner === SERVICE_OWNER) return;
+    this.publication?.revokeOwner(owner);
     // Keep the global lock held while repairing its epoch: another writer must not enter
     // between releasing the dead owner and publishing the matching even epoch.
     const ownsGlobal =

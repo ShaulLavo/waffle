@@ -1,3 +1,4 @@
+import type { FilesystemSection } from "./protocol.js";
 import type { ResolvedPath } from "../core/filesystem.js";
 import { FilesystemError } from "../core/filesystem.js";
 import type {
@@ -282,7 +283,11 @@ export class PublicationDomain {
   private readonly pinData: Uint8Array;
   private readonly versions: Int32Array;
   readonly limits: PublicationLimits;
-  constructor(readonly buffers: PublicationBuffers) {
+  constructor(
+    readonly buffers: PublicationBuffers,
+    private readonly owner = 0x7fffffff,
+    private readonly section?: Pick<FilesystemSection, "enter" | "exit">,
+  ) {
     this.limits = buffers.limits;
     this.control = new Int32Array(buffers.control);
     this.sessions = new Int32Array(buffers.sessions);
@@ -301,16 +306,32 @@ export class PublicationDomain {
   assertLive(): void {
     if (this.stopped) throw new FilesystemError(11);
   }
+  private admitted<T>(action: () => T): T {
+    this.section?.enter();
+    try {
+      return action();
+    } finally {
+      this.section?.exit();
+    }
+  }
   private arena<T>(action: () => T): T {
+    return this.admitted(() => this.lockedArena(action));
+  }
+  private lockedArena<T>(action: () => T): T {
     this.assertLive();
-    if (Atomics.compareExchange(this.control, Control.ArenaLock, 0, 1) !== 0)
+    if (Atomics.compareExchange(this.control, Control.ArenaLock, 0, this.owner) !== 0)
       throw new FilesystemError(6, "publication admission is contended");
     try {
       this.assertLive();
       return action();
     } finally {
-      Atomics.store(this.control, Control.ArenaLock, 0);
+      Atomics.compareExchange(this.control, Control.ArenaLock, this.owner, 0);
     }
+  }
+  /** Invoked by the filesystem authority only for its already proven-reaped owner. */
+  revokeOwner(owner: number): void {
+    if (!owner || owner === 0x7fffffff) return;
+    Atomics.compareExchange(this.control, Control.ArenaLock, owner, 0);
   }
   private session(session: PublicationSession): number {
     this.assertLive();
@@ -342,6 +363,9 @@ export class PublicationDomain {
     throw new FilesystemError(6, "publication session bound exceeded");
   }
   next(session: PublicationSession): MutationId {
+    return this.admitted(() => this.nextAdmitted(session));
+  }
+  private nextAdmitted(session: PublicationSession): MutationId {
     this.session(session);
     const sequence = Atomics.add(this.sessions, session.slot * SESSION_WORDS + Session.Next, 1) + 1;
     if (sequence > MAX_COUNTER) {
@@ -470,9 +494,11 @@ export class PublicationDomain {
     intent: MutationIntent,
     input: Uint8Array,
   ): void {
-    this.session(session);
-    if (admission.id.session !== session.serial) throw new FilesystemError(11);
-    this.verifyAdmission(admission, intent, input);
+    this.admitted(() => {
+      this.session(session);
+      if (admission.id.session !== session.serial) throw new FilesystemError(11);
+      this.verifyAdmission(admission, intent, input);
+    });
   }
   verifyAdmission(
     admission: PublicationAdmission,
@@ -687,6 +713,19 @@ export class PublicationDomain {
     );
   }
   cancel(session: PublicationSession, admission: PublicationAdmission): void {
+    try {
+      this.section?.enter();
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === 11) return;
+      throw error;
+    }
+    try {
+      this.cancelAdmitted(session, admission);
+    } finally {
+      this.section?.exit();
+    }
+  }
+  private cancelAdmitted(session: PublicationSession, admission: PublicationAdmission): void {
     const base = admission.slot * OP_WORDS;
     if (
       admission.id.session !== session.serial ||
@@ -1099,8 +1138,12 @@ export function mutationResult(value: unknown): MutationResult {
     return { kind: "append", written: value.written, offset: value.offset };
   throw new FilesystemError(29, "invalid publication mutation result");
 }
-export function forkPublication(connection: PublicationConnection): PublicationConnection {
-  const domain = new PublicationDomain(connection.buffers);
+export function forkPublication(
+  connection: PublicationConnection,
+  owner = 0x7fffffff,
+  section?: Pick<FilesystemSection, "enter" | "exit">,
+): PublicationConnection {
+  const domain = new PublicationDomain(connection.buffers, owner, section);
   return { buffers: connection.buffers, session: domain.openSession() };
 }
 

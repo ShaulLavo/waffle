@@ -102,10 +102,11 @@ export function createFilesystemIdentity(
   entries.fill(-1);
   entries[0] = 0;
   let domain: PublicationConnection | undefined;
-  if (parent?.publication) domain = forkPublication(parent.publication);
+  if (parent?.publication)
+    domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
     const buffers = createPublicationBuffers(publication.limits);
-    const session = new PublicationDomain(buffers).openSession();
+    const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,
       session,
