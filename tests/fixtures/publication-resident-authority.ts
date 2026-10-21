@@ -69,7 +69,7 @@ let guardAttempt: Promise<void> | undefined;
 let guardAbort: AbortController | undefined;
 const nativeLockRequest = navigator.locks.request.bind(navigator.locks);
 Object.defineProperty(navigator.locks, "request", {
-  value: async (name: string, options: LockOptions, callback: LockGrantedCallback) => {
+  value: async (name: string, options: LockOptions, callback: (lock: Lock | null) => unknown) => {
     if (guardGate && options.mode === "shared") {
       self.postMessage({ event: "guardPending" });
       await guardGate.promise;
