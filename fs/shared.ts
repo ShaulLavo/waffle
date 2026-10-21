@@ -110,7 +110,6 @@ export class SharedFilesystemState {
   private serviceMutation = false;
   private globalOwner: number | undefined;
   private fileOwnsGlobal = new Set<number>();
-  private cleanupDepth = 0;
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
   onContention?: () => void;
@@ -248,9 +247,20 @@ export class SharedFilesystemState {
       if (Atomics.compareExchange(cells, index, 0, owner) === 0) return;
     }
   }
-  private lock(index: number, revoked?: () => boolean, owner = this.lockOwner): void {
+  private assertLockAccess(access: "data" | "activation" | "release"): void {
+    if (access === "release") return;
+    if (access === "activation") this.publication?.assertLive();
+    else this.publication?.assertAccess();
+  }
+  private lock(
+    index: number,
+    revoked?: () => boolean,
+    owner = this.lockOwner,
+    access: "data" | "release" = "data",
+  ): void {
     const global = !!this.publication && this.globalOwner === undefined;
-    if (global) this.globalLock(revoked, owner);
+    if (global) this.globalLock(revoked, owner, false, access);
+    else this.assertLockAccess(access);
     this.section?.enter();
     let held = false;
     try {
@@ -276,9 +286,12 @@ export class SharedFilesystemState {
     revoked?: () => boolean,
     owner = this.lockOwner,
     nonblocking = false,
-    activating = false,
+    access: "data" | "activation" | "release" = "data",
   ): void {
-    if (this.serviceMutation && owner === SERVICE_OWNER) return;
+    if (this.serviceMutation && owner === SERVICE_OWNER) {
+      this.assertLockAccess(access);
+      return;
+    }
     this.section?.enter();
     let held = false;
     try {
@@ -287,8 +300,7 @@ export class SharedFilesystemState {
       if (!held) this.contend(this.cells, GLOBAL_LOCK, revoked, owner);
       held = true;
       if (revoked?.()) throw new FilesystemError(11);
-      if (!this.cleanupDepth && !activating) this.publication?.assertAccess();
-      if (activating) this.publication?.assertLive();
+      this.assertLockAccess(access);
       this.globalOwner = owner;
     } catch (error) {
       if (held) Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
@@ -303,7 +315,7 @@ export class SharedFilesystemState {
     this.section?.exit();
   }
   activateResidentAuthority(): void {
-    this.globalLock(undefined, this.lockOwner, false, true);
+    this.globalLock(undefined, this.lockOwner, false, "activation");
     try {
       this.publication!.activateResident();
     } finally {
@@ -756,7 +768,7 @@ export class SharedFilesystemState {
   ): T {
     if (!this.publication) return read();
     if ((this.serviceMutation && owner === SERVICE_OWNER) || this.currentOwner === owner) {
-      this.publication.assertLive();
+      this.publication.assertAccess();
       return read();
     }
     this.globalLock(revoked, owner, nonblocking);
@@ -1354,12 +1366,11 @@ export class SharedFilesystemState {
     }
   }
   release(handle: FileHandle): void {
-    this.cleanupDepth++;
     this.section?.enter();
     try {
       const slot = this.slot(handle);
       let free = false;
-      this.lock(this.at(slot, FILE_LOCK));
+      this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, "release");
       try {
         if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
         const refs = Atomics.sub(this.slots, this.at(slot, REFS), 1) - 1;
@@ -1367,10 +1378,9 @@ export class SharedFilesystemState {
       } finally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
-      if (free) this.free(handle);
+      if (free) this.free(handle, "release");
     } finally {
       this.section?.exit();
-      this.cleanupDepth--;
     }
   }
   unlink(handle: FileHandle): void {
@@ -1430,12 +1440,12 @@ export class SharedFilesystemState {
     this.slots[this.at(slot, REVISION_STATE)]! &= ~RESIDENT;
     Atomics.store(this.slots, this.at(slot, HANDLE), -1);
   }
-  private free(handle: FileHandle): void {
-    this.globalLock();
+  private free(handle: FileHandle, access: "data" | "release" = "data"): void {
+    this.globalLock(undefined, this.lockOwner, false, access);
     try {
       const slot = this.findSlot(handle);
       if (!slot) return;
-      this.lock(this.at(slot, FILE_LOCK));
+      this.lock(this.at(slot, FILE_LOCK), undefined, this.lockOwner, access);
       try {
         if (
           this.slots[this.at(slot, HANDLE)] !== handle + 1 ||

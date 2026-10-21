@@ -351,7 +351,9 @@ test("reference cleanup cannot lend its access to a reentrant readiness probe", 
   f.service.residentPublication!.activate();
   const slot = shared.fileSlot(f.handle);
   const load = Atomics.load;
+  const compareExchange = Atomics.compareExchange;
   let readiness: boolean | undefined;
+  let inheritedFailure: unknown;
   try {
     Atomics.load = function (...args: Parameters<typeof Atomics.load>) {
       Atomics.load = load;
@@ -364,10 +366,27 @@ test("reference cleanup cannot lend its access to a reentrant readiness probe", 
       );
       return Reflect.apply(load, Atomics, args);
     };
+    Atomics.compareExchange = ((
+      array: Int32Array,
+      index: number,
+      before: number,
+      after: number,
+    ) => {
+      if (array !== shared.slots) return compareExchange(array, index, before, after);
+      Atomics.compareExchange = compareExchange;
+      try {
+        shared.isResident(f.handle);
+      } catch (error) {
+        inheritedFailure = error;
+      }
+      return compareExchange(array, index, before, after);
+    }) as typeof Atomics.compareExchange;
     shared.release(f.handle);
     expect(readiness).toBe(false);
+    expect(inheritedFailure).toMatchObject({ errno: 6 });
   } finally {
     Atomics.load = load;
+    Atomics.compareExchange = compareExchange;
     f.stop();
   }
 });
