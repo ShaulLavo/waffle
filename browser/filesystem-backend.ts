@@ -10,6 +10,7 @@ export interface FilesystemBackendOptions {
   readonly implementation?: "indexeddb" | "opfs-memory" | "memory";
 }
 export interface FilesystemBackendLifecycle {
+  readonly retainOpeningDebt?: (debt: Promise<void>) => void;
   readonly onStartupStage?: RuntimeStartupObserver;
   readonly signal?: AbortSignal;
   readonly onWaiting?: () => void;

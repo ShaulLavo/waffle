@@ -217,7 +217,7 @@ test("persistent server drain keeps authority live until separate finalization",
 import { createPersistentResidentOwner } from "../browser/persistent-resident-owner";
 
 /** Native API stand-ins exercise the real owner/opener, not browser scheduling. */
-function pendingNativeClaim() {
+function pendingNativeClaim(closeFailure?: Error) {
   const originals = new Map(
     ["location", "navigator", "indexedDB"].map((key) => [
       key,
@@ -228,6 +228,8 @@ function pendingNativeClaim() {
   const pending = Promise.withResolvers<never>();
   let claimSignal: AbortSignal | undefined;
   let closed = 0;
+  let released = 0;
+  const opened = Promise.withResolvers<void>();
   const database = {
     objectStoreNames: {
       length: 3,
@@ -235,13 +237,16 @@ function pendingNativeClaim() {
     },
     close() {
       closed++;
+      if (closeFailure) throw closeFailure;
     },
   } as unknown as IDBDatabase;
   const opening = { result: database } as IDBOpenDBRequest;
   const locks = {
     request(name: string, options: LockOptions, callback: LockGrantedCallback<unknown>) {
       if (!name.startsWith("bun-wasm:filesystem:indexeddb:"))
-        return Promise.resolve(callback({ name, mode: "exclusive" }));
+        return Promise.resolve(callback({ name, mode: "exclusive" })).then(() => {
+          released++;
+        });
       claimSignal = options.signal;
       const abort = () => pending.reject(claimSignal?.reason);
       claimSignal?.addEventListener("abort", abort, { once: true });
@@ -252,7 +257,12 @@ function pendingNativeClaim() {
   const values = {
     location: { origin: "https://owner-unit.test" },
     navigator: { locks },
-    indexedDB: { open: () => opening },
+    indexedDB: {
+      open() {
+        opened.resolve();
+        return opening;
+      },
+    },
   };
   for (const [key, value] of Object.entries(values))
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -276,6 +286,10 @@ function pendingNativeClaim() {
     owner,
     readiness,
     requested: requested.promise,
+    opened: opened.promise,
+    get released() {
+      return released;
+    },
     get claimSignal() {
       return claimSignal;
     },
@@ -283,12 +297,19 @@ function pendingNativeClaim() {
       return closed;
     },
     async deliver() {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await opened.promise;
       opening.onsuccess!(new Event("success"));
+    },
+    fail(error: DOMException) {
+      Object.defineProperty(opening, "error", { value: error });
+      opening.onerror!(new Event("error"));
+    },
+    block() {
+      opening.onblocked!(new Event("blocked"));
     },
     async close() {
       pending.reject(new DOMException("fixture retirement", "AbortError"));
-      await owner.stop();
+      await owner.stop().catch(() => {});
       await readiness;
       for (const [key, descriptor] of originals) {
         if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -311,6 +332,77 @@ test("owner cancellation reaches an ungranted native claim without retiring its 
     expect(holderAlive).toBe(true);
     expect(owned.closed).toBe(1);
     expect(await owned.readiness).toMatchObject({ errno: 11 });
+  } finally {
+    await owned.close();
+  }
+});
+
+test("owner joins a physically pending native open after readiness cancellation", async () => {
+  const owned = pendingNativeClaim();
+  try {
+    await owned.opened;
+    const stopped = owned.owner.stop();
+    expect(await owned.readiness).toMatchObject({ errno: 11 });
+    await assertPending(stopped);
+    expect(owned.released).toBe(0);
+    expect(owned.closed).toBe(0);
+    await owned.deliver();
+    await stopped;
+    expect(owned.closed).toBe(1);
+    expect(owned.released).toBe(2);
+    expect(owned.claimSignal).toBeUndefined();
+  } finally {
+    await owned.close();
+  }
+});
+
+test("owner retains the original failed late native close and memoized stop with guards", async () => {
+  const failure = new Error("original late native close failure");
+  const owned = pendingNativeClaim(failure);
+  try {
+    await owned.opened;
+    const stopped = owned.owner.stop();
+    const failed = stopped.catch((error: unknown) => error);
+    await assertPending(stopped);
+    await owned.deliver();
+    expect(await failed).toBe(failure);
+    expect(owned.owner.stop()).toBe(stopped);
+    await expect(owned.owner.stop()).rejects.toBe(failure);
+    expect(owned.closed).toBe(1);
+    expect(owned.released).toBe(0);
+  } finally {
+    await owned.close();
+  }
+});
+
+test("owner joins blocked native request until terminal delivery rather than releasing guards", async () => {
+  const owned = pendingNativeClaim();
+  try {
+    await owned.opened;
+    owned.block();
+    expect(await owned.readiness).toBeInstanceOf(Error);
+    const stopped = owned.owner.stop();
+    await assertPending(stopped);
+    expect(owned.released).toBe(0);
+    await owned.deliver();
+    await stopped;
+    expect(owned.closed).toBe(1);
+    expect(owned.released).toBe(2);
+  } finally {
+    await owned.close();
+  }
+});
+
+test("terminal native request error without a delivered DB is not failed cleanup", async () => {
+  const owned = pendingNativeClaim();
+  const failure = new DOMException("native request failed", "QuotaExceededError");
+  try {
+    await owned.opened;
+    owned.fail(failure);
+    expect(await owned.readiness).toBe(failure);
+    await owned.owner.stop();
+    expect(owned.closed).toBe(0);
+    expect(owned.released).toBe(2);
   } finally {
     await owned.close();
   }

@@ -157,6 +157,7 @@ class PersistentOwner implements PersistentResidentOwner {
   private guards: Guards = { kind: "none" };
   private readonly abort = new AbortController();
   private readonly opening: Promise<void>;
+  private readonly openingDebts: Promise<void>[] = [];
   private readonly connection: ReturnType<typeof createFilesystemConnection>;
   private readonly root: FilesystemClient;
   private readonly workspace: string;
@@ -210,8 +211,6 @@ class PersistentOwner implements PersistentResidentOwner {
     );
     this.guards = { kind: "exclusive", bootstrap, continuity };
     this.checkLive();
-    // Native open/load remains this attempt's debt. In particular IDB's cancellable
-    // wrapper can reject before the uncancellable native open delivers its resource.
     const backend = await openFilesystemBackend(
       {
         mode: "fast",
@@ -221,6 +220,10 @@ class PersistentOwner implements PersistentResidentOwner {
       },
       {
         onStartupStage: this.observer,
+        signal: this.abort.signal,
+        retainOpeningDebt: (debt) => {
+          this.openingDebts.push(debt);
+        },
         retainStorage: (storage) => {
           this.storage = storage;
         },
@@ -283,6 +286,7 @@ class PersistentOwner implements PersistentResidentOwner {
   }
   private async close(predecessor: "opening" | "ready"): Promise<void> {
     await this.opening;
+    await Promise.all(this.openingDebts);
     if (this.guards.kind === "server") await this.guards.server.drainForOwner();
     await this.service?.drainForOwner();
     if (predecessor === "ready") await this.backend?.flush();

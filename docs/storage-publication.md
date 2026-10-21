@@ -222,11 +222,15 @@ Bootstrap and exclusive continuity precede native open, ownership claim and load
 The new owner always waits for native ownership without stealing it. The ordinary
 filesystem worker keeps its existing policy through the same backend opener.
 
-Startup cancellation closes admission immediately. Once native open/load starts, its
-original promise remains owned until it settles. The factory does not forward abort
-into the adapter's early-rejecting native-open wrapper. A native ownership wait can
-therefore keep stop pending until its holder releases ownership. Pending cleanup is
-not permission to replace it, release its guards or announce successful cancellation.
+Startup cancellation closes admission immediately and cancels an ungranted native
+ownership wait without retiring its ordinary holder. The owner forwards its abort
+signal and retains the original physical opening debt before the native request starts.
+Readiness may reject early, but a blocked or aborted IndexedDB request remains debt
+until terminal native delivery or error. A delivered DB closes once after any started
+epoch transaction and lock callback retire. A terminal native error without a handle
+has no close obligation. The owner joins the original shared opening and physical debt
+before releasing guards. A failed native close retains that debt and the same failed
+stop. Cancellation is not permission to forgive pending or failed physical cleanup.
 
 A published owner stops in this order: resident transport drain, service preparation
 and detached-barrier drain, final checkpoint with the publication domain still live,

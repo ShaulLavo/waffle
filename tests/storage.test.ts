@@ -254,7 +254,15 @@ for (const whenBusy of ["takeover", "wait"] as const)
           }
         },
       };
+      let physicalDebt: Promise<void> | undefined;
+      let debtSettled = false;
       const pending = IndexedDBStorage.open("granted", {
+        retainOpeningDebt(debt) {
+          physicalDebt = debt;
+          void debt.then(() => {
+            debtSettled = true;
+          });
+        },
         indexedDB: factory,
         locks,
         whenBusy,
@@ -273,13 +281,58 @@ for (const whenBusy of ["takeover", "wait"] as const)
         expect(abortCount).toBe(1);
         expect(lockHeld).toBe(true);
         expect(closeCount).toBe(0);
+        expect(debtSettled).toBe(false);
         acknowledgeAbort();
       } else transaction.oncomplete!(new Event("complete"));
       const result = await pending;
       // Always release a pre-fix owner, so this regression is safe as a negative control.
       if (result instanceof IndexedDBStorage) await result.close();
       expect(result).toBe(aborted);
+      await physicalDebt;
+      expect(debtSettled).toBe(true);
       expect(closeCount).toBe(1);
       expect(lockHeld).toBe(false);
     });
   }
+
+test("IndexedDB retains the original debt before native request and preserves a late close failure", async () => {
+  const controller = new AbortController();
+  const failure = new Error("original physical close failure");
+  let originalDebt: Promise<void> | undefined;
+  let closed = 0;
+  const opening = {
+    result: {
+      close() {
+        closed++;
+        throw failure;
+      },
+    },
+  } as unknown as IDBOpenDBRequest;
+  const factory = {
+    open() {
+      expect(originalDebt).toBeInstanceOf(Promise);
+      return opening;
+    },
+  } as unknown as IDBFactory;
+  const result = IndexedDBStorage.open("late-close-failure", {
+    indexedDB: factory,
+    locks: {
+      async request() {
+        throw new Error("claim must not start");
+      },
+    },
+    signal: controller.signal,
+    whenBusy: "wait",
+    retainOpeningDebt(debt) {
+      originalDebt = debt;
+    },
+  }).catch((error: unknown) => error);
+  const aborted = new DOMException("cancel physical request", "AbortError");
+  controller.abort(aborted);
+  expect(await result).toBe(aborted);
+  const failed = originalDebt!.catch((error: unknown) => error);
+  opening.onsuccess!(new Event("success"));
+  expect(await failed).toBe(failure);
+  await expect(originalDebt!).rejects.toBe(failure);
+  expect(closed).toBe(1);
+});
