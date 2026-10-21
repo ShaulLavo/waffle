@@ -190,7 +190,6 @@ The repair acceptance and exact-head hosted checks are recorded in
 `storage-publication-repair-r1/PARENT-FIX-MAPPING.md` under the program reports.
 No consumer changes or S1/S2 acceptance follow from this unit.
 
-
 ### Bounded independent-page resident grant pilot, 2026-10-21
 
 Status: Approved bounded implementation, not accepted S2. The exclusive
