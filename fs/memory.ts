@@ -36,6 +36,29 @@ export interface DirNode {
 
 export type Node = FileNode | DirNode;
 
+export interface NamespaceEdge {
+  readonly parent: DirNode;
+  readonly name: string;
+  readonly before: Node | undefined;
+  readonly after: Node | undefined;
+}
+export interface NamespacePlan {
+  readonly edits: readonly NamespaceEdge[];
+  readonly edges: readonly NamespaceEdge[];
+  readonly created: readonly Node[];
+  readonly parents: readonly DirNode[];
+  readonly forgotten: readonly Node[];
+  readonly links: readonly { readonly node: Node; readonly delta: 1 | -1 }[];
+  readonly mtime: number;
+}
+function namespacePlan(edits: readonly NamespaceEdge[] = [], created: readonly Node[] = [], forgotten: readonly Node[] = [], links: NamespacePlan["links"] = []): NamespacePlan {
+  return { edits, edges: edits, created, forgotten, links, parents: Array.from(new Set(edits.map((edge) => edge.parent))), mtime: Date.now() };
+}
+function boundedNamespace(plan: NamespacePlan, bound: number): NamespacePlan {
+  if (plan.edges.length + plan.created.length + plan.parents.length > bound) throw new FilesystemError(6, "namespace effect bound exceeded");
+  return plan;
+}
+
 let nextIno = 1;
 
 export function newIno(): number {
@@ -405,6 +428,117 @@ export class MemFS implements FileSystem {
     this.changed(sourceParent);
     this.changed(parent);
     return 0;
+  }
+
+  /** Plans refer to the actual nodes and edges. No mirror tree is built or mutated. */
+  planCreate(path: ResolvedPath, kind: "file" | "directory", exclusive: boolean, bound: number): { readonly plan: NamespacePlan; readonly result: FileHandle | { error: number } } {
+    const parent = this.parentOf(path);
+    if (typeof parent === "number") return { plan: namespacePlan(), result: { error: parent } };
+    const existing = parent.children.get(path.name);
+    if (existing) return { plan: namespacePlan(), result: !exclusive && kind === "file" ? this.handle(existing) : { error: 20 } };
+    const node = kind === "file" ? newFile() : newDir();
+    const plan = boundedNamespace(namespacePlan([{ parent, name: path.name, before: undefined, after: node }], [node], [], [{ node, delta: 1 }]), bound);
+    return { plan, result: this.handle(node) };
+  }
+  planLink(from: ResolvedPath, to: ResolvedPath, bound: number): { readonly plan: NamespacePlan; readonly result: number } {
+    if (from.node === undefined) return { plan: namespacePlan(), result: 44 };
+    const node = this.nodeForHandle(from.node);
+    if (node.kind === "dir") return { plan: namespacePlan(), result: 63 };
+    if (to.node !== undefined) return { plan: namespacePlan(), result: 20 };
+    if (to.trailingSlash) return { plan: namespacePlan(), result: 54 };
+    const parent = this.parentOf(to);
+    if (typeof parent === "number") return { plan: namespacePlan(), result: parent };
+    return { plan: boundedNamespace(namespacePlan([{ parent, name: to.name, before: undefined, after: node }], [], [], [{ node, delta: 1 }]), bound), result: 0 };
+  }
+  planRemovePath(path: ResolvedPath, directory: boolean, bound: number): { readonly plan: NamespacePlan; readonly result: number } {
+    if (directory && path.terminalDot) return { plan: namespacePlan(), result: 28 };
+    if (path.node === undefined) return { plan: namespacePlan(), result: 44 };
+    const node = this.nodeForHandle(path.node);
+    if (directory && node.kind !== "dir") return { plan: namespacePlan(), result: 54 };
+    if (!directory && node.kind === "dir") return { plan: namespacePlan(), result: 31 };
+    if (node.kind === "dir" && node.children.size) return { plan: namespacePlan(), result: 55 };
+    const parent = this.parentOf(path);
+    if (typeof parent === "number") return { plan: namespacePlan(), result: parent };
+    return { plan: boundedNamespace(namespacePlan([{ parent, name: path.name, before: node, after: undefined }], [], [node], [{ node, delta: -1 }]), bound), result: 0 };
+  }
+  planRename(from: ResolvedPath, to: ResolvedPath, bound: number): { readonly plan: NamespacePlan; readonly result: number } {
+    const failure = (result: number) => ({ plan: namespacePlan(), result });
+    if (from.terminalDot || to.terminalDot) return failure(28);
+    if (from.node === undefined) return failure(44);
+    const node = this.nodeForHandle(from.node);
+    const target = to.node === undefined ? undefined : this.nodeForHandle(to.node);
+    if (node === target) return failure(0);
+    if (to.trailingSlash && node.kind !== "dir") return failure(54);
+    if (node.kind === "dir" && to.parent !== undefined && this.containsDirectory(node, this.directory(to.parent))) return failure(28);
+    if (target?.kind === "dir" && node.kind !== "dir") return failure(31);
+    if (target && target.kind !== "dir" && node.kind === "dir") return failure(54);
+    if (target?.kind === "dir" && target.children.size) return failure(55);
+    const parent = this.parentOf(to), source = this.parentOf(from);
+    if (typeof parent === "number") return failure(parent);
+    if (typeof source === "number") return failure(source);
+    const edges = [{ parent: source, name: from.name, before: node, after: undefined }, { parent, name: to.name, before: target, after: node }];
+    return { plan: boundedNamespace(namespacePlan(edges, [], target ? [target] : [], target ? [{ node: target, delta: -1 }] : []), bound), result: 0 };
+  }
+  planMkdirp(path: string, bound: number): { readonly plan: NamespacePlan; readonly node: DirNode } {
+    let node = this.root;
+    const edges: NamespaceEdge[] = [], created: Node[] = [];
+    for (const part of splitPath(path)) {
+      this.require(node, 1);
+      let child = node.children.get(part);
+      if (!child) child = this.planDirectoryChild(node, part, edges, created, bound);
+      if (child.kind !== "dir") throw new FilesystemError(54);
+      node = child;
+    }
+    const plan = boundedNamespace(namespacePlan(edges, created, [], created.map((entry) => ({ node: entry, delta: 1 }))), bound);
+    return { plan, node };
+  }
+  private planDirectoryChild(parent: DirNode, name: string, edges: NamespaceEdge[], created: Node[], bound: number): DirNode {
+    this.require(parent, 2);
+    if (edges.length * 3 + 3 > bound) throw new FilesystemError(6, "namespace effect bound exceeded");
+    const child = newDir();
+    edges.push({ parent, name, before: undefined, after: child });
+    created.push(child);
+    return child;
+  }
+  planRemove(path: string, bound: number): { readonly plan: NamespacePlan; readonly result: boolean } {
+    const parent = this.lookup(dirname(path));
+    if (parent?.kind !== "dir") return { plan: namespacePlan(), result: false };
+    this.require(parent, 3);
+    const name = basename(path), node = parent.children.get(name);
+    if (!node) return { plan: namespacePlan(), result: false };
+    const plan = namespacePlan([{ parent, name, before: node, after: undefined }], [], [node], [{ node, delta: -1 }]);
+    const edges = plan.edges.slice();
+    const pending: Node[] = [node];
+    while (pending.length) this.collectRemovalEdges(pending.pop()!, pending, edges, bound);
+    return { plan: boundedNamespace({ ...plan, edges }, bound), result: true };
+  }
+  private collectRemovalEdges(node: Node, pending: Node[], edges: NamespaceEdge[], bound: number): void {
+    if (node.kind !== "dir") return;
+    for (const [name, child] of node.children) {
+      if (edges.length + 2 > bound) throw new FilesystemError(6, "namespace effect bound exceeded");
+      edges.push({ parent: node, name, before: child, after: undefined });
+      pending.push(child);
+    }
+  }
+  /** The sole publication namespace apply point. Persistence callbacks stay on actual edits. */
+  applyNamespace(plan: NamespacePlan): void {
+    const created = new Set(plan.created);
+    for (const edge of plan.edits) {
+      if (edge.after) edge.parent.children.set(edge.name, edge.after);
+      else edge.parent.children.delete(edge.name);
+      if (edge.after?.kind === "dir") this.directoryParents.set(edge.after, edge.parent);
+      if (edge.after && created.has(edge.after)) this.onLinkChange?.(edge.after, 1);
+    }
+    for (const link of plan.links) {
+      if (created.has(link.node)) continue;
+      this.onLinkChange?.(link.node, link.delta);
+    }
+    for (const node of plan.forgotten) this.forget(node);
+    for (const node of plan.created) { node.mtime = plan.mtime; this.changed(node); }
+    for (const parent of plan.parents) { parent.mtime = plan.mtime; this.changed(parent); }
+  }
+  discardNamespace(plan: NamespacePlan): void {
+    for (const node of plan.created) this.forget(node);
   }
 
   constructor(public root: DirNode = newDir()) {

@@ -37,7 +37,8 @@ export type MutationResult =
   | { readonly kind: "number"; readonly value: number }
   | { readonly kind: "boolean"; readonly value: boolean }
   | { readonly kind: "append"; readonly written: number; readonly offset: number }
-  | { readonly kind: "error"; readonly errno: number };
+  | { readonly kind: "error"; readonly errno: number }
+  | { readonly kind: "create-error"; readonly errno: number };
 export type PublicationEffect =
   | { readonly kind: "bytes"; readonly file: FileKey; readonly offset: number; readonly bytes: Uint8Array; readonly size: number; readonly version: number }
   | { readonly kind: "resize"; readonly file: FileKey; readonly size: number; readonly version: number }
@@ -153,8 +154,8 @@ function parseResult(bytes: Uint8Array): MutationResult {
     return { kind: "number", value: value.value };
   if (value.kind === "boolean" && "value" in value && typeof value.value === "boolean")
     return { kind: "boolean", value: value.value };
-  if (value.kind === "error" && "errno" in value && typeof value.errno === "number")
-    return { kind: "error", errno: value.errno };
+  if ((value.kind === "error" || value.kind === "create-error") && "errno" in value && typeof value.errno === "number")
+    return { kind: value.kind, errno: value.errno };
   if (value.kind === "append" && "written" in value && typeof value.written === "number" && "offset" in value && typeof value.offset === "number")
     return { kind: "append", written: value.written, offset: value.offset };
   throw new FilesystemError(29, "invalid publication result");
@@ -595,13 +596,14 @@ export function publicationCut(value: unknown): PublicationCut {
   if (!value || typeof value !== "object" || !("history" in value) || !("generation" in value)) throw new FilesystemError(28);
   return { history: text(value.history), generation: integer(value.generation) };
 }
-export function mutationValue(result: MutationResult): number | boolean | { written: number; offset: number } | undefined {
+export function mutationValue(result: MutationResult): number | boolean | { written: number; offset: number } | { error: number } | undefined {
   switch (result.kind) {
     case "void": return;
     case "number": return result.value;
     case "boolean": return result.value;
     case "append": return { written: result.written, offset: result.offset };
     case "error": throw new FilesystemError(result.errno);
+    case "create-error": return { error: result.errno };
     default: { const exhaustive: never = result; return exhaustive; }
   }
 }

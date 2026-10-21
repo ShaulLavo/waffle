@@ -485,7 +485,11 @@ export class FilesystemService {
       domain.verify(connection.session, admission, intent, data);
       if (intent.kind === "preopen" && !session.freeEntries.length) throw new FilesystemError(51);
       const plan = backend.planPublication(intent, data);
-      const publication = domain.prepare(admission, plan.result, plan.changes);
+      let publication: import("./publication.js").PreparedPublication;
+      try {
+        if ((intent.kind === "create" || intent.kind === "preopen") && plan.result.kind === "number" && !session.handles.has(plan.result.value) && !session.freeEntries.length) throw new FilesystemError(51);
+        publication = domain.prepare(admission, plan.result, plan.changes);
+      } catch (error) { backend.discardPublication(plan); throw error; }
       return this.applyPublication(session, id, operation, plan, publication);
     } finally {
       backend.shared.endServiceMutation(new Int32Array(session.connection.epoch));

@@ -1,7 +1,7 @@
 import type { MutationIntent, MutationResult, PublicationEffect } from "./publication.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
-import { MemFS, type Node } from "./memory.js";
+import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
 
@@ -38,7 +38,8 @@ type LocalMutationAction =
   | { readonly kind: "resize"; readonly handle: FileHandle; readonly size: number; readonly truncate: boolean; readonly mtime: number }
   | { readonly kind: "setMode"; readonly handle: FileHandle; readonly mode: number }
   | { readonly kind: "setMtime"; readonly handle: FileHandle; readonly mtime: number }
-  | { readonly kind: "preopen"; readonly path: string };
+  | { readonly kind: "preopen"; readonly path: string }
+  | { readonly kind: "namespace"; readonly plan: NamespacePlan; readonly registered: readonly FileHandle[]; readonly removed: readonly { node: Node; handle: FileHandle }[]; readonly preopen?: string };
 export interface LocalMutationPlan {
   readonly action: LocalMutationAction;
   readonly result: MutationResult;
@@ -423,16 +424,65 @@ export class MemoryBackend implements FilesystemBackend {
       case "resize": return this.planPublicationResize(intent);
       case "setMode": return this.planPublicationMode(intent);
       case "setMtime": return this.planPublicationMtime(intent);
-      case "preopen": {
-        const node = this.fs.lookup(intent.path);
-        if (!node || node.kind !== "dir") throw new FilesystemError(52, "local publication namespace planning is incomplete");
-        const handle = this.fs.handleForNode(node);
-        return { action: { kind: "preopen", path: intent.path }, result: { kind: "number", value: handle }, changes: [] };
+      case "preopen": case "mkdirp": {
+        const prepared = this.fs.planMkdirp(intent.path, domain.limits.effects);
+        const handle = this.fs.handleForNode(prepared.node);
+        return this.planNamespace(prepared.plan, intent.kind === "preopen" ? { kind: "number", value: handle } : { kind: "void" }, intent.kind === "preopen" ? intent.path : undefined);
       }
-      case "mkdirp": case "remove": case "writeFile": case "move": case "create": case "link": case "rename": case "removePath":
-        throw new FilesystemError(52, "local publication namespace planning is incomplete");
+      case "create": {
+        this.path(intent.path);
+        const prepared = this.fs.planCreate(intent.path, intent.nodeKind, intent.exclusive, domain.limits.effects);
+        return this.planNamespace(prepared.plan, typeof prepared.result === "number" ? { kind: "number", value: prepared.result } : { kind: "create-error", errno: prepared.result.error });
+      }
+      case "link": case "rename": {
+        this.path(intent.from); this.path(intent.to);
+        const prepared = intent.kind === "link" ? this.fs.planLink(intent.from, intent.to, domain.limits.effects) : this.fs.planRename(intent.from, intent.to, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "removePath": {
+        this.path(intent.path);
+        const prepared = this.fs.planRemovePath(intent.path, intent.directory, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "remove": {
+        const prepared = this.fs.planRemove(intent.path, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "boolean", value: prepared.result });
+      }
+      case "move": {
+        const root = this.fs.preopen("/");
+        const from = this.fs.resolve(root, intent.from.replace(/^\//, "")), to = this.fs.resolve(root, intent.to.replace(/^\//, ""));
+        if (typeof from === "number" || typeof to === "number") return { action: { kind: "none" }, result: { kind: "number", value: typeof from === "number" ? from : typeof to === "number" ? to : 28 }, changes: [] };
+        const prepared = this.fs.planRename(from, to, domain.limits.effects);
+        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+      }
+      case "writeFile": throw new FilesystemError(52, "local publication compound writeFile planning is incomplete");
       default: { const exhaustive: never = intent; return exhaustive; }
     }
+  }
+  private planNamespace(plan: NamespacePlan, result: MutationResult, preopen?: string): LocalMutationPlan {
+    const changes: PublicationEffect[] = [];
+    for (const node of plan.created) changes.push({ kind: "inode", file: this.publicationKey(node.ino), nodeKind: node.kind === "dir" ? "directory" : "file", mode: node.mode, mtime: plan.mtime });
+    for (const edge of plan.edges) changes.push({ kind: "entry", parent: this.publicationKey(edge.parent.ino), name: edge.name, before: edge.before ? this.publicationKey(edge.before.ino) : null, after: edge.after ? this.publicationKey(edge.after.ino) : null });
+    for (const parent of plan.parents) changes.push({ kind: "metadata", file: this.publicationKey(parent.ino), mode: parent.mode, mtime: plan.mtime });
+    const registered: FileHandle[] = [];
+    try {
+      for (const node of plan.created) {
+        const handle = this.fs.handleForNode(node);
+        registered.push(handle);
+        this.sync(handle);
+      }
+      const removed = plan.edges.flatMap((edge) => edge.before ? [{ node: edge.before, handle: this.fs.handleForNode(edge.before) }] : []);
+      return { action: { kind: "namespace", plan, registered, removed, ...(preopen ? { preopen } : {}) }, result, changes };
+    } catch (error) {
+      for (const handle of registered) this.shared.unlink(handle);
+      this.fs.discardNamespace(plan);
+      throw error;
+    }
+  }
+  discardPublication(plan: LocalMutationPlan): void {
+    if (plan.action.kind !== "namespace") return;
+    for (const handle of plan.action.registered) this.shared.unlink(handle);
+    this.fs.discardNamespace(plan.action.plan);
   }
   private publicationFile(handle: FileHandle) {
     this.check(handle, "file");
@@ -510,6 +560,13 @@ export class MemoryBackend implements FilesystemBackend {
         this.shared.setMtime(action.handle, action.mtime);
         return;
       case "preopen": this.sync(this.fs.preopen(action.path)); return;
+      case "namespace":
+        this.fs.applyNamespace(action.plan);
+        for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
+        for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
+        for (const entry of action.removed) if (!this.isLinked(entry.node)) this.shared.unlink(entry.handle);
+        if (action.preopen) this.sync(this.fs.preopen(action.preopen));
+        return;
       default: { const exhaustive: never = action; return exhaustive; }
     }
   }

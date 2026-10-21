@@ -288,12 +288,11 @@ test("production publication try I/O owns no byte work on EAGAIN and admits one 
   } finally { Atomics.store(root.shared.cells, 1, 0); fixture.stop(); }
 });
 
-test("production publication rejects unimplemented namespace plans before changes", async () => {
+test("production publication refuses incomplete compound writeFile before changes", async () => {
   const fixture = await localPublicationFixture();
   try {
     const start = await fixture.cut();
     await expectErrno(fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 52);
-    await expectErrno(fixture.root.asyncCall("mkdirp", ["/missing/child"]), 52);
     expect(await fixture.cut()).toEqual(start);
     expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([1, 2, 3]));
     expect(fixture.backend.fs.lookup("/missing")).toBeUndefined();
@@ -570,5 +569,84 @@ test("resident direct metadata joins the publication order and chmod revokes an 
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o600])).toBe(0);
     expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
     expect(fixture.sibling.shared.stat(fixture.handle)?.ino).toBe(inode);
+  } finally { fixture.stop(); }
+});
+
+
+test("production namespace plans publish implicit parents and reject over-bound plans without edits", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const start = await fixture.cut();
+    const before = fixture.backend.shared.resources();
+    await expectErrno(fixture.root.asyncCall("mkdirp", ["/a/b/c/d/e/f"]), 6);
+    expect(fixture.backend.fs.lookup("/a")).toBeUndefined();
+    expect(await fixture.cut()).toEqual(start);
+    expect(fixture.backend.shared.resources()).toEqual(before);
+    const directory = await fixture.root.asyncCall("preopen", ["/a/b"]);
+    fixture.root.retain(directory);
+    const page = await fixture.changes(start);
+    expect(page.publications).toHaveLength(1);
+    expect(page.publications[0].changes.filter((effect: {kind: string}) => effect.kind === "inode")).toHaveLength(2);
+    expect(page.publications[0].changes.filter((effect: {kind: string}) => effect.kind === "entry").map((effect: {name: string}) => effect.name)).toEqual(["a", "b"]);
+    expect((await fixture.root.asyncCall("readdir", [directory])).map((entry: {name: string}) => entry.name)).toEqual([".", ".."]);
+    const after = await fixture.cut();
+    await fixture.root.asyncCall("mkdirp", ["/a/b"]);
+    expect(await fixture.cut()).toEqual(after);
+  } finally { fixture.stop(); }
+});
+
+test("production namespace rename and unlink preserve distinct retained file identities", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const directory = await fixture.root.asyncCall("preopen", ["/"]);
+    const resolve = (name: string) => fixture.root.asyncCall("resolve", [directory, name]);
+    const target = await fixture.root.asyncCall("create", [await resolve("target"), "file", true]);
+    fixture.root.retain(target);
+    expect(fixture.root.tryWrite(target, [new Uint8Array([4])], 0)).toBe(1);
+    const sourceKey = fixture.root.shared.stat(fixture.handle)!.ino;
+    const targetKey = fixture.root.shared.stat(target)!.ino;
+    expect(sourceKey).not.toBe(targetKey);
+    const before = await fixture.cut();
+    expect(await fixture.root.asyncCall("rename", [await resolve("file"), await resolve("target")])).toBe(0);
+    const group = (await fixture.changes(before)).publications[0];
+    expect(group.changes.filter((effect: {kind: string}) => effect.kind === "entry")).toHaveLength(2);
+    expect(group.changes.filter((effect: {kind: string}) => effect.kind === "metadata")).toHaveLength(1);
+    expect((await resolve("target")).node).toBe(fixture.handle);
+    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([8])], 0)).toBe(1);
+    expect(fixture.root.tryWrite(target, [new Uint8Array([9])], 0)).toBe(1);
+    expect(await fixture.root.asyncCall("link", [await resolve("target"), await resolve("alias")])).toBe(0);
+    expect(await fixture.root.asyncCall("removePath", [await resolve("target"), false])).toBe(0);
+    expect((await resolve("alias")).node).toBe(fixture.handle);
+    expect(await fixture.root.asyncCall("removePath", [await resolve("alias"), false])).toBe(0);
+    const source = new Uint8Array(3), replaced = new Uint8Array(1);
+    expect(fixture.root.tryRead(fixture.handle, [source], 0)).toBe(3);
+    expect(source).toEqual(new Uint8Array([8, 2, 3]));
+    expect(fixture.root.tryRead(target, [replaced], 0)).toBe(1);
+    expect(replaced).toEqual(new Uint8Array([9]));
+    expect(fixture.root.shared.stat(fixture.handle)!.ino).toBe(sourceKey);
+    expect(fixture.root.shared.stat(target)!.ino).toBe(targetKey);
+  } finally { fixture.stop(); }
+});
+
+test("production recursive removal publishes every edge and retained directory cannot grow names", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const parent = await fixture.root.asyncCall("preopen", ["/tree/child"]);
+    fixture.root.retain(parent);
+    const path = await fixture.root.asyncCall("resolve", [parent, "leaf"]);
+    const file = await fixture.root.asyncCall("create", [path, "file", true]);
+    fixture.root.retain(file);
+    expect(fixture.root.tryWrite(file, [new Uint8Array([7])], 0)).toBe(1);
+    const before = await fixture.cut();
+    expect(await fixture.root.asyncCall("remove", ["/tree"])).toBe(true);
+    const group = (await fixture.changes(before)).publications[0];
+    expect(group.changes.filter((effect: {kind: string}) => effect.kind === "entry").map((effect: {name: string}) => effect.name).sort()).toEqual(["child", "leaf", "tree"]);
+    expect(await fixture.root.asyncCall("listFiles", ["/"])).toEqual(["/file"]);
+    expect(fixture.root.tryRead(file, [new Uint8Array(1)], 0)).toBe(1);
+    const missing = await fixture.root.asyncCall("resolve", [parent, "new"]);
+    expect(await fixture.root.asyncCall("create", [missing, "file", true])).toEqual({error: 44});
+    const after = await fixture.cut();
+    expect(await fixture.root.asyncCall("remove", ["/tree"])).toBe(false);
+    expect(await fixture.cut()).toEqual(after);
   } finally { fixture.stop(); }
 });
