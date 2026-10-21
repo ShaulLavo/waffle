@@ -57,6 +57,33 @@ async function guestBundle(): Promise<Blob> {
   if (!build.success) throw new AggregateError(build.logs, "test-only guest bundle failed");
   return build.outputs[0]!;
 }
+async function observeWorkspaceChannels(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const counts = { opened: 0, closed: 0 };
+    const NativeChannel = BroadcastChannel;
+    class ObservedChannel extends NativeChannel {
+      private closed = false;
+      constructor(name: string) {
+        super(name);
+        if (name.startsWith("waffle:resident:")) counts.opened++;
+      }
+      close(): void {
+        if (!this.closed && this.name.startsWith("waffle:resident:")) counts.closed++;
+        this.closed = true;
+        super.close();
+      }
+    }
+    globalThis.BroadcastChannel = ObservedChannel;
+    Reflect.set(globalThis, "__workspaceChannelCounts", counts);
+  });
+}
+async function workspaceChannels(page: Page): Promise<unknown> {
+  return page.evaluate(() => {
+    const counts: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
+    if (!counts || typeof counts !== "object") throw new Error("channel observer missing");
+    return Object.fromEntries(Object.entries(counts));
+  });
+}
 async function workspacePage(
   page: Page,
   operation: string,
@@ -81,6 +108,7 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
     for (const page of [first, second]) {
       page.on("pageerror", (error) => console.error(error));
       await observeDeaths(page);
+      await observeWorkspaceChannels(page);
       await page.goto(origin);
     }
     const descriptor = await control(
@@ -218,8 +246,15 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
       [second, "child"],
       [second, "proc"],
       [first, "retained"],
-    ] as const)
-      await control(page, "workspaceGuestStop", { key });
+    ] as const) {
+      const before = record(await workspaceChannels(page));
+      const stopped = record(await control(page, "workspaceGuestStop", { key }));
+      equal(record(stopped.exit).type, "exit");
+      const after = record(await workspaceChannels(page));
+      console.log("WORKSPACE_EXIT_CHANNELS=" + JSON.stringify({ key, before, after }));
+      equal(after.opened, before.opened);
+      equal(after.closed, Number(before.closed) + 1);
+    }
     for (const page of [first, second]) await control(page, "workspaceStop");
     await control(first, "workspaceAuthorityStop");
     console.log(

@@ -35,6 +35,10 @@ class FixtureWorker {
     this.worker.onmessageerror = () => this.fail(new Error("invalid worker clone"));
   }
   private receive(data: Record<string, unknown>): void {
+    if (data.type === "exit") {
+      this.events.set("exit", data);
+      this.waiting.get("exit")?.resolve(data);
+    }
     if (typeof data.event === "string") {
       this.events.set(data.event, data);
       this.waiting.get(data.event)?.resolve(data);
@@ -412,10 +416,11 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   if (!guest) throw new Error("missing workspace guest");
   if (operation === "workspaceGuestStop") {
     await guest.worker.request("stop");
+    const exit = await guest.worker.until("exit");
     await guest.worker.until("finished");
     await guest.worker.terminate();
     guests.delete(text(body.key));
-    return null;
+    return { exit };
   }
   return guest.worker.request(text(body.operation), body.request);
 }
