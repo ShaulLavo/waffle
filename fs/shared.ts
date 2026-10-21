@@ -1,3 +1,4 @@
+import { typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
   type PublicationAdmission,
@@ -996,7 +997,7 @@ export class SharedFilesystemState {
     const bytes = new Uint8Array(end - at);
     let offset = 0;
     for (const chunk of chunks) {
-      bytes.set(chunk, offset);
+      typedArraySet(bytes, chunk, offset);
       offset += chunk.length;
     }
     domain.verifyAdmission(

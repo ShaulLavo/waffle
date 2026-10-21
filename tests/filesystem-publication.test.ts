@@ -1623,6 +1623,8 @@ test("cancelled unconnected publication identities release bounded sessions with
     expect(baseline).toBe(2);
     for (let index = 0; index < 24; index++) {
       const cancelled = createProcessFilesystemIdentity(root.connection);
+      revokeFilesystem(cancelled);
+      expect(domain.diagnostics().sessions).toBe(baseline + 1);
       cancelUnconnectedIdentity(cancelled);
       cancelUnconnectedIdentity(cancelled);
       service.sweep();
@@ -1643,6 +1645,7 @@ test("cancelled unconnected publication identities release bounded sessions with
     const connected = connectFilesystemIdentity(createProcessFilesystemIdentity(root.connection));
     service.connect(connected.server);
     next = new FilesystemClient(connected.client);
+    expect(next.connection.publication!.session.slot).toBe(cancelled.publication!.session.slot);
     expect(await next.asyncCall("preopen", ["/"])).toBeNumber();
     cancelUnconnectedIdentity(cancelled);
     expect(domain.diagnostics().sessions).toBe(baseline + 1);
@@ -1663,7 +1666,9 @@ test("cancelled unconnected publication identities release bounded sessions with
 });
 
 type PrivateCopyObservation = { destination: string; global: number; arena: number };
-async function observePrivatePublicationCopies(enabled: boolean): Promise<PrivateCopyObservation[]> {
+async function observePrivatePublicationCopies(
+  enabled: boolean,
+): Promise<PrivateCopyObservation[]> {
   const backend = new MemoryBackend();
   backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
@@ -1685,13 +1690,22 @@ async function observePrivatePublicationCopies(enabled: boolean): Promise<Privat
     Uint8Array.prototype.set = function (source: ArrayLike<number>, offset?: number): void {
       const destination = publicationCopyDestination(typedArrayBuffer(this), buffers);
       if (destination)
-        calls.push({ destination, global: atomicsLoad(global, 1), arena: control ? atomicsLoad(control, 1) : 0 });
+        calls.push({
+          destination,
+          global: atomicsLoad(global, 1),
+          arena: control ? atomicsLoad(control, 1) : 0,
+        });
       reflectApply(original, this, [source, offset]);
     };
     expect(client.tryWrite(path.node, [new Uint8Array([9])], 0)).toBe(1);
     expect(await client.asyncCall("write", [path.node, 1], new Uint8Array([8]))).toBe(1);
     if (enabled)
-      await client.asyncCall("publicationPin", [connection.client.publication!.observer, path.node, 0, 3]);
+      await client.asyncCall("publicationPin", [
+        connection.client.publication!.observer,
+        path.node,
+        0,
+        3,
+      ]);
     Uint8Array.prototype.set = original;
     const output = new Uint8Array(3);
     expect(client.tryRead(path.node, [output], 0)).toBe(3);

@@ -237,6 +237,10 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
   Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
+  if (connection.publication)
+    new PublicationDomain(connection.publication.buffers).retireSession(
+      connection.publication.session,
+    );
   Atomics.notify(new Int32Array(connection.sections), 0);
   wake(connection);
 }

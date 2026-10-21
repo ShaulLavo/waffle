@@ -1,3 +1,4 @@
+import { typedArraySet } from "../proc/intrinsics.js";
 import type { FilesystemSection } from "./protocol.js";
 import { FilesystemError, type ResolvedPath } from "../core/filesystem.js";
 import type {
@@ -269,7 +270,7 @@ function parseResult(bytes: Uint8Array): MutationResult {
 
 /** Fixed arenas shared by the service and actual direct clients. The filesystem global lock
  * protects prepare/commit/cut/log/pin calls. Admission uses a separate immediate arena CAS,
- * never held across a filesystem lock, await, or guest call. */
+ * never held across a filesystem lock or await. Private byte copies use captured intrinsics. */
 export class PublicationDomain {
   private readonly control: Int32Array;
   private readonly sessions: Int32Array;
@@ -337,7 +338,7 @@ export class PublicationDomain {
     const base = session.slot * SESSION_WORDS;
     if (
       this.sessions[base + Session.Serial] !== session.serial ||
-      !this.sessions[base + Session.Open]
+      Atomics.load(this.sessions, base + Session.Open) !== session.serial
     )
       throw new FilesystemError(11, "publication session is closed");
     return base;
@@ -349,16 +350,17 @@ export class PublicationDomain {
       const slot = this.findSession();
       this.control[Control.Serial] = serial;
       const base = slot * SESSION_WORDS;
+      this.clearSession(this.sessions[base + Session.Serial]!);
       this.sessions[base + Session.Serial] = serial;
       this.sessions[base + Session.Next] = 0;
       this.sessions[base + Session.Retired] = 0;
-      this.sessions[base + Session.Open] = 1;
+      Atomics.store(this.sessions, base + Session.Open, serial);
       return { slot, serial };
     });
   }
   private findSession(): number {
     for (let slot = 0; slot < this.limits.sessions; slot++)
-      if (!this.sessions[slot * SESSION_WORDS + Session.Open]) return slot;
+      if (Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) <= 0) return slot;
     throw new FilesystemError(6, "publication session bound exceeded");
   }
   next(session: PublicationSession): MutationId {
@@ -450,8 +452,8 @@ export class PublicationDomain {
     const ticket = serial * 8;
     const base = slot * OP_WORDS;
     const at = this.inputAt(slot);
-    this.inputs.set(args, at);
-    this.inputs.set(input, at + this.limits.argumentBytes);
+    typedArraySet(this.inputs, args, at);
+    typedArraySet(this.inputs, input, at + this.limits.argumentBytes);
     this.operations[base + Op.Session] = id.session;
     this.operations[base + Op.Sequence] = id.sequence;
     this.operations[base + Op.Arguments] = args.length;
@@ -525,7 +527,7 @@ export class PublicationDomain {
     for (let slot = 0; slot < this.limits.sessions; slot++)
       if (
         this.sessions[slot * SESSION_WORDS + Session.Serial] === id.session &&
-        this.sessions[slot * SESSION_WORDS + Session.Open]
+        Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) === id.session
       )
         return this.lookup({ slot, serial: id.session }, id);
     return { kind: "unknown" };
@@ -673,7 +675,8 @@ export class PublicationDomain {
     return prepared;
   }
   /** All potentially failing work is in prepare. Invoke immediately after synchronous effects,
-   * before releasing the same filesystem global lock. No callbacks or encoding occur here. */
+   * before releasing the same filesystem global lock. Byte copies use captured intrinsics;
+   * result and effect encoding is already complete. */
   commit(prepared: PreparedPublication): PublicationReceipt {
     const base = this.checkAdmission(prepared.admission, Status.Committing);
     const generation = prepared.receipt.cut.generation;
@@ -688,7 +691,7 @@ export class PublicationDomain {
       this.versions[entry.slot * VERSION_WORDS + 1] = versionLow;
       this.versions[entry.slot * VERSION_WORDS + 2] = versionHigh;
     }
-    this.results.set(prepared.result, prepared.admission.slot * this.limits.resultBytes);
+    typedArraySet(this.results, prepared.result, prepared.admission.slot * this.limits.resultBytes);
     this.operations[base + Op.Result] = prepared.result.length;
     this.operations[base + Op.GenerationLow] = low;
     this.operations[base + Op.GenerationHigh] = high;
@@ -701,7 +704,7 @@ export class PublicationDomain {
   private appendLog(effects: Uint8Array, low: number, high: number): void {
     const slot = this.control[Control.LogNext]!;
     const stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
-    this.logData.set(effects, slot * stride);
+    typedArraySet(this.logData, effects, slot * stride);
     this.log[slot * LOG_WORDS] = effects.length;
     this.log[slot * LOG_WORDS + 1] = low;
     this.log[slot * LOG_WORDS + 2] = high;
@@ -803,14 +806,27 @@ export class PublicationDomain {
     }
     return { kind: "changes", publications, next };
   }
+  /** Reap calls only after this exact identity has quiesced or physically stopped.
+   * The serial-tagged tombstone cannot revoke a newer occupant or acquire a living peer's arena. */
+  retireSession(session: PublicationSession): void {
+    Atomics.compareExchange(
+      this.sessions,
+      session.slot * SESSION_WORDS + Session.Open,
+      session.serial,
+      -session.serial,
+    );
+  }
   closeSession(session: PublicationSession): void {
     this.arena(() => {
-      this.session(session);
-      this.sessions[session.slot * SESSION_WORDS + Session.Open] = 0;
-      for (let slot = 0; slot < this.limits.operations; slot++)
-        if (this.operations[slot * OP_WORDS + Op.Session] === session.serial)
-          this.clearOperation(slot);
+      if (this.sessions[session.slot * SESSION_WORDS + Session.Serial] !== session.serial) return;
+      this.retireSession(session);
+      this.clearSession(session.serial);
     });
+  }
+  private clearSession(serial: number): void {
+    if (!serial) return;
+    for (let slot = 0; slot < this.limits.operations; slot++)
+      if (this.operations[slot * OP_WORDS + Op.Session] === serial) this.clearOperation(slot);
   }
   pin(file: FileKey, version: number, bytes: Uint8Array): PublicationPin {
     const cut = this.cut();
@@ -823,7 +839,7 @@ export class PublicationDomain {
       throw new FilesystemError(33);
     }
     const owned = bytes.slice();
-    this.pinData.set(owned, slot * stride);
+    typedArraySet(this.pinData, owned, slot * stride);
     this.pins[slot * PIN_WORDS] = id;
     this.pins[slot * PIN_WORDS + 2] = bytes.length;
     this.control[Control.PinSerial] = id;
@@ -865,7 +881,7 @@ export class PublicationDomain {
       pins = 0,
       pinBytes = 0;
     for (let slot = 0; slot < this.limits.sessions; slot++)
-      if (this.sessions[slot * SESSION_WORDS + Session.Open]) sessions++;
+      if (Atomics.load(this.sessions, slot * SESSION_WORDS + Session.Open) > 0) sessions++;
     for (let slot = 0; slot < this.limits.operations; slot++) {
       const state = this.operations[slot * OP_WORDS + Op.State]! & STATUS_MASK;
       if (state === Status.Pending || state === Status.Committing) pending++;
@@ -915,10 +931,10 @@ function encodeEffects(
     throw new FilesystemError(6, "publication effect bytes exceeded");
   const bytes = new Uint8Array(4 + header.length + length);
   new DataView(bytes.buffer).setUint32(0, header.length, true);
-  bytes.set(header, 4);
+  typedArraySet(bytes, header, 4);
   let at = 4 + header.length;
   for (const tail of tails) {
-    bytes.set(tail, at);
+    typedArraySet(bytes, tail, at);
     at += tail.length;
   }
   return bytes;
