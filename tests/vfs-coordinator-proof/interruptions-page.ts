@@ -20,30 +20,49 @@ IDBDatabase.prototype.close = function () {
 };
 function start(work: Promise<Reply>): void {
   outcome = undefined;
-  running = work.then((reply) => { outcome = reply; return reply; });
+  running = work.then((reply) => {
+    outcome = reply;
+    return reply;
+  });
 }
 async function holdBootstrap(workspace: string): Promise<void> {
   const ready = Promise.withResolvers<void>();
-  void navigator.locks.request(`e5-bootstrap:${workspace}`, () => new Promise<void>((resolve) => {
-    release = resolve;
-    ready.resolve();
-  }));
+  void navigator.locks.request(
+    `e5-bootstrap:${workspace}`,
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+        ready.resolve();
+      }),
+  );
   await ready.promise;
 }
 function keepAlive(store: IDBObjectStore, held: () => boolean): void {
   const request = store.get("head");
-  request.onsuccess = () => { if (held()) keepAlive(store, held); };
+  request.onsuccess = () => {
+    if (held()) keepAlive(store, held);
+  };
 }
 async function holdRegistry(workspace: string): Promise<void> {
   const db = await openDatabase(workspace);
   const tx = db.transaction("workspace", "readwrite");
   let held = true;
-  const complete = new Promise<void>((resolve) => { tx.oncomplete = () => { db.close(); resolve(); }; });
-  release = () => { held = false; };
+  const complete = new Promise<void>((resolve) => {
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+  });
+  release = () => {
+    held = false;
+  };
   const store = tx.objectStore("workspace");
   await new Promise<void>((resolve) => {
     const first = store.get("head");
-    first.onsuccess = () => { keepAlive(store, () => held); resolve(); };
+    first.onsuccess = () => {
+      keepAlive(store, () => held);
+      resolve();
+    };
   });
   void complete;
 }
@@ -70,12 +89,19 @@ const interruptions = {
   startRecover: () => start(client.recover()),
   result: () => outcome,
   joined: () => running,
-  release: () => { release?.(); release = undefined; },
+  release: () => {
+    release?.();
+    release = undefined;
+  },
   resources: () => ({ databases: connections.size, worker: Boolean(client.worker) }),
   snapshot,
-  retainWorker: () => { successorWorker = client.worker; },
+  retainWorker: () => {
+    successorWorker = client.worker;
+  },
   sameWorker: () => successorWorker === client.worker,
 };
 type InterruptionPage = typeof interruptions;
-declare global { var interruptions: InterruptionPage; }
+declare global {
+  var interruptions: InterruptionPage;
+}
 globalThis.interruptions = interruptions;

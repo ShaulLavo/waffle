@@ -4,7 +4,11 @@ import { ParkingGates, type Schedule } from "./parking.js";
 import type { Request } from "./protocol.js";
 function original(): Request {
   return {
-    client: "history/session", sequence: 1, epoch: 1, history: "history", actor: "host",
+    client: "history/session",
+    sequence: 1,
+    epoch: 1,
+    history: "history",
+    actor: "host",
     operation: { kind: "append", path: "/data", text: "once" },
   };
 }
@@ -13,8 +17,15 @@ test("F3a successful null status cannot resolve an issued mutation", () => {
   const issued = ledger.capture(original());
   ledger.settle(issued, unsettled(issued, "lost"));
   try {
-    const status = ledger.capture({ ...issued, operation: { kind: "status", key: "history/session:1" } });
-    ledger.settle(status, { kind: "ok", cursor: { epoch: 1, history: "history", generation: 0, watermark: 0, durableWatermark: 0 }, result: null });
+    const status = ledger.capture({
+      ...issued,
+      operation: { kind: "status", key: "history/session:1" },
+    });
+    ledger.settle(status, {
+      kind: "ok",
+      cursor: { epoch: 1, history: "history", generation: 0, watermark: 0, durableWatermark: 0 },
+      result: null,
+    });
   } catch (error) {
     expect(String(error)).toContain("OP_ID_CONFLICT");
   }
@@ -24,7 +35,9 @@ test("F3b refreshed history cannot reissue an unknown identity", () => {
   const ledger = new IntentLedger();
   const issued = ledger.capture(original());
   ledger.settle(issued, unsettled(issued, "lost"));
-  expect(() => ledger.capture({ ...issued, epoch: 2, history: "new-history" })).toThrow("OUTCOME_UNKNOWN");
+  expect(() => ledger.capture({ ...issued, epoch: 2, history: "new-history" })).toThrow(
+    "OUTCOME_UNKNOWN",
+  );
   expect(ledger.unresolved()).toEqual(["history/session:1"]);
 });
 class Clock {
@@ -32,7 +45,9 @@ class Clock {
   readonly jobs = new Map<() => void, number>();
   readonly after: Schedule = (callback, milliseconds) => {
     this.jobs.set(callback, this.now + milliseconds);
-    return () => { this.jobs.delete(callback); };
+    return () => {
+      this.jobs.delete(callback);
+    };
   };
   advance(milliseconds: number): void {
     this.now += milliseconds;

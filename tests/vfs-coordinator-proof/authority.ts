@@ -360,7 +360,15 @@ function deliver(port: MessagePort, envelope: Envelope): void {
       result: {
         kind: "ok",
         cursor: cursor(state ?? initial("fenced-safe")),
-        result: { instance, initialized: Boolean(state), pending, gates: gates.size, state, events, counters },
+        result: {
+          instance,
+          initialized: Boolean(state),
+          pending,
+          gates: gates.size,
+          state,
+          events,
+          counters,
+        },
       },
     });
     return;
