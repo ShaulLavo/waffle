@@ -629,7 +629,6 @@ export class FilesystemService {
         this.residentPublication.workspaceHost ??= {
           root: session.connection,
           connect: (connection) => this.connect(connection),
-          sweep: () => this.sweep(),
           adopt: (connection, reservation) => this.adoptWorkspace(connection, reservation),
           close: (connection) => this.closeWorkspace(connection),
         };
