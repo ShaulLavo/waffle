@@ -1,3 +1,4 @@
+import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
 import {
   browserQuietStartFailure,
   hostRootStartFailure,
@@ -799,636 +800,643 @@ const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap
       }),
     ),
 );
-const cases: BrowserCase[] = quietFailureCases.concat([
-  {
-    label: "startup diagnostic: embedder root keeps generic stderr",
-    standalone: true,
-    run: hostRootStartFailure,
-  },
-  {
-    label: "startup diagnostic: registered child controller still runs",
-    standalone: true,
-    run: () => browserQuietStartFailure("adapter-entry", "pipe", undefined, true),
-  },
+const cases: BrowserCase[] = quietFailureCases.concat(
+  fdReopenCases().map(({ label, run }) => ({ label, standalone: true, run: async () => run() })),
+  [
+    {
+      label: "startup diagnostic: embedder root keeps generic stderr",
+      standalone: true,
+      run: hostRootStartFailure,
+    },
+    {
+      label: "startup diagnostic: registered child controller still runs",
+      standalone: true,
+      run: () => browserQuietStartFailure("adapter-entry", "pipe", undefined, true),
+    },
 
-  {
-    label: "pipe filestat and fd_kind: kinds, stdio, dup and inherited child remaps",
-    standalone: true,
-    run: () => browserPipeFilestat(),
-  },
-  {
-    label: "fd_kind: signal-only worker without process transport",
-    standalone: true,
-    run: browserFdKindWithoutProcess,
-  },
-  {
-    label: "startup diagnostic: normal entry never delays stderr EOF",
-    standalone: true,
-    run: () => browserStartupDiagnostic(undefined, "normal"),
-  },
-  {
-    label: "startup diagnostic: worker-selected failure reports to host after acknowledgement",
-    standalone: true,
-    run: () => browserStartupDiagnostic(),
-  },
-  {
-    label: "startup diagnostic: executor completion cannot duplicate broker output",
-    standalone: true,
-    run: () => browserStartupDiagnostic(undefined, "drain", true),
-  },
-  {
-    label: "startup diagnostic: stalled reader cannot retain teardown",
-    standalone: true,
-    run: () => browserStartupDiagnostic(undefined, "stalled"),
-  },
-  {
-    label: "startup diagnostic: closed reader cannot retain teardown",
-    standalone: true,
-    run: () => browserStartupDiagnostic(undefined, "closed"),
-  },
-  {
-    label: "startup diagnostic: disposal releases a suppressed diagnostic writer",
-    standalone: true,
-    run: () => browserStartupDiagnostic(undefined, "dispose"),
-  },
-  {
-    label: "runtime diagnostic: draining reader receives all bytes",
-    standalone: true,
-    run: () => browserRuntimeDiagnostic(),
-  },
-  {
-    label: "runtime diagnostic: slow reader resets five-second deadline",
-    standalone: true,
-    run: () => browserRuntimeDiagnostic(undefined, "slow"),
-  },
-  {
-    label: "runtime diagnostic: stalled reader releases after deadline",
-    standalone: true,
-    run: () => browserRuntimeDiagnostic(undefined, "stalled"),
-  },
-  {
-    label: "runtime diagnostic: closed reader releases immediately",
-    standalone: true,
-    run: () => browserRuntimeDiagnostic(undefined, "closed"),
-  },
-  {
-    label: "cell clone: browser broker spawns and waits after slot recycling",
-    standalone: true,
-    run: browserBrokerCellClone,
-  },
-  {
-    label: "cell clone: Worker rejects stale process cells after collection and recycling",
-    standalone: true,
-    run: () => browserStaleCellClone(false),
-  },
-  {
-    label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id",
-    standalone: true,
-    run: () => browserStaleCellClone(true),
-  },
-  {
-    label:
-      "intrinsics: guest replacements cannot observe private process views or adopt recycled rows",
-    async run(f) {
-      const poisoned: number[] = [];
-      const poison = async (pid: number) => {
-        await f.call(pid, { operation: "poison-intrinsics" });
-        poisoned.push(pid);
-      };
-      try {
-        await poison(f.pid);
+    {
+      label: "pipe filestat and fd_kind: kinds, stdio, dup and inherited child remaps",
+      standalone: true,
+      run: () => browserPipeFilestat(),
+    },
+    {
+      label: "fd_kind: signal-only worker without process transport",
+      standalone: true,
+      run: browserFdKindWithoutProcess,
+    },
+    {
+      label: "startup diagnostic: normal entry never delays stderr EOF",
+      standalone: true,
+      run: () => browserStartupDiagnostic(undefined, "normal"),
+    },
+    {
+      label: "startup diagnostic: worker-selected failure reports to host after acknowledgement",
+      standalone: true,
+      run: () => browserStartupDiagnostic(),
+    },
+    {
+      label: "startup diagnostic: executor completion cannot duplicate broker output",
+      standalone: true,
+      run: () => browserStartupDiagnostic(undefined, "drain", true),
+    },
+    {
+      label: "startup diagnostic: stalled reader cannot retain teardown",
+      standalone: true,
+      run: () => browserStartupDiagnostic(undefined, "stalled"),
+    },
+    {
+      label: "startup diagnostic: closed reader cannot retain teardown",
+      standalone: true,
+      run: () => browserStartupDiagnostic(undefined, "closed"),
+    },
+    {
+      label: "startup diagnostic: disposal releases a suppressed diagnostic writer",
+      standalone: true,
+      run: () => browserStartupDiagnostic(undefined, "dispose"),
+    },
+    {
+      label: "runtime diagnostic: draining reader receives all bytes",
+      standalone: true,
+      run: () => browserRuntimeDiagnostic(),
+    },
+    {
+      label: "runtime diagnostic: slow reader resets five-second deadline",
+      standalone: true,
+      run: () => browserRuntimeDiagnostic(undefined, "slow"),
+    },
+    {
+      label: "runtime diagnostic: stalled reader releases after deadline",
+      standalone: true,
+      run: () => browserRuntimeDiagnostic(undefined, "stalled"),
+    },
+    {
+      label: "runtime diagnostic: closed reader releases immediately",
+      standalone: true,
+      run: () => browserRuntimeDiagnostic(undefined, "closed"),
+    },
+    {
+      label: "cell clone: browser broker spawns and waits after slot recycling",
+      standalone: true,
+      run: browserBrokerCellClone,
+    },
+    {
+      label: "cell clone: Worker rejects stale process cells after collection and recycling",
+      standalone: true,
+      run: () => browserStaleCellClone(false),
+    },
+    {
+      label: "cell clone: Worker rejects stale job cells with a distinct lifecycle id",
+      standalone: true,
+      run: () => browserStaleCellClone(true),
+    },
+    {
+      label:
+        "intrinsics: guest replacements cannot observe private process views or adopt recycled rows",
+      async run(f) {
+        const poisoned: number[] = [];
+        const poison = async (pid: number) => {
+          await f.call(pid, { operation: "poison-intrinsics" });
+          poisoned.push(pid);
+        };
+        try {
+          await poison(f.pid);
+          equal(
+            await f.call(f.pid, { operation: "exercise-controls" }),
+            9,
+            "all live control families exercised",
+          );
+          const oldPid = await f.spawn(),
+            oldJob = f.job(oldPid),
+            oldWorker = f.workers.get(oldPid)!;
+          const oldJobSlot = workerProcessState(oldWorker.transport).jobSlot;
+          await poison(oldPid);
+          equal(
+            await f.call(oldPid, { operation: "exercise-controls" }),
+            9,
+            "child live cells remain usable",
+          );
+          const sibling = await f.spawn(),
+            siblingJob = f.job(sibling);
+          await rejectsErrno(
+            () => f.call(oldPid, { operation: "kill", pid: sibling, signal: 9 }),
+            63,
+            "poisoned child cannot signal sibling",
+          );
+          await rejectsErrno(
+            () => f.call(oldPid, { operation: "kill-job", job: siblingJob, signal: 9 }),
+            63,
+            "poisoned child cannot signal sibling job",
+          );
+          equal(
+            await f.call(f.pid, { operation: "wait", pid: oldPid }),
+            null,
+            "poisoned live child wait",
+          );
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job: oldJob }),
+            null,
+            "poisoned live job wait",
+          );
+          await f.call(f.pid, { operation: "kill", pid: oldPid, signal: 17 }); // Ignored default; keep it running.
+          const completion = f.supervisor.waitForExit(f.pid, sibling);
+          await f.call(f.pid, { operation: "kill", pid: sibling, signal: 9 });
+          equal(
+            await completion,
+            { kind: "signaled", code: 9, status: 137 },
+            "poisoned signal publishes terminal winner",
+          );
+          await f.call(f.pid, { operation: "kill-job", job: siblingJob, signal: 9 });
+          equal(
+            await f.call(f.pid, { operation: "wait", pid: sibling }),
+            { kind: "signaled", code: 9, status: 137 },
+            "poisoned signal child collection",
+          );
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job: siblingJob }),
+            { kind: "signaled", code: 9, status: 137 },
+            "poisoned signal job collection",
+          );
+          await f.exit(oldPid, 5);
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job: oldJob }),
+            exited(5),
+            "poisoned old job collection",
+          );
+          // Check both the retired slot and its replacement, not just a still-live zombie.
+          for (const phase of ["collected", "recycled"]) {
+            let replacement: number | undefined;
+            if (phase === "recycled") {
+              replacement = await f.spawn();
+              const worker = f.workers.get(replacement)!;
+              equal(
+                worker.transport.slot,
+                oldWorker.transport.slot,
+                "poisoned replacement reuses process row",
+              );
+              equal(
+                workerProcessState(worker.transport).jobSlot,
+                oldJobSlot,
+                "poisoned replacement reuses job row",
+              );
+              assert(
+                replacement !== oldPid && f.job(replacement) !== oldJob,
+                "recycling must assign fresh identities",
+              );
+              await poison(replacement);
+            }
+            const before = Array.from(new Uint8Array(f.root.directory));
+            const reads = await f.call<MutationResult[]>(oldPid, { operation: "read-captured" });
+            const writes = await f.call<MutationResult[]>(oldPid, { operation: "mutate-captured" });
+            equal(
+              reads.length,
+              30,
+              `${phase}: all stale read, startup, wait and notify checks attempted`,
+            );
+            assert(writes.length >= 39, `${phase}: all stale mutation checks attempted`);
+            for (const result of reads.concat(writes))
+              equal(result.errno, ProcessErrno.SRCH, `${phase}: ${result.operation}`);
+            equal(
+              Array.from(new Uint8Array(f.root.directory)),
+              before,
+              `${phase}: stale checks leave the entire directory untouched`,
+            );
+            if (replacement !== undefined) {
+              equal(
+                await f.call(f.pid, { operation: "wait", pid: replacement }),
+                null,
+                "replacement remains live",
+              );
+              await f.exit(replacement, 23);
+              equal(
+                await f.call(f.pid, { operation: "wait-job", job: f.job(replacement) }),
+                exited(23),
+                "replacement completes normally",
+              );
+            }
+          }
+        } finally {
+          await restoreAndAuditIntrinsics(f, poisoned);
+        }
+      },
+    },
+    {
+      label:
+        "intrinsics: real Worker pipe registry and descriptor lifecycle keep private buffers captured",
+      async run(f) {
+        const report = await f.call<IntrinsicsReport>(f.pid, { operation: "pipe-intrinsics" });
         equal(
-          await f.call(f.pid, { operation: "exercise-controls" }),
-          9,
-          "all live control families exercised",
+          report.leaks,
+          [],
+          "guest pipe observers never receive private backing buffers or collections",
         );
+        for (const name of [
+          "Atomics.load",
+          "TypedArray.buffer",
+          "TypedArray.subarray",
+          "Map.set",
+          "Map.get",
+          "Reflect.get",
+          "Object.prototype.get",
+          "Object.prototype.set",
+          "crypto.randomUUID",
+        ]) {
+          assert(report.canaries.includes(name), `pipe observer ${name} positive control`);
+        }
+      },
+    },
+    {
+      label:
+        "intrinsics: real Worker bootstrap checkActive retains terminal authority under guest replacements",
+      async run(f) {
+        const pid = await f.spawn(),
+          job = f.job(pid);
+        await f.call(pid, { operation: "poison-intrinsics" });
+        try {
+          const completion = f.supervisor.waitForExit(f.pid, pid);
+          equal(
+            await f.call(pid, { operation: "bootstrap-check-active" }),
+            { live: true, signal: 9 },
+            "bootstrap active checks",
+          );
+          equal(
+            await completion,
+            { kind: "signaled", code: 9, status: 137 },
+            "bootstrap terminal signal survives attempted normal completion",
+          );
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job }),
+            { kind: "signaled", code: 9, status: 137 },
+            "bootstrap job remains collectible",
+          );
+        } finally {
+          await restoreAndAuditIntrinsics(f, [pid]);
+        }
+      },
+    },
+    {
+      label: "shared Worker waits consume one child independently of job collection",
+      async run(f) {
+        const pid = await f.spawn(),
+          job = f.job(pid);
+        equal(await f.call(f.pid, { operation: "wait", pid }), null, "running child wait");
+        await f.exit(pid, 23);
+        equal(await f.call(f.pid, { operation: "wait", pid }), exited(23), "consuming wait");
+        await rejectsErrno(
+          () => f.call(f.pid, { operation: "wait", pid }),
+          ProcessErrno.CHILD,
+          "repeat wait",
+        );
+        equal(await f.call(f.pid, { operation: "wait-job", job }), exited(23), "job outcome");
+        assert(!f.supervisor.get(pid), "Job collection must remove the host process record");
+        await rejectsProcess(
+          () => f.call(f.pid, { operation: "wait", pid }),
+          "collected child wait",
+        );
+      },
+    },
+    {
+      label: "repeated real Worker spawn exit and job collection",
+      async run(f) {
+        let previous = f.pid;
+        for (let iteration = 0; iteration < 64; iteration++) {
+          const pid = await f.spawn(),
+            job = f.job(pid),
+            code = iteration % 31;
+          assert(pid > previous, "Process identities must not be reused");
+          previous = pid;
+          await f.exit(pid, code);
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job }),
+            exited(code),
+            `iteration ${iteration}`,
+          );
+          assert(
+            !f.supervisor.get(pid) && !f.broker.get(pid),
+            "Collected process must leave host and broker live records",
+          );
+          // Do not accumulate OS threads or test-owned history while testing directory lifetime.
+          f.workers.get(pid)!.stop();
+          f.workers.delete(pid);
+          f.notices.length = 0;
+          equal(f.workers.size, 1, "remaining test-owned Workers");
+          equal(directorySlots(f.root.directory), [f.root.slot], "remaining shared process slots");
+          equal(directoryJobs(f.root.directory).length, 1, "remaining shared job slots");
+        }
+        equal(
+          Array.from(f.supervisor.table.values(), (record) => record.pid),
+          [f.pid],
+          "remaining host processes",
+        );
+      },
+    },
+    {
+      label: "repeated real Worker individual waits recycle a still-live shell job",
+      async run(f) {
+        const job = f.job(f.pid);
+        for (let iteration = 0; iteration < 32; iteration++) {
+          const pid = await f.spawn(f.pid, job);
+          await f.exit(pid, iteration);
+          equal(
+            await f.call(f.pid, { operation: "wait", pid }),
+            exited(iteration),
+            "individual collection",
+          );
+          await rejectsErrno(
+            () => f.call(f.pid, { operation: "wait", pid }),
+            ProcessErrno.CHILD,
+            "repeat individual wait",
+          );
+          f.workers.get(pid)!.stop();
+          f.workers.delete(pid);
+          f.notices.length = 0;
+          equal(
+            directorySlots(f.root.directory),
+            [f.root.slot],
+            "only the still-live shell occupies a slot",
+          );
+          equal(directoryJobs(f.root.directory).length, 1, "the shell's job remains live");
+        }
+      },
+    },
+    {
+      label: "direct child wait leaves a live grandchild pending until job collection",
+      async run(f) {
+        const leader = await f.spawn(),
+          job = f.job(leader);
+        const grandchild = await f.spawn(leader, job);
+        await f.exit(leader, 23);
+        equal(
+          await f.call(f.pid, { operation: "wait", pid: leader }),
+          exited(23),
+          "collect direct child",
+        );
+        for (let repeat = 0; repeat < 3; repeat++)
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job }),
+            null,
+            "orphan keeps group pending",
+          );
+        await f.exit(grandchild, 7);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job }),
+          exited(23),
+          "cached leader outcome after grandchild exit",
+        );
+        await rejectsErrno(
+          () => f.call(f.pid, { operation: "wait-job", job }),
+          ProcessErrno.CHILD,
+          "repeat group collection",
+        );
+      },
+    },
+    {
+      label: "unreaped zombie keeps immutable outcome across late Worker messages",
+      async run(f) {
+        const pid = await f.spawn(),
+          job = f.job(pid);
+        await f.exit(pid, 7);
+        await f.call(pid, { operation: "exit", code: 99 });
+        assert(
+          f.supervisor.get(pid) && f.broker.get(pid),
+          "Uncollected zombie must remain addressable",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait", pid }),
+          exited(7),
+          "late exit cannot replace zombie outcome",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job }),
+          exited(7),
+          "zombie job collection",
+        );
+      },
+    },
+    {
+      label: "unreaped zombies retain capacity until consuming job wait",
+      async run(f) {
+        const zombies: { pid: number; job: number; slot: number }[] = [];
+        for (let index = 0; index < 3; index++) {
+          const pid = await f.spawn(),
+            job = f.job(pid),
+            slot = f.workers.get(pid)!.transport.slot;
+          await f.exit(pid, index);
+          zombies.push({ pid, job, slot });
+        }
+        equal(directorySlots(f.root.directory).length, 4, "zombies occupy all process slots");
+        equal(directoryJobs(f.root.directory).length, 4, "zombies retain their job rows");
+        await rejectsErrno(
+          () => f.call(f.pid, { operation: "spawn" }),
+          ProcessErrno.AGAIN,
+          "full zombie directory",
+        );
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: zombies[0]!.job }),
+          exited(0),
+          "release one zombie",
+        );
+        const replacement = await f.spawn(),
+          replacementJob = f.job(replacement);
+        equal(
+          f.workers.get(replacement)!.transport.slot,
+          zombies[0]!.slot,
+          "collected zombie row reused",
+        );
+        await f.exit(replacement, 12);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: replacementJob }),
+          exited(12),
+          "replacement collection",
+        );
+        for (let index = 1; index < zombies.length; index++) {
+          equal(
+            await f.call(f.pid, { operation: "wait-job", job: zombies[index]!.job }),
+            exited(index),
+            "other zombie remains intact",
+          );
+        }
+        equal(directorySlots(f.root.directory), [f.root.slot], "all zombie process rows collected");
+        equal(directoryJobs(f.root.directory).length, 1, "all zombie job rows collected");
+      },
+    },
+    {
+      label: "still-running stale Worker cannot mutate a reused process or job row",
+      async run(f) {
         const oldPid = await f.spawn(),
           oldJob = f.job(oldPid),
           oldWorker = f.workers.get(oldPid)!;
-        const oldJobSlot = workerProcessState(oldWorker.transport).jobSlot;
-        await poison(oldPid);
-        equal(
-          await f.call(oldPid, { operation: "exercise-controls" }),
-          9,
-          "child live cells remain usable",
-        );
-        const sibling = await f.spawn(),
-          siblingJob = f.job(sibling);
-        await rejectsErrno(
-          () => f.call(oldPid, { operation: "kill", pid: sibling, signal: 9 }),
-          63,
-          "poisoned child cannot signal sibling",
-        );
-        await rejectsErrno(
-          () => f.call(oldPid, { operation: "kill-job", job: siblingJob, signal: 9 }),
-          63,
-          "poisoned child cannot signal sibling job",
-        );
-        equal(
-          await f.call(f.pid, { operation: "wait", pid: oldPid }),
-          null,
-          "poisoned live child wait",
-        );
-        equal(
-          await f.call(f.pid, { operation: "wait-job", job: oldJob }),
-          null,
-          "poisoned live job wait",
-        );
-        await f.call(f.pid, { operation: "kill", pid: oldPid, signal: 17 }); // Ignored default; keep it running.
-        const completion = f.supervisor.waitForExit(f.pid, sibling);
-        await f.call(f.pid, { operation: "kill", pid: sibling, signal: 9 });
-        equal(
-          await completion,
-          { kind: "signaled", code: 9, status: 137 },
-          "poisoned signal publishes terminal winner",
-        );
-        await f.call(f.pid, { operation: "kill-job", job: siblingJob, signal: 9 });
-        equal(
-          await f.call(f.pid, { operation: "wait", pid: sibling }),
-          { kind: "signaled", code: 9, status: 137 },
-          "poisoned signal child collection",
-        );
-        equal(
-          await f.call(f.pid, { operation: "wait-job", job: siblingJob }),
-          { kind: "signaled", code: 9, status: 137 },
-          "poisoned signal job collection",
-        );
+        const oldState = workerProcessState(oldWorker.transport);
         await f.exit(oldPid, 5);
         equal(
           await f.call(f.pid, { operation: "wait-job", job: oldJob }),
           exited(5),
-          "poisoned old job collection",
+          "old job collection",
         );
-        // Check both the retired slot and its replacement, not just a still-live zombie.
-        for (const phase of ["collected", "recycled"]) {
-          let replacement: number | undefined;
-          if (phase === "recycled") {
-            replacement = await f.spawn();
-            const worker = f.workers.get(replacement)!;
-            equal(
-              worker.transport.slot,
-              oldWorker.transport.slot,
-              "poisoned replacement reuses process row",
-            );
-            equal(
-              workerProcessState(worker.transport).jobSlot,
-              oldJobSlot,
-              "poisoned replacement reuses job row",
-            );
-            assert(
-              replacement !== oldPid && f.job(replacement) !== oldJob,
-              "recycling must assign fresh identities",
-            );
-            await poison(replacement);
-          }
-          const before = Array.from(new Uint8Array(f.root.directory));
-          const reads = await f.call<MutationResult[]>(oldPid, { operation: "read-captured" });
-          const writes = await f.call<MutationResult[]>(oldPid, { operation: "mutate-captured" });
+        const delayed = f.notices.filter(
+          (notice) =>
+            notice.message.operation !== "spawn" || notice.message.transport.pid === oldPid,
+        );
+        delayed.push({
+          sender: oldPid,
+          message: {
+            type: "runtime-proc",
+            operation: "signal",
+            transport: oldWorker.transport,
+            targets: [oldPid],
+          },
+        });
+        const newPid = await f.spawn(),
+          newJob = f.job(newPid),
+          newWorker = f.workers.get(newPid)!;
+        const newState = workerProcessState(newWorker.transport);
+        equal(
+          newWorker.transport.slot,
+          oldWorker.transport.slot,
+          "replacement uses captured process row",
+        );
+        equal(newState.jobSlot, oldState.jobSlot, "replacement uses captured job row");
+        assert(
+          newPid !== oldPid && newJob !== oldJob,
+          "Replacement must have fresh immutable process and job identities",
+        );
+        const before = await f.call(newPid, { operation: "snapshot" });
+        const mutations = await f.call<MutationResult[]>(oldPid, { operation: "mutate-captured" });
+        assert(
+          mutations.length >= 39,
+          "Stale Worker must attempt every captured control and outcome mutation",
+        );
+        for (const mutation of mutations)
           equal(
-            reads.length,
-            30,
-            `${phase}: all stale read, startup, wait and notify checks attempted`,
+            mutation.errno,
+            ProcessErrno.SRCH,
+            `${mutation.operation} rejects captured stale identity`,
           );
-          assert(writes.length >= 39, `${phase}: all stale mutation checks attempted`);
-          for (const result of reads.concat(writes))
-            equal(result.errno, ProcessErrno.SRCH, `${phase}: ${result.operation}`);
-          equal(
-            Array.from(new Uint8Array(f.root.directory)),
-            before,
-            `${phase}: stale checks leave the entire directory untouched`,
-          );
-          if (replacement !== undefined) {
-            equal(
-              await f.call(f.pid, { operation: "wait", pid: replacement }),
-              null,
-              "replacement remains live",
-            );
-            await f.exit(replacement, 23);
-            equal(
-              await f.call(f.pid, { operation: "wait-job", job: f.job(replacement) }),
-              exited(23),
-              "replacement completes normally",
-            );
-          }
-        }
-      } finally {
-        await restoreAndAuditIntrinsics(f, poisoned);
-      }
-    },
-  },
-  {
-    label:
-      "intrinsics: real Worker pipe registry and descriptor lifecycle keep private buffers captured",
-    async run(f) {
-      const report = await f.call<IntrinsicsReport>(f.pid, { operation: "pipe-intrinsics" });
-      equal(
-        report.leaks,
-        [],
-        "guest pipe observers never receive private backing buffers or collections",
-      );
-      for (const name of [
-        "Atomics.load",
-        "TypedArray.buffer",
-        "TypedArray.subarray",
-        "Map.set",
-        "Map.get",
-        "Reflect.get",
-        "Object.prototype.get",
-        "Object.prototype.set",
-        "crypto.randomUUID",
-      ]) {
-        assert(report.canaries.includes(name), `pipe observer ${name} positive control`);
-      }
-    },
-  },
-  {
-    label:
-      "intrinsics: real Worker bootstrap checkActive retains terminal authority under guest replacements",
-    async run(f) {
-      const pid = await f.spawn(),
-        job = f.job(pid);
-      await f.call(pid, { operation: "poison-intrinsics" });
-      try {
-        const completion = f.supervisor.waitForExit(f.pid, pid);
+        for (const notice of delayed)
+          await f.broker.handle(structuredClone(notice.message), notice.sender);
+        await f.flush();
         equal(
-          await f.call(pid, { operation: "bootstrap-check-active" }),
-          { live: true, signal: 9 },
-          "bootstrap active checks",
+          await f.call(newPid, { operation: "snapshot" }),
+          before,
+          "stale writes and delayed notices leave replacement untouched",
         );
         equal(
-          await completion,
-          { kind: "signaled", code: 9, status: 137 },
-          "bootstrap terminal signal survives attempted normal completion",
-        );
-        equal(
-          await f.call(f.pid, { operation: "wait-job", job }),
-          { kind: "signaled", code: 9, status: 137 },
-          "bootstrap job remains collectible",
-        );
-      } finally {
-        await restoreAndAuditIntrinsics(f, [pid]);
-      }
-    },
-  },
-  {
-    label: "shared Worker waits consume one child independently of job collection",
-    async run(f) {
-      const pid = await f.spawn(),
-        job = f.job(pid);
-      equal(await f.call(f.pid, { operation: "wait", pid }), null, "running child wait");
-      await f.exit(pid, 23);
-      equal(await f.call(f.pid, { operation: "wait", pid }), exited(23), "consuming wait");
-      await rejectsErrno(
-        () => f.call(f.pid, { operation: "wait", pid }),
-        ProcessErrno.CHILD,
-        "repeat wait",
-      );
-      equal(await f.call(f.pid, { operation: "wait-job", job }), exited(23), "job outcome");
-      assert(!f.supervisor.get(pid), "Job collection must remove the host process record");
-      await rejectsProcess(() => f.call(f.pid, { operation: "wait", pid }), "collected child wait");
-    },
-  },
-  {
-    label: "repeated real Worker spawn exit and job collection",
-    async run(f) {
-      let previous = f.pid;
-      for (let iteration = 0; iteration < 64; iteration++) {
-        const pid = await f.spawn(),
-          job = f.job(pid),
-          code = iteration % 31;
-        assert(pid > previous, "Process identities must not be reused");
-        previous = pid;
-        await f.exit(pid, code);
-        equal(
-          await f.call(f.pid, { operation: "wait-job", job }),
-          exited(code),
-          `iteration ${iteration}`,
+          await f.call(f.pid, { operation: "wait", pid: newPid }),
+          null,
+          "replacement remains running",
         );
         assert(
-          !f.supervisor.get(pid) && !f.broker.get(pid),
-          "Collected process must leave host and broker live records",
+          !f.supervisor.get(oldPid) && !f.broker.get(oldPid),
+          "Delayed notices must not recreate collected identities",
         );
-        // Do not accumulate OS threads or test-owned history while testing directory lifetime.
-        f.workers.get(pid)!.stop();
-        f.workers.delete(pid);
-        f.notices.length = 0;
-        equal(f.workers.size, 1, "remaining test-owned Workers");
-        equal(directorySlots(f.root.directory), [f.root.slot], "remaining shared process slots");
-        equal(directoryJobs(f.root.directory).length, 1, "remaining shared job slots");
-      }
-      equal(
-        Array.from(f.supervisor.table.values(), (record) => record.pid),
-        [f.pid],
-        "remaining host processes",
-      );
-    },
-  },
-  {
-    label: "repeated real Worker individual waits recycle a still-live shell job",
-    async run(f) {
-      const job = f.job(f.pid);
-      for (let iteration = 0; iteration < 32; iteration++) {
-        const pid = await f.spawn(f.pid, job);
-        await f.exit(pid, iteration);
+        await f.exit(newPid, 17);
         equal(
-          await f.call(f.pid, { operation: "wait", pid }),
-          exited(iteration),
-          "individual collection",
+          await f.call(f.pid, { operation: "wait-job", job: newJob }),
+          exited(17),
+          "replacement completes normally",
         );
-        await rejectsErrno(
-          () => f.call(f.pid, { operation: "wait", pid }),
-          ProcessErrno.CHILD,
-          "repeat individual wait",
-        );
-        f.workers.get(pid)!.stop();
-        f.workers.delete(pid);
-        f.notices.length = 0;
-        equal(
-          directorySlots(f.root.directory),
-          [f.root.slot],
-          "only the still-live shell occupies a slot",
-        );
-        equal(directoryJobs(f.root.directory).length, 1, "the shell's job remains live");
-      }
+      },
     },
-  },
-  {
-    label: "direct child wait leaves a live grandchild pending until job collection",
-    async run(f) {
-      const leader = await f.spawn(),
-        job = f.job(leader);
-      const grandchild = await f.spawn(leader, job);
-      await f.exit(leader, 23);
-      equal(
-        await f.call(f.pid, { operation: "wait", pid: leader }),
-        exited(23),
-        "collect direct child",
-      );
-      for (let repeat = 0; repeat < 3; repeat++)
+    {
+      label: "host resource fence hides child and job completion",
+      async run(f) {
+        const pid = await f.spawn(),
+          job = f.job(pid),
+          release = f.fence(pid);
+        await f.call(pid, { operation: "exit", code: 11 });
+        equal(await f.call(f.pid, { operation: "wait", pid }), null, "fenced child wait");
+        equal(await f.call(f.pid, { operation: "wait-job", job }), null, "fenced job wait");
+        release();
+        await f.supervisor.waitForExit(f.pid, pid);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job }),
+          exited(11),
+          "released fence outcome",
+        );
+      },
+    },
+    {
+      label: "collected orphan leader preserves live grandchild job signalling and outcome",
+      async run(f) {
+        const parent = await f.spawn(),
+          parentJob = f.job(parent);
+        const leader = await f.spawn(parent),
+          job = f.job(leader);
+        const grandchild = await f.spawn(leader, job);
+        const leaderSlot = f.workers.get(leader)!.transport.slot;
+        await f.exit(leader, 21);
+        await f.exit(parent, 3);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: parentJob }),
+          exited(3),
+          "collect exited ancestor job",
+        );
+        assert(!f.supervisor.get(leader), "Exited orphan leader must be auto-collected");
+        assert(
+          !directorySlots(f.root.directory).includes(leaderSlot),
+          "Orphan leader process row must not pin its job metadata",
+        );
         equal(
           await f.call(f.pid, { operation: "wait-job", job }),
           null,
-          "orphan keeps group pending",
+          "live grandchild keeps job pending",
         );
-      await f.exit(grandchild, 7);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job }),
-        exited(23),
-        "cached leader outcome after grandchild exit",
-      );
-      await rejectsErrno(
-        () => f.call(f.pid, { operation: "wait-job", job }),
-        ProcessErrno.CHILD,
-        "repeat group collection",
-      );
-    },
-  },
-  {
-    label: "unreaped zombie keeps immutable outcome across late Worker messages",
-    async run(f) {
-      const pid = await f.spawn(),
-        job = f.job(pid);
-      await f.exit(pid, 7);
-      await f.call(pid, { operation: "exit", code: 99 });
-      assert(
-        f.supervisor.get(pid) && f.broker.get(pid),
-        "Uncollected zombie must remain addressable",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait", pid }),
-        exited(7),
-        "late exit cannot replace zombie outcome",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job }),
-        exited(7),
-        "zombie job collection",
-      );
-    },
-  },
-  {
-    label: "unreaped zombies retain capacity until consuming job wait",
-    async run(f) {
-      const zombies: { pid: number; job: number; slot: number }[] = [];
-      for (let index = 0; index < 3; index++) {
-        const pid = await f.spawn(),
-          job = f.job(pid),
-          slot = f.workers.get(pid)!.transport.slot;
-        await f.exit(pid, index);
-        zombies.push({ pid, job, slot });
-      }
-      equal(directorySlots(f.root.directory).length, 4, "zombies occupy all process slots");
-      equal(directoryJobs(f.root.directory).length, 4, "zombies retain their job rows");
-      await rejectsErrno(
-        () => f.call(f.pid, { operation: "spawn" }),
-        ProcessErrno.AGAIN,
-        "full zombie directory",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: zombies[0]!.job }),
-        exited(0),
-        "release one zombie",
-      );
-      const replacement = await f.spawn(),
-        replacementJob = f.job(replacement);
-      equal(
-        f.workers.get(replacement)!.transport.slot,
-        zombies[0]!.slot,
-        "collected zombie row reused",
-      );
-      await f.exit(replacement, 12);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: replacementJob }),
-        exited(12),
-        "replacement collection",
-      );
-      for (let index = 1; index < zombies.length; index++) {
+        const completion = f.supervisor.waitForExit(leader, grandchild);
+        await f.call(f.pid, { operation: "kill-job", job, signal: 9 });
         equal(
-          await f.call(f.pid, { operation: "wait-job", job: zombies[index]!.job }),
-          exited(index),
-          "other zombie remains intact",
+          await completion,
+          { kind: "signaled", code: 9, status: 137 },
+          "root can still reach orphan grandchild",
         );
-      }
-      equal(directorySlots(f.root.directory), [f.root.slot], "all zombie process rows collected");
-      equal(directoryJobs(f.root.directory).length, 1, "all zombie job rows collected");
-    },
-  },
-  {
-    label: "still-running stale Worker cannot mutate a reused process or job row",
-    async run(f) {
-      const oldPid = await f.spawn(),
-        oldJob = f.job(oldPid),
-        oldWorker = f.workers.get(oldPid)!;
-      const oldState = workerProcessState(oldWorker.transport);
-      await f.exit(oldPid, 5);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: oldJob }),
-        exited(5),
-        "old job collection",
-      );
-      const delayed = f.notices.filter(
-        (notice) => notice.message.operation !== "spawn" || notice.message.transport.pid === oldPid,
-      );
-      delayed.push({
-        sender: oldPid,
-        message: {
-          type: "runtime-proc",
-          operation: "signal",
-          transport: oldWorker.transport,
-          targets: [oldPid],
-        },
-      });
-      const newPid = await f.spawn(),
-        newJob = f.job(newPid),
-        newWorker = f.workers.get(newPid)!;
-      const newState = workerProcessState(newWorker.transport);
-      equal(
-        newWorker.transport.slot,
-        oldWorker.transport.slot,
-        "replacement uses captured process row",
-      );
-      equal(newState.jobSlot, oldState.jobSlot, "replacement uses captured job row");
-      assert(
-        newPid !== oldPid && newJob !== oldJob,
-        "Replacement must have fresh immutable process and job identities",
-      );
-      const before = await f.call(newPid, { operation: "snapshot" });
-      const mutations = await f.call<MutationResult[]>(oldPid, { operation: "mutate-captured" });
-      assert(
-        mutations.length >= 39,
-        "Stale Worker must attempt every captured control and outcome mutation",
-      );
-      for (const mutation of mutations)
         equal(
-          mutation.errno,
-          ProcessErrno.SRCH,
-          `${mutation.operation} rejects captured stale identity`,
+          await f.call(f.pid, { operation: "wait-job", job }),
+          exited(21),
+          "job preserves original leader outcome",
         );
-      for (const notice of delayed)
-        await f.broker.handle(structuredClone(notice.message), notice.sender);
-      await f.flush();
-      equal(
-        await f.call(newPid, { operation: "snapshot" }),
-        before,
-        "stale writes and delayed notices leave replacement untouched",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait", pid: newPid }),
-        null,
-        "replacement remains running",
-      );
-      assert(
-        !f.supervisor.get(oldPid) && !f.broker.get(oldPid),
-        "Delayed notices must not recreate collected identities",
-      );
-      await f.exit(newPid, 17);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: newJob }),
-        exited(17),
-        "replacement completes normally",
-      );
+        equal(directorySlots(f.root.directory), [f.root.slot], "orphan chain process cleanup");
+        equal(directoryJobs(f.root.directory).length, 1, "orphan chain job cleanup");
+      },
     },
-  },
-  {
-    label: "host resource fence hides child and job completion",
-    async run(f) {
-      const pid = await f.spawn(),
-        job = f.job(pid),
-        release = f.fence(pid);
-      await f.call(pid, { operation: "exit", code: 11 });
-      equal(await f.call(f.pid, { operation: "wait", pid }), null, "fenced child wait");
-      equal(await f.call(f.pid, { operation: "wait-job", job }), null, "fenced job wait");
-      release();
-      await f.supervisor.waitForExit(f.pid, pid);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job }),
-        exited(11),
-        "released fence outcome",
-      );
+    {
+      label: "root exit collects directory and job rows with lazy and eager activation",
+      standalone: true,
+      async run() {
+        await rootCleanupCase();
+      },
     },
-  },
-  {
-    label: "collected orphan leader preserves live grandchild job signalling and outcome",
-    async run(f) {
-      const parent = await f.spawn(),
-        parentJob = f.job(parent);
-      const leader = await f.spawn(parent),
-        job = f.job(leader);
-      const grandchild = await f.spawn(leader, job);
-      const leaderSlot = f.workers.get(leader)!.transport.slot;
-      await f.exit(leader, 21);
-      await f.exit(parent, 3);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: parentJob }),
-        exited(3),
-        "collect exited ancestor job",
-      );
-      assert(!f.supervisor.get(leader), "Exited orphan leader must be auto-collected");
-      assert(
-        !directorySlots(f.root.directory).includes(leaderSlot),
-        "Orphan leader process row must not pin its job metadata",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job }),
-        null,
-        "live grandchild keeps job pending",
-      );
-      const completion = f.supervisor.waitForExit(leader, grandchild);
-      await f.call(f.pid, { operation: "kill-job", job, signal: 9 });
-      equal(
-        await completion,
-        { kind: "signaled", code: 9, status: 137 },
-        "root can still reach orphan grandchild",
-      );
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job }),
-        exited(21),
-        "job preserves original leader outcome",
-      );
-      equal(directorySlots(f.root.directory), [f.root.slot], "orphan chain process cleanup");
-      equal(directoryJobs(f.root.directory).length, 1, "orphan chain job cleanup");
+    {
+      label: "orphan background job remains collectible after its parent job",
+      async run(f) {
+        const parent = await f.spawn(),
+          parentJob = f.job(parent);
+        const child = await f.spawn(parent),
+          childJob = f.job(child);
+        await f.exit(parent, 3);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: parentJob }),
+          exited(3),
+          "parent job collection",
+        );
+        assert(!f.supervisor.get(parent), "Parent process must be collected");
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: childJob }),
+          null,
+          "orphan remains live",
+        );
+        await f.exit(child, 19);
+        equal(
+          await f.call(f.pid, { operation: "wait-job", job: childJob }),
+          exited(19),
+          "orphan job collection",
+        );
+        equal(
+          Array.from(f.supervisor.table.values(), (record) => record.pid),
+          [f.pid],
+          "orphan host cleanup",
+        );
+      },
     },
-  },
-  {
-    label: "root exit collects directory and job rows with lazy and eager activation",
-    standalone: true,
-    async run() {
-      await rootCleanupCase();
-    },
-  },
-  {
-    label: "orphan background job remains collectible after its parent job",
-    async run(f) {
-      const parent = await f.spawn(),
-        parentJob = f.job(parent);
-      const child = await f.spawn(parent),
-        childJob = f.job(child);
-      await f.exit(parent, 3);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: parentJob }),
-        exited(3),
-        "parent job collection",
-      );
-      assert(!f.supervisor.get(parent), "Parent process must be collected");
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: childJob }),
-        null,
-        "orphan remains live",
-      );
-      await f.exit(child, 19);
-      equal(
-        await f.call(f.pid, { operation: "wait-job", job: childJob }),
-        exited(19),
-        "orphan job collection",
-      );
-      equal(
-        Array.from(f.supervisor.table.values(), (record) => record.pid),
-        [f.pid],
-        "orphan host cleanup",
-      );
-    },
-  },
-]);
+  ],
+);
 
 async function restoreAndAuditIntrinsics(
   fixture: ProcessFixture,

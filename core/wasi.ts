@@ -1,3 +1,5 @@
+import { descriptorPath, reopenDescriptor } from "./fd-reopen.js";
+import { normalize } from "./path.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
@@ -257,6 +259,73 @@ export class Wasi {
       () => this.opts.fs.release(resource.handle),
       preopen,
     );
+  }
+
+  /** runtime_proc uses positive errno and checks output memory before changing the inode. */
+  fdReopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
+    if ((out >>> 0) + 4 > this.bytes().length) return 21;
+    try {
+      const result = reopenDescriptor(
+        this.descriptors,
+        this.opts.fs,
+        fd >>> 0,
+        oflags,
+        fdflags,
+        base,
+      );
+      if (result < 0) return -result;
+      this.view().setUint32(out >>> 0, result, true);
+      return SUCCESS;
+    } catch (error) {
+      if (error instanceof FilesystemError) return error.errno;
+      throw error;
+    }
+  }
+
+  private descriptorPath(fd: number, path: string): number | undefined {
+    const dir = this.descriptors.get(fd);
+    if (dir?.resource.kind !== "directory") return undefined;
+    const fs = this.opts.fs;
+    if (dir.preopen !== "/" && fs.stat(dir.resource.handle).ino !== fs.stat(fs.preopen("/")).ino)
+      return undefined;
+    return descriptorPath(normalize(path));
+  }
+
+  private descriptorPathAccess(directory: number, path: string): number {
+    let prefix = ".";
+    const parents = ["."].concat(normalize(path).split("/").slice(1, -1));
+    for (const part of parents) {
+      prefix += `/${part}`;
+      const resolved = this.opts.fs.resolve(directory, `${prefix}/.`);
+      if (typeof resolved !== "number") continue;
+      // Missing ancestors belong to the virtual namespace; existing ones still enforce search.
+      return resolved === ENOENT ? SUCCESS : resolved;
+    }
+    return SUCCESS;
+  }
+
+  private openDescriptorPath(
+    source: number,
+    oflags: number,
+    fdflags: number,
+    base: bigint,
+    inheriting: bigint,
+    out: number,
+  ): number {
+    if (!this.descriptors.get(source)) return ENOENT;
+    if ((out >>> 0) + 4 > this.bytes().length) return 21;
+    const result = reopenDescriptor(
+      this.descriptors,
+      this.opts.fs,
+      source,
+      oflags,
+      fdflags,
+      base,
+      inheriting,
+    );
+    if (result < 0) return -result;
+    this.view().setUint32(out >>> 0, result, true);
+    return SUCCESS;
   }
 
   /** Runs `_start`; returns the exit code. */
@@ -549,7 +618,10 @@ export class Wasi {
         view.setUint8(ptr, filetype);
         view.setUint16(
           ptr + 2,
-          entry.resource.kind === "file" && entry.resource.append ? FDFLAG_APPEND : 0,
+          entry.resource.kind === "file"
+            ? ((entry.resource.fdflags ?? 0) & ~FDFLAG_APPEND) |
+                (entry.resource.append ? FDFLAG_APPEND : 0)
+            : 0,
           true,
         );
         view.setBigUint64(ptr + 8, entry.rightsBase, true);
@@ -561,7 +633,11 @@ export class Wasi {
         if (!entry) return EBADF;
         if ((entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS) !== RIGHT_FD_FDSTAT_SET_FLAGS)
           return ENOTCAPABLE;
-        if (entry.resource.kind === "file") entry.resource.append = (flags & FDFLAG_APPEND) !== 0;
+        if (flags & ~31) return EINVAL;
+        if (entry.resource.kind === "file") {
+          entry.resource.fdflags = flags;
+          entry.resource.append = (flags & FDFLAG_APPEND) !== 0;
+        }
         return SUCCESS;
       },
       fd_fdstat_set_rights: (fd: number, base: bigint, inheriting: bigint) => {
@@ -808,9 +884,10 @@ export class Wasi {
         fdflags: number,
         fdOut: number,
       ) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_OPEN);
-        if (typeof path === "number") return path;
-        const dir = this.descriptors.get(fd)!;
+        const dir = this.descriptors.get(fd);
+        if (!dir) return EBADF;
+        if (dir.resource.kind !== "directory") return ENOTDIR;
+        if (!(dir.rightsBase & RIGHT_PATH_OPEN)) return ENOTCAPABLE;
         rightsBase = BigInt.asUintN(64, rightsBase);
         rightsInheriting = BigInt.asUintN(64, rightsInheriting);
         if (
@@ -821,6 +898,22 @@ export class Wasi {
         if (oflags & O_CREAT && !(dir.rightsBase & RIGHT_PATH_CREATE_FILE)) return ENOTCAPABLE;
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
+        const name = this.str(ptr, len);
+        const source = this.descriptorPath(fd, name);
+        if (source !== undefined) {
+          const error = this.descriptorPathAccess(dir.resource.handle, name);
+          if (error) return error;
+          return this.openDescriptorPath(
+            source,
+            oflags,
+            fdflags,
+            rightsBase,
+            rightsInheriting,
+            fdOut,
+          );
+        }
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_OPEN);
+        if (typeof path === "number") return path;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
         if (node === undefined) {
@@ -843,7 +936,7 @@ export class Wasi {
         const resource: Resource =
           kind === "directory"
             ? { kind, handle: node }
-            : { kind, handle: node, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0 };
+            : { kind, handle: node, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0, fdflags };
         const newFd = this.openFile(resource, rightsBase, rightsInheriting);
         this.view().setUint32(fdOut, newFd, true);
         return SUCCESS;

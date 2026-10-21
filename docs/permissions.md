@@ -20,6 +20,22 @@ Reads, writes, append, resize, directory listing and namespace mutations enforce
 
 A mode change does not erase bytes already returned. Caller-owned read buffers and any previously exposed host byte views remain accessible to that caller. Waffle does not claim memory isolation from trusted JavaScript that owns filesystem objects or shared buffers. Enforcement applies to subsequent filesystem API operations, not retroactive revocation of memory.
 
+## Descriptor paths and reopening
+
+The WASI layer, not MemFS, resolves `/dev/fd/N`, `/proc/self/fd/N` and the three
+`/dev/std*` aliases against the current process. Relative equivalents work through the
+root preopen. Missing descriptors are `ENOENT`; shared filesystem clients do not see
+process-specific namespace entries. Opened root directories also recognize normalized
+aliases; other directory bindings use ordinary resolution. Search permission on the root
+and existing real ancestor directories is checked before opening a virtual alias.
+
+A regular-file reopen checks the inode's current read/write policy, independent of the
+source descriptor's rights, but cannot grant rights beyond the live root preopen's
+path-open capabilities. It retains the inode across unlink and creates a new offset and
+flags. Pipes, terminals and directories instead share their existing description and may
+only narrow its rights. See [the reopen ABI](host-abi.md#reopen-an-existing-descriptor)
+for flag, error and redirection semantics.
+
 ## Saved metadata adoption
 
 Modes persist with inode metadata through overwrite, hard links, rename, retained unlinked handles and reload. The inode moved by a replacement rename keeps its own mode; an open replaced inode keeps its previous mode until its last reference closes.

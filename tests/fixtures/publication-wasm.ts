@@ -21,7 +21,10 @@ function section(id: number, payload: number[]): number[] {
 }
 /** Original local fixture. Every exported function has a real Wasm body that calls the
  * production import. Exporting an import directly would not exercise a guest call body. */
-function moduleFor(namespace: string, signatures: readonly ImportSignature[]): WebAssembly.Module {
+export function guestModule(
+  namespace: string,
+  signatures: readonly ImportSignature[],
+): WebAssembly.Module {
   const types = signatures.flatMap(({ parameters }) =>
     [0x60].concat(
       leb(parameters.length),
@@ -65,7 +68,7 @@ function moduleFor(namespace: string, signatures: readonly ImportSignature[]): W
   );
 }
 export function publicationWasiModule(): WebAssembly.Module {
-  return moduleFor("wasi_snapshot_preview1", [
+  return guestModule("wasi_snapshot_preview1", [
     { name: "fd_pwrite", parameters: ["i32", "i32", "i32", "i64", "i32"] },
     { name: "fd_write", parameters: ["i32", "i32", "i32", "i32"] },
     { name: "fd_read", parameters: ["i32", "i32", "i32", "i32"] },
@@ -81,7 +84,7 @@ export function publicationWasiModule(): WebAssembly.Module {
   ]);
 }
 export function publicationProcModule(): WebAssembly.Module {
-  return moduleFor("runtime_proc", [
+  return guestModule("runtime_proc", [
     { name: "read", parameters: ["i32", "i32", "i32"] },
     { name: "write", parameters: ["i32", "i32", "i32"] },
   ]);

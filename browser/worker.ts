@@ -562,6 +562,16 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const namespaces = executor.namespaces?.(context);
     if (done) return;
     const processImports: Record<string, (...args: number[]) => number | void> = {
+      fd_reopen: (
+        fd: number,
+        oflags: number,
+        fdflags: number,
+        base: number | bigint,
+        out: number,
+      ) => {
+        checkActive();
+        return wasi!.fdReopen(fd, oflags, fdflags, BigInt(base), out);
+      },
       fd_kind: (fd) => {
         checkActive();
         return wasi!.descriptors.kind(fd! >>> 0);

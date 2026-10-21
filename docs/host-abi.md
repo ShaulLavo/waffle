@@ -53,6 +53,52 @@ the browser's signal-only worker namespace also exposes it without activating th
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
 determines its kind.
 
+## Reopen an existing descriptor
+
+`runtime_proc.fd_reopen(fd: u32, oflags: u32, fdflags: u32, rights_base: u64, out_fd_ptr: u32) -> errno`
+returns **positive WASI errno**, or zero after writing the lowest free fd as a little-endian
+`u32`. The output span is checked before opening or truncating anything (`EFAULT`, 21).
+`oflags`, `fdflags` and rights use the same bits as preview1 `path_open`; inheriting rights
+are zero for this import. `fd_kind` on success reports the source's kind.
+
+For regular files, the new description retains the same inode, even after unlink, starts
+at offset zero, and owns its flags independently of the source description. `TRUNC` resizes
+the inode to zero; `APPEND` selects EOF for each write. Other preview1 fdflags, including
+`NONBLOCK`, are retained in fdstat. `CREAT` or `EXCL` returns `EINVAL` (28), `DIRECTORY`
+returns `ENOTDIR` (54), and unknown flag bits return `EINVAL`.
+
+The source's rights do not restrict a regular-file reopen: a write-only descriptor can
+reopen for reading if the inode allows it. Current [inode access policy](permissions.md)
+is authoritative (`EACCES`, 2). The caller's live `/` preopen must still allow `PATH_OPEN`,
+the requested rights must fit its inheriting rights, and `TRUNC` requires its
+`PATH_FILESTAT_SET_SIZE` right (`ENOTCAPABLE`, 76). No root preopen means no regular-file
+reopen. Rights stripped from the root are not restored by reopening another descriptor.
+
+Pipes, terminals and directories receive a new binding to the **same** description, like
+`dup`, rather than a new cursor or flags. Requested rights must fit the source's rights
+(`EACCES`); directory truncation returns `EISDIR` (31). Invalid or closed descriptors
+return `EBADF` (8). Both process adapters and signal-only browser workers expose the import;
+it does not require a spawn or process-service activation.
+
+### Descriptor path behaviour
+
+WASI `path_open` recognizes `/dev/fd/N`, `/proc/self/fd/N`, `/dev/stdin`, `/dev/stdout`
+and `/dev/stderr`, plus normalized relative equivalents, only through the `/` preopen
+or a directory binding for the filesystem root. Other directory bindings use ordinary
+filesystem resolution. Root and any existing real ancestor directories still require
+search permission; absent ancestors belong to the virtual namespace. They resolve
+against the **calling process's current descriptor table**, including inherited/remapped
+stdio and fd 3 when the root preopen has moved. They use the same reopen operation,
+while also checking the path-open directory's rights and the requested inheriting rights.
+A missing descriptor returns `ENOENT` (44), not `EBADF`. These are WASI-only virtual names:
+no per-process entries or symlinks are installed in shared MemFS.
+
+A regular-file stdout/stderr opened with `APPEND` does not force a later reopen to append.
+For example, redirecting `echo x >/dev/stderr` with `TRUNC` leaves exactly `x\n`, even when
+stderr's original description had `APPEND`. Reopening with `APPEND` (`>>`) preserves old
+bytes and appends `x\n`. Neither operation advances the source description's offset or
+changes its flags. Pipes and terminals keep shared-stream behaviour.
+
 ## Executable access queries
 
 `runtime_proc.access_start(path_ptr, path_len, cwd_ptr, cwd_len, mode)` copies both UTF-8
