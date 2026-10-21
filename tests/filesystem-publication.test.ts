@@ -144,7 +144,13 @@ import {
   type PublicationLimits,
   type PublicationBuffers,
 } from "../fs/publication-internal";
-import { PAGE, reapFilesystem } from "../fs/protocol";
+import {
+  PAGE,
+  reapFilesystem,
+  connectFilesystemIdentity,
+  createProcessFilesystemIdentity,
+  type FilesystemIdentity,
+} from "../fs/protocol";
 
 const limits: PublicationLimits = {
   sessions: 4,
@@ -1591,11 +1597,6 @@ test("production append EOF growth prepares capacity but retry owns only the lat
   }
 });
 
-import {
-  connectFilesystemIdentity,
-  createProcessFilesystemIdentity,
-  type FilesystemIdentity,
-} from "../fs/protocol";
 import { atomicsLoad, reflectApply, typedArrayBuffer } from "../proc/intrinsics";
 
 function cancelUnconnectedIdentity(identity: FilesystemIdentity): void {
