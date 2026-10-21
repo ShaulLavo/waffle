@@ -31,7 +31,7 @@ export function shareFileResource(
   const value = new Float64Array(1);
   const bits = new BigUint64Array(value.buffer);
   if (!buffer) {
-    Atomics.store(cells, 1, resource.append ? 1 : 0);
+    Atomics.store(cells, 1, ((resource.fdflags ?? 0) & ~1) | (resource.append ? 1 : 0));
     value[0] = resource.offset;
     Atomics.store(offset, 0, bits[0]!);
   }
@@ -57,8 +57,14 @@ export function shareFileResource(
     append: {
       enumerable: true,
       configurable: false,
-      get: () => Atomics.load(cells, 1) !== 0,
-      set: (value: boolean) => Atomics.store(cells, 1, value ? 1 : 0),
+      get: () => (Atomics.load(cells, 1) & 1) !== 0,
+      set: (value: boolean) => (value ? Atomics.or(cells, 1, 1) : Atomics.and(cells, 1, ~1)),
+    },
+    fdflags: {
+      enumerable: true,
+      configurable: false,
+      get: () => Atomics.load(cells, 1),
+      set: (value: number) => Atomics.store(cells, 1, value),
     },
   });
   return shared;

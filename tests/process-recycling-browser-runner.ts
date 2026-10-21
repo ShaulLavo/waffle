@@ -3,6 +3,18 @@ import { resolve } from "node:path";
 import { chromium, firefox, webkit, type Browser, type BrowserContext } from "playwright";
 import { installClientWorker } from "./process-recycling-browser.js";
 import {
+  NavigationObservation,
+  finishNavigationEngine,
+  failNavigationEngine,
+  observeNavigationBrowser,
+  observeRootHandler,
+  observeRootRequest,
+  navigationDiagnosticErrors,
+  startNavigationCapture,
+  stopNavigationCapture,
+  startNavigationEngine,
+} from "./process-navigation-observer.js";
+import {
   closeBrowserResources,
   stopBrowserResource,
 } from "./process-recycling-browser-runner-control.js";
@@ -27,6 +39,15 @@ type ContextOwner = {
 // Register ownership and teardown before allocations (including unresolved launch promises).
 const browsers = new Set<BrowserOwner>();
 const contexts = new Set<ContextOwner>();
+const secondaryErrors: unknown[] = [];
+function secondaryCleanupFailure(phase: string, error: unknown): void {
+  secondaryErrors.push(error);
+  try {
+    console.error("Process browser secondary cleanup failure", phase, error);
+  } catch (loggingError) {
+    secondaryErrors.push(loggingError);
+  }
+}
 let scratchCreation: Promise<string> | undefined;
 let firefoxScratchCreation: Promise<string> | undefined;
 let scratch: string | undefined;
@@ -40,8 +61,34 @@ function active(): void {
 function stopContext(owner: ContextOwner): Promise<void> {
   return stopBrowserResource(contexts, owner);
 }
-function stopBrowser(owner: BrowserOwner): Promise<void> {
-  return stopBrowserResource(browsers, owner);
+async function stopBrowser(owner: BrowserOwner): Promise<void> {
+  try {
+    await stopBrowserResource(browsers, owner);
+  } catch (error) {
+    secondaryCleanupFailure("browser close", error);
+  } finally {
+    finishNavigationEngine();
+  }
+}
+async function stopObservedContext(
+  owner: ContextOwner,
+  observation: NavigationObservation,
+): Promise<void> {
+  observation.record("context-close-begin");
+  try {
+    await stopContext(owner);
+    observation.contextClosed();
+  } catch (error) {
+    observation.record("context-close-rejected");
+    secondaryCleanupFailure("context close", error);
+  }
+}
+async function stopCapture(): Promise<void> {
+  try {
+    await stopNavigationCapture();
+  } catch (error) {
+    secondaryCleanupFailure("capture close", error);
+  }
 }
 function cleanup(): Promise<void> {
   return (cleaning ??= (async () => {
@@ -49,6 +96,7 @@ function cleanup(): Promise<void> {
     try {
       errors.push(...(await closeBrowserResources(contexts, browsers)));
     } finally {
+      await stopCapture();
       try {
         server?.stop(true);
       } catch (error) {
@@ -95,28 +143,46 @@ const deadline = setTimeout(() => onSignal("deadline exceeded"), 600_000);
 
 async function inPage<T>(browser: Browser, label?: string): Promise<T> {
   active();
+  const observation = NavigationObservation.begin(browser.browserType().name(), label);
   // Promise ownership is recorded synchronously, before awaiting context creation.
-  const owner: ContextOwner = { creation: browser.newContext(), stopped: false };
+  const owner: ContextOwner = {
+    creation: browser.newContext({ extraHTTPHeaders: observation.requestHeaders() }),
+    stopped: false,
+  };
   contexts.add(owner);
   try {
     const context = await owner.creation;
     active();
+    observation.observeContext(context);
     const page = await context.newPage();
     active();
+    observation.observePage(page, `http://127.0.0.1:${server!.port}/`);
     page.on("pageerror", (error) => console.error(`Process page error: ${error.message}`));
-    await page.goto(`http://127.0.0.1:${server!.port}/`);
+    observation.record("goto-begin", { route: "/", waitUntil: "load", defaultTimeoutMs: 30_000 });
+    try {
+      await page.goto(`http://127.0.0.1:${server!.port}/`);
+      observation.record("goto-fulfilled");
+    } catch (error) {
+      observation.recordRejection("goto-rejected", error);
+      throw error;
+    }
     active();
+    observation.record("evaluate-entry");
     return (await page.evaluate(async (label?: string) => {
       const modulePath = "/tests.js";
       const tests = (await import(modulePath)) as typeof import("./process-recycling-browser.js");
       return label === undefined ? tests.processBrowserCases() : tests.runProcessBrowserCase(label);
     }, label)) as T;
+  } catch (error) {
+    observation.failed(error);
+    throw error;
   } finally {
     // Context teardown also terminates Workers if a page crashes before its fixture finally.
-    await stopContext(owner);
+    await stopObservedContext(owner, observation);
   }
 }
 
+let outcome: { kind: "fulfilled" } | { kind: "rejected"; reason: unknown } = { kind: "fulfilled" };
 try {
   const names = process.argv.slice(2);
   const selected: Engine[] = [];
@@ -192,8 +258,12 @@ try {
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    fetch(request, bunServer) {
       const path = new URL(request.url).pathname;
+      const rootRequest =
+        path === "/"
+          ? observeRootRequest(request, () => bunServer.requestIP(request), bunServer.port)
+          : undefined;
       const headers = {
         "Cross-Origin-Opener-Policy": "same-origin",
         "Cross-Origin-Embedder-Policy": "require-corp",
@@ -211,11 +281,17 @@ try {
       if (path === "/cell-fs-worker.js") return new Response(cellFsBuild.outputs[0]!, { headers });
       if (path === "/tests.js") return new Response(script, { headers });
       if (path === "/process-client.js") return new Response(worker, { headers });
-      if (path === "/")
-        return new Response("<!doctype html><title>Process transport tests</title>", { headers });
+      if (path === "/") {
+        const response = new Response("<!doctype html><title>Process transport tests</title>", {
+          headers,
+        });
+        observeRootHandler("response-return", rootRequest);
+        return response;
+      }
       return new Response("Not found", { status: 404, headers });
     },
   });
+  await startNavigationCapture(server.port);
   const failures: string[] = [];
   for (const name of selected) {
     active();
@@ -229,6 +305,7 @@ try {
       active();
     }
     process.env.TMPDIR = name === "firefox" && firefoxScratch ? firefoxScratch : scratch;
+    startNavigationEngine(name);
     const owner: BrowserOwner = {
       name,
       creation: engines[name].launch({
@@ -242,6 +319,7 @@ try {
     try {
       const browser = await owner.creation;
       active();
+      observeNavigationBrowser(browser);
       const listed = await inPage<string[]>(browser);
       const labels = listed.filter(
         (label) =>
@@ -269,6 +347,7 @@ try {
         `${name} ${browser.version()}: ${passed}/${labels.length} process browser cases passed`,
       );
     } catch (error) {
+      failNavigationEngine(error);
       failures.push(`${name} setup: ${String(error)}`);
       console.error(`  FAIL ${failures.at(-1)}`);
     } finally {
@@ -280,12 +359,20 @@ try {
       failures.map((message) => new Error(message)),
       `${failures.length} process browser failure(s)`,
     );
+} catch (error) {
+  outcome = { kind: "rejected", reason: error };
 } finally {
   clearTimeout(deadline);
   try {
     await cleanup();
+  } catch (error) {
+    secondaryCleanupFailure("runner cleanup", error);
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", terminate);
   }
 }
+if (outcome.kind === "rejected") throw outcome.reason;
+const cleanupErrors = secondaryErrors.concat(navigationDiagnosticErrors());
+if (cleanupErrors.length)
+  throw new AggregateError(cleanupErrors, "Process navigation diagnostics failed");
