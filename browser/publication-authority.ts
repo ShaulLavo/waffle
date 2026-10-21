@@ -68,14 +68,28 @@ export class ResidentAuthorityServer {
   }
   private admit(message: Record<string, unknown>): void {
     let client: string, id: string;
-    try { client = text(message.client); id = text(message.id); } catch { return; }
+    try {
+      client = text(message.client);
+      id = text(message.id);
+    } catch {
+      return;
+    }
     const key = `${client}:${id}`;
     if (message.operation === "workspace") {
       try {
-        const body = record(message.body), limits = this.authority.backend.shared.publication!.limits;
-        message.body = { token: text(body.token), request: workspaceRequest(body.request, limits.inputBytes, limits.argumentBytes) };
+        const body = record(message.body),
+          limits = this.authority.backend.shared.publication!.limits;
+        message.body = {
+          token: text(body.token),
+          request: workspaceRequest(body.request, limits.inputBytes, limits.argumentBytes),
+        };
       } catch (error) {
-        this.channel.postMessage({ kind: "reply", client, id, errno: error instanceof FilesystemError ? error.errno : 29 });
+        this.channel.postMessage({
+          kind: "reply",
+          client,
+          id,
+          errno: error instanceof FilesystemError ? error.errno : 29,
+        });
         return;
       }
     }
@@ -88,7 +102,10 @@ export class ResidentAuthorityServer {
     const body = message.body;
     const token = body && typeof body === "object" && "token" in body ? body.token : undefined;
     this.requests.set(key, { client, token, abort });
-    this.queue = this.queue.then(() => this.request(message, abort.signal)).catch(() => {}).finally(() => this.requests.delete(key));
+    this.queue = this.queue
+      .then(() => this.request(message, abort.signal))
+      .catch(() => {})
+      .finally(() => this.requests.delete(key));
   }
   private token(value: unknown): ResidentSession {
     const token = text(value);
@@ -151,7 +168,19 @@ export class ResidentAuthorityServer {
     if (!session || session.token !== text(token)) throw new FilesystemError(11);
     return session;
   }
-  private async execute(client: string, operation: string, value: unknown, signal: AbortSignal): Promise<unknown> {
+  private adoptWorkspace(peer: WorkspacePeer, body: Record<string, unknown>): number[] {
+    if (!Array.isArray(body.handles) || body.handles.length > 4096) throw new FilesystemError(28);
+    return peer.adopt(
+      this.peer(this.token(body.source)),
+      body.handles.map((handle: unknown) => integer(handle)),
+    );
+  }
+  private async execute(
+    client: string,
+    operation: string,
+    value: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
     if (this.stopped || signal.aborted) throw new FilesystemError(11);
     if (operation === "open") {
       if (this.sessions.has(client)) throw new FilesystemError(6);
@@ -174,10 +203,7 @@ export class ResidentAuthorityServer {
       if (operation === "workspaceNext") return peer.next();
       if (operation === "workspaceReceipts") return peer.receipts();
       if (operation === "workspaceReceipt") return peer.receipt(body.id);
-      if (operation === "workspaceAdopt") {
-        if (!Array.isArray(body.handles) || body.handles.length > 4096) throw new FilesystemError(28);
-        return peer.adopt(this.peer(this.token(body.source)), body.handles.map((handle: unknown) => integer(handle)));
-      }
+      if (operation === "workspaceAdopt") return this.adoptWorkspace(peer, body);
       if (operation === "workspace") return peer.execute(body.request, signal);
       throw new FilesystemError(2);
     }

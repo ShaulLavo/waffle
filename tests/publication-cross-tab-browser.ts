@@ -192,7 +192,14 @@ async function queuedAttachmentControl(): Promise<unknown> {
     new AbortController().signal,
   );
   const candidate = new ResidentAttachment(
-    { kind: "file", workspace, instance: "not-opened", epoch: 1, description: "not-issued", handle: 1 },
+    {
+      kind: "file",
+      workspace,
+      instance: "not-opened",
+      epoch: 1,
+      description: "not-issued",
+      handle: 1,
+    },
     () => false,
   );
   let accepted = false;
@@ -374,15 +381,17 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
   if (operation === "workspacePage" || operation === "workspacePageDenied") {
     if (!workspaceClient || !Array.isArray(body.args)) throw new Error("missing page workspace");
     const bytes = Array.isArray(body.bytes) ? Uint8Array.from(body.bytes) : undefined;
-    try { return await workspaceClient.asyncCall(text(body.operation), body.args, bytes); }
-    catch (error) {
+    try {
+      return await workspaceClient.asyncCall(text(body.operation), body.args, bytes);
+    } catch (error) {
       if (operation !== "workspacePageDenied") throw error;
       return Number(Reflect.get(Object(error), "errno"));
     }
   }
   if (operation === "workspaceGuest") {
     if (!descriptor) throw new Error("missing workspace descriptor");
-    const worker = new FixtureWorker("/resident-guest.js"), connection = createResidentConnection(descriptor);
+    const worker = new FixtureWorker("/resident-guest.js"),
+      connection = createResidentConnection(descriptor);
     guests.set(text(body.key), { worker, connection });
     await worker.request("start", { mode: text(body.mode), connection }, [connection.port]);
     return worker.until("ready");
@@ -394,7 +403,9 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     const connection = inherited.connection as FilesystemConnection;
     const worker = new FixtureWorker("/resident-guest.js");
     guests.set(text(body.key), { worker, connection });
-    await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [connection.port]);
+    await worker.request("start", { mode: text(body.mode), connection, token: inherited.token }, [
+      connection.port,
+    ]);
     return worker.until("ready");
   }
   const guest = guests.get(text(body.key));

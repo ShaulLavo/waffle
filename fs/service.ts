@@ -121,7 +121,11 @@ export class FilesystemService {
         } else if (isRevoked(connection))
           Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
       } finally {
-        Atomics.sub(new Int32Array(reservation.source, 0, CAPABILITY_LENGTH), reservation.sourceKey + 2, 1);
+        Atomics.sub(
+          new Int32Array(reservation.source, 0, CAPABILITY_LENGTH),
+          reservation.sourceKey + 2,
+          1,
+        );
       }
     }
     Atomics.store(session.capabilities, 0, session.transient.size);
@@ -155,7 +159,9 @@ export class FilesystemService {
     connection.port.start();
   }
   private async closeWorkspace(connection: FilesystemConnection): Promise<void> {
-    const session = Array.from(this.sessions).find((peer) => peer.connection.capabilities === connection.capabilities);
+    const session = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === connection.capabilities,
+    );
     if (!session) return;
     await waitForFilesystemQuiescence(session.connection);
     await this.queue;
@@ -164,13 +170,26 @@ export class FilesystemService {
     this.close(session);
     if (this.sessions.has(session)) throw new FilesystemError(6);
   }
-  private adoptWorkspace(connection: FilesystemConnection, reservation: import("./protocol.js").FilesystemReservation): void {
-    const target = Array.from(this.sessions).find((peer) => peer.connection.capabilities === connection.capabilities);
-    const source = Array.from(this.sessions).find((peer) => peer.connection.capabilities === reservation.source);
-    if (!target || !source || isRevoked(source.connection) || isRevoked(connection) ||
-        reservation.target !== connection.capabilities || reservation.targetOwner !== connection.owner ||
-        source.handles.get(reservation.handle) !== reservation.sourceKey ||
-        Atomics.load(source.capabilities, reservation.sourceKey + 2) <= 0)
+  private adoptWorkspace(
+    connection: FilesystemConnection,
+    reservation: import("./protocol.js").FilesystemReservation,
+  ): void {
+    const target = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === connection.capabilities,
+    );
+    const source = Array.from(this.sessions).find(
+      (peer) => peer.connection.capabilities === reservation.source,
+    );
+    if (
+      !target ||
+      !source ||
+      isRevoked(source.connection) ||
+      isRevoked(connection) ||
+      reservation.target !== connection.capabilities ||
+      reservation.targetOwner !== connection.owner ||
+      source.handles.get(reservation.handle) !== reservation.sourceKey ||
+      Atomics.load(source.capabilities, reservation.sourceKey + 2) <= 0
+    )
       throw new FilesystemError(8);
     const state = new Int32Array(reservation.state);
     if (Atomics.load(state, 0) || Atomics.compareExchange(state, 1, 0, 1))
@@ -634,7 +653,8 @@ export class FilesystemService {
           close: (connection) => this.closeWorkspace(connection),
         };
         const descriptor = this.residentPublication.retain(
-          handle, operation === "publicationWorkspace" ? "workspace" : "file",
+          handle,
+          operation === "publicationWorkspace" ? "workspace" : "file",
         );
         domain.excludeDirect();
         return descriptor;

@@ -118,7 +118,10 @@ async function start(request: {
         const description = createFilesystemDescriptorCodec(context.fs).import(request.token, 2);
         if (description.resource.kind !== "file") throw new Error("missing inherited file");
         resource = description.resource;
-        fd = context.wasi.descriptors.add(description, { rightsBase: (1n << 1n) | (1n << 2n) | (1n << 6n) | (1n << 21n), rightsInheriting: 0n });
+        fd = context.wasi.descriptors.add(description, {
+          rightsBase: (1n << 1n) | (1n << 2n) | (1n << 6n) | (1n << 21n),
+          rightsInheriting: 0n,
+        });
         return;
       }
       const descriptor = connection.residentPublication;
@@ -126,15 +129,19 @@ async function start(request: {
       if (descriptor?.kind === "workspace") {
         const directory = context.fs.preopen("/");
         const path = context.fs.resolve(directory, "dir/a");
-        if (typeof path === "number" || path.node === undefined) throw new Error("workspace file missing");
+        if (typeof path === "number" || path.node === undefined)
+          throw new Error("workspace file missing");
         handle = path.node;
       }
       if (handle === undefined) throw new Error("missing retained handle");
       context.fs.retain(handle);
       resource = { kind: "file", handle, offset: 0, append: false };
       shareFileResource(resource, connection);
-      fd = context.wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n) | (1n << 21n), 0n, () =>
-        context.fs.release(handle),
+      fd = context.wasi.descriptors.open(
+        resource,
+        (1n << 1n) | (1n << 2n) | (1n << 6n) | (1n << 21n),
+        0n,
+        () => context.fs.release(handle),
       );
     },
     async run(context) {
@@ -162,20 +169,38 @@ function armClaim(buffer: unknown): void {
 }
 function workspaceCall(value: unknown): unknown {
   if (!current || !resource) throw new Error("guest not ready");
-  const body = record(value), action = text(body.action), view = new DataView(memory.buffer);
+  const body = record(value),
+    action = text(body.action),
+    view = new DataView(memory.buffer);
   if (action === "stat") {
     const result = guestFunction(current.instance, "fd_filestat_get")(fd, 512);
-    return { result, size: Number(view.getBigUint64(544, true)), offset: resource.offset, handle: resource.handle };
+    return {
+      result,
+      size: Number(view.getBigUint64(544, true)),
+      offset: resource.offset,
+      handle: resource.handle,
+    };
   }
   const from = new TextEncoder().encode(text(body.path));
   new Uint8Array(memory.buffer, 1024, from.length).set(from);
-  if (action === "unlink") return guestFunction(current.instance, "path_unlink_file")(3, 1024, from.length);
+  if (action === "unlink")
+    return guestFunction(current.instance, "path_unlink_file")(3, 1024, from.length);
   if (action === "rename") {
     const to = new TextEncoder().encode(text(body.to));
     new Uint8Array(memory.buffer, 2048, to.length).set(to);
     return guestFunction(current.instance, "path_rename")(3, 1024, from.length, 3, 2048, to.length);
   }
-  const result = guestFunction(current.instance, "path_open")(3, 0, 1024, from.length, 1, 6n, 0n, 0, 64);
+  const result = guestFunction(current.instance, "path_open")(
+    3,
+    0,
+    1024,
+    from.length,
+    1,
+    6n,
+    0n,
+    0,
+    64,
+  );
   if (!result) guestFunction(current.instance, "fd_close")(view.getUint32(64, true));
   return result;
 }
@@ -206,20 +231,28 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     if (!descriptor) throw new Error("missing real descriptor");
     const token = createFilesystemDescriptorCodec(current.fs, identity).export(descriptor, 2);
     const connection = connectFilesystemIdentity(identity);
-    current.fs.connection.port.postMessage({ connect: connection.server }, [connection.server.port]);
+    current.fs.connection.port.postMessage({ connect: connection.server }, [
+      connection.server.port,
+    ]);
     return { connection: connection.client, token };
   }
   if (operation === "workspace") return workspaceCall(body);
   if (operation === "observerDenied") {
     let denied = 0;
-    try { await current.fs.asyncCall("publicationDiagnostics", ["not-an-observer"]); }
-    catch (error) { denied = Number(Reflect.get(Object(error), "errno")); }
+    try {
+      await current.fs.asyncCall("publicationDiagnostics", ["not-an-observer"]);
+    } catch (error) {
+      denied = Number(Reflect.get(Object(error), "errno"));
+    }
     return denied;
   }
   if (operation === "offset") return resource?.offset;
   if (operation === "prepareDenied") {
-    try { await current.fs.residentPublicationClient().prepare(residentRequest(body), resource?.handle); }
-    catch (error) { return Number(Reflect.get(Object(error), "errno")); }
+    try {
+      await current.fs.residentPublicationClient().prepare(residentRequest(body), resource?.handle);
+    } catch (error) {
+      return Number(Reflect.get(Object(error), "errno"));
+    }
     return 0;
   }
   if (operation === "prepare") {
@@ -270,7 +303,12 @@ self.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
   void execute(data.operation, data.body).then(
     (value) => {
       const connection = value as FilesystemConnection;
-      const transfers = data.operation === "descendant" ? [connection.port] : data.operation === "descendantCodec" ? [(value as { connection: FilesystemConnection }).connection.port] : [];
+      const transfers =
+        data.operation === "descendant"
+          ? [connection.port]
+          : data.operation === "descendantCodec"
+            ? [(value as { connection: FilesystemConnection }).connection.port]
+            : [];
       self.postMessage({ id, value }, transfers);
     },
     (error: unknown) => self.postMessage({ id, failure: String(error) }),

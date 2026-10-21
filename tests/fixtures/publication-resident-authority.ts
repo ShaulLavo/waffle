@@ -27,7 +27,8 @@ const limits: PublicationLimits = {
 };
 let backend: MemoryBackend | undefined, service: FilesystemService | undefined;
 let root: FilesystemClient | undefined, server: ResidentAuthorityServer | undefined;
-let handle = 0, rootHandle = 0;
+let handle = 0,
+  rootHandle = 0;
 let ordinaryPort: MessagePort | undefined;
 let holdReply: "open" | "prepare" | undefined;
 let heldReply: (() => void) | undefined;
@@ -91,11 +92,10 @@ async function serviceWork(): Promise<number> {
 }
 async function enable(workspace: string, namespace = false): Promise<unknown> {
   if (!root || !service) throw new Error("authority not initialized");
-  const descriptor: unknown = await root.asyncCall(namespace ? "publicationWorkspace" : "publicationResident", [
-    root.connection.publication!.observer,
-    namespace ? rootHandle : handle,
-    workspace,
-  ]);
+  const descriptor: unknown = await root.asyncCall(
+    namespace ? "publicationWorkspace" : "publicationResident",
+    [root.connection.publication!.observer, namespace ? rootHandle : handle, workspace],
+  );
   server = await serveResidentAuthority(service.residentPublication!, new AbortController().signal);
   return descriptor;
 }

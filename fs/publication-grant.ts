@@ -414,12 +414,18 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(11);
     return owner;
   }
-  prepare(session: ResidentSession, request: ResidentRequest, handle = session.descriptor.handle): ResidentGrant {
+  prepare(
+    session: ResidentSession,
+    request: ResidentRequest,
+    handle = session.descriptor.handle,
+  ): ResidentGrant {
     const kind = request.kind,
       maxBytes = bounded(request.maxBytes, this.domain.limits.inputBytes);
     const offset = kind === "append" ? 0 : bounded(request.offset, Number.MAX_SAFE_INTEGER);
     const owner = this.session(session);
-    return this.boundary(0, () => structuredClone(this.issue(owner, { kind, maxBytes, offset }, handle)));
+    return this.boundary(0, () =>
+      structuredClone(this.issue(owner, { kind, maxBytes, offset }, handle)),
+    );
   }
   private issue(
     owner: AuthoritySession,

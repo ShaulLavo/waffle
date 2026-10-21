@@ -1,23 +1,49 @@
 import {
-  Int32ArrayConstructor, atomicsLoad, atomicsStore, sharedArrayBufferByteLength,
+  Int32ArrayConstructor,
+  atomicsLoad,
+  atomicsStore,
+  sharedArrayBufferByteLength,
 } from "../proc/intrinsics.js";
 import { FilesystemClient, type FilesystemCompletion } from "./client.js";
 import { localPublication } from "./publication-internal.js";
 import { mutationIntent, mutationValue, type MutationId } from "./publication.js";
 import type { ResidentSession } from "./publication-grant.js";
-import { ResidentChannel, integer, record, residentSession, text } from "./publication-attachment.js";
 import {
-  CAPABILITY_HEADER, CAPABILITY_LENGTH, CAPABILITY_SLOTS, CAPABILITY_WORDS,
-  CONNECTION_SHARED_BYTES, MAX_CONNECTION_OWNERS, HEADER, PAGE, State,
-  FilesystemError, connectFilesystemIdentity, createFilesystemIdentity, isRevoked,
-  pack, unpack, wake, type FilesystemConnection, type FilesystemIdentity,
+  ResidentChannel,
+  integer,
+  record,
+  residentSession,
+  text,
+} from "./publication-attachment.js";
+import {
+  CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
+  CAPABILITY_SLOTS,
+  CAPABILITY_WORDS,
+  CONNECTION_SHARED_BYTES,
+  MAX_CONNECTION_OWNERS,
+  HEADER,
+  PAGE,
+  State,
+  FilesystemError,
+  connectFilesystemIdentity,
+  createFilesystemIdentity,
+  isRevoked,
+  pack,
+  unpack,
+  wake,
+  type FilesystemConnection,
+  type FilesystemIdentity,
 } from "./protocol.js";
 
 export interface WorkspaceHost {
   readonly root: FilesystemIdentity;
   connect(connection: FilesystemConnection): void;
   close(connection: FilesystemConnection): Promise<void>;
-  adopt(connection: FilesystemConnection, reservation: FilesystemIdentity["reservations"][number]): void;
+  adopt(
+    connection: FilesystemConnection,
+    reservation: FilesystemIdentity["reservations"][number],
+  ): void;
 }
 interface WorkspaceCall {
   readonly operation: string;
@@ -39,8 +65,10 @@ export function sameWorkspaceBacking(
   right: SharedArrayBuffer,
   kind: keyof typeof backingWords,
 ): boolean {
-  const words = backingWords[kind], bytes = (words + 1) * 4;
-  if (sharedArrayBufferByteLength(left) !== bytes || sharedArrayBufferByteLength(right) !== bytes) return false;
+  const words = backingWords[kind],
+    bytes = (words + 1) * 4;
+  if (sharedArrayBufferByteLength(left) !== bytes || sharedArrayBufferByteLength(right) !== bytes)
+    return false;
   const a = new Int32ArrayConstructor(left, words * 4, 1);
   const b = new Int32ArrayConstructor(right, words * 4, 1);
   const before = atomicsLoad(a, 0);
@@ -54,11 +82,25 @@ export function sameWorkspaceBacking(
   }
 }
 function reservationKey(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= CAPABILITY_HEADER &&
-    value < CAPABILITY_LENGTH && (value - CAPABILITY_HEADER) % CAPABILITY_WORDS === 0;
+  return (
+    Number.isSafeInteger(value) &&
+    value >= CAPABILITY_HEADER &&
+    value < CAPABILITY_LENGTH &&
+    (value - CAPABILITY_HEADER) % CAPABILITY_WORDS === 0
+  );
 }
 
-const queryOperations = new Set(["stat", "permissions", "resolve", "lookup", "readdir", "read", "grow", "sync", "flush"]);
+const queryOperations = new Set([
+  "stat",
+  "permissions",
+  "resolve",
+  "lookup",
+  "readdir",
+  "read",
+  "grow",
+  "sync",
+  "flush",
+]);
 
 function identity(value: unknown): MutationId {
   const data = record(value);
@@ -67,21 +109,16 @@ function identity(value: unknown): MutationId {
 function argumentSize(value: unknown, budget: number, depth = 0): number {
   if (budget < 0 || depth > 4) throw new FilesystemError(6);
   if (value === undefined || value === null || typeof value === "boolean") return 8;
-  if (typeof value === "number") { integer(value); return 24; }
+  if (typeof value === "number") {
+    integer(value);
+    return 24;
+  }
   if (typeof value === "string") {
     if (value.length > budget) throw new FilesystemError(6);
     return value.length * 3 + 4;
   }
   if (typeof value !== "object") throw new FilesystemError(28);
-  if (value instanceof Map) {
-    if (value.size > 4096) throw new FilesystemError(6);
-    let size = 2;
-    for (const [key, item] of value) {
-      size += argumentSize(key, budget - size, depth + 1) + argumentSize(item, budget - size, depth + 1);
-      if (size > budget) throw new FilesystemError(6);
-    }
-    return size;
-  }
+  if (value instanceof Map) return mapArgumentSize(value, budget, depth);
   const keys = Object.keys(value);
   if (keys.length > (Array.isArray(value) ? 4096 : 8)) throw new FilesystemError(6);
   let size = 2;
@@ -91,8 +128,23 @@ function argumentSize(value: unknown, budget: number, depth = 0): number {
   }
   return size;
 }
-export function workspaceRequest(value: unknown, inputBound: number, argumentBound: number): WorkspaceCall {
-  const data = record(value), operation = text(data.operation);
+function mapArgumentSize(value: Map<unknown, unknown>, budget: number, depth: number): number {
+  if (value.size > 4096) throw new FilesystemError(6);
+  let size = 2;
+  for (const [key, item] of value) {
+    size +=
+      argumentSize(key, budget - size, depth + 1) + argumentSize(item, budget - size, depth + 1);
+    if (size > budget) throw new FilesystemError(6);
+  }
+  return size;
+}
+export function workspaceRequest(
+  value: unknown,
+  inputBound: number,
+  argumentBound: number,
+): WorkspaceCall {
+  const data = record(value),
+    operation = text(data.operation);
   if (!Array.isArray(data.args) || data.args.length > 4) throw new FilesystemError(28);
   if (!(data.input instanceof Uint8Array) || data.input.length > inputBound)
     throw new FilesystemError(6);
@@ -101,7 +153,8 @@ export function workspaceRequest(value: unknown, inputBound: number, argumentBou
   const args: unknown[] = data.args;
   const intent = mutationIntent(operation, args);
   if (!intent && !queryOperations.has(operation)) throw new FilesystemError(2);
-  if (intent) return { operation, args, input: data.input, ...(data.id ? { id: identity(data.id) } : {}) };
+  if (intent)
+    return { operation, args, input: data.input, ...(data.id ? { id: identity(data.id) } : {}) };
   if (operation === "lookup") text(args[0]);
   else if (operation !== "flush") integer(args[0]);
   if (operation === "resolve") text(args[1]);
@@ -120,7 +173,10 @@ export class WorkspacePeer {
   private pending = new Set<FilesystemCompletion>();
   private identities = new Map<number, MutationId>();
   private stopped = false;
-  constructor(readonly session: ResidentSession, private host: WorkspaceHost) {
+  constructor(
+    readonly session: ResidentSession,
+    private host: WorkspaceHost,
+  ) {
     const root = { ...host.root };
     delete root.publication;
     delete root.residentPublication;
@@ -136,7 +192,11 @@ export class WorkspacePeer {
     return !this.stopped && this.retained.has(handle);
   }
   private holdResults(): number[] {
-    const entries = new Int32ArrayConstructor(this.client.connection.capabilities, 0, CAPABILITY_LENGTH);
+    const entries = new Int32ArrayConstructor(
+      this.client.connection.capabilities,
+      0,
+      CAPABILITY_LENGTH,
+    );
     for (let key = CAPABILITY_HEADER; key < entries.length; key += CAPABILITY_WORDS) {
       const handle = Atomics.load(entries, key);
       if (Atomics.load(entries, key + 1) < 0 || this.retained.has(handle)) continue;
@@ -180,9 +240,18 @@ export class WorkspacePeer {
     const call = workspaceRequest(value, limits.inputBytes, limits.argumentBytes);
     let admission;
     if (mutationIntent(call.operation, call.args)) {
-      const admitted = this.client[localPublication](call.operation, call.args, call.input, call.id ?? this.next());
+      const admitted = this.client[localPublication](
+        call.operation,
+        call.args,
+        call.input,
+        call.id ?? this.next(),
+      );
       if (admitted.kind === "duplicate")
-        return { value: mutationValue(admitted.receipt.result), receipt: admitted.receipt, handles: this.holdResults() };
+        return {
+          value: mutationValue(admitted.receipt.result),
+          receipt: admitted.receipt,
+          handles: this.holdResults(),
+        };
       admission = admitted.admission;
     }
     const completion = this.client.submit(call.operation, call.args, call.input, PAGE, admission);
@@ -193,10 +262,15 @@ export class WorkspacePeer {
     try {
       const result: unknown = await completion.value();
       argumentSize(result instanceof Uint8Array ? undefined : result, requestBound);
-      if (result instanceof Uint8Array && result.length > limits.inputBytes) throw new FilesystemError(6);
+      if (result instanceof Uint8Array && result.length > limits.inputBytes)
+        throw new FilesystemError(6);
       const handles = this.holdResults();
       const receipt = admission ? this.receipt(admission.id) : undefined;
-      return { value: result, handles, ...(receipt?.kind === "committed" ? { receipt: receipt.receipt } : {}) };
+      return {
+        value: result,
+        handles,
+        ...(receipt?.kind === "committed" ? { receipt: receipt.receipt } : {}),
+      };
     } finally {
       signal.removeEventListener("abort", cancel);
       this.pending.delete(completion);
@@ -217,7 +291,10 @@ interface BridgeOperation {
   readonly buffer: SharedArrayBuffer;
   readonly joined: Promise<void>;
 }
-interface BridgeParent { readonly bridge: WorkspaceBridge; readonly handles: readonly number[] }
+interface BridgeParent {
+  readonly bridge: WorkspaceBridge;
+  readonly handles: readonly number[];
+}
 class WorkspaceBridge {
   private channel: ResidentChannel;
   private session: ResidentSession | undefined;
@@ -226,14 +303,21 @@ class WorkspaceBridge {
   private bound: Promise<void> = Promise.resolve();
   private children = new Set<WorkspaceBridge>();
   private transfer = Promise.withResolvers<void>();
-  constructor(private connection: FilesystemConnection, private parent?: BridgeParent) {
+  constructor(
+    private connection: FilesystemConnection,
+    private parent?: BridgeParent,
+  ) {
     this.channel = new ResidentChannel(connection.residentPublication!.workspace);
     connection.port.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(data);
     connection.port.start();
   }
   private connect(value: unknown): void {
     const child = value as FilesystemConnection;
-    if (isRevoked(this.connection) || !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") || !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners"))
+    if (
+      isRevoked(this.connection) ||
+      !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") ||
+      !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners")
+    )
       throw new FilesystemError(11);
     const handles: number[] = [];
     for (const reservation of child.reservations) {
@@ -246,17 +330,36 @@ class WorkspaceBridge {
     void bridge.transfer.promise.finally(() => this.children.delete(bridge));
     if (!handles.length) bridge.transfer.resolve();
   }
-  private validateReservation(child: FilesystemConnection, reservation: FilesystemIdentity["reservations"][number]): void {
-    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH), target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
-    if (!sameWorkspaceBacking(reservation.source, this.connection.capabilities, "capabilities") || !sameWorkspaceBacking(reservation.target, child.capabilities, "capabilities") || reservation.targetOwner !== child.owner || !reservationKey(reservation.sourceKey) || !reservationKey(reservation.targetKey))
+  private validateReservation(
+    child: FilesystemConnection,
+    reservation: FilesystemIdentity["reservations"][number],
+  ): void {
+    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH),
+      target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
+    if (
+      !sameWorkspaceBacking(reservation.source, this.connection.capabilities, "capabilities") ||
+      !sameWorkspaceBacking(reservation.target, child.capabilities, "capabilities") ||
+      reservation.targetOwner !== child.owner ||
+      !reservationKey(reservation.sourceKey) ||
+      !reservationKey(reservation.targetKey)
+    )
       throw new FilesystemError(8);
-    if (Atomics.load(source, reservation.sourceKey) !== reservation.handle || Atomics.load(source, reservation.sourceKey + 2) <= 0 || Atomics.load(target, reservation.targetKey) !== reservation.handle || Atomics.load(target, reservation.targetKey + 1) <= 0)
+    if (
+      Atomics.load(source, reservation.sourceKey) !== reservation.handle ||
+      Atomics.load(source, reservation.sourceKey + 2) <= 0 ||
+      Atomics.load(target, reservation.targetKey) !== reservation.handle ||
+      Atomics.load(target, reservation.targetKey + 1) <= 0
+    )
       throw new FilesystemError(8);
     const state = new Int32Array(reservation.state);
     if (Atomics.load(state, 0) || Atomics.load(state, 1)) throw new FilesystemError(11);
   }
   private receive(value: unknown): void {
-    try { this.message(record(value)); } catch { /* Malformed local data owns no request. */ }
+    try {
+      this.message(record(value));
+    } catch {
+      /* Malformed local data owns no request. */
+    }
   }
   private message(data: Record<string, unknown>): void {
     if ("connect" in data) return this.connect(data.connect);
@@ -273,9 +376,12 @@ class WorkspaceBridge {
     const id = integer(data.id);
     if (!(data.buffer instanceof SharedArrayBuffer)) throw new FilesystemError(28);
     const buffer = data.buffer;
-    if (buffer.byteLength > requestBound || this.pending.size >= 16) return this.fail(id, buffer, 6);
+    if (buffer.byteLength > requestBound || this.pending.size >= 16)
+      return this.fail(id, buffer, 6);
     const abort = new AbortController();
-    const joined = this.execute(id, buffer, abort.signal).catch((error: unknown) => this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29));
+    const joined = this.execute(id, buffer, abort.signal).catch((error: unknown) =>
+      this.fail(id, buffer, error instanceof FilesystemError ? error.errno : 29),
+    );
     this.pending.set(id, { abort, buffer, joined });
     void joined.finally(() => this.pending.delete(id));
   }
@@ -304,19 +410,33 @@ class WorkspaceBridge {
   private async bind(value: unknown): Promise<void> {
     if (this.session) throw new FilesystemError(6);
     const session = residentSession(value);
-    if (session.descriptor.kind !== "workspace" || JSON.stringify(session.descriptor) !== JSON.stringify(this.connection.residentPublication)) throw new FilesystemError(11);
+    if (
+      session.descriptor.kind !== "workspace" ||
+      JSON.stringify(session.descriptor) !== JSON.stringify(this.connection.residentPublication)
+    )
+      throw new FilesystemError(11);
     this.session = session;
     const parent = this.parent;
     if (!parent || !parent.handles.length) return;
     await parent.bridge.bound;
     const source = parent.bridge.session;
     if (!source) throw new FilesystemError(11);
-    await this.channel.call("workspaceAdopt", { token: session.token, source: source.token, handles: parent.handles });
+    await this.channel.call("workspaceAdopt", {
+      token: session.token,
+      source: source.token,
+      handles: parent.handles,
+    });
     for (const reservation of this.connection.reservations) this.finishReservation(reservation);
     this.transfer.resolve();
   }
   private cancelTransferred(): void {
-    if (!isRevoked(this.connection) && this.connection.reservations.some((reservation) => !Atomics.load(new Int32Array(reservation.state), 0))) return;
+    if (
+      !isRevoked(this.connection) &&
+      this.connection.reservations.some(
+        (reservation) => !Atomics.load(new Int32Array(reservation.state), 0),
+      )
+    )
+      return;
     this.transfer.resolve();
   }
   private finishReservation(reservation: FilesystemIdentity["reservations"][number]): void {
@@ -325,11 +445,16 @@ class WorkspaceBridge {
     parent.bridge.validateReservation(this.connection, reservation);
     const state = new Int32Array(reservation.state);
     if (Atomics.compareExchange(state, 1, 0, 1)) throw new FilesystemError(11);
-    Atomics.sub(new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH), reservation.sourceKey + 2, 1);
+    Atomics.sub(
+      new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
+      reservation.sourceKey + 2,
+      1,
+    );
   }
   private mirror(value: unknown): unknown {
     const response = record(value);
-    if (!Array.isArray(response.handles) || response.handles.length > CAPABILITY_SLOTS) throw new FilesystemError(29);
+    if (!Array.isArray(response.handles) || response.handles.length > CAPABILITY_SLOTS)
+      throw new FilesystemError(29);
     const entries = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH);
     for (const raw of response.handles) this.mirrorHandle(entries, integer(raw));
     return response.value;
@@ -346,12 +471,26 @@ class WorkspaceBridge {
     Atomics.store(entries, free + 1, 0);
     Atomics.add(entries, 0, 1);
   }
+  private async stop(id: number): Promise<void> {
+    for (const [key, pending] of this.pending) if (key !== id) pending.abort.abort();
+    await Promise.all(
+      Array.from(this.pending, ([key, pending]) =>
+        key === id ? Promise.resolve() : pending.joined,
+      ),
+    );
+    for (const child of this.children) child.cancelTransferred();
+    await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
+    this.responses.clear();
+    this.channel.close();
+  }
   private async execute(id: number, buffer: SharedArrayBuffer, signal: AbortSignal): Promise<void> {
     const cells = new Int32Array(buffer, 0, HEADER / 4);
-    const inputLength = integer(cells[1], 8192), dataLength = integer(cells[2], PAGE);
+    const inputLength = integer(cells[1], 8192),
+      dataLength = integer(cells[2], PAGE);
     if (inputLength + dataLength > buffer.byteLength - HEADER) throw new FilesystemError(28);
     const input: unknown = unpack(new Uint8Array(buffer, HEADER, inputLength));
-    const call = record(input), operation = text(call.operation);
+    const call = record(input),
+      operation = text(call.operation);
     if (!Array.isArray(call.args)) throw new FilesystemError(28);
     if (operation === "workspaceBind") {
       this.bound = this.bind(call.args[0]);
@@ -359,7 +498,9 @@ class WorkspaceBridge {
       return this.complete(id, buffer, undefined);
     }
     if (operation === "take") {
-      const key = integer(call.args[0]), at = integer(call.args[1]), count = integer(call.args[2], PAGE);
+      const key = integer(call.args[0]),
+        at = integer(call.args[1]),
+        count = integer(call.args[2], PAGE);
       const response = this.responses.get(key);
       if (!response) throw new FilesystemError(11);
       const part = response.slice(at, at + count);
@@ -367,19 +508,18 @@ class WorkspaceBridge {
       return this.complete(id, buffer, part);
     }
     if (operation === "workspaceBridgeStop") {
-      for (const [key, pending] of this.pending) if (key !== id) pending.abort.abort();
-      await Promise.all(Array.from(this.pending, ([key, pending]) => key === id ? Promise.resolve() : pending.joined));
-      for (const child of this.children) child.cancelTransferred();
-      await Promise.all(Array.from(this.children, (child) => child.transfer.promise));
-      this.responses.clear();
-      this.channel.close();
+      await this.stop(id);
       return this.complete(id, buffer, undefined);
     }
     await this.bound;
     const session = this.session;
     if (!session || signal.aborted || Atomics.load(cells, 6)) throw new FilesystemError(11);
     const token = session.token;
-    if (operation === "workspaceNext" || operation === "workspaceReceipt" || operation === "workspaceReceipts") {
+    if (
+      operation === "workspaceNext" ||
+      operation === "workspaceReceipt" ||
+      operation === "workspaceReceipts"
+    ) {
       const value = await this.channel.call(operation, { token, id: call.args[0] }, signal);
       return this.complete(id, buffer, value);
     }
@@ -388,8 +528,21 @@ class WorkspaceBridge {
     const actualOperation = explicit ? text(args[1]) : operation;
     const actualArgs = explicit ? args[2] : args;
     const mutationId = explicit ? identity(args[0]) : undefined;
-    const value = await this.channel.call("workspace", { token, request: { operation: actualOperation, args: actualArgs, input: new Uint8Array(new Uint8Array(buffer, HEADER + inputLength, dataLength)), id: mutationId } }, signal);
-    if (signal.aborted || Atomics.load(cells, 6) || isRevoked(this.connection)) throw new FilesystemError(11);
+    const value = await this.channel.call(
+      "workspace",
+      {
+        token,
+        request: {
+          operation: actualOperation,
+          args: actualArgs,
+          input: new Uint8Array(new Uint8Array(buffer, HEADER + inputLength, dataLength)),
+          id: mutationId,
+        },
+      },
+      signal,
+    );
+    if (signal.aborted || Atomics.load(cells, 6) || isRevoked(this.connection))
+      throw new FilesystemError(11);
     this.complete(id, buffer, this.mirror(value));
   }
 }

@@ -101,7 +101,9 @@ export function createFilesystemIdentity(
     throw new FilesystemError(33, "filesystem identity table exhausted");
   const ownerStates = parent?.ownerStates ?? new SharedArrayBuffer(MAX_CONNECTION_OWNERS * 4);
   const workspace = parent?.residentPublication?.kind === "workspace";
-  const capabilities = new SharedArrayBufferConstructor((CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4);
+  const capabilities = new SharedArrayBufferConstructor(
+    (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4,
+  );
   const entries = new Int32ArrayConstructor(capabilities, 0, CAPABILITY_LENGTH);
   entries.fill(-1);
   entries[0] = 0;
@@ -155,7 +157,11 @@ export function releaseFilesystemReservation(reservation: FilesystemReservation)
       break;
   }
   if (Atomics.compareExchange(state, 1, 0, 2) === 0)
-    Atomics.sub(new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH), reservation.sourceKey + 2, 1);
+    Atomics.sub(
+      new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH),
+      reservation.sourceKey + 2,
+      1,
+    );
 }
 export function connectFilesystemIdentity(identity: FilesystemIdentity) {
   const channel = new NativeMessageChannel();

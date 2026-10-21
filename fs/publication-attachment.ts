@@ -1,4 +1,8 @@
-import { Int32ArrayConstructor, SharedArrayBufferConstructor, typedArraySet } from "../proc/intrinsics.js";
+import {
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  typedArraySet,
+} from "../proc/intrinsics.js";
 import { installWorkspaceBridge } from "./publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
 import { decodeEffects, encodeEffects, type PublicationCut } from "./publication.js";
@@ -505,7 +509,10 @@ export async function attachResidentPublication(
 
 function workspaceIdentityBuffer(source: SharedArrayBuffer, words: number): SharedArrayBuffer {
   const buffer = new SharedArrayBufferConstructor((words + 1) * 4);
-  typedArraySet(new Int32ArrayConstructor(buffer, 0, words), new Int32ArrayConstructor(source, 0, words));
+  typedArraySet(
+    new Int32ArrayConstructor(buffer, 0, words),
+    new Int32ArrayConstructor(source, 0, words),
+  );
   new Int32ArrayConstructor(buffer, words * 4, 1)[0] = 0;
   return buffer;
 }

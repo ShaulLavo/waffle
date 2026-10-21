@@ -430,8 +430,10 @@ export class FilesystemClient implements FileSystem {
     if (this.resident && this.connection.residentPublication?.kind !== "workspace")
       throw new FilesystemError(58, "resident grant namespace is unsupported");
     if (this.resident && !this.resident.client) throw new FilesystemError(6);
-    if (this.connection.residentPublication?.kind === "workspace" &&
-        (mapSize(this.completions) >= 16 || data.length > PAGE || pack(args).length > 8192))
+    if (
+      this.connection.residentPublication?.kind === "workspace" &&
+      (mapSize(this.completions) >= 16 || data.length > PAGE || pack(args).length > 8192)
+    )
       throw new FilesystemError(6);
     const domain = this.shared.publication;
     const connection = this.connection.publication;
@@ -1071,11 +1073,28 @@ export class FilesystemClient implements FileSystem {
         at += count;
       }
       return bytes.length;
-    } catch (error) { return -errno(error); }
+    } catch (error) {
+      return -errno(error);
+    }
   }
-  private workspaceWrite(handle: number, chunks: readonly Uint8Array[], offset: number, append: false): number;
-  private workspaceWrite(handle: number, chunks: readonly Uint8Array[], offset: number, append: true): number | { written: number; offset: number };
-  private workspaceWrite(handle: number, chunks: readonly Uint8Array[], offset: number, append: boolean): number | { written: number; offset: number } {
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: false,
+  ): number;
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: true,
+  ): number | { written: number; offset: number };
+  private workspaceWrite(
+    handle: number,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    append: boolean,
+  ): number | { written: number; offset: number } {
     try {
       chunks = fixedWriteSources(chunks);
       let length = 0;
@@ -1083,12 +1102,18 @@ export class FilesystemClient implements FileSystem {
       if (length > PAGE) throw new FilesystemError(6);
       const bytes = new Uint8ArrayConstructor(length);
       let at = 0;
-      for (const chunk of chunks) { typedArraySet(bytes, chunk, at); at += typedArrayLength(chunk); }
+      for (const chunk of chunks) {
+        typedArraySet(bytes, chunk, at);
+        at += typedArrayLength(chunk);
+      }
       return this.call(append ? "append" : "write", append ? [handle] : [handle, offset], bytes);
-    } catch (error) { return -errno(error); }
+    } catch (error) {
+      return -errno(error);
+    }
   }
   read(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.connection.residentPublication?.kind === "file") return this.tryRead(handle, chunks, offset);
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryRead(handle, chunks, offset);
     if (this.resident) return this.workspaceRead(handle, chunks, offset);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.
     const slot = this.directSlot(handle);
@@ -1145,7 +1170,8 @@ export class FilesystemClient implements FileSystem {
     }
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.connection.residentPublication?.kind === "file") return this.tryWrite(handle, chunks, offset);
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryWrite(handle, chunks, offset);
     if (this.resident) return this.workspaceWrite(handle, chunks, offset, false);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
     if (!(offset >= 0)) return -28; // EINVAL: positions are never negative.

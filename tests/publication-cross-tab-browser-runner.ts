@@ -57,50 +57,111 @@ async function guestBundle(): Promise<Blob> {
   if (!build.success) throw new AggregateError(build.logs, "test-only guest bundle failed");
   return build.outputs[0]!;
 }
-async function workspacePage(page: Page, operation: string, args: unknown[] = [], bytes?: number[]): Promise<unknown> {
+async function workspacePage(
+  page: Page,
+  operation: string,
+  args: unknown[] = [],
+  bytes?: number[],
+): Promise<unknown> {
   return control(page, "workspacePage", { operation, args, bytes });
 }
-async function workspaceGuest(page: Page, key: string, operation: string, request?: unknown): Promise<unknown> {
+async function workspaceGuest(
+  page: Page,
+  key: string,
+  operation: string,
+  request?: unknown,
+): Promise<unknown> {
   return control(page, "workspaceGuestCall", { key, operation, request });
 }
 async function workspaceControls(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext();
   try {
-    const first = await context.newPage(), second = await context.newPage();
+    const first = await context.newPage(),
+      second = await context.newPage();
     for (const page of [first, second]) {
       page.on("pageerror", (error) => console.error(error));
       await observeDeaths(page);
       await page.goto(origin);
     }
-    const descriptor = await control(first, "workspaceAuthority", `workspace-${crypto.randomUUID()}`);
-    for (const page of [first, second]) equal(await control(page, "workspacePeer", descriptor), { authorityRootReceived: false });
+    const descriptor = await control(
+      first,
+      "workspaceAuthority",
+      `workspace-${crypto.randomUUID()}`,
+    );
+    for (const page of [first, second])
+      equal(await control(page, "workspacePeer", descriptor), { authorityRootReceived: false });
     const root = await workspacePage(second, "preopen", ["/"]);
     const old = record(await workspacePage(second, "resolve", [root, "dir/a"]));
     const directory = record(await workspacePage(second, "resolve", [root, "dir"]));
     equal(record(await workspacePage(second, "stat", [old.node])).size, 4);
-    equal(record(await workspacePage(second, "stat", [record(await workspacePage(second, "resolve", [root, "dir/b"])).node])).size, 2);
+    equal(
+      record(
+        await workspacePage(second, "stat", [
+          record(await workspacePage(second, "resolve", [root, "dir/b"])).node,
+        ]),
+      ).size,
+      2,
+    );
     const entries = await workspacePage(second, "readdir", [directory.node]);
     if (!Array.isArray(entries)) throw new Error("missing current directory entries");
     equal(entries.map((entry) => record(entry).name).sort(), [".", "..", "a", "b"]);
     await control(first, "workspaceGuest", { key: "retained", mode: "wasi" });
     await control(second, "workspaceGuest", { key: "proc", mode: "proc" });
-    equal(await workspaceGuest(first, "retained", "workspace", { action: "create", path: "dir/new" }), 0);
-    equal(await workspaceGuest(first, "retained", "workspace", { action: "rename", path: "dir/a", to: "dir/renamed" }), 0);
+    equal(
+      await workspaceGuest(first, "retained", "workspace", { action: "create", path: "dir/new" }),
+      0,
+    );
+    equal(
+      await workspaceGuest(first, "retained", "workspace", {
+        action: "rename",
+        path: "dir/a",
+        to: "dir/renamed",
+      }),
+      0,
+    );
     await workspacePage(second, "writeFile", ["/dir/a"], [99]);
-    equal(await workspaceGuest(first, "retained", "workspace", { action: "unlink", path: "dir/renamed" }), 0);
-    const retained = record(await workspaceGuest(first, "retained", "workspace", { action: "stat" }));
-    equal(retained.result, 0); equal(retained.size, 4); equal(retained.handle, old.node);
-    equal(record(await workspacePage(second, "stat", [record(await workspacePage(second, "resolve", [root, "dir/a"])).node])).size, 1);
-    const unavailable = record(await workspaceGuest(second, "proc", "call", { kind: "read", bytes: [88, 88] }));
-    equal(unavailable.result, -6); equal(unavailable.offset, 0); equal(unavailable.bytes, [88, 88]);
+    equal(
+      await workspaceGuest(first, "retained", "workspace", {
+        action: "unlink",
+        path: "dir/renamed",
+      }),
+      0,
+    );
+    const retained = record(
+      await workspaceGuest(first, "retained", "workspace", { action: "stat" }),
+    );
+    equal(retained.result, 0);
+    equal(retained.size, 4);
+    equal(retained.handle, old.node);
+    equal(
+      record(
+        await workspacePage(second, "stat", [
+          record(await workspacePage(second, "resolve", [root, "dir/a"])).node,
+        ]),
+      ).size,
+      1,
+    );
+    const unavailable = record(
+      await workspaceGuest(second, "proc", "call", { kind: "read", bytes: [88, 88] }),
+    );
+    equal(unavailable.result, -6);
+    equal(unavailable.offset, 0);
+    equal(unavailable.bytes, [88, 88]);
     await workspaceGuest(second, "proc", "prepare", { kind: "read", offset: 0, maxBytes: 2 });
-    const read = record(await workspaceGuest(second, "proc", "call", { kind: "read", bytes: [88, 88] }));
-    equal(read.result, 2); equal(read.bytes, [10, 20]); equal(read.offset, 2);
+    const read = record(
+      await workspaceGuest(second, "proc", "call", { kind: "read", bytes: [88, 88] }),
+    );
+    equal(read.result, 2);
+    equal(read.bytes, [10, 20]);
+    equal(read.offset, 2);
     await workspacePage(first, "stat", [await workspacePage(first, "preopen", ["/"])]);
     const cut = await control(first, "workspaceCut");
     await workspaceGuest(second, "proc", "prepare", { kind: "write", offset: 2, maxBytes: 1 });
-    const written = record(await workspaceGuest(second, "proc", "call", { kind: "write", bytes: [77] }));
-    equal(written.result, 1); equal(written.offset, 3);
+    const written = record(
+      await workspaceGuest(second, "proc", "call", { kind: "write", bytes: [77] }),
+    );
+    equal(written.result, 1);
+    equal(written.offset, 3);
     // There is no settle or notification. The other page's current query must settle ACK.
     equal(record(await workspacePage(second, "stat", [old.node])).size, 4);
     const changed = record(await control(first, "workspaceChanges", cut));
@@ -109,15 +170,29 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
     equal(changed.publications.length, 1);
     const group = record(changed.publications[0]);
     if (!Array.isArray(group.changes)) throw new Error("missing complete effects");
-    equal(group.changes.map((effect) => record(effect).kind), ["bytes", "metadata"]);
+    equal(
+      group.changes.map((effect) => record(effect).kind),
+      ["bytes", "metadata"],
+    );
     equal(await workspaceGuest(second, "proc", "observerDenied"), 2);
     await control(second, "workspaceDescendant", { parent: "proc", key: "child", mode: "proc" });
     await workspaceGuest(second, "child", "prepare", { kind: "read", offset: 3, maxBytes: 1 });
-    const childRead = record(await workspaceGuest(second, "child", "call", { kind: "read", bytes: [88] }));
-    equal(childRead.result, 1); equal(childRead.bytes, [40]); equal(childRead.offset, 4);
+    const childRead = record(
+      await workspaceGuest(second, "child", "call", { kind: "read", bytes: [88] }),
+    );
+    equal(childRead.result, 1);
+    equal(childRead.bytes, [40]);
+    equal(childRead.offset, 4);
     equal(await workspaceGuest(second, "proc", "offset"), 4);
     await workspacePage(second, "setMode", [old.node, 0]);
-    equal(await workspaceGuest(second, "proc", "prepareDenied", { kind: "read", offset: 4, maxBytes: 1 }), 2);
+    equal(
+      await workspaceGuest(second, "proc", "prepareDenied", {
+        kind: "read",
+        offset: 4,
+        maxBytes: 1,
+      }),
+      2,
+    );
     await workspacePage(second, "setMode", [old.node, 0o666]);
     const id = await workspacePage(second, "workspaceNext");
     const mutation = [id, "writeFile", ["/dir/once"]];
@@ -125,14 +200,34 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
     const receipt = await workspacePage(second, "workspaceReceipt", [id]);
     await workspacePage(second, "workspaceMutation", mutation, [42]);
     equal(await workspacePage(second, "workspaceReceipt", [id]), receipt);
-    equal(await control(second, "workspacePageDenied", { operation: "workspaceMutation", args: mutation, bytes: [43] }), 28);
+    equal(
+      await control(second, "workspacePageDenied", {
+        operation: "workspaceMutation",
+        args: mutation,
+        bytes: [43],
+      }),
+      28,
+    );
     const recent = await workspacePage(second, "workspaceReceipts");
-    if (!Array.isArray(recent) || !recent.some((entry) => JSON.stringify(record(entry).outcome) === JSON.stringify(receipt))) throw new Error("missing own-session recovery receipt");
-    for (const [page, key] of [[second, "child"], [second, "proc"], [first, "retained"]] as const) await control(page, "workspaceGuestStop", { key });
+    if (
+      !Array.isArray(recent) ||
+      !recent.some((entry) => JSON.stringify(record(entry).outcome) === JSON.stringify(receipt))
+    )
+      throw new Error("missing own-session recovery receipt");
+    for (const [page, key] of [
+      [second, "child"],
+      [second, "proc"],
+      [first, "retained"],
+    ] as const)
+      await control(page, "workspaceGuestStop", { key });
     for (const page of [first, second]) await control(page, "workspaceStop");
     await control(first, "workspaceAuthorityStop");
-    console.log("PASS workspace independent pages, genuine WASI namespace, retained unlink/replacement, current async metadata, real runtime_proc EAGAIN/read/write, lost-nudge complete changes, guest observer denial, codec reservation/shared offsets, permissions, exact duplicate/conflict/own receipts and joined stop");
-  } finally { await context.close(); }
+    console.log(
+      "PASS workspace independent pages, genuine WASI namespace, retained unlink/replacement, current async metadata, real runtime_proc EAGAIN/read/write, lost-nudge complete changes, guest observer denial, codec reservation/shared offsets, permissions, exact duplicate/conflict/own receipts and joined stop",
+    );
+  } finally {
+    await context.close();
+  }
 }
 async function run(name: string, origin: string): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")

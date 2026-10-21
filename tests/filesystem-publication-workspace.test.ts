@@ -6,8 +6,26 @@ import {
   createFilesystemConnection,
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
-import { ResidentChannel, ResidentGrantClient, createResidentConnection, residentDescriptor, residentSession } from "../fs/publication-attachment";
-import { CAPABILITY_HEADER, CAPABILITY_LENGTH, CAPABILITY_SLOTS, CAPABILITY_WORDS, CONNECTION_SHARED_BYTES, MAX_CONNECTION_OWNERS, SHARED_SEGMENT_BYTES, connectFilesystemIdentity, createFilesystemIdentity, createProcessFilesystemIdentity, isRevoked } from "../fs/protocol";
+import {
+  ResidentChannel,
+  ResidentGrantClient,
+  createResidentConnection,
+  residentDescriptor,
+  residentSession,
+} from "../fs/publication-attachment";
+import {
+  CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
+  CAPABILITY_SLOTS,
+  CAPABILITY_WORDS,
+  CONNECTION_SHARED_BYTES,
+  MAX_CONNECTION_OWNERS,
+  SHARED_SEGMENT_BYTES,
+  connectFilesystemIdentity,
+  createFilesystemIdentity,
+  createProcessFilesystemIdentity,
+  isRevoked,
+} from "../fs/protocol";
 import { sameWorkspaceBacking } from "../fs/publication-workspace";
 import type { PublicationLimits } from "../fs/publication-internal";
 
@@ -36,9 +54,13 @@ async function fixture(backend = new MemoryBackend()) {
   const directory: number = await root.asyncCall("preopen", ["/"]);
   const file: { node: number } = await root.asyncCall("resolve", [directory, "dir/a"]);
   const workspace = `workspace-${crypto.randomUUID()}`;
-  const descriptor = residentDescriptor(await root.asyncCall("publicationWorkspace", [
-    root.connection.publication!.observer, directory, workspace,
-  ]));
+  const descriptor = residentDescriptor(
+    await root.asyncCall("publicationWorkspace", [
+      root.connection.publication!.observer,
+      directory,
+      workspace,
+    ]),
+  );
   const authority = service.residentPublication!;
   authority.activate();
   const guard = { release: () => Promise.resolve() };
@@ -46,7 +68,12 @@ async function fixture(backend = new MemoryBackend()) {
   const channel = new ResidentChannel(workspace);
   const session = residentSession(await channel.call("open", descriptor));
   return {
-    channel, session, root, backend, directory, file: file.node,
+    channel,
+    session,
+    root,
+    backend,
+    directory,
+    file: file.node,
     async stop() {
       await channel.call("close", { token: session.token });
       channel.close();
@@ -57,7 +84,13 @@ async function fixture(backend = new MemoryBackend()) {
   };
 }
 
-async function call(f: Awaited<ReturnType<typeof fixture>>, operation: string, args: unknown[] = [], input = new Uint8Array(), id?: unknown): Promise<Record<string, unknown>> {
+async function call(
+  f: Awaited<ReturnType<typeof fixture>>,
+  operation: string,
+  args: unknown[] = [],
+  input = new Uint8Array(),
+  id?: unknown,
+): Promise<Record<string, unknown>> {
   const value = await f.channel.call("workspace", {
     token: f.session.token,
     request: { operation, args, input, id },
@@ -77,7 +110,9 @@ test("private connection queries the sole workspace namespace", async () => {
     const result = await call(f, "stat", [f.file]);
     expect(result).toMatchObject({ value: { kind: "file", size: 3 } });
     expect(f.backend.shared.cells.buffer).toBe(f.root.connection.shared);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 });
 test("namespace mutations use exact session identities and preserve one complete receipt", async () => {
   const f = await fixture();
@@ -90,14 +125,38 @@ test("namespace mutations use exact session identities and preserve one complete
     expect(repeat.receipt).toEqual(first.receipt);
     expect(f.backend.shared.publication!.cut().generation).toBe(before.generation + 1);
     await rejectsErrno(call(f, "writeFile", ["/dir/c"], new Uint8Array([8]), id), 28);
-    expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id })).toMatchObject({ kind: "committed", receipt: first.receipt });
-    expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id: { session: 1, sequence: 1 } })).toEqual({ kind: "unknown" });
-    expect(await f.channel.call("workspaceReceipts", { token: f.session.token })).toContainEqual({ id, outcome: { kind: "committed", receipt: first.receipt } });
-    await rejectsErrno(call(f, "publicationChanges", [f.root.connection.publication!.observer, before, limits.logBytes]), 2);
-    const changes = await f.root.asyncCall("publicationChanges", [f.root.connection.publication!.observer, before, limits.logBytes]);
+    expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id })).toMatchObject({
+      kind: "committed",
+      receipt: first.receipt,
+    });
+    expect(
+      await f.channel.call("workspaceReceipt", {
+        token: f.session.token,
+        id: { session: 1, sequence: 1 },
+      }),
+    ).toEqual({ kind: "unknown" });
+    expect(await f.channel.call("workspaceReceipts", { token: f.session.token })).toContainEqual({
+      id,
+      outcome: { kind: "committed", receipt: first.receipt },
+    });
+    await rejectsErrno(
+      call(f, "publicationChanges", [
+        f.root.connection.publication!.observer,
+        before,
+        limits.logBytes,
+      ]),
+      2,
+    );
+    const changes = await f.root.asyncCall("publicationChanges", [
+      f.root.connection.publication!.observer,
+      before,
+      limits.logBytes,
+    ]);
     expect(changes).toMatchObject({ kind: "changes" });
     expect(changes.publications).toHaveLength(1);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 });
 test("retained files survive rename, replacement and unlink with current permissions", async () => {
   const f = await fixture();
@@ -113,7 +172,9 @@ test("retained files survive rename, replacement and unlink with current permiss
     expect((await call(f, "stat", [f.file])).value).toMatchObject({ kind: "file", size: 3 });
     await call(f, "setMode", [f.file, 0]);
     await rejectsErrno(call(f, "read", [f.file, 3, 0]), 2);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 });
 
 class PausedBackend extends MemoryBackend {
@@ -128,18 +189,28 @@ class PausedBackend extends MemoryBackend {
   }
 }
 test("service-side queued cancellation has no effects and stop joins its preparation", async () => {
-  const backend = new PausedBackend(), f = await fixture(backend);
+  const backend = new PausedBackend(),
+    f = await fixture(backend);
   let stopped = false;
   try {
     await call(f, "preopen", ["/"]);
     const before = backend.shared.publication!.cut();
     backend.pause = true;
     const abort = new AbortController();
-    const pending = f.channel.call("workspace", { token: f.session.token, request: { operation: "writeFile", args: ["/dir/cancelled"], input: new Uint8Array([99]) } }, abort.signal);
+    const pending = f.channel.call(
+      "workspace",
+      {
+        token: f.session.token,
+        request: { operation: "writeFile", args: ["/dir/cancelled"], input: new Uint8Array([99]) },
+      },
+      abort.signal,
+    );
     await backend.started.promise;
     abort.abort();
     await rejectsErrno(pending, 11);
-    const stop = f.stop().then(() => { stopped = true; });
+    const stop = f.stop().then(() => {
+      stopped = true;
+    });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(stopped).toBe(false);
     backend.released.resolve();
@@ -160,9 +231,10 @@ test("repeated joined resident stop never posts cancellation on its closed chann
     const client = new ResidentGrantClient(session, channel, { release: () => Promise.resolve() });
     await client.stop();
     await client.stop();
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 });
-
 
 test("legitimate workspace reservation transfer never changes live ownership controls", async () => {
   const f = await fixture();
@@ -185,13 +257,17 @@ test("legitimate workspace reservation transfer never changes live ownership con
     reservation = parent.reserve(f.file, childIdentity);
     const sourceCount = Atomics.load(new Int32Array(connection.capabilities), 0);
     const targetCount = Atomics.load(new Int32Array(childIdentity.capabilities), 0);
-    Atomics.store = new Proxy(originalStore, { apply(target, receiver, args) {
-      const result = Reflect.apply(target, receiver, args);
-      if (isRevoked(connection)) changed.push("service revocation");
-      if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount) changed.push("source capability header");
-      if (Atomics.load(new Int32Array(childIdentity.capabilities), 0) !== targetCount) changed.push("target capability header");
-      return result;
-    } });
+    Atomics.store = new Proxy(originalStore, {
+      apply(target, receiver, args) {
+        const result = Reflect.apply(target, receiver, args);
+        if (isRevoked(connection)) changed.push("service revocation");
+        if (Atomics.load(new Int32Array(connection.capabilities), 0) !== sourceCount)
+          changed.push("source capability header");
+        if (Atomics.load(new Int32Array(childIdentity.capabilities), 0) !== targetCount)
+          changed.push("target capability header");
+        return result;
+      },
+    });
     connection.port.postMessage({ connect: childPair.server }, [childPair.server.port]);
     await child.asyncCall("workspaceBind", [childSession]);
     childBound = true;
@@ -216,7 +292,6 @@ test("legitimate workspace reservation transfer never changes live ownership con
   }
 });
 
-
 test("workspace backing proof accepts cloned aliases and rejects copied contents", () => {
   const cases = [
     { kind: "shared", words: CONNECTION_SHARED_BYTES / 4 },
@@ -240,8 +315,22 @@ test("workspace backing proof accepts cloned aliases and rejects copied contents
 
 test("only workspace allocations append identity cells and capability scans exclude them", () => {
   const ordinary = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
-  const file = createResidentConnection({ kind: "file", workspace: "layout", instance: "layout", epoch: 1, description: "file", handle: 2 });
-  const workspace = createResidentConnection({ kind: "workspace", workspace: "layout", instance: "layout", epoch: 1, description: "workspace", handle: 2 });
+  const file = createResidentConnection({
+    kind: "file",
+    workspace: "layout",
+    instance: "layout",
+    epoch: 1,
+    description: "file",
+    handle: 2,
+  });
+  const workspace = createResidentConnection({
+    kind: "workspace",
+    workspace: "layout",
+    instance: "layout",
+    epoch: 1,
+    description: "workspace",
+    handle: 2,
+  });
   const parent = new FilesystemClient({ ...workspace, residentPublication: undefined });
   const child = createProcessFilesystemIdentity(workspace);
   try {
