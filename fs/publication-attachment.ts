@@ -19,8 +19,7 @@ import {
 } from "./protocol.js";
 
 const NativeChannel = globalThis.BroadcastChannel;
-export const continuityKey = (workspace: string): string =>
-  `waffle:publication:continuity:${workspace}`;
+const continuityKey = (workspace: string): string => `waffle:publication:continuity:${workspace}`;
 const callBound = 3000;
 
 export function record(value: unknown): Record<string, unknown> {
@@ -486,7 +485,7 @@ export async function attachResidentPublication(
   return client;
 }
 
-/** Local liveness, capability and offset metadata only. This allocates no MemFS,
+/** Local liveness, capability and offset a full root-format allocation, 25,477,140 bytes before objects, ports and offsets. This allocates no MemFS,
  * backend, root directory or authority publication arena. Namespace calls are unsupported. */
 export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
   const descriptor = residentDescriptor(value);

@@ -171,22 +171,26 @@ export async function serveResidentAuthority(
   authority: ResidentGrantAuthority,
   signal: AbortSignal,
 ): Promise<ResidentAuthorityServer> {
-  const bootstrap = await acquirePublicationGuard(
-    `bootstrap:${authority.workspace}`,
-    "exclusive",
-    signal,
-    true,
-  );
+  let bootstrap: PublicationGuard | undefined;
   let prospective: PublicationGuard | undefined;
   try {
+    bootstrap = await acquirePublicationGuard(
+      `bootstrap:${authority.workspace}`,
+      "exclusive",
+      signal,
+      true,
+    );
     prospective = await acquirePublicationGuard(authority.workspace, "exclusive", signal, true);
     await prospective.release();
+    prospective = undefined;
     prospective = await acquirePublicationGuard(authority.workspace, "shared", signal);
     if (signal.aborted) throw new FilesystemError(11);
+    authority.activate();
     return new ResidentAuthorityServer(authority, prospective, bootstrap);
   } catch (error) {
+    authority.dispose();
     await prospective?.release();
-    await bootstrap.release();
+    await bootstrap?.release();
     throw error;
   }
 }

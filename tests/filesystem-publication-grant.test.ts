@@ -39,6 +39,8 @@ test("the production service issues a private retained resident descriptor", asy
       "resident-red-control",
     ]);
     expect(descriptor).toMatchObject({ workspace: "resident-red-control", handle: path.node });
+    await rejectsErrno(publicationObserver(root).cut(), 6);
+    service.residentPublication!.activate();
     expect(await publicationObserver(root).cut()).toEqual(before);
   } finally {
     root.dispose();
@@ -67,6 +69,7 @@ async function residentFixture(configuration = limits) {
     "resident-fixture",
   ]);
   const authority = service.residentPublication!;
+  authority.activate();
   const session = authority.open(descriptor);
   return {
     backend,
@@ -118,7 +121,7 @@ test("remote ACK excludes local direct and service operations until exact one-ti
     });
     expect(f.authority.settle(f.session, cell.snapshot())).toEqual(imported);
     const output = new Uint8Array(5);
-    expect(f.root.tryRead(f.handle, [output], 0)).toBe(5);
+    expect(f.backend.shared.read(f.handle, [output], 0)).toBe(5);
     expect(Array.from(output)).toEqual([1, 2, 3, 4, 5]);
     const changes = await f.observer.changes(before, limits.logBytes);
     expect(changes.kind).toBe("changes");
@@ -167,7 +170,7 @@ test("cancelled readiness retains no failed bytes and a changed actual retry com
     failed[0] = 10;
     f.authority.settle(f.session, retry.snapshot());
     const output = new Uint8Array(3);
-    expect(f.root.tryRead(f.handle, [output], 0)).toBe(3);
+    expect(f.backend.shared.read(f.handle, [output], 0)).toBe(3);
     expect(Array.from(output)).toEqual([9, 2, 3]);
     expect((await f.observer.cut()).generation).toBe(before.generation + 1);
   } finally {
@@ -192,7 +195,7 @@ test("grant claim rechecks cancellation after caller-controlled iovec enumeratio
     expect(cell.snapshot().kind).toBe("cancelled");
     f.authority.settle(f.session, cell.snapshot());
     const output = new Uint8Array(3);
-    expect(f.root.tryRead(f.handle, [output], 0)).toBe(3);
+    expect(f.backend.shared.read(f.handle, [output], 0)).toBe(3);
     expect(Array.from(output)).toEqual([1, 2, 3]);
   } finally {
     f.stop();
@@ -239,7 +242,7 @@ test("retained grant identity survives rename and unlink, while mode denial rema
     expect(cell.tryAppend(f.handle, [new Uint8Array([6])])).toEqual({ written: 1, offset: 4 });
     f.authority.settle(f.session, cell.snapshot());
     const output = new Uint8Array(4);
-    expect(f.root.tryRead(f.handle, [output], 0)).toBe(4);
+    expect(f.backend.shared.read(f.handle, [output], 0)).toBe(4);
     expect(Array.from(output)).toEqual([1, 2, 3, 6]);
   } finally {
     f.stop();
@@ -254,7 +257,7 @@ test("READY reserves effect capacity and exact session identity before any remot
     expect(f.backend.shared.publication!.diagnostics().pending).toBe(0);
     expect(await f.observer.cut()).toEqual(before);
     const output = new Uint8Array(3);
-    expect(f.root.tryRead(f.handle, [output], 0)).toBe(3);
+    expect(f.backend.shared.read(f.handle, [output], 0)).toBe(3);
     expect(Array.from(output)).toEqual([1, 2, 3]);
   } finally {
     f.stop();
@@ -280,10 +283,14 @@ test("READY reserves effect capacity and exact session identity before any remot
 
 test("private claim views never reach late guest atomics hooks", async () => {
   const f = await residentFixture();
-  const load = Atomics.load, store = Atomics.store, compareExchange = Atomics.compareExchange;
+  const load = Atomics.load,
+    store = Atomics.store,
+    compareExchange = Atomics.compareExchange;
   let intercepted = 0;
   try {
-    const cell = new ResidentGrantCell(f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 }));
+    const cell = new ResidentGrantCell(
+      f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 }),
+    );
     const observe = (array: ArrayBufferView) => {
       if (array.buffer === cell.state.buffer || array.buffer === cell.payload.buffer) intercepted++;
     };
@@ -295,7 +302,12 @@ test("private claim views never reach late guest atomics hooks", async () => {
       observe(array);
       return store(array, index, value);
     }) as typeof Atomics.store;
-    Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => {
+    Atomics.compareExchange = ((
+      array: Int32Array,
+      index: number,
+      expected: number,
+      replacement: number,
+    ) => {
       observe(array);
       return compareExchange(array, index, expected, replacement);
     }) as typeof Atomics.compareExchange;
@@ -311,6 +323,46 @@ test("private claim views never reach late guest atomics hooks", async () => {
     Atomics.load = load;
     Atomics.store = store;
     Atomics.compareExchange = compareExchange;
+    f.stop();
+  }
+});
+
+test("pending resident activation denies ordinary service and direct cached work", async () => {
+  const backend = new MemoryBackend();
+  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  const service = new FilesystemService(backend);
+  const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  service.connect(connection.server);
+  const root = new FilesystemClient(connection.client);
+  try {
+    const directory: number = await root.asyncCall("preopen", ["/"]);
+    const path: { node: number } = await root.asyncCall("resolve", [directory, "file"]);
+    root.retain(path.node);
+    expect(root.tryRead(path.node, [new Uint8Array(1)], 0)).toBe(1);
+    await root.asyncCall("publicationResident", [
+      connection.client.publication!.observer,
+      path.node,
+      "pending-control",
+    ]);
+    expect(root.tryRead(path.node, [new Uint8Array(1)], 0)).toBe(-6);
+    expect(root.tryWrite(path.node, [new Uint8Array([7])], 0)).toBe(-6);
+    await rejectsErrno(root.asyncCall("writeFile", ["/file"], new Uint8Array([9])), 6);
+    expect(() => backend.shared.read(path.node, [new Uint8Array(1)], 0)).toThrow();
+  } finally {
+    root.dispose();
+    service.dispose();
+  }
+});
+
+test("idle authority disposal permanently denies queued ordinary service work", async () => {
+  const f = await residentFixture();
+  try {
+    const queued = f.root.asyncCall("writeFile", ["/file"], new Uint8Array([9]));
+    f.authority.dispose();
+    expect(f.backend.shared.publication!.stopped).toBe(true);
+    await rejectsErrno(queued, 11);
+    expect(f.root.tryRead(f.handle, [new Uint8Array(1)], 0)).toBe(-11);
+  } finally {
     f.stop();
   }
 });

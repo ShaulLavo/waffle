@@ -18,14 +18,30 @@ let fd = 0,
 let finish: (() => void) | undefined;
 let claimGate: Int32Array | undefined;
 let privateInterceptions = 0;
-const nativeLoad = Atomics.load, nativeStore = Atomics.store, nativeCompare = Atomics.compareExchange;
+const nativeLoad = Atomics.load,
+  nativeStore = Atomics.store,
+  nativeCompare = Atomics.compareExchange;
 function armDefensiveHooks(): void {
   const observe = (array: Int32Array) => {
     if (array.length === 3 && array.buffer.byteLength === 12) privateInterceptions++;
   };
-  Atomics.load = ((array: Int32Array, index: number) => { observe(array); return nativeLoad(array, index); }) as typeof Atomics.load;
-  Atomics.store = ((array: Int32Array, index: number, value: number) => { observe(array); return nativeStore(array, index, value); }) as typeof Atomics.store;
-  Atomics.compareExchange = ((array: Int32Array, index: number, expected: number, replacement: number) => { observe(array); return nativeCompare(array, index, expected, replacement); }) as typeof Atomics.compareExchange;
+  Atomics.load = ((array: Int32Array, index: number) => {
+    observe(array);
+    return nativeLoad(array, index);
+  }) as typeof Atomics.load;
+  Atomics.store = ((array: Int32Array, index: number, value: number) => {
+    observe(array);
+    return nativeStore(array, index, value);
+  }) as typeof Atomics.store;
+  Atomics.compareExchange = ((
+    array: Int32Array,
+    index: number,
+    expected: number,
+    replacement: number,
+  ) => {
+    observe(array);
+    return nativeCompare(array, index, expected, replacement);
+  }) as typeof Atomics.compareExchange;
 }
 function defensiveResult(): number {
   Atomics.load = nativeLoad;
@@ -72,7 +88,11 @@ function call(body: unknown): unknown {
     count: view.getUint32(32, true),
   };
 }
-async function start(request: { mode: string; connection: FilesystemConnection; handle?: number }): Promise<void> {
+async function start(request: {
+  mode: string;
+  connection: FilesystemConnection;
+  handle?: number;
+}): Promise<void> {
   mode = text(request.mode);
   const connection = request.connection;
   const req: RuntimeWorkerRequest = {
@@ -112,16 +132,14 @@ async function start(request: { mode: string; connection: FilesystemConnection; 
 function armClaim(buffer: unknown): void {
   if (!(buffer instanceof SharedArrayBuffer)) throw new Error("missing local freeze cell");
   claimGate = new Int32Array(buffer);
-  const compare = Atomics.compareExchange;
-  Atomics.compareExchange = function (array, index, expected, replacement) {
-    const result = Reflect.apply(compare, Atomics, [array, index, expected, replacement]);
-    if (array.length !== 3 || index !== 0 || expected !== 0 || replacement !== 1 || result !== 0)
-      return result;
-    Atomics.compareExchange = compare;
-    self.postMessage({ event: "claimed" });
-    while (!Atomics.load(claimGate!, 0)) Atomics.wait(claimGate!, 0, 0);
-    return result;
-  };
+  Object.defineProperty(globalThis, "__publicationClaimed", {
+    configurable: true,
+    value() {
+      Reflect.deleteProperty(globalThis, "__publicationClaimed");
+      self.postMessage({ event: "claimed" });
+      while (!nativeLoad(claimGate!, 0)) Atomics.wait(claimGate!, 0, 0);
+    },
+  });
 }
 async function execute(operation: string, body: unknown): Promise<unknown> {
   if (operation === "armClaim") {
@@ -129,8 +147,12 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
     return null;
   }
   if (!current) throw new Error("guest not ready");
-  if (operation === "armDefensiveHooks") { armDefensiveHooks(); return null; }
+  if (operation === "armDefensiveHooks") {
+    armDefensiveHooks();
+    return null;
+  }
   if (operation === "defensiveResult") return defensiveResult();
+  if (operation === "descendant") return current.fs.fork();
   if (operation === "prepare") {
     await current.fs.residentPublicationClient().prepare(residentRequest(body));
     return null;
@@ -144,8 +166,24 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
   throw new Error(`unknown guest operation ${operation}`);
 }
 type GuestMessage =
-  | { id: string; operation: "start"; body: { mode: string; connection: FilesystemConnection; handle?: number } }
-  | { id: string; operation: "armDefensiveHooks" | "defensiveResult" | "armClaim" | "prepare" | "settle" | "call" | "stop"; body: unknown };
+  | {
+      id: string;
+      operation: "start";
+      body: { mode: string; connection: FilesystemConnection; handle?: number };
+    }
+  | {
+      id: string;
+      operation:
+        | "armDefensiveHooks"
+        | "defensiveResult"
+        | "descendant"
+        | "armClaim"
+        | "prepare"
+        | "settle"
+        | "call"
+        | "stop";
+      body: unknown;
+    };
 self.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
   const id = data.id;
   if (data.operation === "start") {
@@ -156,7 +194,10 @@ self.onmessage = ({ data }: MessageEvent<GuestMessage>) => {
     return;
   }
   void execute(data.operation, data.body).then(
-    (value) => self.postMessage({ id, value }),
+    (value) => {
+      const connection = value as FilesystemConnection;
+      self.postMessage({ id, value }, data.operation === "descendant" ? [connection.port] : []);
+    },
     (error: unknown) => self.postMessage({ id, failure: String(error) }),
   );
 };

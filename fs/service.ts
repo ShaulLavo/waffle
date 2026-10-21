@@ -416,6 +416,7 @@ export class FilesystemService {
         admission = publicationAdmission(input.publication);
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
+      if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
       if (operation !== "flush" && operation !== "sync") {
         const preparation = this.backend.prepare?.(
           operation === "publicationPin" ? "read" : operation,
@@ -585,7 +586,9 @@ export class FilesystemService {
           workspace,
         );
         if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
-        return this.residentPublication.retain(handle);
+        const descriptor = this.residentPublication.retain(handle);
+        domain.excludeDirect();
+        return descriptor;
       }
       case "publicationCut":
         return domain.cut();

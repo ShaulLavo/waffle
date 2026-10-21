@@ -107,23 +107,71 @@ let claimGate: Int32Array | undefined;
 async function ordinarySurvivorControl(): Promise<unknown> {
   const owner = new FixtureWorker("/resident-authority.js");
   const worker = new FixtureWorker("/resident-guest.js");
+  const descendantWorker = new FixtureWorker("/resident-guest.js");
   try {
     const result = record(await owner.request("ordinaryRoot"));
     const connection = result.connection as FilesystemConnection;
-    await worker.request("start", { mode: "proc", connection, handle: result.handle }, [connection.port]);
+    await worker.request("start", { mode: "proc", connection, handle: result.handle }, [
+      connection.port,
+    ]);
     await worker.until("ready");
     const request = { kind: "write", bytes: [2] };
     const before = record(await worker.request("call", request)).result;
-    const issued = residentDescriptor(await owner.request("enable", `ordinary-${crypto.randomUUID()}`));
+    const issued = residentDescriptor(
+      await owner.request("enable", `ordinary-${crypto.randomUUID()}`),
+    );
     const activated = record(await worker.request("call", request)).result;
+    const descendantConnection = (await worker.request("descendant")) as FilesystemConnection;
+    await descendantWorker.request(
+      "start",
+      { mode: "proc", connection: descendantConnection, handle: result.handle },
+      [descendantConnection.port],
+    );
+    await descendantWorker.until("ready");
+    const descendant = record(await descendantWorker.request("call", request)).result;
     await owner.terminate();
-    const guard = await acquirePublicationGuard(issued.workspace, "exclusive", new AbortController().signal, true);
+    const guard = await acquirePublicationGuard(
+      issued.workspace,
+      "exclusive",
+      new AbortController().signal,
+      true,
+    );
     await guard.release();
     const survivor = record(await worker.request("call", request)).result;
-    return { before, activated, survivor, observedNativeAuthorityDeath: true, exclusive: true };
+    return {
+      before,
+      activated,
+      survivor,
+      observedNativeAuthorityDeath: true,
+      exclusive: true,
+      descendant,
+    };
   } finally {
+    await descendantWorker.terminate();
     await worker.terminate();
     await owner.terminate();
+  }
+}
+async function guardLifecycleControl(): Promise<unknown> {
+  const pendingOwner = new FixtureWorker("/resident-authority.js");
+  const idleOwner = new FixtureWorker("/resident-authority.js");
+  try {
+    await pendingOwner.request("beginGuard", `pending-${crypto.randomUUID()}`);
+    await pendingOwner.until("guardPending");
+    const pending = await pendingOwner.request("serviceWork");
+    const failed = await pendingOwner.request("failGuard");
+    await idleOwner.request("start", `idle-${crypto.randomUUID()}`);
+    const idle = record(await idleOwner.request("idleStop"));
+    return {
+      pending,
+      failed,
+      idleStopped: idle.idleStopped,
+      queued: idle.queued,
+      stopped: idle.stopped,
+    };
+  } finally {
+    await pendingOwner.terminate();
+    await idleOwner.terminate();
   }
 }
 async function startGuest(mode: string): Promise<unknown> {
@@ -298,6 +346,7 @@ async function latePreparationControl(): Promise<unknown> {
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation === "guardLifecycle") return guardLifecycleControl();
   if (operation === "ordinarySurvivor") return ordinarySurvivorControl();
   if (operation === "authority") {
     authority = new FixtureWorker("/resident-authority.js");
@@ -354,7 +403,8 @@ async function guestControl(operation: string, value?: unknown): Promise<unknown
     mode = text(body.mode),
     guest = guests.get(mode);
   if (!guest) throw new Error(`missing guest ${mode}`);
-  if (operation === "armDefensiveHooks" || operation === "defensiveResult") return guest.worker.request(operation);
+  if (operation === "armDefensiveHooks" || operation === "defensiveResult")
+    return guest.worker.request(operation);
   if (operation === "prepare")
     return guest.worker.request("prepare", residentRequest(body.request));
   if (operation === "call") return guest.worker.request("call", body.request);

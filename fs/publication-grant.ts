@@ -1,5 +1,13 @@
 import { FilesystemError, type FileStat } from "../core/filesystem.js";
 import {
+  atomicsLoad,
+  atomicsStore,
+  atomicsCompareExchange,
+  Int32ArrayConstructor,
+  Uint8ArrayConstructor,
+  SharedArrayBufferConstructor,
+  arrayFrom,
+  typedArraySubarray,
   typedArrayBuffer,
   typedArrayByteOffset,
   typedArrayLength,
@@ -108,21 +116,32 @@ function canonical(publication: ResidentPublication, bound: number): Uint8Array 
   return encodeEffects(decoded.receipt, decoded.changes, bound);
 }
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  return a.length === b.length && a.every((byte, index) => byte === b[index]);
+  if (typedArrayLength(a) !== typedArrayLength(b)) return false;
+  for (let index = 0; index < typedArrayLength(a); index++) if (a[index] !== b[index]) return false;
+  return true;
 }
 function ownedViews(chunks: readonly Uint8Array[]): Uint8Array[] {
-  return Array.from(
+  return arrayFrom(
     chunks,
     (chunk) =>
-      new Uint8Array(typedArrayBuffer(chunk), typedArrayByteOffset(chunk), typedArrayLength(chunk)),
+      new Uint8ArrayConstructor(
+        typedArrayBuffer(chunk),
+        typedArrayByteOffset(chunk),
+        typedArrayLength(chunk),
+      ),
   );
 }
 function prefix(chunks: readonly Uint8Array[], length: number): Uint8Array {
-  const bytes = new Uint8Array(length);
+  const bytes = new Uint8ArrayConstructor(length);
   let at = 0;
-  for (const chunk of chunks) {
-    const count = Math.min(length - at, chunk.length);
-    typedArraySet(bytes, new Uint8Array(chunk.buffer, chunk.byteOffset, count), at);
+  for (let index = 0; index < chunks.length; index++) {
+    const chunk = chunks[index]!;
+    const count = Math.min(length - at, typedArrayLength(chunk));
+    typedArraySet(
+      bytes,
+      new Uint8ArrayConstructor(typedArrayBuffer(chunk), typedArrayByteOffset(chunk), count),
+      at,
+    );
     at += count;
     if (at === length) break;
   }
@@ -133,14 +152,18 @@ function mutation(
   bytes: Uint8Array,
   mtime: number,
 ): ResidentPublication {
-  const changed = bytes.length > 0;
+  const changed = typedArrayLength(bytes) > 0;
   const receipt: PublicationReceipt = {
     id: grant.id,
     cut: { history: grant.cut.history, generation: grant.cut.generation + Number(changed) },
     result:
       grant.kind === "append"
-        ? { kind: "append", written: bytes.length, offset: grant.offset + bytes.length }
-        : { kind: "number", value: bytes.length },
+        ? {
+            kind: "append",
+            written: typedArrayLength(bytes),
+            offset: grant.offset + typedArrayLength(bytes),
+          }
+        : { kind: "number", value: typedArrayLength(bytes) },
     durability: { kind: "untracked" },
   };
   return {
@@ -153,7 +176,7 @@ function mutation(
             file: grant.file,
             offset: grant.offset,
             bytes,
-            size: Math.max(grant.stat.size, grant.offset + bytes.length),
+            size: Math.max(grant.stat.size, grant.offset + typedArrayLength(bytes)),
             version: grant.version,
           },
           { kind: "metadata", file: grant.file, mode: grant.stat.mode!, mtime },
@@ -171,12 +194,14 @@ export class ResidentGrantCell {
     storage?: { state: SharedArrayBuffer; payload: SharedArrayBuffer },
     private claimAllowed: () => boolean = () => true,
   ) {
-    this.state = new Int32Array(storage?.state ?? new SharedArrayBuffer(12));
-    this.payload = new Uint8Array(storage?.payload ?? new SharedArrayBuffer(grant.effectBytes));
+    this.state = new Int32ArrayConstructor(storage?.state ?? new SharedArrayBufferConstructor(12));
+    this.payload = new Uint8ArrayConstructor(
+      storage?.payload ?? new SharedArrayBufferConstructor(grant.effectBytes),
+    );
   }
   cancel(): boolean {
     return (
-      Atomics.compareExchange(this.state, 0, CellState.Ready, CellState.Cancelled) ===
+      atomicsCompareExchange(this.state, 0, CellState.Ready, CellState.Cancelled) ===
       CellState.Ready
     );
   }
@@ -189,7 +214,7 @@ export class ResidentGrantCell {
     offset: number,
     kind: ResidentRequest["kind"],
   ): number | { written: number; offset: number } {
-    if (Atomics.load(this.state, 0) !== CellState.Ready) return -6;
+    if (atomicsLoad(this.state, 0) !== CellState.Ready) return -6;
     const grant = this.grant;
     if (handle !== grant.session.descriptor.handle) return -8;
     if (grant.kind !== kind || (kind !== "append" && offset !== grant.offset)) return -6;
@@ -199,23 +224,22 @@ export class ResidentGrantCell {
     } catch {
       return -28;
     }
-    const length = Math.min(
-      grant.maxBytes,
-      views.reduce((n, chunk) => n + chunk.length, 0),
-    );
+    let size = 0;
+    for (let index = 0; index < views.length; index++) size += views[index]!.length;
+    const length = Math.min(grant.maxBytes, size);
     if (!this.claimAllowed()) {
       this.cancel();
       return -11;
     }
     if (
-      Atomics.compareExchange(this.state, 0, CellState.Ready, CellState.Claimed) !== CellState.Ready
+      atomicsCompareExchange(this.state, 0, CellState.Ready, CellState.Claimed) !== CellState.Ready
     )
       return -6;
     try {
       if (grant.kind === "read") return this.readClaimed(grant, views, length);
       return this.writeClaimed(grant, views, length);
     } catch (error) {
-      Atomics.store(this.state, 0, CellState.Stopped);
+      atomicsStore(this.state, 0, CellState.Stopped);
       throw error;
     }
   }
@@ -224,16 +248,17 @@ export class ResidentGrantCell {
     views: readonly Uint8Array[],
     length: number,
   ): number {
-    const count = Math.min(length, grant.bytes.length);
+    const count = Math.min(length, grant.typedArrayLength(bytes));
     this.state[1] = count;
     let at = 0;
-    for (const view of views) {
-      const n = Math.min(count - at, view.length);
-      typedArraySet(view, grant.bytes.subarray(at, at + n));
+    for (let index = 0; index < views.length; index++) {
+      const view = views[index]!;
+      const n = Math.min(count - at, typedArrayLength(view));
+      typedArraySet(view, typedArraySubarray(grant.bytes, at, at + n));
       at += n;
       if (at === count) break;
     }
-    Atomics.store(this.state, 0, CellState.Committed);
+    atomicsStore(this.state, 0, CellState.Committed);
     return count;
   }
   private writeClaimed(
@@ -244,8 +269,8 @@ export class ResidentGrantCell {
     const publication = mutation(grant, prefix(views, length), clock());
     const encoded = encodeEffects(publication.receipt, publication.changes, grant.effectBytes);
     typedArraySet(this.payload, encoded);
-    this.state[1] = encoded.length;
-    Atomics.store(this.state, 0, CellState.Committed);
+    this.state[1] = typedArrayLength(encoded);
+    atomicsStore(this.state, 0, CellState.Committed);
     const result = publication.receipt.result;
     return result.kind === "append" ? { written: result.written, offset: result.offset } : length;
   }
@@ -265,7 +290,7 @@ export class ResidentGrantCell {
   }
   snapshot(): ResidentOutcome {
     const grant = this.grant.key;
-    switch (Atomics.load(this.state, 0)) {
+    switch (atomicsLoad(this.state, 0)) {
       case CellState.Ready:
         return { kind: "ready", grant };
       case CellState.Claimed:
@@ -281,10 +306,10 @@ export class ResidentGrantCell {
           return {
             kind: "committed",
             grant,
-            publication: decodeEffects(this.payload.slice(0, this.state[1]!)),
+            publication: decodeEffects(typedArraySubarray(this.payload, 0, this.state[1]!)),
           };
         } catch {
-          Atomics.store(this.state, 0, CellState.Stopped);
+          atomicsStore(this.state, 0, CellState.Stopped);
           return { kind: "stopped", grant };
         }
       default:
@@ -301,6 +326,7 @@ export class ResidentGrantAuthority {
   private outstanding: OutstandingGrant = { kind: "idle" };
   private serial = 0;
   private stopped = false;
+  private disposed = false;
   constructor(
     readonly backend: MemoryBackend,
     readonly epoch: Int32Array,
@@ -337,6 +363,10 @@ export class ResidentGrantAuthority {
       this.descriptions.set(descriptor.description, { descriptor });
       return { ...descriptor };
     });
+  }
+  activate(): void {
+    if (this.stopped) throw new FilesystemError(11);
+    this.backend.shared.activateResidentAuthority();
   }
   open(descriptor: ResidentDescriptor): ResidentSession {
     const { workspace, instance, epoch, description, handle } = descriptor;
@@ -416,9 +446,13 @@ export class ResidentGrantAuthority {
     return this.issueMutation(base, request.kind, this.serial);
   }
   private issueRead(base: GrantBase, serial: number): ResidentGrant {
-    const bytes = new Uint8Array(base.maxBytes);
+    const bytes = new Uint8ArrayConstructor(base.maxBytes);
     const count = this.backend.shared.read(base.session.descriptor.handle, [bytes], base.offset);
-    const grant: ResidentGrant = { ...base, kind: "read", bytes: bytes.slice(0, count) };
+    const grant: ResidentGrant = {
+      ...base,
+      kind: "read",
+      bytes: typedArraySubarray(bytes, 0, count),
+    };
     this.domain.reserveResidentGrant(serial);
     this.outstanding = { kind: "issued", serial, grant, admission: undefined };
     return grant;
@@ -433,7 +467,7 @@ export class ResidentGrantAuthority {
       base.session.session,
       id,
       intent,
-      new Uint8Array(base.maxBytes),
+      new Uint8ArrayConstructor(base.maxBytes),
     );
     if (result.kind !== "admitted") throw new FilesystemError(29);
     try {
@@ -443,7 +477,11 @@ export class ResidentGrantAuthority {
         id,
         version: this.domain.nextContentVersion(base.file.ino),
       };
-      const worst = mutation(grant, new Uint8Array(base.maxBytes), Number.MAX_SAFE_INTEGER);
+      const worst = mutation(
+        grant,
+        new Uint8ArrayConstructor(base.maxBytes),
+        Number.MAX_SAFE_INTEGER,
+      );
       this.domain.reserveResidentCapacity(result.admission, worst.receipt.result, worst.changes);
       if (encoder.encode(JSON.stringify(worst.receipt.result)).length > base.resultBytes)
         throw new FilesystemError(6);
@@ -494,7 +532,7 @@ export class ResidentGrantAuthority {
       if (issued.admission) this.domain.cancel(owner.value.session, issued.admission);
       result = { kind: "retired" };
     } else if (outcome.kind === "read" && grant.kind === "read") {
-      bounded(outcome.count, grant.bytes.length);
+      bounded(outcome.count, grant.typedArrayLength(bytes));
       if (
         outcome.cut.history !== grant.cut.history ||
         outcome.cut.generation !== grant.cut.generation
@@ -519,8 +557,8 @@ export class ResidentGrantAuthority {
   ): ResidentSettlement {
     const content = publication.changes.find((change) => change.kind === "bytes");
     const metadata = publication.changes.find((change) => change.kind === "metadata");
-    const bytes = content?.kind === "bytes" ? content.bytes : new Uint8Array();
-    bounded(bytes.length, grant.maxBytes);
+    const bytes = content?.kind === "bytes" ? content.bytes : new Uint8ArrayConstructor();
+    bounded(typedArrayLength(bytes), grant.maxBytes);
     const mtime =
       metadata?.kind === "metadata"
         ? bounded(metadata.mtime, Number.MAX_SAFE_INTEGER)
@@ -535,7 +573,7 @@ export class ResidentGrantAuthority {
     this.domain.finishResidentInput(admission, bytes);
     const prepared = this.domain.prepare(admission, expected.receipt.result, expected.changes);
     const plan: LocalMutationPlan = {
-      action: bytes.length
+      action: typedArrayLength(bytes)
         ? {
             kind: "write",
             handle: grant.session.descriptor.handle,
@@ -566,13 +604,15 @@ export class ResidentGrantAuthority {
     this.sessions.delete(session.token);
   }
   dispose(): void {
-    if (this.stopped) return;
+    if (this.disposed) return;
     this.stopped = true;
-    if (this.outstanding.kind !== "idle") this.domain.stop();
+    this.domain.stop();
     for (const owner of this.sessions.values()) this.domain.retireSession(owner.value.session);
     this.sessions.clear();
-    for (const { descriptor } of this.descriptions.values())
+    for (const [key, { descriptor }] of this.descriptions) {
       this.backend.release(descriptor.handle);
-    this.descriptions.clear();
+      this.descriptions.delete(key);
+    }
+    this.disposed = true;
   }
 }

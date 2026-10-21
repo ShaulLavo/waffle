@@ -34,6 +34,29 @@ async function observeDeaths(page: Page): Promise<void> {
     await death;
   });
 }
+async function guestBundle(): Promise<Blob> {
+  const build = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "fixtures/publication-resident-guest.ts")],
+    target: "browser",
+    plugins: [
+      {
+        name: "private-claim-test-observer",
+        setup(build) {
+          build.onLoad({ filter: /fs\/publication-grant\.ts$/ }, async ({ path }) => {
+            const source = await Bun.file(path).text();
+            const marker = '    try {\n      if (grant.kind === "read") return this.readClaimed';
+            if (source.split(marker).length !== 2) throw new Error("claim test marker changed");
+            const observation =
+              '    const observe = Reflect.get(globalThis, "__publicationClaimed");\n    if (typeof observe === "function") observe();\n';
+            return { contents: source.replace(marker, observation + marker), loader: "ts" };
+          });
+        },
+      },
+    ],
+  });
+  if (!build.success) throw new AggregateError(build.logs, "test-only guest bundle failed");
+  return build.outputs[0]!;
+}
 async function run(name: string, origin: string): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")
     throw new Error(`unknown engine ${name}`);
@@ -48,6 +71,9 @@ async function run(name: string, origin: string): Promise<void> {
       await observeDeaths(page);
       await page.goto(origin);
     }
+    const lifecycleControl = await control(first, "guardLifecycle");
+    console.log("GUARD_LIFECYCLE=" + JSON.stringify(lifecycleControl));
+    equal(lifecycleControl, { pending: 6, failed: 11, idleStopped: 11, queued: 11, stopped: true });
     const survivor = await control(first, "ordinarySurvivor");
     console.log("ORDINARY_SURVIVOR=" + JSON.stringify(survivor));
     const descriptor = await control(first, "authority", `resident-${crypto.randomUUID()}`);
@@ -78,7 +104,14 @@ async function run(name: string, origin: string): Promise<void> {
     equal(write.offset, 1);
     const intercepted = await control(second, "defensiveResult", { mode: "proc" });
     console.log("PRIVATE_VIEW_INTERCEPTIONS=" + JSON.stringify(intercepted));
-    equal(survivor, { before: 1, activated: -6, survivor: -6, observedNativeAuthorityDeath: true, exclusive: true });
+    equal(survivor, {
+      before: 1,
+      activated: -6,
+      survivor: -6,
+      observedNativeAuthorityDeath: true,
+      exclusive: true,
+      descendant: -6,
+    });
     equal(intercepted, 0);
     console.log("PASS ordinary survivor exclusion and post-exposure defensive private-view hooks");
     equal(record(await control(first, "authorityInspect")).count, -6);
@@ -202,9 +235,7 @@ try {
     "/resident-authority.js": await browserBundle(
       resolve(import.meta.dir, "fixtures/publication-resident-authority.ts"),
     ),
-    "/resident-guest.js": await browserBundle(
-      resolve(import.meta.dir, "fixtures/publication-resident-guest.ts"),
-    ),
+    "/resident-guest.js": await guestBundle(),
   });
   const names = process.argv.slice(2);
   for (const name of names.length ? names : ["chromium"]) await run(name, origin);

@@ -1,4 +1,17 @@
-import { typedArraySet } from "../proc/intrinsics.js";
+import {
+  arrayAppend,
+  Uint8ArrayConstructor,
+  DataViewConstructor,
+  dataViewGetUint32,
+  dataViewSetUint32,
+  typedArrayLength,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayByteLength,
+  typedArraySubarray,
+  reflectApply,
+  typedArraySet,
+} from "../proc/intrinsics.js";
 import type { FilesystemSection } from "./protocol.js";
 import { FilesystemError, type ResolvedPath } from "../core/filesystem.js";
 import type {
@@ -140,7 +153,7 @@ export interface PublicationPin {
   readonly bytes: Uint8Array;
 }
 
-const CONTROL_WORDS = 10;
+const CONTROL_WORDS = 11;
 const SESSION_WORDS = 4;
 const OP_WORDS = 9;
 const LOG_WORDS = 3;
@@ -158,6 +171,7 @@ const enum Control {
   PinSerial,
   OperationSerial,
   ResidentGrant,
+  DirectExcluded,
 }
 const enum Session {
   Serial,
@@ -188,6 +202,16 @@ const STATUS_MASK = 7;
 const MAX_OPERATION = Math.floor(MAX_COUNTER / 8);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const encode = TextEncoder.prototype.encode;
+const decode = TextDecoder.prototype.decode;
+const stringify = JSON.stringify;
+const parse = JSON.parse;
+function encodeText(value: string): Uint8Array {
+  return reflectApply(encode, encoder, [value]);
+}
+function decodeText(bytes: Uint8Array): string {
+  return reflectApply(decode, decoder, [bytes]);
+}
 
 function bounded(value: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_COUNTER)
@@ -240,12 +264,12 @@ function number(low: number, high: number): number {
   return (low >>> 0) + high * 0x100000000;
 }
 function json(value: unknown, bound: number): Uint8Array {
-  const result = encoder.encode(JSON.stringify(value));
+  const result = encodeText(stringify(value));
   if (result.length > bound) throw new FilesystemError(6, "publication record bound exceeded");
   return result;
 }
 function parseResult(bytes: Uint8Array): MutationResult {
-  const value: unknown = JSON.parse(decoder.decode(bytes));
+  const value: unknown = parse(decodeText(bytes));
   if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
   if (value.kind === "void") return { kind: "void" };
   if (value.kind === "number" && "value" in value && typeof value.value === "number")
@@ -274,6 +298,7 @@ function parseResult(bytes: Uint8Array): MutationResult {
  * never held across a filesystem lock or await. Private byte copies use captured intrinsics. */
 export class PublicationDomain {
   private readonly control: Int32Array;
+  private residentActive = false;
   private readonly sessions: Int32Array;
   private readonly operations: Int32Array;
   private readonly inputs: Uint8Array;
@@ -306,6 +331,21 @@ export class PublicationDomain {
   }
   assertLive(): void {
     if (this.stopped) throw new FilesystemError(11);
+  }
+  /** Caller holds the filesystem global lock, including every prior direct operation. */
+  excludeDirect(): void {
+    this.assertLive();
+    Atomics.store(this.control, Control.DirectExcluded, 1);
+  }
+  activateResident(): void {
+    this.assertLive();
+    if (!Atomics.load(this.control, Control.DirectExcluded)) throw new FilesystemError(28);
+    this.residentActive = true;
+  }
+  assertAccess(): void {
+    this.assertLive();
+    if (Atomics.load(this.control, Control.DirectExcluded) && !this.residentActive)
+      throw new FilesystemError(6);
   }
   /** A remote publication owns exclusion, never the filesystem lock, while away. */
   assertCurrent(grant = 0): void {
@@ -956,30 +996,49 @@ export function encodeEffects(
 ): Uint8Array {
   const tails: Uint8Array[] = [];
   let length = 0;
-  const metadata = changes.map((change) => {
-    if (change.kind !== "bytes") return change;
+  const metadata: unknown[] = [];
+  for (let index = 0; index < changes.length; index++) {
+    const change = changes[index]!;
+    if (change.kind !== "bytes") {
+      arrayAppend(metadata, change);
+      continue;
+    }
     const at = length;
-    tails.push(change.bytes);
-    length += change.bytes.length;
-    return { ...change, bytes: { at, length: change.bytes.length } };
-  });
+    arrayAppend(tails, change.bytes);
+    length += typedArrayLength(change.bytes);
+    arrayAppend(metadata, { ...change, bytes: { at, length: typedArrayLength(change.bytes) } });
+  }
   const header = json({ receipt, changes: metadata }, bound);
-  if (4 + header.length + length > bound)
+  if (4 + typedArrayLength(header) + length > bound)
     throw new FilesystemError(6, "publication effect bytes exceeded");
-  const bytes = new Uint8Array(4 + header.length + length);
-  new DataView(bytes.buffer).setUint32(0, header.length, true);
+  const bytes = new Uint8ArrayConstructor(4 + typedArrayLength(header) + length);
+  dataViewSetUint32(
+    new DataViewConstructor(typedArrayBuffer(bytes)),
+    0,
+    typedArrayLength(header),
+    true,
+  );
   typedArraySet(bytes, header, 4);
-  let at = 4 + header.length;
-  for (const tail of tails) {
+  let at = 4 + typedArrayLength(header);
+  for (let index = 0; index < tails.length; index++) {
+    const tail = tails[index]!;
     typedArraySet(bytes, tail, at);
-    at += tail.length;
+    at += typedArrayLength(tail);
   }
   return bytes;
 }
 export function decodeEffects(bytes: Uint8Array): Publication {
-  const length = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+  const length = dataViewGetUint32(
+    new DataViewConstructor(
+      typedArrayBuffer(bytes),
+      typedArrayByteOffset(bytes),
+      typedArrayByteLength(bytes),
+    ),
+    0,
+    true,
+  );
   // This is the private paired codec, not a guest RPC argument. Validate before narrowing.
-  const value: unknown = JSON.parse(decoder.decode(bytes.subarray(4, 4 + length)));
+  const value: unknown = parse(decodeText(typedArraySubarray(bytes, 4, 4 + length)));
   if (
     !value ||
     typeof value !== "object" ||
@@ -989,9 +1048,9 @@ export function decodeEffects(bytes: Uint8Array): Publication {
   )
     throw new FilesystemError(29);
   const receipt = decodeReceipt(value.receipt);
-  const changes = value.changes.map((entry: unknown) =>
-    decodeEffect(entry, bytes.subarray(4 + length)),
-  );
+  const changes: PublicationEffect[] = [];
+  for (let index = 0; index < value.changes.length; index++)
+    arrayAppend(changes, decodeEffect(value.changes[index], typedArraySubarray(bytes, 4 + length)));
   return { receipt, changes };
 }
 function decodeReceipt(value: unknown): PublicationReceipt {
@@ -1026,7 +1085,7 @@ function decodeReceipt(value: unknown): PublicationReceipt {
   return {
     id: { session: id.session, sequence: id.sequence },
     cut: { history: cut.history, generation: cut.generation },
-    result: parseResult(encoder.encode(JSON.stringify(value.result))),
+    result: parseResult(encodeText(stringify(value.result))),
     durability: { kind: "untracked" },
   };
 }
@@ -1112,7 +1171,7 @@ function decodeContentEffect(
     typeof range.length !== "number" ||
     range.at < 0 ||
     range.length < 0 ||
-    range.at + range.length > tail.length
+    range.at + range.length > typedArrayLength(tail)
   )
     throw new FilesystemError(29);
   return {
@@ -1121,8 +1180,13 @@ function decodeContentEffect(
     size: value.size,
     version: value.version,
     offset: value.offset,
-    bytes: tail.slice(range.at, range.at + range.length),
+    bytes: copyEffectBytes(tail, range.at, range.length),
   };
+}
+function copyEffectBytes(tail: Uint8Array, at: number, length: number): Uint8Array {
+  const bytes = new Uint8ArrayConstructor(length);
+  typedArraySet(bytes, typedArraySubarray(tail, at, at + length));
+  return bytes;
 }
 function integer(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)

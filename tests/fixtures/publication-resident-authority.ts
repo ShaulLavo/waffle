@@ -53,16 +53,37 @@ BroadcastChannel.prototype.postMessage = function (value: unknown): void {
   Reflect.apply(post, this, [value]);
 };
 async function initialize(): Promise<void> {
-    backend = new MemoryBackend();
-    backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
-    service = new FilesystemService(backend);
-    const connection = createFilesystemConnection(undefined, { limits, observe: true });
-    service.connect(connection.server);
-    root = new FilesystemClient(connection.client);
-    const dir: number = await root.asyncCall("preopen", ["/"]);
-    const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
-    handle = file.node;
-    root.retain(handle);
+  backend = new MemoryBackend();
+  backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
+  service = new FilesystemService(backend);
+  const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  service.connect(connection.server);
+  root = new FilesystemClient(connection.client);
+  const dir: number = await root.asyncCall("preopen", ["/"]);
+  const file: { node: number } = await root.asyncCall("resolve", [dir, "file"]);
+  handle = file.node;
+  root.retain(handle);
+}
+let guardGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+let guardAttempt: Promise<void> | undefined;
+let guardAbort: AbortController | undefined;
+const nativeLockRequest = navigator.locks.request.bind(navigator.locks);
+Object.defineProperty(navigator.locks, "request", {
+  value: async (name: string, options: LockOptions, callback: LockGrantedCallback) => {
+    if (guardGate && options.mode === "shared") {
+      self.postMessage({ event: "guardPending" });
+      await guardGate.promise;
+    }
+    return nativeLockRequest(name, options, callback);
+  },
+});
+async function serviceWork(): Promise<number> {
+  try {
+    await root!.asyncCall("writeFile", ["/file"], new Uint8Array([99]));
+    return 0;
+  } catch (error) {
+    return Number(Reflect.get(Object(error), "errno"));
+  }
 }
 async function enable(workspace: string): Promise<unknown> {
   if (!root || !service) throw new Error("authority not initialized");
@@ -74,7 +95,54 @@ async function enable(workspace: string): Promise<unknown> {
   server = await serveResidentAuthority(service.residentPublication!, new AbortController().signal);
   return descriptor;
 }
+function inspectBytes(output: Uint8Array): number {
+  const shared = backend!.shared,
+    epoch = new Int32Array(root!.connection.epoch);
+  try {
+    shared.beginServiceMutation(epoch);
+  } catch (error) {
+    return -Number(Reflect.get(Object(error), "errno"));
+  }
+  try {
+    return shared.read(handle, [output], 0);
+  } finally {
+    shared.endServiceMutation(epoch);
+  }
+}
 async function execute(operation: string, body: unknown): Promise<unknown> {
+  if (operation === "beginGuard") {
+    await initialize();
+    await root!.asyncCall("publicationResident", [
+      root!.connection.publication!.observer,
+      handle,
+      text(body),
+    ]);
+    guardGate = Promise.withResolvers<void>();
+    guardAbort = new AbortController();
+    guardAttempt = serveResidentAuthority(service!.residentPublication!, guardAbort.signal).then(
+      (value) => {
+        server = value;
+      },
+      () => {},
+    );
+    return null;
+  }
+  if (operation === "serviceWork") return serviceWork();
+  if (operation === "failGuard") {
+    guardAbort!.abort();
+    guardGate!.resolve();
+    await guardAttempt;
+    return serviceWork();
+  }
+  if (operation === "idleStop") {
+    const queued = serviceWork();
+    await server!.stop();
+    return {
+      queued: await queued,
+      idleStopped: await serviceWork(),
+      stopped: backend!.shared.publication!.stopped,
+    };
+  }
   if (operation === "start") {
     await initialize();
     return enable(text(body));
@@ -102,7 +170,7 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
   }
   if (operation === "inspect") {
     const output = new Uint8Array(8).fill(90),
-      count = root.tryRead(handle, [output], 0);
+      count = inspectBytes(output);
     return {
       count,
       bytes: Array.from(output),
