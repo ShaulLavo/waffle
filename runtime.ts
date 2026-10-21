@@ -262,6 +262,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const launching = new Set<Promise<ProcessHandle>>();
   const handles = new Set<ProcessHandle>();
   const consumers = new Set<RuntimeConsumer>();
+  const physicalStops = new Map<object, () => void | Promise<void>>();
+  const cleanupDebt = new Map<object, Promise<void>>();
   let disposed = false;
   let host: BrowserProcessBroker | undefined;
   let ownedActivation: Promise<BrowserProcessBroker> | undefined;
@@ -380,9 +382,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       assertLive();
       const owned: RuntimeConsumer = { filesystem, revoke, stop };
       consumers.add(owned);
+      physicalStops.set(owned, stop);
       return () => {
         // Disposal now owns this fence and stop, including releases from cancellation hooks.
-        if (!disposed) consumers.delete(owned);
+        if (disposed) return;
+        consumers.delete(owned);
+        physicalStops.delete(owned);
       };
     },
     network() {
@@ -440,7 +445,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
                       return handle.terminate();
                     });
                     void stopping.then(
-                      () => handles.delete(owned),
+                      () => {
+                        handles.delete(owned);
+                        physicalStops.delete(owned);
+                      },
                       () => {},
                     );
                   }
@@ -448,6 +456,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
                 },
               };
               handles.add(owned);
+              physicalStops.set(owned, owned.terminate);
               return owned;
             });
             launching.add(pending);
@@ -540,16 +549,40 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // Rejection is not a proof of quiescence. Retain consumers, filesystem and the page
         // guard until this page is destroyed rather than allowing a new owner to overlap them.
         if (failures.length !== failuresBeforeFences) throwFailures();
+        // Snapshot original callbacks before any stop can clear its owner's records.
+        const stops = Array.from(physicalStops);
+        const hostOwner = host;
+        const hostStop = hostOwner?.dispose.bind(hostOwner);
+        const joinStop = (owner: object, stop: () => void | Promise<void>) => {
+          let joined: Promise<void>;
+          try {
+            joined = Promise.resolve(stop());
+          } catch (error) {
+            joined = Promise.reject(error);
+          }
+          cleanupDebt.set(owner, joined);
+          void joined.then(
+            () => {
+              cleanupDebt.delete(owner);
+              physicalStops.delete(owner);
+            },
+            () => {},
+          );
+          return joined;
+        };
         releaseTermination();
-        await Promise.all(
-          Array.from(handles, (handle) => attempt(() => handle.terminate())).concat(
-            Array.from(consumers, (consumer) => attempt(() => consumer.stop())),
-          ),
+        const stopped = await Promise.allSettled(
+          stops.map(([owner, stop]) => joinStop(owner, stop)),
         );
+        for (const result of stopped) {
+          if (result.status === "rejected") failures.push(result.reason);
+        }
+        if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
+        if (hostOwner && hostStop) await attempt(() => joinStop(hostOwner, hostStop));
+        // A rejected physical stop keeps its original owner/join and the live root.
+        if (cleanupDebt.size) throwFailures();
         handles.clear();
         consumers.clear();
-        if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
-        await attempt(() => host?.dispose());
         await attempt(() => filesystem.dispose());
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);

@@ -1228,18 +1228,6 @@ test.each(["consumer", "siblings", "multiple", "late", "host", "success"])(
   15_000,
 );
 
-test("cleanup errors still close the filesystem and release page ownership", async () => {
-  const runtime = create({
-    processHost: processHost(async () => {
-      throw new Error("consumer cleanup failed");
-    }),
-  });
-  await runtime.processes();
-  await expect(runtime.dispose()).rejects.toThrow("consumer cleanup failed");
-  expect(events.at(-1)).toBe("filesystem:stop");
-  expect(create().disposed).toBe(false);
-});
-
 test("registration leases remove unused programs and adapters without activating process services or loaders", async () => {
   let activations = 0,
     loads = 0;
