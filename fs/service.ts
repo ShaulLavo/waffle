@@ -392,6 +392,9 @@ export class FilesystemService {
     } else this.trim(session);
     return result;
   }
+  private assertBackendAccess(): void {
+    if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
+  }
   private async request(
     session: Session,
     id: number,
@@ -416,7 +419,7 @@ export class FilesystemService {
         admission = publicationAdmission(input.publication);
       this.checkRequest(session, operation, args);
       if (prepared?.failure) throw prepared.failure.error;
-      if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
+      this.assertBackendAccess();
       if (operation !== "flush" && operation !== "sync") {
         const preparation = this.backend.prepare?.(
           operation === "publicationPin" ? "read" : operation,
