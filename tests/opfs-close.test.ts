@@ -83,6 +83,13 @@ class FileStandIn implements FileSystemFileHandle {
   }
 }
 
+function directoryIterator<T>(values: Iterable<T>): FileSystemDirectoryHandleAsyncIterator<T> {
+  const iterator = (async function* () { yield* values; })();
+  return Object.assign(iterator, {
+    async [Symbol.asyncDispose](): Promise<void> { await iterator.return(); },
+  });
+}
+
 class DirectoryStandIn implements FileSystemDirectoryHandle {
   readonly kind = "directory";
   readonly children = new Map<string, DirectoryStandIn | FileStandIn>();
@@ -107,12 +114,12 @@ class DirectoryStandIn implements FileSystemDirectoryHandle {
   }
   async removeEntry(name: string): Promise<void> { this.children.delete(name); }
   async resolve(): Promise<string[] | null> { return null; }
-  async *entries(): AsyncIterableIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]> {
-    yield* this.children.entries();
+  entries(): FileSystemDirectoryHandleAsyncIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]> {
+    return directoryIterator(this.children.entries());
   }
-  async *keys(): AsyncIterableIterator<string> { yield* this.children.keys(); }
-  async *values(): AsyncIterableIterator<FileSystemFileHandle | FileSystemDirectoryHandle> {
-    yield* this.children.values();
+  keys(): FileSystemDirectoryHandleAsyncIterator<string> { return directoryIterator(this.children.keys()); }
+  values(): FileSystemDirectoryHandleAsyncIterator<FileSystemFileHandle | FileSystemDirectoryHandle> {
+    return directoryIterator(this.children.values());
   }
   [Symbol.asyncIterator]() { return this.entries(); }
 }
