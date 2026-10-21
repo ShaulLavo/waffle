@@ -25,6 +25,7 @@ let instance = crypto.randomUUID();
 let workspaceName: string | undefined;
 const events: unknown[] = [];
 const ports = new Set<MessagePort>();
+const initializations = new Map<string, { port: MessagePort; controller: AbortController; timer: ReturnType<typeof setTimeout> }>();
 const counters = {
   strict: 0,
   relaxed: 0,
@@ -87,21 +88,28 @@ function fence(head: State | undefined): State {
 function requireInstance(expected: string): void {
   if (instance !== expected) throw new Error("FENCED: instance changed across await");
 }
-async function acquireVolatile(workspace: string): Promise<() => void> {
-  const ready = Promise.withResolvers<(() => void) | undefined>();
+async function acquireVolatile(workspace: string, signal: AbortSignal): Promise<() => void> {
+  signal.throwIfAborted();
+  const ready = Promise.withResolvers<() => void>();
+  const held = Promise.withResolvers<void>();
+  const aborted = () => { held.resolve(); ready.reject(signal.reason); };
+  const release = () => {
+    signal.removeEventListener("abort", aborted);
+    held.resolve();
+  };
+  signal.addEventListener("abort", aborted, { once: true });
   void navigator.locks.request(`e5-volatile:${workspace}`, { ifAvailable: true }, (lock) => {
     trace({ phase: "volatile-lock-result", acquired: Boolean(lock), instance });
-    if (!lock) {
-      ready.resolve(undefined);
-      return;
-    }
-    return new Promise<void>((resolve) => ready.resolve(resolve));
-  });
-  const release = await ready.promise;
-  if (!release) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
-  return release;
+    if (!lock) throw new Error("UNAVAILABLE: live lock-holding volatile authority");
+    signal.throwIfAborted();
+    ready.resolve(release);
+    return held.promise;
+  }).catch(ready.reject);
+  try { return await ready.promise; }
+  catch (error) { release(); throw error; }
 }
-async function initialize(command: Extract<Command, { kind: "initialize" }>): Promise<Reply> {
+async function initialize(command: Extract<Command, { kind: "initialize" }>, signal: AbortSignal): Promise<Reply> {
+  signal.throwIfAborted();
   const from = instance;
   if (state) {
     const local = current();
@@ -111,7 +119,8 @@ async function initialize(command: Extract<Command, { kind: "initialize" }>): Pr
       local.token !== command.token
     )
       throw new Error("FENCED: initialized authority identity mismatch");
-    await transaction(database(), "relaxed", (head) => ({ result: fence(head) }));
+    await transaction(database(), "relaxed", (head) => ({ result: fence(head) }), signal);
+    signal.throwIfAborted();
     requireInstance(from);
     if (local !== current()) throw new Error("FENCED: initialize changed across await");
     counters.relaxed++;
@@ -120,15 +129,19 @@ async function initialize(command: Extract<Command, { kind: "initialize" }>): Pr
   let claimedDatabase: IDBDatabase | undefined;
   let release: (() => void) | undefined;
   try {
-    if (command.arm === "volatile-fast") release = await acquireVolatile(command.workspace);
+    if (command.arm === "volatile-fast") release = await acquireVolatile(command.workspace, signal);
     requireInstance(from);
-    claimedDatabase = await openDatabase(command.workspace);
+    signal.throwIfAborted();
+    claimedDatabase = await openDatabase(command.workspace, signal);
     requireInstance(from);
+    signal.throwIfAborted();
     const claimed = await transaction(claimedDatabase, "strict", (saved) => {
       requireInstance(from);
+      signal.throwIfAborted();
       return claim(saved, command);
-    });
+    }, signal);
     requireInstance(from);
+    signal.throwIfAborted();
     db = claimedDatabase;
     unlock = release;
     state = claimed;
@@ -194,6 +207,8 @@ function apply(head: State, request: Request): { state: State; result: unknown }
     return { state: head, result: receipt };
   }
   history(request, head);
+  if (!request.client.startsWith(`${head.history}/`))
+    throw new Error("OUTCOME_UNKNOWN: identity belongs to an earlier history");
   if (head.receipts.size >= 256) throw new Error("BACKPRESSURE: receipt budget");
   const next = structuredClone(head);
   const operationResult = perform(next, request.operation);
@@ -303,8 +318,8 @@ async function close(): Promise<Reply> {
   setTimeout(() => Reflect.get(globalThis, "close")(), 0);
   return result;
 }
-async function command(command: Command): Promise<Reply> {
-  if (command.kind === "initialize") return initialize(command);
+async function command(command: Command, signal: AbortSignal): Promise<Reply> {
+  if (command.kind === "initialize") return initialize(command, signal);
   if (command.kind === "request") return execute(command.request);
   if (command.kind === "close") return close();
   if (command.kind === "drain-instance") return drain();
@@ -327,10 +342,30 @@ async function response(control: Command, result: Reply): Promise<Reply> {
   }
   return result;
 }
+function initialization(port: MessagePort, control: Command) {
+  const controller = new AbortController();
+  if (control.kind !== "initialize") return { controller, finish: () => {} };
+  const timer = setTimeout(() => controller.abort(new Error("UNAVAILABLE: initialize deadline")), 3000);
+  const owner = { port, controller, timer };
+  initializations.set(control.attempt, owner);
+  const finish = () => {
+    clearTimeout(timer);
+    if (initializations.get(control.attempt) === owner) initializations.delete(control.attempt);
+  };
+  return { controller, finish };
+}
+function cancelInitialization(port: MessagePort, attempt: string): void {
+  const owner = initializations.get(attempt);
+  if (owner?.port === port) owner.controller.abort(new Error("UNAVAILABLE: initialization cancelled"));
+}
 function deliver(port: MessagePort, envelope: Envelope): void {
   const control = envelope.command;
   trace({ phase: "deliver", id: envelope.id, control, initialized: Boolean(state), pending });
   const deliveredInstance = instance;
+  if (control.kind === "cancel-initialize") {
+    cancelInitialization(port, control.attempt);
+    return;
+  }
   if (control.kind === "replace-instance") {
     if (pending > 0 && gates.size === 0) {
       post(port, {
@@ -385,14 +420,20 @@ function deliver(port: MessagePort, envelope: Envelope): void {
     });
     return;
   }
+  if (control.kind === "initialize" && initializations.has(control.attempt)) {
+    post(port, { id: envelope.id, result: failure(new Error("OP_ID_CONFLICT: initialization identity")) });
+    return;
+  }
+  const admission = initialization(port, control);
   pending++;
   counters.pendingPeak = Math.max(counters.pendingPeak, pending);
   tail = tail.then(async () => {
     trace({ phase: "queue-start", id: envelope.id, kind: control.kind });
     const committed =
       deliveredInstance === instance
-        ? await command(control).catch(failure)
+        ? await command(control, admission.controller.signal).catch(failure)
         : failure(new Error("FENCED: retired queue"));
+    admission.finish();
     const result =
       deliveredInstance === instance
         ? await response(control, committed).catch(failure)

@@ -21,6 +21,13 @@ import {
   type WorkerMessage,
 } from "./protocol.js";
 
+class RecoveryAttempt {
+  readonly id = crypto.randomUUID();
+  readonly controller = new AbortController();
+  readonly timer = setTimeout(() => this.controller.abort(new Error("UNAVAILABLE: recovery deadline")), 3000);
+  finish(): void { clearTimeout(this.timer); }
+  cancel(): void { this.controller.abort(new Error("FENCED: attempt superseded or detached")); }
+}
 export class ProofClient {
   readonly client = crypto.randomUUID();
   sequence = 0;
@@ -41,45 +48,57 @@ export class ProofClient {
   readonly intents = new IntentLedger();
   readonly recoveryEvents: unknown[] = [];
   staleReplies = 0;
-  private recoveryAttempt = 0;
+  private attempt: RecoveryAttempt | undefined;
   private connection: { workspace: string; arm: Arm; token: string } | undefined;
   private pending = new Map<
     number,
     { instance: string | undefined; command: Command; settle: (reply: Reply) => void }
   >();
+  private async runAttempt(work: (attempt: RecoveryAttempt) => Promise<Reply>): Promise<Reply> {
+    this.attempt?.cancel();
+    const attempt = new RecoveryAttempt();
+    this.attempt = attempt;
+    try {
+      return await work(attempt);
+    } catch (error) {
+      if (this.attempt === attempt && this.authority.kind !== "detached")
+        this.authority = { kind: "unavailable", instance: observed(this.authority), previous: accepted(this.authority), reason: String(error) };
+      return failure(error);
+    } finally {
+      attempt.finish();
+      if (this.attempt === attempt) this.attempt = undefined;
+    }
+  }
   async recover(): Promise<Reply> {
     const connection = this.connection;
     if (!connection || !this.worker) return failure(new Error("UNAVAILABLE: no retained port"));
-    try {
-      return await navigator.locks.request(
-        `e5-bootstrap:${connection.workspace}`,
-        { signal: AbortSignal.timeout(3000) },
-        () => this.recoverRetained(connection),
-      );
-    } catch (error) {
-      return failure(error);
-    }
+    return this.runAttempt((attempt) => navigator.locks.request(
+      `e5-bootstrap:${connection.workspace}`,
+      { signal: attempt.controller.signal },
+      () => this.recoverRetained(connection, attempt),
+    ));
   }
   private async recoverRetained(connection: {
     workspace: string;
     arm: Arm;
     token: string;
-  }): Promise<Reply> {
+  }, attempt: RecoveryAttempt): Promise<Reply> {
+    this.validateAttempt(attempt);
     if (this.connection !== connection || !this.worker)
       return failure(new Error("FENCED: recovery attachment changed before admission"));
     const previous = accepted(this.authority);
     const worker = this.worker;
-    const attempt = ++this.recoveryAttempt;
     const expectedInstance = observed(this.authority);
     this.authority = beginRecovery(this.authority);
-    const head = await readRegistry(connection.workspace);
+    const head = await readRegistry(connection.workspace, attempt.controller.signal);
     this.validateRecovery(connection, worker, attempt, expectedInstance);
     const claimedInstance = observed(this.authority);
     const reply = await this.send({
       kind: "initialize",
       ...connection,
       expected: head?.epoch ?? 0,
-    });
+      attempt: attempt.id,
+    }, 3000, attempt.controller.signal);
     this.validateRecovery(connection, worker, attempt, claimedInstance);
     const instance = observed(this.authority);
     if (reply.kind === "error" || !instance) {
@@ -115,46 +134,52 @@ export class ProofClient {
   private validateRecovery(
     connection: { workspace: string; arm: Arm; token: string },
     worker: SharedWorker | undefined,
-    attempt: number,
+    attempt: RecoveryAttempt,
     instance: string | undefined,
   ): void {
+    this.validateAttempt(attempt);
     if (
       this.connection !== connection ||
-      this.worker !== worker ||
-      this.recoveryAttempt !== attempt
+      this.worker !== worker
     )
       throw new Error("FENCED: recovery attachment changed");
     if (this.authority.kind !== "recovering" || (instance && observed(this.authority) !== instance))
       throw new Error("FENCED: recovery instance changed across await");
   }
-  async connect(workspace: string, arm: Arm, replace = false): Promise<Reply> {
-    try {
-      return await navigator.locks.request(
-        `e5-bootstrap:${workspace}`,
-        { signal: AbortSignal.timeout(3000) },
-        () => this.attach(workspace, arm, replace),
-      );
-    } catch (error) {
-      return failure(new Error(`UNAVAILABLE: bootstrap ${String(error)}`));
-    }
+  private validateAttempt(attempt: RecoveryAttempt): void {
+    attempt.controller.signal.throwIfAborted();
+    if (this.attempt !== attempt) throw new Error("FENCED: obsolete recovery attempt");
   }
-  private async attach(workspace: string, arm: Arm, replace: boolean): Promise<Reply> {
-    const head = await readRegistry(workspace);
+  async connect(workspace: string, arm: Arm, replace = false): Promise<Reply> {
+    return this.runAttempt((attempt) => navigator.locks.request(
+      `e5-bootstrap:${workspace}`,
+      { signal: attempt.controller.signal },
+      () => this.attach(workspace, arm, replace, attempt),
+    ));
+  }
+  private async attach(workspace: string, arm: Arm, replace: boolean, attempt: RecoveryAttempt): Promise<Reply> {
+    this.validateAttempt(attempt);
+    const head = await readRegistry(workspace, attempt.controller.signal);
+    this.validateAttempt(attempt);
     const token = !replace && head && !head.closed ? head.token : crypto.randomUUID();
-    this.detach();
+    this.detachAttachment();
     this.connection = { workspace, arm, token };
     this.authority = beginRecovery(this.authority);
     const trace = new URL(location.href).searchParams.has("trace") ? "&trace=1" : "";
     this.observe({ phase: "attach", workspace, token });
-    this.worker = new SharedWorker(`/authority.js?workspace=${workspace}&token=${token}${trace}`, {
+    const worker = new SharedWorker(`/authority.js?workspace=${workspace}&token=${token}${trace}`, {
       name: token,
       type: "module",
     });
-    this.worker.onerror = (event) => this.fault(`worker error: ${event.message}`);
-    this.worker.port.onmessageerror = () => this.fault("port messageerror");
-    this.worker.port.onmessage = (event) => this.receive(event.data);
-    this.worker.port.start();
-    return this.recoverRetained(this.connection);
+    this.worker = worker;
+    worker.onerror = (event) => this.fault(`worker error: ${event.message}`);
+    worker.port.onmessageerror = () => this.fault("port messageerror");
+    worker.port.onmessage = (event) => {
+      if (this.worker === worker) this.receive(event.data);
+      else this.staleReplies++;
+    };
+    worker.port.start();
+    return this.recoverRetained(this.connection, attempt);
   }
 
   private fault(message: string): void {
@@ -200,8 +225,10 @@ export class ProofClient {
         unsettled(pending.command.kind === "request" ? pending.command.request : undefined, reason),
       );
   }
-  send(command: Command, timeoutMs = 3000): Promise<Reply> {
-    if (!this.worker) return Promise.resolve(failure(new Error("UNAVAILABLE: disconnected")));
+  send(command: Command, timeoutMs = 3000, signal?: AbortSignal): Promise<Reply> {
+    const worker = this.worker;
+    if (!worker) return Promise.resolve(failure(new Error("UNAVAILABLE: disconnected")));
+    if (signal?.aborted) return Promise.resolve(failure(signal.reason));
     if (command.kind === "request" && this.authority.kind !== "current")
       return Promise.resolve(unsettled(command.request, `authority ${this.authority.kind}`));
     if (this.pending.size >= 64)
@@ -209,25 +236,32 @@ export class ProofClient {
     const id = ++this.messages;
     this.observe({ phase: "send", id, command });
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.fault(`response deadline: ${command.kind}`);
-        resolve(
-          unsettled(command.kind === "request" ? command.request : undefined, "response deadline"),
-        );
-      }, timeoutMs);
       const settle = (reply: Reply) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", aborted);
         this.pending.delete(id);
         resolve(reply);
       };
+      const cancel = () => {
+        if (command.kind === "initialize") worker.port.postMessage({ id, command: { kind: "cancel-initialize", attempt: command.attempt } });
+      };
+      const aborted = () => {
+        cancel();
+        settle(unsettled(undefined, "initialization interrupted"));
+      };
+      const timer = setTimeout(() => {
+        cancel();
+        this.fault(`response deadline: ${command.kind}`);
+        settle(unsettled(command.kind === "request" ? command.request : undefined, "response deadline"));
+      }, timeoutMs);
       this.pending.set(id, { instance: observed(this.authority), command, settle });
-      this.worker?.port.postMessage({ id, command });
+      signal?.addEventListener("abort", aborted, { once: true });
+      worker.port.postMessage({ id, command });
     });
   }
   request(operation: Operation, options: Partial<Request> = {}): Request {
     return {
-      client: this.client,
+      client: `${this.cursor.history}/${this.client}`,
       sequence: ++this.sequence,
       epoch: this.cursor.epoch,
       history: this.cursor.history,
@@ -266,10 +300,16 @@ export class ProofClient {
     return reply;
   }
   detach(): void {
+    this.attempt?.cancel();
+    this.attempt = undefined;
+    this.detachAttachment();
+  }
+  private detachAttachment(): void {
     this.observe({ phase: "detach", hadWorker: Boolean(this.worker) });
     this.invalidatePending("port detached");
     this.worker?.port.close();
     this.worker = undefined;
+    this.connection = undefined;
     this.authority = { kind: "detached" };
   }
 }

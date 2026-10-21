@@ -8,15 +8,16 @@ export class ParkingGates {
   constructor(private readonly after: Schedule = schedule) {}
   park(gate: string): Promise<void> {
     return new Promise((resolve) => {
-      const cancel = this.after(() => {
-        this.gates.delete(gate);
+      const finish = () => {
+        if (this.gates.get(gate) === release) this.gates.delete(gate);
         resolve();
-      }, 5000);
-      this.gates.set(gate, () => {
+      };
+      const cancel = this.after(finish, 5000);
+      const release = () => {
         cancel();
-        this.gates.delete(gate);
-        resolve();
-      });
+        finish();
+      };
+      this.gates.set(gate, release);
     });
   }
   release(gate: string): boolean {

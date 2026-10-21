@@ -1,12 +1,36 @@
 import { MemFS } from "../../fs/memory.js";
 import type { Arm, State } from "./protocol.js";
 
-export function openDatabase(workspace: string): Promise<IDBDatabase> {
+const opening = new Set<IDBOpenDBRequest>();
+function abortTransaction(tx: IDBTransaction): void {
+  try { tx.abort(); }
+  catch (error) {
+    if (error instanceof DOMException && error.name === "InvalidStateError") return;
+    throw error;
+  }
+}
+function finishOpen(request: IDBOpenDBRequest, signal: AbortSignal | undefined, resolve: (db: IDBDatabase) => void): void {
+  if (signal?.aborted) { request.result.close(); return; }
+  resolve(request.result);
+}
+export function openDatabase(workspace: string, signal?: AbortSignal): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    if (opening.size >= 64) throw new Error("BACKPRESSURE: pending database opens");
     const request = indexedDB.open(workspace, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("workspace");
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    opening.add(request);
+    const aborted = () => reject(signal?.reason);
+    const cleanup = () => { signal?.removeEventListener("abort", aborted); opening.delete(request); };
+    signal?.addEventListener("abort", aborted, { once: true });
+    request.onupgradeneeded = () => {
+      if (signal?.aborted) request.transaction?.abort();
+      else request.result.createObjectStore("workspace");
+    };
+    request.onerror = () => { cleanup(); reject(request.error); };
+    request.onsuccess = () => {
+      cleanup();
+      finishOpen(request, signal, resolve);
+    };
   });
 }
 export function initial(arm: Arm): State {
@@ -48,8 +72,10 @@ export function transaction<T>(
   db: IDBDatabase,
   durability: IDBTransactionDurability,
   update: Update<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     const tx = db.transaction("workspace", "readwrite", { durability });
     const store = tx.objectStore("workspace");
     let result: T, problem: unknown;
@@ -58,8 +84,11 @@ export function transaction<T>(
       reject(new Error("UNSUPPORTED: durability"));
       return;
     }
-    tx.oncomplete = () => resolve(result);
-    tx.onabort = () => reject(problem ?? tx.error ?? new Error("ABORT"));
+    const aborted = () => abortTransaction(tx);
+    const cleanup = () => signal?.removeEventListener("abort", aborted);
+    signal?.addEventListener("abort", aborted, { once: true });
+    tx.oncomplete = () => { cleanup(); resolve(result); };
+    tx.onabort = () => { cleanup(); reject(problem ?? signal?.reason ?? tx.error ?? new Error("ABORT")); };
     const get = store.get("head");
     const success = (value: T) => {
       result = value;
@@ -67,13 +96,16 @@ export function transaction<T>(
     const failed = (error: unknown) => {
       problem = error;
     };
-    get.onsuccess = () => applyUpdate(store, tx, get.result, update, success, failed);
+    get.onsuccess = () => {
+      if (signal?.aborted) return aborted();
+      applyUpdate(store, tx, get.result, update, success, failed);
+    };
   });
 }
-export async function readRegistry(workspace: string): Promise<State | undefined> {
-  const db = await openDatabase(workspace);
+export async function readRegistry(workspace: string, signal?: AbortSignal): Promise<State | undefined> {
+  const db = await openDatabase(workspace, signal);
   try {
-    return await transaction(db, "relaxed", (state) => ({ result: state }));
+    return await transaction(db, "relaxed", (state) => ({ result: state }), signal);
   } finally {
     db.close();
   }

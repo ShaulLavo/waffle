@@ -67,12 +67,14 @@ export class IntentLedger {
   capture(input: Request): Request {
     checkRequestBytes(input);
     const request = structuredClone(input);
-    if (!mutation(request.operation)) return request;
     const key = `${request.client}:${request.sequence}`;
     const fingerprint = JSON.stringify({ actor: request.actor, operation: request.operation });
     const previous = this.intents.get(key);
     if (previous && previous.fingerprint !== fingerprint)
       throw new Error("OP_ID_CONFLICT: payload mismatch");
+    if (!mutation(request.operation)) return request;
+    if (previous && previous.request.history !== request.history)
+      throw new Error("OUTCOME_UNKNOWN: issued history cannot change");
     if (!previous && this.intents.size >= 256) throw new Error("BACKPRESSURE: intent budget");
     if (!previous)
       this.intents.set(key, { request: structuredClone(request), fingerprint, outcome: "issued" });
@@ -80,8 +82,15 @@ export class IntentLedger {
   }
   settle(request: Request, reply: Reply): void {
     const intent = this.intents.get(`${request.client}:${request.sequence}`);
-    if (!intent) return;
-    intent.outcome = reply.kind === "ok" ? "resolved" : "unknown";
+    if (!intent || !mutation(request.operation)) return;
+    const fingerprint = JSON.stringify({ actor: request.actor, operation: request.operation });
+    if (fingerprint !== intent.fingerprint || request.history !== intent.request.history) return;
+    const result = reply.kind === "ok" ? reply.result : undefined;
+    const matching = result && typeof result === "object" &&
+      "key" in result && result.key === `${request.client}:${request.sequence}` &&
+      "fingerprint" in result && result.fingerprint === intent.fingerprint &&
+      "history" in result && result.history === intent.request.history;
+    intent.outcome = matching ? "resolved" : "unknown";
   }
   unresolved(): string[] {
     return Array.from(this.intents)
