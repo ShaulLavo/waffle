@@ -2,6 +2,19 @@ import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
 const lifecycle = new BrowserRunnerLifecycle(180_000);
+async function installDeathObserver(page: import("playwright").Page): Promise<void> {
+  const deaths = new Map<string, Promise<void>>();
+  page.on("worker", (worker) => {
+    const closed = Promise.withResolvers<void>();
+    worker.once("close", () => closed.resolve());
+    deaths.set(worker.url(), closed.promise);
+  });
+  await page.exposeFunction("__publicationWaitForClose", async (url: string) => {
+    const closed = deaths.get(url);
+    if (!closed) throw new Error(`Worker was not observed by the browser: ${url}`);
+    await closed;
+  });
+}
 async function run(name: string, origin: string): Promise<void> {
   if (name !== "chromium" && name !== "firefox" && name !== "webkit")
     throw new Error(`Unknown browser: ${name}`);
@@ -14,15 +27,7 @@ async function run(name: string, origin: string): Promise<void> {
   const browser = await lifecycle.launch(name);
   try {
     const page = await browser.newPage();
-    const deaths = new Map<string, Promise<void>>();
-    page.on("worker", (worker) => {
-      deaths.set(worker.url(), new Promise<void>((resolve) => worker.once("close", () => resolve())));
-    });
-    await page.exposeFunction("__publicationWaitForClose", async (url: string) => {
-      const closed = deaths.get(url);
-      if (!closed) throw new Error(`Worker was not observed by the browser: ${url}`);
-      await closed;
-    });
+    await installDeathObserver(page);
     await page.goto(origin);
     const passed = await page.evaluate(async () => {
       const path = "/tests.js";

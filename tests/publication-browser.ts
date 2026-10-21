@@ -1,19 +1,40 @@
 import { SharedFilesystem } from "../browser/shared-fs.js";
-import { FilesystemClient, createFilesystemConnection, revokeFilesystem, reapFilesystem, waitForFilesystemQuiescence } from "../fs/index.js";
-import { localPublication, publicationObserver, type PublicationLimits } from "../fs/publication-internal.js";
+import {
+  FilesystemClient,
+  createFilesystemConnection,
+  revokeFilesystem,
+  reapFilesystem,
+  waitForFilesystemQuiescence,
+} from "../fs/index.js";
+import {
+  localPublication,
+  publicationObserver,
+  type PublicationLimits,
+} from "../fs/publication-internal.js";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { PAGE, type FilesystemConnection } from "../fs/protocol.js";
 import type { PublicationCut } from "../fs/publication.js";
 
 const limits: PublicationLimits = {
-  sessions: 8, operations: 16, inputBytes: 64, argumentBytes: 1024,
-  effectBytes: 8192, effects: 32, resultBytes: 128, logRecords: 16,
-  logBytes: 131072, pins: 2, pinBytes: 128,
+  sessions: 8,
+  operations: 16,
+  inputBytes: 64,
+  argumentBytes: 1024,
+  effectBytes: 8192,
+  effects: 32,
+  resultBytes: 128,
+  logRecords: 16,
+  logBytes: 131072,
+  pins: 2,
+  pinBytes: 128,
 };
 function equal(actual: unknown, expected: unknown): void {
-  const canonical = (value: unknown) => JSON.stringify(value, (_key, item: unknown) =>
-    item && typeof item === "object" && !Array.isArray(item)
-      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+  const canonical = (value: unknown) =>
+    JSON.stringify(value, (_key, item: unknown) =>
+      item && typeof item === "object" && !Array.isArray(item)
+        ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+        : item,
+    );
   if (canonical(actual) !== canonical(expected))
     throw new Error(`Expected ${canonical(expected)}, received ${canonical(actual)}`);
 }
@@ -23,12 +44,20 @@ function field(value: unknown, key: string): unknown {
 }
 async function denied(action: Promise<unknown>, errno: number): Promise<void> {
   let failure: unknown;
-  try { await action; } catch (error) { failure = error; }
+  try {
+    await action;
+  } catch (error) {
+    failure = error;
+  }
   equal(field(failure, "errno"), errno);
 }
 function throws(action: () => unknown): void {
   let caught = false;
-  try { action(); } catch { caught = true; }
+  try {
+    action();
+  } catch {
+    caught = true;
+  }
   equal(caught, true);
 }
 function response(worker: Worker): Promise<unknown> {
@@ -56,7 +85,8 @@ interface WorkerOwner {
 async function physicalStop(owner: WorkerOwner): Promise<void> {
   if (owner.dead) return;
   const observe = Reflect.get(globalThis, "__publicationWaitForClose");
-  if (typeof observe !== "function") throw new Error("Native browser worker-close observer missing");
+  if (typeof observe !== "function")
+    throw new Error("Native browser worker-close observer missing");
   const closed = observe(owner.url);
   owner.worker.terminate();
   await closed;
@@ -69,7 +99,11 @@ function releaseGate(gate?: Int32Array): void {
 }
 async function memoryFixture(overrides: Partial<PublicationLimits> = {}) {
   const config = { ...limits, ...overrides };
-  const fs = new SharedFilesystem({ mode: "memory", workerURL: "/fs-worker.js", [localPublication]: { limits: config, observe: true } });
+  const fs = new SharedFilesystem({
+    mode: "memory",
+    workerURL: "/fs-worker.js",
+    [localPublication]: { limits: config, observe: true },
+  });
   const owners: WorkerOwner[] = [];
   try {
     await fs.writeFile("/file", new Uint8Array([1, 2, 3]));
@@ -79,19 +113,39 @@ async function memoryFixture(overrides: Partial<PublicationLimits> = {}) {
     const observer = publicationObserver(fs.client);
     const spawn = async (mode: "wasi" | "proc", gate?: Int32Array) => {
       const url = new URL(`/guest.js?identity=${crypto.randomUUID()}`, location.href).href;
-      const owner: WorkerOwner = { url, worker: new Worker(url, { type: "module" }), connection: fs.fork(), gate, dead: false };
+      const owner: WorkerOwner = {
+        url,
+        worker: new Worker(url, { type: "module" }),
+        connection: fs.fork(),
+        gate,
+        dead: false,
+      };
       owners.push(owner);
       equal(owner.connection.publication?.observer, undefined);
-      equal(await message(owner.worker, { connection: owner.connection, mode, admissionGate: gate?.buffer }, [owner.connection.port]), { ready: true });
+      equal(
+        await message(
+          owner.worker,
+          { connection: owner.connection, mode, admissionGate: gate?.buffer },
+          [owner.connection.port],
+        ),
+        { ready: true },
+      );
       return owner;
     };
-    const stop = async () => {
-      for (const owner of owners) releaseGate(owner.gate);
-      for (const owner of owners) { await physicalStop(owner); fs.reap(owner.connection); }
-      await fs.dispose();
-    };
+    const stop = () => stopOwners(owners, fs);
     return { fs, client: fs.client, observer, handle: path.node, directory, config, spawn, stop };
-  } catch (error) { await fs.dispose(); throw error; }
+  } catch (error) {
+    await fs.dispose();
+    throw error;
+  }
+}
+async function stopOwners(owners: readonly WorkerOwner[], fs: SharedFilesystem): Promise<void> {
+  for (const owner of owners) releaseGate(owner.gate);
+  for (const owner of owners) {
+    await physicalStop(owner);
+    fs.reap(owner.connection);
+  }
+  await fs.dispose();
 }
 type Fixture = Awaited<ReturnType<typeof memoryFixture>>;
 async function group(f: Fixture, before: PublicationCut, kinds?: readonly string[]) {
@@ -100,24 +154,40 @@ async function group(f: Fixture, before: PublicationCut, kinds?: readonly string
   equal(page.publications.length, 1);
   const publication = page.publications[0]!;
   equal(publication.receipt.cut, { history: before.history, generation: before.generation + 1 });
-  equal(await f.observer.receipt(publication.receipt.id), { kind: "committed", receipt: publication.receipt });
+  equal(await f.observer.receipt(publication.receipt.id), {
+    kind: "committed",
+    receipt: publication.receipt,
+  });
   equal(publication.receipt.durability, { kind: "untracked" });
-  if (kinds) equal(publication.changes.map((effect) => effect.kind), kinds);
+  if (kinds)
+    equal(
+      publication.changes.map((effect) => effect.kind),
+      kinds,
+    );
   equal(await f.observer.cut(), publication.receipt.cut);
   return publication;
 }
-async function current(f: Fixture, owners: readonly WorkerOwner[], expected: readonly number[]): Promise<void> {
+async function current(
+  f: Fixture,
+  owners: readonly WorkerOwner[],
+  expected: readonly number[],
+): Promise<void> {
   equal(Array.from((await f.fs.readFile("/file"))!), expected);
   const bytes = new Uint8Array(expected.length);
   equal(f.client.tryRead(f.handle, [bytes], 0), expected.length);
   equal(Array.from(bytes), expected);
   for (const owner of owners)
-    equal(await message(owner.worker, { operation: "inspect", byte: 42 }), { result: expected.length, bytes: expected });
+    equal(await message(owner.worker, { operation: "inspect", byte: 42 }), {
+      result: expected.length,
+      bytes: expected,
+    });
 }
 async function writerOracle(): Promise<void> {
   const f = await memoryFixture();
   try {
-    const wasi = await f.spawn("wasi"), proc = await f.spawn("proc"), direct = await f.spawn("proc");
+    const wasi = await f.spawn("wasi"),
+      proc = await f.spawn("proc"),
+      direct = await f.spawn("proc");
     const owners = [wasi, proc, direct];
     let before = await f.observer.cut();
     const source = new Uint8Array([7, 6, 5]);
@@ -127,7 +197,12 @@ async function writerOracle(): Promise<void> {
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [7, 6, 5]);
     before = await f.observer.cut();
-    equal(await message(wasi.worker, { operation: "write", byte: 8 }), { result: 0, offset: 0, byte: 8, count: 1 });
+    equal(await message(wasi.worker, { operation: "write", byte: 8 }), {
+      result: 0,
+      offset: 0,
+      byte: 8,
+      count: 1,
+    });
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [8, 6, 5]);
     before = await f.observer.cut();
@@ -135,39 +210,80 @@ async function writerOracle(): Promise<void> {
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [9, 6, 5]);
     before = await f.observer.cut();
-    equal(await message(wasi.worker, { operation: "offsetWrite", byte: 4 }), { result: 0, offset: 1, byte: 4, count: 1 });
+    equal(await message(wasi.worker, { operation: "offsetWrite", byte: 4 }), {
+      result: 0,
+      offset: 1,
+      byte: 4,
+      count: 1,
+    });
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [4, 6, 5]);
     before = await f.observer.cut();
-    equal(await message(proc.worker, { operation: "write", byte: 3 }), { result: 1, offset: 1, byte: 3, count: 0xdeadbeef });
+    equal(await message(proc.worker, { operation: "write", byte: 3 }), {
+      result: 1,
+      offset: 1,
+      byte: 3,
+      count: 0xdeadbeef,
+    });
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [3, 6, 5]);
     before = await f.observer.cut();
-    equal(await message(direct.worker, { operation: "directAppend", byte: 2 }), { written: 1, offset: 4 });
+    equal(await message(direct.worker, { operation: "directAppend", byte: 2 }), {
+      written: 1,
+      offset: 4,
+    });
     // No publication nudge exists. Real completion/segment delivery remains enabled.
     await group(f, before, ["bytes", "metadata"]);
     await current(f, owners, [3, 6, 5, 2]);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
+}
+async function contention(
+  f: Fixture,
+  owner: WorkerOwner,
+  cells: Int32Array,
+  lock: number,
+): Promise<void> {
+  Atomics.store(cells, lock, 99);
+  try {
+    equal(await message(owner.worker, { operation: "write", byte: 10 }), {
+      result: -6,
+      offset: 0,
+      byte: 10,
+      count: 0xdeadbeef,
+    });
+    equal(await message(owner.worker, { operation: "read", byte: 42 }), {
+      result: -6,
+      offset: 0,
+      byte: 42,
+      count: 0xdeadbeef,
+    });
+  } finally {
+    Atomics.store(cells, lock, 0);
+  }
 }
 async function nonblocking(): Promise<void> {
   const f = await memoryFixture();
   try {
     const owner = await f.spawn("proc");
     const before = await f.observer.cut();
-    for (const cells of [f.client.shared.cells, f.client.shared.slots]) {
-      const lock = cells === f.client.shared.cells ? 1 : f.client.shared.fileSlot(f.handle) * SLOT_WORDS + 8;
-      Atomics.store(cells, lock, 99);
-      try {
-        equal(await message(owner.worker, { operation: "write", byte: 10 }), { result: -6, offset: 0, byte: 10, count: 0xdeadbeef });
-        equal(await message(owner.worker, { operation: "read", byte: 42 }), { result: -6, offset: 0, byte: 42, count: 0xdeadbeef });
-      } finally { Atomics.store(cells, lock, 0); }
-    }
+    await contention(f, owner, f.client.shared.cells, 1);
+    await contention(
+      f,
+      owner,
+      f.client.shared.slots,
+      f.client.shared.fileSlot(f.handle) * SLOT_WORDS + 8,
+    );
     equal(await f.observer.cut(), before);
     equal(f.client.tryWrite(f.handle, [new Uint8Array(128).fill(8)], 0), 64);
     const publication = await group(f, before, ["bytes", "metadata"]);
     equal(publication.receipt.result, { kind: "number", value: 64 });
     let cut = await f.observer.cut();
-    equal(f.client.tryAppend(f.handle, [new Uint8Array(128).fill(9)]), { written: 64, offset: 128 });
+    equal(f.client.tryAppend(f.handle, [new Uint8Array(128).fill(9)]), {
+      written: 64,
+      offset: 128,
+    });
     const append = await group(f, cut, ["bytes", "metadata"]);
     equal(append.receipt.result, { kind: "append", written: 64, offset: 128 });
     cut = await f.observer.cut();
@@ -179,12 +295,15 @@ async function nonblocking(): Promise<void> {
     equal((await f.fs.readFile("/file"))!.length, 128);
     await denied(f.client.asyncCall("writeFile", ["/file", false, true], new Uint8Array([1])), 20);
     equal(await f.observer.cut(), cut);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function growth(): Promise<void> {
   const f = await memoryFixture();
   try {
-    const before = await f.observer.cut(), revision = f.client.shared.revision(f.handle);
+    const before = await f.observer.cut(),
+      revision = f.client.shared.revision(f.handle);
     const bytes = new Uint8Array([8]);
     equal(f.client.tryWrite(f.handle, [bytes], PAGE), -6);
     bytes[0] = 9;
@@ -200,17 +319,23 @@ async function growth(): Promise<void> {
     equal(f.client.tryRead(f.handle, [output], PAGE), 1);
     equal(Array.from(output), [9]);
     equal(field(await f.observer.diagnostics(), "pending"), 0);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function namespace(): Promise<void> {
   const f = await memoryFixture();
   try {
-    const resolve = (name: string): Promise<{ node: number }> => f.client.asyncCall("resolve", [f.directory, name]);
+    const resolve = (name: string): Promise<{ node: number }> =>
+      f.client.asyncCall("resolve", [f.directory, name]);
     let before = await f.observer.cut();
     const parent: number = await f.client.asyncCall("preopen", ["/tree/child"]);
     f.client.retain(parent);
     const made = await group(f, before);
-    equal(made.changes.filter((effect) => effect.kind === "entry").map((effect) => effect.name), ["tree", "child"]);
+    equal(
+      made.changes.filter((effect) => effect.kind === "entry").map((effect) => effect.name),
+      ["tree", "child"],
+    );
     before = await f.observer.cut();
     const targetPath = await resolve("target");
     const target: number = await f.client.asyncCall("create", [targetPath, "file", true]);
@@ -236,7 +361,8 @@ async function namespace(): Promise<void> {
     before = await f.observer.cut();
     equal(await f.fs.remove("/moved"), true);
     await group(f, before);
-    const source = new Uint8Array(3), overwritten = new Uint8Array(1);
+    const source = new Uint8Array(3),
+      overwritten = new Uint8Array(1);
     equal(f.client.tryRead(f.handle, [source], 0), 3);
     equal(f.client.tryRead(target, [overwritten], 0), 1);
     equal(Array.from(source), [8, 2, 3]);
@@ -245,15 +371,35 @@ async function namespace(): Promise<void> {
     before = await f.observer.cut();
     equal(await f.fs.remove("/tree"), true);
     const removed = await group(f, before);
-    equal(removed.changes.filter((effect) => effect.kind === "entry").map((effect) => effect.name).sort(), ["child", "tree"]);
+    equal(
+      removed.changes
+        .filter((effect) => effect.kind === "entry")
+        .map((effect) => effect.name)
+        .sort(),
+      ["child", "tree"],
+    );
     equal(await f.fs.listFiles(), []);
     before = await f.observer.cut();
     equal(await f.fs.remove("/tree"), false);
     await f.fs.mkdirp("/new/deep");
     await group(f, before);
-    equal((await f.client.asyncCall("readdir", [f.directory])).map((entry: { name: string }) => entry.name), [".", "..", "new"]);
-    equal(await f.client.asyncCall("create", [await f.client.asyncCall("resolve", [parent, "lost"]), "file", true]), { error: 44 });
-  } finally { await f.stop(); }
+    equal(
+      (await f.client.asyncCall("readdir", [f.directory])).map(
+        (entry: { name: string }) => entry.name,
+      ),
+      [".", "..", "new"],
+    );
+    equal(
+      await f.client.asyncCall("create", [
+        await f.client.asyncCall("resolve", [parent, "lost"]),
+        "file",
+        true,
+      ]),
+      { error: 44 },
+    );
+  } finally {
+    await f.stop();
+  }
 }
 async function metadataAndReads(): Promise<void> {
   const f = await memoryFixture();
@@ -292,22 +438,31 @@ async function metadataAndReads(): Promise<void> {
     equal(Array.from((await f.fs.readFile("/dir/file"))!), [4]);
     await denied(f.client.asyncCall("mkdirp", ["/a/b/c/d/e/f/g/h/i/j/k/l"]), 6);
     equal(await f.client.asyncCall("lookup", ["/a"]), undefined);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function identitiesAndPins(): Promise<void> {
   const f = await memoryFixture({ logRecords: 2, logBytes: 16384 });
   try {
     const before = await f.observer.cut();
-    const args = [f.handle, 0], bytes = new Uint8Array([8]);
+    const args = [f.handle, 0],
+      bytes = new Uint8Array([8]);
     const admitted = f.client[localPublication]("write", args, bytes);
     if (admitted.kind !== "admitted") throw new Error("Expected identity");
     equal(await f.client.asyncCall("write", args, admitted.input, admitted.admission), 1);
     const entry = await group(f, before, ["bytes", "metadata"]);
-    equal(f.client[localPublication]("write", args, bytes, admitted.admission.id), { kind: "duplicate", receipt: entry.receipt });
-    for (const request of [() => f.client[localPublication]("write", args, new Uint8Array([9]), admitted.admission.id),
+    equal(f.client[localPublication]("write", args, bytes, admitted.admission.id), {
+      kind: "duplicate",
+      receipt: entry.receipt,
+    });
+    for (const request of [
+      () => f.client[localPublication]("write", args, new Uint8Array([9]), admitted.admission.id),
       () => f.client[localPublication]("write", [f.handle, 1], bytes, admitted.admission.id),
       () => f.client[localPublication]("write", [999, 0], bytes, admitted.admission.id),
-      () => f.client[localPublication]("append", [f.handle], bytes, admitted.admission.id)]) throws(request);
+      () => f.client[localPublication]("append", [f.handle], bytes, admitted.admission.id),
+    ])
+      throws(request);
     const pin = await f.observer.pin(f.handle, 0, 3);
     equal(pin.bytes, [8, 2, 3]);
     const second = await f.observer.pin(f.handle, 0, 3);
@@ -321,14 +476,23 @@ async function identitiesAndPins(): Promise<void> {
     await f.observer.releasePin(pin.id);
     await f.observer.releasePin(newer.id);
     equal((await f.observer.diagnostics()).pins, 0);
-    for (let index = 0; index < limits.operations; index++) await f.client.asyncCall("setMtime", [f.handle, index + 100]);
+    for (let index = 0; index < limits.operations; index++)
+      await f.client.asyncCall("setMtime", [f.handle, index + 100]);
     equal(await f.observer.receipt(admitted.admission.id), { kind: "retired" });
     throws(() => f.client[localPublication]("write", args, bytes, admitted.admission.id));
     equal((await f.observer.changes(before, f.config.logBytes)).kind, "gap");
     const fork = new FilesystemClient(f.fs.fork());
-    try { await denied(fork.asyncCall("publicationCut", [f.client.connection.publication?.observer]), 2); }
-    finally { fork.dispose(); }
-  } finally { await f.stop(); }
+    try {
+      await denied(
+        fork.asyncCall("publicationCut", [f.client.connection.publication?.observer]),
+        2,
+      );
+    } finally {
+      fork.dispose();
+    }
+  } finally {
+    await f.stop();
+  }
 }
 async function liveAdmission(): Promise<void> {
   const f = await memoryFixture();
@@ -340,7 +504,9 @@ async function liveAdmission(): Promise<void> {
     equal(Atomics.load(new Int32Array(held.connection.sections), 0) > 0, true);
     equal(f.client.tryWrite(f.handle, [new Uint8Array([7])], 0), -6);
     let settled = false;
-    const quiesced = waitForFilesystemQuiescence(held.connection).then(() => { settled = true; });
+    const quiesced = waitForFilesystemQuiescence(held.connection).then(() => {
+      settled = true;
+    });
     await Promise.resolve();
     equal(settled, false);
     const finished = response(held.worker);
@@ -350,7 +516,10 @@ async function liveAdmission(): Promise<void> {
     equal(await f.observer.cut(), before);
     equal(f.client.tryWrite(f.handle, [new Uint8Array([9])], 0), 1);
     await group(f, before, ["bytes", "metadata"]);
-  } finally { releaseGate(gate); await f.stop(); }
+  } finally {
+    releaseGate(gate);
+    await f.stop();
+  }
 }
 async function deadAdmission(): Promise<void> {
   const f = await memoryFixture();
@@ -367,17 +536,30 @@ async function deadAdmission(): Promise<void> {
     await f.observer.cut();
     equal(f.client.tryWrite(f.handle, [new Uint8Array([9])], 0), 1);
     await group(f, before, ["bytes", "metadata"]);
-  } finally { releaseGate(gate); await f.stop(); }
+  } finally {
+    releaseGate(gate);
+    await f.stop();
+  }
 }
 
 async function serviceFixture(cold: boolean) {
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   const url = new URL(`/guest.js?service=${crypto.randomUUID()}`, location.href).href;
-  const owner: WorkerOwner = { url, worker: new Worker(url, { type: "module" }), connection: connection.server, dead: false };
+  const owner: WorkerOwner = {
+    url,
+    worker: new Worker(url, { type: "module" }),
+    connection: connection.server,
+    dead: false,
+  };
   const client = new FilesystemClient(connection.client);
   let sibling: FilesystemClient | undefined;
   try {
-    equal(await message(owner.worker, { connection: connection.server, mode: "service", cold }, [connection.server.port]), { ready: true });
+    equal(
+      await message(owner.worker, { connection: connection.server, mode: "service", cold }, [
+        connection.server.port,
+      ]),
+      { ready: true },
+    );
     const directory: number = await client.asyncCall("preopen", ["/"]);
     const path: { node: number } = await client.asyncCall("resolve", [directory, "file"]);
     client.retain(path.node);
@@ -391,7 +573,14 @@ async function serviceFixture(cold: boolean) {
       sibling?.dispose();
       client.dispose();
     };
-    return { client, sibling, handle: path.node, owner, observer: publicationObserver(client), stop };
+    return {
+      client,
+      sibling,
+      handle: path.node,
+      owner,
+      observer: publicationObserver(client),
+      stop,
+    };
   } catch (error) {
     await physicalStop(owner);
     sibling?.dispose();
@@ -417,7 +606,9 @@ async function coldStop(): Promise<void> {
     equal(Array.from(output), [42, 42, 42]);
     equal(f.client.tryRead(f.handle, [output], 0), -11);
     equal(f.sibling.tryWrite(f.handle, [new Uint8Array([9])], 0), -11);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function coldPeer(): Promise<void> {
   const f = await serviceFixture(true);
@@ -437,18 +628,27 @@ async function coldPeer(): Promise<void> {
     equal(Array.from(output), [1, 2, 3]);
     equal(await f.observer.cut(), before);
     equal((await f.observer.diagnostics()).inputBytes, 0);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function responseLoss(): Promise<void> {
   const f = await serviceFixture(false);
   try {
     const before = await f.observer.cut();
-    const args = [f.handle, 0], bytes = new Uint8Array([9]);
+    const args = [f.handle, 0],
+      bytes = new Uint8Array([9]);
     const admitted = f.client[localPublication]("write", args, bytes);
     if (admitted.kind !== "admitted") throw new Error("Expected admission");
     await message(f.owner.worker, { control: "holdResponse", id: -2 });
     const held = response(f.owner.worker);
-    const completion = f.client.submit("write", args, admitted.input, undefined, admitted.admission);
+    const completion = f.client.submit(
+      "write",
+      args,
+      admitted.input,
+      undefined,
+      admitted.admission,
+    );
     const value = completion.value();
     const rejected = denied(value, 11);
     equal(await held, { responseHeld: true });
@@ -460,13 +660,21 @@ async function responseLoss(): Promise<void> {
     await rejected;
     completion.release();
     await message(f.owner.worker, { control: "deliverResponse" });
-    equal(f.client[localPublication]("write", args, bytes, admitted.admission.id).kind, "duplicate");
+    equal(
+      f.client[localPublication]("write", args, bytes, admitted.admission.id).kind,
+      "duplicate",
+    );
     const page = await f.observer.changes(before, limits.logBytes);
     if (page.kind !== "changes") throw new Error("Lost receipt log");
     equal(page.publications.length, 1);
-    equal(page.publications[0]!.changes.map((effect) => effect.kind), ["bytes", "metadata"]);
+    equal(
+      page.publications[0]!.changes.map((effect) => effect.kind),
+      ["bytes", "metadata"],
+    );
     equal(f.client.completions.size, 0);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function lateStoppedReply(): Promise<void> {
   const f = await serviceFixture(false);
@@ -475,8 +683,12 @@ async function lateStoppedReply(): Promise<void> {
     const before = cursor;
     await message(f.owner.worker, { control: "holdResponse", id: -2 });
     const held = response(f.owner.worker);
-    const completion = f.client.submit("publicationCut", [f.client.connection.publication?.observer]);
-    const value = completion.value().then((cut) => { cursor = cut; });
+    const completion = f.client.submit("publicationCut", [
+      f.client.connection.publication?.observer,
+    ]);
+    const value = completion.value().then((cut) => {
+      cursor = cut;
+    });
     const rejected = denied(value, 11);
     equal(await held, { responseHeld: true });
     await denied(f.observer.stop(), 11);
@@ -488,11 +700,14 @@ async function lateStoppedReply(): Promise<void> {
     await denied(f.observer.cut(), 11);
     throws(() => f.client.fork());
     equal(f.sibling.tryRead(f.handle, [new Uint8Array(3)], 0), -11);
-  } finally { await f.stop(); }
+  } finally {
+    await f.stop();
+  }
 }
 async function sensitivity(): Promise<void> {
   const f = await memoryFixture({ logRecords: 2, logBytes: 16384 });
-  const domain = f.client.shared.publication!, commit = domain.commit.bind(domain);
+  const domain = f.client.shared.publication!,
+    commit = domain.commit.bind(domain);
   try {
     const before = await f.observer.cut();
     domain.commit = (prepared) => prepared.receipt;
@@ -501,12 +716,20 @@ async function sensitivity(): Promise<void> {
     equal(page.kind, "changes");
     equal(field(page, "publications"), []);
     let rejected = false;
-    try { await group(f, before, ["bytes", "metadata"]); } catch { rejected = true; }
+    try {
+      await group(f, before, ["bytes", "metadata"]);
+    } catch {
+      rejected = true;
+    }
     equal(rejected, true);
     domain.commit = commit;
-    for (const byte of [6, 7, 8]) equal(f.client.tryWrite(f.handle, [new Uint8Array([byte])], 0), 1);
+    for (const byte of [6, 7, 8])
+      equal(f.client.tryWrite(f.handle, [new Uint8Array([byte])], 0), 1);
     equal((await f.observer.changes(before, f.config.logBytes)).kind, "gap");
-  } finally { domain.commit = commit; await f.stop(); }
+  } finally {
+    domain.commit = commit;
+    await f.stop();
+  }
 }
 async function uninstrumented(): Promise<void> {
   const fs = new SharedFilesystem({ mode: "memory", workerURL: "/fs-worker.js" });
@@ -515,20 +738,37 @@ async function uninstrumented(): Promise<void> {
     equal(fs.client.connection.publication, undefined);
     equal(fs.client.shared.publication, undefined);
     equal(Array.from((await fs.readFile("/ordinary"))!), [112, 108, 97, 105, 110]);
-  } finally { await fs.dispose(); }
+  } finally {
+    await fs.dispose();
+  }
 }
 /** @browserEntry Executed by the registered browser runner through its bundled URL. */
 export async function runPublicationBrowser(): Promise<string[]> {
   const cases: readonly [string, () => Promise<void>][] = [
     ["uninstrumented root allocates no publication domain", uninstrumented],
-    ["host real WASI runtime_proc and resident writers publish receipts and current reads without nudges", writerOracle],
-    ["global and file contention preserve guest memory and offsets; one bounded prefix and no delayed suffix", nonblocking],
+    [
+      "host real WASI runtime_proc and resident writers publish receipts and current reads without nudges",
+      writerOracle,
+    ],
+    [
+      "global and file contention preserve guest memory and offsets; one bounded prefix and no delayed suffix",
+      nonblocking,
+    ],
     ["growth owns no guest bytes or logical revision before retry", growth],
-    ["namespace groups retain distinct inode identities across rename link unlink and recursive removal", namespace],
+    [
+      "namespace groups retain distinct inode identities across rename link unlink and recursive removal",
+      namespace,
+    ],
     ["direct and service metadata plus cached current reads enforce permissions", metadataAndReads],
-    ["exact duplicate conflicts retirement immutable pins and explicit history gaps", identitiesAndPins],
+    [
+      "exact duplicate conflicts retirement immutable pins and explicit history gaps",
+      identitiesAndPins,
+    ],
     ["live admission revocation waits without stealing from the holder", liveAdmission],
-    ["native browser worker close is observed before reaping the dead admission holder", deadAdmission],
+    [
+      "native browser worker close is observed before reaping the dead admission holder",
+      deadAdmission,
+    ],
     ["actual paused PersistentBackend read cannot hydrate after domain stop", coldStop],
     ["cancelled cold writer preserves a live peer sharing the actual storage read", coldPeer],
     ["after-commit response loss preserves receipt and exact duplicate result", responseLoss],
@@ -537,7 +777,11 @@ export async function runPublicationBrowser(): Promise<string[]> {
   ];
   const passed: string[] = [];
   for (const [name, run] of cases) {
-    try { await run(); } catch (error) { throw new Error(`${name}: ${String(error)}`); }
+    try {
+      await run();
+    } catch (error) {
+      throw new Error(`${name}: ${String(error)}`);
+    }
     passed.push(name);
   }
   return passed;

@@ -1,4 +1,9 @@
-import { FilesystemClient, FilesystemService, MemoryBackend, type FilesystemConnection } from "../../fs";
+import {
+  FilesystemClient,
+  FilesystemService,
+  MemoryBackend,
+  type FilesystemConnection,
+} from "../../fs";
 import { Wasi } from "../../core/wasi";
 import { DescriptorTable, type Resource } from "../../core/descriptors";
 import { shareFileResource } from "../../core/open-file";
@@ -14,7 +19,14 @@ interface Setup {
   readonly admissionGate?: SharedArrayBuffer;
 }
 interface Call {
-  readonly operation: "write" | "offsetWrite" | "read" | "append" | "directWrite" | "directAppend" | "inspect";
+  readonly operation:
+    | "write"
+    | "offsetWrite"
+    | "read"
+    | "append"
+    | "directWrite"
+    | "directAppend"
+    | "inspect";
   readonly byte: number;
 }
 function unusedService(): ProcessService {
@@ -116,7 +128,11 @@ function call(guest: ReturnType<typeof setup>, request: Call) {
   let result: number;
   guest.resource.append = request.operation === "append";
   if (guest.mode === "proc")
-    result = guestFunction(guest.instance, request.operation === "read" ? "read" : "write")(guest.fd, 256, 1);
+    result = guestFunction(guest.instance, request.operation === "read" ? "read" : "write")(
+      guest.fd,
+      256,
+      1,
+    );
   else if (request.operation === "read")
     result = guestFunction(guest.instance, "fd_read")(guest.fd, 0, 1, 32);
   else if (request.operation === "offsetWrite" || request.operation === "append")
@@ -141,8 +157,9 @@ interface ServiceSetup {
   readonly mode: "service";
   readonly cold?: boolean;
 }
-type ServiceControl = { readonly control: "releaseLoad" | "serviceState" | "deliverResponse" } |
-  { readonly control: "holdResponse"; readonly id: number };
+type ServiceControl =
+  | { readonly control: "releaseLoad" | "serviceState" | "deliverResponse" }
+  | { readonly control: "holdResponse"; readonly id: number };
 let service: FilesystemService | undefined;
 let backend: MemoryBackend | undefined;
 let releaseLoad: (() => void) | undefined;
@@ -151,24 +168,50 @@ let heldResponse: (() => void) | undefined;
 let responseId = -1;
 async function installService(request: ServiceSetup): Promise<void> {
   if (request.cold) {
-    const pending = new Promise<void>((resolve) => { releaseLoad = resolve; });
-    backend = await PersistentBackend.open({
-      async load() { return { version: 1, generation: 1, root: 100, nodes: [
-        { ino: 100, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 101]] },
-        { ino: 101, kind: "file", mode: 0o600, size: 3, mtime: 1, data: "fixture-payload" },
-      ] }; },
-      async read() { self.postMessage({ reading: true }); await pending; return new Uint8Array([1, 2, 3]); },
-      async persist() {}, async flush() {}, async close() {},
-    }, { intervalMs: 0 });
+    const pending = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    backend = await PersistentBackend.open(
+      {
+        async load() {
+          return {
+            version: 1,
+            generation: 1,
+            root: 100,
+            nodes: [
+              { ino: 100, kind: "dir", mode: 0o700, size: 0, mtime: 1, children: [["file", 101]] },
+              { ino: 101, kind: "file", mode: 0o600, size: 3, mtime: 1, data: "fixture-payload" },
+            ],
+          };
+        },
+        async read() {
+          self.postMessage({ reading: true });
+          await pending;
+          return new Uint8Array([1, 2, 3]);
+        },
+        async persist() {},
+        async flush() {},
+        async close() {},
+      },
+      { intervalMs: 0 },
+    );
     const hydrate = backend.shared.hydrate.bind(backend.shared);
-    backend.shared.hydrate = (handle, bytes) => { hydrationCount++; return hydrate(handle, bytes); };
+    backend.shared.hydrate = (handle, bytes) => {
+      hydrationCount++;
+      return hydrate(handle, bytes);
+    };
   } else {
     backend = new MemoryBackend();
     backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   }
   const post = request.connection.port.postMessage.bind(request.connection.port);
   request.connection.port.postMessage = (message: unknown) => {
-    if (message && typeof message === "object" && "completed" in message && (responseId === -2 || message.completed === responseId)) {
+    if (
+      message &&
+      typeof message === "object" &&
+      "completed" in message &&
+      (responseId === -2 || message.completed === responseId)
+    ) {
       responseId = -1;
       heldResponse = () => post(message);
       self.postMessage({ responseHeld: true });
@@ -183,12 +226,21 @@ async function installService(request: ServiceSetup): Promise<void> {
 async function serviceControl(request: ServiceControl): Promise<void> {
   if (request.control === "releaseLoad") {
     releaseLoad?.();
-    await backend?.prepare?.("read", [fixtureHandle()]);
+    if (backend instanceof PersistentBackend) await backend.prepare("read", [fixtureHandle()]);
   }
   if (request.control === "holdResponse") responseId = request.id;
-  if (request.control === "deliverResponse") { heldResponse?.(); heldResponse = undefined; responseId = -1; }
+  if (request.control === "deliverResponse") {
+    heldResponse?.();
+    heldResponse = undefined;
+    responseId = -1;
+  }
   service?.sweep();
-  self.postMessage({ hydrations: hydrationCount, resident: backend?.shared.isResident(fixtureHandle()), resources: service?.resources(), diagnostics: backend?.shared.publication?.diagnostics() });
+  self.postMessage({
+    hydrations: hydrationCount,
+    resident: backend?.shared.isResident(fixtureHandle()),
+    resources: service?.resources(),
+    diagnostics: backend?.shared.publication?.diagnostics(),
+  });
 }
 function fixtureHandle(): number {
   const node = backend?.fs.lookup("/file");
@@ -205,7 +257,9 @@ function initialize(request: Setup | ServiceSetup): void {
   self.postMessage({ ready: true });
 }
 let guest: ReturnType<typeof setup> | undefined;
-self.onmessage = ({ data }: MessageEvent<Setup | ServiceSetup | ServiceControl | Call | "stop">) => {
+self.onmessage = ({
+  data,
+}: MessageEvent<Setup | ServiceSetup | ServiceControl | Call | "stop">) => {
   try {
     if (data === "stop") {
       service?.dispose();
@@ -219,7 +273,10 @@ self.onmessage = ({ data }: MessageEvent<Setup | ServiceSetup | ServiceControl |
       initialize(data);
       return;
     }
-    if ("control" in data) { void serviceControl(data).catch((error) => self.postMessage({ failure: String(error) })); return; }
+    if ("control" in data) {
+      void serviceControl(data).catch((error) => self.postMessage({ failure: String(error) }));
+      return;
+    }
     if (!guest) throw new Error("publication fixture is not initialized");
     self.postMessage(call(guest, data));
   } catch (error) {

@@ -24,8 +24,16 @@ test("local publication orders real host, WASI and direct writers without a nudg
   const observer = publicationObserver(fixture.root);
   const memory = new WebAssembly.Memory({ initial: 4 });
   const wasi = new Wasi({
-    args: [], env: {}, fs: guestClient, preopens: {}, namespaces: { env: { memory } },
-    stdout() {}, stderr() {}, sleep() { throw new Error("resident WASI slept"); },
+    args: [],
+    env: {},
+    fs: guestClient,
+    preopens: {},
+    namespaces: { env: { memory } },
+    stdout() {},
+    stderr() {},
+    sleep() {
+      throw new Error("resident WASI slept");
+    },
   });
   const module = publicationWasiModule();
   const guest = new WebAssembly.Instance(module, wasi.imports(module));
@@ -33,7 +41,10 @@ test("local publication orders real host, WASI and direct writers without a nudg
   const path = await guestClient.asyncCall("resolve", [directory, "file"]);
   guestClient.retain(path.node);
   const resource: Extract<Resource, { kind: "file" }> = {
-    kind: "file", handle: path.node, offset: 0, append: false,
+    kind: "file",
+    handle: path.node,
+    offset: 0,
+    append: false,
   };
   shareFileResource(resource, guestClient.connection);
   const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
@@ -64,7 +75,10 @@ test("local publication orders real host, WASI and direct writers without a nudg
     oracleCurrent(clients, fixture.handle, [6, 4, 5]);
     // The kernel emits no publication nudge, including for this last success. Completion
     // delivery is untouched. Only explicit observer reads discover the committed group.
-    expect(fixture.sibling.tryAppend(fixture.handle, [new Uint8Array([7])])).toEqual({ written: 1, offset: 4 });
+    expect(fixture.sibling.tryAppend(fixture.handle, [new Uint8Array([7])])).toEqual({
+      written: 1,
+      offset: 4,
+    });
     await oracleSuccess(observer, cut, ["bytes", "metadata"]);
     oracleCurrent(clients, fixture.handle, [6, 4, 5, 7]);
   } finally {
@@ -83,14 +97,24 @@ async function oracleSuccess(
   requirePublicationGroups(page, 1);
   if (page.kind !== "changes") throw new Error("missing complete publication group");
   const group = page.publications[0]!;
-  expect(group.receipt.cut).toEqual({ history: previous.history, generation: previous.generation + 1 });
+  expect(group.receipt.cut).toEqual({
+    history: previous.history,
+    generation: previous.generation + 1,
+  });
   expect<readonly string[]>(group.changes.map((effect) => effect.kind)).toEqual(kinds);
   expect(group.receipt.durability).toEqual({ kind: "untracked" });
-  expect(await observer.receipt(group.receipt.id)).toEqual({ kind: "committed", receipt: group.receipt });
+  expect(await observer.receipt(group.receipt.id)).toEqual({
+    kind: "committed",
+    receipt: group.receipt,
+  });
   expect(await observer.cut()).toEqual(group.receipt.cut);
   return group.receipt.cut;
 }
-function oracleCurrent(clients: readonly FilesystemClient[], handle: number, expected: readonly number[]): void {
+function oracleCurrent(
+  clients: readonly FilesystemClient[],
+  handle: number,
+  expected: readonly number[],
+): void {
   for (const client of clients) {
     const output = new Uint8Array(expected.length);
     expect(client.tryRead(handle, [output], 0)).toBe(expected.length);
@@ -99,7 +123,11 @@ function oracleCurrent(clients: readonly FilesystemClient[], handle: number, exp
 }
 
 import { PublicationDomain, createPublicationBuffers } from "../fs/publication";
-import { localPublication, publicationObserver, type PublicationLimits } from "../fs/publication-internal";
+import {
+  localPublication,
+  publicationObserver,
+  type PublicationLimits,
+} from "../fs/publication-internal";
 import { PAGE, reapFilesystem } from "../fs/protocol";
 
 const limits: PublicationLimits = {
@@ -1367,22 +1395,52 @@ test("production append admits one EOF prefix and empty writes retain exact no-e
     const observer = publicationObserver(fixture.root);
     const before = await observer.cut();
     expect(fixture.sibling.tryAppend(fixture.handle, [new Uint8Array(128).fill(8)])).toEqual({
-      written: 64, offset: 67,
+      written: 64,
+      offset: 67,
     });
     const page = await observer.changes(before, limits.logBytes);
     requirePublicationGroups(page, 1);
     if (page.kind !== "changes") throw new Error("missing append group");
-    expect(page.publications[0]!.receipt.result).toEqual({ kind: "append", written: 64, offset: 67 });
+    expect(page.publications[0]!.receipt.result).toEqual({
+      kind: "append",
+      written: 64,
+      offset: 67,
+    });
     expect(page.publications[0]!.changes[0]).toMatchObject({ kind: "bytes", offset: 3, size: 67 });
     const committed = await observer.cut();
-    const admission = fixture.root[localPublication]("write", [fixture.handle, 0], new Uint8Array());
+    const admission = fixture.root[localPublication](
+      "write",
+      [fixture.handle, 0],
+      new Uint8Array(),
+    );
     if (admission.kind !== "admitted") throw new Error("missing empty-write identity");
-    expect(await fixture.root.asyncCall("write", [fixture.handle, 0], admission.input, admission.admission)).toBe(0);
+    expect(
+      await fixture.root.asyncCall(
+        "write",
+        [fixture.handle, 0],
+        admission.input,
+        admission.admission,
+      ),
+    ).toBe(0);
     const lookup = await observer.receipt(admission.admission.id);
-    expect(lookup).toMatchObject({ kind: "committed", receipt: { cut: committed, result: { kind: "number", value: 0 } } });
-    expect(fixture.root[localPublication]("write", [fixture.handle, 0], new Uint8Array(), admission.admission.id).kind).toBe("duplicate");
+    expect(lookup).toMatchObject({
+      kind: "committed",
+      receipt: { cut: committed, result: { kind: "number", value: 0 } },
+    });
+    expect(
+      fixture.root[localPublication](
+        "write",
+        [fixture.handle, 0],
+        new Uint8Array(),
+        admission.admission.id,
+      ).kind,
+    ).toBe("duplicate");
     expect(await observer.cut()).toEqual(committed);
-    oracleCurrent([fixture.root, fixture.sibling], fixture.handle, [1, 2, 3].concat(Array.from({ length: 64 }, () => 8)));
+    oracleCurrent(
+      [fixture.root, fixture.sibling],
+      fixture.handle,
+      [1, 2, 3].concat(Array.from({ length: 64 }, () => 8)),
+    );
   } finally {
     fixture.stop();
   }
@@ -1395,7 +1453,12 @@ test("production cancelled after-commit value cannot install a late observer cur
   let target = -1;
   let late: unknown;
   fixture.server.port.postMessage = (message: unknown) => {
-    if (message && typeof message === "object" && "completed" in message && message.completed === target) {
+    if (
+      message &&
+      typeof message === "object" &&
+      "completed" in message &&
+      message.completed === target
+    ) {
       late = message;
       held.resolve();
       return;
@@ -1408,7 +1471,9 @@ test("production cancelled after-commit value cannot install a late observer cur
     const before = cursor;
     const completion = fixture.root.submit("publicationCut", [fixture.grant]);
     target = completion.id;
-    const value = completion.value().then((cut) => { cursor = cut; });
+    const value = completion.value().then((cut) => {
+      cursor = cut;
+    });
     await held.promise;
     await expectErrno(observer.stop(), 11);
     await expectErrno(value, 11);
@@ -1420,7 +1485,12 @@ test("production cancelled after-commit value cannot install a late observer cur
     expect(fixture.sibling.tryRead(fixture.handle, [new Uint8Array(3)], 0)).toBe(-11);
     expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(-11);
     expect(() => fixture.sibling.fork()).toThrow();
-    expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({ stopped: true, pending: 0, pins: 0, inputBytes: 0 });
+    expect(fixture.backend.shared.publication!.diagnostics()).toMatchObject({
+      stopped: true,
+      pending: 0,
+      pins: 0,
+      inputBytes: 0,
+    });
   } finally {
     fixture.server.port.postMessage = post;
     fixture.stop();
@@ -1438,8 +1508,17 @@ test("production closed sessions cannot be resurrected by a fresh connection", a
     fresh = new FilesystemClient(fixture.root.fork());
     expect(fresh.connection.publication!.session.serial).not.toBe(old.serial);
     const cut = await fixture.cut();
-    expect(() => fresh![localPublication]("write", [fixture.handle, 0], new Uint8Array([9]), id)).toThrow();
-    expect(() => fresh!.shared.publication!.admit(old, id, { kind: "write", handle: fixture.handle, offset: 0 }, new Uint8Array([9]))).toThrow("closed");
+    expect(() =>
+      fresh![localPublication]("write", [fixture.handle, 0], new Uint8Array([9]), id),
+    ).toThrow();
+    expect(() =>
+      fresh!.shared.publication!.admit(
+        old,
+        id,
+        { kind: "write", handle: fixture.handle, offset: 0 },
+        new Uint8Array([9]),
+      ),
+    ).toThrow("closed");
     expect(await fixture.cut()).toEqual(cut);
   } finally {
     fresh?.dispose();
