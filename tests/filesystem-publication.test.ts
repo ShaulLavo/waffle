@@ -4,6 +4,8 @@ import {
   FilesystemService,
   MemoryBackend,
   createFilesystemConnection,
+  revokeFilesystem,
+  waitForFilesystemQuiescence,
 } from "../fs";
 
 async function expectErrno(action: Promise<unknown>, expected: number): Promise<void> {
@@ -1229,6 +1231,77 @@ test("production no-effect receipts do not advance cuts and clean slot eviction 
     expect(await fixture.root.asyncCall("remove", ["/idle"])).toBe(true);
     expect(domain.contentVersion(node.ino)).toBe(0);
   } finally {
+    fixture.stop();
+  }
+});
+
+async function heldAdmissionWorker(root: FilesystemClient) {
+  const worker = new Worker(new URL("./fixtures/publication-guest.ts", import.meta.url).href);
+  const connection = root.fork();
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  let message = workerMessage(worker);
+  worker.postMessage({ connection, mode: "proc", admissionGate: gate.buffer }, [connection.port]);
+  expect(await message).toEqual({ ready: true });
+  message = workerMessage(worker);
+  worker.postMessage({ operation: "write", byte: 88 });
+  expect(await message).toEqual({ admissionHeld: true });
+  return { worker, connection, gate };
+}
+function releaseAdmissionGate(gate: Int32Array): void {
+  Atomics.store(gate, 0, 1);
+  Atomics.notify(gate, 0);
+}
+test("production active admission remains fenced through live revocation without stealing", async () => {
+  const fixture = await localPublicationFixture();
+  const held = await heldAdmissionWorker(fixture.root);
+  try {
+    const start = await fixture.cut();
+    const sections = Atomics.load(new Int32Array(held.connection.sections), 0);
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([7])], 0)).toBe(-6);
+    let settled = false;
+    const waiting = waitForFilesystemQuiescence(held.connection).then(() => {
+      settled = true;
+    });
+    fixture.service.sweep();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const prematurelySettled = settled;
+    const message = workerMessage(held.worker);
+    releaseAdmissionGate(held.gate);
+    expect(await message).toEqual({ result: -11, offset: 0, byte: 88, count: 0xdeadbeef });
+    await waiting;
+    fixture.service.sweep();
+    expect(await fixture.cut()).toEqual(start);
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
+    expect((await fixture.changes(start)).publications).toHaveLength(1);
+    expect({ admitted: sections > 0, prematurelySettled }).toEqual({
+      admitted: true,
+      prematurelySettled: false,
+    });
+  } finally {
+    releaseAdmissionGate(held.gate);
+    held.worker.terminate();
+    reapFilesystem(held.connection);
+    fixture.stop();
+  }
+});
+test("production proven-dead admission holder releases only its own arena for a live peer", async () => {
+  const fixture = await localPublicationFixture();
+  const held = await heldAdmissionWorker(fixture.root);
+  try {
+    const start = await fixture.cut();
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([7])], 0)).toBe(-6);
+    revokeFilesystem(held.connection);
+    await held.worker.terminate();
+    reapFilesystem(held.connection);
+    fixture.service.sweep();
+    const written = fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([9])], 0);
+    expect(written).toBe(1);
+    expect((await fixture.changes(start)).publications).toHaveLength(1);
+  } finally {
+    releaseAdmissionGate(held.gate);
+    held.worker.terminate();
+    reapFilesystem(held.connection);
+    fixture.root.shared.publication!.stop();
     fixture.stop();
   }
 });

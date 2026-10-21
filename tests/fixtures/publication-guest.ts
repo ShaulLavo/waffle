@@ -10,6 +10,7 @@ import { guestFunction, publicationProcModule, publicationWasiModule } from "./p
 interface Setup {
   readonly connection: FilesystemConnection;
   readonly mode: "wasi" | "proc";
+  readonly admissionGate?: SharedArrayBuffer;
 }
 interface Call {
   readonly operation: "write" | "read" | "append";
@@ -110,6 +111,18 @@ function call(guest: ReturnType<typeof setup>, request: Call) {
   else result = guestFunction(guest.instance, "fd_pwrite")(guest.fd, 0, 1, 0n, 32);
   return { result, offset: guest.resource.offset, byte: bytes[0], count: view.getUint32(32, true) };
 }
+function pauseAdmission(connection: FilesystemConnection, buffer: SharedArrayBuffer): void {
+  const inputs = connection.publication?.buffers.inputs;
+  const gate = new Int32Array(buffer);
+  const original = Uint8Array.prototype.set;
+  Uint8Array.prototype.set = function (source: ArrayLike<number>, offset?: number): void {
+    Reflect.apply(original, this, [source, offset]);
+    if (this.buffer !== inputs) return;
+    Uint8Array.prototype.set = original;
+    self.postMessage({ admissionHeld: true });
+    while (!Atomics.load(gate, 0)) Atomics.wait(gate, 0, 0);
+  };
+}
 let guest: ReturnType<typeof setup> | undefined;
 self.onmessage = ({ data }: MessageEvent<Setup | Call | "stop">) => {
   try {
@@ -121,6 +134,7 @@ self.onmessage = ({ data }: MessageEvent<Setup | Call | "stop">) => {
     }
     if ("connection" in data) {
       guest = setup(data);
+      if (data.admissionGate) pauseAdmission(data.connection, data.admissionGate);
       self.postMessage({ ready: true });
       return;
     }
