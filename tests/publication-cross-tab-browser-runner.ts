@@ -616,7 +616,7 @@ async function lateRequestControl(owner: Page, holder: Page, failClose: boolean)
     equal(await control(holder, "persistentProbe", name), false);
   } else cancelledBeforeLoad({ ready: false, stopped });
   console.log("P1_LATE_NATIVE_REQUEST=" + JSON.stringify({ failClose, result, stopped }));
-  await control(owner, "persistentDeath");
+  if (failClose) await control(owner, "persistentDeath");
   equal(await control(holder, "persistentProbe", name), true);
   await control(owner, "persistentDelete", name);
   console.log(
