@@ -1197,7 +1197,7 @@ test("production current cached and host reads recheck traversal permissions and
     expect(await fixture.root.asyncCall("setMode", [parent, 0o600])).toBe(0);
     const denied = await fixture.cut();
     await expectErrno(fixture.root.asyncCall("readFile", ["/dir/child"]), 2);
-    await expectErrno(fixture.root.asyncCall("resolve", [parent, "child"]), 2);
+    expect(await fixture.root.asyncCall("resolve", [parent, "child"])).toBe(2);
     await expectErrno(fixture.root.asyncCall("listFiles", ["/dir"]), 2);
     expect(await fixture.cut()).toEqual(denied);
     expect(await fixture.root.asyncCall("setMode", [parent, 0o700])).toBe(0);

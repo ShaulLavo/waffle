@@ -170,3 +170,21 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 - **MEASURED [E5]**: Retention is about 3.62 MiB of evidence and 3.13 MiB of original dispatcher logs. Actual-host receipts cover both cloud runners, the Mac reservation and ports, and PC staging removal. No route or deployment was created.
 - **DERIVED [R1, O]**: Preserve the R1 permissions report and immutable source anchors until the bounded prerequisite and separately owned bash-web integration resolve the blocker, or the owner abandons it. The shell lane already removed its only task-created worktree. Preserve unrelated diagnostics and report material.
 - **DERIVED [O; AGENTS.md]**: Verify current clean Git status and worktree registration before source removal. Use `git worktree remove`, never prune shared build trees or caches. The completion sizes above are receipt-time values, not a claim that later allocation sizes cannot change. Every new run owns fresh all-path teardown and verifies it on its actual host.
+
+### Local publication author checkpoint, 2026-10-21
+
+Status: Approved implementation, incomplete. The exclusive
+`storage/publication-local` branch contains opt-in production local publication,
+actual MemFS namespace plans, real guest controls and a supplemental browser
+runner. It is not review-ready or S1/S2 acceptance. See
+[the internal checkpoint contract](../docs/storage-publication.md).
+
+The original compile-valid missing-publication oracle remains red with errno52.
+The supplemental browser checkpoint `6041ef9` passed six controls per engine,
+not the full browser matrix. Admission lifecycle control `d74ef19` reproduced
+premature quiescence and a stranded arena after observing actual worker exit.
+The correction at `19284c0` passed both lifecycle controls; its broader focused
+run exposed a test expecting rejection where resolve returns errno2 as a value.
+Exact immutable results and original failures are retained under
+`/work/reports/waffle-finish-20261021/storage-publication-local/author/`.
+Full local acceptance and required gates remain blocking. No consumer changes.
