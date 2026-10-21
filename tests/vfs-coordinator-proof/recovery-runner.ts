@@ -281,10 +281,10 @@ async function explicitReplacement(
     error(unresolved, "OUTCOME_UNKNOWN");
     const uninitialized = await execute(third, { kind: "read", path: "/data" });
     error(uninitialized, "UNAVAILABLE");
-    const rawUninitialized = await third.evaluate(() => proof.client.send({ kind: "inspect" }));
+    const rawInspection = await third.evaluate(() => proof.client.send({ kind: "inspect" }));
     assert(
-      ok(rawUninitialized).result &&
-        JSON.stringify(ok(rawUninitialized).result).includes('"initialized":false'),
+      ok(rawInspection).result &&
+        JSON.stringify(ok(rawInspection).result).includes('"initialized":false'),
       "Replacement did not start uninitialized",
     );
     const rawRead = await rawUninitialized(third, false);
