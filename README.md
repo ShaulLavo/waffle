@@ -23,9 +23,7 @@ const runtime = createRuntime({ filesystem: { workerURL: "/fs-worker.js", mode: 
 try {
   await runtime.filesystem.writeFile("/hello.txt", "hello from Waffle");
   console.log(new TextDecoder().decode(await runtime.filesystem.readFile("/hello.txt")));
-} finally {
-  await runtime.dispose();
-}
+} finally { await runtime.dispose(); }
 ```
 
 [Site](https://waffle.shaulavo.dev/) · [Getting started](docs/getting-started.md) · [Architecture](docs/architecture.md) · [Host ABI](docs/host-abi.md) · [Startup](docs/runtime-startup.md) · [Storage](docs/storage.md) · [Development](docs/development.md)
