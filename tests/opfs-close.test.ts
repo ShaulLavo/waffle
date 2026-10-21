@@ -189,7 +189,7 @@ class Fixture {
     await Promise.allSettled(this.owners.map((owner) => owner.close()));
     for (const access of this.accesses) access.forceClose();
     if (this.locks.held) this.interventions.push("force-release:original-lock");
-    this.locks.forceRelease();
+    if (this.locks.requests.length) this.locks.forceRelease();
     await Promise.all(this.locks.requests);
     expect(this.live()).toHaveLength(0);
     expect(this.locks.held).toBe(false);
