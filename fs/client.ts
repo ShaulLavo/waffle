@@ -1,4 +1,4 @@
-import { mutationIntent, type PublicationAdmission } from "./publication.js";
+import { mutationIntent, type PublicationAdmission, type MutationIntent } from "./publication.js";
 import { permissionsFor } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
@@ -1027,7 +1027,42 @@ export class FilesystemClient implements FileSystem {
       return -this.directFailure(handle, error);
     }
   }
+  private publishedMetadata(intent: Extract<MutationIntent, { kind: "resize" | "setMtime" }>): number {
+    const domain = this.shared.publication!, session = this.connection.publication!.session;
+    let admission: PublicationAdmission | undefined;
+    try {
+      if (intent.kind === "resize" && (!Number.isSafeInteger(intent.size) || intent.size < 0)) throw new FilesystemError(28);
+      if (intent.kind === "setMtime" && (!Number.isSafeInteger(intent.mtime) || intent.mtime < 0)) throw new FilesystemError(28);
+      const input = new Uint8ArrayConstructor();
+      const admitted = domain.admit(session, domain.next(session), intent, input);
+      if (admitted.kind !== "admitted") throw new FilesystemError(29);
+      admission = admitted.admission;
+      const result = this.attemptMetadata(intent, admission);
+      if (result !== undefined) return result;
+      const args = intent.kind === "resize" ? [intent.handle, intent.size, intent.truncate] : [intent.handle, intent.mtime];
+      const completion = this.submit(intent.kind, args, input, 1024, admission);
+      try { return completion.wait(); }
+      finally { completion.release(); }
+    } catch (error) { return errno(error); }
+    finally { if (admission) domain.cancel(session, admission); }
+  }
+  private attemptMetadata(intent: Extract<MutationIntent, { kind: "resize" | "setMtime" }>, admission: PublicationAdmission): number | undefined {
+    if (!mapHas(this.openHandles, intent.handle) || !this.shared.hasFile(intent.handle)) return undefined;
+    try {
+      return this.shared.mutate(this.epoch, this.revoked, () => {
+        if (intent.kind === "setMtime") return this.shared.setMtime(intent.handle, intent.mtime, this.revoked, this.connection.owner, admission);
+        const info = this.shared.info(intent.handle, this.revoked);
+        if (!info) throw new FilesystemError(8);
+        if ((intent.truncate && intent.size < info.size) || intent.size > info.capacity) return undefined;
+        return this.shared.resize(intent.handle, intent.size, intent.truncate, this.revoked, this.connection.owner, admission);
+      }, this.connection.owner);
+    } catch (error) {
+      if (error instanceof MissingSegmentError || error instanceof MissingDataError) return undefined;
+      throw error;
+    }
+  }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
+    if (this.shared.publication) return this.publishedMetadata({ kind: "resize", handle, size, truncate });
     if (!this.shared.publication && mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         const result = this.shared.mutate(
@@ -1058,6 +1093,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   setMtime(handle: FileHandle, mtime: number): number {
+    if (this.shared.publication) return this.publishedMetadata({ kind: "setMtime", handle, mtime });
     if (!this.shared.publication && mapHas(this.openHandles, handle) && this.shared.hasFile(handle)) {
       try {
         return this.shared.mutate(

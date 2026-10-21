@@ -523,25 +523,52 @@ test("cancelling one cold session preserves the live peer and its real shared lo
   let loading: void | Promise<void> = undefined;
   try {
     const start = await fixture.cut();
-    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([8])], 0)).toBe(-6);
-    expect(fixture.sibling.tryRead(fixture.handle, [new Uint8Array(3)], 0)).toBe(-6);
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([8])], 0)).toBe(-6);
+    expect(fixture.root.tryRead(fixture.handle, [new Uint8Array(3)], 0)).toBe(-6);
     await fixture.reading;
     loading = fixture.backend.prepare("read", [fixture.handle]);
-    fixture.root.dispose();
+    fixture.sibling.dispose();
     fixture.service.sweep();
     expect(fixture.service.resources().clients).toBe(1);
     fixture.release();
     await loading;
     expect(fixture.reads()).toBe(1);
     expect(fixture.hydrations()).toBe(1);
-    const pending = Array.from(fixture.sibling.completions.values());
+    const pending = Array.from(fixture.root.completions.values());
     expect(pending).toHaveLength(1);
     await pending[0]!.value();
     const output = new Uint8Array(3);
-    expect(fixture.sibling.tryRead(fixture.handle, [output], 0)).toBe(3);
+    expect(fixture.root.tryRead(fixture.handle, [output], 0)).toBe(3);
     expect(output).toEqual(new Uint8Array([1, 2, 3]));
     const domain = fixture.backend.shared.publication!;
     expect(domain.cut()).toEqual(start);
     expect(domain.diagnostics()).toMatchObject({ stopped: false, sessions: 1, pending: 0, inputBytes: 0 });
   } finally { fixture.release(); await loading; fixture.stop(); fixture.backend.dispose(); }
+});
+
+test("resident direct metadata joins the publication order and chmod revokes an open description", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    const start = await fixture.cut();
+    fixture.root.call = () => { throw new Error("resident metadata used blocking RPC"); };
+    expect(fixture.root.resize(fixture.handle, 6, false)).toBe(0);
+    const resized = await fixture.cut();
+    expect(resized.generation).toBe(start.generation + 1);
+    expect(fixture.sibling.tryRead(fixture.handle, [new Uint8Array(6)], 0)).toBe(6);
+    expect(fixture.root.setMtime(fixture.handle, 77)).toBe(0);
+    expect(fixture.sibling.shared.stat(fixture.handle)?.mtime).toBe(77);
+    const page = await fixture.changes(start);
+    expect(page.publications).toHaveLength(2);
+    expect(page.publications[0].changes[0]).toMatchObject({ kind: "resize", size: 6 });
+    expect(page.publications[1].changes).toEqual([{ kind: "metadata", file: page.publications[0].changes[0].file, mode: 0o600, mtime: 77 }]);
+    const inode = fixture.sibling.shared.stat(fixture.handle)?.ino;
+    expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o400])).toBe(0);
+    const denied = await fixture.cut();
+    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(-2);
+    expect(fixture.root.setMtime(fixture.handle, 88)).toBe(2);
+    expect(await fixture.cut()).toEqual(denied);
+    expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o600])).toBe(0);
+    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
+    expect(fixture.sibling.shared.stat(fixture.handle)?.ino).toBe(inode);
+  } finally { fixture.stop(); }
 });

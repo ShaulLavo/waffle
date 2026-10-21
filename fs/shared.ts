@@ -1092,6 +1092,7 @@ export class SharedFilesystemState {
     truncate: boolean,
     revoked?: () => boolean,
     owner = this.lockOwner,
+    admission?: PublicationAdmission,
   ): number {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
@@ -1104,6 +1105,9 @@ export class SharedFilesystemState {
         throw new MissingDataError("shared filesystem file has not been loaded");
       if (size > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE)
         throw new RangeError("file needs growth");
+      const next = truncate ? size : Math.max(old, size);
+      const mtime = truncate ? Date.now() : this.getMtime(slot);
+      const publication = admission ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission) : undefined;
       if (resident && truncate && size < old) {
         let position = size;
         while (position < old) {
@@ -1113,15 +1117,31 @@ export class SharedFilesystemState {
           position += count;
         }
       }
-      const next = truncate ? size : Math.max(old, size);
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), next);
       this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
-      if (truncate) this.setTimestamp(slot, Date.now());
+      if (truncate) this.setTimestamp(slot, mtime);
       if (truncate || next !== old) this.changed(slot);
+      if (publication) this.publication!.commit(publication);
       return 0;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
     }
+  }
+  private prepareResize(slot: number, handle: FileHandle, size: number, truncate: boolean, next: number, mtime: number, admission: PublicationAdmission): PreparedPublication {
+    const domain = this.publication!;
+    domain.verifyAdmission(admission, { kind: "resize", handle, size, truncate }, new Uint8Array());
+    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const changes: import("./publication.js").PublicationEffect[] = [];
+    if (next !== this.slots[this.at(slot, FILE_SIZE)]) changes.push({ kind: "resize", file, size: next, version: domain.cut().generation + 1 });
+    if (mtime !== this.getMtime(slot)) changes.push({ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime });
+    return domain.prepare(admission, { kind: "number", value: 0 }, changes);
+  }
+  private prepareMtime(slot: number, handle: FileHandle, mtime: number, admission: PublicationAdmission): PreparedPublication {
+    const domain = this.publication!;
+    domain.verifyAdmission(admission, { kind: "setMtime", handle, mtime }, new Uint8Array());
+    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const changes: import("./publication.js").PublicationEffect[] = mtime === this.getMtime(slot) ? [] : [{ kind: "metadata", file, mode: this.slots[this.at(slot, MODE)]!, mtime }];
+    return domain.prepare(admission, { kind: "number", value: 0 }, changes);
   }
   /** Service-only: caller holds the global allocator/mutation lock. */
   reclaimLocked(handle: FileHandle): void {
@@ -1148,14 +1168,17 @@ export class SharedFilesystemState {
     mtime: number,
     revoked?: () => boolean,
     owner = this.lockOwner,
+    admission?: PublicationAdmission,
   ): number {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
+      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
       this.setTimestamp(slot, mtime);
       this.changed(slot);
+      if (publication) this.publication!.commit(publication);
       return 0;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
