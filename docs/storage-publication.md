@@ -51,3 +51,37 @@ They do not approve S1/S2, cross-tab topology, SAFE, persisted publication metad
 packed storage, public transactions, indexing/search, aggregate memory bounds,
 above-RAM range reads, performance or consumer pins. Real Safari, iOS, owner freeze
 and physical power-cut behavior remain unverified by this unit.
+
+## Bounded independent-page resident pilot
+
+The private resident attachment adds an experimental handoff for one retained,
+small regular file on the production MemoryBackend. It is not a selectable
+storage mode. The authority retains the only MemFS and publication domain; a
+second page receives an ordinary descriptor and bounded operation data, never
+the authority root SharedArrayBuffer.
+
+Readiness is separate from a synchronous read, write or append. One outstanding
+grant excludes authority-local direct access and service mutations. A missing
+grant returns EAGAIN without capturing caller bytes. READY can be cancelled only
+by its cell's no-effect transition; CLAIMED cannot be reclaimed by a timeout.
+COMMITTED owns the complete result, effects and receipt before guest success.
+The authority imports the selected offset and publication once. Explicit status
+finds the original cell even when the final commit notification is omitted.
+A missing committed payload stops the old history rather than guessing success.
+
+Each attached page and actual guest worker owns its own non-stealable shared
+Web Lock, keyed by workspace across authority incarnations. Recovery requests
+exclusive continuity before taking any incoming shared guard. Bootstrap attaches
+before setup, imports, preopens or guest start; successful local cleanup joins
+attachment stop before exit acknowledgement. A failed fence retains its guard.
+
+`tests/filesystem-publication-grant.test.ts` exercises the production authority.
+`tests/publication-cross-tab-browser-runner.ts` drives two independent pages and
+actual bootstrap, Preview1 and runtime_proc bodies. Its assertions cover current
+reads after ACK without a commit nudge, bounded prefixes, exact import, local
+exclusion, late attachment cleanup and separately observed native worker death.
+Passing focused controls is not full matrix or production acceptance. The
+current source report records which stages actually passed and every preserved
+red. Cold files, growth beyond the resident bound and namespace operations on a
+private attachment are explicitly unsupported. No SAFE, durable history,
+consumer pin, public API or S1/S2 acceptance follows.
