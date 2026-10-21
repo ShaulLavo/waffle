@@ -435,3 +435,33 @@ The network helper performs injected `fetch` operations and writes responses to 
 ## Compatibility
 
 Waffle does not promise compatibility with an older runtime package or a stale consumer. Consumers pin one exact Git commit and use the matching exports and lockfile.
+
+## Inode permission query
+
+`runtime_fs.path_permissions_get(dirfd: u32, path_ptr: u32, path_len: u32, flags: u32, out_ptr: u32) -> i32`
+returns zero or a positive WASI errno. The WASI adapter supplies the namespace without activating
+process services. It checks the directory descriptor's `PATH_FILESTAT_GET` right, resolves the
+UTF-8 relative pathname from that capability and checks ancestor search permissions. The path
+must be nonempty, valid UTF-8 and contain no NUL. Flags must be zero; follow-link or other flags
+return `ENOTSUP`, errno 58, because symlinks are unsupported.
+
+Success writes exactly 16 bytes, four little-endian u32 words:
+
+| Offset | Field           | Meaning                               |
+| -----: | --------------- | ------------------------------------- |
+|      0 | mode            | Actual stored inode mode              |
+|      4 | modeSupported   | Bits with defined mode semantics      |
+|      8 | access          | Effective-caller granted access bits  |
+|     12 | accessSupported | Access bits the filesystem can answer |
+
+Access bits are read 4, write 2 and search-or-execute 1. Supported clear bits deny access;
+unsupported bits are unknown. Regular files support read/write, not registry execution.
+Directories support read/write/search. See [inode policy](permissions.md) for the single
+virtual principal, supported mode masks, sticky semantics and saved-metadata adoption.
+
+Missing paths return `ENOENT`, errno 44; denied ancestor search returns `EACCES`, errno 2.
+A target with no read/write grants still has queryable metadata and returns zero with clear
+access bits. Missing descriptor rights return `ENOTCAPABLE`, errno 76, not inode denial.
+Unsupported adapter metadata returns `ENOTSUP`, errno 58. Invalid pointers return `EFAULT`,
+errno 21. Errors leave the output unchanged. This import does not extend or reinterpret the
+standard 64-byte Preview1 filestat record, perform open-based inference, or fetch payloads.

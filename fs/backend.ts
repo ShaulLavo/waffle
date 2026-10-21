@@ -62,7 +62,10 @@ export class MemoryBackend implements FilesystemBackend {
     const node = this.fs.nodeForHandle(handle);
     const stat = this.fs.stat(handle);
     if (node.kind === "file") this.shared.register(handle, stat, node.data);
-    else if (this.directoryTimes.get(handle) !== stat.mtime || !this.shared.stat(handle)) {
+    else if (
+      this.directoryTimes.get(handle) !== stat.mtime ||
+      this.shared.stat(handle)?.mode !== stat.mode
+    ) {
       this.shared.register(handle, stat);
       this.directoryTimes.set(handle, stat.mtime);
     }
@@ -137,8 +140,72 @@ export class MemoryBackend implements FilesystemBackend {
     }
     throw new FilesystemError(44);
   }
+  private mkdirParents(path: string): void {
+    try {
+      this.fs.mkdirp(dirname(path));
+    } catch (error) {
+      if (error instanceof FilesystemError) throw error;
+      throw new FilesystemError(54);
+    }
+  }
+  private createExclusive(path: string, data: Uint8Array): void {
+    // Resolve the actual tree before normalization so missing/.. and file/.. cannot
+    // silently change the target. The service queue serializes namespace creation.
+    const target = normalize(path);
+    let resolved = this.fs.resolveAbsolute(path);
+    if (typeof resolved === "number") {
+      if (resolved !== 44) throw new FilesystemError(resolved);
+      if (path.endsWith("/")) throw new FilesystemError(54);
+      this.checkMissingParent(path);
+      this.mkdirParents(target);
+      resolved = this.fs.resolveAbsolute(target);
+      if (typeof resolved === "number") throw new FilesystemError(resolved);
+    }
+    if (resolved.node !== undefined) throw new FilesystemError(20);
+    if (resolved.trailingSlash) throw new FilesystemError(54);
+    const result = this.fs.create(resolved, "file", true);
+    if (typeof result !== "number") throw new FilesystemError(result.error);
+    try {
+      this.fs.writeFile(target, data.slice(), false);
+      this.sync(result);
+    } catch (error) {
+      this.fs.remove(target);
+      throw error;
+    }
+  }
+  private writeExisting(handle: FileHandle, append: boolean, data: Uint8Array): void {
+    if (!(this.fs.permissions(handle).access & 2)) throw new FilesystemError(2);
+    if (append && !data.length) return;
+    this.shared.mutate(undefined, undefined, () => {
+      const offset = append ? this.shared.info(handle)!.size : 0;
+      this.shared.growLocked(handle, offset + data.length);
+      if (!append) this.shared.resize(handle, 0, true);
+      this.shared.write(handle, [data], offset);
+      if (!append) this.shared.reclaimLocked(handle);
+      this.fs.setMtime(handle, Date.now());
+    });
+  }
+  private writeFile(path: string, append: boolean, exclusive: boolean, data: Uint8Array): void {
+    if (append && exclusive)
+      throw new FilesystemError(28, "writeFile cannot append and create exclusively");
+    if (exclusive) return this.createExclusive(path, data);
+    const existing = this.existing(path);
+    if (existing) return this.writeExisting(existing.handle, append, data);
+    this.fs.writeFile(path, data.slice(), false);
+    try {
+      const created = this.existing(path);
+      if (created) this.sync(created.handle);
+    } catch (error) {
+      this.fs.remove(path);
+      throw error;
+    }
+  }
   private executeOperation(operation: string, args: any[], data: Uint8Array): unknown {
     const [a, b, c] = args;
+    if (["write", "append", "grow", "resize"].includes(operation)) {
+      this.check(a, "file");
+      if (!(this.fs.permissions(a).access & 2)) throw new FilesystemError(2);
+    }
     switch (operation) {
       case "flush":
         return;
@@ -156,6 +223,15 @@ export class MemoryBackend implements FilesystemBackend {
       case "stat":
         this.check(a);
         return this.shared.stat(a)!;
+      case "permissions":
+        this.check(a);
+        return this.fs.permissions(a);
+      case "setMode": {
+        this.check(a);
+        const error = this.fs.setMode(a, b);
+        if (!error) this.shared.setMode(a, b);
+        return error;
+      }
       case "read": {
         this.check(a, "file");
         const bytes = new Uint8Array(b);
@@ -196,7 +272,7 @@ export class MemoryBackend implements FilesystemBackend {
         });
       case "setMtime":
         this.check(a);
-        this.fs.setMtime(a, b);
+        if (this.fs.setMtime(a, b)) return 2;
         return this.shared.mutate(undefined, undefined, () => this.shared.setMtime(a, b));
       case "readdir":
         this.check(a, "directory");
@@ -254,10 +330,10 @@ export class MemoryBackend implements FilesystemBackend {
         if (!node) return undefined;
         const metadata = (entry: Node) => {
           const handle = this.fs.handleForNode(entry);
-          this.sync(handle);
           const stat = this.shared.stat(handle);
           return { kind: entry.kind, ino: entry.ino, mtime: stat?.mtime ?? entry.mtime };
         };
+        if (node.kind === "dir") this.fs.readdir(this.fs.handleForNode(node));
         return node.kind === "file"
           ? metadata(node)
           : {
@@ -274,69 +350,8 @@ export class MemoryBackend implements FilesystemBackend {
         const count = this.shared.read(existing.handle, [bytes], 0);
         return bytes.subarray(0, count);
       }
-      case "writeFile": {
-        if (b && c) throw new FilesystemError(28, "writeFile cannot append and create exclusively");
-        if (c) {
-          // The service queue is the namespace lock. Resolve before creating parents so a
-          // malformed or impossible path cannot leave directories behind. Once the actual tree
-          // has validated dot segments, write through the same canonical target used by create.
-          const target = normalize(a);
-          let path = this.fs.resolveAbsolute(a);
-          if (typeof path === "number") {
-            if (path !== 44) throw new FilesystemError(path);
-            if (a.endsWith("/")) throw new FilesystemError(54);
-            this.checkMissingParent(a);
-            try {
-              this.fs.mkdirp(dirname(target));
-            } catch {
-              throw new FilesystemError(54);
-            }
-            path = this.fs.resolveAbsolute(target);
-            if (typeof path === "number") throw new FilesystemError(path);
-          }
-          if (path.node !== undefined) throw new FilesystemError(20);
-          if (path.trailingSlash) throw new FilesystemError(54);
-          const result = this.fs.create(path, "file", true);
-          if (typeof result !== "number") throw new FilesystemError(result.error);
-          try {
-            this.fs.writeFile(target, data.slice(), false);
-            this.sync(result);
-          } catch (error) {
-            this.fs.remove(target);
-            throw error;
-          }
-          return;
-        }
-        const existing = this.existing(a);
-        if (existing) {
-          if (b && !data.length) return;
-          if (b)
-            this.shared.mutate(undefined, undefined, () => {
-              const info = this.shared.info(existing.handle)!;
-              this.shared.growLocked(existing.handle, info.size + data.length);
-              this.shared.append(existing.handle, [data]);
-              this.fs.setMtime(existing.handle, Date.now());
-            });
-          else
-            this.shared.mutate(undefined, undefined, () => {
-              this.shared.growLocked(existing.handle, data.length);
-              this.shared.resize(existing.handle, 0, true);
-              this.shared.write(existing.handle, [data], 0);
-              this.shared.reclaimLocked(existing.handle);
-              this.fs.setMtime(existing.handle, Date.now());
-            });
-          return;
-        }
-        this.fs.writeFile(a, data.slice(), false);
-        try {
-          const created = this.existing(a);
-          if (created) this.sync(created.handle);
-        } catch (error) {
-          this.fs.remove(a);
-          throw error;
-        }
-        return;
-      }
+      case "writeFile":
+        return this.writeFile(a, b, c, data);
       case "mkdirp":
         this.fs.mkdirp(a);
         return;

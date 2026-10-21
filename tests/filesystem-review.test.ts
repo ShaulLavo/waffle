@@ -1,3 +1,4 @@
+import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -226,10 +227,10 @@ test("shared stat cannot observe a torn two-word timestamp", () => {
   let intercepted = false;
   Atomics.load = ((...args: any[]) => {
     const value = Reflect.apply(originalLoad, Atomics, args);
-    if (!intercepted && args[0] === state.slots && args[1] === 12 + 3) {
+    if (!intercepted && args[0] === state.slots && args[1] === SLOT_WORDS + 3) {
       intercepted = true;
       // An actual competing writer can enter only if the metadata reader has no file lock.
-      if (originalLoad(state.slots, 12 + 8) === 0) state.setMtime(0, newTime);
+      if (originalLoad(state.slots, SLOT_WORDS + 8) === 0) state.setMtime(0, newTime);
     }
     return value;
   }) as typeof Atomics.load;

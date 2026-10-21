@@ -1,3 +1,4 @@
+import { retainedClientFixture } from "./fixtures/retained-client.js";
 import { afterEach, expect, test } from "bun:test";
 const workerCleanups = new Set<() => void>();
 afterEach(() => {
@@ -15,35 +16,12 @@ import {
   reapFilesystem,
   waitForFilesystemQuiescence,
 } from "../fs";
+import { SLOT_WORDS } from "../fs/shared";
 import { FilesystemSection } from "../fs/protocol";
-
-function fixture() {
-  const pair = createFilesystemConnection();
-  const client = new FilesystemClient(pair.client);
-  client.shared.register(
-    0,
-    { kind: "file", ino: 1, size: 4, mtime: 1 },
-    new Uint8Array([65, 66, 67, 68]),
-  );
-  const capabilities = new Int32Array(pair.client.capabilities);
-  Atomics.store(capabilities, 1, 0);
-  Atomics.store(capabilities, 2, 0);
-  client.retain(0);
-  client.call = () => {
-    throw new Error("unexpected I/O RPC");
-  };
-  return {
-    client,
-    cleanup: () => {
-      client.dispose();
-      pair.server.port.close();
-    },
-  };
-}
 
 for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"] as const)
   test(`quiescence waits for ${operation}'s held lock, then permits another owner`, async () => {
-    const { client, cleanup } = fixture();
+    const { client, cleanup } = retainedClientFixture();
     const compare = Atomics.compareExchange;
     let waiting: Promise<void> | undefined;
     let settled = false;
@@ -53,7 +31,7 @@ for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"
       if (
         !waiting &&
         args[0] === client.shared.slots &&
-        args[1] === 20 &&
+        args[1] === SLOT_WORDS + 8 &&
         args[2] === 0 &&
         result === 0
       ) {
@@ -82,7 +60,7 @@ for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"
       await waiting;
       expect(settled).toBe(true);
       expect(Atomics.load(client.shared.cells, 1)).toBe(0);
-      expect(Atomics.load(client.shared.slots, 20)).toBe(0);
+      expect(Atomics.load(client.shared.slots, SLOT_WORDS + 8)).toBe(0);
       expect(Atomics.load(new Int32Array(client.connection.sections), 0)).toBe(0);
       reapFilesystem(client.connection);
       const other = new SharedFilesystemState(
@@ -99,7 +77,7 @@ for (const operation of ["read", "write", "append", "resize", "setMtime", "stat"
   });
 
 test("revocation between section admission and its check cannot acquire a lock or mutate pages", async () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   const add = Atomics.add;
   let raced = false;
   Atomics.add = ((...args: any[]) => {
@@ -115,7 +93,7 @@ test("revocation between section admission and its check cannot acquire a lock o
     expect(raced).toBe(true);
     await waitForFilesystemQuiescence(client.connection);
     expect(Atomics.load(client.shared.cells, 1)).toBe(0);
-    expect(Atomics.load(client.shared.slots, 20)).toBe(0);
+    expect(Atomics.load(client.shared.slots, SLOT_WORDS + 8)).toBe(0);
     const other = new SharedFilesystemState(
       client.connection.shared,
       client.connection.maxBytes,
@@ -174,7 +152,7 @@ test("the service keeps capabilities until an admitted entrant finishes its revo
 });
 
 test("nested file metadata locks keep their outer allocator section admitted", async () => {
-  const { client, cleanup } = fixture();
+  const { client, cleanup } = retainedClientFixture();
   let waiting: Promise<void> | undefined;
   let settled = false;
   try {

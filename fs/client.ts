@@ -1,3 +1,4 @@
+import { permissionsFor } from "../core/filesystem.js";
 import {
   Int32ArrayConstructor,
   Uint8ArrayConstructor,
@@ -231,7 +232,7 @@ export class FilesystemClient implements FileSystem {
   // rechecks the slot's handle under its file lock.
   private fileSlots = new MapConstructor<number, number>();
   // Preparation owns no guest buffers and never writes file bytes. Only a successful try* retry
-  // commits I/O; the pending grow request merely loads data and reserves capacity.
+  // commits I/O; preparation only hydrates data or reserves write capacity.
   private ioPreparations = new MapConstructor<number, FilesystemCompletion>();
   private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
@@ -569,9 +570,16 @@ export class FilesystemClient implements FileSystem {
     completion.releaseReady();
     return true;
   }
-  private prepareIO(handle: FileHandle, size: number): void {
-    if (!mapHas(this.ioPreparations, handle))
-      mapSet(this.ioPreparations, handle, this.submit("grow", [handle, size]));
+  private prepareIO(
+    handle: FileHandle,
+    intent: { kind: "read" } | { kind: "grow"; size: number },
+  ): void {
+    if (mapHas(this.ioPreparations, handle)) return;
+    const completion =
+      intent.kind === "read"
+        ? this.submit("read", [handle, 0, 0])
+        : this.submit("grow", [handle, intent.size]);
+    mapSet(this.ioPreparations, handle, completion);
   }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
@@ -592,7 +600,7 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       if (error instanceof MissingDataError || error instanceof MissingSegmentError) {
         try {
-          this.prepareIO(handle, 0);
+          this.prepareIO(handle, { kind: "read" });
           return -6;
         } catch (failure) {
           return -errno(failure);
@@ -621,7 +629,7 @@ export class FilesystemClient implements FileSystem {
         true,
       );
       if (written !== undefined) return written;
-      this.prepareIO(handle, offset + total);
+      this.prepareIO(handle, { kind: "grow", size: offset + total });
       return -6;
     } catch (error) {
       return -this.directFailure(handle, error);
@@ -648,7 +656,7 @@ export class FilesystemClient implements FileSystem {
         true,
       );
       if (typeof result !== "number") return result;
-      this.prepareIO(handle, result);
+      this.prepareIO(handle, { kind: "grow", size: result });
       return -6;
     } catch (error) {
       return -this.directFailure(handle, error);
@@ -678,7 +686,8 @@ export class FilesystemClient implements FileSystem {
       );
       // A cold file can be polled before its first read. Start hydration, but do not enqueue
       // RPCs on ordinary hot-file lock contention.
-      if (ready === undefined) this.prepareIO(handle, 0);
+      if (ready === undefined)
+        this.prepareIO(handle, writing ? { kind: "grow", size: 0 } : { kind: "read" });
       return {
         readable: !writing && ready === true,
         writable: writing && ready === true,
@@ -728,6 +737,17 @@ export class FilesystemClient implements FileSystem {
       }
     } finally {
       this.release(handle);
+    }
+  }
+  permissions(handle: FileHandle) {
+    const stat = this.stat(handle);
+    return stat.mode === undefined ? undefined : permissionsFor(stat.kind, stat.mode);
+  }
+  setMode(handle: FileHandle, mode: number): number {
+    try {
+      return this.call("setMode", [handle, mode]);
+    } catch (error) {
+      return errno(error);
     }
   }
   private cachedRead(handle: FileHandle, position: number) {
@@ -912,6 +932,7 @@ export class FilesystemClient implements FileSystem {
           () => {
             const info = this.shared.info(handle, this.revoked);
             if (!info) throw new FilesystemError(8);
+            if (info.mode !== undefined && !(info.mode & 0o200)) throw new FilesystemError(2);
             // Recheck under the global lock: an append may have turned this into a shrink,
             // or a service shrink may have reclaimed the capacity sampled by the caller.
             if ((truncate && size < info.size) || size > info.capacity) return undefined;

@@ -11,6 +11,7 @@ export type {
   FileSystem,
   FileHandle,
   FileStat,
+  FilePermissions,
   DirectoryEntry,
   ResolvedPath,
 } from "./filesystem.js";
