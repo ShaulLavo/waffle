@@ -108,7 +108,16 @@ class NativeDatabaseOpening {
     this.outcome.reject(new Error("Filesystem database upgrade is blocked"));
   }
   private close(): Promise<void> {
-    return (this.closing ??= Promise.resolve().then(() => this.database?.close()));
+    if (this.closing) return this.closing;
+    const closing = Promise.withResolvers<void>();
+    this.closing = closing.promise;
+    try {
+      this.database?.close();
+      closing.resolve();
+    } catch (error) {
+      closing.reject(error);
+    }
+    return closing.promise;
   }
   async retire(): Promise<void> {
     try {
