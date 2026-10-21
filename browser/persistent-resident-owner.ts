@@ -163,7 +163,9 @@ class PersistentOwner implements PersistentResidentOwner {
   private storage: StorageBackend | undefined;
   private backend: PersistentBackend | undefined;
   private service: FilesystemService | undefined;
-  private readonly interrupted = () => { void this.stop().catch(() => {}); };
+  private readonly interrupted = () => {
+    void this.stop().catch(() => {});
+  };
   constructor(
     private readonly request: PersistentOwnerRequest,
     private readonly signal: AbortSignal,
@@ -172,12 +174,17 @@ class PersistentOwner implements PersistentResidentOwner {
     const { origin, implementation, name } = request.selected;
     this.workspace = text(JSON.stringify([origin, implementation, name]));
     // Validate the complete arena before acquiring guards or opening native storage.
-    this.connection = createFilesystemConnection(undefined, { ...request.publication, observe: true });
-    this.root = new FilesystemClient(this.connection.client);
-    this.opening = Promise.resolve().then(() => this.open()).catch((error: unknown) => {
-      this.outcome.reject(error);
-      void this.stop().catch(() => {});
+    this.connection = createFilesystemConnection(undefined, {
+      ...request.publication,
+      observe: true,
     });
+    this.root = new FilesystemClient(this.connection.client);
+    this.opening = Promise.resolve()
+      .then(() => this.open())
+      .catch((error: unknown) => {
+        this.outcome.reject(error);
+        void this.stop().catch(() => {});
+      });
     signal.addEventListener("abort", this.interrupted, { once: true });
     if (signal.aborted) this.interrupted();
   }
@@ -188,23 +195,38 @@ class PersistentOwner implements PersistentResidentOwner {
   private async open(): Promise<void> {
     this.checkLive();
     const bootstrap = await acquirePublicationGuard(
-      `bootstrap:${this.workspace}`, "exclusive", this.abort.signal, true,
+      `bootstrap:${this.workspace}`,
+      "exclusive",
+      this.abort.signal,
+      true,
     );
     this.guards = { kind: "bootstrap", bootstrap };
     this.checkLive();
-    const continuity = await acquirePublicationGuard(this.workspace, "exclusive", this.abort.signal, true);
+    const continuity = await acquirePublicationGuard(
+      this.workspace,
+      "exclusive",
+      this.abort.signal,
+      true,
+    );
     this.guards = { kind: "exclusive", bootstrap, continuity };
     this.checkLive();
     // Native open/load remains this attempt's debt. In particular IDB's cancellable
     // wrapper can reject before the uncancellable native open delivers its resource.
-    const backend = await openFilesystemBackend({
-      mode: "fast", whenBusy: "wait", name: this.request.selected.name,
-      implementation: this.request.selected.implementation,
-    }, {
-      onStartupStage: this.observer,
-      retainStorage: (storage) => { this.storage = storage; },
-      onOwnershipLost: this.interrupted,
-    });
+    const backend = await openFilesystemBackend(
+      {
+        mode: "fast",
+        whenBusy: "wait",
+        name: this.request.selected.name,
+        implementation: this.request.selected.implementation,
+      },
+      {
+        onStartupStage: this.observer,
+        retainStorage: (storage) => {
+          this.storage = storage;
+        },
+        onOwnershipLost: this.interrupted,
+      },
+    );
     if (!(backend instanceof PersistentBackend)) throw new FilesystemError(58);
     this.backend = backend;
     this.checkLive();
@@ -212,15 +234,27 @@ class PersistentOwner implements PersistentResidentOwner {
     this.service.connect(this.connection.server);
     const handle: number = await this.root.asyncCall("preopen", ["/"]);
     this.checkLive();
-    const descriptor = Object.freeze(residentDescriptor(await this.root.asyncCall("publicationWorkspace", [
-      this.root.connection.publication!.observer, handle, this.workspace,
-    ])));
+    const descriptor = Object.freeze(
+      residentDescriptor(
+        await this.root.asyncCall("publicationWorkspace", [
+          this.root.connection.publication!.observer,
+          handle,
+          this.workspace,
+        ]),
+      ),
+    );
     this.checkLive();
     const authority = this.service.residentPublication;
     if (!authority) throw new FilesystemError(58);
-    const identity = Object.freeze({ instance: authority.instance, history: this.root.connection.publication!.buffers.history });
-    if (this.request.kind === "reopen-v1" &&
-        (identity.instance === this.request.original.instance || identity.history === this.request.original.history))
+    const identity = Object.freeze({
+      instance: authority.instance,
+      history: this.root.connection.publication!.buffers.history,
+    });
+    if (
+      this.request.kind === "reopen-v1" &&
+      (identity.instance === this.request.original.instance ||
+        identity.history === this.request.original.history)
+    )
       throw new FilesystemError(28, "reopen did not create a fresh history");
     await continuity.release();
     this.guards = { kind: "bootstrap", bootstrap };

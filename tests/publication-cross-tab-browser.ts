@@ -650,7 +650,89 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
 }
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
+let persistentHolder: Awaited<ReturnType<typeof acquirePublicationGuard>> | undefined;
+async function persistentControl(operation: string, value: unknown): Promise<unknown> {
+  if (operation === "persistentSeed") return ordinaryPersistentWorkspace(text(value), true);
+  if (operation === "persistentInspect") return inspectPersistentWorkspace(text(value));
+  if (operation === "persistentDelete") {
+    await deletePersistentWorkspace(text(value));
+    return null;
+  }
+  if (operation === "persistentHold") {
+    const workspace = JSON.stringify([location.origin, "indexeddb", text(value)]);
+    persistentHolder = await acquirePublicationGuard(
+      workspace,
+      "shared",
+      new AbortController().signal,
+    );
+    return workspace;
+  }
+  if (operation === "persistentProbe") {
+    const workspace = JSON.stringify([location.origin, "indexeddb", text(value)]);
+    try {
+      const guard = await acquirePublicationGuard(
+        workspace,
+        "exclusive",
+        new AbortController().signal,
+        true,
+      );
+      await guard.release();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (operation === "persistentRelease") {
+    await persistentHolder?.release();
+    persistentHolder = undefined;
+    return null;
+  }
+  if (operation === "persistentStart" || operation === "persistentAbortLateOpen") {
+    if (authority) throw new Error("previous authority realm still retained");
+    authority = new FixtureWorker("/resident-authority.js");
+    const result = await authority.request(operation, value);
+    if (operation === "persistentAbortLateOpen") {
+      await authority.terminate();
+      authority = undefined;
+    }
+    return result;
+  }
+  if (operation === "persistentStop") {
+    const result = record(await authority!.request("persistentStop"));
+    if (result.stopped === true) {
+      await authority!.terminate();
+      authority = undefined;
+    }
+    return result;
+  }
+  if (operation === "persistentFailClose") return authority!.request(operation);
+  if (operation === "persistentDeath") {
+    await authority!.terminate();
+    authority = undefined;
+    return null;
+  }
+  if (operation === "persistentRead") {
+    const descriptor = residentDescriptor(value);
+    const client = new FilesystemClient(createResidentConnection(descriptor));
+    await client.attachResidentPublication();
+    try {
+      const root: number = await client.asyncCall("preopen", ["/"]);
+      const first = record(await client.asyncCall("resolve", [root, "nested/deeper/a"]));
+      const second = record(await client.asyncCall("resolve", [root, "nested/second"]));
+      const stat = record(await client.asyncCall("stat", [first.node]));
+      const a: Uint8Array = await client.asyncCall("read", [first.node, 4, 0]);
+      const b: Uint8Array = await client.asyncCall("read", [second.node, 3, 0]);
+      return { first: Array.from(a), second: Array.from(b), mode: stat.mode, size: stat.size };
+    } finally {
+      await client.stopResidentPublication();
+      client.dispose();
+    }
+  }
+  throw new Error(`unknown persistent page operation ${operation}`);
+}
 export async function control(operation: string, value?: unknown): Promise<unknown> {
+  if (operation !== "persistentBaseline" && operation.startsWith("persistent"))
+    return persistentControl(operation, value);
   if (operation === "persistentBaseline") return persistentBaseline();
   if (operation.startsWith("workspace")) return workspaceControl(operation, value);
   if (operation === "guardLifecycle") return guardLifecycleControl();

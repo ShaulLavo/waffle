@@ -884,7 +884,9 @@ export class FilesystemService {
     const quiescence = sessions.flatMap((session) =>
       session.quiescing ? [session.quiescing] : [],
     );
-    const waits = quiescence.concat(sessions.map((session) => waitForFilesystemQuiescence(session.connection)));
+    const waits = quiescence.concat(
+      sessions.map((session) => waitForFilesystemQuiescence(session.connection)),
+    );
     return (this.ownerDraining = this.drainOwnerWork(sessions, waits));
   }
   private async drainOwnerWork(sessions: Session[], quiescence: Promise<void>[]): Promise<void> {

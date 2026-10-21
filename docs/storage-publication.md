@@ -207,3 +207,43 @@ A later failed persist does not invalidate an earlier successful payload barrier
 Ordinary close saves before disposal and joins storage close afterward.
 These checks change no storage format, FAST memory ACK, or untracked receipt.
 They do not provide explicit recovery, a durable publication cut, or SAFE mode.
+
+## Private persistent resident owner
+
+`browser/persistent-resident-owner.ts` is an internal construction and teardown owner.
+It is not exported by the package and does not install a replacement Runtime filesystem.
+The caller retains the returned owner before awaiting `ready`, including when readiness
+fails. Only a successful `stop()` permits dropping that owner.
+
+Selection snapshots the actual origin, implementation, exact name and current format.
+The continuity key is JSON of `[origin, implementation, name]`. Format validates the
+request but cannot create a separate lock namespace for the same physical store.
+Bootstrap and exclusive continuity precede native open, ownership claim and load.
+The new owner always waits for native ownership without stealing it. The ordinary
+filesystem worker keeps its existing policy through the same backend opener.
+
+Startup cancellation closes admission immediately. Once native open/load starts, its
+original promise remains owned until it settles. The factory does not forward abort
+into the adapter's early-rejecting native-open wrapper. A native ownership wait can
+therefore keep stop pending until its holder releases ownership. Pending cleanup is
+not permission to replace it, release its guards or announce successful cancellation.
+
+A published owner stops in this order: resident transport drain, service preparation
+and detached-barrier drain, final checkpoint with the publication domain still live,
+backend lifetime disposal, root/service disposal, actual native storage close, then
+continuity and bootstrap release. Unpublished construction omits the final checkpoint.
+A live resident session or outstanding grant refuses the drain. Failure retains the
+owner and remaining guards. Repeated stop returns the original promise, even if it
+failed. Genuine realm destruction is distinct from successful cooperative cleanup.
+
+Every ready result includes a new instance/history and the full `v1-new-history`
+notice. Durable publication cuts are untracked, old capabilities and mutation
+outcomes are not restored, and the acknowledged tail may be lost. Explicit `reopen-v1`
+requires the caller's acceptance of that loss and uncertainty. This private mechanism
+does not provide Runtime recovery, retirement of surviving clients, SAFE guarantees,
+a public recovery API or a consumer format switch.
+
+The existing cross-tab runner registers native factory controls. A separately approved
+focused stage can select `--persistent-owner-only chromium`; the default runner still
+includes all prior controls. These native controls are not substitutes for the broader
+browser matrix or independent review.

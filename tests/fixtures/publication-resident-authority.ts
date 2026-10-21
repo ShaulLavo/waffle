@@ -12,6 +12,46 @@ import {
 } from "../../browser/publication-authority";
 import { record, text } from "../../fs/publication-attachment";
 
+import { IndexedDBStorage } from "../../fs/indexeddb";
+import {
+  createPersistentResidentOwner,
+  selectPersistentWorkspace,
+  type PersistentOwnerRequest,
+  type PersistentResidentOwner,
+} from "../../browser/persistent-resident-owner";
+
+let persistentOwner: PersistentResidentOwner | undefined;
+let persistentAbort: AbortController | undefined;
+let persistentStop: Promise<void> | undefined;
+let observeNative = false;
+let failNativeClose = false;
+let openGate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+let openHeld: ReturnType<typeof Promise.withResolvers<void>> | undefined;
+let nativeEvents: string[] = [];
+const nativeOpen = IndexedDBStorage.open;
+const nativeLoad = IndexedDBStorage.prototype.load;
+const nativeClose = IndexedDBStorage.prototype.close;
+IndexedDBStorage.open = async function (name, options) {
+  if (observeNative) nativeEvents.push("native-open");
+  const storage = await nativeOpen.call(this, name, options);
+  if (observeNative) nativeEvents.push("native-acquired");
+  if (openGate) {
+    openHeld!.resolve();
+    await openGate.promise;
+  }
+  return storage;
+};
+IndexedDBStorage.prototype.load = async function () {
+  if (observeNative) nativeEvents.push("native-load");
+  return nativeLoad.call(this);
+};
+IndexedDBStorage.prototype.close = async function () {
+  if (observeNative) nativeEvents.push("native-close-called");
+  if (failNativeClose) throw new Error("injected native close failure");
+  await nativeClose.call(this);
+  if (observeNative) nativeEvents.push("native-closed");
+};
+
 const limits: PublicationLimits = {
   sessions: 16,
   operations: 16,
@@ -79,7 +119,12 @@ Object.defineProperty(navigator.locks, "request", {
       self.postMessage({ event: "guardPending" });
       await guardGate.promise;
     }
-    return nativeLockRequest(name, options, callback);
+    return nativeLockRequest(name, options, async (lock) => {
+      const value = await callback(lock);
+      if (observeNative && name.startsWith("waffle:publication:"))
+        nativeEvents.push("guard-released");
+      return value;
+    });
   },
 });
 async function serviceWork(): Promise<number> {
@@ -113,7 +158,92 @@ function inspectBytes(output: Uint8Array): number {
     shared.endServiceMutation(epoch);
   }
 }
+function persistentRequest(body: unknown): PersistentOwnerRequest {
+  const data = record(body);
+  const base = {
+    runtimeLifetime: text(data.runtimeLifetime),
+    attempt: text(data.attempt),
+    selected: selectPersistentWorkspace({ name: text(data.name), mode: "fast", whenBusy: "wait" }),
+    publication: { limits, observe: true },
+  };
+  if (data.original === undefined) return { ...base, kind: "initial-open" };
+  const original = record(data.original);
+  return {
+    ...base,
+    kind: "reopen-v1",
+    accept: "new-history-loss-and-unknown",
+    original: { instance: text(original.instance), history: text(original.history) },
+  };
+}
+function beginPersistent(body: unknown): PersistentResidentOwner {
+  if (persistentOwner) throw new Error("original persistent owner still retained");
+  observeNative = true;
+  nativeEvents = [];
+  persistentAbort = new AbortController();
+  persistentStop = undefined;
+  const request = persistentRequest(body);
+  persistentOwner = createPersistentResidentOwner(request, persistentAbort.signal);
+  return persistentOwner;
+}
+async function stopPersistent(): Promise<unknown> {
+  const owner = persistentOwner;
+  if (!owner) throw new Error("persistent owner missing");
+  persistentStop ??= owner.stop();
+  const same = persistentStop === owner.stop();
+  try {
+    await persistentStop;
+    if (persistentOwner === owner) persistentOwner = undefined;
+    return { same, stopped: true, events: nativeEvents.slice() };
+  } catch (error) {
+    return { same, stopped: false, failure: String(error), events: nativeEvents.slice() };
+  }
+}
+async function persistentOperation(operation: string, body: unknown): Promise<unknown> {
+  if (operation === "persistentStart") {
+    const owner = beginPersistent(body);
+    try {
+      return { ready: true, value: await owner.ready, events: nativeEvents.slice() };
+    } catch (error) {
+      return { ready: false, failure: String(error), events: nativeEvents.slice() };
+    }
+  }
+  if (operation === "persistentStop") return stopPersistent();
+  if (operation === "persistentFailClose") {
+    failNativeClose = true;
+    return null;
+  }
+  if (operation === "persistentAbortLateOpen") {
+    openGate = Promise.withResolvers<void>();
+    openHeld = Promise.withResolvers<void>();
+    const owner = beginPersistent(body);
+    const ready = owner.ready.then(
+      () => true,
+      () => false,
+    );
+    await openHeld.promise;
+    persistentAbort!.abort();
+    persistentStop = owner.stop();
+    let settled = false;
+    void persistentStop.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    const pendingBeforeRelease = !settled;
+    openGate.resolve();
+    const stopped = await stopPersistent();
+    openGate = undefined;
+    openHeld = undefined;
+    return { pendingBeforeRelease, ready: await ready, stopped };
+  }
+  throw new Error(`unknown persistent operation ${operation}`);
+}
 async function execute(operation: string, body: unknown): Promise<unknown> {
+  if (operation.startsWith("persistent")) return persistentOperation(operation, body);
   if (operation === "beginGuard") {
     await initialize();
     await root!.asyncCall("publicationResident", [
