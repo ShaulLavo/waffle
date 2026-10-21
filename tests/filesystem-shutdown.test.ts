@@ -776,6 +776,8 @@ async function rejectedQuiescing(reason: unknown, reentrant: boolean): Promise<v
     section.exit();
     held = false;
     expect(await quiesced).toEqual({ status: "rejected", reason });
+    const work: unknown = Reflect.get(owned.service, "work");
+    expect(work instanceof Map && work.has(original.done)).toBe(true);
     expect(Reflect.get(original.session, "quiescing")).toBeUndefined();
     expect(owned.backend.pins.get(directory)).toBe(1);
     stopping ??= owned.service.shutdown();
@@ -800,3 +802,66 @@ for (const [index, reason] of quiescingReasons.entries()) {
     rejectedQuiescing(reason, true),
   );
 }
+
+
+test("F1 service revocation alone does not authorize dead-owner recovery", async () => {
+  const owned = fixture();
+  const child = connectFilesystemIdentity(createProcessFilesystemIdentity(owned.root.client));
+  owned.connections.push(child);
+  const recover = owned.backend.revokeOwner.bind(owned.backend);
+  const recovered: number[] = [];
+  try {
+    const client = owned.connect();
+    await client.asyncCall("preopen", ["/"]);
+    owned.service.connect(child.server);
+    revokeFilesystem(child.client);
+    owned.backend.revokeOwner = (owner, epoch) => {
+      recovered.push(owner);
+      recover(owner, epoch);
+    };
+    const stopping = owned.service.shutdown();
+    owned.joins.push(stopping);
+    await stopping;
+    expect(recovered).toEqual([]);
+    expect(owned.backend.closes).toBe(1);
+  } finally {
+    await owned.close();
+  }
+});
+
+test("F1 failed recovery preserves the original failure and attempts independent recoveries", async () => {
+  const owned = fixture();
+  const first = connectFilesystemIdentity(createProcessFilesystemIdentity(owned.root.client));
+  const second = connectFilesystemIdentity(createProcessFilesystemIdentity(owned.root.client));
+  owned.connections.push(first, second);
+  const failure = new Error("dead-owner recovery");
+  const recover = owned.backend.revokeOwner.bind(owned.backend);
+  const recovered: number[] = [];
+  try {
+    const client = owned.connect();
+    const directory: number = await client.asyncCall("preopen", ["/"]);
+    owned.service.connect(first.server);
+    owned.service.connect(second.server);
+    reapFilesystem(first.client);
+    reapFilesystem(second.client);
+    owned.backend.revokeOwner = (owner, epoch) => {
+      recovered.push(owner);
+      if (owner === first.client.owner) throw failure;
+      recover(owner, epoch);
+    };
+    const stopping = owned.service.shutdown();
+    owned.joins.push(outcome(stopping));
+    const result = await outcome(stopping);
+    expect(result.status).toBe("rejected");
+    if (result.status === "rejected") expect(result.reason).toBe(failure);
+    expect(recovered).toEqual([first.client.owner, second.client.owner]);
+    expect(owned.backend.pins.get(directory)).toBe(1);
+    expect(owned.service.shutdown()).toBe(stopping);
+    expect(owned.backend.closes).toBe(0);
+    owned.service.dispose();
+    owned.service.sweep();
+    expect(recovered).toHaveLength(2);
+  } finally {
+    await owned.close();
+  }
+});

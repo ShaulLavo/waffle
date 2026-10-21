@@ -59,6 +59,7 @@ interface Session {
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
+  releaseState?: { kind: "running" } | { kind: "failed"; error: unknown };
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
   publicationPins?: Set<number>;
@@ -849,17 +850,31 @@ export class FilesystemService {
     this.releaseSession(session);
   }
   private releaseSession(session: Session): void {
+    if (session.releaseState?.kind === "running") return;
+    if (session.releaseState?.kind === "failed") throw session.releaseState.error;
+    session.releaseState = { kind: "running" };
+    try {
+      this.releaseSessionPins(session);
+      session.releaseState = undefined;
+    } catch (error) {
+      session.releaseState = { kind: "failed", error };
+      throw error;
+    }
+  }
+  private releaseSessionPins(session: Session): void {
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
     // an entrant between admission and acquisition, which may still be touching a pin or page.
     if (ownRevocation !== 2 && Atomics.load(new Int32Array(session.connection.sections), 0)) {
-      session.quiescing ??= waitForFilesystemQuiescence(session.connection).then(() => {
-        // A later rejected entrant can briefly raise the count again. Let close() re-arm
-        // its waiter if the next sweep observes that admission before it aborts.
-        session.quiescing = undefined;
-        this.sweep();
-      });
+      session.quiescing ??= this.trackWork(
+        session,
+        waitForFilesystemQuiescence(session.connection).then(() => {
+          // The field controls rearming; work retains this original outcome after it clears.
+          session.quiescing = undefined;
+          this.sweep();
+        }),
+      );
       return;
     }
     if (ownRevocation === 2)
@@ -1010,15 +1025,8 @@ export class FilesystemService {
     return done;
   }
   private async shutdownFence(session: Session): Promise<void> {
-    const quiescing = session.quiescing ?? Promise.resolve();
     revokeFilesystemService(session.connection);
-    const results = await Promise.allSettled([
-      waitForFilesystemQuiescence(session.connection),
-      quiescing,
-    ]);
-    const failures: unknown[] = [];
-    this.collectFailures(results, failures);
-    this.throwShutdownFailures(failures);
+    await waitForFilesystemQuiescence(session.connection);
   }
   private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
     const failures: unknown[] = [];
@@ -1031,6 +1039,8 @@ export class FilesystemService {
       )
     )
       failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));
+    this.throwShutdownFailures(failures);
+    this.recoverShutdownOwners(owner.sessions, failures);
     this.throwShutdownFailures(failures);
     for (const session of owner.sessions) {
       try {
@@ -1050,6 +1060,19 @@ export class FilesystemService {
       failures.push(new FilesystemError(6, "filesystem has unresolved refused transfers"));
     this.throwShutdownFailures(failures);
     await this.backend.close?.();
+  }
+  private recoverShutdownOwners(sessions: readonly Session[], failures: unknown[]): void {
+    for (const session of sessions) {
+      if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) !== 2) continue;
+      try {
+        this.backend.revokeOwner?.(
+          session.connection.owner,
+          new Int32Array(session.connection.epoch),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
   }
   private async drainShutdownWork(failures: unknown[]): Promise<void> {
     const joined = new Set<Promise<unknown>>();
