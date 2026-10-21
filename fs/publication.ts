@@ -343,9 +343,9 @@ export class PublicationDomain {
     this.residentActive = true;
   }
   assertAccess(): void {
+    if (!Atomics.load(this.control, Control.DirectExcluded)) return;
     this.assertLive();
-    if (Atomics.load(this.control, Control.DirectExcluded) && !this.residentActive)
-      throw new FilesystemError(6);
+    if (!this.residentActive) throw new FilesystemError(6);
   }
   /** A remote publication owns exclusion, never the filesystem lock, while away. */
   assertCurrent(grant = 0): void {

@@ -832,6 +832,15 @@ export class SharedFilesystemState {
       this.section?.exit();
     }
   }
+  private readyGlobal(revoked: () => boolean, owner: number): boolean {
+    try {
+      this.globalLock(revoked, owner, true);
+      return true;
+    } catch (error) {
+      if (error instanceof FilesystemError && error.errno === 6) return false;
+      throw error;
+    }
+  }
   /** Probe without spinning or changing file data. True means ready, false means lock contention,
    * and undefined requests hydration. The same locks gate a successful retry. */
   directReadiness(
@@ -848,8 +857,8 @@ export class SharedFilesystemState {
     try {
       if (revoked()) throw new FilesystemError(11);
       if (writing || this.publication) {
-        this.globalLock(revoked, owner, true);
-        global = true;
+        global = this.readyGlobal(revoked, owner);
+        if (!global) return false;
       }
       file = Atomics.compareExchange(this.slots, lock, 0, owner) === 0;
       if (!file) return false;

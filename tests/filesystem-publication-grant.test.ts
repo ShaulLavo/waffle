@@ -400,14 +400,15 @@ test("claim constructors, copies and paired codec bypass late prototype hooks", 
     for (const [prototype, name] of methods) {
       const own = Object.getOwnPropertyDescriptor(prototype, name);
       const method = Reflect.get(prototype, name);
-      Object.defineProperty(prototype, name, {
-        configurable: true,
-        writable: true,
-        value: function (this: unknown, ...args: unknown[]) {
-          intercepted++;
-          return Reflect.apply(method, this, args);
-        },
-      });
+      const value = function (this: unknown, ...args: unknown[]) {
+        intercepted++;
+        return Reflect.apply(method, this, args);
+      };
+      Object.defineProperty(
+        prototype,
+        name,
+        own ? { ...own, value } : { configurable: true, writable: true, value },
+      );
       restorations.push(() => {
         if (own) Object.defineProperty(prototype, name, own);
         else Reflect.deleteProperty(prototype, name);
