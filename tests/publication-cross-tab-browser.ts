@@ -7,8 +7,9 @@ class FixtureWorker {
   readonly url: string;
   private pending = new Map<string, ReturnType<typeof Promise.withResolvers<unknown>>>();
   private events = new Map<string, unknown>();
+  private failure: Error | undefined;
   private waiting = new Map<string, ReturnType<typeof Promise.withResolvers<unknown>>>();
-  constructor(path: string) {
+  constructor(path: string, private expectedStartupFailure = false) {
     this.url = new URL(`${path}?worker=${crypto.randomUUID()}`, location.href).href;
     this.worker = new Worker(this.url, { type: "module" });
     this.worker.onmessage = ({ data }: MessageEvent<unknown>) => this.receive(record(data));
@@ -20,7 +21,7 @@ class FixtureWorker {
       this.events.set(data.event, data);
       this.waiting.get(data.event)?.resolve(data);
     }
-    if (data.type === "cleanup-error" || data.event === "failure") this.fail(new Error(JSON.stringify(data)));
+    if (data.type === "cleanup-error" || data.event === "failure" || (data.type === "error" && !this.expectedStartupFailure)) this.fail(new Error(JSON.stringify(data)));
     if (typeof data.id !== "string") return;
     const pending = this.pending.get(data.id);
     this.pending.delete(data.id);
@@ -28,6 +29,7 @@ class FixtureWorker {
     else pending?.resolve(data.value);
   }
   private fail(error: Error): void {
+    this.failure = error;
     for (const pending of this.pending.values()) pending.reject(error);
     for (const pending of this.waiting.values()) pending.reject(error);
   }
@@ -41,6 +43,7 @@ class FixtureWorker {
     } finally { clearTimeout(timer); this.pending.delete(id); }
   }
   async until(event: string): Promise<unknown> {
+    if (this.failure) throw this.failure;
     if (this.events.has(event)) return this.events.get(event);
     const answer = Promise.withResolvers<unknown>();
     this.waiting.set(event, answer);
@@ -84,7 +87,7 @@ async function cancelledStartupControl(): Promise<unknown> {
   const workspace = `startup-${crypto.randomUUID()}`;
   const exclusive = await acquirePublicationGuard(workspace, "exclusive", new AbortController().signal);
   const connection = createResidentConnection({ workspace, instance: "cancelled", epoch: 1, description: "never-opened", handle: 1 });
-  const worker = new FixtureWorker("/resident-guest.js");
+  const worker = new FixtureWorker("/resident-guest.js", true);
   try {
     await worker.request("start", { mode: "wasi", connection }, [connection.port]);
     revokeFilesystem(connection);
