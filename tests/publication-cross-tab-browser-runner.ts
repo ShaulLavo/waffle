@@ -150,6 +150,13 @@ async function run(name: string, origin: string): Promise<void> {
     console.log(
       "PASS queued acquisition cancellation joins cleanup and actual cancelled bootstrap never reaches setup",
     );
+    const recovery = await context.newPage();
+    await recovery.goto(origin);
+    equal(await control(recovery, "peer", descriptor), {
+      attached: true,
+      authorityRootReceived: false,
+    });
+    await control(recovery, "pageStop");
     await control(first, "stopGuest", { mode: "wasi" });
     await control(second, "prepare", {
       mode: "proc",
@@ -160,13 +167,6 @@ async function run(name: string, origin: string): Promise<void> {
     await control(second, "pageStop");
     equal(await control(first, "authorityDeath"), { observedNativeDeath: true });
     equal(await control(first, "exclusive"), false);
-    const recovery = await context.newPage();
-    await recovery.goto(origin);
-    equal(await control(recovery, "peer", descriptor), {
-      attached: true,
-      authorityRootReceived: false,
-    });
-    await control(recovery, "pageStop");
     await first.close();
     equal(await control(recovery, "exclusive"), false);
     // Creator-page closure is not claimant death. Its actual worker on the other page
