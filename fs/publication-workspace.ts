@@ -1,10 +1,14 @@
+import {
+  Int32ArrayConstructor, atomicsLoad, atomicsStore, sharedArrayBufferByteLength,
+} from "../proc/intrinsics.js";
 import { FilesystemClient, type FilesystemCompletion } from "./client.js";
 import { localPublication } from "./publication-internal.js";
 import { mutationIntent, mutationValue, type MutationId } from "./publication.js";
 import type { ResidentSession } from "./publication-grant.js";
 import { ResidentChannel, integer, record, residentSession, text } from "./publication-attachment.js";
 import {
-  CAPABILITY_HEADER, CAPABILITY_SLOTS, CAPABILITY_WORDS, HEADER, PAGE, State,
+  CAPABILITY_HEADER, CAPABILITY_LENGTH, CAPABILITY_SLOTS, CAPABILITY_WORDS,
+  CONNECTION_SHARED_BYTES, MAX_CONNECTION_OWNERS, HEADER, PAGE, State,
   FilesystemError, connectFilesystemIdentity, createFilesystemIdentity, isRevoked,
   pack, unpack, wake, type FilesystemConnection, type FilesystemIdentity,
 } from "./protocol.js";
@@ -22,15 +26,38 @@ interface WorkspaceCall {
   readonly id?: MutationId;
 }
 const requestBound = PAGE + 8192;
-function sameBuffer(left: SharedArrayBuffer, right: SharedArrayBuffer, index = 0): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  const a = new Int32Array(left), b = new Int32Array(right);
-  const before = Atomics.load(a, index), probe = before ^ -1;
-  Atomics.store(a, index, probe);
-  const same = Atomics.load(b, index) === probe;
-  Atomics.store(a, index, before);
-  return same;
+const backingWords = {
+  shared: CONNECTION_SHARED_BYTES / 4,
+  owners: MAX_CONNECTION_OWNERS,
+  capabilities: CAPABILITY_LENGTH,
+};
+/** Host-only trailers are never part of a guest operation's views or slot scans.
+ * This proves aliasing under exclusive host trailer writes, not hostile raw-SAB authentication.
+ * Comparisons run synchronously in the one bridge realm; operational guest writes stay independent. */
+export function sameWorkspaceBacking(
+  left: SharedArrayBuffer,
+  right: SharedArrayBuffer,
+  kind: keyof typeof backingWords,
+): boolean {
+  const words = backingWords[kind], bytes = (words + 1) * 4;
+  if (sharedArrayBufferByteLength(left) !== bytes || sharedArrayBufferByteLength(right) !== bytes) return false;
+  const a = new Int32ArrayConstructor(left, words * 4, 1);
+  const b = new Int32ArrayConstructor(right, words * 4, 1);
+  const before = atomicsLoad(a, 0);
+  if (before !== 0 || atomicsLoad(b, 0) !== 0) return false;
+  const probe = -1;
+  try {
+    atomicsStore(a, 0, probe);
+    return atomicsLoad(b, 0) === probe;
+  } finally {
+    atomicsStore(a, 0, before);
+  }
 }
+function reservationKey(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= CAPABILITY_HEADER &&
+    value < CAPABILITY_LENGTH && (value - CAPABILITY_HEADER) % CAPABILITY_WORDS === 0;
+}
+
 const queryOperations = new Set(["stat", "permissions", "resolve", "lookup", "readdir", "read", "grow", "sync", "flush"]);
 
 function identity(value: unknown): MutationId {
@@ -109,7 +136,7 @@ export class WorkspacePeer {
     return !this.stopped && this.retained.has(handle);
   }
   private holdResults(): number[] {
-    const entries = new Int32Array(this.client.connection.capabilities);
+    const entries = new Int32ArrayConstructor(this.client.connection.capabilities, 0, CAPABILITY_LENGTH);
     for (let key = CAPABILITY_HEADER; key < entries.length; key += CAPABILITY_WORDS) {
       const handle = Atomics.load(entries, key);
       if (Atomics.load(entries, key + 1) < 0 || this.retained.has(handle)) continue;
@@ -206,7 +233,7 @@ class WorkspaceBridge {
   }
   private connect(value: unknown): void {
     const child = value as FilesystemConnection;
-    if (isRevoked(this.connection) || !sameBuffer(child.shared, this.connection.shared, 6) || !sameBuffer(child.ownerStates, this.connection.ownerStates))
+    if (isRevoked(this.connection) || !sameWorkspaceBacking(child.shared, this.connection.shared, "shared") || !sameWorkspaceBacking(child.ownerStates, this.connection.ownerStates, "owners"))
       throw new FilesystemError(11);
     const handles: number[] = [];
     for (const reservation of child.reservations) {
@@ -220,8 +247,8 @@ class WorkspaceBridge {
     if (!handles.length) bridge.transfer.resolve();
   }
   private validateReservation(child: FilesystemConnection, reservation: FilesystemIdentity["reservations"][number]): void {
-    const source = new Int32Array(this.connection.capabilities), target = new Int32Array(child.capabilities);
-    if (!sameBuffer(reservation.source, this.connection.capabilities) || !sameBuffer(reservation.target, child.capabilities) || reservation.targetOwner !== child.owner)
+    const source = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH), target = new Int32ArrayConstructor(child.capabilities, 0, CAPABILITY_LENGTH);
+    if (!sameWorkspaceBacking(reservation.source, this.connection.capabilities, "capabilities") || !sameWorkspaceBacking(reservation.target, child.capabilities, "capabilities") || reservation.targetOwner !== child.owner || !reservationKey(reservation.sourceKey) || !reservationKey(reservation.targetKey))
       throw new FilesystemError(8);
     if (Atomics.load(source, reservation.sourceKey) !== reservation.handle || Atomics.load(source, reservation.sourceKey + 2) <= 0 || Atomics.load(target, reservation.targetKey) !== reservation.handle || Atomics.load(target, reservation.targetKey + 1) <= 0)
       throw new FilesystemError(8);
@@ -298,12 +325,12 @@ class WorkspaceBridge {
     parent.bridge.validateReservation(this.connection, reservation);
     const state = new Int32Array(reservation.state);
     if (Atomics.compareExchange(state, 1, 0, 1)) throw new FilesystemError(11);
-    Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
+    Atomics.sub(new Int32ArrayConstructor(reservation.source, 0, CAPABILITY_LENGTH), reservation.sourceKey + 2, 1);
   }
   private mirror(value: unknown): unknown {
     const response = record(value);
     if (!Array.isArray(response.handles) || response.handles.length > CAPABILITY_SLOTS) throw new FilesystemError(29);
-    const entries = new Int32Array(this.connection.capabilities);
+    const entries = new Int32ArrayConstructor(this.connection.capabilities, 0, CAPABILITY_LENGTH);
     for (const raw of response.handles) this.mirrorHandle(entries, integer(raw));
     return response.value;
   }

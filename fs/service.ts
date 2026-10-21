@@ -10,6 +10,7 @@ import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js"
 import { MemoryBackend, type FilesystemBackend } from "./backend.js";
 import {
   CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   HEADER,
@@ -87,7 +88,7 @@ export class FilesystemService {
     const session: Session = {
       connection,
       handles: new Map(),
-      capabilities: new Int32Array(connection.capabilities),
+      capabilities: new Int32Array(connection.capabilities, 0, CAPABILITY_LENGTH),
       freeEntries: Array.from(
         { length: CAPABILITY_SLOTS },
         (_, index) => CAPABILITY_HEADER + (CAPABILITY_SLOTS - index - 1) * CAPABILITY_WORDS,
@@ -120,7 +121,7 @@ export class FilesystemService {
         } else if (isRevoked(connection))
           Atomics.store(session.capabilities, reservation.targetKey + 1, -1);
       } finally {
-        Atomics.sub(new Int32Array(reservation.source), reservation.sourceKey + 2, 1);
+        Atomics.sub(new Int32Array(reservation.source, 0, CAPABILITY_LENGTH), reservation.sourceKey + 2, 1);
       }
     }
     Atomics.store(session.capabilities, 0, session.transient.size);

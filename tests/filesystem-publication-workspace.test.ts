@@ -7,7 +7,8 @@ import {
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
 import { ResidentChannel, ResidentGrantClient, createResidentConnection, residentDescriptor, residentSession } from "../fs/publication-attachment";
-import { connectFilesystemIdentity, createProcessFilesystemIdentity, isRevoked } from "../fs/protocol";
+import { CAPABILITY_HEADER, CAPABILITY_LENGTH, CAPABILITY_SLOTS, CAPABILITY_WORDS, CONNECTION_SHARED_BYTES, MAX_CONNECTION_OWNERS, SHARED_SEGMENT_BYTES, connectFilesystemIdentity, createFilesystemIdentity, createProcessFilesystemIdentity, isRevoked } from "../fs/protocol";
+import { sameWorkspaceBacking } from "../fs/publication-workspace";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -212,5 +213,59 @@ test("legitimate workspace reservation transfer never changes live ownership con
     await childChannel.call("close", { token: childSession.token });
     childChannel.close();
     await f.stop();
+  }
+});
+
+
+test("workspace backing proof accepts cloned aliases and rejects copied contents", () => {
+  const cases = [
+    { kind: "shared", words: CONNECTION_SHARED_BYTES / 4 },
+    { kind: "owners", words: MAX_CONNECTION_OWNERS },
+    { kind: "capabilities", words: CAPABILITY_LENGTH },
+  ] as const;
+  for (const { kind, words } of cases) {
+    const owned = new SharedArrayBuffer((words + 1) * 4);
+    const alias: SharedArrayBuffer = structuredClone(owned);
+    const unrelated = new SharedArrayBuffer(owned.byteLength);
+    new Int32Array(unrelated).set(new Int32Array(owned));
+    expect(sameWorkspaceBacking(owned, alias, kind)).toBe(true);
+    expect(sameWorkspaceBacking(owned, unrelated, kind)).toBe(false);
+    expect(Atomics.load(new Int32Array(owned), words)).toBe(0);
+    expect(sameWorkspaceBacking(owned, new SharedArrayBuffer(words * 4), kind)).toBe(false);
+    Atomics.store(new Int32Array(unrelated), words, -1);
+    expect(sameWorkspaceBacking(owned, unrelated, kind)).toBe(false);
+    expect(Atomics.load(new Int32Array(owned), words)).toBe(0);
+  }
+});
+
+test("only workspace allocations append identity cells and capability scans exclude them", () => {
+  const ordinary = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
+  const file = createResidentConnection({ kind: "file", workspace: "layout", instance: "layout", epoch: 1, description: "file", handle: 2 });
+  const workspace = createResidentConnection({ kind: "workspace", workspace: "layout", instance: "layout", epoch: 1, description: "workspace", handle: 2 });
+  const parent = new FilesystemClient({ ...workspace, residentPublication: undefined });
+  const child = createProcessFilesystemIdentity(workspace);
+  try {
+    for (const identity of [ordinary, file]) {
+      expect(identity.shared.byteLength).toBe(CONNECTION_SHARED_BYTES);
+      expect(identity.ownerStates.byteLength).toBe(MAX_CONNECTION_OWNERS * 4);
+      expect(identity.capabilities.byteLength).toBe(CAPABILITY_LENGTH * 4);
+    }
+    expect(workspace.shared.byteLength).toBe(CONNECTION_SHARED_BYTES + 4);
+    expect(workspace.ownerStates.byteLength).toBe(MAX_CONNECTION_OWNERS * 4 + 4);
+    expect(workspace.capabilities.byteLength).toBe(CAPABILITY_LENGTH * 4 + 4);
+    expect(child.capabilities.byteLength).toBe(CAPABILITY_LENGTH * 4 + 4);
+    const entries = new Int32Array(child.capabilities);
+    for (let slot = 0; slot < CAPABILITY_SLOTS; slot++) {
+      const key = CAPABILITY_HEADER + slot * CAPABILITY_WORDS;
+      entries[key] = 100 + slot;
+      entries[key + 1] = 1;
+      entries[key + 2] = 0;
+    }
+    expect(() => parent.reserve(2, child)).toThrow(expect.objectContaining({ errno: 51 }));
+    expect(entries[CAPABILITY_LENGTH]).toBe(0);
+    expect(() => parent.retain(999999)).toThrow(expect.objectContaining({ errno: 8 }));
+  } finally {
+    parent.dispose();
+    file.port.close();
   }
 });

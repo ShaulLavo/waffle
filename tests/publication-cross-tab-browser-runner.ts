@@ -81,7 +81,7 @@ async function workspaceControls(browser: Browser, origin: string): Promise<void
     equal(record(await workspacePage(second, "stat", [record(await workspacePage(second, "resolve", [root, "dir/b"])).node])).size, 2);
     const entries = await workspacePage(second, "readdir", [directory.node]);
     if (!Array.isArray(entries)) throw new Error("missing current directory entries");
-    equal(entries.map((entry) => record(entry).name).sort(), ["a", "b"]);
+    equal(entries.map((entry) => record(entry).name).sort(), [".", "..", "a", "b"]);
     await control(first, "workspaceGuest", { key: "retained", mode: "wasi" });
     await control(second, "workspaceGuest", { key: "proc", mode: "proc" });
     equal(await workspaceGuest(first, "retained", "workspace", { action: "create", path: "dir/new" }), 0);

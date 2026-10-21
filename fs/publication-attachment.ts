@@ -1,3 +1,4 @@
+import { Int32ArrayConstructor, SharedArrayBufferConstructor, typedArraySet } from "../proc/intrinsics.js";
 import { installWorkspaceBridge } from "./publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
 import { decodeEffects, encodeEffects, type PublicationCut } from "./publication.js";
@@ -13,6 +14,9 @@ import {
 
 import {
   CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
+  CONNECTION_SHARED_BYTES,
+  MAX_CONNECTION_OWNERS,
   connectFilesystemIdentity,
   createFilesystemIdentity,
   SHARED_SEGMENT_BYTES,
@@ -499,13 +503,24 @@ export async function attachResidentPublication(
   return client;
 }
 
-/** Local liveness and capabilities reuse a full root-format allocation: 25,477,140 bytes
- * before objects, ports and offsets. No backend or authority root is copied; namespace is unsupported. */
+function workspaceIdentityBuffer(source: SharedArrayBuffer, words: number): SharedArrayBuffer {
+  const buffer = new SharedArrayBufferConstructor((words + 1) * 4);
+  typedArraySet(new Int32ArrayConstructor(buffer, 0, words), new Int32ArrayConstructor(source, 0, words));
+  new Int32ArrayConstructor(buffer, words * 4, 1)[0] = 0;
+  return buffer;
+}
+/** Synthetic local liveness/capabilities, never an authority backend or writable tree.
+ * Workspace buffers append three non-operational backing-identity words, twelve bytes total. */
 export function createResidentConnection(value: ResidentDescriptor): FilesystemConnection {
   const descriptor = residentDescriptor(value);
   const identity = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES);
   identity.residentPublication = descriptor;
-  const entries = new Int32Array(identity.capabilities);
+  if (descriptor.kind === "workspace") {
+    identity.shared = workspaceIdentityBuffer(identity.shared, CONNECTION_SHARED_BYTES / 4);
+    identity.ownerStates = workspaceIdentityBuffer(identity.ownerStates, MAX_CONNECTION_OWNERS);
+    identity.capabilities = workspaceIdentityBuffer(identity.capabilities, CAPABILITY_LENGTH);
+  }
+  const entries = new Int32ArrayConstructor(identity.capabilities, 0, CAPABILITY_LENGTH);
   entries[0] = 1;
   entries[CAPABILITY_HEADER] = descriptor.handle;
   entries[CAPABILITY_HEADER + 1] = 0;

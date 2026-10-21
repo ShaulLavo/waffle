@@ -139,3 +139,30 @@ transfer, current reads after a lost nudge, observer denial and receipt recovery
 The source report records executed results. This remains a private MemoryBackend
 slice, not S1/S2, SAFE, public-mode or whole-project acceptance. Cold range loading,
 growth beyond admitted bounds, durable history and consumer pins stay separate.
+
+### Workspace backing identity
+
+Workspace synthetic shared state, owner states and capability tables each append
+one non-operational word. Ordinary and file-only allocations keep their original
+sizes. Capability views and scans exclude that final word. The page bridge checks
+fixed allocation lengths and compares backing stores only at those fixed final
+words, using captured constructors, byte-length accessors and atomic operations.
+The synchronous comparison restores zero in `finally`. It never probes a live
+revocation, lock, liveness or capability word. Source/target reservation keys,
+counts, owner and transfer state are still checked separately.
+
+This check assumes only the trusted host bridge writes the trailer. All host
+allocations initialize it to zero; the bridge rejects a nonzero initial trailer.
+Two unrelated zero-filled or copied allocations cannot pass: changing the first
+trailer to minus one leaves the other at zero. Structured-cloned aliases see the
+same change. Live guest operations may change operational words concurrently,
+but none of their bounded capability views or slot scans includes the trailer.
+
+The worker bootstrap keeps `FilesystemClient` in host closures. WASI and process
+imports receive guest-memory arguments and descriptor operations, not the raw
+connection or trailer views. The retained-descriptor codec and identity transport
+are trusted host machinery. Captured construction, copying and atomics prevent a
+late guest global/prototype replacement from receiving the comparison views.
+This is not authentication against code already given arbitrary raw control
+SABs, including an untrusted host integration. Such a writer can corrupt control
+memory directly and is outside this private slice's trust assumption.

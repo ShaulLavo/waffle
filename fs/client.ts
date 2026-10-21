@@ -46,6 +46,7 @@ import type {
 } from "../core/index.js";
 import {
   CAPABILITY_HEADER,
+  CAPABILITY_LENGTH,
   CAPABILITY_SLOTS,
   CAPABILITY_WORDS,
   HEADER,
@@ -254,7 +255,7 @@ export class FilesystemClient implements FileSystem {
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   constructor(readonly connection: FilesystemConnection) {
-    this.capabilities = new Int32ArrayConstructor(connection.capabilities);
+    this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
     this.epoch = new Int32ArrayConstructor(connection.epoch);
     this.revoked = sharedRevoked(connection);
     if (connection.residentPublication)
@@ -341,7 +342,7 @@ export class FilesystemClient implements FileSystem {
       this.retain(handle);
       try {
         const sourceKey = this.capabilityEntry(handle)!;
-        const entries = new Int32ArrayConstructor(target.capabilities);
+        const entries = new Int32ArrayConstructor(target.capabilities, 0, CAPABILITY_LENGTH);
         let targetKey = CAPABILITY_HEADER;
         while (
           targetKey < typedArrayLength(entries) &&
