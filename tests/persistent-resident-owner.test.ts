@@ -130,3 +130,86 @@ test("owner drain joins a detached checkpoint and keeps the domain live for fina
     owned.close();
   }
 });
+
+import { MemoryBackend } from "../fs/backend";
+import { ResidentAuthorityServer } from "../browser/publication-authority";
+import { ResidentChannel, residentDescriptor } from "../fs/publication-attachment";
+
+async function residentServer() {
+  const backend = new MemoryBackend();
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection(undefined, { limits, observe: true });
+  service.connect(pair.server);
+  const root = new FilesystemClient(pair.client);
+  const directory: number = await root.asyncCall("preopen", ["/"]);
+  const workspace = `owner-drain-${crypto.randomUUID()}`;
+  const descriptor = residentDescriptor(
+    await root.asyncCall("publicationWorkspace", [
+      root.connection.publication!.observer,
+      directory,
+      workspace,
+    ]),
+  );
+  const authority = service.residentPublication!;
+  authority.activate();
+  const releases: string[] = [];
+  const server = new ResidentAuthorityServer(
+    authority,
+    {
+      async release() {
+        releases.push("continuity");
+      },
+    },
+    {
+      async release() {
+        releases.push("bootstrap");
+      },
+    },
+  );
+  const channel = new ResidentChannel(workspace);
+  return {
+    backend,
+    server,
+    descriptor,
+    channel,
+    releases,
+    async close() {
+      channel.close();
+      await server.stop();
+      root.dispose();
+      service.dispose();
+    },
+  };
+}
+
+test("persistent server drain refuses a live actual session and memoizes its failure", async () => {
+  const owned = await residentServer();
+  try {
+    await owned.channel.call("open", owned.descriptor);
+    const draining = owned.server.drainForOwner();
+    await expect(draining).rejects.toMatchObject({ errno: 6 });
+    expect(owned.server.drainForOwner()).toBe(draining);
+    await expect(owned.server.drainForOwner()).rejects.toMatchObject({ errno: 6 });
+    expect(owned.releases).toEqual([]);
+    expect(owned.backend.shared.publication!.stopped).toBe(false);
+  } finally {
+    // This fixture owns a memory server, not native storage or real continuity guards.
+    await owned.close();
+  }
+});
+
+test("persistent server drain keeps authority live until separate finalization", async () => {
+  const owned = await residentServer();
+  try {
+    await owned.server.drainForOwner();
+    expect(owned.backend.shared.publication!.stopped).toBe(false);
+    expect(owned.releases).toEqual([]);
+    const finalizing = owned.server.finishStop();
+    expect(owned.server.finishStop()).toBe(finalizing);
+    await finalizing;
+    expect(owned.backend.shared.publication!.stopped).toBe(true);
+    expect(owned.releases).toEqual(["continuity", "bootstrap"]);
+  } finally {
+    await owned.close();
+  }
+});

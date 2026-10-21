@@ -24,7 +24,7 @@ export async function openFilesystemBackend(
   const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
   requireVfsCapabilities(descriptor.implementation);
   if (descriptor.implementation === "memory") return new MemoryBackend();
-  let backend: PersistentBackend | undefined;
+  let backend: PersistentBackend | undefined = undefined;
   let ownershipLost = false;
   const storage =
     descriptor.implementation === "opfs-memory"

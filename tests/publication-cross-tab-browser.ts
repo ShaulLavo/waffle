@@ -650,10 +650,35 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
 }
 
 /** @browserEntry Invoked by the registered browser runner through its bundled URL. */
+async function inspectFactoryWorkspace(name: string): Promise<unknown> {
+  const metadata = record(await inspectPersistentWorkspace(name));
+  const database = await nativeRequest(indexedDB.open(name, 1));
+  try {
+    const transaction = database.transaction("data", "readonly");
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+    });
+    const store = transaction.objectStore("data");
+    const [keys, values]: [IDBValidKey[], unknown[]] = await Promise.all([
+      nativeRequest(store.getAllKeys()),
+      nativeRequest(store.getAll()),
+    ]);
+    await completed;
+    const payloads = values.map((value, index) => {
+      if (!(value instanceof Uint8Array))
+        throw new Error("unexpected native payload representation");
+      return { key: keys[index], bytes: Array.from(value) };
+    });
+    return { ...metadata, payloads };
+  } finally {
+    database.close();
+  }
+}
 let persistentHolder: Awaited<ReturnType<typeof acquirePublicationGuard>> | undefined;
 async function persistentControl(operation: string, value: unknown): Promise<unknown> {
   if (operation === "persistentSeed") return ordinaryPersistentWorkspace(text(value), true);
-  if (operation === "persistentInspect") return inspectPersistentWorkspace(text(value));
+  if (operation === "persistentInspect") return inspectFactoryWorkspace(text(value));
   if (operation === "persistentDelete") {
     await deletePersistentWorkspace(text(value));
     return null;
