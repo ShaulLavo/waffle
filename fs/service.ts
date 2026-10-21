@@ -151,6 +151,28 @@ export class FilesystemService {
     };
     connection.port.start();
   }
+  private adoptWorkspace(connection: FilesystemConnection, reservation: import("./protocol.js").FilesystemReservation): void {
+    const target = Array.from(this.sessions).find((peer) => peer.connection.capabilities === connection.capabilities);
+    const source = Array.from(this.sessions).find((peer) => peer.connection.capabilities === reservation.source);
+    if (!target || !source || isRevoked(source.connection) || isRevoked(connection) ||
+        reservation.target !== connection.capabilities || reservation.targetOwner !== connection.owner ||
+        source.handles.get(reservation.handle) !== reservation.sourceKey ||
+        Atomics.load(source.capabilities, reservation.sourceKey + 2) <= 0)
+      throw new FilesystemError(8);
+    const state = new Int32Array(reservation.state);
+    if (Atomics.load(state, 0) || Atomics.compareExchange(state, 1, 0, 1))
+      throw new FilesystemError(11);
+    try {
+      if (target.handles.has(reservation.handle)) return;
+      this.backend.retain(reservation.handle);
+      target.handles.set(reservation.handle, reservation.targetKey);
+      target.transient.set(reservation.handle, true);
+      const free = target.freeEntries.indexOf(reservation.targetKey);
+      if (free >= 0) target.freeEntries.splice(free, 1);
+    } finally {
+      Atomics.sub(source.capabilities, reservation.sourceKey + 2, 1);
+    }
+  }
   private enqueue(
     session: Session,
     id: number,
@@ -577,6 +599,7 @@ export class FilesystemService {
     if (!grant || args[0] !== grant) throw new FilesystemError(2);
     const domain = this.backend.shared.publication!;
     switch (operation) {
+      case "publicationWorkspace":
       case "publicationResident": {
         const handle = args[1],
           workspace = args[2];
@@ -589,7 +612,15 @@ export class FilesystemService {
           workspace,
         );
         if (this.residentPublication.workspace !== workspace) throw new FilesystemError(28);
-        const descriptor = this.residentPublication.retain(handle);
+        this.residentPublication.workspaceHost ??= {
+          root: session.connection,
+          connect: (connection) => this.connect(connection),
+          sweep: () => this.sweep(),
+          adopt: (connection, reservation) => this.adoptWorkspace(connection, reservation),
+        };
+        const descriptor = this.residentPublication.retain(
+          handle, operation === "publicationWorkspace" ? "workspace" : "file",
+        );
         domain.excludeDirect();
         return descriptor;
       }

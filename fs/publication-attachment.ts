@@ -1,3 +1,4 @@
+import { installWorkspaceBridge } from "./publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
 import { decodeEffects, encodeEffects, type PublicationCut } from "./publication.js";
 import {
@@ -38,7 +39,9 @@ export function integer(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
 }
 export function residentDescriptor(value: unknown): ResidentDescriptor {
   const data = record(value);
+  if (data.kind !== "file" && data.kind !== "workspace") throw new FilesystemError(28);
   return {
+    kind: data.kind,
     workspace: text(data.workspace),
     instance: text(data.instance),
     epoch: integer(data.epoch),
@@ -73,6 +76,7 @@ export function residentGrant(value: unknown): ResidentGrant {
     file = record(data.file);
   if (stat.kind !== "file") throw new FilesystemError(28);
   const base = {
+    handle: integer(data.handle),
     key: text(data.key),
     session: residentSession(data.session),
     file: { birthHistory: text(file.birthHistory), ino: integer(file.ino) },
@@ -227,11 +231,14 @@ export class ResidentChannel {
     if (data.errno !== undefined) pending.reject(new FilesystemError(integer(data.errno)));
     else pending.resolve(data.value);
   }
-  call(operation: string, body: unknown): Promise<unknown> {
+  call(operation: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (this.pending.size >= 16) return Promise.reject(new FilesystemError(6));
+    if (signal?.aborted) return Promise.reject(new FilesystemError(11));
     const id = crypto.randomUUID();
     const answer = Promise.withResolvers<unknown>();
     const timer = setTimeout(() => {
       this.pending.delete(id);
+      this.channel.postMessage({ kind: "cancel", client: this.id, id });
       answer.reject(new FilesystemError(6));
     }, callBound);
     this.pending.set(id, { ...answer, timer });
@@ -242,7 +249,12 @@ export class ResidentChannel {
       this.pending.delete(id);
       answer.reject(error);
     }
-    return answer.promise;
+    const cancel = () => this.channel.postMessage({ kind: "cancel", client: this.id, id });
+    signal?.addEventListener("abort", cancel, { once: true });
+    return answer.promise.finally(() => signal?.removeEventListener("abort", cancel));
+  }
+  cancelSession(token: string): void {
+    this.channel.postMessage({ kind: "cancelSession", token });
   }
   close(): void {
     for (const pending of this.pending.values()) {
@@ -292,11 +304,11 @@ export class ResidentGrantClient {
   ) {
     channel.status = () => this.cell?.snapshot();
   }
-  prepare(request: ResidentRequest): Promise<void> {
+  prepare(request: ResidentRequest, handle = this.session.descriptor.handle): Promise<void> {
     const owned = residentRequest(request);
     if (this.stopped || this.revoked()) return Promise.reject(new FilesystemError(11));
     if (this.preparing) return Promise.reject(new FilesystemError(6));
-    const preparing = this.prepareOwned(owned);
+    const preparing = this.prepareOwned(owned, handle);
     this.preparing = preparing;
     void preparing.then(
       () => this.clearPreparing(preparing),
@@ -307,7 +319,7 @@ export class ResidentGrantClient {
   private clearPreparing(preparing: Promise<void>): void {
     if (this.preparing === preparing) this.preparing = undefined;
   }
-  private async prepareOwned(request: ResidentRequest): Promise<void> {
+  private async prepareOwned(request: ResidentRequest, handle: number): Promise<void> {
     if (this.cell) {
       this.cell.cancel();
       const status = await this.settle();
@@ -315,7 +327,7 @@ export class ResidentGrantClient {
     }
     if (this.stopped || this.revoked()) throw new FilesystemError(11);
     const grant = residentGrant(
-      await this.channel.call("prepare", { token: this.session.token, request }),
+      await this.channel.call("prepare", { token: this.session.token, request, handle }),
     );
     if (JSON.stringify(grant.session) !== JSON.stringify(this.session))
       throw new FilesystemError(11);
@@ -354,6 +366,7 @@ export class ResidentGrantClient {
   invalidate(): void {
     this.stopped = true;
     this.cell?.cancel();
+    this.channel.cancelSession(this.session.token);
   }
   stop(): Promise<void> {
     this.invalidate();
@@ -497,6 +510,7 @@ export function createResidentConnection(value: ResidentDescriptor): FilesystemC
   entries[CAPABILITY_HEADER + 1] = 0;
   entries[CAPABILITY_HEADER + 2] = 0;
   const connection = connectFilesystemIdentity(identity);
-  connection.server.port.close();
+  if (descriptor.kind === "workspace") installWorkspaceBridge(connection.server);
+  else connection.server.port.close();
   return connection.client;
 }

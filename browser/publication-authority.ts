@@ -1,3 +1,4 @@
+import { WorkspacePeer } from "../fs/publication-workspace.js";
 import { FilesystemError } from "../core/filesystem.js";
 import {
   ResidentGrantAuthority,
@@ -8,6 +9,7 @@ import {
   acquirePublicationGuard,
   encodeResidentSettlement,
   record,
+  integer,
   residentDescriptor,
   residentOutcome,
   residentRequest,
@@ -25,6 +27,8 @@ interface StatusWaiter {
 export class ResidentAuthorityServer {
   private channel: BroadcastChannel;
   private sessions = new Map<string, ResidentSession>();
+  private peers = new Map<string, WorkspacePeer>();
+  private requests = new Map<string, { client: string; token: unknown; abort: AbortController }>();
   private status = new Map<string, StatusWaiter>();
   private outstanding:
     | { readonly client: string; readonly token: string; readonly grant: string }
@@ -49,9 +53,54 @@ export class ResidentAuthorityServer {
         this.receiveStatus(message);
         return;
       }
+      if (message.kind === "cancel") {
+        this.requests.get(`${String(message.client)}:${String(message.id)}`)?.abort.abort();
+        return;
+      }
+      if (message.kind === "cancelSession") {
+        for (const active of this.requests.values())
+          if (active.token === message.token) active.abort.abort();
+        return;
+      }
       if (message.kind !== "request" || this.stopped) return;
-      this.queue = this.queue.then(() => this.request(message)).catch(() => {});
+      this.admit(message);
     };
+  }
+  private admit(message: Record<string, unknown>): void {
+    let client: string, id: string;
+    try { client = text(message.client); id = text(message.id); } catch { return; }
+    const key = `${client}:${id}`;
+    if (this.requests.has(key)) return;
+    if (this.requests.size >= this.authority.backend.shared.publication!.limits.operations) {
+      this.channel.postMessage({ kind: "reply", client, id, errno: 6 });
+      return;
+    }
+    const abort = new AbortController();
+    const body = message.body;
+    const token = body && typeof body === "object" && "token" in body ? body.token : undefined;
+    this.requests.set(key, { client, token, abort });
+    this.queue = this.queue.then(() => this.request(message, abort.signal)).catch(() => {}).finally(() => this.requests.delete(key));
+  }
+  private token(value: unknown): ResidentSession {
+    const token = text(value);
+    const session = Array.from(this.sessions.values()).find((session) => session.token === token);
+    if (!session) throw new FilesystemError(11);
+    return session;
+  }
+  private peer(session: ResidentSession): WorkspacePeer {
+    if (session.descriptor.kind !== "workspace") throw new FilesystemError(58);
+    let peer = this.peers.get(session.token);
+    if (peer) return peer;
+    const host = this.authority.workspaceHost;
+    if (!host) throw new FilesystemError(58);
+    peer = new WorkspacePeer(session, host);
+    this.peers.set(session.token, peer);
+    return peer;
+  }
+  private closeSession(session: ResidentSession): void {
+    this.peers.get(session.token)?.stop();
+    this.peers.delete(session.token);
+    this.authority.close(session);
   }
   private receiveStatus(data: Record<string, unknown>): void {
     try {
@@ -93,7 +142,8 @@ export class ResidentAuthorityServer {
     if (!session || session.token !== text(token)) throw new FilesystemError(11);
     return session;
   }
-  private async execute(client: string, operation: string, value: unknown): Promise<unknown> {
+  private async execute(client: string, operation: string, value: unknown, signal: AbortSignal): Promise<unknown> {
+    if (this.stopped || signal.aborted) throw new FilesystemError(11);
     if (operation === "open") {
       if (this.sessions.has(client)) throw new FilesystemError(6);
       const session = this.authority.open(residentDescriptor(value));
@@ -102,17 +152,34 @@ export class ResidentAuthorityServer {
     }
     if (operation === "closeConnection") {
       const session = this.sessions.get(client);
-      if (session) this.authority.close(session);
+      if (session) this.closeSession(session);
       this.sessions.delete(client);
       return null;
     }
-    const body = record(value),
-      session = this.session(client, body.token);
+    const body = record(value);
+    if (operation.startsWith("workspace")) {
+      const session = this.token(body.token);
+      await this.settleOutstanding();
+      if (this.stopped || signal.aborted) throw new FilesystemError(11);
+      const peer = this.peer(session);
+      if (operation === "workspaceNext") return peer.next();
+      if (operation === "workspaceReceipt") return peer.receipt(body.id);
+      if (operation === "workspaceAdopt") {
+        if (!Array.isArray(body.handles) || body.handles.length > 4096) throw new FilesystemError(28);
+        return peer.adopt(this.peer(this.token(body.source)), body.handles.map((handle: unknown) => integer(handle)));
+      }
+      if (operation === "workspace") return peer.execute(body.request, signal);
+      throw new FilesystemError(2);
+    }
+    const session = this.session(client, body.token);
     if (operation === "prepare") {
       const request = residentRequest(body.request);
       await this.settleOutstanding();
       if (this.stopped) throw new FilesystemError(11);
-      const grant = this.authority.prepare(session, request);
+      const handle = body.handle === undefined ? session.descriptor.handle : integer(body.handle);
+      if (session.descriptor.kind === "workspace" && !this.peer(session).owns(handle))
+        throw new FilesystemError(8);
+      const grant = this.authority.prepare(session, request, handle);
       this.outstanding = { client, token: session.token, grant: grant.key };
       return grant;
     }
@@ -128,13 +195,13 @@ export class ResidentAuthorityServer {
       return encodeResidentSettlement(result);
     }
     if (operation === "close") {
-      this.authority.close(session);
+      this.closeSession(session);
       this.sessions.delete(client);
       return null;
     }
     throw new FilesystemError(58);
   }
-  private async request(data: Record<string, unknown>): Promise<void> {
+  private async request(data: Record<string, unknown>, signal: AbortSignal): Promise<void> {
     let client: string, id: string;
     try {
       client = text(data.client);
@@ -143,7 +210,7 @@ export class ResidentAuthorityServer {
       return;
     }
     try {
-      const value = await this.execute(client, text(data.operation), data.body);
+      const value = await this.execute(client, text(data.operation), data.body, signal);
       this.channel.postMessage({ kind: "reply", client, id, value });
     } catch (error) {
       const errno = error instanceof FilesystemError ? error.errno : 29;
@@ -152,12 +219,15 @@ export class ResidentAuthorityServer {
   }
   stop(): Promise<void> {
     this.stopped = true;
+    for (const active of this.requests.values()) active.abort.abort();
     return (this.stopping ??= this.stopOwned());
   }
   private async stopOwned(): Promise<void> {
     await this.queue;
     // A pending/unknown claimant keeps both continuity and bootstrap held.
     if (this.outstanding) throw new FilesystemError(6);
+    for (const peer of this.peers.values()) peer.stop();
+    this.peers.clear();
     this.channel.close();
     this.authority.dispose();
     await this.guard.release();

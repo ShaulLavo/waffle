@@ -33,6 +33,7 @@ export type ResidentRequest =
   | { readonly kind: "read" | "write"; readonly offset: number; readonly maxBytes: number }
   | { readonly kind: "append"; readonly maxBytes: number };
 export interface ResidentDescriptor {
+  readonly kind: "file" | "workspace";
   readonly workspace: string;
   readonly instance: string;
   readonly epoch: number;
@@ -46,6 +47,7 @@ export interface ResidentSession {
 }
 interface GrantBase {
   readonly key: string;
+  readonly handle: number;
   readonly session: ResidentSession;
   readonly file: FileKey;
   readonly stat: FileStat;
@@ -216,7 +218,7 @@ export class ResidentGrantCell {
   ): number | { written: number; offset: number } {
     if (atomicsLoad(this.state, 0) !== CellState.Ready) return -6;
     const grant = this.grant;
-    if (handle !== grant.session.descriptor.handle) return -8;
+    if (handle !== grant.handle) return -8;
     if (grant.kind !== kind || (kind !== "append" && offset !== grant.offset)) return -6;
     let views: Uint8Array[];
     try {
@@ -319,6 +321,7 @@ export class ResidentGrantCell {
 /** Owns real retained descriptions and the sole publication order, not a second tree. */
 export class ResidentGrantAuthority {
   readonly instance = crypto.randomUUID();
+  workspaceHost: import("./publication-workspace.js").WorkspaceHost | undefined;
   private descriptions = new Map<string, RetainedDescription>();
   private sessions = new Map<string, AuthoritySession>();
   private outstanding: OutstandingGrant = { kind: "idle" };
@@ -345,13 +348,15 @@ export class ResidentGrantAuthority {
       this.backend.shared.endServiceMutation(this.epoch);
     }
   }
-  retain(handle: number): ResidentDescriptor {
+  retain(handle: number, kind: ResidentDescriptor["kind"] = "file"): ResidentDescriptor {
     return this.boundary(0, () => {
       if (this.descriptions.size >= this.domain.limits.sessions) throw new FilesystemError(6);
       const stat = this.backend.shared.info(handle);
-      if (!stat || stat.kind !== "file") throw new FilesystemError(8);
+      if (!stat || stat.kind !== (kind === "file" ? "file" : "directory"))
+        throw new FilesystemError(8);
       this.backend.retain(handle);
-      const descriptor = {
+      const descriptor: ResidentDescriptor = {
+        kind,
         workspace: this.workspace,
         instance: this.instance,
         epoch: 1,
@@ -367,10 +372,11 @@ export class ResidentGrantAuthority {
     this.backend.shared.activateResidentAuthority();
   }
   open(descriptor: ResidentDescriptor): ResidentSession {
-    const { workspace, instance, epoch, description, handle } = descriptor;
+    const { kind, workspace, instance, epoch, description, handle } = descriptor;
     const retained = this.descriptions.get(description)?.descriptor;
     if (
       !retained ||
+      retained.kind !== kind ||
       retained.workspace !== workspace ||
       retained.instance !== instance ||
       retained.epoch !== epoch ||
@@ -398,6 +404,7 @@ export class ResidentGrantAuthority {
     const expected = owner.value.descriptor,
       actual = value.descriptor;
     if (
+      expected.kind !== actual.kind ||
       expected.workspace !== actual.workspace ||
       expected.instance !== actual.instance ||
       expected.epoch !== actual.epoch ||
@@ -407,19 +414,19 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(11);
     return owner;
   }
-  prepare(session: ResidentSession, request: ResidentRequest): ResidentGrant {
+  prepare(session: ResidentSession, request: ResidentRequest, handle = session.descriptor.handle): ResidentGrant {
     const kind = request.kind,
       maxBytes = bounded(request.maxBytes, this.domain.limits.inputBytes);
     const offset = kind === "append" ? 0 : bounded(request.offset, Number.MAX_SAFE_INTEGER);
     const owner = this.session(session);
-    return this.boundary(0, () => structuredClone(this.issue(owner, { kind, maxBytes, offset })));
+    return this.boundary(0, () => structuredClone(this.issue(owner, { kind, maxBytes, offset }, handle)));
   }
   private issue(
     owner: AuthoritySession,
     request: { kind: ResidentRequest["kind"]; maxBytes: number; offset: number },
+    handle: number,
   ): ResidentGrant {
     if (this.outstanding.kind !== "idle") throw new FilesystemError(6);
-    const handle = owner.value.descriptor.handle;
     const stat = this.backend.shared.info(handle);
     if (!stat || !this.backend.shared.isResident(handle)) throw new FilesystemError(6);
     if (stat.mode === undefined) throw new FilesystemError(58);
@@ -430,6 +437,7 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(6);
     if (++this.serial > 0x7ffffffe) throw new FilesystemError(33);
     const base: GrantBase = {
+      handle,
       key: crypto.randomUUID(),
       session: owner.value,
       file: { birthHistory: this.domain.buffers.history, ino: stat.ino },
@@ -445,7 +453,7 @@ export class ResidentGrantAuthority {
   }
   private issueRead(base: GrantBase, serial: number): ResidentGrant {
     const bytes = new Uint8ArrayConstructor(base.maxBytes);
-    const count = this.backend.shared.read(base.session.descriptor.handle, [bytes], base.offset);
+    const count = this.backend.shared.read(base.handle, [bytes], base.offset);
     const grant: ResidentGrant = {
       ...base,
       kind: "read",
@@ -459,8 +467,8 @@ export class ResidentGrantAuthority {
     const id = this.domain.next(base.session.session);
     const intent: MutationIntent =
       kind === "append"
-        ? { kind, handle: base.session.descriptor.handle }
-        : { kind, handle: base.session.descriptor.handle, offset: base.offset };
+        ? { kind, handle: base.handle }
+        : { kind, handle: base.handle, offset: base.offset };
     const result = this.domain.admit(
       base.session.session,
       id,
@@ -574,7 +582,7 @@ export class ResidentGrantAuthority {
       action: typedArrayLength(bytes)
         ? {
             kind: "write",
-            handle: grant.session.descriptor.handle,
+            handle: grant.handle,
             offset: grant.offset,
             data: bytes,
             mtime,
