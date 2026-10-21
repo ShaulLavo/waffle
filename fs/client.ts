@@ -667,9 +667,16 @@ export class FilesystemClient implements FileSystem {
         : this.submit("grow", [handle, intent.size]);
     mapSet(this.ioPreparations, handle, completion);
   }
+  private residentIO<T>(action: () => T): T | number {
+    try {
+      this.section.enter();
+    } catch (error) { return -errno(error); }
+    try { return action(); } catch (error) { return -errno(error); }
+    finally { this.section.exit(); }
+  }
   /** Nonblocking runtime_proc I/O. Never retain an iovec across an EAGAIN boundary. */
   tryRead(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.resident.client?.tryRead(handle, chunks, offset) ?? (this.revoked() ? -11 : -6);
+    if (this.resident) return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
     if (!(offset >= 0)) return -28;
     try {
       if (!this.preparedIO(handle)) return -6;
@@ -697,7 +704,7 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
-    if (this.resident) return this.resident.client?.tryWrite(handle, chunks, offset) ?? (this.revoked() ? -11 : -6);
+    if (this.resident) return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
     if (!(offset >= 0)) return -28;
     try {
@@ -728,7 +735,7 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
-    if (this.resident) return this.resident.client?.tryAppend(handle, chunks) ?? (this.revoked() ? -11 : -6);
+    if (this.resident) return this.residentIO(() => this.resident?.client?.tryAppend(handle, chunks) ?? -6);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, true);
     try {
       if (!this.preparedIO(handle)) return -6;
