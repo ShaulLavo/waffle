@@ -213,7 +213,11 @@ export class ResidentAuthorityServer {
       await this.settleOutstanding();
       if (this.stopped) throw new FilesystemError(11);
       const handle = body.handle === undefined ? session.descriptor.handle : integer(body.handle);
-      if (session.descriptor.kind === "workspace" && !this.peer(session).owns(handle))
+      if (
+        session.descriptor.kind === "file"
+          ? handle !== session.descriptor.handle
+          : !this.peer(session).owns(handle)
+      )
         throw new FilesystemError(8);
       const grant = this.authority.prepare(session, request, handle);
       this.outstanding = { client, token: session.token, grant: grant.key };
