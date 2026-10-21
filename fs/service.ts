@@ -617,7 +617,7 @@ export class FilesystemService {
   }
   private publicationPin(session: Session, args: readonly unknown[]): unknown {
     if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
-    const [_, handle, offset, length] = args;
+    const [, handle, offset, length] = args;
     const shared = this.backend.shared,
       domain = shared.publication!;
     if (
