@@ -221,6 +221,11 @@ test("direct publication kernel fails before bytes on conflicts, bounds and glob
   expect(Atomics.load(shared.cells, 1)).toBe(0);
 });
 
+function requirePublicationGroups(page: {kind: string; publications?: readonly unknown[]}, count: number): void {
+  if (page.kind !== "changes") throw new Error("publication history gap");
+  if (page.publications?.length !== count) throw new Error("missing complete publication group");
+}
+
 async function localPublicationFixture(backend = new MemoryBackend(), seed = true) {
   if (seed) backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
@@ -252,6 +257,7 @@ test("production publication content paths publish before direct and service suc
     expect(output).toEqual(new Uint8Array([9, 8, 3]));
     expect(await root.asyncCall("append", [handle], new Uint8Array([7]))).toEqual({ written: 1, offset: 4 });
     const page = await changes(start);
+    requirePublicationGroups(page, 2);
     expect(page.kind).toBe("changes");
     expect(page.publications).toHaveLength(2);
     expect(page.publications.map((publication: { changes: unknown[] }) => publication.changes.length)).toEqual([2, 2]);
@@ -758,4 +764,49 @@ test("production exact identities survive after-commit response loss and cannot 
     fixture.sibling.dispose();
     expect(() => fixture.sibling[localPublication]("write", args, data, admitted.admission.id)).toThrow();
   } finally { fixture.server.port.postMessage = post; fixture.stop(); }
+});
+
+
+test("production publication oracle detects a disabled direct commit and a stale observer cut", async () => {
+  const fixture = await localPublicationFixture();
+  const domain = fixture.root.shared.publication!, commit = domain.commit.bind(domain);
+  try {
+    const start = await fixture.cut();
+    domain.commit = (prepared) => prepared.receipt;
+    expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([9])], 0)).toBe(1);
+    expect(fixture.backend.shared.snapshot(fixture.handle)?.data).toEqual(new Uint8Array([9, 2, 3]));
+    expect(() => requirePublicationGroups({kind: "changes", publications: []}, 1)).toThrow("missing complete publication group");
+    expect(() => requirePublicationGroups(fixture.backend.shared.publication!.changes(start, limits.logBytes), 1)).toThrow("missing complete publication group");
+    domain.commit = commit;
+    for (const byte of [6, 7, 8]) expect(fixture.root.tryWrite(fixture.handle, [new Uint8Array([byte])], 0)).toBe(1);
+    expect(() => requirePublicationGroups(fixture.backend.shared.publication!.changes(start, limits.logBytes), 3)).toThrow("publication history gap");
+  } finally { domain.commit = commit; fixture.stop(); }
+});
+
+test("production current cached and host reads recheck traversal permissions and metadata", async () => {
+  const fixture = await localPublicationFixture();
+  try {
+    await fixture.root.asyncCall("writeFile", ["/dir/child"], new Uint8Array([4]));
+    const parent = await fixture.root.asyncCall("preopen", ["/dir"]);
+    fixture.root.retain(parent);
+    const child = await fixture.root.asyncCall("resolve", [parent, "child"]);
+    fixture.root.retain(child.node);
+    const before = await fixture.cut();
+    expect(fixture.root.stat(child.node).size).toBe(1);
+    expect(fixture.root.permissions(child.node).access).toBe(6);
+    expect(await fixture.root.asyncCall("resize", [child.node, 2, false])).toBe(0);
+    expect(fixture.root.stat(child.node).size).toBe(2);
+    expect(await fixture.root.asyncCall("setMtime", [child.node, 55])).toBe(0);
+    expect(fixture.root.stat(child.node).mtime).toBe(55);
+    expect(await fixture.root.asyncCall("setMode", [parent, 0o600])).toBe(0);
+    const denied = await fixture.cut();
+    await expectErrno(fixture.root.asyncCall("readFile", ["/dir/child"]), 2);
+    await expectErrno(fixture.root.asyncCall("resolve", [parent, "child"]), 2);
+    await expectErrno(fixture.root.asyncCall("listFiles", ["/dir"]), 2);
+    expect(await fixture.cut()).toEqual(denied);
+    expect(await fixture.root.asyncCall("setMode", [parent, 0o700])).toBe(0);
+    expect((await fixture.root.asyncCall("readFile", ["/dir/child"]))).toEqual(new Uint8Array([4, 0]));
+    expect((await fixture.root.asyncCall("lookup", ["/dir"])).children.size).toBe(1);
+    expect((await fixture.changes(before)).kind).toBe("gap");
+  } finally { fixture.stop(); }
 });
