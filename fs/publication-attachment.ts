@@ -364,6 +364,7 @@ export class ResidentGrantClient {
     );
   }
   invalidate(): void {
+    if (this.stopped) return;
     this.stopped = true;
     this.cell?.cancel();
     this.channel.cancelSession(this.session.token);

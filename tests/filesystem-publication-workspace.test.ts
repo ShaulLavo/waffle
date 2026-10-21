@@ -6,7 +6,7 @@ import {
   createFilesystemConnection,
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
-import { ResidentChannel, residentDescriptor, residentSession } from "../fs/publication-attachment";
+import { ResidentChannel, ResidentGrantClient, residentDescriptor, residentSession } from "../fs/publication-attachment";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -148,4 +148,15 @@ test("service-side queued cancellation has no effects and stop joins its prepara
     backend.released.resolve();
     if (!stopped) await f.stop();
   }
+});
+
+test("repeated joined resident stop never posts cancellation on its closed channel", async () => {
+  const f = await fixture();
+  try {
+    const channel = new ResidentChannel(f.session.descriptor.workspace);
+    const session = residentSession(await channel.call("open", f.session.descriptor));
+    const client = new ResidentGrantClient(channel, session, () => false);
+    await client.stop();
+    await client.stop();
+  } finally { await f.stop(); }
 });
