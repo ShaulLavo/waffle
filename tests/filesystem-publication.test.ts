@@ -19,36 +19,88 @@ async function expectErrno(action: Promise<unknown>, expected: number): Promise<
 }
 
 test("local publication orders real host, WASI and direct writers without a nudge", async () => {
-  const service = new FilesystemService(new MemoryBackend());
-  const connection = createFilesystemConnection();
-  service.connect(connection.server);
-  const root = new FilesystemClient(connection.client);
-  const sibling = new FilesystemClient(root.fork());
+  const fixture = await localPublicationFixture();
+  const guestClient = new FilesystemClient(fixture.root.fork());
+  const observer = publicationObserver(fixture.root);
+  const memory = new WebAssembly.Memory({ initial: 4 });
+  const wasi = new Wasi({
+    args: [], env: {}, fs: guestClient, preopens: {}, namespaces: { env: { memory } },
+    stdout() {}, stderr() {}, sleep() { throw new Error("resident WASI slept"); },
+  });
+  const module = publicationWasiModule();
+  const guest = new WebAssembly.Instance(module, wasi.imports(module));
+  const directory = await guestClient.asyncCall("preopen", ["/"]);
+  const path = await guestClient.asyncCall("resolve", [directory, "file"]);
+  guestClient.retain(path.node);
+  const resource: Extract<Resource, { kind: "file" }> = {
+    kind: "file", handle: path.node, offset: 0, append: false,
+  };
+  shareFileResource(resource, guestClient.connection);
+  const fd = wasi.descriptors.open(resource, (1n << 1n) | (1n << 2n) | (1n << 6n), 0n);
+  wasi.start(guest);
+  const clients = [fixture.root, guestClient, fixture.sibling];
+  const view = new DataView(memory.buffer);
+  view.setUint32(0, 256, true);
+  view.setUint32(4, 1, true);
   try {
-    await root.asyncCall("writeFile", ["/file"], new TextEncoder().encode("host"));
-    const directory = await root.asyncCall("preopen", ["/"]);
-    const path = await root.asyncCall("resolve", [directory, "file"]);
-    root.retain(path.node);
-    expect(root.tryWrite(path.node, [new TextEncoder().encode("direct")], 0)).toBe(6);
-    const peerDirectory = await sibling.asyncCall("preopen", ["/"]);
-    const peerPath = await sibling.asyncCall("resolve", [peerDirectory, "file"]);
-    sibling.retain(peerPath.node);
-    const output = new Uint8Array(6);
-    expect(sibling.tryRead(peerPath.node, [output], 0)).toBe(6);
-    expect(new TextDecoder().decode(output)).toBe("direct");
-    const cut = await root.asyncCall("publicationCut");
-    expect(cut.history).toBeString();
-    expect(cut.history.length).toBeGreaterThan(0);
-    expect(cut.generation).toBeGreaterThan(0);
+    let cut = await observer.cut();
+    await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([1, 2, 3]));
+    cut = await oracleSuccess(observer, cut, ["resize", "bytes", "metadata"]);
+    oracleCurrent(clients, fixture.handle, [1, 2, 3]);
+    new Uint8Array(memory.buffer, 256, 1)[0] = 4;
+    expect(guestFunction(guest, "fd_pwrite")(fd, 0, 1, 1n, 32)).toBe(0);
+    expect(view.getUint32(32, true)).toBe(1);
+    expect(resource.offset).toBe(0);
+    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    oracleCurrent(clients, fixture.handle, [1, 4, 3]);
+    expect(fixture.sibling.tryWrite(fixture.handle, [new Uint8Array([5])], 2)).toBe(1);
+    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    oracleCurrent(clients, fixture.handle, [1, 4, 5]);
+    new Uint8Array(memory.buffer, 256, 1)[0] = 6;
+    expect(guestFunction(guest, "fd_write")(fd, 0, 1, 32)).toBe(0);
+    expect(view.getUint32(32, true)).toBe(1);
+    expect(resource.offset).toBe(1);
+    cut = await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    oracleCurrent(clients, fixture.handle, [6, 4, 5]);
+    // The kernel emits no publication nudge, including for this last success. Completion
+    // delivery is untouched. Only explicit observer reads discover the committed group.
+    expect(fixture.sibling.tryAppend(fixture.handle, [new Uint8Array([7])])).toEqual({ written: 1, offset: 4 });
+    await oracleSuccess(observer, cut, ["bytes", "metadata"]);
+    oracleCurrent(clients, fixture.handle, [6, 4, 5, 7]);
   } finally {
-    sibling.dispose();
-    root.dispose();
-    service.dispose();
+    wasi.descriptors.dispose();
+    guestClient.dispose();
+    fixture.stop();
   }
 });
 
+async function oracleSuccess(
+  observer: ReturnType<typeof publicationObserver>,
+  previous: import("../fs/publication").PublicationCut,
+  kinds: readonly string[],
+) {
+  const page = await observer.changes(previous, limits.logBytes);
+  requirePublicationGroups(page, 1);
+  if (page.kind !== "changes") throw new Error("missing complete publication group");
+  const group = page.publications[0]!;
+  expect(group.cut).toEqual({ history: previous.history, generation: previous.generation + 1 });
+  expect(group.changes.map((effect) => effect.kind)).toEqual(kinds);
+  expect(group.receipt.cut).toEqual(group.cut);
+  expect(group.receipt.durability).toEqual({ kind: "untracked" });
+  expect(await observer.receipt(group.receipt.id)).toEqual({ kind: "committed", receipt: group.receipt });
+  expect(await observer.cut()).toEqual(group.cut);
+  return group.cut;
+}
+function oracleCurrent(clients: readonly FilesystemClient[], handle: number, expected: readonly number[]): void {
+  for (const client of clients) {
+    const output = new Uint8Array(expected.length);
+    expect(client.tryRead(handle, [output], 0)).toBe(expected.length);
+    expect(Array.from(output)).toEqual(expected);
+  }
+}
+
 import { PublicationDomain, createPublicationBuffers } from "../fs/publication";
-import { localPublication, type PublicationLimits } from "../fs/publication-internal";
+import { localPublication, publicationObserver, type PublicationLimits } from "../fs/publication-internal";
 import { PAGE, reapFilesystem } from "../fs/protocol";
 
 const limits: PublicationLimits = {
