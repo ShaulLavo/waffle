@@ -176,16 +176,18 @@ function completeEffects(value: unknown, before: PublicationCut): Record<string,
   equal(changes.next, { history: before.history, generation: before.generation + 6 });
   return groups;
 }
-function appendEffects(group: Record<string, unknown>, offset: number, bytes: number[]): void {
+function appendEffects(group: Record<string, unknown>, offset: number, bytes: number[]) {
   if (!Array.isArray(group.changes)) throw new Error("missing append group");
   const data = record(group.changes[0]);
   const metadata = record(group.changes[1]);
   equal(data.offset, offset);
-  equal(data.bytes, bytes);
+  equal(data.bytes, Object.fromEntries(bytes.map((byte, index) => [index, byte])));
   equal(data.size, offset + bytes.length);
   equal(metadata.file, data.file);
   equal(typeof metadata.mode, "number");
   equal(typeof metadata.mtime, "number");
+  if (typeof data.version !== "number") throw new Error("missing content version");
+  return { file: data.file, version: data.version };
 }
 function renameEffects(
   group: Record<string, unknown>,
@@ -207,6 +209,7 @@ function renameEffects(
   equal(metadata.file, added.parent);
   equal(typeof metadata.mode, "number");
   equal(typeof metadata.mtime, "number");
+  return removed.before;
 }
 async function stopped(page: Page): Promise<unknown> {
   const stop = record(await control(page, "persistentStop"));
@@ -335,13 +338,16 @@ async function history(
     const changes = await inspect(authority(), "changes", initial);
     evidence.changes = changes;
     const groups = completeEffects(changes, initial);
-    appendEffects(groups[0]!, 3, [41]);
-    appendEffects(groups[1]!, 4, [42]);
-    appendEffects(groups[3]!, 5, [43]);
-    appendEffects(groups[4]!, 6, [44, 45]);
+    const first = appendEffects(groups[0]!, 3, [41]);
+    const proc = appendEffects(groups[1]!, 4, [42]);
+    const wasi = appendEffects(groups[3]!, 5, [43]);
+    const replay = appendEffects(groups[4]!, 6, [44, 45]);
+    equal(proc, { file: first.file, version: first.version + 1 });
+    equal(wasi, { file: first.file, version: first.version + 2 });
+    equal(replay, { file: first.file, version: first.version + 3 });
     equal(groups[1]!.receipt, record(evidence.missingNudgeReceipt).receipt);
-    renameEffects(groups[2]!, "a", "target", true);
-    renameEffects(groups[5]!, "target", "final", false);
+    equal(renameEffects(groups[2]!, "a", "target", true), first.file);
+    equal(renameEffects(groups[5]!, "target", "final", false), first.file);
     equal(record(groups[4]!.receipt).id, id);
     equal(record(groups[4]!.receipt), record(receipt).receipt);
     return changes;
