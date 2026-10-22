@@ -72,7 +72,7 @@ async function withBackend(
   checkpointLimits = limits,
 ) {
   const store = new HeldStorage();
-  const options = { intervalMs: 0, checkpointLimits };
+  const options = { intervalMs: 0, checkpointLimits, dirtyLimits: false } as const;
   const backend = await PersistentBackend.open(store, options);
   const work: Promise<void>[] = [];
   const track = (promise: Promise<void>) => {

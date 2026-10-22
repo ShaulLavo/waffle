@@ -1,3 +1,4 @@
+import { DirtyAdmission, DIRTY_HEADER_WORDS } from "./dirty-admission.js";
 import { typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
@@ -19,7 +20,7 @@ import {
 export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
 const MAGIC = 0x42574653;
-const HEADER_WORDS = 16;
+const HEADER_WORDS = 16 + DIRTY_HEADER_WORDS;
 const MAX_FILES = 4096;
 const SEGMENT_PAGES = 256;
 const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
@@ -29,7 +30,9 @@ const MAX_FILE_PAGES = TOTAL_PAGES;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-export const SLOT_WORDS = 13;
+export const SLOT_WORDS = 15;
+const DIRTY_SIZE = 13;
+const DIRTY_MARK = 14;
 const PAGE_OWNER_OFFSET = HEADER_WORDS;
 const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
 const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
@@ -97,6 +100,7 @@ export function fixedWriteSources(chunks: readonly Uint8Array[]): readonly Uint8
 
 /** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
 export class SharedFilesystemState {
+  readonly dirtyAdmission: DirtyAdmission;
   readonly cells: Int32Array;
   readonly owners: Int32Array;
   readonly slots: Int32Array;
@@ -121,6 +125,7 @@ export class SharedFilesystemState {
     private readonly section?: FilesystemSection,
     publication?: PublicationBuffers,
   ) {
+    this.dirtyAdmission = new DirtyAdmission(buffer);
     if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
@@ -258,7 +263,7 @@ export class SharedFilesystemState {
     owner = this.lockOwner,
     access: "data" | "release" = "data",
   ): void {
-    const global = !!this.publication && this.globalOwner === undefined;
+    const global = (this.dirtyAdmission.enabled || !!this.publication) && this.globalOwner === undefined;
     if (global) this.globalLock(revoked, owner, false, access);
     else this.assertLockAccess(access);
     this.section?.enter();
@@ -385,6 +390,35 @@ export class SharedFilesystemState {
     this.slots[base + REVISION] = low + 1;
     if (low === -1) this.slots[base + REVISION_STATE] = this.slots[base + REVISION_STATE]! + 2;
   }
+  private residentBytes(): number {
+    return Atomics.load(this.cells, USED_PAGES) * PAGE;
+  }
+  private checkDirty(slot: number, size: number): void {
+    this.dirtyAdmission.checkFile(
+      this.residentBytes(), this.slots[this.at(slot, DIRTY_SIZE)]!, size,
+      this.slots[this.at(slot, DIRTY_MARK)] !== 1,
+    );
+  }
+  private dirty(slot: number, size = this.slots[this.at(slot, FILE_SIZE)]!): void {
+    if (!this.dirtyAdmission.enabled) return;
+    const previous = this.slots[this.at(slot, DIRTY_SIZE)]!;
+    this.dirtyAdmission.file(this.residentBytes(), previous, size, this.slots[this.at(slot, DIRTY_MARK)] !== 1);
+    this.slots[this.at(slot, DIRTY_SIZE)] = Math.max(previous, size);
+    this.slots[this.at(slot, DIRTY_MARK)] = 1;
+  }
+  checkDirtyGrowth(handle: FileHandle, size: number): void {
+    this.checkDirty(this.slot(handle), size);
+  }
+  prepareDirty(handle: FileHandle, size?: number): void {
+    this.dirty(this.slot(handle), size);
+  }
+  cleanDirty(revision: number, namespace: number): void {
+    if (!this.dirtyAdmission.clean(revision, namespace)) return;
+    for (let slot = 1; slot < MAX_FILES; slot++) {
+      this.slots[this.at(slot, DIRTY_SIZE)] = 0;
+      this.slots[this.at(slot, DIRTY_MARK)] = 0;
+    }
+  }
   private checkFile(slot: number, handle: FileHandle): void {
     if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
     if (this.slots[this.at(slot, 0)] !== 1) throw new FilesystemError(31);
@@ -407,7 +441,8 @@ export class SharedFilesystemState {
     const current = Atomics.load(this.slots, this.at(slot, CAPACITY));
     if (needed <= current) return;
     if (needed > MAX_FILE_PAGES) throw new RangeError("shared filesystem file is too large");
-    const target = Math.max(needed, Math.min(MAX_FILE_PAGES, Math.max(1, current * 2)));
+    const target = this.dirtyAdmission.enabled ? needed : Math.max(needed, Math.min(MAX_FILE_PAGES, Math.max(1, current * 2)));
+    this.dirtyAdmission.resident(this.residentBytes() + (target - current) * PAGE);
     const allocated: number[] = [];
     const rollback = () => {
       for (const physical of allocated) {
@@ -468,6 +503,7 @@ export class SharedFilesystemState {
           }
           return;
         }
+        this.dirtyAdmission.pin(1, this.residentBytes());
         const loaded = resident || stat.size === 0;
         if (stat.kind === "file" && loaded) {
           this.allocate(slot, Math.ceil(Math.max(data?.length ?? 0, stat.size) / PAGE));
@@ -486,6 +522,9 @@ export class SharedFilesystemState {
         this.slots[this.at(slot, REVISION_STATE)] =
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
         Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
+      } catch (error) {
+        if (this.slots[this.at(slot, HANDLE)] !== handle + 1) this.dirtyAdmission.pin(-1, this.residentBytes());
+        throw error;
       } finally {
         this.unlock(this.at(slot, FILE_LOCK));
       }
@@ -701,6 +740,7 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK));
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      this.dirty(slot);
       this.slots[this.at(slot, MODE)] = mode;
       this.changed(slot);
     } finally {
@@ -976,6 +1016,7 @@ export class SharedFilesystemState {
           mtime,
           admission,
         );
+        this.dirty(slot, Math.max(size, end));
         this.commitDirectBytes(
           slot,
           prepared ? [prepared.bytes] : chunks,
@@ -1145,6 +1186,7 @@ export class SharedFilesystemState {
         end > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
       )
         return undefined;
+      this.dirty(slot, Math.max(this.slots[this.at(slot, FILE_SIZE)]!, end));
       let at = offset;
       for (const chunk of chunks) {
         this.copyInto(slot, chunk, at);
@@ -1193,6 +1235,7 @@ export class SharedFilesystemState {
         offset + total > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
       )
         return offset + total;
+      this.dirty(slot, offset + total);
       let at = offset;
       for (const chunk of chunks) {
         this.copyInto(slot, chunk, at);
@@ -1219,6 +1262,7 @@ export class SharedFilesystemState {
     return result;
   }
   growLocked(handle: FileHandle, size: number): void {
+    this.checkDirtyGrowth(handle, size);
     this.allocate(this.slot(handle), Math.ceil(size / PAGE));
   }
   grow(handle: FileHandle, size: number): void {
@@ -1253,6 +1297,7 @@ export class SharedFilesystemState {
       const publication = admission
         ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
         : undefined;
+      if (truncate || next !== old) this.dirty(slot, next);
       if (resident && truncate && size < old) {
         let position = size;
         while (position < old) {
@@ -1344,6 +1389,7 @@ export class SharedFilesystemState {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
       const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
+      this.dirty(slot);
       this.setTimestamp(slot, mtime);
       this.changed(slot);
       if (publication) this.publication!.commit(publication);
@@ -1429,6 +1475,9 @@ export class SharedFilesystemState {
     if (this.slots[this.at(slot, UNLINKED)])
       this.publication?.forgetContent(this.slots[this.at(slot, INO)]!);
     this.freePagesLocked(slot);
+    this.dirtyAdmission.pin(-1, this.residentBytes());
+    this.slots[this.at(slot, DIRTY_SIZE)] = 0;
+    this.slots[this.at(slot, DIRTY_MARK)] = 0;
     const revision = this.getRevision(slot);
     const floor =
       (this.cells[FREED_REVISION_HIGH]! >>> 0) * 0x100000000 +

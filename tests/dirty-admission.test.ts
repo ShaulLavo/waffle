@@ -47,7 +47,7 @@ async function fixture(run: (backend: PersistentBackend, client: FilesystemClien
     storage.released.resolve();
     client.dispose();
     service.dispose();
-    await backend.close();
+    await Promise.allSettled([backend.close()]);
   }
 }
 

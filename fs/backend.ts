@@ -16,6 +16,7 @@ export interface FilesystemBackend {
   sharedSegments?(): SharedSegment[];
   /** Lazy storage reads finish before the service acquires its mutation lock. */
   prepare?(operation: string, args: any[], data: Uint8Array): void | Promise<void>;
+  waitForDirtyCapacity?(changed: number, cancelled: () => boolean): Promise<void>;
   /** File identity/path limits explicit durability to that file; omitted flushes the workspace. */
   flush?(target?: FileHandle | string): Promise<void>;
   /** Release startup resources when cancellation races backend creation. */
@@ -455,8 +456,7 @@ export class MemoryBackend implements FilesystemBackend {
    * change namespace, logical size or revision. Unsupported plans fail before any effect. */
   planPublication(intent: MutationIntent, data: Uint8Array): LocalMutationPlan {
     const domain = this.shared.publication;
-    if (!domain) throw new FilesystemError(28);
-    domain.assertLive();
+    domain?.assertLive();
     switch (intent.kind) {
       case "write":
       case "append":
@@ -469,7 +469,7 @@ export class MemoryBackend implements FilesystemBackend {
         return this.planPublicationMtime(intent);
       case "preopen":
       case "mkdirp": {
-        const prepared = this.fs.planMkdirp(intent.path, domain.limits.effects);
+        const prepared = this.fs.planMkdirp(intent.path, (domain?.limits.effects ?? 65536));
         const handle = this.fs.handleForNode(prepared.node);
         return this.planNamespace(
           prepared.plan,
@@ -483,7 +483,7 @@ export class MemoryBackend implements FilesystemBackend {
           intent.path,
           intent.nodeKind,
           intent.exclusive,
-          domain.limits.effects,
+          (domain?.limits.effects ?? 65536),
         );
         return this.planNamespace(
           prepared.plan,
@@ -498,8 +498,8 @@ export class MemoryBackend implements FilesystemBackend {
         this.path(intent.to);
         const prepared =
           intent.kind === "link"
-            ? this.fs.planLink(intent.from, intent.to, domain.limits.effects)
-            : this.fs.planRename(intent.from, intent.to, domain.limits.effects);
+            ? this.fs.planLink(intent.from, intent.to, (domain?.limits.effects ?? 65536))
+            : this.fs.planRename(intent.from, intent.to, (domain?.limits.effects ?? 65536));
         return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
       }
       case "removePath": {
@@ -507,12 +507,12 @@ export class MemoryBackend implements FilesystemBackend {
         const prepared = this.fs.planRemovePath(
           intent.path,
           intent.directory,
-          domain.limits.effects,
+          (domain?.limits.effects ?? 65536),
         );
         return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
       }
       case "remove": {
-        const prepared = this.fs.planRemove(intent.path, domain.limits.effects);
+        const prepared = this.fs.planRemove(intent.path, (domain?.limits.effects ?? 65536));
         return this.planNamespace(prepared.plan, { kind: "boolean", value: prepared.result });
       }
       case "move": {
@@ -528,7 +528,7 @@ export class MemoryBackend implements FilesystemBackend {
             },
             changes: [],
           };
-        const prepared = this.fs.planRename(from, to, domain.limits.effects);
+        const prepared = this.fs.planRename(from, to, (domain?.limits.effects ?? 65536));
         return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
       }
       case "writeFile":
@@ -607,7 +607,7 @@ export class MemoryBackend implements FilesystemBackend {
     const prepared = this.fs.planHostFile(
       normalize(intent.path),
       intent.exclusive,
-      this.shared.publication!.limits.effects,
+      (this.shared.publication?.limits.effects ?? 65536),
     );
     const namespace = this.planNamespace(prepared.plan, { kind: "void" });
     if (namespace.action.kind !== "namespace") throw new FilesystemError(29);
@@ -619,7 +619,7 @@ export class MemoryBackend implements FilesystemBackend {
       if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
       this.shared.growLocked(handle, size);
       const file = this.publicationKey(info.ino),
-        version = this.shared.publication!.nextContentVersion(info.ino);
+        version = (this.shared.publication?.nextContentVersion(info.ino) ?? 0);
       const mtime = prepared.plan.mtime,
         changes = namespace.changes.slice();
       if (intent.append && !data.length && !changes.length)
@@ -654,7 +654,7 @@ export class MemoryBackend implements FilesystemBackend {
       if (this.isLinked(entry.node)) continue;
       this.shared.unlink(entry.handle);
       if (this.shared.revision(entry.handle) === undefined)
-        this.shared.publication!.forgetContent(entry.node.ino);
+        this.shared.publication?.forgetContent(entry.node.ino);
     }
     if (action.preopen) this.sync(this.fs.preopen(action.preopen));
   }
@@ -665,7 +665,7 @@ export class MemoryBackend implements FilesystemBackend {
     return info;
   }
   private publicationKey(ino: number) {
-    return { birthHistory: this.shared.publication!.buffers.history, ino };
+    return { birthHistory: this.shared.publication?.buffers.history ?? "", ino };
   }
   private planPublicationWrite(
     intent: Extract<MutationIntent, { kind: "write" | "append" }>,
@@ -693,7 +693,7 @@ export class MemoryBackend implements FilesystemBackend {
           offset,
           bytes: data,
           size: Math.max(info.size, end),
-          version: this.shared.publication!.nextContentVersion(info.ino),
+          version: (this.shared.publication?.nextContentVersion(info.ino) ?? 0),
         },
         { kind: "metadata", file, mode: info.mode ?? 0o600, mtime },
       ],
@@ -713,7 +713,7 @@ export class MemoryBackend implements FilesystemBackend {
         kind: "resize",
         file,
         size,
-        version: this.shared.publication!.nextContentVersion(info.ino),
+        version: (this.shared.publication?.nextContentVersion(info.ino) ?? 0),
       });
     if (mtime !== info.mtime)
       changes.push({ kind: "metadata", file, mode: info.mode ?? 0o600, mtime });
@@ -779,8 +779,10 @@ export class MemoryBackend implements FilesystemBackend {
       changes,
     };
   }
+  protected admitMutation(_plan: LocalMutationPlan): void {}
   /** Only this synchronous typed switch applies a publication-aware service mutation. */
   applyPublication(plan: LocalMutationPlan): void {
+    this.admitMutation(plan);
     const action = plan.action;
     switch (action.kind) {
       case "none":

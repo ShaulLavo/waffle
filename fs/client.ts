@@ -1,3 +1,4 @@
+import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
 import {
@@ -1199,16 +1200,15 @@ export class FilesystemClient implements FileSystem {
         for (;;) {
           // Capacity is rechecked under the file lock. A truncate can reclaim pages between
           // retries, so grow only after both locks exit.
-          const written = this.shared.directWrite(
-            slot,
-            handle,
-            chunks,
-            offset,
-            total,
-            this.epoch,
-            this.revoked,
-            this.connection.owner,
-          );
+          let written: number | undefined;
+          const changed = this.shared.dirtyAdmission.change;
+          try {
+            written = this.shared.directWrite(slot, handle, chunks, offset, total, this.epoch, this.revoked, this.connection.owner);
+          } catch (error) {
+            if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
+            this.call("dirtyWait", [handle, changed]);
+            continue;
+          }
           if (written !== undefined) return written;
           this.call("grow", [handle, offset + total]);
         }
@@ -1262,15 +1262,15 @@ export class FilesystemClient implements FileSystem {
     try {
       if (!slot) return fallback();
       for (;;) {
-        const result = this.shared.directAppend(
-          slot,
-          handle,
-          chunks,
-          total,
-          this.epoch,
-          this.revoked,
-          this.connection.owner,
-        );
+        let result: ReturnType<SharedFilesystemState["directAppend"]>;
+        const changed = this.shared.dirtyAdmission.change;
+        try {
+          result = this.shared.directAppend(slot, handle, chunks, total, this.epoch, this.revoked, this.connection.owner);
+        } catch (error) {
+          if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
+          this.call("dirtyWait", [handle, changed]);
+          continue;
+        }
         if (typeof result !== "number") return result;
         this.call("grow", [handle, result]);
       }
@@ -1383,7 +1383,7 @@ export class FilesystemClient implements FileSystem {
         );
         return result === undefined ? this.call("resize", [handle, size, truncate]) : result;
       } catch (error) {
-        if (error instanceof MissingSegmentError || error instanceof MissingDataError)
+        if (error instanceof DirtyCapacityError || error instanceof MissingSegmentError || error instanceof MissingDataError)
           return this.call("resize", [handle, size, truncate]);
         return errno(error);
       }
@@ -1409,6 +1409,7 @@ export class FilesystemClient implements FileSystem {
           this.connection.owner,
         );
       } catch (error) {
+        if (error instanceof DirtyCapacityError) return this.call("setMtime", [handle, mtime]);
         return errno(error);
       }
     }
