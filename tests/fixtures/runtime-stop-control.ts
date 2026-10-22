@@ -99,6 +99,8 @@ async function run(mode: string, failure: unknown) {
       filesystem.connect(message.connect);
     }
     terminate() {
+      if (Reflect.get(globalThis, Symbol.for("waffle.runtime.owner")) === undefined)
+        throw new Error("Page ownership released before filesystem stop");
       events.push("filesystem:stop");
       filesystem.dispose();
     }
@@ -156,7 +158,7 @@ async function exercise(mode: string, failure: unknown, events: string[]) {
     throw new Error("replacement stop ran");
   };
   if (mode === "host" || mode === "adapter" || mode === "late") release();
-  await runtime.processes();
+  if (mode !== "inactive") await runtime.processes();
   const launch =
     mode === "adapter" || mode === "late"
       ? await launchAdapter(

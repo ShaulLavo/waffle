@@ -1177,6 +1177,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
 
 test.each([
   ["consumer", "error"],
+  ["inactive", "error"],
   ["consumer", "undefined"],
   ["consumer", "null"],
   ["consumer", "false"],
@@ -1193,6 +1194,8 @@ test.each([
   const page = Bun.spawn([process.execPath, runtimeStopControlPath, mode, reason], {
     stdout: "pipe",
     stderr: "pipe",
+    timeout: 3000,
+    killSignal: "SIGKILL",
   });
   try {
     const [exitCode, stdout, stderr] = await Promise.all([
@@ -1202,7 +1205,12 @@ test.each([
     ]);
     expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
     const success = mode === "success";
-    const consumer = mode === "consumer" || mode === "sync" || mode === "multiple" || success;
+    const consumer =
+      mode === "consumer" ||
+      mode === "inactive" ||
+      mode === "sync" ||
+      mode === "multiple" ||
+      success;
     expect(JSON.parse(stdout)).toEqual({
       rejected: !success,
       sameFailure: !success,
@@ -1216,7 +1224,7 @@ test.each([
         consumer ? ["consumer:stop"] : [],
         ["sibling:stop"],
         mode === "adapter" || mode === "late" ? ["adapter:stop"] : [],
-        ["host:stop"],
+        mode === "inactive" ? [] : ["host:stop"],
         success ? ["filesystem:stop", "filesystem:stop"] : [],
       ),
     });
