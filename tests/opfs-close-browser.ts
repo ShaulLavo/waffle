@@ -1,4 +1,4 @@
-export const opfsCloseArms = ["native-success", "injected-error", "injected-undefined"] as const;
+const opfsCloseArms = ["native-success", "injected-error", "injected-undefined"] as const;
 export type OpfsCloseArm = (typeof opfsCloseArms)[number];
 export type OpfsCloseCommand =
   | { kind: "prepare"; storageName: string; arm: OpfsCloseArm }
@@ -41,7 +41,7 @@ export class OpfsCloseSetupInvalid extends Error {
 export function requireProof(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
-export function isOpfsCloseArm(value: unknown): value is OpfsCloseArm {
+function isOpfsCloseArm(value: unknown): value is OpfsCloseArm {
   return value === "native-success" || value === "injected-error" || value === "injected-undefined";
 }
 export function reasonReceipt(reason: unknown): Record<string, unknown> {

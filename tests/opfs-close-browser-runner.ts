@@ -10,7 +10,7 @@ import {
   type OpfsCloseReply,
 } from "./opfs-close-browser.js";
 
-export const opfsCloseControllerGap =
+const opfsCloseControllerGap =
   "HELD: no qualified controller enforces the 45s whole-arm fence and joins late allocations. " +
   "Promise races and BrowserRunnerLifecycle's 60s emergency fence do not supply that controller.";
 
