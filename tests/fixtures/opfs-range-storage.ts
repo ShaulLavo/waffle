@@ -4,7 +4,8 @@ import { encodeSnapshot, type PersistedIndex } from "../../fs/storage";
 import type { StorageLockManager } from "../../fs/indexeddb";
 
 export const payloadSize = 128 * 1024 * 1024;
-export const encoded = (value: string) => btoa(JSON.stringify(value)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+const encoded = (value: string) =>
+  btoa(JSON.stringify(value)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 export const pattern = (offset: number) => (offset * 17 + 3) & 255;
 
 export class RangeAccess {
@@ -12,7 +13,9 @@ export class RangeAccess {
   closes = 0;
   fault: { reason: unknown } | undefined;
   constructor(readonly file: RangeFile) {}
-  getSize() { return this.file.size; }
+  getSize() {
+    return this.file.size;
+  }
   read(buffer: Uint8Array, { at }: { at: number }) {
     this.file.reads.push({ at, length: buffer.length, buffer: buffer.buffer });
     this.file.onRead?.();
@@ -21,8 +24,12 @@ export class RangeAccess {
     for (let i = 0; i < count; i++) buffer[i] = pattern(at + i);
     return count;
   }
-  write() { throw new Error("Range fixture must not write payloads"); }
-  truncate() { throw new Error("Range fixture must not truncate payloads"); }
+  write(): number {
+    throw new Error("Range fixture must not write payloads");
+  }
+  truncate() {
+    throw new Error("Range fixture must not truncate payloads");
+  }
   flush() {}
   close() {
     this.closes++;
@@ -41,27 +48,44 @@ export class RangeFile implements FileSystemFileHandle {
   onRead?: () => void;
   lookup?: () => Promise<void>;
   acquire?: () => Promise<void>;
-  constructor(readonly name: string, public size: number, private text = "") {}
+  opened?: (access: RangeAccess) => void;
+  constructor(
+    readonly name: string,
+    public size: number,
+    private text = "",
+  ) {}
   async createSyncAccessHandle() {
     await this.acquire?.();
     const access = new RangeAccess(this);
     this.accesses.push(access);
+    this.opened?.(access);
     return access;
   }
-  async getFile() { return new File([this.text], this.name); }
-  async createWritable(): Promise<FileSystemWritableFileStream> { throw new Error("Unexpected writable stream"); }
-  async isSameEntry(other: FileSystemHandle) { return this === other; }
+  async getFile() {
+    return new File([this.text], this.name);
+  }
+  async createWritable(): Promise<FileSystemWritableFileStream> {
+    throw new Error("Unexpected writable stream");
+  }
+  async isSameEntry(other: FileSystemHandle): Promise<boolean> {
+    return this === other;
+  }
 }
 
 function iterator<T>(items: Iterable<T>): FileSystemDirectoryHandleAsyncIterator<T> {
-  return (async function* () { yield* items; })();
+  return (async function* () {
+    yield* items;
+    return undefined;
+  })();
 }
 
 class RangeDirectory implements FileSystemDirectoryHandle {
   readonly kind = "directory";
   readonly nodes = new Map<string, RangeDirectory | RangeFile>();
   constructor(readonly name: string) {}
-  async isSameEntry(other: FileSystemHandle) { return this === other; }
+  async isSameEntry(other: FileSystemHandle): Promise<boolean> {
+    return this === other;
+  }
   async getDirectoryHandle(name: string): Promise<RangeDirectory> {
     const node = this.nodes.get(name);
     if (node instanceof RangeDirectory) return node;
@@ -73,12 +97,26 @@ class RangeDirectory implements FileSystemDirectoryHandle {
     await node.lookup?.();
     return node;
   }
-  async removeEntry(name: string) { this.nodes.delete(name); }
-  async resolve() { return null; }
-  entries() { return iterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>(this.nodes); }
-  keys() { return iterator(this.nodes.keys()); }
-  values() { return iterator<FileSystemFileHandle | FileSystemDirectoryHandle>(this.nodes.values()); }
-  [Symbol.asyncIterator]() { return this.entries(); }
+  async removeEntry(name: string) {
+    this.nodes.delete(name);
+  }
+  async resolve() {
+    return null;
+  }
+  entries(): FileSystemDirectoryHandleAsyncIterator<
+    [string, FileSystemFileHandle | FileSystemDirectoryHandle]
+  > {
+    return iterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>(this.nodes);
+  }
+  keys() {
+    return iterator(this.nodes.keys());
+  }
+  values() {
+    return iterator<FileSystemFileHandle | FileSystemDirectoryHandle>(this.nodes.values());
+  }
+  [Symbol.asyncIterator]() {
+    return this.entries();
+  }
 }
 
 export class RangeFixture {
@@ -89,15 +127,17 @@ export class RangeFixture {
   readonly owners: OpfsStorage[] = [];
   held = false;
   releases = 0;
-  private release = Promise.withResolvers<void>();
+  private release = Promise.withResolvers<never>();
   private lifetime: Promise<unknown> = Promise.resolve();
   readonly locks: StorageLockManager = {
     request: async (_name, _options, callback) => {
       this.held = true;
-      const operation = callback({});
+      const operation = Promise.race([callback({}), this.release.promise]);
       this.lifetime = operation;
-      void this.release.promise.then(() => { this.held = false; });
-      return operation.finally(() => { this.held = false; this.releases++; });
+      return operation.finally(() => {
+        this.held = false;
+        this.releases++;
+      });
     },
   };
   gate() {
@@ -111,7 +151,8 @@ export class RangeFixture {
   }
   async seed(sizes: number[] = [payloadSize]) {
     const workspace = new RangeDirectory(`bun-wasm-${encoded("ranges")}`);
-    const data = new RangeDirectory("data"), metadata = new RangeDirectory("metadata");
+    const data = new RangeDirectory("data"),
+      metadata = new RangeDirectory("metadata");
     this.root.nodes.set(workspace.name, workspace);
     workspace.nodes.set("data", data);
     workspace.nodes.set("metadata", metadata);
@@ -121,16 +162,28 @@ export class RangeFixture {
       const file = new RangeFile(`p-${encoded(key)}`, size);
       this.files.set(key, file);
       data.nodes.set(file.name, file);
-      const index: PersistedIndex = { version: 1, generation: i + 1, root: 1, nodes: [
-        { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["file", 2]] },
-        { ino: 2, kind: "file", size, mtime: 1, data: key },
-      ] };
+      const index: PersistedIndex = {
+        version: 1,
+        generation: i + 1,
+        root: 1,
+        nodes: [
+          { ino: 1, kind: "dir", size: 0, mtime: 1, children: [["file", 2]] },
+          { ino: 2, kind: "file", size, mtime: 1, data: key },
+        ],
+      };
       const record = JSON.stringify(await encodeSnapshot(index));
-      metadata.nodes.set(`snapshot-${i + 1}.json`, new RangeFile("snapshot", record.length, record));
+      metadata.nodes.set(
+        `snapshot-${i + 1}.json`,
+        new RangeFile("snapshot", record.length, record),
+      );
     }
   }
   async open(cacheSize = 1) {
-    const owner = await OpfsStorage.open("ranges", { root: this.root, locks: this.locks, handleCacheSize: cacheSize });
+    const owner = await OpfsStorage.open("ranges", {
+      root: this.root,
+      locks: this.locks,
+      handleCacheSize: cacheSize,
+    });
     this.owners.push(owner);
     return owner;
   }
@@ -142,12 +195,11 @@ export class RangeFixture {
   async cleanup() {
     for (const gate of this.gates) gate.resolve();
     await Promise.all(this.operations);
-    await Promise.allSettled(this.owners.map(owner => owner.close()));
-    for (const file of this.files.values()) for (const access of file.accesses) access.active = false;
-    this.release.resolve();
-    // A failed-close fixture deliberately retains the real ownership promise until intervention.
-    void this.lifetime.catch(() => {});
-    await this.release.promise;
+    await Promise.allSettled(this.owners.map((owner) => owner.close()));
+    for (const file of this.files.values())
+      for (const access of file.accesses) access.active = false;
+    this.release.reject(new Error("Explicit synthetic lock-release intervention"));
+    await this.lifetime.catch(() => {});
     expect(this.held).toBe(false);
   }
 }
