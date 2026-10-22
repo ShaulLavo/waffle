@@ -209,9 +209,10 @@ function recordBefore<T>(recorder: BeforeRecorder<T> | undefined, event: BeforeR
 function recordedOperation<T>(run: () => Promise<T>, recorder: BeforeRecorder<T>): Promise<T> {
   const promise = run();
   recordBefore(recorder, { kind: "operation-returned", promise, at: stamp() });
-  void observe(promise).then((outcome) => {
-    recordBefore(recorder, { kind: "operation-settled", outcome, at: stamp() });
-  });
+  void promise.then(
+    (value) => recordBefore(recorder, { kind: "operation-settled", outcome: { kind: "fulfilled", value }, at: stamp() }),
+    (reason: unknown) => recordBefore(recorder, { kind: "operation-settled", outcome: { kind: "rejected", reason }, at: stamp() }),
+  );
   return promise;
 }
 
@@ -225,10 +226,13 @@ export async function before<T>(
 ): Promise<Outcome<T>> {
   const at = recorder ? stamp() : undefined;
   const remaining = Math.min(deadline - (at?.wallMs ?? Date.now()), maximumMs);
-  if (at) recordBefore(recorder, {
-    kind: "started", at, effectiveMs: remaining,
-    timerDueMonotonicMs: at.monotonicMs + remaining,
-  });
+  if (at)
+    recordBefore(recorder, {
+      kind: "started",
+      at,
+      effectiveMs: remaining,
+      timerDueMonotonicMs: at.monotonicMs + remaining,
+    });
   if (remaining <= 0) {
     const outcome: Outcome<T> = { kind: "invalid", cause: `${phase}: arm deadline exhausted` };
     if (recorder) recordBefore(recorder, { kind: "returned", outcome, at: stamp() });
@@ -238,7 +242,11 @@ export async function before<T>(
   const expired = new Promise<Outcome<T>>((resolve) => {
     if (recorder) {
       const scheduledAt = stamp();
-      recordBefore(recorder, { kind: "timer-scheduled", at: scheduledAt, timerDueMonotonicMs: scheduledAt.monotonicMs + remaining });
+      recordBefore(recorder, {
+        kind: "timer-scheduled",
+        at: scheduledAt,
+        timerDueMonotonicMs: scheduledAt.monotonicMs + remaining,
+      });
     }
     timer = setTimeout(() => {
       if (recorder) recordBefore(recorder, { kind: "timer-fired", at: stamp() });

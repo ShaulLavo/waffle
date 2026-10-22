@@ -18,7 +18,10 @@ import {
   type WorkerSnapshot,
 } from "./filesystem-shutdown-browser.js";
 
-import { ContextCloseObservation, shutdownSelection } from "./filesystem-shutdown-close-observation.js";
+import {
+  ContextCloseObservation,
+  shutdownSelection,
+} from "./filesystem-shutdown-close-observation.js";
 
 type Engine = keyof typeof engines;
 type OriginalTarget = {
@@ -58,13 +61,20 @@ type ArmReport = {
   deleteDatabase: Stage<void>;
   context: Stage<void>;
 };
-const closeOwners: { browser: Browser; report: ArmReport; observation: ContextCloseObservation<BrowserContext> }[] = [];
+const closeOwners: {
+  browser: Browser;
+  report: ArmReport;
+  observation: ContextCloseObservation<BrowserContext>;
+}[] = [];
 const closeObserverErrors: unknown[] = [];
-const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, { errors: closeObserverErrors, record(event) {
-  for (const owner of closeOwners) {
-    if (owner.browser === event.resource) owner.observation.enclosing(event);
-  }
-} });
+const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, {
+  errors: closeObserverErrors,
+  record(event) {
+    for (const owner of closeOwners) {
+      if (owner.browser === event.resource) owner.observation.enclosing(event);
+    }
+  },
+});
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -450,7 +460,10 @@ async function runArm(
   value(primary, "arm primary");
   assert(cleanupPassed(report), "Independent cleanup or original target join failed");
 }
-function specifications(reasons: readonly FailureReason[], arms: readonly ShutdownArm[]): ShutdownSpec[] {
+function specifications(
+  reasons: readonly FailureReason[],
+  arms: readonly ShutdownArm[],
+): ShutdownSpec[] {
   return arms.flatMap((arm) =>
     (arm === "success" ? ["error" as const] : reasons).map((reason) => ({
       arm,
@@ -475,7 +488,8 @@ async function run(): Promise<void> {
     "/filesystem-shutdown-page.js": page,
     "/filesystem-shutdown-worker.js": worker,
   });
-  for (const engine of selected.selected) await runEngine(engine, origin, selected.reasons, selected.arms);
+  for (const engine of selected.selected)
+    await runEngine(engine, origin, selected.reasons, selected.arms);
 }
 async function runEngine(
   engine: Engine,
@@ -489,5 +503,16 @@ async function runEngine(
 }
 const main = await observe(run());
 const cleanup = await observe(lifecycle.close());
-console.log(evidenceJson({ closeObserverErrors, contextCloseObservations: closeOwners.map(({ report, observation }) => ({ report, diagnostic: observation.snapshot() })), main, cleanup, browserExecution: "requires separate root release" }));
+console.log(
+  evidenceJson({
+    closeObserverErrors,
+    contextCloseObservations: closeOwners.map(({ report, observation }) => ({
+      report,
+      diagnostic: observation.snapshot(),
+    })),
+    main,
+    cleanup,
+    browserExecution: "requires separate root release",
+  }),
+);
 if (main.kind !== "fulfilled" || cleanup.kind !== "fulfilled") process.exitCode = 1;

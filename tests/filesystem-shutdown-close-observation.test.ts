@@ -1,5 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { before, evidenceJson, failureValue, failureReasons, observe, type BeforeRecord } from "./filesystem-shutdown-browser.js";
+import {
+  before,
+  evidenceJson,
+  failureValue,
+  failureReasons,
+  observe,
+  type BeforeRecord,
+} from "./filesystem-shutdown-browser.js";
 
 function clockFixture() {
   const handle = setTimeout(() => {}, 2_147_483_647);
@@ -36,11 +43,17 @@ async function lateClose(reason: unknown, reject: boolean) {
   const primary = new Error("distinct primary failure");
   let calls = 0;
   try {
-    const bounded = before(55_000, "owned context close", () => {
-      calls++;
-      called.resolve();
-      return original.promise;
-    }, 1000, { events: records });
+    const bounded = before(
+      55_000,
+      "owned context close",
+      () => {
+        calls++;
+        called.resolve();
+        return original.promise;
+      },
+      1000,
+      { events: records },
+    );
     await called.promise;
     clock.expire();
     const invalid = await bounded;
@@ -54,22 +67,46 @@ async function lateClose(reason: unknown, reject: boolean) {
     expect(await bounded).toBe(invalid);
     const returned = records.find((event) => event.kind === "operation-returned");
     expect(returned?.kind).toBe("operation-returned");
-    if (returned?.kind !== "operation-returned") throw new Error("Original close promise was not retained");
+    if (returned?.kind !== "operation-returned")
+      throw new Error("Original close promise was not retained");
     expect(returned.promise).toBe(original.promise);
     const settled = records.find((event) => event.kind === "operation-settled");
     expect(settled?.kind).toBe("operation-settled");
-    if (settled?.kind !== "operation-settled") throw new Error("Late original outcome was not retained");
+    if (settled?.kind !== "operation-settled")
+      throw new Error("Late original outcome was not retained");
     expect(settled.outcome.kind).toBe(reject ? "rejected" : "fulfilled");
-    if (settled.outcome.kind === "rejected") expect(Object.is(settled.outcome.reason, reason)).toBe(true);
-    const evidence = { primary: { kind: "rejected", reason: primary }, cleanup: settled.outcome, bounded: invalid };
+    if (settled.outcome.kind === "rejected")
+      expect(Object.is(settled.outcome.reason, reason)).toBe(true);
+    const evidence = {
+      primary: { kind: "rejected", reason: primary },
+      cleanup: settled.outcome,
+      bounded: invalid,
+    };
     expect(evidence.primary.reason).toBe(primary);
     expect(evidenceJson(evidence)).toContain("distinct primary failure");
     const started = records.find((event) => event.kind === "started");
-    expect(started).toEqual({ kind: "started", at: { wallMs: 10_000, monotonicMs: 200 }, effectiveMs: 1000, timerDueMonotonicMs: 1200 });
-    expect(records.find((event) => event.kind === "timer-scheduled")).toEqual({ kind: "timer-scheduled", at: { wallMs: 10_000, monotonicMs: 200 }, timerDueMonotonicMs: 1200 });
-    expect(records.find((event) => event.kind === "timer-fired")).toEqual({ kind: "timer-fired", at: { wallMs: 11_000, monotonicMs: 1200 } });
+    expect(started).toEqual({
+      kind: "started",
+      at: { wallMs: 10_000, monotonicMs: 200 },
+      effectiveMs: 1000,
+      timerDueMonotonicMs: 1200,
+    });
+    expect(records.find((event) => event.kind === "timer-scheduled")).toEqual({
+      kind: "timer-scheduled",
+      at: { wallMs: 10_000, monotonicMs: 200 },
+      timerDueMonotonicMs: 1200,
+    });
+    expect(records.find((event) => event.kind === "timer-fired")).toEqual({
+      kind: "timer-fired",
+      at: { wallMs: 11_000, monotonicMs: 1200 },
+    });
     expect(records.map((event) => event.kind)).toEqual([
-      "started", "timer-scheduled", "operation-returned", "timer-fired", "returned", "operation-settled",
+      "started",
+      "timer-scheduled",
+      "operation-returned",
+      "timer-fired",
+      "returned",
+      "operation-settled",
     ]);
   } finally {
     original.resolve();
@@ -77,12 +114,21 @@ async function lateClose(reason: unknown, reject: boolean) {
   }
 }
 
-test("actual before retains the one deferred close after its timer wins", () => lateClose(undefined, false));
+test("actual before retains the one deferred close after its timer wins", () =>
+  lateClose(undefined, false));
 for (const reason of failureReasons)
-  test(`actual before retains late original rejection without falsy loss: ${reason}`, () => lateClose(failureValue(reason), true));
+  test(`actual before retains late original rejection without falsy loss: ${reason}`, () =>
+    lateClose(failureValue(reason), true));
 
-import { ContextCloseObservation, shutdownSelection } from "./filesystem-shutdown-close-observation.js";
-import { stopBrowserResource, type BrowserResourceOwner, type ResourceCloseObserver } from "./process-recycling-browser-runner-control.js";
+import {
+  ContextCloseObservation,
+  shutdownSelection,
+} from "./filesystem-shutdown-close-observation.js";
+import {
+  stopBrowserResource,
+  type BrowserResourceOwner,
+  type ResourceCloseObserver,
+} from "./process-recycling-browser-runner-control.js";
 
 function contextFixture() {
   const operation = Promise.withResolvers<void>();
@@ -109,7 +155,13 @@ function contextFixture() {
       };
     },
   };
-  return { context, operation, invoked: invoked.promise, receiver: receiver.promise, counts: () => ({ getters, calls }) };
+  return {
+    context,
+    operation,
+    invoked: invoked.promise,
+    receiver: receiver.promise,
+    counts: () => ({ getters, calls }),
+  };
 }
 async function contextCase(reason: unknown, reject: boolean, late: boolean) {
   const clock = clockFixture();
@@ -135,10 +187,12 @@ async function contextCase(reason: unknown, reject: boolean, late: boolean) {
     expect(result.kind).toBe(late ? "invalid" : reject ? "rejected" : "fulfilled");
     if (late) expect(result).toBe(beforeSettlement);
     const snapshot = observation.originalSnapshot();
-    if (snapshot.kind !== "returned" || !("outcome" in snapshot.settled)) throw new Error("Missing original settlement");
+    if (snapshot.kind !== "returned" || !("outcome" in snapshot.settled))
+      throw new Error("Missing original settlement");
     expect(snapshot.exactAllocatedContext).toBe(true);
     expect(snapshot.settled.outcome.kind).toBe(reject ? "rejected" : "fulfilled");
-    if (snapshot.settled.outcome.kind === "rejected") expect(Object.is(snapshot.settled.outcome.reason, reason)).toBe(true);
+    if (snapshot.settled.outcome.kind === "rejected")
+      expect(Object.is(snapshot.settled.outcome.reason, reason)).toBe(true);
     expect(snapshot.at).toEqual({ wallMs: 10_000, monotonicMs: 200 });
     expect(snapshot.settled.at.wallMs).toBe(late ? 11_000 : 10_000);
   } finally {
@@ -147,9 +201,11 @@ async function contextCase(reason: unknown, reject: boolean, late: boolean) {
   }
 }
 for (const late of [false, true]) {
-  test(`retained context exact receiver/raw promise, fulfillment, late=${late}`, () => contextCase(undefined, false, late));
+  test(`retained context exact receiver/raw promise, fulfillment, late=${late}`, () =>
+    contextCase(undefined, false, late));
   for (const reason of failureReasons)
-    test(`retained context exact rejection ${reason}, late=${late}`, () => contextCase(failureValue(reason), true, late));
+    test(`retained context exact rejection ${reason}, late=${late}`, () =>
+      contextCase(failureValue(reason), true, late));
 }
 
 test("missing allocation/call remains missing when the existing cap expires", async () => {
@@ -175,10 +231,15 @@ test("exhausted arm does not invoke close or install another timer", async () =>
   const fixture = contextFixture();
   const observation = new ContextCloseObservation("exhausted", Promise.resolve(fixture.context));
   try {
-    expect(await observation.observeBefore(9999)).toEqual({ kind: "invalid", cause: "owned context close: arm deadline exhausted" });
+    expect(await observation.observeBefore(9999)).toEqual({
+      kind: "invalid",
+      cause: "owned context close: arm deadline exhausted",
+    });
     expect(fixture.counts()).toEqual({ getters: 0, calls: 0 });
     expect(observation.original.kind).toBe("not-invoked");
-  } finally { clock.close(); }
+  } finally {
+    clock.close();
+  }
 });
 
 async function enclosingCase(reason: unknown, reject: boolean) {
@@ -188,14 +249,25 @@ async function enclosingCase(reason: unknown, reject: boolean) {
   const browserClose = Promise.withResolvers<void>();
   const browserInvoked = Promise.withResolvers<void>();
   let browserCalls = 0;
-  const browser = { close() {
-    browserCalls++;
-    expect(observation.outer.map((event) => event.event)).toEqual(["started"]);
-    browserInvoked.resolve();
-    return browserClose.promise;
-  } };
-  const observer: ResourceCloseObserver = { errors: [], record(event) { observation.enclosing(event); } };
-  const owner: BrowserResourceOwner = { creation: Promise.resolve(browser), stopped: false, observeClose: observer };
+  const browser = {
+    close() {
+      browserCalls++;
+      expect(observation.outer.map((event) => event.event)).toEqual(["started"]);
+      browserInvoked.resolve();
+      return browserClose.promise;
+    },
+  };
+  const observer: ResourceCloseObserver = {
+    errors: [],
+    record(event) {
+      observation.enclosing(event);
+    },
+  };
+  const owner: BrowserResourceOwner = {
+    creation: Promise.resolve(browser),
+    stopped: false,
+    observeClose: observer,
+  };
   const owners = new Set([owner]);
   try {
     const bounded = observation.observeBefore(55_000);
@@ -211,30 +283,56 @@ async function enclosingCase(reason: unknown, reject: boolean) {
     await fixture.operation.promise.catch(() => {});
     if (reject) browserClose.reject(reason);
     else browserClose.resolve();
-    const actualCleanup = await cleanup.then(() => ({ kind: "fulfilled" as const }), (error: unknown) => ({ kind: "rejected" as const, reason: error }));
+    const actualCleanup = await cleanup.then(
+      () => ({ kind: "fulfilled" as const }),
+      (error: unknown) => ({ kind: "rejected" as const, reason: error }),
+    );
     expect(actualCleanup.kind).toBe(reject ? "rejected" : "fulfilled");
-    if (actualCleanup.kind === "rejected") expect(Object.is(actualCleanup.reason, reason)).toBe(true);
+    if (actualCleanup.kind === "rejected")
+      expect(Object.is(actualCleanup.reason, reason)).toBe(true);
     expect(browserCalls).toBe(1);
     expect(fixture.counts()).toEqual({ getters: 1, calls: 1 });
     expect(observation.bounded).toBe(invalid);
-    expect(observation.outer.map((event) => event.event)).toEqual(["started", reject ? "rejected" : "fulfilled"]);
+    expect(observation.outer.map((event) => event.event)).toEqual([
+      "started",
+      reject ? "rejected" : "fulfilled",
+    ]);
     expect(observer.errors).toEqual([]);
     expect(during.outer).toHaveLength(1);
   } finally {
-    fixture.operation.resolve(); browserClose.resolve(); clock.close();
+    fixture.operation.resolve();
+    browserClose.resolve();
+    clock.close();
   }
 }
 for (const reason of failureReasons)
-  test(`actual enclosing resource close snapshots preserve ${reason}`, () => enclosingCase(failureValue(reason), true));
-test("actual enclosing close fulfillment cannot cure invalid context", () => enclosingCase(undefined, false));
+  test(`actual enclosing resource close snapshots preserve ${reason}`, () =>
+    enclosingCase(failureValue(reason), true));
+test("actual enclosing close fulfillment cannot cure invalid context", () =>
+  enclosingCase(undefined, false));
 
 test("default selection stays84 arms and explicit selector selects exactly one existing arm", () => {
   const defaults = shutdownSelection(["chromium", "firefox", "webkit"]);
   expect(defaults.selected).toEqual(["chromium", "firefox", "webkit"]);
-  expect(defaults.arms).toEqual(["success", "drain-failure", "final-save-failure", "raw-close-failure"]);
+  expect(defaults.arms).toEqual([
+    "success",
+    "drain-failure",
+    "final-save-failure",
+    "raw-close-failure",
+  ]);
   expect(defaults.reasons).toEqual(failureReasons);
   expect(defaults.selected.length * (1 + 3 * defaults.reasons.length)).toBe(84);
-  expect(shutdownSelection(["firefox", "--backend", "indexeddb", "--reason", "error", "--arm", "raw-close-failure"])).toEqual({ selected: ["firefox"], reasons: ["error"], arms: ["raw-close-failure"] });
+  expect(
+    shutdownSelection([
+      "firefox",
+      "--backend",
+      "indexeddb",
+      "--reason",
+      "error",
+      "--arm",
+      "raw-close-failure",
+    ]),
+  ).toEqual({ selected: ["firefox"], reasons: ["error"], arms: ["raw-close-failure"] });
 });
 for (const args of [
   ["firefox", "--arm", "raw-close-failure"],
@@ -243,14 +341,22 @@ for (const args of [
   ["firefox", "--reason", "false", "--arm", "raw-close-failure"],
   ["firefox", "--backend", "opfs", "--reason", "error", "--arm", "raw-close-failure"],
   ["firefox", "--reason", "error", "--arm", "success"],
-]) test(`selector rejects incompatible ${args.join(" ")}`, () => expect(() => shutdownSelection(args)).toThrow());
+])
+  test(`selector rejects incompatible ${args.join(" ")}`, () =>
+    expect(() => shutdownSelection(args)).toThrow());
 
 for (const reason of failureReasons)
   test(`synchronous original close throw retains exact ${reason}`, async () => {
     const clock = clockFixture();
     const error = failureValue(reason);
     let calls = 0;
-    const context = { once() {}, close(): Promise<void> { calls++; throw error; } };
+    const context = {
+      once() {},
+      close(): Promise<void> {
+        calls++;
+        throw error;
+      },
+    };
     const observation = new ContextCloseObservation("sync-throw", Promise.resolve(context));
     try {
       const result = await observation.observeBefore(55_000);
@@ -258,8 +364,11 @@ for (const reason of failureReasons)
       expect(result.kind).toBe("rejected");
       if (result.kind === "rejected") expect(Object.is(result.reason, error)).toBe(true);
       expect(observation.original.kind).toBe("call-threw");
-      if (observation.original.kind === "call-threw") expect(Object.is(observation.original.reason, error)).toBe(true);
-    } finally { clock.close(); }
+      if (observation.original.kind === "call-threw")
+        expect(Object.is(observation.original.reason, error)).toBe(true);
+    } finally {
+      clock.close();
+    }
   });
 
 test("optional enclosing observer failure cannot replace original cleanup failure", async () => {
@@ -268,12 +377,32 @@ test("optional enclosing observer failure cannot replace original cleanup failur
   const observer = new Error("observer sentinel");
   const errors: unknown[] = [];
   const owner: BrowserResourceOwner = {
-    creation: Promise.resolve({ close: () => Promise.reject(cleanup) }), stopped: false,
-    observeClose: { errors, record() { throw observer; } },
+    creation: Promise.resolve({ close: () => Promise.reject(cleanup) }),
+    stopped: false,
+    observeClose: {
+      errors,
+      record() {
+        throw observer;
+      },
+    },
   };
   const result = await observe(stopBrowserResource(new Set([owner]), owner));
   expect(result.kind).toBe("rejected");
   if (result.kind === "rejected") expect(result.reason).toBe(cleanup);
   expect(errors).toEqual([observer, observer]);
   expect(primary).not.toBe(cleanup);
+});
+
+test("close getter failure remains a missing call and retains its original reason", async () => {
+  const clock = clockFixture();
+  let getters = 0;
+  const context = { once() {}, get close(): () => Promise<void> { getters++; throw undefined; } };
+  const observation = new ContextCloseObservation("lookup-failure", Promise.resolve(context));
+  try {
+    const result = await observation.observeBefore(55_000);
+    expect(result.kind).toBe("rejected");
+    expect(getters).toBe(1);
+    expect(observation.original.kind).toBe("lookup-threw");
+    if (observation.original.kind === "lookup-threw") expect(observation.original.reason).toBeUndefined();
+  } finally { clock.close(); }
 });

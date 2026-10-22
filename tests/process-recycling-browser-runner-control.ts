@@ -28,10 +28,16 @@ async function bounded<T>(operation: Promise<T>, timeoutMs: number, phase: strin
 }
 
 function notifyClose(observer: ResourceCloseObserver, event: ResourceCloseEvent): void {
-  try { observer.record(event); }
-  catch (reason) { observer.errors.push(reason); }
+  try {
+    observer.record(event);
+  } catch (reason) {
+    observer.errors.push(reason);
+  }
 }
-function closeResource(resource: Awaited<BrowserResourceOwner["creation"]> | undefined, observer?: ResourceCloseObserver): Promise<void> | undefined {
+function closeResource(
+  resource: Awaited<BrowserResourceOwner["creation"]> | undefined,
+  observer?: ResourceCloseObserver,
+): Promise<void> | undefined {
   if (!resource) return;
   if (!observer) return resource.close();
   notifyClose(observer, { kind: "started", resource });
