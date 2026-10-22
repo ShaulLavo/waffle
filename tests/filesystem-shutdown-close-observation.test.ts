@@ -25,26 +25,18 @@ function clockFixture() {
   handle.unref();
   let wallMs = 10_000;
   let monotonicMs = 200;
-  let fire: (() => void) | undefined;
-  let delay: number | undefined;
   const wall = spyOn(Date, "now").mockImplementation(() => wallMs);
   const monotonic = spyOn(performance, "now").mockImplementation(() => monotonicMs);
-  const schedule = Object.assign(
-    (callback: () => void, timeout?: number) => {
-      fire = callback;
-      delay = timeout;
-      return handle;
-    },
-    { __promisify__: setTimeout.__promisify__ },
-  );
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation(schedule);
+  const timer = spyOn(globalThis, "setTimeout").mockReturnValue(handle);
   return {
     expire() {
       wallMs += 1000;
       monotonicMs += 1000;
-      if (!fire) throw new Error("Actual before timer was not installed");
-      expect(delay).toBe(1000);
-      fire();
+      const scheduled = timer.mock.calls[0];
+      if (!scheduled || typeof scheduled[0] !== "function")
+        throw new Error("Actual before timer was not installed");
+      expect(scheduled[1]).toBe(1000);
+      scheduled[0]();
     },
     close() {
       timer.mockRestore();
