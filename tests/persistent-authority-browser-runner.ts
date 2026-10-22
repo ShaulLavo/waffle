@@ -123,12 +123,7 @@ async function inspect(worker: Worker, operation: string, body?: unknown): Promi
       const observe: unknown = Reflect.get(globalThis, "__persistentAuthorityProof");
       if (typeof observe !== "function") throw new Error("factory root observer missing");
       const value: unknown = await observe(operation, body);
-      const normalized: unknown = JSON.parse(
-        JSON.stringify(value, (_key, part: unknown) =>
-          part instanceof Uint8Array ? Array.from(part) : part,
-        ),
-      );
-      return normalized;
+      return value;
     },
     { operation, body },
   );
