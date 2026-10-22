@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 
 const lifecycle = new BrowserRunnerLifecycle(300_000);
+let scratchRemoved = false;
 try {
   await lifecycle.init();
   console.log(JSON.stringify({ phase: "setup", ownedScratch: lifecycle.scratch, port: 46431 }));
@@ -25,7 +26,9 @@ try {
   console.log(JSON.stringify(result, null, 2));
 } finally {
   await lifecycle.close();
-  const removed = !existsSync(lifecycle.scratch);
-  console.log(JSON.stringify({ phase: "cleanup", ownedScratch: lifecycle.scratch, removed }));
-  if (!removed) throw new Error("Owned native test scratch was not removed");
+  scratchRemoved = !existsSync(lifecycle.scratch);
+  console.log(
+    JSON.stringify({ phase: "cleanup", ownedScratch: lifecycle.scratch, removed: scratchRemoved }),
+  );
 }
+if (!scratchRemoved) throw new Error("Owned native test scratch was not removed");
