@@ -240,6 +240,40 @@ function borrow<T extends object>(
   return Object.freeze(projection);
 }
 
+type PhysicalStop = () => void | Promise<void>;
+
+function joinStop({
+  owner,
+  stop,
+  physicalStops,
+  cleanupDebt,
+}: {
+  owner: object;
+  stop: PhysicalStop;
+  physicalStops: Map<object, PhysicalStop>;
+  cleanupDebt: Map<object, Promise<void>>;
+}): Promise<void> {
+  let joined: Promise<void>;
+  try {
+    joined = Promise.resolve(stop());
+  } catch (error) {
+    joined = Promise.reject(error);
+  }
+  cleanupDebt.set(owner, joined);
+  void joined.then(
+    () => {
+      cleanupDebt.delete(owner);
+      physicalStops.delete(owner);
+    },
+    () => {},
+  );
+  return joined;
+}
+
+function stopFailures(results: readonly PromiseSettledResult<void>[]): unknown[] {
+  return results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+}
+
 /** The page is the sole owner. Duplicate bundles share only the guard, not a service locator. */
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
@@ -260,7 +294,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   const adapters = new Map<string, GuestLauncher>();
   const programs = new Map<string, Executable>();
   const launching = new Set<Promise<ProcessHandle>>();
-  const handles = new Set<ProcessHandle>();
+  const physicalStops = new Map<object, PhysicalStop>();
+  const cleanupDebt = new Map<object, Promise<void>>();
   const consumers = new Set<RuntimeConsumer>();
   let disposed = false;
   let host: BrowserProcessBroker | undefined;
@@ -380,9 +415,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
       assertLive();
       const owned: RuntimeConsumer = { filesystem, revoke, stop };
       consumers.add(owned);
+      physicalStops.set(owned, stop);
       return () => {
         // Disposal now owns this fence and stop, including releases from cancellation hooks.
-        if (!disposed) consumers.delete(owned);
+        if (disposed) return;
+        consumers.delete(owned);
+        physicalStops.delete(owned);
       };
     },
     network() {
@@ -440,14 +478,14 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
                       return handle.terminate();
                     });
                     void stopping.then(
-                      () => handles.delete(owned),
+                      () => physicalStops.delete(owned),
                       () => {},
                     );
                   }
                   return stopping;
                 },
               };
-              handles.add(owned);
+              physicalStops.set(owned, owned.terminate);
               return owned;
             });
             launching.add(pending);
@@ -540,16 +578,21 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         // Rejection is not a proof of quiescence. Retain consumers, filesystem and the page
         // guard until this page is destroyed rather than allowing a new owner to overlap them.
         if (failures.length !== failuresBeforeFences) throwFailures();
+        const stops = Array.from(physicalStops);
+        const hostOwner = host;
+        const hostStop = hostOwner?.dispose.bind(hostOwner);
         releaseTermination();
-        await Promise.all(
-          Array.from(handles, (handle) => attempt(() => handle.terminate())).concat(
-            Array.from(consumers, (consumer) => attempt(() => consumer.stop())),
-          ),
+        const stopped = await Promise.allSettled(
+          stops.map(([owner, stop]) => joinStop({ owner, stop, physicalStops, cleanupDebt })),
         );
-        handles.clear();
-        consumers.clear();
+        failures.push(...stopFailures(stopped));
         if (ownedNetwork) await attempt(async () => (await ownedNetwork)?.dispose());
-        await attempt(() => host?.dispose());
+        if (hostOwner && hostStop)
+          await attempt(() =>
+            joinStop({ owner: hostOwner, stop: hostStop, physicalStops, cleanupDebt }),
+          );
+        if (cleanupDebt.size) throwFailures();
+        consumers.clear();
         await attempt(() => filesystem.dispose());
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);
