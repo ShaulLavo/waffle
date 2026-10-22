@@ -72,8 +72,18 @@ export class ContextCloseObservation<C extends CloseContext> {
       const original: Original<C> = { kind: "returned", context, promise, at, settled: pending() };
       this.original = original;
       void promise.then(
-        (value) => { this.original = { ...original, settled: { at: stamp(), outcome: { kind: "fulfilled", value } } }; },
-        (reason: unknown) => { this.original = { ...original, settled: { at: stamp(), outcome: { kind: "rejected", reason } } }; },
+        (value) => {
+          this.original = {
+            ...original,
+            settled: { at: stamp(), outcome: { kind: "fulfilled", value } },
+          };
+        },
+        (reason: unknown) => {
+          this.original = {
+            ...original,
+            settled: { at: stamp(), outcome: { kind: "rejected", reason } },
+          };
+        },
       );
       return promise;
     } catch (reason) {

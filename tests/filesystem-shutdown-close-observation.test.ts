@@ -396,13 +396,22 @@ test("optional enclosing observer failure cannot replace original cleanup failur
 test("close getter failure remains a missing call and retains its original reason", async () => {
   const clock = clockFixture();
   let getters = 0;
-  const context = { once() {}, get close(): () => Promise<void> { getters++; throw undefined; } };
+  const context = {
+    once() {},
+    get close(): () => Promise<void> {
+      getters++;
+      throw undefined;
+    },
+  };
   const observation = new ContextCloseObservation("lookup-failure", Promise.resolve(context));
   try {
     const result = await observation.observeBefore(55_000);
     expect(result.kind).toBe("rejected");
     expect(getters).toBe(1);
     expect(observation.original.kind).toBe("lookup-threw");
-    if (observation.original.kind === "lookup-threw") expect(observation.original.reason).toBeUndefined();
-  } finally { clock.close(); }
+    if (observation.original.kind === "lookup-threw")
+      expect(observation.original.reason).toBeUndefined();
+  } finally {
+    clock.close();
+  }
 });

@@ -210,8 +210,18 @@ function recordedOperation<T>(run: () => Promise<T>, recorder: BeforeRecorder<T>
   const promise = run();
   recordBefore(recorder, { kind: "operation-returned", promise, at: stamp() });
   void promise.then(
-    (value) => recordBefore(recorder, { kind: "operation-settled", outcome: { kind: "fulfilled", value }, at: stamp() }),
-    (reason: unknown) => recordBefore(recorder, { kind: "operation-settled", outcome: { kind: "rejected", reason }, at: stamp() }),
+    (value) =>
+      recordBefore(recorder, {
+        kind: "operation-settled",
+        outcome: { kind: "fulfilled", value },
+        at: stamp(),
+      }),
+    (reason: unknown) =>
+      recordBefore(recorder, {
+        kind: "operation-settled",
+        outcome: { kind: "rejected", reason },
+        at: stamp(),
+      }),
   );
   return promise;
 }
