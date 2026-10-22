@@ -11,6 +11,7 @@ import { FilesystemSection, type FilesystemConnection } from "../fs/protocol.js"
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import type { ProcessContext } from "../proc/types.js";
+import { runtimeStopControlPath } from "./fixtures/runtime-stop-control.js";
 
 const emptyModule = new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
 const bytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
@@ -1174,16 +1175,55 @@ test("facade initial browser graph keeps process services and interrupt compilat
   ).toBe(true);
 });
 
-test("cleanup errors still close the filesystem and release page ownership", async () => {
-  const runtime = create({
-    processHost: processHost(async () => {
-      throw new Error("consumer cleanup failed");
-    }),
+test.each([
+  ["consumer", "error"],
+  ["consumer", "undefined"],
+  ["consumer", "null"],
+  ["consumer", "false"],
+  ["consumer", "zero"],
+  ["consumer", "empty"],
+  ["consumer", "object"],
+  ["sync", "undefined"],
+  ["multiple", "undefined"],
+  ["adapter", "error"],
+  ["late", "error"],
+  ["host", "error"],
+  ["success", "error"],
+])("physical stop ownership survives %s with %s rejection", async (mode, reason) => {
+  const page = Bun.spawn([process.execPath, runtimeStopControlPath, mode, reason], {
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  await runtime.processes();
-  await expect(runtime.dispose()).rejects.toThrow("consumer cleanup failed");
-  expect(events.at(-1)).toBe("filesystem:stop");
-  expect(create().disposed).toBe(false);
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      page.exited,
+      new Response(page.stdout).text(),
+      new Response(page.stderr).text(),
+    ]);
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
+    const success = mode === "success";
+    const consumer = mode === "consumer" || mode === "sync" || mode === "multiple" || success;
+    expect(JSON.parse(stdout)).toEqual({
+      rejected: !success,
+      sameFailure: !success,
+      sameRejection: !success,
+      sameDisposal: true,
+      retainedWhilePending: true,
+      guardHeld: !success,
+      sameToken: !success,
+      events: (consumer ? ["consumer:revoke"] : []).concat(
+        ["sibling:revoke"],
+        consumer ? ["consumer:stop"] : [],
+        ["sibling:stop"],
+        mode === "adapter" || mode === "late" ? ["adapter:stop"] : [],
+        ["host:stop"],
+        success ? ["filesystem:stop", "filesystem:stop"] : [],
+      ),
+    });
+  } finally {
+    page.kill();
+    await page.exited;
+  }
 });
 
 test("registration leases remove unused programs and adapters without activating process services or loaders", async () => {
