@@ -620,18 +620,19 @@ async function pressureCheckpoint(
 ) {
   await backend.checkpoint(true);
   expect(client.tryWrite(handle, [new Uint8Array(6).fill(66)], 0)).toBe(6);
-  storage.persistGate = hold();
-  return { checkpoint: backend.checkpoint(true, handle) };
+  const gate = hold();
+  storage.persistGate = gate;
+  return { gate, checkpoint: backend.checkpoint(true, handle) };
 }
 
 test("pre-cut pressure wait and cancelled observation retain execution ownership outside locks", async () => {
   const { storage, backend } = await pressureBackend();
   await fixture(async ({ service, client, handle }) => {
-    const { checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
+    const { gate, checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
     let acquisition: ReturnType<FilesystemService["pauseFilesystemWrites"]> | undefined;
     const first = client.prepare("append", [handle], new Uint8Array(1));
     try {
-      await storage.persistGate.entered.promise;
+      await gate.entered.promise;
       expect(client.tryWrite(handle, [new Uint8Array(12).fill(67)], 0)).toBe(12);
       client.dispatch(first);
       const observed = first.value().catch((error: unknown) => error);
@@ -644,7 +645,7 @@ test("pre-cut pressure wait and cancelled observation retain execution ownership
       expect(client.tryWrite(handle, [bytes("later!")], 0)).toBe(-6);
       first.cancel();
       expect(await observed).toMatchObject({ errno: 11 });
-      storage.persistGate.release.resolve();
+      gate.release.resolve();
       await checkpoint;
       const lease = await acquisition;
       await lease.flush();
@@ -653,7 +654,7 @@ test("pre-cut pressure wait and cancelled observation retain execution ownership
       expect(backend.shared.writeAdmission.active).toBe(0);
       await lease.release();
     } finally {
-      storage.persistGate.release.resolve();
+      gate.release.resolve();
       await checkpoint.catch(() => {});
       first.release();
       await acquisition?.then(
@@ -993,12 +994,12 @@ test("a proven dead admission owner cannot leave the tiny admission lock held", 
 test("rejected pressure checkpoint retains dirty debt and the held lease can retry flush", async () => {
   const { storage, backend } = await pressureBackend();
   await fixture(async ({ service, client, handle }) => {
-    const { checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
+    const { gate, checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
     void checkpoint.catch(() => {});
     let acquisition: ReturnType<FilesystemService["pauseFilesystemWrites"]> | undefined;
     const completion = client.prepare("append", [handle], new Uint8Array([68]));
     try {
-      await storage.persistGate.entered.promise;
+      await gate.entered.promise;
       expect(client.tryWrite(handle, [new Uint8Array(12).fill(67)], 0)).toBe(12);
       client.dispatch(completion);
       const result = completion.value();
@@ -1010,7 +1011,7 @@ test("rejected pressure checkpoint retains dirty debt and the held lease can ret
       void acquisition.catch(() => {});
       await pending(acquisition);
       storage.rejectPersist = true;
-      storage.persistGate.release.resolve();
+      gate.release.resolve();
       await expect(checkpoint).rejects.toThrow("storage persist rejected");
       await expect(result).resolves.toMatchObject({ written: 1 });
       const lease = await acquisition;
@@ -1027,7 +1028,7 @@ test("rejected pressure checkpoint retains dirty debt and the held lease can ret
       expect(client.tryWrite(handle, [bytes("retry!")], 0)).toBe(6);
     } finally {
       storage.rejectPersist = false;
-      storage.persistGate.release.resolve();
+      gate.release.resolve();
       completion.release();
       await checkpoint.catch(() => {});
       await acquisition?.then(
