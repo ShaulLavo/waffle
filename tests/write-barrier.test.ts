@@ -1095,3 +1095,64 @@ test("first root attachment cannot replace a held preconnection gate", async () 
     pair.server.port.close();
   }
 });
+
+for (const append of [false, true]) {
+  test(`blocking guest retries admission lock contention outside mutation sections, append=${append}`, async () => {
+    await fixture(async ({ backend, client, handle }) => {
+      const pair = client.fork();
+      const worker = new Worker(
+        new URL("./fixtures/write-barrier-worker.ts", import.meta.url).href,
+      );
+      const control = new Int32Array(new SharedArrayBuffer(4));
+      const lock = new Int32Array(backend.shared.buffer, WRITE_BARRIER_OFFSET, 1);
+      const ready = Promise.withResolvers<void>();
+      const first = Promise.withResolvers<unknown>();
+      const result = Promise.withResolvers<unknown>();
+      worker.onmessage = ({ data }) => {
+        if (data.admitted) ready.resolve();
+        else if (data.waitingAdmission) first.resolve(data);
+        else {
+          first.resolve(data);
+          result.resolve(data.result);
+        }
+      };
+      worker.onerror = (error) => {
+        ready.reject(error);
+        first.reject(error);
+        result.reject(error);
+      };
+      try {
+        worker.postMessage(
+          {
+            connection: pair,
+            control: control.buffer,
+            beforeCut: false,
+            append,
+            admissionWait: true,
+          },
+          [pair.port],
+        );
+        await ready.promise;
+        Atomics.store(lock, 0, client.connection.owner);
+        Atomics.store(control, 0, 1);
+        Atomics.notify(control, 0);
+        expect(await first.promise).toEqual({ waitingAdmission: true });
+        expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
+        expect(backend.shared.snapshot(handle)?.data).toEqual(bytes("before"));
+        Atomics.store(lock, 0, 0);
+        Atomics.notify(lock, 0);
+        expect(await result.promise).toEqual(append ? { written: 1, offset: 7 } : 7);
+        expect(backend.shared.snapshot(handle)?.data).toEqual(
+          bytes(append ? "beforeC" : "earlier"),
+        );
+      } finally {
+        Atomics.store(lock, 0, 0);
+        Atomics.notify(lock, 0);
+        Atomics.store(control, 0, 1);
+        Atomics.notify(control, 0);
+        await worker.terminate();
+        reapFilesystem(pair);
+      }
+    });
+  });
+}

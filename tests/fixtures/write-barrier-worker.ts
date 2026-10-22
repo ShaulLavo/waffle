@@ -1,5 +1,6 @@
 import { FilesystemClient } from "../../fs/client";
 import type { FilesystemConnection } from "../../fs/protocol";
+import { WRITE_BARRIER_OFFSET } from "../../fs/write-barrier";
 
 self.onmessage = ({
   data,
@@ -9,6 +10,7 @@ self.onmessage = ({
   beforeCut: boolean;
   retry?: boolean;
   append?: boolean;
+  admissionWait?: boolean;
 }>) => {
   const client = new FilesystemClient(data.connection);
   const root: number = client.call("preopen", ["/"]);
@@ -18,6 +20,7 @@ self.onmessage = ({
   const write = () => {
     self.postMessage({ admitted: true });
     while (!Atomics.load(control, 0)) Atomics.wait(control, 0, 0);
+    if (data.admissionWait) observeAdmissionWait();
     const result = data.append
       ? client.append(path.node, [new Uint8Array([67])])
       : client.write(path.node, [new TextEncoder().encode("earlier")], 0);
@@ -37,3 +40,12 @@ self.onmessage = ({
     self.close();
   }
 };
+
+function observeAdmissionWait(): void {
+  const wait = Atomics.wait;
+  Atomics.wait = (array, index, value, timeout) => {
+    if (array.byteOffset === WRITE_BARRIER_OFFSET && index === 0)
+      self.postMessage({ waitingAdmission: true });
+    return wait(array, index, value, timeout);
+  };
+}
