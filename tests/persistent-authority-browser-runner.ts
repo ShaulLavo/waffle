@@ -6,6 +6,7 @@ import type { PublicationCut } from "../fs/publication";
 const lifecycle = new BrowserRunnerLifecycle(180_000);
 const negative = process.argv.includes("--negative-control");
 const deadWorkers = new WeakSet<Worker>();
+const roots = new WeakMap<Page, unknown>();
 const reportPath = process.env.PERSISTENT_AUTHORITY_REPORT;
 const schedule = [
   "four independent pages",
@@ -72,20 +73,26 @@ async function control(page: Page, operation: string, value?: unknown): Promise<
     { operation, value },
   );
 }
-function host(page: Page, operation: string, args: unknown[] = [], bytes?: number[]) {
-  return control(page, "workspacePage", { operation, args, bytes });
+async function host(page: Page, operation: string, args: unknown[] = [], bytes?: number[]) {
+  try {
+    return await control(page, "workspacePage", { operation, args, bytes });
+  } catch (cause) {
+    throw new Error(`page workspace ${operation} ${JSON.stringify(args)}`, { cause });
+  }
 }
 function guest(page: Page, key: "wasi" | "proc", operation: string, request?: unknown) {
   return control(page, "workspaceGuestCall", { key, operation, request });
 }
 async function read(page: Page, path: string, expected: readonly number[]): Promise<void> {
-  const root = await host(page, "preopen", ["/"]);
+  const root = roots.get(page);
+  if (root === undefined) throw new Error("page root was not opened");
   const file = record(await host(page, "resolve", [root, path]));
   equal(await host(page, "read", [file.node, expected.length + 2, 0]), expected);
   equal(record(await host(page, "stat", [file.node])).size, expected.length);
 }
 async function absent(page: Page, path: string): Promise<void> {
-  const root = await host(page, "preopen", ["/"]);
+  const root = roots.get(page);
+  if (root === undefined) throw new Error("page root was not opened");
   equal(record(await host(page, "resolve", [root, path])).node, undefined);
 }
 async function observeDeaths(page: Page): Promise<() => Worker> {
@@ -198,182 +205,192 @@ async function stopped(page: Page): Promise<unknown> {
 async function scenario(browser: Browser, origin: string): Promise<void> {
   const context = await browser.newContext();
   try {
-    const a = await context.newPage(),
-      b = await context.newPage();
-    const c = await context.newPage(),
-      d = await context.newPage();
-    const pages = [a, b, c, d];
-    const authority = await observeDeaths(a);
-    await observeDeaths(b);
-    await observeDeaths(c);
-    await observeDeaths(d);
-    await step(schedule[0]!, async () => {
-      for (const page of pages) {
-        await page.goto(origin);
-        equal(await page.opener(), null);
-        equal(await page.evaluate(() => crossOriginIsolated), true);
-      }
-      return { pages: pages.length, independentTopLevel: true };
-    });
-    const name = `waffle-fourpage-${crypto.randomUUID()}`;
-    let ready: Record<string, unknown> = {};
-    await step(schedule[1]!, async () => {
-      const started = record(
-        await control(a, "persistentStart", {
-          name,
-          runtimeLifetime: crypto.randomUUID(),
-          attempt: crypto.randomUUID(),
-        }),
-      );
-      equal(started.ready, true);
-      ready = record(started.value);
-      equal(record(record(ready.request).selected).implementation, "indexeddb");
-      for (const page of pages) await control(page, "workspacePeer", ready.descriptor);
-      return started;
-    });
-    let initial: PublicationCut = { history: "uninitialized", generation: 0 };
-    await step(schedule[2]!, async () => {
-      await host(a, "mkdirp", ["/dir"]);
-      await host(a, "writeFile", ["/dir/a"], [10, 20, 30]);
-      await host(a, "writeFile", ["/dir/target"], [99]);
-      await control(b, "workspaceGuest", { key: "wasi", mode: "wasi" });
-      await control(d, "workspaceGuest", { key: "proc", mode: "proc" });
-      initial = cut(await inspect(authority(), "cut"));
-      return { cut: initial, guests: ["Preview1", "runtime_proc"] };
-    });
-    await step(schedule[3]!, async () => {
-      await host(a, "writeFile", ["/dir/a", true], [41]);
-      await read(c, "dir/a", [10, 20, 30, 41]);
-    });
-    await step(schedule[4]!, async () => {
-      const ack = await appendGuest(d, "proc", 42);
-      return { ack, finalSettlementNudgesSent: 0, omitted: 1 };
-    });
-    await step(schedule[5]!, async () => {
-      await read(c, "dir/a", [10, 20, 30, 41, 42]);
-      const settled = await guest(d, "proc", "settle");
-      equal(await guest(d, "proc", "settle"), settled);
-      return settled;
-    });
-    await step(schedule[6]!, async () => {
-      await host(c, "move", ["/dir/a", "/dir/target"]);
-      await absent(a, "dir/a");
-      await read(a, "dir/target", [10, 20, 30, 41, 42]);
-    });
-    await step(schedule[7]!, async () => {
-      const ack = await appendGuest(b, "wasi", 43);
-      await guest(d, "proc", "prepare", { kind: "read", offset: 0, maxBytes: 6 });
-      const read = record(
-        await guest(d, "proc", "call", { kind: "read", offset: 0, bytes: [0, 0, 0, 0, 0, 0] }),
-      );
-      equal(read.result, 6);
-      equal(read.bytes, [10, 20, 30, 41, 42, 43]);
-      const settled = await guest(d, "proc", "settle");
-      return { ack, settled, read };
-    });
-    let id: unknown;
-    let receipt: unknown;
-    await step(schedule[8]!, async () => {
-      id = await host(a, "workspaceNext");
-      const args = [id, "writeFile", ["/dir/target", true]];
-      await host(a, "workspaceMutation", args, [44, 45]);
-      receipt = await host(a, "workspaceReceipt", [id]);
-      const replayId = negative ? await host(a, "workspaceNext") : id;
-      await host(a, "workspaceMutation", [replayId, args[1], args[2]], [44, 45]);
-      await read(c, "dir/target", [10, 20, 30, 41, 42, 43, 44, 45]);
-      equal(await host(a, "workspaceReceipt", [id]), receipt);
-      equal(record(receipt).kind, "committed");
-      return { id, receipt, replayId };
-    });
-    await step(schedule[9]!, async () => {
-      equal(
-        await guest(b, "wasi", "workspace", {
-          action: "rename",
-          path: "dir/target",
-          to: "dir/final",
-        }),
-        0,
-      );
-      await absent(c, "dir/target");
-      await read(d, "dir/final", [10, 20, 30, 41, 42, 43, 44, 45]);
-      const changes = await inspect(authority(), "changes", initial);
-      const groups = completeEffects(changes, initial);
-      renameEffects(groups[2]!, "a", "target", true);
-      renameEffects(groups[5]!, "target", "final", false);
-      equal(record(groups[4]!.receipt).id, id);
-      equal(record(groups[4]!.receipt), record(receipt).receipt);
-      evidence.changes = changes;
-      return changes;
-    });
-    await step(schedule[10]!, async () => {
-      await host(c, "flush");
-      evidence.saved = await control(a, "persistentInspect", name);
-      return evidence.saved;
-    });
-    await step(schedule[11]!, async () => {
-      await control(b, "workspaceGuestStop", { key: "wasi" });
-      await control(d, "workspaceGuestStop", { key: "proc" });
-      for (const page of pages) await control(page, "workspaceStop");
-    });
-    await step(schedule[12]!, async () => {
-      const stop = await stopped(a);
-      equal(deadWorkers.has(authority()), true);
-      return { stop, nativeWorkerDeath: true };
-    });
-    await step(schedule[13]!, async () => {
-      const previous = ready;
-      const started = record(
-        await control(a, "persistentStart", {
-          name,
-          original: previous.identity,
-          runtimeLifetime: crypto.randomUUID(),
-          attempt: crypto.randomUUID(),
-        }),
-      );
-      equal(started.ready, true);
-      ready = record(started.value);
-      const identity = record(ready.identity),
-        old = record(previous.identity);
-      equal(identity.instance === old.instance, false);
-      equal(identity.history === old.history, false);
-      equal(ready.notice, {
-        kind: "v1-new-history",
-        durablePublicationCut: "untracked",
-        oldCapabilities: "not-restored",
-        oldMutationOutcomes: "not-restored",
-        acknowledgedTail: "may-be-lost",
-      });
-      equal(await inspect(authority(), "changes", initial), {
-        kind: "gap",
-        current: await inspect(authority(), "cut"),
-      });
-      equal(await inspect(authority(), "receipt", id), { kind: "unknown" });
-      evidence.originalDescriptor = previous.descriptor;
-      return started;
-    });
-    await step(schedule[14]!, async () => {
-      equal(await control(c, "staleDescriptor", evidence.originalDescriptor), 11);
-      return { errno: 11 };
-    });
-    await step(schedule[15]!, async () => {
-      for (const page of pages) {
-        await control(page, "workspacePeer", ready.descriptor);
-        await read(page, "dir/final", [10, 20, 30, 41, 42, 43, 44, 45]);
-        await absent(page, "dir/a");
-        await absent(page, "dir/target");
-      }
-      return { savedBytes: [10, 20, 30, 41, 42, 43, 44, 45], pages: 4 };
-    });
-    await step(schedule[16]!, async () => {
-      for (const page of pages) await control(page, "workspaceStop");
-      await stopped(a);
-      equal(deadWorkers.has(authority()), true);
-      await control(a, "persistentDelete", name);
-      return { nativeWorkerDeath: true, deleted: name };
-    });
+    await history(context, origin);
   } finally {
     await context.close();
   }
+}
+async function history(
+  context: Awaited<ReturnType<Browser["newContext"]>>,
+  origin: string,
+): Promise<void> {
+  const a = await context.newPage(),
+    b = await context.newPage();
+  const c = await context.newPage(),
+    d = await context.newPage();
+  const pages = [a, b, c, d];
+  const authority = await observeDeaths(a);
+  await observeDeaths(b);
+  await observeDeaths(c);
+  await observeDeaths(d);
+  await step(schedule[0]!, async () => {
+    for (const page of pages) {
+      await page.goto(origin);
+      equal(await page.opener(), null);
+      equal(await page.evaluate(() => crossOriginIsolated), true);
+    }
+    return { pages: pages.length, independentTopLevel: true };
+  });
+  const name = `waffle-fourpage-${crypto.randomUUID()}`;
+  let ready: Record<string, unknown> = {};
+  await step(schedule[1]!, async () => {
+    const started = record(
+      await control(a, "persistentStart", {
+        name,
+        runtimeLifetime: crypto.randomUUID(),
+        attempt: crypto.randomUUID(),
+      }),
+    );
+    equal(started.ready, true);
+    ready = record(started.value);
+    equal(record(record(ready.request).selected).implementation, "indexeddb");
+    for (const page of pages) {
+      await control(page, "workspacePeer", ready.descriptor);
+      roots.set(page, await host(page, "preopen", ["/"]));
+    }
+    return started;
+  });
+  let initial: PublicationCut = { history: "uninitialized", generation: 0 };
+  await step(schedule[2]!, async () => {
+    await host(a, "mkdirp", ["/dir"]);
+    await host(a, "writeFile", ["/dir/a"], [10, 20, 30]);
+    await host(a, "writeFile", ["/dir/target"], [99]);
+    await control(b, "workspaceGuest", { key: "wasi", mode: "wasi" });
+    await control(d, "workspaceGuest", { key: "proc", mode: "proc" });
+    initial = cut(await inspect(authority(), "cut"));
+    return { cut: initial, guests: ["Preview1", "runtime_proc"] };
+  });
+  await step(schedule[3]!, async () => {
+    await host(a, "writeFile", ["/dir/a", true], [41]);
+    await read(c, "dir/a", [10, 20, 30, 41]);
+  });
+  await step(schedule[4]!, async () => {
+    const ack = await appendGuest(d, "proc", 42);
+    return { ack, finalSettlementNudgesSent: 0, omitted: 1 };
+  });
+  await step(schedule[5]!, async () => {
+    await read(c, "dir/a", [10, 20, 30, 41, 42]);
+    const settled = await guest(d, "proc", "settle");
+    equal(await guest(d, "proc", "settle"), settled);
+    return settled;
+  });
+  await step(schedule[6]!, async () => {
+    await host(c, "move", ["/dir/a", "/dir/target"]);
+    await absent(a, "dir/a");
+    await read(a, "dir/target", [10, 20, 30, 41, 42]);
+  });
+  await step(schedule[7]!, async () => {
+    const ack = await appendGuest(b, "wasi", 43);
+    await guest(d, "proc", "prepare", { kind: "read", offset: 0, maxBytes: 6 });
+    const read = record(
+      await guest(d, "proc", "call", { kind: "read", offset: 0, bytes: [0, 0, 0, 0, 0, 0] }),
+    );
+    equal(read.result, 6);
+    equal(read.bytes, [10, 20, 30, 41, 42, 43]);
+    const settled = await guest(d, "proc", "settle");
+    return { ack, settled, read };
+  });
+  let id: unknown;
+  let receipt: unknown;
+  await step(schedule[8]!, async () => {
+    id = await host(a, "workspaceNext");
+    const args = [id, "writeFile", ["/dir/target", true]];
+    await host(a, "workspaceMutation", args, [44, 45]);
+    receipt = await host(a, "workspaceReceipt", [id]);
+    const replayId = negative ? await host(a, "workspaceNext") : id;
+    await host(a, "workspaceMutation", [replayId, args[1], args[2]], [44, 45]);
+    await read(c, "dir/target", [10, 20, 30, 41, 42, 43, 44, 45]);
+    equal(await host(a, "workspaceReceipt", [id]), receipt);
+    equal(record(receipt).kind, "committed");
+    return { id, receipt, replayId };
+  });
+  await step(schedule[9]!, async () => {
+    equal(
+      await guest(b, "wasi", "workspace", {
+        action: "rename",
+        path: "dir/target",
+        to: "dir/final",
+      }),
+      0,
+    );
+    await absent(c, "dir/target");
+    await read(d, "dir/final", [10, 20, 30, 41, 42, 43, 44, 45]);
+    const changes = await inspect(authority(), "changes", initial);
+    const groups = completeEffects(changes, initial);
+    renameEffects(groups[2]!, "a", "target", true);
+    renameEffects(groups[5]!, "target", "final", false);
+    equal(record(groups[4]!.receipt).id, id);
+    equal(record(groups[4]!.receipt), record(receipt).receipt);
+    evidence.changes = changes;
+    return changes;
+  });
+  await step(schedule[10]!, async () => {
+    await host(c, "flush");
+    evidence.saved = await control(a, "persistentInspect", name);
+    return evidence.saved;
+  });
+  await step(schedule[11]!, async () => {
+    await control(b, "workspaceGuestStop", { key: "wasi" });
+    await control(d, "workspaceGuestStop", { key: "proc" });
+    for (const page of pages) await control(page, "workspaceStop");
+  });
+  await step(schedule[12]!, async () => {
+    const stop = await stopped(a);
+    equal(deadWorkers.has(authority()), true);
+    return { stop, nativeWorkerDeath: true };
+  });
+  await step(schedule[13]!, async () => {
+    const previous = ready;
+    const started = record(
+      await control(a, "persistentStart", {
+        name,
+        original: previous.identity,
+        runtimeLifetime: crypto.randomUUID(),
+        attempt: crypto.randomUUID(),
+      }),
+    );
+    equal(started.ready, true);
+    ready = record(started.value);
+    const identity = record(ready.identity),
+      old = record(previous.identity);
+    equal(identity.instance === old.instance, false);
+    equal(identity.history === old.history, false);
+    equal(ready.notice, {
+      kind: "v1-new-history",
+      durablePublicationCut: "untracked",
+      oldCapabilities: "not-restored",
+      oldMutationOutcomes: "not-restored",
+      acknowledgedTail: "may-be-lost",
+    });
+    equal(await inspect(authority(), "changes", initial), {
+      kind: "gap",
+      current: await inspect(authority(), "cut"),
+    });
+    equal(await inspect(authority(), "receipt", id), { kind: "unknown" });
+    evidence.originalDescriptor = previous.descriptor;
+    return started;
+  });
+  await step(schedule[14]!, async () => {
+    equal(await control(c, "staleDescriptor", evidence.originalDescriptor), 11);
+    return { errno: 11 };
+  });
+  await step(schedule[15]!, async () => {
+    for (const page of pages) {
+      await control(page, "workspacePeer", ready.descriptor);
+      roots.set(page, await host(page, "preopen", ["/"]));
+      await read(page, "dir/final", [10, 20, 30, 41, 42, 43, 44, 45]);
+      await absent(page, "dir/a");
+      await absent(page, "dir/target");
+    }
+    return { savedBytes: [10, 20, 30, 41, 42, 43, 44, 45], pages: 4 };
+  });
+  await step(schedule[16]!, async () => {
+    for (const page of pages) await control(page, "workspaceStop");
+    await stopped(a);
+    equal(deadWorkers.has(authority()), true);
+    await control(a, "persistentDelete", name);
+    return { nativeWorkerDeath: true, deleted: name };
+  });
 }
 try {
   await lifecycle.init();
