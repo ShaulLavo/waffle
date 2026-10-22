@@ -79,3 +79,23 @@ segment checksums while writing into an isolated staging namespace. It enforces
 byte and metadata budgets, reports quota errors, and publishes one complete root
 only after final integrity validation. Cancellation and interruption discard the
 staging namespace without changing the old root. Adapter switching is explicit.
+
+## Damaged recovery candidates
+
+Reopen keeps the full physical revision inventory separate from the payloads usable
+by recovery. A malformed manifest or incomplete chunk coverage makes that revision
+unavailable to bases and journal successors, not absent from collection. Surviving
+compound keys also identify a revision whose manifest is missing. Later eligible
+compaction deletes those records once no recovery base or runtime pin needs them.
+Unknown markers, metadata layouts and physical key layouts still reject. Native
+request failures and exact abort reasons are not converted into unavailable data.
+
+Before selecting a v1 migration state, recovery excludes journal successors with
+missing payloads. Their journal keys stay in the physical inventory so the next
+publication discards them. Migration's final size checks, strict root switch and
+exact writer epoch fences are unchanged.
+
+`IDB_REVIEW_MODE=repair bun tests/indexeddb-chunks-browser-runner.ts` runs bounded
+native damaged-candidate and reclamation controls. `IDB_REVIEW_MODE=preserve` runs
+migration interruption, cancellation, epoch, pin, close and existing adapter
+controls without the 128 MiB range campaign.

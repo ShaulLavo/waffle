@@ -81,6 +81,19 @@ async function change(
   );
 }
 
+async function reseedLegacy(name: string): Promise<void> {
+  await raw(name, async (db) => {
+    const tx = db.transaction(["metadata", "data"], "readwrite", { durability: "strict" });
+    tx.objectStore("metadata").delete("format");
+    tx.objectStore("data").put(bytes("legacy data"), "file:1");
+    tx.objectStore("data").delete(["file:1", 0]);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error);
+    });
+  });
+}
+
 export interface BrowserStorageTest {
   label: string;
   run(): Promise<void>;
@@ -662,16 +675,7 @@ function indexedDBCases(
         "new workspace has format identity",
       );
     });
-    await raw(name, async (db) => {
-      const tx = db.transaction(["metadata", "data"], "readwrite", { durability: "strict" });
-      tx.objectStore("metadata").delete("format");
-      tx.objectStore("data").put(bytes("legacy data"), "file:1");
-      tx.objectStore("data").delete(["file:1", 0]);
-      await new Promise<void>((resolve, reject) => {
-        tx.oncomplete = () => resolve();
-        tx.onabort = () => reject(tx.error);
-      });
-    });
+    await reseedLegacy(name);
     const adopted = await open();
     assert((await adopted.load())?.generation === 1, "legacy namespace survives adoption");
     assert(

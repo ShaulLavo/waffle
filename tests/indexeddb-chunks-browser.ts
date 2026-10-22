@@ -662,7 +662,9 @@ async function damagedRevisionRecovery(damage: RevisionDamage) {
     await damageRevision(name, damage);
     const before = await physicalRevisionKeys(name, "file:3");
     const recovered = await open();
-    assert((await recovered.load())?.generation === 2, `${damage} recovers generation 2`);
+    const reopenedIndex = await observePhysical(() => recovered.load());
+    assert(reopenedIndex.result?.generation === 2, `${damage} recovers generation 2`);
+    assert(reopenedIndex.counters.payloadBytes === 0, "cold recovery does not hydrate chunk bytes");
     assert(
       new TextDecoder().decode(await recovered.read("file:2")) === "v2",
       "recovered bytes match the older complete namespace",
@@ -699,7 +701,70 @@ async function damagedRevisionRecovery(damage: RevisionDamage) {
     await breakSnapshots(name);
     const broken = await open();
     await rejected(broken.load(), "corrupt");
-    return { damage, recoveredGeneration: 2, afterGeneration: 8, before, after };
+    return {
+      damage,
+      recoveredGeneration: 2,
+      afterGeneration: 8,
+      before,
+      after,
+      reopen: reopenedIndex.counters,
+    };
+  });
+}
+async function fatalReopen(damage: "marker" | "layout" | "key" | "manifests") {
+  return owned(async (name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    if (damage === "marker") await edit(name, "metadata", "format", "foreign-format");
+    if (damage === "layout") await edit(name, "metadata", "foreign-layout", 1);
+    if (damage === "key") await edit(name, "data", ["file:1", -1], new Uint8Array(1));
+    if (damage === "manifests") await edit(name, "data", "file:1", { invalid: true });
+    const reopened = await open();
+    const expected = damage === "manifests" ? "corrupt" : "Invalid";
+    if (damage === "marker" || damage === "layout") await rejected(reopened.load(), "Incompatible");
+    else await rejected(reopened.load(), expected);
+    assert(
+      (await value(name, "data", ["file:1", 0])) !== undefined,
+      "fatal recovery never erases existing chunks",
+    );
+    return { damage, rejected: true };
+  });
+}
+async function coldRecoveryCancellation() {
+  return owned(async (_name, open) => {
+    const storage = await open();
+    await storage.persist(batch(1));
+    await storage.close();
+    const cold = await open();
+    const controller = new AbortController();
+    const get = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+      const request = get.call(this, key);
+      if (this.name === "data" && key === "file:1")
+        request.addEventListener("success", () => controller.abort(false), { once: true });
+      return request;
+    };
+    try {
+      await rejected(
+        cold.readRange("file:1", { offset: 0, length: 1, signal: controller.signal }),
+        false,
+      );
+    } finally {
+      IDBObjectStore.prototype.get = get;
+      await cold.close();
+    }
+    const reopened = await open();
+    assert((await reopened.load())?.generation === 1, "cancelled validation preserves the root");
+    return "false abort reason escapes cold manifest validation unchanged";
+  });
+}
+async function boundedRangeCancellation() {
+  return owned(async (_name, open) => {
+    const storage = await open();
+    await storage.persist(largeBatch(1, pattern(CHUNK_SIZE + 17)));
+    await cancellation(storage);
+    return "pre-aborted, queued and in-flight exact reasons on a 65553-byte fixture";
   });
 }
 export async function indexedDBReviewRepairControls() {
@@ -709,6 +774,11 @@ export async function indexedDBReviewRepairControls() {
     ["malformed newest manifest", () => damagedRevisionRecovery("malformed-manifest")],
     ["incomplete chunk reclaim", () => damagedRevisionRecovery("missing-chunk")],
     ["orphan chunk reclaim", () => damagedRevisionRecovery("missing-manifest")],
+    ["unknown marker stays fatal", () => fatalReopen("marker")],
+    ["unknown layout stays fatal", () => fatalReopen("layout")],
+    ["unknown chunk key stays fatal", () => fatalReopen("key")],
+    ["no complete manifest root stays fatal", () => fatalReopen("manifests")],
+    ["cold recovery exact cancellation", coldRecoveryCancellation],
   ];
   const results = [];
   for (const [label, run] of controls) {
@@ -728,6 +798,7 @@ export async function indexedDBReviewPreservationControls() {
   return {
     migration,
     cancelled: await migrationCancellation(),
+    rangeCancellation: await boundedRangeCancellation(),
     corrupt: await corruptLegacy(),
     retained: await retainedRevisions(),
     epoch: await migrationEpochFence(),

@@ -223,8 +223,15 @@ function completed(tx: IDBTransaction): Promise<void> {
 function payloads(nodes: Iterable<PersistedNode>, keys: Set<string>): void {
   for (const node of nodes) if (node.data !== undefined) keys.add(node.data);
 }
-function hasPayloads(index: PersistedIndex, keys: ReadonlySet<string>): boolean {
-  return index.nodes.every((node) => node.data === undefined || keys.has(node.data));
+function hasPayloads(nodes: readonly PersistedNode[], keys: ReadonlySet<string>): boolean {
+  return nodes.every((node) => node.data === undefined || keys.has(node.data));
+}
+function recoveryManifest(value: unknown, key: string): ChunkManifest | undefined {
+  try {
+    return parseManifest(value, key);
+  } catch {
+    return undefined;
+  }
 }
 function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references" | "parents"> {
   const references = new Map<number, number>(),
@@ -377,12 +384,7 @@ export function recoverIndex(
     const chain: Journal[] = [];
     while (!base) {
       const entry = journals.get(current);
-      if (
-        !entry ||
-        entry.previous >= current ||
-        !entry.upserts.every((node) => node.data === undefined || payloadKeys.has(node.data))
-      )
-        break;
+      if (!entry || entry.previous >= current || !hasPayloads(entry.upserts, payloadKeys)) break;
       chain.push(entry);
       current = entry.previous;
       base = bases.find((base) => base?.generation === current);
@@ -777,16 +779,21 @@ export class IndexedDBStorage implements StorageBackend {
         "indexeddb",
         "Incompatible IndexedDB metadata layout",
       );
-    const payloadKeys = new Set(dataKeys.filter((key): key is string => typeof key === "string"));
+    const payloadKeys = new Set<string>();
+    for (const key of dataKeys) {
+      if (typeof key === "string") payloadKeys.add(key);
+      else if (Array.isArray(key) && typeof key[0] === "string") payloadKeys.add(key[0]);
+    }
     const physical =
       format === INDEXEDDB_FORMAT ? await this.validateChunks(dataKeys, signal) : undefined;
-    if (physical) for (const key of payloadKeys) if (!physical.has(key)) payloadKeys.delete(key);
+    const available = physical ? new Set(physical.keys()) : payloadKeys;
     const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
     for (const slot of [0, 1] as const)
       if (
         bases[slot] &&
-        (!hasPayloads(bases[slot]!, payloadKeys) || !this.matchSizes(bases[slot]!.nodes, physical))
+        (!hasPayloads(bases[slot]!.nodes, available) ||
+          !this.matchSizes(bases[slot]!.nodes, physical))
       )
         bases[slot] = undefined;
     const journals = new Map<number, Journal>();
@@ -796,12 +803,13 @@ export class IndexedDBStorage implements StorageBackend {
         if (
           validateJournal(entry) &&
           entry.generation === journalKeys[i] &&
+          hasPayloads(entry.upserts, available) &&
           this.matchSizes(entry.upserts, physical)
         )
           journals.set(entry.generation, entry);
       }),
     );
-    const newest = recoverIndex(bases, journals, payloadKeys);
+    const newest = recoverIndex(bases, journals, available);
     if (
       !newest &&
       (metadataKeys.length - Number(formatPresent) > 1 ||
@@ -855,7 +863,8 @@ export class IndexedDBStorage implements StorageBackend {
     const chunks = new Map<string, Set<number>>();
     for (const key of keys) {
       if (typeof key === "string") {
-        manifests.set(key, await this.manifest(key, signal));
+        const manifest = recoveryManifest(await this.readRecord(key, signal), key);
+        if (manifest) manifests.set(key, manifest);
         continue;
       }
       if (
