@@ -32,6 +32,8 @@ export default {
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
         "tests/persistent-authority-browser-runner.ts",
+        "tests/owner-freeze-browser-runner.ts",
+        "tests/fixtures/owner-freeze-{owner,guest}.ts",
         "tests/fixtures/persistent-authority-observer.ts",
         "tests/fixtures/publication-resident-{authority,guest}.ts",
         "tests/storage-lock-browser.ts",

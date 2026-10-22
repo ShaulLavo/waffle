@@ -238,3 +238,33 @@ results and cleanup live under
 `/work/reports/waffle-finish-20261021/storage-workspace-connect-repair-r3/`.
 This source is not final-head acceptance; independent review and the full immutable
 wave remain required before a PR can be review-ready.
+
+### Native owner freeze and timeout cleanup, 2026-10-23
+
+Status: Approved follow-up. The bounded tests-only proof at
+`86ca440a198b0c4bc1284421f95e26506a70fbe4` pauses the actual persistent
+IndexedDB authority execution context in native Chromium. Four independent pages
+and a real WASI guest observe short-pause same-history publication and a second
+pause crossing the real transport deadline. Timeout remains an unknown outcome,
+not evidence of owner death or permission to take over.
+
+The saved positive schedule completes 8 steps; the intentional no-pause control
+fails the pause oracle. Neither result qualifies OS/mobile suspension, stale-owner
+replacement, SAFE, durable receipt continuity, last-client shutdown or endurance.
+Exact source, commands and raw schedules live in
+`/work/reports/wave-20261022/waffle/owner-freeze/RESULT.md`.
+
+The resumed authority can read and flush, but original client cleanup remains
+unresolved. At that pin, `fs/publication-attachment.ts:268` permanently marks a
+transport timeout unconfirmed; `assertSettled` at lines 285-286 prevents the
+original bridge stop at lines 972-976. The guest reports `cleanup-error`, peer
+stop returns errno 6, and `browser/publication-authority.ts:278-281` refuses drain
+while original resident sessions remain. Native realm teardown contains those
+resources; it is not a successful protocol cleanup join.
+
+Implement request-identity, cancellation and terminal-outcome reconciliation for
+that original cleanup debt without inferring death from elapsed time. Initial
+write set is `fs/publication-attachment.ts`, `fs/publication-workspace.ts`,
+`browser/publication-authority.ts` and focused tests. Coordinate serial ownership
+with the reversible write-barrier lane. Preserve uncertainty when no authoritative
+outcome exists; do not add stale-version compatibility or a timeout-based takeover.
