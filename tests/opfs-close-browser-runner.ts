@@ -377,7 +377,7 @@ export async function runOpfsCloseArm(
       () => budget.run("lifecycle cleanup", () => lifecycle.close()),
       result,
     );
-    result.primaryErrors.push(...original.rawErrors.concat(final.rawErrors));
+    result.primaryErrors = result.primaryErrors.concat(original.rawErrors, final.rawErrors);
     result.workers = Array.from(original.owners.values(), (owner) => owner.receipt).concat(
       Array.from(final.owners.values(), (owner) => owner.receipt),
     );
