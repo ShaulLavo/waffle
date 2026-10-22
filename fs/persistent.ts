@@ -24,6 +24,8 @@ export class PersistentBackend extends MemoryBackend {
   private sequence = 0;
   private checkpointEpoch = 0;
   private pendingCheckpoints = 0;
+  private admittedWork = new Set<Promise<void>>();
+  private closing?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private nonce = crypto.randomUUID();
@@ -259,10 +261,18 @@ export class PersistentBackend extends MemoryBackend {
         this.release(handle);
       });
     this.loading.set(handle, load);
-    return load;
+    return this.ownWork(load);
+  }
+  override execute(
+    operation: string,
+    args: Parameters<MemoryBackend["execute"]>[1],
+    data: Uint8Array,
+  ): unknown {
+    this.assertAdmitting();
+    return super.execute(operation, args, data);
   }
   prepare(operation: string, args: any[]): void | Promise<void> {
-    if (this.stopped) throw new Error("filesystem persistence backend is closed");
+    this.assertAdmitting();
     const target = ["read", "write", "append", "grow", "resize"].includes(operation)
       ? args[0]
       : operation === "readFile" || operation === "writeFile"
@@ -307,6 +317,18 @@ export class PersistentBackend extends MemoryBackend {
   flush(target?: FileHandle | string): Promise<void> {
     return this.checkpoint(true, target);
   }
+  private assertAdmitting(): void {
+    if (this.closing) throw new Error("filesystem persistence backend is closed");
+    this.assertOpen();
+  }
+  private ownWork(work: Promise<void>): Promise<void> {
+    this.admittedWork.add(work);
+    void work.then(
+      () => this.admittedWork.delete(work),
+      () => this.admittedWork.delete(work),
+    );
+    return work;
+  }
   private assertOpen(): void {
     if (this.stopped) throw new Error("filesystem persistence backend is closed");
   }
@@ -317,6 +339,10 @@ export class PersistentBackend extends MemoryBackend {
   }
   /** Background close-only checkpoint. Explicit saves/fsync use flush() for payload durability. */
   checkpoint(durable = false, target?: FileHandle | string): Promise<void> {
+    if (this.closing) return Promise.reject(new Error("filesystem persistence backend is closed"));
+    return this.ownWork(this.captureCheckpoint(durable, target));
+  }
+  private captureCheckpoint(durable = false, target?: FileHandle | string): Promise<void> {
     if (this.stopped) return Promise.reject(new Error("filesystem persistence backend is closed"));
     const selected =
       typeof target === "string"
@@ -461,17 +487,36 @@ export class PersistentBackend extends MemoryBackend {
       return durable ? this.flushOpen(flushKeys) : undefined;
     });
   }
-  dispose(): void {
+  private cancelTimer(): void {
+    if (this.timer === undefined) return;
+    clearInterval(this.timer);
+    this.timer = undefined;
+  }
+  private stopPersistence(): void {
     this.stopped = true;
     this.checkpointEpoch++;
-    if (this.timer !== undefined) clearInterval(this.timer);
+    this.cancelTimer();
   }
-  async close(): Promise<void> {
-    try {
-      await this.flush();
-    } finally {
-      this.dispose();
-      await this.storage.close();
-    }
+  dispose(): void {
+    if (this.closing) return;
+    this.stopPersistence();
+  }
+  private async finishClose(work: readonly Promise<void>[]): Promise<void> {
+    const outcomes = await Promise.allSettled(work);
+    for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+    await this.captureCheckpoint(true);
+    this.stopPersistence();
+    await this.storage.close();
+  }
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    const owner = Promise.withResolvers<void>();
+    this.closing = owner.promise;
+    this.cancelTimer();
+    const work = Array.from(
+      new Set(Array.from(this.admittedWork).concat([this.lastCommit, this.tail])),
+    );
+    void this.finishClose(work).then(owner.resolve, owner.reject);
+    return owner.promise;
   }
 }

@@ -21,6 +21,7 @@ import {
   isRevoked,
   pack,
   revokeFilesystem,
+  revokeFilesystemService,
   waitForFilesystemQuiescence,
   unpack,
   wake,
@@ -58,9 +59,14 @@ interface Session {
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
   quiescing?: Promise<void>;
+  releaseState?: { kind: "running" } | { kind: "failed"; error: unknown };
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
   publicationPins?: Set<number>;
+}
+interface ShutdownOwner {
+  readonly done: Promise<void>;
+  readonly sessions: readonly Session[];
 }
 interface PreparedRequest {
   handles: number[];
@@ -75,12 +81,14 @@ export class FilesystemService {
   private ownerDraining: Promise<void> | undefined;
   private runningRequests = new Set<Promise<void>>();
   private preparingSessions = new Set<Session>();
+  private work = new Map<Promise<unknown>, Session>();
+  private shutdownOwner: ShutdownOwner | undefined;
+  private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
   constructor(private backend: FilesystemBackend) {}
   connect(connection: FilesystemConnection): void {
     if (this.ownerStopping) {
-      revokeFilesystem(connection);
-      connection.port.close();
+      this.refuseConnection(connection);
       throw new FilesystemError(11);
     }
     if (connection.publication && !(this.backend instanceof MemoryBackend))
@@ -144,6 +152,11 @@ export class FilesystemService {
     for (const segment of this.backend.sharedSegments?.() ?? [])
       connection.port.postMessage({ segment: segment.buffer, index: segment.index });
     connection.port.onmessage = ({ data }: MessageEvent<RequestMessage>) => {
+      if (this.ownerStopping) {
+        if ("connect" in data) this.refuseConnection(data.connect);
+        else if ("buffer" in data) this.cancelRequest(session, data.id, data.buffer);
+        return;
+      }
       if ("connect" in data) {
         if (!isRevoked(connection)) this.connect(data.connect);
         else data.connect.port.close();
@@ -152,12 +165,12 @@ export class FilesystemService {
         // A controller can release a transfer for another live identity. Its notifier need
         // not own that identity's port, so sweep notifications also trim live peers in queue
         // order. Internal contention sweeps stay lock-free until an owner has quiesced.
-        this.queue = this.queue.then(() => {
+        this.enqueueMaintenance(session, () => {
           for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
         });
       } else if ("discard" in data) session.responses.delete(data.discard);
       else if ("trim" in data)
-        this.queue = this.queue.then(() => {
+        this.enqueueMaintenance(session, () => {
           if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
         });
       else {
@@ -230,16 +243,57 @@ export class FilesystemService {
     } catch {
       /* request() reports malformed input through its completion */
     }
-    this.queue = this.queue.then(() => {
-      const request = this.request(session, id, buffer, prepared);
-      this.runningRequests.add(request);
-      void request.then(
-        () => this.runningRequests.delete(request),
-        () => this.runningRequests.delete(request),
-      );
-      if (!barrier) return request;
-      void request.catch(() => {});
-    });
+    const previous = this.queue;
+    const request = this.trackWork(
+      session,
+      previous.then(() => this.request(session, id, buffer, prepared)),
+    );
+    this.runningRequests.add(request);
+    void request.then(
+      () => this.runningRequests.delete(request),
+      () => this.runningRequests.delete(request),
+    );
+    this.queue = barrier
+      ? previous.then(() => {})
+      : request.then(
+          () => {},
+          () => {},
+        );
+  }
+  private trackWork<T>(session: Session, done: Promise<T>): Promise<T> {
+    this.work.set(done, session);
+    void done.then(
+      () => this.work.delete(done),
+      () => {},
+    );
+    return done;
+  }
+  private enqueueMaintenance(session: Session, run: () => void): void {
+    const done = this.trackWork(session, this.queue.then(run));
+    this.queue = done.then(
+      () => {},
+      () => {},
+    );
+  }
+  private refuseConnection(connection: FilesystemConnection): void {
+    if (
+      connection.reservations.some(
+        (reservation) => Atomics.load(new Int32Array(reservation.state), 1) === 0,
+      )
+    )
+      this.refusedConnections.add(connection);
+    revokeFilesystem(connection);
+    connection.port.close();
+  }
+  private cancelRequest(session: Session, id: number, buffer: SharedArrayBuffer): void {
+    const cells = new Int32Array(buffer, 0, HEADER / 4);
+    Atomics.store(cells, 6, 1);
+    Atomics.store(cells, 3, 11);
+    Atomics.store(cells, 0, State.Cancelled);
+    Atomics.notify(cells, 0);
+    wake(session.connection);
+    session.pending.delete(id);
+    session.connection.port.postMessage({ completed: id });
   }
   private pin(session: Session, handle: number | undefined, preopen = false): void {
     if (handle === undefined) return;
@@ -429,13 +483,15 @@ export class FilesystemService {
       const flushing = this.backend.flush?.(
         operation === "sync" ? a : typeof a === "string" ? a : undefined,
       );
-      return Promise.resolve(flushing).then(() =>
+      return this.trackWork(session, Promise.resolve(flushing)).then(() =>
         this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
       );
     }
     const result = this.backend.execute(operation, args, data);
     if (result instanceof Promise)
-      return result.then((value) => this.finishResult(session, id, operation, value));
+      return this.trackWork(session, result).then((value) =>
+        this.finishResult(session, id, operation, value),
+      );
     return this.finishResult(session, id, operation, result);
   }
   private finishResult(session: Session, id: number, operation: string, result: any): unknown {
@@ -573,15 +629,17 @@ export class FilesystemService {
       payload,
     );
     if (!preparation) return;
+    const original = this.trackWork(session, preparation);
     const continuation = prepared ?? { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
-    const joined = preparation.then(
+    const joined = original.then(
       () => this.enqueue(session, id, buffer, continuation),
       (error) => {
         continuation.failure = { error };
         this.enqueue(session, id, buffer, continuation);
       },
     );
+    this.trackWork(session, joined);
     session.preparations.add(joined);
     this.preparingSessions.add(session);
     void joined.then(
@@ -772,7 +830,7 @@ export class FilesystemService {
     return { ...pin, bytes: Array.from(pin.bytes) };
   }
   sweep(): void {
-    if (this.sweeping) return;
+    if (this.sweeping || this.shutdownOwner) return;
     this.sweeping = true;
     try {
       // Recover all proven-dead lock owners before any close can need the allocator lock.
@@ -788,17 +846,35 @@ export class FilesystemService {
     }
   }
   private close(session: Session): void {
+    if (this.shutdownOwner) return;
+    this.releaseSession(session);
+  }
+  private releaseSession(session: Session): void {
+    if (session.releaseState?.kind === "running") return;
+    if (session.releaseState?.kind === "failed") throw session.releaseState.error;
+    session.releaseState = { kind: "running" };
+    try {
+      this.releaseSessionPins(session);
+      session.releaseState = undefined;
+    } catch (error) {
+      session.releaseState = { kind: "failed", error };
+      throw error;
+    }
+  }
+  private releaseSessionPins(session: Session): void {
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
     // an entrant between admission and acquisition, which may still be touching a pin or page.
     if (ownRevocation !== 2 && Atomics.load(new Int32Array(session.connection.sections), 0)) {
-      session.quiescing ??= waitForFilesystemQuiescence(session.connection).then(() => {
-        // A later rejected entrant can briefly raise the count again. Let close() re-arm
-        // its waiter if the next sweep observes that admission before it aborts.
-        session.quiescing = undefined;
-        this.sweep();
-      });
+      session.quiescing ??= this.trackWork(
+        session,
+        waitForFilesystemQuiescence(session.connection).then(() => {
+          // The field controls rearming; work retains this original outcome after it clears.
+          session.quiescing = undefined;
+          this.sweep();
+        }),
+      );
       return;
     }
     if (ownRevocation === 2)
@@ -818,8 +894,8 @@ export class FilesystemService {
     for (const key of session.handles.values()) Atomics.store(session.capabilities, key + 1, -1);
     for (const handle of Array.from(session.handles.keys())) {
       if (Atomics.load(session.capabilities, session.handles.get(handle)! + 2) > 0) continue;
-      session.handles.delete(handle);
       this.backend.release(handle);
+      session.handles.delete(handle);
     }
     Atomics.store(session.capabilities, 0, 0);
     session.preopens.clear();
@@ -921,20 +997,121 @@ export class FilesystemService {
       throw new FilesystemError(6, "filesystem owner still has pending work");
   }
   dispose(): void {
+    if (this.shutdownOwner) return;
     this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
   }
-  async shutdown(): Promise<void> {
-    await this.queue;
-    this.dispose();
+  shutdown(): Promise<void> {
+    if (this.shutdownOwner) return this.shutdownOwner.done;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const done = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    const sessions = Array.from(
+      new Set(
+        Array.from(this.sessions).concat(
+          Array.from(this.preparingSessions),
+          Array.from(this.work.values()),
+        ),
+      ),
+    );
+    const owner = { done, sessions };
+    this.shutdownOwner = owner;
+    this.ownerStopping = true;
+    const fences = sessions.map((session) => this.shutdownFence(session));
+    void this.drainShutdown(owner, fences).then(resolve, reject);
+    return done;
+  }
+  private async shutdownFence(session: Session): Promise<void> {
+    revokeFilesystemService(session.connection);
+    await waitForFilesystemQuiescence(session.connection);
+  }
+  private async drainShutdown(owner: ShutdownOwner, fences: Promise<void>[]): Promise<void> {
+    const failures: unknown[] = [];
+    this.collectFailures(await Promise.allSettled(fences), failures);
+    await this.drainShutdownWork(failures);
+    if (
+      this.residentPublication ||
+      owner.sessions.some(
+        (session) => session.connection.publication || session.connection.residentPublication,
+      )
+    )
+      failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));
+    this.throwShutdownFailures(failures);
+    this.recoverShutdownOwners(owner.sessions, failures);
+    this.throwShutdownFailures(failures);
+    for (const session of owner.sessions) {
+      try {
+        await this.releaseShutdownSession(session);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (
+      !failures.length &&
+      Array.from(this.refusedConnections).some((connection) =>
+        connection.reservations.some(
+          (reservation) => Atomics.load(new Int32Array(reservation.state), 1) === 0,
+        ),
+      )
+    )
+      failures.push(new FilesystemError(6, "filesystem has unresolved refused transfers"));
+    this.throwShutdownFailures(failures);
     await this.backend.close?.();
+  }
+  private recoverShutdownOwners(sessions: readonly Session[], failures: unknown[]): void {
+    for (const session of sessions) {
+      if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) !== 2) continue;
+      try {
+        this.backend.revokeOwner?.(
+          session.connection.owner,
+          new Int32Array(session.connection.epoch),
+        );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  }
+  private async drainShutdownWork(failures: unknown[]): Promise<void> {
+    const joined = new Set<Promise<unknown>>();
+    for (;;) {
+      const queue = this.queue;
+      await queue;
+      const work = Array.from(this.work.keys()).filter((done) => !joined.has(done));
+      for (const done of work) joined.add(done);
+      this.collectFailures(await Promise.allSettled(work), failures);
+      if (queue !== this.queue) continue;
+      if (Array.from(this.work.keys()).some((done) => !joined.has(done))) continue;
+      return;
+    }
+  }
+  private async releaseShutdownSession(session: Session): Promise<void> {
+    for (;;) {
+      await this.shutdownFence(session);
+      this.releaseSession(session);
+      if (!session.quiescing) break;
+    }
+    if (this.sessions.has(session))
+      throw new FilesystemError(6, "filesystem session retains unresolved transfers");
+  }
+  private collectFailures(
+    results: readonly PromiseSettledResult<unknown>[],
+    failures: unknown[],
+  ): void {
+    for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+  }
+  private throwShutdownFailures(failures: readonly unknown[]): void {
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, "filesystem shutdown failed");
   }
 }
 function failureDiagnostic(error: unknown) {
   let message = "Unknown filesystem worker error";
   let stack: string | undefined;
   try {
-    message = String(error);
+    message = String(error) || message;
   } catch {
     /* Rejection reasons need not be printable. */
   }

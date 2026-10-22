@@ -204,7 +204,7 @@ checkpoint bookkeeping or start a payload flush. Disposal does not abort or join
 an adapter operation. Rejection is not rollback, and applied v1 bytes remain saved.
 Live storage failures retain their original errors and dirty retry behavior.
 A later failed persist does not invalidate an earlier successful payload barrier.
-Ordinary close saves before disposal and joins storage close afterward.
+Ordinary close joins admitted work and its final durable save before disposal, then joins native storage close. A failed drain or save retains the original close rejection and does not release storage.
 These checks change no storage format, FAST memory ACK, or untracked receipt.
 They do not provide explicit recovery, a durable publication cut, or SAFE mode.
 

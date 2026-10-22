@@ -52,20 +52,48 @@ test("page filesystem accepts a consumer-owned worker URL and storage namespace"
   expect(terminated).toBe(1);
 });
 
-test("page filesystem exposes typed waiting and ready state transitions", () => {
+test("page filesystem exposes typed waiting and ready state transitions", async () => {
   const previous = globalThis.Worker;
   let message: ((event: MessageEvent) => void) | undefined;
-  const states: string[] = [];
-  globalThis.Worker = class {
-    constructor() {}
-    addEventListener(type: string, listener: (event: MessageEvent) => void) {
-      if (type === "message") message = listener;
-    }
-    postMessage() {}
-    terminate() {}
-  } as unknown as typeof Worker;
+  let serverPort: MessagePort | undefined;
+  let turn: MessageChannel | undefined;
   let fs: SharedFilesystem | undefined;
+  let failure: { reason: unknown } | undefined;
+  let requests = 0;
+  let terminated = 0;
+  const states: SharedFilesystem["state"]["status"][] = [];
+  const cleanup = [
+    async () => {
+      const stopping = fs?.dispose();
+      // Explicit fixture intervention releases the stand-in, not native storage.
+      message?.(new MessageEvent("message", { data: { type: "filesystem-disposed" } }));
+      await stopping;
+    },
+    () => fs?.client.dispose(),
+    () => fs?.client.connection.port.close(),
+    () => serverPort?.close(),
+    () => turn?.port1.close(),
+    () => turn?.port2.close(),
+  ];
+  const deliver = (data: unknown) => {
+    if (!message) throw new Error("Filesystem Worker message listener was not installed");
+    message(new MessageEvent("message", { data }));
+  };
   try {
+    Object.defineProperty(globalThis, "Worker", {
+      value: class {
+        addEventListener(type: string, listener: (event: MessageEvent) => void) {
+          if (type === "message") message = listener;
+        }
+        postMessage(payload: { connect?: { port: MessagePort }; dispose?: boolean }) {
+          serverPort ??= payload.connect?.port;
+          if (payload.dispose) requests++;
+        }
+        terminate() {
+          terminated++;
+        }
+      },
+    });
     fs = new SharedFilesystem(
       withVfsImplementation("opfs-memory", {
         workerURL: "https://example.test/fs.js",
@@ -75,15 +103,49 @@ test("page filesystem exposes typed waiting and ready state transitions", () => 
         },
       }),
     );
-    message!({ data: { type: "filesystem-state", status: "waiting" } } as MessageEvent);
+    deliver({ type: "filesystem-state", status: "waiting" });
     expect(fs.state.status).toBe("waiting");
-    message!({ data: { type: "filesystem-state", status: "ready" } } as MessageEvent);
+    deliver({ type: "filesystem-state", status: "ready" });
     expect(fs.state.status).toBe("ready");
+    const stopping = fs.dispose();
+    let settled = false;
+    void stopping.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    expect(fs.dispose()).toBe(stopping);
+    expect(requests).toBe(1);
+    turn = new MessageChannel();
+    const checkpoint = Promise.withResolvers<void>();
+    turn.port1.onmessage = () => checkpoint.resolve();
+    turn.port2.postMessage(null);
+    await checkpoint.promise;
+    expect(settled).toBe(false);
+    expect(states).toEqual(["waiting", "ready"]);
+    expect(fs.state.status).toBe("ready");
+    expect(terminated).toBe(0);
+    deliver({ type: "filesystem-disposed" });
+    await stopping;
+    expect(fs.dispose()).toBe(stopping);
+    expect(states).toEqual(["waiting", "ready", "disposed"]);
+    expect(fs.state.status).toBe("disposed");
+    expect(requests).toBe(1);
+    expect(terminated).toBe(1);
+  } catch (reason) {
+    failure = { reason };
+  }
+  try {
+    const results = await Promise.allSettled(cleanup.map((run) => Promise.resolve().then(run)));
+    if (failure) throw failure.reason;
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected?.status === "rejected") throw rejected.reason;
   } finally {
-    fs?.dispose();
     globalThis.Worker = previous;
   }
-  expect(states).toEqual(["waiting", "ready", "disposed"]);
 });
 
 test("page restores a worker's typed startup failure without losing its code", async () => {
