@@ -17,7 +17,7 @@ try {
   await page.goto(origin);
   const result = await page.evaluate(async (mode) => {
     const path = "/tests.js";
-    const suite = await import(path);
+    const suite: typeof import("./indexeddb-chunks-browser") = await import(path);
     if (mode === "repair") return suite.indexedDBReviewRepairControls();
     if (mode === "preserve") return suite.indexedDBReviewPreservationControls();
     return {

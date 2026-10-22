@@ -825,7 +825,6 @@ async function persistentControl(operation: string, value: unknown): Promise<unk
   }
   throw new Error(`unknown persistent page operation ${operation}`);
 }
-/** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation !== "persistentBaseline" && operation.startsWith("persistent"))
     return persistentControl(operation, value);

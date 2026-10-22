@@ -767,6 +767,7 @@ async function boundedRangeCancellation() {
     return "pre-aborted, queued and in-flight exact reasons on a 65553-byte fixture";
   });
 }
+/** @browserEntry Called by the browser bundle through its runtime URL. */
 export async function indexedDBReviewRepairControls() {
   const controls: [string, () => Promise<unknown>][] = [
     ["marked abandoned v1 journal", () => abandonedLegacyJournal(true)],
@@ -790,6 +791,7 @@ export async function indexedDBReviewRepairControls() {
   }
   return results;
 }
+/** @browserEntry Called by the browser bundle through its runtime URL. */
 export async function indexedDBReviewPreservationControls() {
   const migration = [];
   for (const marked of [true, false])
@@ -807,6 +809,7 @@ export async function indexedDBReviewPreservationControls() {
     existing: await indexedDBExistingControls(),
   };
 }
+/** @browserEntry Called by the browser bundle through its runtime URL. */
 export async function indexedDBChunkControls() {
   const ranges = await rangeControls();
   const migration = [];
@@ -826,6 +829,7 @@ export async function indexedDBChunkControls() {
   );
   return { ranges, migration, cancelled, corrupt, retained, epoch, close, recovery, review };
 }
+/** @browserEntry Called by the browser bundle through its runtime URL. */
 export async function indexedDBExistingControls() {
   const passed: string[] = [];
   for (const test of storageTests()) {
