@@ -365,7 +365,7 @@ export class PersistentBackend extends MemoryBackend {
           : Math.max(this.shared.info(action.handle)!.size, action.size),
       );
     if (action.kind === "setMode" || action.kind === "setMtime")
-      files.set(action.handle, this.shared.info(action.handle)!.size);
+      files.set(action.handle, this.shared.stat(action.handle)!.size);
     this.shared.prepareDirtyMutation(files, units);
   }
   override execute(

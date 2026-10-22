@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { FilesystemClient } from "../fs/client";
 import { FilesystemService } from "../fs/service";
-import { createFilesystemConnection, PAGE } from "../fs/protocol";
+import { DescriptorTable } from "../core/descriptors";
+import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
+import type { PublicationConfiguration } from "../fs/publication-internal";
+import { createFilesystemConnection, reapFilesystem, PAGE } from "../fs/protocol";
 import {
   snapshotBatch,
   type PersistedIndex,
@@ -64,7 +67,11 @@ interface Fixture {
   storage: ControlledStorage;
   track: (work: Promise<void>) => Promise<void>;
 }
-async function fixture(run: (context: Fixture) => Promise<void>, options: Options = {}) {
+async function fixture(
+  run: (context: Fixture) => Promise<void>,
+  options: Options = {},
+  publication?: PublicationConfiguration,
+) {
   const storage = new ControlledStorage();
   const backend = await PersistentBackend.open(storage, {
     intervalMs: 0,
@@ -72,7 +79,7 @@ async function fixture(run: (context: Fixture) => Promise<void>, options: Option
     ...options,
   });
   const service = new FilesystemService(backend);
-  const pair = createFilesystemConnection();
+  const pair = createFilesystemConnection(undefined, publication);
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
   const work: Promise<void>[] = [];
@@ -189,9 +196,9 @@ test("resize, mode and time reserve whole-file cuts before changing metadata", a
     const before = backend.shared.snapshot(handle);
     expect(() => backend.execute("resize", [handle, 17, true], data(0))).toThrow("dirty capacity");
     expect(backend.shared.snapshot(handle)).toEqual(before);
-    backend.execute("setMode", [handle, 0o640], data(0));
+    backend.execute("setMode", [handle, 0o700], data(0));
     backend.execute("setMtime", [handle, 1234], data(0));
-    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o640, mtime: 1234 });
+    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o700, mtime: 1234 });
     expect(client.tryAppend(handle, [data(1)])).toEqual({ written: 1, offset: 5 });
     backend.execute("resize", [handle, 2, true], data(0));
     expect(backend.shared.snapshot(handle)!.data).toEqual(data(2));
@@ -264,4 +271,110 @@ test("targeted flushes keep immutable cut order without making FAST ACK durable"
     },
     { dirtyLimits: { maxBytes: PAGE + 80 } },
   );
+});
+
+const publication: PublicationConfiguration = {
+  observe: true,
+  limits: {
+    sessions: 4,
+    operations: 8,
+    inputBytes: 64,
+    argumentBytes: 512,
+    effectBytes: 2048,
+    effects: 16,
+    resultBytes: 128,
+    logRecords: 4,
+    logBytes: 8192,
+    pins: 2,
+    pinBytes: 128,
+  },
+};
+
+for (const enabled of [false, true])
+  test(`actual blocking worker resumes outside shared locks, publication=${enabled}`, async () => {
+    await fixture(
+      async (context) => {
+        const { backend, client, handle } = context;
+        const { gate, checkpoint } = await held(context);
+        expect(client.tryWrite(handle, [data(8, 67)], 0)).toBe(8);
+        const connection = client.fork();
+        const descriptors = new DescriptorTable();
+        const fd = descriptors.open(
+          { kind: "file", handle, offset: 8, append: false },
+          0x1fffffffn,
+          0n,
+        );
+        const codec = createFilesystemDescriptorCodec(client, connection);
+        const token = codec.export(descriptors.get(fd)!, 2);
+        const worker = new Worker(
+          new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href,
+        );
+        const start = new SharedArrayBuffer(8);
+        Atomics.store(new Int32Array(start), 1, 1);
+        const result = new Promise<{ offset: number }>((resolve, reject) => {
+          worker.onmessage = ({ data }) => resolve(data);
+          worker.onerror = reject;
+        });
+        try {
+          worker.postMessage({ connection, token, count: 1, start }, [connection.port]);
+          await waiters(backend, 1);
+          expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
+          expect(backend.shared.stat(handle)!.size).toBe(8);
+          expect(await client.asyncCall("stat", [handle])).toMatchObject({ size: 8 });
+          gate.released.resolve();
+          await checkpoint;
+          expect(await result).toEqual({ offset: 9 });
+          await waiters(backend, 0);
+          expect(backend.shared.snapshot(handle)!.data).toEqual(data(9, 67));
+        } finally {
+          await worker.terminate();
+          codec.discard(token);
+          reapFilesystem(connection);
+          descriptors.dispose();
+        }
+      },
+      tiny,
+      enabled ? publication : undefined,
+    );
+  });
+
+test("metadata-only admission rejects before mode or time changes", async () => {
+  await fixture(async (context) => {
+    const { backend, client } = context;
+    const root = await client.asyncCall("preopen", ["/"]);
+    const { gate, checkpoint } = await held(context);
+    const counters = backend.dirtyPressure();
+    backend.shared.mutate(undefined, undefined, () =>
+      backend.shared.dirtyAdmission.configure(
+        {
+          maxMetadataBytes:
+            (counters.accountedMetadataUnits - counters.immutableMetadataUnits) * 2 +
+            counters.immutableMetadataUnits,
+        },
+        backend.checkpointPressure().limits,
+        counters.namespaceUnits,
+      ),
+    );
+    const before = backend.shared.stat(root);
+    expect(() => backend.execute("setMode", [root, 0o500], data(0))).toThrow("dirty capacity");
+    expect(() => backend.execute("setMtime", [root, 1000], data(0))).toThrow("dirty capacity");
+    expect(backend.shared.stat(root)).toEqual(before);
+    expect(backend.fs.root.mode).toBe(before!.mode!);
+    expect(backend.fs.root.mtime).toBe(before!.mtime);
+    gate.released.resolve();
+    await checkpoint;
+  });
+});
+
+test("dirty files share one cut limit and namespace creation is all-or-nothing", async () => {
+  await fixture(async ({ backend, storage }) => {
+    backend.execute("writeFile", ["/file"], data(8));
+    const before = backend.dirtyPressure();
+    expect(() => backend.execute("writeFile", ["/new"], data(12))).toThrow("dirty capacity");
+    expect(backend.fs.lookup("/new")).toBeUndefined();
+    expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(before.dirtyCaptureBytes);
+    expect(backend.dirtyPressure().namespaceUnits).toBe(before.namespaceUnits);
+    await backend.checkpoint(true);
+    expect(storage.index!.nodes.filter((node) => node.kind === "file")).toHaveLength(1);
+  });
 });
