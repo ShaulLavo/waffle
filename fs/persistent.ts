@@ -1,12 +1,29 @@
+import {
+  CheckpointPressure,
+  type CheckpointLimits,
+  type CheckpointCost,
+} from "./checkpoint-pressure.js";
 import { FilesystemError } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend } from "./backend.js";
 import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory.js";
 import type { PersistedIndex, PersistedNode, PersistenceBatch, StorageBackend } from "./storage.js";
 
+interface CheckpointRequest {
+  readonly durable: boolean;
+  readonly target: FileHandle | string | undefined;
+  readonly selected: Node | undefined;
+}
+interface CheckpointCapture {
+  readonly changed: Set<Node>;
+  readonly data: Map<string, Uint8Array>;
+  readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string }>;
+}
+
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
  * no lock or guest request is held across a background commit. */
 export class PersistentBackend extends MemoryBackend {
+  private readonly pressure: CheckpointPressure;
   private nodes = new Map<number, Node>();
   private detached = new WeakSet<Node>();
   private links = new Map<number, number>();
@@ -34,8 +51,10 @@ export class PersistentBackend extends MemoryBackend {
     fs: MemFS,
     index?: PersistedIndex,
     intervalMs = 50,
+    checkpointLimits?: Partial<CheckpointLimits>,
   ) {
     super(fs);
+    this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
       if (this.nodes.has(node.ino)) return;
@@ -68,10 +87,17 @@ export class PersistentBackend extends MemoryBackend {
   }
   static async open(
     storage: StorageBackend,
-    options: { intervalMs?: number } = {},
+    options: { intervalMs?: number; checkpointLimits?: Partial<CheckpointLimits> } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
-    if (!index) return new PersistentBackend(storage, new MemFS(), undefined, options.intervalMs);
+    if (!index)
+      return new PersistentBackend(
+        storage,
+        new MemFS(),
+        undefined,
+        options.intervalMs,
+        options.checkpointLimits,
+      );
     const nodes = new Map<number, Node>();
     for (const entry of index.nodes)
       nodes.set(
@@ -105,7 +131,13 @@ export class PersistentBackend extends MemoryBackend {
     const root = nodes.get(index.root);
     if (root?.kind !== "dir") throw new Error("persisted filesystem has no root directory");
     adoptInodes(root);
-    return new PersistentBackend(storage, new MemFS(root), index, options.intervalMs);
+    return new PersistentBackend(
+      storage,
+      new MemFS(root),
+      index,
+      options.intervalMs,
+      options.checkpointLimits,
+    );
   }
   private changeLinks(node: Node, delta: 1 | -1): void {
     const previous = this.links.get(node.ino) ?? 0;
@@ -314,8 +346,8 @@ export class PersistentBackend extends MemoryBackend {
   }
   /** Capture only dirty nodes and changed resident payloads. Cost is bounded by the shared
    * slot table plus changes, not by the number of cold files in a workspace. */
-  flush(target?: FileHandle | string): Promise<void> {
-    return this.checkpoint(true, target);
+  flush(target?: FileHandle | string, signal?: AbortSignal): Promise<void> {
+    return this.checkpoint(true, target, signal);
   }
   private assertAdmitting(): void {
     if (this.closing) throw new Error("filesystem persistence backend is closed");
@@ -337,55 +369,131 @@ export class PersistentBackend extends MemoryBackend {
     await this.storage.flush(keys);
     this.assertOpen();
   }
-  /** Background close-only checkpoint. Explicit saves/fsync use flush() for payload durability. */
-  checkpoint(durable = false, target?: FileHandle | string): Promise<void> {
+  checkpointPressure() {
+    return this.pressure.diagnostics();
+  }
+  /** Cancellation ends observation, not ownership of an already captured checkpoint. */
+  checkpoint(durable = false, target?: FileHandle | string, signal?: AbortSignal): Promise<void> {
     if (this.closing) return Promise.reject(new Error("filesystem persistence backend is closed"));
-    return this.ownWork(this.captureCheckpoint(durable, target));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    let work: Promise<void>;
+    try {
+      work = this.ownWork(this.captureCheckpoint(durable, target));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (!signal) return work;
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+    });
+  }
+  private nodeMetadataBytes(node: Node): number {
+    let bytes = 256;
+    if (node.kind !== "dir") return bytes;
+    for (const name of node.children.keys()) bytes += 64 + name.length * 2;
+    return bytes;
+  }
+  private pinMetadataBytes(): number {
+    let bytes = 0;
+    for (const [handle, node] of this.registeredNodes) {
+      if (this.shared.revision(handle) === undefined) continue;
+      const key = this.committedKeys.get(node.ino) ?? this.detachedKeys.get(node.ino);
+      if (key) bytes += 128 + key.length * 2;
+    }
+    return bytes;
+  }
+  private captureCost({ durable, target, selected }: CheckpointRequest): CheckpointCost {
+    let bytes = 0;
+    let metadataBytes = 256 + this.removed.size * 256;
+    for (const node of this.dirty) metadataBytes += this.nodeMetadataBytes(node);
+    for (const handle of this.shared.registeredHandles()) {
+      const revision = this.shared.revision(handle);
+      if (revision === undefined || revision === this.revisions.get(handle)) continue;
+      const node = this.registeredNodes.get(handle);
+      if (node?.kind !== "file") continue;
+      if (this.detached.has(node) && (!durable || (target !== undefined && selected !== node)))
+        continue;
+      if (!this.dirty.has(node)) metadataBytes += this.nodeMetadataBytes(node);
+      if (this.shared.isResident(handle)) bytes += (this.shared.stat(handle)?.size ?? 0) * 2;
+    }
+    // Metadata units cover capture containers, adapter cloning and runtime pin lists.
+    return { bytes, metadataBytes: (metadataBytes + this.pinMetadataBytes()) * 4 };
   }
   private captureCheckpoint(durable = false, target?: FileHandle | string): Promise<void> {
-    if (this.stopped) return Promise.reject(new Error("filesystem persistence backend is closed"));
-    const selected =
-      typeof target === "string"
-        ? this.resolveNode(target)
-        : target === undefined
-          ? undefined
-          : this.fs.nodeForHandle(target);
-    this.pruneDetached();
-    const changed = new Set(this.dirty);
-    const data = new Map<string, Uint8Array>();
-    const detachedSnapshots = new Map<FileNode, { handle: FileHandle; key: string }>();
-    this.shared.mutate(undefined, undefined, () => {
-      for (const handle of this.shared.registeredHandles()) {
-        const revision = this.shared.revision(handle);
-        if (revision === undefined || revision === this.revisions.get(handle)) continue;
-        const node = this.registeredNodes.get(handle);
-        if (node?.kind !== "file") continue;
-        if (this.detached.has(node)) {
-          if (!durable || (target !== undefined && selected !== node)) continue;
-          const snapshot = this.shared.snapshot(handle);
-          if (snapshot) {
-            const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
-            data.set(key, snapshot.data);
-            detachedSnapshots.set(node, { handle, key });
-          }
-          // An unlinked fd still owns bytes, not a namespace entry. Leave its revision
-          // dirty so a queued relink recaptures shared bytes rather than the old baseline.
-          continue;
-        }
-        const stat = this.shared.stat(handle);
-        if (!stat) continue;
-        node.size = stat.size;
-        node.mtime = stat.mtime;
-        const snapshot = this.shared.snapshot(handle);
-        if (snapshot) {
-          const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
-          data.set(key, snapshot.data);
-          this.keys.set(node.ino, key);
-        }
-        this.revisions.set(handle, revision);
-        changed.add(node);
+    this.assertOpen();
+    // Reserve and copy in one synchronous mutation section. No storage wait holds this lock.
+    return this.shared.mutate(undefined, undefined, () => {
+      const selected =
+        typeof target === "string"
+          ? this.resolveNode(target)
+          : target === undefined
+            ? undefined
+            : this.fs.nodeForHandle(target);
+      const request = { durable, target, selected };
+      const cost = this.captureCost(request);
+      const reservation = this.pressure.reserve(cost);
+      try {
+        return this.captureReserved(request, reservation, cost.metadataBytes).finally(() =>
+          this.pressure.release(reservation),
+        );
+      } catch (error) {
+        this.pressure.release(reservation);
+        this.keys = new Map(this.committedKeys);
+        this.revisions.clear();
+        throw error;
       }
     });
+  }
+  private captureFile(
+    handle: FileHandle,
+    { durable, target, selected }: CheckpointRequest,
+    { changed, data, detachedSnapshots }: CheckpointCapture,
+  ): void {
+    const revision = this.shared.revision(handle);
+    if (revision === undefined || revision === this.revisions.get(handle)) return;
+    const node = this.registeredNodes.get(handle);
+    if (node?.kind !== "file") return;
+    if (this.detached.has(node)) {
+      if (!durable || (target !== undefined && selected !== node)) return;
+      const snapshot = this.shared.snapshot(handle);
+      if (!snapshot) return;
+      const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
+      data.set(key, snapshot.data);
+      detachedSnapshots.set(node, { handle, key });
+      // A detached fd owns bytes, not a name. A later relink must recapture its dirty revision.
+      return;
+    }
+    const stat = this.shared.stat(handle);
+    if (!stat) return;
+    node.size = stat.size;
+    node.mtime = stat.mtime;
+    const snapshot = this.shared.snapshot(handle);
+    if (snapshot) {
+      const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
+      data.set(key, snapshot.data);
+      this.keys.set(node.ino, key);
+    }
+    this.revisions.set(handle, revision);
+    changed.add(node);
+  }
+  private captureReserved(
+    request: CheckpointRequest,
+    reservation: number,
+    metadataBytes: number,
+  ): Promise<void> {
+    const { durable, target, selected } = request;
+    this.pruneDetached();
+    const capture: CheckpointCapture = {
+      changed: new Set(this.dirty),
+      data: new Map(),
+      detachedSnapshots: new Map(),
+    };
+    for (const handle of this.shared.registeredHandles())
+      this.captureFile(handle, request, capture);
+    const { changed, data, detachedSnapshots } = capture;
     const upserts: PersistedNode[] = Array.from(changed, (node) =>
       node.kind === "dir"
         ? {
@@ -418,6 +526,7 @@ export class PersistentBackend extends MemoryBackend {
     if (!upserts.length && !removes.length && !data.size)
       return this.lastCommit.then(() => {
         this.assertOpen();
+        this.pressure.start(reservation, metadataBytes);
         return durable ? this.flushOpen(flushKeys) : undefined;
       });
     const epoch = this.checkpointEpoch;
@@ -434,6 +543,7 @@ export class PersistentBackend extends MemoryBackend {
         this.assertOpen();
         if (epoch !== this.checkpointEpoch)
           throw new Error("filesystem checkpoint invalidated by a failed commit");
+        this.pressure.start(reservation, metadataBytes + this.pinMetadataBytes() * 4);
         batch.generation = this.generation + 1;
         // A later request may have reattached an inode removed by this older checkpoint.
         // Its next upsert still needs the durable payload even though it is no longer detached.
