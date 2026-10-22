@@ -4,13 +4,12 @@ import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner
 import {
   before,
   evidenceJson,
-  failureReasons,
   observe,
   pending,
   requireValue,
-  shutdownArms,
   verifyOriginalWorkerLocation,
   type FailureReason,
+  type ShutdownArm,
   type Outcome,
   type PageSettlement,
   type ReopenResults,
@@ -18,6 +17,8 @@ import {
   type Stage,
   type WorkerSnapshot,
 } from "./filesystem-shutdown-browser.js";
+
+import { ContextCloseObservation, shutdownSelection } from "./filesystem-shutdown-close-observation.js";
 
 type Engine = keyof typeof engines;
 type OriginalTarget = {
@@ -57,7 +58,13 @@ type ArmReport = {
   deleteDatabase: Stage<void>;
   context: Stage<void>;
 };
-const lifecycle = new BrowserRunnerLifecycle();
+const closeOwners: { browser: Browser; report: ArmReport; observation: ContextCloseObservation<BrowserContext> }[] = [];
+const closeObserverErrors: unknown[] = [];
+const lifecycle = new BrowserRunnerLifecycle(600_000, 5000, { errors: closeObserverErrors, record(event) {
+  for (const owner of closeOwners) {
+    if (owner.browser === event.resource) owner.observation.enclosing(event);
+  }
+} });
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -290,7 +297,7 @@ function requirePage(page: Page | undefined): Page {
 }
 async function cleanupArm(
   page: Page | undefined,
-  context: Promise<BrowserContext>,
+  context: ContextCloseObservation<BrowserContext>,
   ledger: TargetLedger,
   report: ArmReport,
 ): Promise<void> {
@@ -360,12 +367,7 @@ async function cleanupArm(
     () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.deleteDatabase()),
     1000,
   );
-  report.context = await before(
-    report.deadline,
-    "owned context close",
-    async () => (await context).close(),
-    1000,
-  );
+  report.context = await context.observeBefore(report.deadline);
 }
 function cleanupPassed(report: ArmReport): boolean {
   return (
@@ -408,6 +410,8 @@ async function runArm(
   // before awaiting it, so setup failure still reaches independent context cleanup.
   const context = browser.newContext();
   void observe(context);
+  const observation = new ContextCloseObservation(spec.nonce, context);
+  closeOwners.push({ browser, report, observation });
   let page: Page | undefined;
   let ledger = emptyLedger();
   const primary = await observe(
@@ -431,10 +435,11 @@ async function runArm(
     })(),
   );
   report.primary = primary;
-  await cleanupArm(page, context, ledger, report);
+  await cleanupArm(page, observation, ledger, report);
   console.log(
     evidenceJson({
       report,
+      contextCloseObservation: observation.snapshot(),
       targets: ledger.owners.map(targetEvidence),
       observerErrors: ledger.observerErrors,
       seamLimits:
@@ -445,40 +450,8 @@ async function runArm(
   value(primary, "arm primary");
   assert(cleanupPassed(report), "Independent cleanup or original target join failed");
 }
-function isEngine(input: string): input is Engine {
-  return Object.hasOwn(engines, input);
-}
-function options() {
-  const args = process.argv.slice(2);
-  const selected: Engine[] = [];
-  let backend = "indexeddb";
-  let reason: FailureReason | "all" = "all";
-  for (let i = 0; i < args.length; i++) {
-    const item = args[i]!;
-    if (item === "--backend") {
-      backend = args[++i] ?? "";
-      continue;
-    }
-    if (item === "--reason") {
-      reason = selectedReason(args[++i]);
-      continue;
-    }
-    if (!isEngine(item)) throw new Error(`Unknown shutdown engine/option: ${item}`);
-    if (selected.includes(item)) throw new Error(`Duplicate engine: ${item}`);
-    selected.push(item);
-  }
-  assert(backend === "indexeddb", "Only IndexedDB ordinary shutdown is allocated");
-  assert(selected.length > 0, "Select at least one engine explicitly");
-  return { selected, reasons: reason === "all" ? failureReasons : [reason] };
-}
-function selectedReason(input: string | undefined): FailureReason | "all" {
-  if (input === "all") return "all";
-  const found = failureReasons.find((reason) => reason === input);
-  if (!found) throw new Error(`Unknown failure reason: ${input}`);
-  return found;
-}
-function specifications(reasons: readonly FailureReason[]): ShutdownSpec[] {
-  return shutdownArms.flatMap((arm) =>
+function specifications(reasons: readonly FailureReason[], arms: readonly ShutdownArm[]): ShutdownSpec[] {
+  return arms.flatMap((arm) =>
     (arm === "success" ? ["error" as const] : reasons).map((reason) => ({
       arm,
       reason,
@@ -489,7 +462,7 @@ function specifications(reasons: readonly FailureReason[]): ShutdownSpec[] {
   );
 }
 async function run(): Promise<void> {
-  const selected = options();
+  const selected = shutdownSelection(process.argv.slice(2));
   await lifecycle.init();
   const page = await browserBundle(
     resolve(import.meta.dir, "fixtures/filesystem-shutdown-page.ts"),
@@ -502,18 +475,19 @@ async function run(): Promise<void> {
     "/filesystem-shutdown-page.js": page,
     "/filesystem-shutdown-worker.js": worker,
   });
-  for (const engine of selected.selected) await runEngine(engine, origin, selected.reasons);
+  for (const engine of selected.selected) await runEngine(engine, origin, selected.reasons, selected.arms);
 }
 async function runEngine(
   engine: Engine,
   origin: string,
   reasons: readonly FailureReason[],
+  arms: readonly ShutdownArm[],
 ): Promise<void> {
   const browser = await lifecycle.launch(engine);
-  for (const spec of specifications(reasons)) await runArm(browser, engine, origin, spec);
+  for (const spec of specifications(reasons, arms)) await runArm(browser, engine, origin, spec);
   await lifecycle.closeBrowser(browser);
 }
 const main = await observe(run());
 const cleanup = await observe(lifecycle.close());
-console.log(evidenceJson({ main, cleanup, browserExecution: "requires separate root release" }));
+console.log(evidenceJson({ closeObserverErrors, contextCloseObservations: closeOwners.map(({ report, observation }) => ({ report, diagnostic: observation.snapshot() })), main, cleanup, browserExecution: "requires separate root release" }));
 if (main.kind !== "fulfilled" || cleanup.kind !== "fulfilled") process.exitCode = 1;

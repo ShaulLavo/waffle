@@ -189,24 +189,67 @@ export function parseSnapshot(value: unknown): WorkerSnapshot {
   };
 }
 
+export type Stamp = { wallMs: number; monotonicMs: number };
+export function stamp(): Stamp {
+  return { wallMs: Date.now(), monotonicMs: performance.now() };
+}
+export type BeforeRecord<T> =
+  | { kind: "started"; at: Stamp; effectiveMs: number; timerDueMonotonicMs: number }
+  | { kind: "timer-scheduled"; at: Stamp; timerDueMonotonicMs: number }
+  | { kind: "timer-fired"; at: Stamp }
+  | { kind: "operation-returned"; promise: Promise<T>; at: Stamp }
+  | { kind: "operation-settled"; outcome: Outcome<T>; at: Stamp }
+  | { kind: "returned"; outcome: Outcome<T>; at: Stamp };
+export type BeforeRecorder<T> = {
+  events: BeforeRecord<T>[];
+};
+function recordBefore<T>(recorder: BeforeRecorder<T> | undefined, event: BeforeRecord<T>): void {
+  recorder?.events.push(event);
+}
+function recordedOperation<T>(run: () => Promise<T>, recorder: BeforeRecorder<T>): Promise<T> {
+  const promise = run();
+  recordBefore(recorder, { kind: "operation-returned", promise, at: stamp() });
+  void observe(promise).then((outcome) => {
+    recordBefore(recorder, { kind: "operation-settled", outcome, at: stamp() });
+  });
+  return promise;
+}
+
 /** One absolute arm clock, including cleanup. A timeout is invalid, never success. */
 export async function before<T>(
   deadline: number,
   phase: string,
   run: () => Promise<T>,
   maximumMs = Infinity,
+  recorder?: BeforeRecorder<T>,
 ): Promise<Outcome<T>> {
-  const remaining = Math.min(deadline - Date.now(), maximumMs);
-  if (remaining <= 0) return { kind: "invalid", cause: `${phase}: arm deadline exhausted` };
+  const at = recorder ? stamp() : undefined;
+  const remaining = Math.min(deadline - (at?.wallMs ?? Date.now()), maximumMs);
+  if (at) recordBefore(recorder, {
+    kind: "started", at, effectiveMs: remaining,
+    timerDueMonotonicMs: at.monotonicMs + remaining,
+  });
+  if (remaining <= 0) {
+    const outcome: Outcome<T> = { kind: "invalid", cause: `${phase}: arm deadline exhausted` };
+    if (recorder) recordBefore(recorder, { kind: "returned", outcome, at: stamp() });
+    return outcome;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<Outcome<T>>((resolve) => {
-    timer = setTimeout(
-      () => resolve({ kind: "invalid", cause: `${phase}: deadline expired` }),
-      remaining,
-    );
+    if (recorder) {
+      const scheduledAt = stamp();
+      recordBefore(recorder, { kind: "timer-scheduled", at: scheduledAt, timerDueMonotonicMs: scheduledAt.monotonicMs + remaining });
+    }
+    timer = setTimeout(() => {
+      if (recorder) recordBefore(recorder, { kind: "timer-fired", at: stamp() });
+      resolve({ kind: "invalid", cause: `${phase}: deadline expired` });
+    }, remaining);
   });
   try {
-    return await Promise.race([observe(Promise.resolve().then(run)), expired]);
+    const operation = recorder ? () => recordedOperation(run, recorder) : run;
+    const outcome = await Promise.race([observe(Promise.resolve().then(operation)), expired]);
+    if (recorder) recordBefore(recorder, { kind: "returned", outcome, at: stamp() });
+    return outcome;
   } finally {
     clearTimeout(timer);
   }

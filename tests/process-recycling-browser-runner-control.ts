@@ -1,6 +1,12 @@
+export type ResourceCloseEvent =
+  | { kind: "started"; resource: { close(): Promise<void> } }
+  | { kind: "fulfilled"; resource: { close(): Promise<void> } }
+  | { kind: "rejected"; resource: { close(): Promise<void> }; reason: unknown };
+export type ResourceCloseObserver = { record(event: ResourceCloseEvent): void; errors: unknown[] };
 export type BrowserResourceOwner = {
   creation: Promise<{ close(): Promise<void> }>;
   stopped: boolean;
+  observeClose?: ResourceCloseObserver;
   stopping?: Promise<void>;
 };
 
@@ -21,6 +27,27 @@ async function bounded<T>(operation: Promise<T>, timeoutMs: number, phase: strin
   }
 }
 
+function notifyClose(observer: ResourceCloseObserver, event: ResourceCloseEvent): void {
+  try { observer.record(event); }
+  catch (reason) { observer.errors.push(reason); }
+}
+function closeResource(resource: Awaited<BrowserResourceOwner["creation"]> | undefined, observer?: ResourceCloseObserver): Promise<void> | undefined {
+  if (!resource) return;
+  if (!observer) return resource.close();
+  notifyClose(observer, { kind: "started", resource });
+  try {
+    const promise = resource.close();
+    void promise.then(
+      () => notifyClose(observer, { kind: "fulfilled", resource }),
+      (reason: unknown) => notifyClose(observer, { kind: "rejected", resource, reason }),
+    );
+    return promise;
+  } catch (reason) {
+    notifyClose(observer, { kind: "rejected", resource, reason });
+    throw reason;
+  }
+}
+
 /** Context creation can itself stall. Keep ownership until closure is confirmed;
  * the caller must still close its browser when this bounded attempt fails. */
 export function stopBrowserResource<T extends BrowserResourceOwner>(
@@ -33,7 +60,7 @@ export function stopBrowserResource<T extends BrowserResourceOwner>(
     // has returned. A timed-out launch must not later create an unowned browser.
     const creation = owner.creation.catch(() => undefined);
     const closure = creation.then(async (resource) => {
-      await resource?.close();
+      await closeResource(resource, owner.observeClose);
       owner.stopped = true;
       owners.delete(owner);
     });
