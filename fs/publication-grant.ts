@@ -1,3 +1,4 @@
+import { type WriteTicket } from "./write-barrier.js";
 import { FilesystemError, type FileStat } from "../core/filesystem.js";
 import {
   atomicsLoad,
@@ -97,6 +98,7 @@ type OutstandingGrant =
       readonly serial: number;
       readonly grant: ResidentGrant;
       readonly admission: PublicationAdmission | undefined;
+      readonly writeTicket?: WriteTicket;
     };
 
 const clock = Date.now;
@@ -470,6 +472,22 @@ export class ResidentGrantAuthority {
     return grant;
   }
   private issueMutation(base: GrantBase, kind: "write" | "append", serial: number): ResidentGrant {
+    const gate = this.backend.shared.writeAdmission;
+    const ticket = gate.admit(this.backend.shared.lockOwner, base.maxBytes * 3);
+    try {
+      this.backend.shared.checkWriteInput();
+      return this.issueAdmittedMutation(base, kind, serial, ticket);
+    } catch (error) {
+      gate.finish(ticket);
+      throw error;
+    }
+  }
+  private issueAdmittedMutation(
+    base: GrantBase,
+    kind: "write" | "append",
+    serial: number,
+    ticket: WriteTicket,
+  ): ResidentGrant {
     const id = this.domain.next(base.session.session);
     const intent: MutationIntent =
       kind === "append"
@@ -498,7 +516,13 @@ export class ResidentGrantAuthority {
       if (encoder.encode(JSON.stringify(worst.receipt.result)).length > base.resultBytes)
         throw new FilesystemError(6);
       this.domain.reserveResidentGrant(serial);
-      this.outstanding = { kind: "issued", serial, grant, admission: result.admission };
+      this.outstanding = {
+        kind: "issued",
+        serial,
+        grant,
+        admission: result.admission,
+        writeTicket: ticket,
+      };
       return grant;
     } catch (error) {
       this.domain.cancel(base.session.session, result.admission);
@@ -531,7 +555,11 @@ export class ResidentGrantAuthority {
       this.domain.stop();
       throw new FilesystemError(29);
     }
-    return this.boundary(issued.serial, () => this.importOutcome(owner, issued, outcome));
+    const settle = () =>
+      this.boundary(issued.serial, () => this.importOutcome(owner, issued, outcome));
+    return issued.writeTicket
+      ? this.backend.shared.withWrite(issued.writeTicket, settle)
+      : settle();
   }
   private importOutcome(
     owner: AuthoritySession,
@@ -558,6 +586,7 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(29);
     }
     this.domain.releaseResidentGrant(issued.serial);
+    if (issued.writeTicket) this.backend.shared.writeAdmission.finish(issued.writeTicket);
     this.outstanding = { kind: "idle" };
     owner.last = structuredClone({ outcome, result });
     return result;

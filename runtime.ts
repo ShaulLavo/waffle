@@ -1,3 +1,5 @@
+import { ownerWriteBarrier, type FilesystemWriteBarrier } from "./fs/write-barrier.js";
+export type { FilesystemWriteBarrier } from "./fs/write-barrier.js";
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
 
@@ -38,7 +40,10 @@ export interface RuntimeConsumer {
 }
 
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
-export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose">;
+export type RuntimeFilesystem = Omit<
+  SharedFilesystem,
+  "client" | "dispose" | typeof ownerWriteBarrier
+>;
 export type RuntimeSupervisor = Omit<ProcessSupervisor, "dispose">;
 export type ProcessService = Omit<
   BrowserProcessBroker,
@@ -92,6 +97,9 @@ export interface Runtime {
   /** Lazy runtime-owned localhost services, independent of process activation. */
   network(): Promise<RuntimeNetwork>;
   processes(): Promise<ProcessService>;
+  pauseFilesystemWrites(options?: {
+    readonly signal?: AbortSignal;
+  }): Promise<FilesystemWriteBarrier>;
   dispose(): Promise<void>;
 }
 
@@ -528,6 +536,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         return service;
       });
       return activation;
+    },
+    pauseFilesystemWrites(options) {
+      assertLive();
+      return filesystem[ownerWriteBarrier](options);
     },
     dispose() {
       if (disposal) return disposal;

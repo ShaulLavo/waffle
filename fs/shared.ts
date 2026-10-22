@@ -1,3 +1,4 @@
+import { WriteAdmission, WRITE_BARRIER_WORDS, type WriteTicket } from "./write-barrier.js";
 import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
 import { typedArraySet } from "../proc/intrinsics.js";
 import {
@@ -20,7 +21,7 @@ import {
 export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
 const MAGIC = 0x42574653;
-const HEADER_WORDS = 16 + DIRTY_HEADER_WORDS;
+const HEADER_WORDS = 16 + DIRTY_HEADER_WORDS + WRITE_BARRIER_WORDS;
 const MAX_FILES = 4096;
 const SEGMENT_PAGES = 256;
 const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
@@ -117,6 +118,8 @@ export class SharedFilesystemState {
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
   onContention?: () => void;
+  writeAdmission: WriteAdmission;
+  private writeTicket: WriteTicket | undefined;
   constructor(
     readonly buffer: SharedArrayBuffer = SharedFilesystemState.createBuffer(),
     maxBytes = DEFAULT_SHARED_MAX_BYTES,
@@ -125,7 +128,12 @@ export class SharedFilesystemState {
     private readonly section?: FilesystemSection,
     publication?: PublicationBuffers,
   ) {
-    this.dirtyAdmission = new DirtyAdmission(buffer);
+    this.writeAdmission = new WriteAdmission(buffer);
+    this.dirtyAdmission = new DirtyAdmission(
+      buffer,
+      () => this.writeAdmission.inputBytes,
+      () => this.writeAdmission.metadataBytes,
+    );
     if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
@@ -142,6 +150,31 @@ export class SharedFilesystemState {
     this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
     this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
     this.segments = [buffer].concat(segments);
+  }
+  withWrite<T>(ticket: WriteTicket, run: () => T): T {
+    this.writeAdmission.verify(ticket);
+    const previous = this.writeTicket;
+    this.writeTicket = ticket;
+    try {
+      return run();
+    } finally {
+      this.writeTicket = previous;
+    }
+  }
+  admitWrite<T>(run: () => T, owner = this.lockOwner): T {
+    if (this.writeTicket) return this.withWrite(this.writeTicket, run);
+    const ticket = this.writeAdmission.admit(owner);
+    try {
+      return this.withWrite(ticket, run);
+    } finally {
+      this.writeAdmission.finish(ticket);
+    }
+  }
+  checkWriteInput(): void {
+    if (!this.dirtyAdmission.enabled) return;
+    const check = () => this.dirtyAdmission.checkInput(this.resources().usedBytes);
+    if (this.serviceMutation) return check();
+    this.mutate(undefined, undefined, check);
   }
   static createBuffer(): SharedArrayBuffer {
     return new SharedArrayBuffer(BUFFER_SIZE);
@@ -764,6 +797,8 @@ export class SharedFilesystemState {
     if (mode >= 0 && ((mode >>> 6) & access) !== access) throw new FilesystemError(2);
   }
   setMode(handle: FileHandle, mode: number): void {
+    if (!this.writeTicket) return this.admitWrite(() => this.setMode(handle, mode));
+    this.writeAdmission.verify(this.writeTicket);
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK));
     try {
@@ -992,6 +1027,25 @@ export class SharedFilesystemState {
     const slots = this.slots,
       base = slot * SLOT_WORDS,
       lock = base + FILE_LOCK;
+    if (!this.writeTicket)
+      return this.admitWrite(
+        () =>
+          this.direct(
+            slot,
+            handle,
+            chunks,
+            append,
+            offset,
+            total,
+            epoch,
+            revoked,
+            owner,
+            nonblocking,
+            admission,
+          ),
+        owner,
+      );
+    this.writeAdmission.verify(this.writeTicket, owner);
     this.globalLock(revoked, owner, nonblocking, "data", "file");
     Atomics.add(epoch, 0, 1);
     try {
@@ -1313,6 +1367,12 @@ export class SharedFilesystemState {
     owner = this.lockOwner,
     admission?: PublicationAdmission,
   ): number {
+    if (!this.writeTicket)
+      return this.admitWrite(
+        () => this.resize(handle, size, truncate, revoked, owner, admission),
+        owner,
+      );
+    this.writeAdmission.verify(this.writeTicket);
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {
@@ -1417,6 +1477,9 @@ export class SharedFilesystemState {
     owner = this.lockOwner,
     admission?: PublicationAdmission,
   ): number {
+    if (!this.writeTicket)
+      return this.admitWrite(() => this.setMtime(handle, mtime, revoked, owner, admission), owner);
+    this.writeAdmission.verify(this.writeTicket);
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK), revoked, owner);
     try {

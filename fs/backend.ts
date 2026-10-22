@@ -1,4 +1,9 @@
-import type { MutationIntent, MutationResult, PublicationEffect } from "./publication.js";
+import {
+  mutationIntent,
+  type MutationIntent,
+  type MutationResult,
+  type PublicationEffect,
+} from "./publication.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, dirname, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
@@ -105,6 +110,8 @@ export class MemoryBackend implements FilesystemBackend {
       if (same) return;
       throw new Error("filesystem service cannot attach a second shared tree");
     }
+    if (this.shared.writeAdmission.closed || this.shared.writeAdmission.active)
+      throw new FilesystemError(6, "filesystem root has admitted writes");
     this.shared = new SharedFilesystemState(
       buffer,
       maxBytes,
@@ -171,6 +178,11 @@ export class MemoryBackend implements FilesystemBackend {
     return { handle, node };
   }
   execute(operation: string, args: any[], data: Uint8Array): unknown {
+    if (mutationIntent(operation, args))
+      return this.shared.admitWrite(() => this.executeMutation(operation, args, data));
+    return this.executeMutation(operation, args, data);
+  }
+  private executeMutation(operation: string, args: any[], data: Uint8Array): unknown {
     try {
       return this.executeOperation(operation, args, data);
     } finally {

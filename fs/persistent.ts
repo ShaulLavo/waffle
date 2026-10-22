@@ -1,5 +1,5 @@
 import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
-import { mutationIntent, mutationValue } from "./publication.js";
+import { type MutationIntent, mutationIntent, mutationValue } from "./publication.js";
 import {
   CheckpointPressure,
   type CheckpointLimits,
@@ -378,6 +378,9 @@ export class PersistentBackend extends MemoryBackend {
     if (operation === "dirtyWait") return;
     const intent = this.shared.dirtyAdmission.enabled ? mutationIntent(operation, args) : undefined;
     if (!intent) return super.execute(operation, args, data);
+    return this.shared.admitWrite(() => this.executeAdmitted(intent, data));
+  }
+  private executeAdmitted(intent: MutationIntent, data: Uint8Array): unknown {
     const own = !this.shared.ownsServiceMutation;
     const epoch = new Int32Array(1);
     if (own) this.shared.beginServiceMutation(epoch);

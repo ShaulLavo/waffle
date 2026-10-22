@@ -38,7 +38,11 @@ const BASE_UNITS = 1024;
 export class DirtyAdmission {
   private readonly values: Float64Array;
   private readonly signals: Int32Array;
-  constructor(buffer: SharedArrayBuffer) {
+  constructor(
+    buffer: SharedArrayBuffer,
+    private readonly inputBytes = () => 0,
+    private readonly inputMetadata = () => 0,
+  ) {
     this.values = new Float64Array(buffer, 16 * 4, 20);
     this.signals = new Int32Array(buffer, 9 * 4, 2);
   }
@@ -66,16 +70,35 @@ export class DirtyAdmission {
   private metadata(): number {
     return BASE_UNITS + this.values[NAMESPACE]! + this.values[PINS]! + this.values[DIRTY_METADATA]!;
   }
+  checkInput(resident: number): void {
+    if (!this.enabled) return;
+    if (
+      resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! + this.inputBytes() >
+      this.values[MAX_BYTES]!
+    )
+      this.reject();
+    if (
+      this.metadata() * 2 + this.values[COPY_METADATA]! + this.inputMetadata() >
+      this.values[MAX_METADATA]!
+    )
+      this.reject();
+  }
   private check(resident: number, bytes: number, metadata: number): void {
     if (!this.enabled) return;
     if (this.values[DIRTY_BYTES]! + bytes > this.values[CAPTURE_BYTES]!) this.reject();
     if (this.metadata() + metadata > this.values[CAPTURE_METADATA]!) this.reject();
     if (
-      resident + (this.values[DIRTY_BYTES]! + bytes) * 2 + this.values[COPIES]! >
+      resident +
+        (this.values[DIRTY_BYTES]! + bytes) * 2 +
+        this.values[COPIES]! +
+        this.inputBytes() >
       this.values[MAX_BYTES]!
     )
       this.reject();
-    if ((this.metadata() + metadata) * 2 + this.values[COPY_METADATA]! > this.values[MAX_METADATA]!)
+    if (
+      (this.metadata() + metadata) * 2 + this.values[COPY_METADATA]! + this.inputMetadata() >
+      this.values[MAX_METADATA]!
+    )
       this.reject();
   }
   checkFile(resident: number, previous: number, size: number, first: boolean): void {
@@ -114,12 +137,12 @@ export class DirtyAdmission {
   reserveCopy(cost: CheckpointCost, resident: number): void {
     if (!this.enabled) return;
     if (
-      resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! + cost.bytes >
+      resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! + this.inputBytes() + cost.bytes >
       this.values[MAX_BYTES]!
     )
       this.reject();
     if (
-      this.metadata() + this.values[COPY_METADATA]! + cost.metadataBytes >
+      this.metadata() + this.values[COPY_METADATA]! + this.inputMetadata() + cost.metadataBytes >
       this.values[MAX_METADATA]!
     )
       this.reject();
@@ -129,7 +152,10 @@ export class DirtyAdmission {
   }
   growCopyMetadata(units: number): void {
     if (!this.enabled || !units) return;
-    if (this.metadata() + this.values[COPY_METADATA]! + units > this.values[MAX_METADATA]!)
+    if (
+      this.metadata() + this.values[COPY_METADATA]! + this.inputMetadata() + units >
+      this.values[MAX_METADATA]!
+    )
       this.reject();
     this.values[COPY_METADATA]! += units;
   }
@@ -195,8 +221,11 @@ export class DirtyAdmission {
       pendingOperations: this.values[OPERATIONS]!,
       waiters: Atomics.load(this.signals, 1),
       rejected: this.values[REJECTED]!,
-      accountedBytes: residentBytes + this.values[DIRTY_BYTES]! + this.values[COPIES]!,
-      accountedMetadataUnits: this.metadata() + this.values[COPY_METADATA]!,
+      pendingInputBytes: this.inputBytes(),
+      pendingInputMetadataUnits: this.inputMetadata(),
+      accountedBytes:
+        residentBytes + this.values[DIRTY_BYTES]! + this.values[COPIES]! + this.inputBytes(),
+      accountedMetadataUnits: this.metadata() + this.values[COPY_METADATA]! + this.inputMetadata(),
       limits: {
         maxBytes: this.values[MAX_BYTES]!,
         maxMetadataBytes: this.values[MAX_METADATA]!,

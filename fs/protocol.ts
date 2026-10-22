@@ -1,3 +1,4 @@
+import { WriteAdmission } from "./write-barrier.js";
 import { Int32ArrayConstructor, SharedArrayBufferConstructor } from "../proc/intrinsics.js";
 import type { ResidentDescriptor } from "./publication-grant.js";
 import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
@@ -254,6 +255,7 @@ export function reapFilesystem(connection: FilesystemIdentity): void {
       connection.publication.session,
     );
   Atomics.notify(new Int32Array(connection.sections), 0);
+  new WriteAdmission(connection.shared).reapLocal(connection.owner);
   wake(connection);
 }
 export function wake(connection: FilesystemIdentity): void {
