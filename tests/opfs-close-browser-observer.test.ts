@@ -16,14 +16,13 @@ const scenarios = [
   "dispatch-timeout",
   "dispatch-exhausted",
 ] as const;
-type Scenario = (typeof scenarios)[number];
 const selected = process.env.OPFS_OBSERVER_SCENARIO;
 const trace: string[] = [];
 const lateError = new Error("labelled late observer error");
 const terminationError = new Error("labelled termination call error");
 let lateReason: unknown;
 let elapsed = 0;
-let activePage: StandInPage;
+let activePageIndex = 0;
 const pages: StandInPage[] = [];
 const nativeSetTimeout = globalThis.setTimeout;
 
@@ -45,8 +44,10 @@ class StandInDOMWorker extends EventTarget {
     super();
     this.token = new URL(url, "http://observer.invalid").searchParams.get("token")!;
     this.original = new StandInOriginal(this.token);
-    activePage.workers.push(this);
-    activePage.announce(this.original);
+    const page = pages[activePageIndex];
+    assert(page);
+    page.workers.push(this);
+    page.announce(this.original);
   }
   postMessage(request: OpfsCloseRequest): void {
     trace.push(`${this.token}:${request.command.kind}`);
@@ -96,7 +97,7 @@ class StandInPage {
     return "http://observer.invalid/";
   }
   async goto(): Promise<void> {
-    activePage = this;
+    activePageIndex = pages.indexOf(this);
     const realm = { opfsClose: undefined };
     Object.defineProperty(globalThis, "window", { configurable: true, value: realm });
     await import(`./fixtures/opfs-close-page.ts?observer-realm=${pages.indexOf(this)}`);
@@ -104,7 +105,7 @@ class StandInPage {
     this.api = realm.opfsClose;
   }
   async evaluate(action: (...args: unknown[]) => unknown, value: unknown): Promise<unknown> {
-    activePage = this;
+    activePageIndex = pages.indexOf(this);
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: { opfsClose: this.api },
