@@ -76,7 +76,9 @@ test("browser apt removes Azure HTTP from the official three-line mirror fixture
 test("browser apt preserves comments, near matches, HTTPS Azure and unrelated bytes", () => {
   const preserved = [
     "# http://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
-    "http://azureXarchiveXubuntuXcom/ubuntu/\tpriority:4",
+    "http://azureXarchive.ubuntu.com/ubuntu/\tpriority:4",
+    "http://azure.archiveXubuntu.com/ubuntu/\tpriority:4",
+    "http://azure.archive.ubuntuXcom/ubuntu/\tpriority:4",
     "http://azure.archive.ubuntu.com/ubuntu-other/\tpriority:5",
     "prefix http://azure.archive.ubuntu.com/ubuntu/\tpriority:6",
     "http://azure.archive.ubuntu.com/ubuntu",
