@@ -111,7 +111,7 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 
 ## 7. Formats, migration and export
 
-- **DERIVED [O, S]** — Every persisted format has an identity and version distinct from mode/implementation. Current identities are `waffle-indexeddb-v1` and `waffle-opfs-snapshots-v1`; reject mismatches with typed `INVALID_VFS_FORMAT`, never an empty tree. Existing validated unmarked layouts gain markers without moving data.
+- **DERIVED [O, S]** — Every persisted format has an identity and version distinct from mode/implementation. Current identities are `waffle-indexeddb-chunks-v2` and `waffle-opfs-snapshots-v1`; reject unknown identities with typed `INVALID_VFS_FORMAT`, never an empty tree. Marked or validated unmarked IndexedDB v1 layouts migrate through staged chunks, retaining the v1 root until the complete v2 root is published. Downgrade to v1 is unsupported. OPFS validated unmarked layouts gain their marker without moving data.
 - **DERIVED [O, B §adaptive]** — Before introducing a packed format specify reopen, interruption-safe migration and export/import. Keep the old format authoritative until the new complete root is durably published; recovery selects one valid authoritative state. Export logical entries/bytes/metadata independently of physical packing, with bounded streaming and integrity validation. No automatic adapter switch hides a saved workspace.
 - **DERIVED [O, C §2.6]** — Persisted tool indexes carry filesystem format/schema, generation and change watermark. Recovery validates them or explicitly rebuilds; “files reopened” alone does not prove index freshness. Document downgrade behavior as unsupported, not version-skew negotiation code.
 
