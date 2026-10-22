@@ -77,6 +77,7 @@ async function fixture(backend = new MemoryBackend()) {
   const session = residentSession(await channel.call("open", descriptor));
   return {
     channel,
+    server,
     session,
     root,
     backend,
@@ -107,7 +108,8 @@ async function call(
   return Object.fromEntries(Object.entries(value));
 }
 async function rejectsErrno(action: Promise<unknown>, errno: number): Promise<void> {
-  await expect(action).rejects.toMatchObject({ errno });
+  const failure: unknown = await action.then(() => undefined, (error: unknown) => error);
+  expect(failure).toMatchObject({ errno });
 }
 test("private connection queries the sole workspace namespace", async () => {
   const f = await fixture();
@@ -731,3 +733,156 @@ for (const [name, invalid] of invalidCleanupConnections) {
     }
   });
 }
+
+function transportClock() {
+  const deadlines = new Map<ReturnType<typeof setTimeout>, () => void>();
+  const native = globalThis.setTimeout;
+  const nativeClear = globalThis.clearTimeout;
+  globalThis.clearTimeout = new Proxy(nativeClear, {
+    apply(target, receiver, args: Parameters<typeof clearTimeout>) {
+      if (args[0] !== undefined) deadlines.delete(args[0]);
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  globalThis.setTimeout = new Proxy(native, {
+      apply(target, receiver, args: Parameters<typeof setTimeout>) {
+        const timer = Reflect.apply(target, receiver, args);
+        if (args[1] === 3000) deadlines.set(timer, () => args[0]());
+        return timer;
+      },
+    });
+  return {
+    expire() {
+      const due = Array.from(deadlines);
+      deadlines.clear();
+      for (const [timer, fire] of due) {
+        clearTimeout(timer);
+        fire();
+      }
+    },
+    restore() {
+      globalThis.setTimeout = native;
+      globalThis.clearTimeout = nativeClear;
+      for (const timer of deadlines.keys()) clearTimeout(timer);
+    },
+  };
+}
+
+function holdTransportReplies(client?: string) {
+  const held: { channel: BroadcastChannel; message: unknown }[] = [];
+  const native = BroadcastChannel.prototype.postMessage;
+  BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
+      if (message && typeof message === "object" && "client" in message && (client === undefined || message.client === client) && "kind" in message && message.kind === "reply") {
+        held.push({ channel: this, message: structuredClone(message) });
+        return;
+      }
+      native.call(this, message);
+    };
+  return {
+    held,
+    release() {
+      BroadcastChannel.prototype.postMessage = native;
+      for (const item of held) native.call(item.channel, item.message);
+    },
+  };
+}
+
+async function remainsPending(promise: Promise<unknown>) {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  await Bun.sleep(10);
+  expect(settled).toBe(false);
+}
+
+for (const operation of ["writeFile", "missing-operation"]) {
+  test(`late ${operation === "writeFile" ? "success" : "error"} reconciles only its exact transport identity`, async () => {
+    const f = await fixture();
+    const held = holdTransportReplies(f.channel.id);
+    const clock = transportClock();
+    const observer = new BroadcastChannel(`waffle:resident:${f.session.descriptor.workspace}`);
+    try {
+      const before = f.backend.shared.publication!.cut();
+      const pending = call(f, operation, ["/dir/late"], new Uint8Array([9]));
+      const failed = rejectsErrno(pending, 6);
+      while (!held.held.length) await Bun.sleep(0);
+      clock.expire();
+      await failed;
+      expect(() => f.channel.assertSettled()).toThrow();
+      observer.postMessage({ kind: "reply", client: "foreign", id: "foreign", value: null });
+      observer.postMessage({ kind: "reply", client: f.channel.id, id: "foreign", value: null });
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).toThrow();
+      held.release();
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+      expect(f.backend.shared.publication!.cut().generation).toBe(before.generation + (operation === "writeFile" ? 1 : 0));
+      observer.postMessage(held.held[0]!.message);
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+    } finally {
+      held.release();
+      clock.restore();
+      observer.close();
+      await f.stop();
+    }
+  });
+}
+
+test("unresolved timeout identities keep the original sixteen-call admission bound", async () => {
+  const channel = new ResidentChannel(`absent-${crypto.randomUUID()}`);
+  const clock = transportClock();
+  try {
+    const failed = Array.from({ length: 16 }, () => rejectsErrno(channel.call("workspace", {}), 6));
+    clock.expire();
+    await Promise.all(failed);
+    const refused = channel.call("workspace", {});
+    const failure = refused.catch((error: unknown) => error);
+    let rejected = false;
+    void refused.catch(() => { rejected = true; });
+    await Bun.sleep(10);
+    expect(rejected).toBe(true);
+    expect(await failure).toMatchObject({ errno: 6 });
+  } finally {
+    clock.restore();
+    channel.close();
+  }
+});
+
+test("original bridge stop joins unknown cancellation and actual service preparation", async () => {
+  const backend = new PausedBackend();
+  const f = await fixture(backend);
+  const connection = createResidentConnection(f.session.descriptor);
+  const client = new FilesystemClient({ ...connection, residentPublication: undefined });
+  const clock = transportClock();
+  let stopping: Promise<void> | undefined;
+  let held: ReturnType<typeof holdTransportReplies> | undefined;
+  try {
+    await client.asyncCall("workspaceBind", [f.session]);
+    await client.asyncCall("preopen", ["/"]);
+    held = holdTransportReplies();
+    backend.pause = true;
+    const writing = client.asyncCall("writeFile", ["/dir/timeout"], new Uint8Array([9]));
+    const failed = rejectsErrno(writing, 6);
+    await backend.started.promise;
+    clock.expire();
+    await failed;
+    while (!held.held.length) await Bun.sleep(0);
+    stopping = stopWorkspaceBridge(connection);
+    void stopping.catch(() => {});
+    await remainsPending(stopping);
+    held.release();
+    await stopping;
+    const close = f.channel.call("close", { token: f.session.token });
+    await remainsPending(close);
+    backend.released.resolve();
+    await close;
+    expect(backend.fs.lookup("/dir/timeout")).toBeUndefined();
+  } finally {
+    backend.released.resolve();
+    held?.release();
+    clock.restore();
+    await stopping?.catch(() => {});
+    client.dispose();
+    await f.stop();
+  }
+});
