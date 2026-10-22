@@ -187,8 +187,9 @@ async function closeClient(): Promise<Outcome<void>[]> {
 }
 async function deleteDatabase(): Promise<void> {
   if (!spec) throw new Error("Missing owned database identity");
+  const database = spec.database;
   await new Promise<void>((resolve, reject) => {
-    const deletion = indexedDB.deleteDatabase(spec.database);
+    const deletion = indexedDB.deleteDatabase(database);
     deletion.onsuccess = () => resolve();
     deletion.onerror = () => reject(deletion.error);
     deletion.onblocked = () => reject(new Error("Owned database deletion blocked"));
