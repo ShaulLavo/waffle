@@ -46,6 +46,9 @@ type SyncFile = FileSystemFileHandle & { createSyncAccessHandle(): Promise<SyncA
 type Directory = FileSystemDirectoryHandle & {
   entries(): AsyncIterableIterator<[string, FileSystemFileHandle | FileSystemDirectoryHandle]>;
 };
+type FailedClose = { kind: "failed-close"; reason: unknown };
+type AccessOwnership = { kind: "open" } | FailedClose;
+type CloseOutcome = { kind: "closed" } | FailedClose;
 interface Snapshot {
   name: string;
   index: PersistedIndex;
@@ -82,26 +85,33 @@ function payloadName(key: string): string {
 function keys(index: PersistedIndex): string[] {
   return index.nodes.flatMap((node) => (node.data === undefined ? [] : [node.data]));
 }
+type ParallelState = { cursor: number; failure: PromiseRejectedResult | undefined };
+async function parallelWorker<T>(
+  items: readonly T[],
+  action: (item: T) => Promise<void>,
+  state: ParallelState,
+): Promise<void> {
+  while (state.cursor < items.length && state.failure === undefined) {
+    const item = items[state.cursor++]!;
+    try {
+      await action(item);
+    } catch (reason) {
+      state.failure ??= { status: "rejected", reason };
+    }
+  }
+}
 async function parallel<T>(
   items: readonly T[],
   concurrency: number,
   action: (item: T) => Promise<void>,
 ): Promise<void> {
-  let cursor = 0,
-    failure: unknown;
-  const jobs = Array.from({ length: Math.min(items.length, concurrency) }, async () => {
-    while (cursor < items.length && failure === undefined) {
-      const item = items[cursor++]!;
-      try {
-        await action(item);
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-  });
+  const state: ParallelState = { cursor: 0, failure: undefined };
+  const jobs = Array.from({ length: Math.min(items.length, concurrency) }, () =>
+    parallelWorker(items, action, state),
+  );
   // Settle every acquisition/write before cleanup; Promise.all's first rejection is too early.
   await Promise.all(jobs);
-  if (failure !== undefined) throw failure;
+  if (state.failure !== undefined) throw state.failure.reason;
 }
 
 /** One immutable OPFS payload per logical file revision, and two checksummed snapshot copies.
@@ -117,7 +127,8 @@ export class OpfsStorage implements StorageBackend {
   private known = new Map<string, number>();
   private dirty = new Set<string>();
   private handles = new Map<string, SyncAccess>();
-  private liveHandles = 0;
+  private owned = new Map<SyncAccess, AccessOwnership>();
+  private failedClose?: FailedClose;
   private peakHandles = 0;
   private garbage = new Set<string>();
   private needsOrphanSweep = true;
@@ -239,7 +250,7 @@ export class OpfsStorage implements StorageBackend {
   }
   resources(): Record<string, number> {
     return {
-      opfsHandles: this.liveHandles,
+      opfsHandles: this.owned.size,
       opfsPeakHandles: this.peakHandles,
       opfsCachedHandles: this.handles.size,
       opfsHandleLimit: this.cacheSize + this.concurrency + 1,
@@ -247,7 +258,10 @@ export class OpfsStorage implements StorageBackend {
   }
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
-    const result = this.tail.then(action);
+    const result = this.tail.then(() => {
+      this.assertHandleOwnership();
+      return action();
+    });
     this.tail = result.then(
       () => {},
       () => {},
@@ -330,40 +344,47 @@ export class OpfsStorage implements StorageBackend {
   close(): Promise<void> {
     if (!this.closing) {
       this.closed = true;
-      this.closing = this.tail.then(async () => {
-        let failure: unknown;
-        try {
-          for (const access of this.handles.values()) {
-            try {
-              this.closeAccess(access);
-            } catch (error) {
-              failure ??= error;
-            }
-          }
-          this.handles.clear();
-        } finally {
-          await this.unlock();
-        }
-        if (failure !== undefined) throw failure;
-      });
+      this.closing = this.tail.then(() => this.closeOwned());
     }
     return this.closing;
   }
+  private async closeOwned(): Promise<void> {
+    for (const access of this.owned.keys()) this.closeResult(access);
+    for (const [key, access] of this.handles) if (!this.owned.has(access)) this.handles.delete(key);
+    this.assertHandleOwnership();
+    await this.unlock();
+  }
+  private assertHandleOwnership(): void {
+    if (this.failedClose !== undefined) throw this.failedClose.reason;
+  }
   private closeAccess(access: SyncAccess): void {
+    const result = this.closeResult(access);
+    if (result.kind === "failed-close") throw result.reason;
+  }
+  private closeResult(access: SyncAccess): CloseOutcome {
+    const previous = this.owned.get(access);
+    if (previous?.kind === "failed-close") return previous;
     try {
       access.close();
-    } finally {
-      this.liveHandles--;
+    } catch (reason) {
+      const failure: FailedClose = { kind: "failed-close", reason };
+      this.owned.set(access, failure);
+      this.failedClose ??= failure;
+      this.closed = true;
+      return failure;
     }
+    this.owned.delete(access);
+    return { kind: "closed" };
   }
   private async access(handle: FileSystemFileHandle): Promise<SyncAccess> {
     if (typeof (handle as SyncFile).createSyncAccessHandle !== "function")
       throw new Error("OPFS storage requires sync access handles in a dedicated worker");
     for (let attempt = 0; ; attempt++) {
+      this.assertHandleOwnership();
       try {
         const access = await (handle as SyncFile).createSyncAccessHandle();
-        this.liveHandles++;
-        this.peakHandles = Math.max(this.peakHandles, this.liveHandles);
+        this.owned.set(access, { kind: "open" });
+        this.peakHandles = Math.max(this.peakHandles, this.owned.size);
         return access;
       } catch (error) {
         const delay = BACKOFF_MS[attempt];
@@ -376,8 +397,8 @@ export class OpfsStorage implements StorageBackend {
   private drop(key: string): void {
     const access = this.handles.get(key);
     if (access) {
-      this.handles.delete(key);
       this.closeAccess(access);
+      this.handles.delete(key);
     }
   }
   private async cached(key: string): Promise<SyncAccess> {
