@@ -484,10 +484,15 @@ async function recoveryOwnershipLoss(
       await owner.waitForFunction(
         () => (globalThis as any).lockTest.disposal().status !== "pending",
       );
+      const observed = await owner.evaluate(() => ({
+        disposal: (globalThis as any).lockTest.disposal(),
+        resources: (globalThis as any).lockTest.resources(),
+        probes: (globalThis as any).lockTest.probes(),
+      }));
+      console.log(JSON.stringify({ timing, observed }));
       assert(
-        (await owner.evaluate(() => (globalThis as any).lockTest.disposal())).status ===
-          "fulfilled",
-        "failed owner's disposal did not settle",
+        observed.disposal.status === "fulfilled",
+        `failed owner's disposal did not settle: ${JSON.stringify(observed)}`,
       );
     }
     await dispose(owner);
