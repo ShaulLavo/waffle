@@ -132,7 +132,8 @@ export function verifyOriginalWorkerLocation(
   const raw = observedLocation(rawUrl, "original raw URL");
   if (new URL(live).searchParams.get("nonce") !== nonce)
     throw new Error("Wrong original live nonce");
-  if (live !== raw) throw new Error("Raw and evaluated original worker URLs differ");
+  if (!raw.trim() || new URL(raw, live).href !== live)
+    throw new Error("Raw and evaluated original worker URLs differ");
 }
 export function parseOutcome(value: unknown): Outcome<unknown> {
   if (!isRecord(value)) throw new Error("Missing fixture outcome");

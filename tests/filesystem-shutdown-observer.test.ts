@@ -88,4 +88,6 @@ test("keeps raw evidence separate and unchanged after address comparison", () =>
 test("rejects malformed or missing absolute live addresses", () => {
   expect(() => verify(live, raw)).toThrow();
   expect(() => verify("http://[")).toThrow();
+  expect(() => verify("")).toThrow();
+  expect(() => verify(" \t\n")).toThrow();
 });
