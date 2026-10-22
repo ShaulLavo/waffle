@@ -51,9 +51,14 @@ class ArmBudget {
   }
   async run<T>(phase: string, action: () => Promise<T>, proof = false): Promise<T> {
     const remaining = this.remaining(proof);
-    if (remaining <= 0) throw new OpfsCloseSetupInvalid(`No arm budget for ${phase}`);
     const record: Operation = { phase, state: "pending" };
     this.operations.push(record);
+    if (remaining <= 0) {
+      const reason = new OpfsCloseSetupInvalid(`No arm budget for ${phase}`);
+      record.state = "rejected";
+      record.failure = { reason };
+      throw reason;
+    }
     const operation = Promise.resolve().then(action);
     void operation.then(
       () => {
@@ -86,6 +91,7 @@ class ArmBudget {
 class WorkerObservers {
   readonly owners = new Map<Worker, WorkerOwner>();
   interventionStarted = false;
+  joinsStarted = false;
   readonly rawErrors: unknown[] = [];
   private announced = Promise.withResolvers<WorkerOwner>();
   capture = (original: Worker): void => {
@@ -98,7 +104,6 @@ class WorkerObservers {
     });
     const owner = { original, closed: joined.promise, receipt };
     this.owners.set(original, owner);
-    // The exact object's close observer and map entry precede every URL access.
     try {
       receipt.rawUrl = original.url();
     } catch (reason) {
@@ -138,11 +143,14 @@ class WorkerObservers {
     return owner;
   }
   async join(budget: ArmBudget): Promise<void> {
+    this.joinsStarted = true;
     const failures: unknown[] = [];
     for (const owner of this.owners.values()) {
       try {
         await budget.run(`exact original join ${String(owner.receipt.token)}`, () => owner.closed);
+        owner.receipt.join = { status: "fulfilled" };
       } catch (reason) {
+        owner.receipt.join = { status: "rejected", reason: reasonReceipt(reason) };
         failures.push(reason);
       }
     }
@@ -187,11 +195,31 @@ async function terminate(
   result: OpfsCloseArmResult,
 ): Promise<void> {
   observers.interventionStarted = true;
-  const interventions = await budget.run("explicit Worker termination intervention", () =>
-    page.evaluate(() => window.opfsClose.terminateAll()),
+  try {
+    const interventions = await budget.run("explicit Worker termination intervention", () =>
+      page.evaluate(() => window.opfsClose.terminateAll()),
+    );
+    result.receipts.push({ intervention: interventions, naturalRetirementClaim: false });
+  } finally {
+    await cleanupStep("exact original Worker joins", () => observers.join(budget), result);
+    await cleanupStep(
+      "page observer failures before realm destruction",
+      () => collectObserverFailures(page, budget, result),
+      result,
+    );
+  }
+}
+async function collectObserverFailures(
+  page: Page,
+  budget: ArmBudget,
+  result: OpfsCloseArmResult,
+): Promise<void> {
+  const observerFailures = await budget.run("read unexpected Worker failures", () =>
+    page.evaluate(() => window.opfsClose.failures()),
   );
-  result.receipts.push({ intervention: interventions, naturalRetirementClaim: false });
-  await observers.join(budget);
+  result.receipts.push({ observerFailures, diagnosticCopiesOnly: true });
+  if (observerFailures.length)
+    throw new OpfsCloseSetupInvalid("Unexpected Worker observer failures");
 }
 async function originalObservations(
   page: Page,
@@ -372,6 +400,10 @@ export async function runOpfsCloseArm(
         () => terminate(ownedFinalPage, final, budget, result),
         result,
       );
+    if (!original.joinsStarted)
+      await cleanupStep("remaining original Worker joins", () => original.join(budget), result);
+    if (!final.joinsStarted)
+      await cleanupStep("remaining final Worker joins", () => final.join(budget), result);
     await cleanupStep(
       "lifecycle cleanup, not a 45s controller",
       () => budget.run("lifecycle cleanup", () => lifecycle.close()),
@@ -382,6 +414,7 @@ export async function runOpfsCloseArm(
       Array.from(final.owners.values(), (owner) => owner.receipt),
     );
     if (
+      result.primaryErrors.length ||
       result.cleanupErrors.length ||
       result.operations.some((operation) => operation.state === "pending") ||
       budget.remaining(false) <= 0

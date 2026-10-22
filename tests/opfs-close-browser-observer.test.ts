@@ -105,7 +105,10 @@ class StandInPage {
   }
   async evaluate(action: (...args: unknown[]) => unknown, value: unknown): Promise<unknown> {
     activePage = this;
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { opfsClose: this.api } });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { opfsClose: this.api },
+    });
     if (!String(action).includes("terminateAll")) return action(value);
     this.dispatches++;
     const response = action(value);
@@ -152,10 +155,16 @@ function installStandIns(): void {
   Object.defineProperty(globalThis, "Worker", { configurable: true, value: StandInDOMWorker });
   Object.defineProperty(performance, "now", { configurable: true, value: () => elapsed });
   const timer = (callback: () => void, delay: number): ReturnType<typeof setTimeout> =>
-    nativeSetTimeout(() => {
-      elapsed += delay;
-      callback();
-    }, selected?.startsWith("dispatch-") && trace.filter((value) => value === "probe:probe").length === 2 ? 0 : delay);
+    nativeSetTimeout(
+      () => {
+        elapsed += delay;
+        callback();
+      },
+      (selected?.startsWith("dispatch-") || selected === "terminate-throw") &&
+        trace.filter((value) => value === "probe:probe").length === 2
+        ? 0
+        : delay,
+    );
   Object.defineProperty(globalThis, "setTimeout", { configurable: true, value: timer });
   mock.module("./browser-runner-lifecycle.js", () => ({
     BrowserRunnerLifecycle: StandInLifecycle,
@@ -188,7 +197,9 @@ function checkJoins(result: OpfsCloseArmResult): void {
   const originals = result.workers.slice(0, 4);
   assert.equal(originals.length, 4);
   assert.equal(pages[0]?.dispatches, 1, "F2 intervention dispatch is never retried");
-  const joins = result.operations.filter((operation) => operation.phase.startsWith("exact original join"));
+  const joins = result.operations.filter((operation) =>
+    operation.phase.startsWith("exact original join"),
+  );
   assert.equal(joins.length, 4, "F2 both registered originals need awaited join outcomes");
   for (const original of originals) assert(original.join, "F2 explicit per-original join receipt");
   assert(result.primaryErrors.length, "dispatch error must remain independent");
@@ -220,24 +231,44 @@ async function scenario(): Promise<void> {
   }
   const owner = pages[0]?.api;
   assert(owner);
-  if (selected === "late-error" || selected === "late-undefined" || selected === "late-messageerror") {
+  if (
+    selected === "late-error" ||
+    selected === "late-undefined" ||
+    selected === "late-messageerror"
+  ) {
     const rejected = await Promise.allSettled([owner.request("owner", { kind: "close" })]);
     assert.equal(rejected[0]?.status, "rejected");
     if (rejected[0]?.status === "rejected") assert(Object.is(rejected[0].reason, lateReason));
   }
-  console.log(JSON.stringify({ scenario: selected, labelledStandInsOnly: true, status: result.status, trace }));
+  console.log(
+    JSON.stringify({
+      scenario: selected,
+      labelledStandInsOnly: true,
+      status: result.status,
+      trace,
+    }),
+  );
 }
 if (selected) await scenario();
-else test.each(scenarios)("actual observer source with labelled stand-ins: %s", async (name) => {
-  const child = Bun.spawn([process.execPath, import.meta.path], {
-    env: { ...process.env, OPFS_OBSERVER_SCENARIO: name },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, status] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  expect({ status, stdout, stderr }).toEqual({ status: 0, stdout: expect.any(String), stderr: "" });
-}, 10_000);
+else
+  test.each(scenarios)(
+    "actual observer source with labelled stand-ins: %s",
+    async (name) => {
+      const child = Bun.spawn([process.execPath, import.meta.path], {
+        env: { ...process.env, OPFS_OBSERVER_SCENARIO: name },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, status] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ status, stdout, stderr }).toEqual({
+        status: 0,
+        stdout: expect.any(String),
+        stderr: "",
+      });
+    },
+    10_000,
+  );

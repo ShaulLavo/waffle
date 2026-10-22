@@ -16,10 +16,16 @@ export interface OpfsCloseReply {
   status: "ok" | "setup-invalid" | "behavioral-red";
   receipt: Record<string, unknown>;
 }
+export interface OpfsCloseObserverFailure {
+  token: string;
+  event: "error" | "messageerror" | "reply" | "postMessage" | "terminate";
+  reason: Record<string, unknown>;
+}
 export interface OpfsClosePage {
   start(token: string): void;
   request(token: string, command: OpfsCloseCommand): Promise<OpfsCloseReply>;
   terminateAll(): string[];
+  failures(): OpfsCloseObserverFailure[];
 }
 declare global {
   interface Window {

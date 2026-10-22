@@ -1,6 +1,8 @@
 import {
   parseOpfsCloseReply,
   OpfsCloseSetupInvalid,
+  reasonReceipt,
+  type OpfsCloseObserverFailure,
   type OpfsCloseCommand,
   type OpfsCloseReply,
 } from "../opfs-close-browser.js";
@@ -12,14 +14,22 @@ interface Pending {
 interface PageWorker {
   original: Worker;
   pending: Map<number, Pending>;
-  rawFailures: unknown[];
+  rawFailures: { event: OpfsCloseObserverFailure["event"]; reason: unknown }[];
+  cancellation?: { reason: unknown };
 }
 const workers = new Map<string, PageWorker>();
 let nextRequest = 0;
-function failPending(owner: PageWorker, reason: unknown): void {
-  owner.rawFailures.push(reason);
+function rejectPending(owner: PageWorker, reason: unknown): void {
   for (const pending of owner.pending.values()) pending.reject(reason);
   owner.pending.clear();
+}
+function failPending(
+  owner: PageWorker,
+  reason: unknown,
+  event: OpfsCloseObserverFailure["event"],
+): void {
+  owner.rawFailures.push({ event, reason });
+  rejectPending(owner, reason);
 }
 function receive(owner: PageWorker, value: unknown): void {
   try {
@@ -29,7 +39,7 @@ function receive(owner: PageWorker, value: unknown): void {
     owner.pending.delete(reply.id);
     pending.resolve(reply);
   } catch (reason) {
-    failPending(owner, reason);
+    failPending(owner, reason, "reply");
   }
 }
 function start(token: string): void {
@@ -42,13 +52,15 @@ function start(token: string): void {
   original.addEventListener("message", (event: MessageEvent<unknown>) =>
     receive(owner, event.data),
   );
-  original.addEventListener("error", (event) => failPending(owner, event.error));
-  original.addEventListener("messageerror", (event) => failPending(owner, event));
+  original.addEventListener("error", (event) => failPending(owner, event.error, "error"));
+  original.addEventListener("messageerror", (event) => failPending(owner, event, "messageerror"));
 }
 function request(token: string, command: OpfsCloseCommand): Promise<OpfsCloseReply> {
   const owner = workers.get(token);
   if (!owner) return Promise.reject(new OpfsCloseSetupInvalid("Original Worker missing"));
-  if (owner.rawFailures.length) return Promise.reject(owner.rawFailures[0]);
+  const failure = owner.rawFailures[0];
+  if (failure) return Promise.reject(failure.reason);
+  if (owner.cancellation) return Promise.reject(owner.cancellation.reason);
   const id = ++nextRequest;
   const result = new Promise<OpfsCloseReply>((resolve, reject) => {
     owner.pending.set(id, { resolve, reject });
@@ -56,7 +68,7 @@ function request(token: string, command: OpfsCloseCommand): Promise<OpfsCloseRep
   try {
     owner.original.postMessage({ id, command });
   } catch (reason) {
-    failPending(owner, reason);
+    failPending(owner, reason, "postMessage");
   }
   return result;
 }
@@ -64,9 +76,19 @@ function terminateAll(): string[] {
   const interventions: string[] = [];
   for (const [token, owner] of workers) {
     interventions.push(`explicit Worker.terminate:${token}`);
-    owner.original.terminate();
-    failPending(owner, new Error(`Explicit termination intervention: ${token}`));
+    try {
+      owner.original.terminate();
+    } catch (reason) {
+      failPending(owner, reason, "terminate");
+    }
+    owner.cancellation = { reason: new Error(`Explicit termination intervention: ${token}`) };
+    rejectPending(owner, owner.cancellation.reason);
   }
   return interventions;
 }
-window.opfsClose = { start, request, terminateAll };
+function failures(): OpfsCloseObserverFailure[] {
+  return Array.from(workers, ([token, owner]) =>
+    owner.rawFailures.map(({ event, reason }) => ({ token, event, reason: reasonReceipt(reason) })),
+  ).flat();
+}
+window.opfsClose = { start, request, terminateAll, failures };
