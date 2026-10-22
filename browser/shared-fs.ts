@@ -7,6 +7,7 @@ import {
 } from "../fs/startup.js";
 import {
   FilesystemClient,
+  FilesystemError,
   resolveWriteFileMode,
   createFilesystemConnection,
   createFilesystemIdentity,
@@ -122,35 +123,7 @@ export class SharedFilesystem {
       );
       reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
       this.client = client = new FilesystemClient(connection.client);
-      worker.addEventListener("message", (event) => {
-        if (event.data?.type === "filesystem-disposed") {
-          this.finishDisposal?.(
-            typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
-          );
-          return;
-        }
-        if (this.disposal || this.stopped) return;
-        if (
-          event.data?.type === "filesystem-state" &&
-          (event.data.status === "waiting" || event.data.status === "ready")
-        ) {
-          if (event.data.status === "ready") this.startupComplete = true;
-          this.setState(event.data.status);
-          return;
-        }
-        if (onStartupStage && isWorkerStartupMessage(event.data)) {
-          reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
-          return;
-        }
-        if (event.data?.type === "filesystem-ownership-lost") {
-          this.ownershipLost = true;
-          this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
-          this.onOwnershipLost?.();
-          return;
-        }
-        const error = workerError(event.data);
-        if (error) this.fail(error);
-      });
+      worker.addEventListener("message", (event) => this.receiveMessage(event, onStartupStage));
       worker.addEventListener("error", (event) => {
         event.preventDefault();
         const error = new Error(`Filesystem worker failed: ${event.message || "uncaught error"}`);
@@ -200,6 +173,40 @@ export class SharedFilesystem {
   get state(): SharedFilesystemState {
     return this._state;
   }
+  private receiveMessage(event: MessageEvent, onStartupStage?: RuntimeStartupObserver): void {
+    if (event.data?.type === "filesystem-disposed") {
+      if (this.ordinaryReady() && "error" in event.data && typeof event.data.error !== "string")
+        return;
+      this.finishDisposal?.(
+        typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
+      );
+      return;
+    }
+    if (this.stopped || (this.disposal && !this.ordinaryReady())) return;
+    if (event.data?.type === "filesystem-ownership-lost") {
+      this.ownershipLost = true;
+      this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
+      this.onOwnershipLost?.();
+      return;
+    }
+    const error = workerError(event.data);
+    if (error) {
+      this.fail(error);
+      return;
+    }
+    if (this.disposal) return;
+    if (
+      event.data?.type === "filesystem-state" &&
+      (event.data.status === "waiting" || event.data.status === "ready")
+    ) {
+      if (event.data.status === "ready") this.startupComplete = true;
+      this.setState(event.data.status);
+      return;
+    }
+    if (onStartupStage && isWorkerStartupMessage(event.data)) {
+      reportRuntimeStartup(onStartupStage, event.data.stage, event.data.timestamp);
+    }
+  }
   private setState(status: SharedFilesystemStatus, error?: Error): void {
     if (this._state.status === status && this._state.error === error) return;
     const state = error === undefined ? { status } : { status, error };
@@ -213,7 +220,16 @@ export class SharedFilesystem {
   }
   private fail(error: Error): void {
     if (this.stopped) return;
+    if (this.disposal && this.ordinaryReady()) {
+      this.finishDisposal?.(error);
+      return;
+    }
     this.fatal ??= error;
+    if (this.ordinaryReady()) {
+      this.disposeReady(this.fatal);
+      this.setState("failed", this.fatal);
+      return;
+    }
     // A process does not inherit its parent's lifetime. Publish the separate service-wide
     // revocation so even unpublished independent identities wake when this worker dies.
     revokeFilesystemService(this.client.connection);
@@ -238,6 +254,7 @@ export class SharedFilesystem {
   }
   private assertLive(): void {
     if (this.fatal) throw this.fatal;
+    if (this.disposal && this.ordinaryReady()) throw new FilesystemError(11);
   }
   createIdentity(): FilesystemIdentity {
     this.assertLive();
@@ -358,10 +375,60 @@ export class SharedFilesystem {
     const error = await this.mutate("move", [from, to]);
     if (error) throw new Error(`rename failed: errno ${error}`);
   }
-  /** Revoke synchronously. While waiting for ownership, await worker-side abort and cleanup
-   * before terminating so an abandoned page cannot leave a queued Web Lock request. */
+  private ordinaryReady(): boolean {
+    return (
+      this.startupComplete &&
+      this.vfs.persistent &&
+      !this.client.connection.publication &&
+      !this.client.connection.residentPublication
+    );
+  }
+  private disposeReady(failure?: Error): Promise<void> {
+    let resolve!: () => void;
+    let reject!: (reason: unknown) => void;
+    this.disposal = new Promise<void>((done, failed) => {
+      resolve = done;
+      reject = failed;
+    }).then(
+      () => {
+        this.stop();
+        this.setState("disposed");
+      },
+      (reason: unknown) => {
+        this.fatal ??= reason instanceof Error ? reason : new Error("Filesystem disposal failed");
+        this.setState("failed", this.fatal);
+        throw reason;
+      },
+    );
+    // A worker failure can own this rejection before the caller asks for disposal.
+    void this.disposal.catch(() => {});
+    revokeFilesystemService(this.client.connection);
+    const quiescence = waitForFilesystemQuiescence(this.client.connection);
+    void quiescence.catch(reject);
+    this.finishDisposal = (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      // Do not adopt a pending fence: a later failure must still reject this owner.
+      void quiescence.then(() => resolve(), reject);
+    };
+    if (failure) {
+      reject(failure);
+      return this.disposal;
+    }
+    try {
+      this.worker.postMessage({ dispose: true });
+    } catch (error) {
+      reject(error);
+    }
+    return this.disposal;
+  }
+  /** Revoke synchronously. Ready ordinary storage retains its original owner until the
+   * service ACK and root section fence. Startup cancellation still awaits its abort ACK. */
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
+    if (this.ordinaryReady() && !this.stopped) return this.disposeReady(this.fatal);
     let finish!: (error?: Error) => void;
     this.disposal = new Promise<void>((resolve, reject) => {
       finish = (error) => {

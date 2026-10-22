@@ -115,8 +115,11 @@ for (const status of ["waiting", "ready", "failed", "disposed"] as const) {
     else worker.state(status);
     expect(disposal).toBeDefined();
     const aborts = worker.messages.filter((message) => message.dispose);
-    // A terminal/ready worker must never be killed with an unacknowledged abort handshake.
-    expect(aborts).toHaveLength(status === "waiting" || status === "disposed" ? 1 : 0);
+    expect(aborts).toHaveLength(status === "failed" ? 0 : 1);
+    if (status === "ready") {
+      expect(worker.terminations).toBe(0);
+      expect(new Int32Array(filesystem.client.connection.revocations[0]!)[0]).not.toBe(2);
+    }
     if (aborts.length) worker.acknowledge();
     await disposal;
     expect(filesystem.dispose()).toBe(disposal!);

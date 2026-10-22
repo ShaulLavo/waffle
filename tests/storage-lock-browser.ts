@@ -23,9 +23,11 @@ let filesystemWorker: Worker | undefined;
 const probes: string[] = [];
 let holdOwnershipLoss = false;
 let heldOwnershipLoss: MessageEvent | undefined;
-let disposal: { status: "idle" | "pending" | "fulfilled" | "rejected"; error?: string } = {
-  status: "idle",
-};
+type DisposalRecord =
+  | { status: "idle" | "pending" }
+  | { status: "fulfilled"; samePromise: boolean }
+  | { status: "rejected"; error: string; samePromise: boolean; sameFailure: boolean };
+let disposal: DisposalRecord = { status: "idle" };
 // Instrument calls without replacing the actual browser worker or storage implementation.
 globalThis.Worker = class extends NativeWorker {
   constructor(url: string | URL, options?: WorkerOptions) {
@@ -152,16 +154,21 @@ async function start(
   beginDispose(): void {
     if (disposal.status !== "idle") throw new Error("disposal already started");
     disposal = { status: "pending" };
-    void requireFilesystem()
-      .dispose()
-      .then(
-        () => {
-          disposal = { status: "fulfilled" };
-        },
-        (error) => {
-          disposal = { status: "rejected", error: errorText(error) };
-        },
-      );
+    const filesystem = requireFilesystem();
+    const original = filesystem.dispose();
+    void original.then(
+      () => {
+        disposal = { status: "fulfilled", samePromise: filesystem.dispose() === original };
+      },
+      (error: unknown) => {
+        disposal = {
+          status: "rejected",
+          error: errorText(error),
+          samePromise: filesystem.dispose() === original,
+          sameFailure: error === filesystem.state.error,
+        };
+      },
+    );
   },
   releaseRecovery(): void {
     if (!filesystemWorker) throw new Error("filesystem worker has not been created");
