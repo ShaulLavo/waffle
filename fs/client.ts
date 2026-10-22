@@ -1213,30 +1213,7 @@ export class FilesystemClient implements FileSystem {
           if (this.revoked()) throw new FilesystemError(11);
           return 0;
         }
-        for (;;) {
-          // Capacity is rechecked under the file lock. A truncate can reclaim pages between
-          // retries, so grow only after both locks exit.
-          let written: number | undefined;
-          const changed = this.shared.dirtyAdmission.change;
-          try {
-            written = this.shared.directWrite(
-              slot,
-              handle,
-              chunks,
-              offset,
-              total,
-              this.epoch,
-              this.revoked,
-              this.connection.owner,
-            );
-          } catch (error) {
-            if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
-            this.call("dirtyWait", [handle, changed]);
-            continue;
-          }
-          if (written !== undefined) return written;
-          this.call("grow", [handle, offset + total]);
-        }
+        return this.blockingDirectWrite(slot, handle, chunks, offset, total);
       } catch (error) {
         if (error instanceof MissingSegmentError) {
           try {
@@ -1264,6 +1241,38 @@ export class FilesystemClient implements FileSystem {
       return total || -errno(error);
     }
   }
+  private blockingDirectWrite(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    total: number,
+  ): number {
+    for (;;) {
+      // Capacity is rechecked under the file lock. A truncate can reclaim pages between
+      // retries, so grow only after both locks exit.
+      let written: number | undefined;
+      const changed = this.shared.dirtyAdmission.change;
+      try {
+        written = this.shared.directWrite(
+          slot,
+          handle,
+          chunks,
+          offset,
+          total,
+          this.epoch,
+          this.revoked,
+          this.connection.owner,
+        );
+      } catch (error) {
+        if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
+        this.call("dirtyWait", [handle, changed]);
+        continue;
+      }
+      if (written !== undefined) return written;
+      this.call("grow", [handle, offset + total]);
+    }
+  }
   append(
     handle: FileHandle,
     chunks: readonly Uint8Array[],
@@ -1286,27 +1295,7 @@ export class FilesystemClient implements FileSystem {
     const slot = this.directSlot(handle);
     try {
       if (!slot) return fallback();
-      for (;;) {
-        let result: ReturnType<SharedFilesystemState["directAppend"]>;
-        const changed = this.shared.dirtyAdmission.change;
-        try {
-          result = this.shared.directAppend(
-            slot,
-            handle,
-            chunks,
-            total,
-            this.epoch,
-            this.revoked,
-            this.connection.owner,
-          );
-        } catch (error) {
-          if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
-          this.call("dirtyWait", [handle, changed]);
-          continue;
-        }
-        if (typeof result !== "number") return result;
-        this.call("grow", [handle, result]);
-      }
+      return this.blockingDirectAppend(slot, handle, chunks, total);
     } catch (error) {
       if (error instanceof MissingSegmentError) {
         try {
@@ -1316,6 +1305,34 @@ export class FilesystemClient implements FileSystem {
         }
       }
       return -this.directFailure(handle, error);
+    }
+  }
+  private blockingDirectAppend(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    total: number,
+  ): { written: number; offset: number } {
+    for (;;) {
+      let result: ReturnType<SharedFilesystemState["directAppend"]>;
+      const changed = this.shared.dirtyAdmission.change;
+      try {
+        result = this.shared.directAppend(
+          slot,
+          handle,
+          chunks,
+          total,
+          this.epoch,
+          this.revoked,
+          this.connection.owner,
+        );
+      } catch (error) {
+        if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
+        this.call("dirtyWait", [handle, changed]);
+        continue;
+      }
+      if (typeof result !== "number") return result;
+      this.call("grow", [handle, result]);
     }
   }
   private publishedMetadata(
@@ -1395,6 +1412,13 @@ export class FilesystemClient implements FileSystem {
       throw error;
     }
   }
+  private callMetadata(operation: "resize" | "setMtime", args: unknown[]): number {
+    try {
+      return this.call(operation, args);
+    } catch (error) {
+      return errno(error);
+    }
+  }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
     if (this.shared.publication)
       return this.publishedMetadata({ kind: "resize", handle, size, truncate });
@@ -1425,15 +1449,11 @@ export class FilesystemClient implements FileSystem {
           error instanceof MissingSegmentError ||
           error instanceof MissingDataError
         )
-          return this.call("resize", [handle, size, truncate]);
+          return this.callMetadata("resize", [handle, size, truncate]);
         return errno(error);
       }
     }
-    try {
-      return this.call("resize", [handle, size, truncate]);
-    } catch (error) {
-      return errno(error);
-    }
+    return this.callMetadata("resize", [handle, size, truncate]);
   }
   setMtime(handle: FileHandle, mtime: number): number {
     if (this.shared.publication) return this.publishedMetadata({ kind: "setMtime", handle, mtime });
@@ -1450,15 +1470,12 @@ export class FilesystemClient implements FileSystem {
           this.connection.owner,
         );
       } catch (error) {
-        if (error instanceof DirtyCapacityError) return this.call("setMtime", [handle, mtime]);
+        if (error instanceof DirtyCapacityError)
+          return this.callMetadata("setMtime", [handle, mtime]);
         return errno(error);
       }
     }
-    try {
-      return this.call("setMtime", [handle, mtime]);
-    } catch (error) {
-      return errno(error);
-    }
+    return this.callMetadata("setMtime", [handle, mtime]);
   }
   sync(handle: FileHandle): number {
     try {

@@ -291,55 +291,46 @@ const publication: PublicationConfiguration = {
   },
 };
 
-for (const enabled of [false, true])
-  test(`actual blocking worker resumes outside shared locks, publication=${enabled}`, async () => {
-    await fixture(
-      async (context) => {
-        const { backend, client, service, handle } = context;
-        const { gate, checkpoint } = await held(context);
-        expect(client.tryWrite(handle, [data(8, 67)], 0)).toBe(8);
-        const pair = createFilesystemConnection(client.connection);
-        const connection = pair.client;
-        const descriptors = new DescriptorTable();
-        const fd = descriptors.open(
-          { kind: "file", handle, offset: 8, append: false },
-          0x1fffffffn,
-          0n,
-        );
-        const codec = createFilesystemDescriptorCodec(client, connection);
-        const token = codec.export(descriptors.get(fd)!, 2);
-        service.connect(pair.server);
-        const worker = new Worker(
-          new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href,
-        );
-        const start = new SharedArrayBuffer(8);
-        Atomics.store(new Int32Array(start), 1, 1);
-        const result = new Promise<{ offset: number }>((resolve, reject) => {
-          worker.onmessage = ({ data }) => resolve(data);
-          worker.onerror = reject;
-        });
-        try {
-          worker.postMessage({ connection, token, count: 1, start }, [connection.port]);
-          await waiters(backend, 1);
-          expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
-          expect(backend.shared.stat(handle)!.size).toBe(8);
-          expect(await client.asyncCall("stat", [handle])).toMatchObject({ size: 8 });
-          gate.released.resolve();
-          await checkpoint;
-          expect(await result).toEqual({ offset: 9 });
-          await waiters(backend, 0);
-          expect(backend.shared.snapshot(handle)!.data).toEqual(data(9, 67));
-        } finally {
-          await worker.terminate();
-          codec.discard(token);
-          reapFilesystem(connection);
-          descriptors.dispose();
-        }
-      },
-      tiny,
-      enabled ? publication : undefined,
-    );
+async function blockingWorker(context: Fixture) {
+  const { backend, client, service, handle } = context;
+  const { gate, checkpoint } = await held(context);
+  expect(client.tryWrite(handle, [data(8, 67)], 0)).toBe(8);
+  const pair = createFilesystemConnection(client.connection);
+  const connection = pair.client;
+  const descriptors = new DescriptorTable();
+  const fd = descriptors.open({ kind: "file", handle, offset: 8, append: false }, 0x1fffffffn, 0n);
+  const codec = createFilesystemDescriptorCodec(client, connection);
+  const token = codec.export(descriptors.get(fd)!, 2);
+  service.connect(pair.server);
+  const worker = new Worker(new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href);
+  const start = new SharedArrayBuffer(8);
+  Atomics.store(new Int32Array(start), 1, 1);
+  const result = new Promise<{ offset: number }>((resolve, reject) => {
+    worker.onmessage = ({ data }) => resolve(data);
+    worker.onerror = reject;
   });
+  try {
+    worker.postMessage({ connection, token, count: 1, start }, [connection.port]);
+    await waiters(backend, 1);
+    expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
+    expect(backend.shared.stat(handle)!.size).toBe(8);
+    expect(await client.asyncCall("stat", [handle])).toMatchObject({ size: 8 });
+    gate.released.resolve();
+    await checkpoint;
+    expect(await result).toEqual({ offset: 9 });
+    await waiters(backend, 0);
+    expect(backend.shared.snapshot(handle)!.data).toEqual(data(9, 67));
+  } finally {
+    await worker.terminate();
+    codec.discard(token);
+    reapFilesystem(connection);
+    descriptors.dispose();
+  }
+}
+
+for (const enabled of [false, true])
+  test(`actual blocking worker resumes outside shared locks, publication=${enabled}`, () =>
+    fixture(blockingWorker, tiny, enabled ? publication : undefined));
 
 test("metadata-only admission rejects before mode or time changes", async () => {
   await fixture(async (context) => {
