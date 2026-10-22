@@ -1,5 +1,5 @@
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem } from "./filesystem.js";
+import type { FileSystem, FileStat } from "./filesystem.js";
 import { normalize } from "./path.js";
 
 const READ = 1n << 1n;
@@ -29,17 +29,34 @@ export function reopenDescriptor(
   if ((base & root.rightsInheriting) !== base) return -76;
   if ((inheriting & root.rightsInheriting) !== inheriting) return -76;
   if (oflags & 8 && !(root.rightsBase & PATH_RESIZE)) return -76;
-  const handle = source.resource.handle;
+  return openInode(table, fs, source.resource.handle, "file", oflags, fdflags, base, inheriting);
+}
+
+/** A new open description owns its flags, offset and one inode reference. */
+export function openInode(
+  table: DescriptorTable,
+  fs: FileSystem,
+  handle: number,
+  kind: FileStat["kind"],
+  oflags: number,
+  fdflags: number,
+  base: bigint,
+  inheriting: bigint,
+): number {
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
   const permissions = fs.permissions?.(handle);
   if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
+  if (oflags & 2 && kind !== "directory") return -54;
   if (oflags & 8) {
+    if (kind === "directory") return -31;
     const error = fs.resize(handle, 0, true);
     if (error) return -error;
   }
   fs.retain(handle);
   return table.open(
-    { kind: "file", handle, offset: 0, append: (fdflags & 1) !== 0, fdflags },
+    kind === "directory"
+      ? { kind, handle }
+      : { kind, handle, offset: 0, append: (fdflags & 1) !== 0, fdflags },
     base,
     inheriting,
     () => fs.release(handle),
