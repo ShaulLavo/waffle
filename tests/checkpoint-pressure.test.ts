@@ -95,6 +95,13 @@ function write(backend: PersistentBackend, text: string) {
   backend.execute("writeFile", ["/file"], encode(text));
 }
 
+async function rejectRepeatedCaptures(backend: PersistentBackend) {
+  for (let index = 0; index < 40; index++) {
+    write(backend, "cccc");
+    await expect(backend.checkpoint()).rejects.toMatchObject({ errno: 6 });
+  }
+}
+
 test("payload admission rejects before a second shared snapshot while persist is held", async () => {
   await withBackend(async (backend, store, track) => {
     store.holdPersist = true;
@@ -149,10 +156,7 @@ test("queued and in-flight captures share one byte ceiling under repeated host s
       });
       const snapshot = spyOn(backend.shared, "snapshot");
       try {
-        for (let index = 0; index < 40; index++) {
-          write(backend, "cccc");
-          await expect(backend.checkpoint()).rejects.toMatchObject({ errno: 6 });
-        }
+        await rejectRepeatedCaptures(backend);
         expect(snapshot).not.toHaveBeenCalled();
       } finally {
         snapshot.mockRestore();
