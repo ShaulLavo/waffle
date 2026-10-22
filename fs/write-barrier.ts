@@ -117,26 +117,19 @@ export class WriteAdmission {
       throw new FilesystemError(11, "filesystem write ticket retired");
   }
   reserveInput(ticket: WriteTicket, bytes: number): void {
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > WRITE_INPUT_LIMIT)
-      throw new FilesystemError(6);
-    this.locked(ticket.owner, () => {
-      this.verify(ticket);
-      const previous = Atomics.load(this.cells, ticket.slot + INPUT);
-      if (bytes <= previous) return;
-      if (this.inputBytes + bytes - previous > WRITE_INPUT_LIMIT) throw new FilesystemError(6);
-      Atomics.store(this.cells, ticket.slot + INPUT, bytes);
-    });
+    this.reserve(ticket, bytes, INPUT, WRITE_INPUT_LIMIT);
   }
   reserveMetadata(ticket: WriteTicket, bytes: number): void {
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > WRITE_METADATA_LIMIT)
-      throw new FilesystemError(6);
+    this.reserve(ticket, bytes, INPUT_METADATA, WRITE_METADATA_LIMIT);
+  }
+  private reserve(ticket: WriteTicket, bytes: number, field: number, limit: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limit) throw new FilesystemError(6);
     this.locked(ticket.owner, () => {
       this.verify(ticket);
-      const previous = Atomics.load(this.cells, ticket.slot + INPUT_METADATA);
+      const previous = Atomics.load(this.cells, ticket.slot + field);
       if (bytes <= previous) return;
-      if (this.metadataBytes + bytes - previous > WRITE_METADATA_LIMIT)
-        throw new FilesystemError(6);
-      Atomics.store(this.cells, ticket.slot + INPUT_METADATA, bytes);
+      if (this.reserved(field) + bytes - previous > limit) throw new FilesystemError(6);
+      Atomics.store(this.cells, ticket.slot + field, bytes);
     });
   }
   send(ticket: WriteTicket, request: number): void {

@@ -603,18 +603,31 @@ for (const rejected of [false, true]) {
   });
 }
 
-test("pre-cut pressure wait and cancelled observation retain execution ownership outside locks", async () => {
+async function pressureBackend() {
   const storage = new TestStorage();
   const backend = await PersistentBackend.open(storage, {
     intervalMs: 0,
     checkpointLimits: { maxBytes: 64, maxMetadataBytes: 65536 },
     dirtyLimits: { maxBytes: PAGE + 62, maxWaiters: 4 },
   });
+  return { storage, backend };
+}
+async function pressureCheckpoint(
+  backend: PersistentBackend,
+  storage: TestStorage,
+  client: FilesystemClient,
+  handle: number,
+) {
+  await backend.checkpoint(true);
+  expect(client.tryWrite(handle, [new Uint8Array(6).fill(66)], 0)).toBe(6);
+  storage.persistGate = hold();
+  return { checkpoint: backend.checkpoint(true, handle) };
+}
+
+test("pre-cut pressure wait and cancelled observation retain execution ownership outside locks", async () => {
+  const { storage, backend } = await pressureBackend();
   await fixture(async ({ service, client, handle }) => {
-    await backend.checkpoint(true);
-    expect(client.tryWrite(handle, [new Uint8Array(6).fill(66)], 0)).toBe(6);
-    storage.persistGate = hold();
-    const checkpoint = backend.checkpoint(true, handle);
+    const { checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
     let acquisition: ReturnType<FilesystemService["pauseFilesystemWrites"]> | undefined;
     const first = client.prepare("append", [handle], new Uint8Array(1));
     try {
@@ -978,17 +991,9 @@ test("a proven dead admission owner cannot leave the tiny admission lock held", 
 });
 
 test("rejected pressure checkpoint retains dirty debt and the held lease can retry flush", async () => {
-  const storage = new TestStorage();
-  const backend = await PersistentBackend.open(storage, {
-    intervalMs: 0,
-    checkpointLimits: { maxBytes: 64, maxMetadataBytes: 65536 },
-    dirtyLimits: { maxBytes: PAGE + 62, maxWaiters: 4 },
-  });
+  const { storage, backend } = await pressureBackend();
   await fixture(async ({ service, client, handle }) => {
-    await backend.checkpoint(true);
-    expect(client.tryWrite(handle, [new Uint8Array(6).fill(66)], 0)).toBe(6);
-    storage.persistGate = hold();
-    const checkpoint = backend.checkpoint(true, handle);
+    const { checkpoint } = await pressureCheckpoint(backend, storage, client, handle);
     void checkpoint.catch(() => {});
     let acquisition: ReturnType<FilesystemService["pauseFilesystemWrites"]> | undefined;
     const completion = client.prepare("append", [handle], new Uint8Array([68]));

@@ -294,7 +294,7 @@ const publication: PublicationConfiguration = {
 async function blockingWorker(context: Fixture) {
   const { backend, client, service, handle } = context;
   const { gate, checkpoint } = await held(context);
-  expect(client.tryWrite(handle, [data(8, 67)], 0)).toBe(8);
+  expect(backend.execute("write", [handle, 0], data(8, 67))).toBe(8);
   const pair = createFilesystemConnection(client.connection);
   const connection = pair.client;
   const descriptors = new DescriptorTable();
