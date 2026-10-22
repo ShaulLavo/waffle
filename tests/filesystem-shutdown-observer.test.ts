@@ -41,7 +41,7 @@ test("rejects mismatched original origin, path or query", () => {
   ];
   for (const mismatch of mismatches)
     expect(() => verify(mismatch)).toThrow("Raw and evaluated original worker URLs differ");
-  expect(() => verify(raw, live.replace("41681", "41682"))).toThrow(
+  expect(() => verify(live, live.replace("41681", "41682"))).toThrow(
     "Raw and evaluated original worker URLs differ",
   );
 });
