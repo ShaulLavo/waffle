@@ -186,14 +186,17 @@ export class MemoryBackend implements FilesystemBackend {
     try {
       return this.executeOperation(operation, args, data);
     } finally {
-      if (namespaceOperations.has(operation))
-        for (const handle of this.directoryTimes.keys()) {
-          try {
-            this.sync(handle);
-          } catch {
-            this.directoryTimes.delete(handle);
-          }
-        }
+      this.syncDirectories(operation);
+    }
+  }
+  private syncDirectories(operation: string): void {
+    if (!namespaceOperations.has(operation)) return;
+    for (const handle of this.directoryTimes.keys()) {
+      try {
+        this.sync(handle);
+      } catch {
+        this.directoryTimes.delete(handle);
+      }
     }
   }
   private checkMissingParent(path: string): void {

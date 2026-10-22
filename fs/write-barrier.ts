@@ -1,7 +1,6 @@
 import { atomicsWaitAsync } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
 
-export const ownerWriteBarrier = Symbol("filesystem owner write barrier");
 export interface FilesystemWriteBarrier {
   flush(): Promise<void>;
   release(): Promise<void>;
@@ -27,7 +26,7 @@ const OWNER = 0,
   INPUT = 4,
   INPUT_METADATA = 5;
 export const WRITE_INPUT_LIMIT = 512 * 1024 * 1024;
-export const WRITE_ARGUMENT_LIMIT = 8192;
+const WRITE_ARGUMENT_LIMIT = 8192;
 const WRITE_METADATA_LIMIT = 16 * 1024 * 1024;
 
 export const WRITE_BARRIER_WORDS = HEADER + WORDS * RECORDS;

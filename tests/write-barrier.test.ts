@@ -59,7 +59,6 @@ import {
   WriteAdmission,
   WRITE_INPUT_LIMIT,
   writeArgumentSize,
-  ownerWriteBarrier,
   WRITE_BARRIER_OFFSET,
 } from "../fs/write-barrier";
 import { SharedFilesystemState } from "../fs/shared";
@@ -779,18 +778,20 @@ for (const phase of ["acquiring", "held", "flushing"]) {
           await pending(acquisition);
           service.dispose();
           await expect(acquisition).rejects.toMatchObject({ errno: 11 });
-        } else {
-          const lease = await acquisition;
-          if (phase === "flushing") {
-            flushing = lease.flush();
-            await backend.entered.promise;
-          }
-          service.dispose();
-          backend.released.resolve();
-          await flushing;
-          await lease.release();
-          await expect(lease.flush()).rejects.toMatchObject({ errno: 11 });
+          expect(backend.shared.writeAdmission.closed).toBe(true);
+          await expect(service.pauseFilesystemWrites()).rejects.toMatchObject({ errno: 11 });
+          return;
         }
+        const lease = await acquisition;
+        if (phase === "flushing") {
+          flushing = lease.flush();
+          await backend.entered.promise;
+        }
+        service.dispose();
+        backend.released.resolve();
+        await flushing;
+        await lease.release();
+        await expect(lease.flush()).rejects.toMatchObject({ errno: 11 });
         expect(backend.shared.writeAdmission.closed).toBe(true);
         await expect(service.pauseFilesystemWrites()).rejects.toMatchObject({ errno: 11 });
       } finally {
@@ -855,7 +856,7 @@ test("private workspace bridge admits against the actual authority root gate", a
   );
 });
 
-import { SharedFilesystem } from "../browser/shared-fs";
+import { SharedFilesystem, ownerWriteBarrier } from "../browser/shared-fs";
 import { atomicsWaitAsync } from "../proc/intrinsics";
 
 async function closed(filesystem: SharedFilesystem): Promise<void> {

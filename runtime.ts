@@ -1,4 +1,4 @@
-import { ownerWriteBarrier, type FilesystemWriteBarrier } from "./fs/write-barrier.js";
+import type { FilesystemWriteBarrier } from "./fs/write-barrier.js";
 export type { FilesystemWriteBarrier } from "./fs/write-barrier.js";
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
@@ -7,7 +7,11 @@ type RuntimeNetworkOwner = ReturnType<
   (typeof import("./browser/net/runtime.js"))["createRuntimeNetwork"]
 >;
 
-import { SharedFilesystem, type SharedFilesystemOptions } from "./browser/shared-fs.js";
+import {
+  ownerWriteBarrier,
+  SharedFilesystem,
+  type SharedFilesystemOptions,
+} from "./browser/shared-fs.js";
 import type {
   BrowserProcessBroker,
   BrowserProcessBrokerOptions,

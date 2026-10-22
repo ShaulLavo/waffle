@@ -1343,22 +1343,7 @@ export class FilesystemClient implements FileSystem {
     if (slot) {
       let total = 0;
       for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
-      try {
-        if (!total) {
-          if (this.revoked()) throw new FilesystemError(11);
-          return 0;
-        }
-        return this.blockingDirectWrite(slot, handle, chunks, offset, total);
-      } catch (error) {
-        if (error instanceof MissingSegmentError) {
-          try {
-            return this.copiedWrite(handle, chunks, offset, total);
-          } catch (failure) {
-            return -errno(failure);
-          }
-        }
-        return -this.directFailure(handle, error);
-      }
+      return this.directWriteOrFallback(slot, handle, chunks, offset, total);
     }
     let total = 0;
     try {
@@ -1368,6 +1353,28 @@ export class FilesystemClient implements FileSystem {
       return total;
     } catch (error) {
       return total || -errno(error);
+    }
+  }
+  private directWriteOrFallback(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    total: number,
+  ): number {
+    try {
+      if (!total) {
+        if (this.revoked()) throw new FilesystemError(11);
+        return 0;
+      }
+      return this.blockingDirectWrite(slot, handle, chunks, offset, total);
+    } catch (error) {
+      if (!(error instanceof MissingSegmentError)) return -this.directFailure(handle, error);
+      try {
+        return this.copiedWrite(handle, chunks, offset, total);
+      } catch (failure) {
+        return -errno(failure);
+      }
     }
   }
   private copiedWrite(
@@ -1458,14 +1465,12 @@ export class FilesystemClient implements FileSystem {
       if (!slot) return fallback();
       return this.blockingDirectAppend(slot, handle, chunks, total);
     } catch (error) {
-      if (error instanceof MissingSegmentError) {
-        try {
-          return fallback();
-        } catch (failure) {
-          return -errno(failure);
-        }
+      if (!(error instanceof MissingSegmentError)) return -this.directFailure(handle, error);
+      try {
+        return fallback();
+      } catch (failure) {
+        return -errno(failure);
       }
-      return -this.directFailure(handle, error);
     }
   }
   private blockingDirectAppend(

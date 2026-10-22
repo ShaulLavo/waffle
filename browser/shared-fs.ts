@@ -1,4 +1,4 @@
-import { ownerWriteBarrier, type FilesystemWriteBarrier } from "../fs/write-barrier.js";
+import type { FilesystemWriteBarrier } from "../fs/write-barrier.js";
 import { localPublication, type PublicationConfiguration } from "../fs/publication-internal.js";
 import { type PublicationAdmission } from "../fs/publication.js";
 import {
@@ -34,6 +34,8 @@ import {
 } from "../fs/vfs.js";
 export { getVfsDescriptor, VfsError } from "../fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
+
+export const ownerWriteBarrier = Symbol("filesystem owner write barrier");
 
 export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
 export interface SharedFilesystemState {
