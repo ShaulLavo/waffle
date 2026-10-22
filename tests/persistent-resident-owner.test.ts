@@ -1,3 +1,4 @@
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient } from "../fs/client";
 import { PersistentBackend } from "../fs/persistent";
@@ -294,7 +295,7 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
         origin: values.location.origin,
         name: `unit-pending-${crypto.randomUUID()}`,
         implementation: "indexeddb",
-        format: "waffle-indexeddb-v1",
+        format: INDEXEDDB_FORMAT,
       },
       publication: { limits },
     },

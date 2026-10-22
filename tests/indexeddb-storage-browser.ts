@@ -81,6 +81,19 @@ async function change(
   );
 }
 
+async function reseedLegacy(name: string): Promise<void> {
+  await raw(name, async (db) => {
+    const tx = db.transaction(["metadata", "data"], "readwrite", { durability: "strict" });
+    tx.objectStore("metadata").delete("format");
+    tx.objectStore("data").put(bytes("legacy data"), "file:1");
+    tx.objectStore("data").delete(["file:1", 0]);
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error);
+    });
+  });
+}
+
 export interface BrowserStorageTest {
   label: string;
   run(): Promise<void>;
@@ -662,7 +675,7 @@ function indexedDBCases(
         "new workspace has format identity",
       );
     });
-    await change(name, "metadata", "format");
+    await reseedLegacy(name);
     const adopted = await open();
     assert((await adopted.load())?.generation === 1, "legacy namespace survives adoption");
     assert(
@@ -711,7 +724,7 @@ function indexedDBCases(
         assert(keys.includes("format") && value === identity, "malformed marker remains untouched");
         assert(
           new TextDecoder().decode(
-            await request(db.transaction("data").objectStore("data").get("file:1")),
+            (await request(db.transaction("data").objectStore("data").get(["file:1", 0]))).bytes,
           ) === "preserved",
           "foreign workspace payload remains untouched",
         );
@@ -971,7 +984,7 @@ function indexedDBCases(
         await rejected;
         await raw(database, async (db) => {
           const tx = db.transaction(["data", "metadata", "journal"], "readonly");
-          const payload = await request(tx.objectStore("data").get("file:2"));
+          const payload = (await request(tx.objectStore("data").get(["file:2", 0]))).bytes;
           assert(new TextDecoder().decode(payload) === "newest", "latest payload remains durable");
           assert(
             (await request(tx.objectStore("data").get("stale-only"))) === undefined,

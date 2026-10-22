@@ -1,3 +1,4 @@
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { expect, test } from "bun:test";
 import { getVfsDescriptor, VfsError, type VfsSelection } from "../index.js";
 import { resolveVfs } from "../fs/vfs.js";
@@ -43,7 +44,7 @@ test("descriptors report actual ACKs, loss boundary, ownership, format and lifec
     worker: "dedicated",
     serviceMayAwait: true,
     directSharedMemory: { reads: true, mutations: true },
-    format: { id: "waffle-indexeddb-v1" },
+    format: { id: INDEXEDDB_FORMAT },
   });
   expect(idb.durability).toEqual({
     flush: "checkpoint-data-and-metadata",
