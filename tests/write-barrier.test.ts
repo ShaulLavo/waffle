@@ -1096,8 +1096,12 @@ test("first root attachment cannot replace a held preconnection gate", async () 
   }
 });
 
-for (const append of [false, true]) {
-  test(`blocking guest retries admission lock contention outside mutation sections, append=${append}`, async () => {
+for (const { append, cancelled } of [
+  { append: false, cancelled: false },
+  { append: true, cancelled: false },
+  { append: false, cancelled: true },
+]) {
+  test(`blocking guest admission lock waits outside mutation sections, append=${append}, cancelled=${cancelled}`, async () => {
     await fixture(async ({ backend, client, handle }) => {
       const pair = client.fork();
       const worker = new Worker(
@@ -1138,13 +1142,21 @@ for (const append of [false, true]) {
         Atomics.notify(control, 0);
         expect(await first.promise).toEqual({ waitingAdmission: true });
         expect(Atomics.load(backend.shared.cells, 1)).toBe(0);
+        expect(Atomics.load(new Int32Array(pair.sections), 0)).toBe(0);
+        expect(client.tryWrite(handle, [bytes("later!")], 0)).toBe(-6);
         expect(backend.shared.snapshot(handle)?.data).toEqual(bytes("before"));
-        Atomics.store(lock, 0, 0);
-        Atomics.notify(lock, 0);
-        expect(await result.promise).toEqual(append ? { written: 1, offset: 7 } : 7);
-        expect(backend.shared.snapshot(handle)?.data).toEqual(
-          bytes(append ? "beforeC" : "earlier"),
+        if (cancelled) revokeFilesystem(pair);
+        else {
+          Atomics.store(lock, 0, 0);
+          Atomics.notify(lock, 0);
+        }
+        expect(await result.promise).toEqual(
+          cancelled ? -11 : append ? { written: 1, offset: 7 } : 7,
         );
+        expect(backend.shared.snapshot(handle)?.data).toEqual(
+          bytes(cancelled ? "before" : append ? "beforeC" : "earlier"),
+        );
+        expect(backend.shared.writeAdmission.active).toBe(0);
       } finally {
         Atomics.store(lock, 0, 0);
         Atomics.notify(lock, 0);

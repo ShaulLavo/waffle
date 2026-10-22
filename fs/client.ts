@@ -261,6 +261,7 @@ export class FilesystemClient implements FileSystem {
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
   private activeWrite: WriteTicket | undefined;
+  private admissionInterrupted: (() => boolean) | undefined;
   private workspaceStop: Promise<void> | undefined;
   constructor(readonly connection: FilesystemConnection) {
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
@@ -564,29 +565,32 @@ export class FilesystemClient implements FileSystem {
     completion.ticketRetired = true;
     this.shared.writeAdmission.finish(completion.writeTicket, completion.id);
   }
-  withMutation<T>(run: () => T, inputBytes = 0, metadataBytes = 0): T {
+  withMutation<T>(run: () => T, inputBytes = 0, metadataBytes = 0, blocking = false): T {
+    const interrupted = this.admissionInterrupted ?? (blocking ? this.revoked : undefined);
     if (this.activeWrite) {
       if (inputBytes || metadataBytes) {
-        this.shared.writeAdmission.reserveInput(this.activeWrite, inputBytes);
-        this.shared.writeAdmission.reserveMetadata(this.activeWrite, metadataBytes);
+        this.shared.writeAdmission.reserveInput(this.activeWrite, inputBytes, interrupted);
+        this.shared.writeAdmission.reserveMetadata(this.activeWrite, metadataBytes, interrupted);
         this.shared.checkWriteInput();
       }
       return run();
     }
-    const ticket = this.shared.writeAdmission.admit(this.connection.owner, inputBytes);
+    const ticket = this.shared.writeAdmission.admit(this.connection.owner, inputBytes, interrupted);
     try {
-      this.shared.writeAdmission.reserveMetadata(ticket, metadataBytes);
+      this.shared.writeAdmission.reserveMetadata(ticket, metadataBytes, interrupted);
       this.shared.checkWriteInput();
       this.activeWrite = ticket;
+      this.admissionInterrupted = interrupted;
       return this.shared.withWrite(ticket, run);
     } finally {
       this.activeWrite = undefined;
+      this.admissionInterrupted = undefined;
       this.shared.writeAdmission.finish(ticket);
     }
   }
   private reserveWriteInput(bytes: number): void {
     if (!this.activeWrite) throw new FilesystemError(11);
-    this.shared.writeAdmission.reserveInput(this.activeWrite, bytes);
+    this.shared.writeAdmission.reserveInput(this.activeWrite, bytes, this.admissionInterrupted);
     this.shared.checkWriteInput();
   }
   cancelPublication(admission: PublicationAdmission): void {
@@ -1327,6 +1331,8 @@ export class FilesystemClient implements FileSystem {
       return this.withMutation(
         () => this.writeImpl(handle, chunks, offset),
         this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+        0,
+        true,
       );
     } catch (error) {
       return -errno(error);
@@ -1435,6 +1441,8 @@ export class FilesystemClient implements FileSystem {
       return this.withMutation(
         () => this.appendImpl(handle, chunks),
         this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+        0,
+        true,
       );
     } catch (error) {
       return -errno(error);
@@ -1589,7 +1597,7 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "file")
       return this.resizeImpl(handle, size, truncate);
     try {
-      return this.withMutation(() => this.resizeImpl(handle, size, truncate), 0);
+      return this.withMutation(() => this.resizeImpl(handle, size, truncate), 0, 0, true);
     } catch (error) {
       return errno(error);
     }
@@ -1634,7 +1642,7 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "file")
       return this.setMtimeImpl(handle, mtime);
     try {
-      return this.withMutation(() => this.setMtimeImpl(handle, mtime), 0);
+      return this.withMutation(() => this.setMtimeImpl(handle, mtime), 0, 0, true);
     } catch (error) {
       return errno(error);
     }

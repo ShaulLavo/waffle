@@ -39,12 +39,19 @@ export class WriteAdmission {
   constructor(readonly buffer: SharedArrayBuffer) {
     this.cells = new Int32Array(buffer, WRITE_BARRIER_OFFSET, WRITE_BARRIER_WORDS);
   }
-  private locked<T>(owner: number, run: () => T): T {
-    if (Atomics.compareExchange(this.cells, LOCK, 0, owner)) throw new FilesystemError(6);
+  private locked<T>(owner: number, run: () => T, interrupted?: () => boolean): T {
+    for (;;) {
+      const holder = Atomics.compareExchange(this.cells, LOCK, 0, owner);
+      if (!holder) break;
+      if (!interrupted) throw new FilesystemError(6);
+      if (interrupted()) throw new FilesystemError(11);
+      Atomics.wait(this.cells, LOCK, holder, 50);
+    }
     try {
       return run();
     } finally {
       Atomics.compareExchange(this.cells, LOCK, owner, 0);
+      Atomics.notify(this.cells, LOCK);
       this.notify();
     }
   }
@@ -78,23 +85,29 @@ export class WriteAdmission {
       if (Atomics.load(this.cells, slot + ID)) count++;
     return count;
   }
-  admit(owner: number, bytes = 0): WriteTicket {
+  admit(owner: number, bytes = 0, interrupted?: () => boolean): WriteTicket {
+    if (this.closed) throw new FilesystemError(6);
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > WRITE_INPUT_LIMIT)
       throw new FilesystemError(6, "filesystem input capacity exhausted");
-    return this.locked(owner, () => {
-      if (this.closed || this.inputBytes + bytes > WRITE_INPUT_LIMIT) throw new FilesystemError(6);
-      const slot = this.freeSlot();
-      const serial = Atomics.load(this.cells, SERIAL) + 1;
-      if (serial >= 0x7fffffff) throw new FilesystemError(33);
-      Atomics.store(this.cells, SERIAL, serial);
-      Atomics.store(this.cells, slot + OWNER, owner);
-      Atomics.store(this.cells, slot + LOCAL, serial);
-      Atomics.store(this.cells, slot + REMOTE, 0);
-      Atomics.store(this.cells, slot + INPUT, bytes);
-      Atomics.store(this.cells, slot + INPUT_METADATA, 0);
-      Atomics.store(this.cells, slot + ID, serial);
-      return { slot, serial, owner };
-    });
+    return this.locked(
+      owner,
+      () => {
+        if (this.closed || this.inputBytes + bytes > WRITE_INPUT_LIMIT)
+          throw new FilesystemError(6);
+        const slot = this.freeSlot();
+        const serial = Atomics.load(this.cells, SERIAL) + 1;
+        if (serial >= 0x7fffffff) throw new FilesystemError(33);
+        Atomics.store(this.cells, SERIAL, serial);
+        Atomics.store(this.cells, slot + OWNER, owner);
+        Atomics.store(this.cells, slot + LOCAL, serial);
+        Atomics.store(this.cells, slot + REMOTE, 0);
+        Atomics.store(this.cells, slot + INPUT, bytes);
+        Atomics.store(this.cells, slot + INPUT_METADATA, 0);
+        Atomics.store(this.cells, slot + ID, serial);
+        return { slot, serial, owner };
+      },
+      interrupted,
+    );
   }
   private freeSlot(): number {
     for (let slot = HEADER; slot < this.cells.length; slot += WORDS)
@@ -116,21 +129,31 @@ export class WriteAdmission {
     )
       throw new FilesystemError(11, "filesystem write ticket retired");
   }
-  reserveInput(ticket: WriteTicket, bytes: number): void {
-    this.reserve(ticket, bytes, INPUT, WRITE_INPUT_LIMIT);
+  reserveInput(ticket: WriteTicket, bytes: number, interrupted?: () => boolean): void {
+    this.reserve(ticket, bytes, INPUT, WRITE_INPUT_LIMIT, interrupted);
   }
-  reserveMetadata(ticket: WriteTicket, bytes: number): void {
-    this.reserve(ticket, bytes, INPUT_METADATA, WRITE_METADATA_LIMIT);
+  reserveMetadata(ticket: WriteTicket, bytes: number, interrupted?: () => boolean): void {
+    this.reserve(ticket, bytes, INPUT_METADATA, WRITE_METADATA_LIMIT, interrupted);
   }
-  private reserve(ticket: WriteTicket, bytes: number, field: number, limit: number): void {
+  private reserve(
+    ticket: WriteTicket,
+    bytes: number,
+    field: number,
+    limit: number,
+    interrupted?: () => boolean,
+  ): void {
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limit) throw new FilesystemError(6);
-    this.locked(ticket.owner, () => {
-      this.verify(ticket);
-      const previous = Atomics.load(this.cells, ticket.slot + field);
-      if (bytes <= previous) return;
-      if (this.reserved(field) + bytes - previous > limit) throw new FilesystemError(6);
-      Atomics.store(this.cells, ticket.slot + field, bytes);
-    });
+    this.locked(
+      ticket.owner,
+      () => {
+        this.verify(ticket);
+        const previous = Atomics.load(this.cells, ticket.slot + field);
+        if (bytes <= previous) return;
+        if (this.reserved(field) + bytes - previous > limit) throw new FilesystemError(6);
+        Atomics.store(this.cells, ticket.slot + field, bytes);
+      },
+      interrupted,
+    );
   }
   send(ticket: WriteTicket, request: number): void {
     this.verify(ticket);
@@ -167,6 +190,7 @@ export class WriteAdmission {
   }
   reapLocal(owner: number): void {
     Atomics.compareExchange(this.cells, LOCK, owner, 0);
+    Atomics.notify(this.cells, LOCK);
     for (let slot = HEADER; slot < this.cells.length; slot += WORDS) {
       if (Atomics.load(this.cells, slot + OWNER) !== owner) continue;
       const serial = Atomics.load(this.cells, slot + ID);

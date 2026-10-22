@@ -46,6 +46,10 @@ function observeAdmissionWait(): void {
   Atomics.wait = (array, index, value, timeout) => {
     if (array.byteOffset === WRITE_BARRIER_OFFSET && index === 0)
       self.postMessage({ waitingAdmission: true });
-    return wait(array, index, value, timeout);
+    if (array instanceof Int32Array && typeof value === "number")
+      return wait(array, index, value, timeout);
+    if (array instanceof BigInt64Array && typeof value === "bigint")
+      return wait(array, index, value, timeout);
+    throw new TypeError("invalid atomic wait");
   };
 }
