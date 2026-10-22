@@ -155,10 +155,10 @@ function completeEffects(value: unknown, before: PublicationCut): Record<string,
   const kinds = [
     ["bytes", "metadata"],
     ["bytes", "metadata"],
-    ["entry", "entry"],
+    ["entry", "entry", "metadata"],
     ["bytes", "metadata"],
     ["bytes", "metadata"],
-    ["entry", "entry"],
+    ["entry", "entry", "metadata"],
   ];
   const identities = new Set<string>();
   for (const [index, group] of groups.entries()) {
@@ -176,6 +176,17 @@ function completeEffects(value: unknown, before: PublicationCut): Record<string,
   equal(changes.next, { history: before.history, generation: before.generation + 6 });
   return groups;
 }
+function appendEffects(group: Record<string, unknown>, offset: number, bytes: number[]): void {
+  if (!Array.isArray(group.changes)) throw new Error("missing append group");
+  const data = record(group.changes[0]);
+  const metadata = record(group.changes[1]);
+  equal(data.offset, offset);
+  equal(data.bytes, bytes);
+  equal(data.size, offset + bytes.length);
+  equal(metadata.file, data.file);
+  equal(typeof metadata.mode, "number");
+  equal(typeof metadata.mtime, "number");
+}
 function renameEffects(
   group: Record<string, unknown>,
   from: string,
@@ -191,14 +202,19 @@ function renameEffects(
   equal(added.after, removed.before);
   equal(added.parent, removed.parent);
   equal(added.before === null, !replacement);
+  const metadata = entries.find((entry) => entry.kind === "metadata");
+  if (!metadata) throw new Error("missing parent metadata effect");
+  equal(metadata.file, added.parent);
+  equal(typeof metadata.mode, "number");
+  equal(typeof metadata.mtime, "number");
 }
 async function stopped(page: Page): Promise<unknown> {
   const stop = record(await control(page, "persistentStop"));
   equal(stop.stopped, true);
   equal(stop.same, true);
   if (!Array.isArray(stop.events)) throw new Error("native close events missing");
-  const physical = stop.events.indexOf("native-db-closed");
-  const released = stop.events.indexOf("guard-released");
+  const physical = stop.events.lastIndexOf("native-db-closed");
+  const released = stop.events.lastIndexOf("guard-released");
   if (physical < 0 || released <= physical) throw new Error("guard released before native close");
   return stop;
 }
@@ -272,6 +288,7 @@ async function history(
     await read(c, "dir/a", [10, 20, 30, 41, 42]);
     const settled = await guest(d, "proc", "settle");
     equal(await guest(d, "proc", "settle"), settled);
+    evidence.missingNudgeReceipt = settled;
     return settled;
   });
   await step(schedule[6]!, async () => {
@@ -316,12 +333,17 @@ async function history(
     await absent(c, "dir/target");
     await read(d, "dir/final", [10, 20, 30, 41, 42, 43, 44, 45]);
     const changes = await inspect(authority(), "changes", initial);
+    evidence.changes = changes;
     const groups = completeEffects(changes, initial);
+    appendEffects(groups[0]!, 3, [41]);
+    appendEffects(groups[1]!, 4, [42]);
+    appendEffects(groups[3]!, 5, [43]);
+    appendEffects(groups[4]!, 6, [44, 45]);
+    equal(groups[1]!.receipt, record(evidence.missingNudgeReceipt).receipt);
     renameEffects(groups[2]!, "a", "target", true);
     renameEffects(groups[5]!, "target", "final", false);
     equal(record(groups[4]!.receipt).id, id);
     equal(record(groups[4]!.receipt), record(receipt).receipt);
-    evidence.changes = changes;
     return changes;
   });
   await step(schedule[10]!, async () => {
