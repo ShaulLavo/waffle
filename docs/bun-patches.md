@@ -2,18 +2,20 @@
 
 Waffle owns the reusable browser runtime extracted from bun-wasm. This ledger records copied or adapted implementation that ships in this repository; Bun engine, guest, native binding and application adapter provenance remains in bun-wasm.
 
-| Source                                                                                          | Class            | Revision and local change                                                                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/`, `fs/`, `proc/`, `interrupt/`                                                           | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                               |
-| `browser/net/`                                                                                  | Original adapter | Generic ring, HTTP framing, fetch and host transport, including the runtime-scoped loopback namespace and per-helper socket ownership. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle.                                                                                               |
-| `browser/process-broker.ts`, `browser/worker.ts`                                                | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned.                                                                                                                                                                     |
-| `proc/worker-broker.ts`, `proc/filesystem-codec.ts`, `browser/process-broker.ts`                | Original adapter | Queued PID/directory ownership, acquired directory/slot/PID lifetimes, metadata-independent token discard and retained rejection fences, based on Waffle `15ba700`.                                                                                                                                                                          |
-| `fs/opfs.ts`                                                                                    | Adaptation       | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota implementation, queued lock ownership/cancellation and optional startup lock milestones are original. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
-| `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                         | Original adapter | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                    |
-| `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts` | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                |
-| Inode permission query and enforcement                                                          | Original adapter | Original Waffle code, 2026-10-21; stored owner read/write, directory search/sticky, shared direct I/O checks and explicit saved-metadata adoption. No upstream source copied.                                                                                                                                                                |
-| `core/memory-views.js`                                                                          | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity.                                                                                                                                                                                                                      |
-| `patches/wasi-libc/preopen-scan.patch`                                                          | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.    |
+| Source                                                                                                                                | Class            | Revision and local change                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/`, `fs/`, `proc/`, `interrupt/`                                                                                                 | Original adapter | Browser/WASI runtime services developed in bun-wasm through the frozen extraction revision. The current tree is TypeScript source; `dist/` is generated during `prepare` and is never tracked.                                                                                                                                                                                                          |
+| `browser/net/`                                                                                                                        | Original adapter | Generic ring, HTTP framing, fetch and host transport, including the runtime-scoped loopback namespace and per-helper socket ownership. Fetch and listener policy are injected by the consumer; Bun install/cache policy is not part of Waffle.                                                                                                                                                          |
+| `browser/process-broker.ts`, `browser/worker.ts`                                                                                      | Original adapter | Generic process admission, typed startup outcomes, descriptor transport, worker bootstrap and lifecycle fences. Guest engines and native slots remain application-owned.                                                                                                                                                                                                                                |
+| `proc/worker-broker.ts`, `proc/filesystem-codec.ts`, `browser/process-broker.ts`                                                      | Original adapter | Queued PID/directory ownership, acquired directory/slot/PID lifetimes, metadata-independent token discard and retained rejection fences, based on Waffle `15ba700`.                                                                                                                                                                                                                                     |
+| `fs/opfs.ts`                                                                                                                          | Adaptation       | The sync-access retry constants and retry loop are adapted from SLICC-kernel `src/fs/opfs.ts` at revision `88c5bb3` (Apache-2.0); Waffle's snapshot, payload, quota, queued lock ownership/cancellation, startup milestones, failed-close ownership, acquisition registration and pre-attempt failed-owner cutoff are original glue. Attribution is in the source header and `LICENSES/Apache-2.0.txt`. |
+| `tests/opfs-close{,-browser-observer}.test.ts`, `tests/opfs-close-browser{,-runner}.ts`, `tests/fixtures/opfs-close-{page,worker}.ts` | Original adapter | Waffle failed-close source controls and original-native-object browser observations. Test-only interception and labelled pre-physical-close injection; no upstream source copied.                                                                                                                                                                                                                       |
+| `fs/indexeddb.ts`, `browser/shared-fs.ts`, `runtime.ts`                                                                               | Original adapter | Extend the existing startup abort/disposal handshake to every persistent open, including IndexedDB takeover; fence consumers before cleanup, abandon an unresolved database open, close late successes and abort in-flight epoch allocation without publishing ownership.                                                                                                                               |
+| `fs/vfs.ts`, `browser/{shared-fs,fs-worker}.ts`, `fs/{service,indexeddb,opfs}.ts`, `runtime.ts`                                       | Original adapter | FAST/SAFE mode selection, descriptors, persisted format identities and typed startup diagnostics; existing payload layouts, locks and checkpoint algorithms remain unchanged.                                                                                                                                                                                                                           |
+| `browser/shared-fs.ts`, `fs/{service,persistent}.ts`                                                                                  | Original adapter | Ordinary ready disposal and terminal backend shutdown ownership, integrated from Waffle `e7d4e35` and `6a979e0` onto `93698f1`. Retain the original ACK, section/work joins and failed cleanup reasons; no upstream implementation copied.                                                                                                                                                              |
+| Inode permission query and enforcement                                                                                                | Original adapter | Original Waffle code, 2026-10-21; stored owner read/write, directory search/sticky, shared direct I/O checks and explicit saved-metadata adoption. No upstream source copied.                                                                                                                                                                                                                           |
+| `core/memory-views.js`                                                                                                                | Original adapter | Resizable-memory view helpers retained as source JavaScript because the runtime ABI requires their exact view identity.                                                                                                                                                                                                                                                                                 |
+| `patches/wasi-libc/preopen-scan.patch`                                                                                                | Adaptation       | The `__wasilibc_populate_preopens` scan is adapted from wasi-libc `libc-bottom-half/sources/preopens.c` at revision `2e6fb9d8ee0c` (the wasi-sdk 34 source). When `fd_prestat_get` returns `BADF`, the patch probes `fd_fdstat_get` so open inherited descriptors are skipped while the first truly empty descriptor still ends the scan.                                                               |
 
 ## Process admission ownership
 
@@ -84,8 +86,8 @@ The supplied page has no bitmap images or video: its visuals are inline SVG, CSS
 `fs/startup.ts` and the hooks in `runtime.ts`, `browser/{shared-fs,fs-worker}.ts`,
 `fs/{service,indexeddb,opfs}.ts` are original Waffle adapters. They report fixed
 startup stages around existing operations without copying upstream implementation
-or changing storage policy. The SLICC-kernel retry fragment in `fs/opfs.ts` remains
-unchanged; the new lock milestones are outside that adapted fragment. See
+or changing storage policy. The lock milestones are outside the SLICC-kernel
+retry fragment in `fs/opfs.ts`; its later ownership additions are described below. See
 [runtime-startup.md](runtime-startup.md) for the clock and stage boundaries.
 
 ## Filesystem ownership policy
@@ -93,7 +95,8 @@ unchanged; the new lock milestones are outside that adapted fragment. See
 The queued ownership requests, `whenBusy` settings, lifecycle state and abort/disposal
 handshake in `fs/{opfs,indexeddb,service}.ts`, `browser/{shared-fs,fs-worker}.ts` and
 `runtime.ts` are original Waffle adapters. They change only original ownership glue;
-the SLICC-kernel sync-handle retry fragment at revision `88c5bb3` is unchanged. Storage
+the SLICC-kernel sync-handle retry algorithm at revision `88c5bb3` is retained.
+The fragment now also contains the original failed-close guards described below. Storage
 setup occurs under its lock, and cancellation closes acquired resources before releasing
 that ownership. Pending IndexedDB opens now observe the same startup signal under both busy policies; cancellation acknowledges cleanup without waiting for the browser open and closes any late database success before ownership acquisition. No new upstream implementation was copied.
 
@@ -120,7 +123,8 @@ and mismatched format identities. IndexedDB stores its format record in metadata
 OPFS uses a format-named metadata entry. Validated unmarked existing layouts gain an
 identity without changing payloads, namespace, database version or lock names. The OPFS
 snapshot error is outside the adapted sync-handle retry fragment from SLICC-kernel
-`src/fs/opfs.ts` at `88c5bb3` (Apache-2.0); that fragment is unchanged. No upstream
+`src/fs/opfs.ts` at `88c5bb3` (Apache-2.0). That fragment now includes the original
+ownership additions described below; the retry algorithm is unchanged. No upstream
 code was copied for this revision. Format-marker adoption is original Waffle glue,
 not a new storage engine or an automatic implementation migration.
 
@@ -132,3 +136,52 @@ helper thread. New synchronous control replies and read-credit notifications
 reuse the existing request transport and ring. Socket ownership follows helper
 lifetimes, with no global registry, Bun ABI code or copied upstream implementation.
 See [network.md](network.md) for the consumer launcher contract and browser tests.
+
+## OPFS failed-close ownership and native observations
+
+The adapter-wide ownership map in `fs/opfs.ts` is original Waffle glue. It retains
+each native sync-access original whose close fails, its exact reason and the
+existing WebLock. Only successful physical close removes ownership. Cached,
+evicted and transient originals share that ownership; terminal failed close is
+not retried or treated as successful cleanup.
+
+The acquisition fragment remains adapted from SLICC-kernel `src/fs/opfs.ts` at
+`88c5bb3`, Apache-2.0. Its constants, locked-error classification and delay/retry
+algorithm are unchanged. Waffle added successful-acquisition registration and a
+failed-owner guard before each attempt, including after backoff. The fragment
+is therefore not byte-identical. The guard prevents a new original after known
+failed-close debt; it is not another retry or upstream recovery algorithm.
+
+`tests/opfs-close{,-browser-observer}.test.ts`, `tests/opfs-close-browser{,-runner}.ts` and
+`tests/fixtures/opfs-close-{page,worker}.ts` are original Waffle test adapters.
+No upstream implementation was copied for these observations. Native success
+and labelled pre-physical-close injection remain distinct; injection does not
+prove spontaneous native failure, caller lifetime or natural Worker retirement.
+The source-only browser entry requires a separately qualified whole-arm
+controller before execution. Its local promise deadlines and the existing
+60-second lifecycle emergency fence are not that controller.
+
+See [opfs-close.md](opfs-close.md) for the source checks and the remaining native qualification boundary.
+
+## Ordinary filesystem shutdown
+
+`browser/shared-fs.ts` and `fs/{service,persistent}.ts` are original Waffle adapters.
+This integration retains Waffle's approved page disposal from revision
+`e7d4e35d0ef512bd36387a80d87246d8b0231ea9` and service/backend close from
+`6a979e034b3419f5545a54ec6952f07bb898fff4`, against main revision
+`93698f1009130a2bc7142872e4f02ced06f58272`. No Bun, browser-engine or other
+upstream implementation was copied. OPFS's adapted retry fragment is unchanged.
+
+The page publishes one disposal promise before revoking admission. A ready ordinary
+persistent caller stops its client and Worker only after the original service ACK
+and root section fence. Service shutdown retains admitted work and its failures,
+then releases session pins before closing the backend. Backend close joins admitted
+reads and checkpoints before the final durable save and native storage close. Failed
+drains or saves retain the original failed owner instead of closing storage anyway.
+
+The native fixtures are original test adapters. Their preparation gate and injected
+post-close failure are explicit test seams. The ready-caller proof observes a real
+SharedFilesystem, Worker, service and IndexedDB backend, joins the original target's
+close event before cleanup, and reopens its dirty marker. The post-close failure seam
+runs after native close/unlock; it does not prove native failed-close lock retention.
+See [storage shutdown](storage.md#ordinary-ready-shutdown) for commands and limits.
