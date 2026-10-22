@@ -5,7 +5,7 @@ import { FilesystemService } from "../fs/service";
 import { DescriptorTable } from "../core/descriptors";
 import { createFilesystemDescriptorCodec } from "../proc/filesystem-codec";
 import type { PublicationConfiguration } from "../fs/publication-internal";
-import { createFilesystemConnection, reapFilesystem, PAGE } from "../fs/protocol";
+import { createFilesystemConnection, reapFilesystem, FilesystemError, PAGE } from "../fs/protocol";
 import {
   snapshotBatch,
   type PersistedIndex,
@@ -395,5 +395,30 @@ test("a checkpoint that skips a detached writer cannot retire its pressure debt"
     backend.execute("writeFile", ["/other"], data(12));
     await backend.checkpoint(true);
     expect(backend.shared.snapshot(handle)!.data).toEqual(data(8));
+  });
+});
+
+test("direct metadata pressure fallback returns service errno without throwing", async () => {
+  await fixture(async ({ backend, client, handle }) => {
+    const before = backend.shared.snapshot(handle);
+    const call = client.call;
+    client.call = () => {
+      throw new FilesystemError(6);
+    };
+    try {
+      expect(client.resize(handle, 17, true)).toBe(6);
+      const counters = backend.dirtyPressure();
+      backend.shared.mutate(undefined, undefined, () =>
+        backend.shared.dirtyAdmission.configure(
+          { maxMetadataBytes: counters.accountedMetadataUnits * 2 },
+          backend.checkpointPressure().limits,
+          counters.namespaceUnits,
+        ),
+      );
+      expect(client.setMtime(handle, 1234)).toBe(6);
+      expect(backend.shared.snapshot(handle)).toEqual(before);
+    } finally {
+      client.call = call;
+    }
   });
 });
