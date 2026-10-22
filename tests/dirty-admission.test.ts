@@ -381,3 +381,16 @@ test("dirty files share one cut limit and namespace creation is all-or-nothing",
     expect(storage.index!.nodes.filter((node) => node.kind === "file")).toHaveLength(1);
   });
 });
+
+test("a checkpoint that skips a detached writer cannot retire its pressure debt", async () => {
+  await fixture(async ({ backend, client, handle }) => {
+    expect(client.tryWrite(handle, [data(8)], 0)).toBe(8);
+    backend.execute("remove", ["/file"], data(0));
+    await backend.checkpoint(false);
+    expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(16);
+    expect(() => backend.execute("writeFile", ["/other"], data(12))).toThrow("dirty capacity");
+    expect(backend.fs.lookup("/other")).toBeUndefined();
+    await backend.checkpoint(true);
+    expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(0);
+  });
+});
