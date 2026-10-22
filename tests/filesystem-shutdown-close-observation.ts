@@ -69,7 +69,7 @@ export class ContextCloseObservation<C extends CloseContext> {
     const at = stamp();
     try {
       const promise = close.call(context);
-      const original: Original<C> = { kind: "returned", context, promise, at, settled: pending() };
+      const original: Original<C> = { kind: "returned", context, promise, at, settled: { kind: "pending" } };
       this.original = original;
       void promise.then(
         (value) => {

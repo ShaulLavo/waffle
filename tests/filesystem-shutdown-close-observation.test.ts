@@ -185,7 +185,10 @@ async function contextCase(reason: unknown, reject: boolean, late: boolean) {
     await Promise.resolve();
     expect(fixture.counts()).toEqual({ getters: 1, calls: 1 });
     expect(result.kind).toBe(late ? "invalid" : reject ? "rejected" : "fulfilled");
-    if (late) expect(result).toBe(beforeSettlement);
+    if (late) {
+      if (!beforeSettlement) throw new Error("Missing original bounded result");
+      expect(result).toBe(beforeSettlement);
+    }
     const snapshot = observation.originalSnapshot();
     if (snapshot.kind !== "returned" || !("outcome" in snapshot.settled))
       throw new Error("Missing original settlement");
