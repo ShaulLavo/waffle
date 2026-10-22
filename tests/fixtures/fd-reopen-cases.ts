@@ -15,6 +15,7 @@ function equal(actual: unknown, expected: unknown): void {
 }
 function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   const memory = new WebAssembly.Memory({ initial: 4 });
+  const traces: string[] = [];
   const wasi = new Wasi({
     args: [],
     env: {},
@@ -25,6 +26,7 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
     stdout() {},
     stderr() {},
     sleep() {},
+    trace: (line) => traces.push(line),
   });
   const supervisor = new ProcessSupervisor({
     registry: new ExecutableRegistry(),
@@ -97,6 +99,7 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   const write = (fd: number, text: string) =>
     equal(io("fd_write", fd, put(text, 4096)), text.length);
   return {
+    traces,
     fs,
     wasi,
     supervisor,
@@ -274,12 +277,14 @@ test("inode open failures keep positive errno and leave output and bytes untouch
   const permissions = f.fs.permissions.bind(f.fs);
   const resize = f.fs.resize.bind(f.fs);
   f.view().setUint32(128, 0xabcdef01, true);
+  const traces = f.traces.length;
   f.fs.permissions = () => {
     throw new FilesystemError(2);
   };
   equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 2);
   equal(f.tryPath(`dev/fd/${source}`, 8, WRITE), 2);
   equal(f.tryPath("file", 8, WRITE), 2);
+  equal(f.traces.length, traces);
   f.fs.permissions = permissions;
   f.fs.resize = () => 29;
   equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 29);

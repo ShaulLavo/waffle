@@ -246,7 +246,12 @@ export class Wasi {
 
   /** runtime_proc uses positive errno and checks output memory before changing the inode. */
   fdReopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
-    return this.reopen(fd >>> 0, oflags, fdflags, base, 0n, out);
+    try {
+      return this.reopen(fd >>> 0, oflags, fdflags, base, 0n, out);
+    } catch (error) {
+      if (error instanceof FilesystemError) return error.errno;
+      throw error;
+    }
   }
 
   private reopen(
@@ -258,21 +263,16 @@ export class Wasi {
     out: number,
   ): number {
     if ((out >>> 0) + 4 > this.bytes().length) return 21;
-    try {
-      const result = reopenDescriptor(
-        this.descriptors,
-        this.opts.fs,
-        source,
-        oflags,
-        fdflags,
-        base,
-        inheriting,
-      );
-      return this.opened(result, out >>> 0);
-    } catch (error) {
-      if (error instanceof FilesystemError) return error.errno;
-      throw error;
-    }
+    const result = reopenDescriptor(
+      this.descriptors,
+      this.opts.fs,
+      source,
+      oflags,
+      fdflags,
+      base,
+      inheriting,
+    );
+    return this.opened(result, out >>> 0);
   }
 
   private opened(result: number, out: number): number {
