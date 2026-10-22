@@ -7,7 +7,7 @@ import {
   mapDelete,
   mapSize,
   mapForEach,
-} from "../proc/intrinsics.ts";
+} from "../proc/intrinsics/core.ts";
 import type { FileHandle } from "./filesystem.js";
 
 export interface Readiness {

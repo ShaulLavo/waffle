@@ -38,7 +38,7 @@ test("the full core keeps all exports without loading the process service", asyn
     .map((path) => relative(root, resolve(path)))
     .filter((path) => path.startsWith("proc/"));
   processInputs.sort();
-  expect(processInputs).toEqual(["proc/control.ts", "proc/intrinsics.ts", "proc/types.ts"]);
+  expect(processInputs).toEqual(["proc/control.ts", "proc/errors.ts", "proc/intrinsics/core.ts"]);
   const output = build.outputs[0];
   if (!output) throw new Error("missing full-core artifact");
   const size = gzipSync(Buffer.from(await output.arrayBuffer()), { level: 9 }).length;
