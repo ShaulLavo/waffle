@@ -85,6 +85,8 @@ class ArmBudget {
 }
 class WorkerObservers {
   readonly owners = new Map<Worker, WorkerOwner>();
+  interventionStarted = false;
+  readonly rawErrors: unknown[] = [];
   private announced = Promise.withResolvers<WorkerOwner>();
   capture = (original: Worker): void => {
     const joined = Promise.withResolvers<void>();
@@ -100,6 +102,7 @@ class WorkerObservers {
     try {
       receipt.rawUrl = original.url();
     } catch (reason) {
+      this.rawErrors.push(reason);
       receipt.rawUrlError = reasonReceipt(reason);
     }
     this.announced.resolve(owner);
@@ -135,8 +138,15 @@ class WorkerObservers {
     return owner;
   }
   async join(budget: ArmBudget): Promise<void> {
-    for (const owner of this.owners.values())
-      await budget.run(`exact original join ${String(owner.receipt.token)}`, () => owner.closed);
+    const failures: unknown[] = [];
+    for (const owner of this.owners.values()) {
+      try {
+        await budget.run(`exact original join ${String(owner.receipt.token)}`, () => owner.closed);
+      } catch (reason) {
+        failures.push(reason);
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, "Original Worker joins unconfirmed");
   }
 }
 async function command(
@@ -176,6 +186,7 @@ async function terminate(
   budget: ArmBudget,
   result: OpfsCloseArmResult,
 ): Promise<void> {
+  observers.interventionStarted = true;
   const interventions = await budget.run("explicit Worker termination intervention", () =>
     page.evaluate(() => window.opfsClose.terminateAll()),
   );
@@ -349,13 +360,13 @@ export async function runOpfsCloseArm(
   } finally {
     const ownedFirstPage = firstPage,
       ownedFinalPage = finalPage;
-    if (ownedFirstPage && !result.originalContextClosed)
+    if (ownedFirstPage && !original.interventionStarted)
       await cleanupStep(
         "original Worker intervention/join",
         () => terminate(ownedFirstPage, original, budget, result),
         result,
       );
-    if (ownedFinalPage && !result.finalContextClosed)
+    if (ownedFinalPage && !final.interventionStarted)
       await cleanupStep(
         "final Worker intervention/join",
         () => terminate(ownedFinalPage, final, budget, result),
@@ -366,6 +377,7 @@ export async function runOpfsCloseArm(
       () => budget.run("lifecycle cleanup", () => lifecycle.close()),
       result,
     );
+    result.primaryErrors.push(...original.rawErrors.concat(final.rawErrors));
     result.workers = Array.from(original.owners.values(), (owner) => owner.receipt).concat(
       Array.from(final.owners.values(), (owner) => owner.receipt),
     );

@@ -73,6 +73,14 @@ function receipt<T>(result: PromiseSettledResult<T>): Record<string, unknown> {
     ? { status: "fulfilled", value: result.value }
     : { status: "rejected", reason: reasonReceipt(result.reason) };
 }
+function rawReceipt(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || !("status" in value)) return reasonReceipt(value);
+  if (value.status === "rejected" && "reason" in value)
+    return { status: "rejected", reason: reasonReceipt(value.reason) };
+  if (value.status === "fulfilled" && "value" in value)
+    return { status: "fulfilled", value: reasonReceipt(value.value) };
+  return reasonReceipt(value);
+}
 function checkAccess(value: unknown): asserts value is NativeAccess {
   if (!value || typeof value !== "object") throw new OpfsCloseSetupInvalid("Native access missing");
   for (const method of ["close", "getSize", "read", "write", "truncate", "flush"])
@@ -539,6 +547,7 @@ async function receive(value: unknown): Promise<OpfsCloseReply> {
         accesses: accessReceipts(),
         locks: lockReceipts(),
         rawOutcomesRetainedInOriginalRealm: rawOutcomes.length,
+        rawDiagnostics: rawOutcomes.map(rawReceipt),
       },
     };
   }
