@@ -5,6 +5,7 @@ import { chromium, firefox, webkit, type Browser, type BrowserContext } from "pl
 import {
   stopBrowserResource,
   type BrowserResourceOwner,
+  type ResourceCloseObserver,
 } from "./process-recycling-browser-runner-control.js";
 
 export const engines = { chromium, firefox, webkit };
@@ -61,6 +62,7 @@ export class BrowserRunnerLifecycle {
   constructor(
     timeoutMs = 600_000,
     private cleanupTimeoutMs = 5000,
+    private observeBrowserClose?: ResourceCloseObserver,
   ) {
     process.once("SIGINT", this.interrupted);
     process.once("SIGTERM", this.interrupted);
@@ -137,6 +139,7 @@ export class BrowserRunnerLifecycle {
   async launch(name: keyof typeof engines): Promise<Browser> {
     this.assertLive();
     const owner: Owner<Browser> = {
+      observeClose: this.observeBrowserClose,
       creation: engines[name].launch({
         headless: true,
         downloadsPath: this.scratch,

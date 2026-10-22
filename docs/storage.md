@@ -37,3 +37,53 @@ upgrade closes and cancels a waiting connection, rather than leaving the databas
 selects isolated storage for tests/workspaces. The worker is not a power-loss-safe host
 filesystem beyond the browser's storage guarantees; closing a page without a completed flush
 may lose its uncommitted edits.
+
+## Ordinary ready shutdown
+
+A ready ordinary persistent `SharedFilesystem` revokes new work immediately when
+`dispose()` starts. Repeated calls return the original promise. The page keeps its
+root and Worker until the original service shutdown ACK and root section fence
+finish. A failed ACK or Worker error rejects that promise and retains the failed
+owner. A success ACK followed by an error before the fence finishes still fails.
+
+Ownership loss after readiness also rejects the original disposal promise with the
+same error object as the failed page state. It does not send a new dispose request,
+claim a cleanup ACK, or terminate the failed owner. The storage-lock browser test
+checks that the original native Worker remains live, then awaits page teardown.
+Takeover lets the successor run and read flushed data. That does not prove that the
+failed owner's backend closed successfully or independently observe Worker death.
+
+The service joins admitted preparations, requests, maintenance and section fences
+before releasing pins and closing its backend. `PersistentBackend.close()` also
+returns one original promise, rejects new work, and joins admitted reads/checkpoints
+before its final durable save and native storage close. A failed drain or final save
+does not initiate native close. A failed native close remains the original failure.
+These ordinary paths do not finalize private publication owners.
+
+Run a bounded ready IndexedDB success proof with one cached Playwright engine:
+
+```sh
+STORAGE_SCRATCH_ROOT=/work/tmp bun tests/filesystem-ready-disposal-browser-runner.ts chromium
+```
+
+The proof uses real page APIs, the real service installer and IndexedDB. A test-only
+preparation gate holds admitted work through disposal. It checks the pending native
+lock, the real service ACK and original backend/storage close, then joins the exact
+original Worker target's close event before cleanup and reopens the dirty marker.
+Only fixture configuration and gate/observation controls are injected. No ACK is
+synthetic. Worker termination is still initiated explicitly by page disposal, not
+natural retirement.
+
+The separate service-only observer supports one diagnostic arm:
+
+```sh
+STORAGE_SCRATCH_ROOT=/work/tmp bun tests/filesystem-shutdown-browser-runner.ts firefox --backend indexeddb --reason error --arm raw-close-failure
+```
+
+The complete ordinary service matrix is 84 arms. Its earlier native run stopped
+at the Firefox context-close 1000ms cap after 48 primary observations. That run is
+RED/incomplete; the remaining 36 arms are unproved. A passing selected diagnostic
+is only non-reproduction. The retained original raw close promise, capped result
+and enclosing browser cleanup remain separate receipts. Neither runner proves
+whole Runtime shutdown, OPFS shutdown or native failed-close lock retention. No
+SAFE, public/default or full-matrix acceptance follows from these controls.

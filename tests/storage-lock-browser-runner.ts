@@ -410,6 +410,56 @@ async function waitProbe(page: Page, probe: string): Promise<void> {
   );
 }
 
+async function assertStartupOwnerDisposed(owner: Page): Promise<void> {
+  const disposal = await owner.evaluate(() => (globalThis as any).lockTest.disposal());
+  assert(
+    disposal.status === "fulfilled" && disposal.samePromise,
+    `startup ownership loss stranded disposal: ${JSON.stringify(disposal)}`,
+  );
+  await dispose(owner);
+  const resources = await owner.evaluate(() => (globalThis as any).lockTest.resources());
+  assert(
+    resources.terminations === 1 && resources.clientDisposals === 1,
+    `ownership loss released resources more than once: ${JSON.stringify(resources)}`,
+  );
+}
+
+async function assertRetainedReadyOwner(owner: Page): Promise<void> {
+  const observed = await owner.evaluate(() => ({
+    disposal: (globalThis as any).lockTest.disposal(),
+    resources: (globalThis as any).lockTest.resources(),
+    probes: (globalThis as any).lockTest.probes(),
+    state: (globalThis as any).lockTest.state(),
+  }));
+  assert(
+    observed.disposal.status === "rejected" &&
+      observed.disposal.samePromise &&
+      observed.disposal.sameFailure &&
+      observed.state.status === "failed",
+    `ready ownership loss replaced its original disposal failure: ${JSON.stringify(observed)}`,
+  );
+  assert(
+    observed.resources.terminations === 0 && observed.resources.clientDisposals === 0,
+    `ready ownership loss released its failed cleanup owner: ${JSON.stringify(observed)}`,
+  );
+  assert(
+    !observed.probes.includes("probe-dispose-received") &&
+      !observed.probes.includes("filesystem-disposed"),
+    `ready ownership loss invented a cleanup ACK: ${JSON.stringify(observed)}`,
+  );
+  const workers = owner.workers();
+  const worker = workers[0];
+  assert(
+    worker && workers.length === 1,
+    `Expected one retained native Worker, got ${workers.length}`,
+  );
+  assert(
+    await worker.evaluate(() => location.pathname === "/recovery-fs-worker.js"),
+    "failed owner's original native Worker stopped before page teardown",
+  );
+  console.log(JSON.stringify({ timing: "ready", retainedNativeOwner: observed }));
+}
+
 async function recoveryOwnershipLoss(
   context: BrowserContext,
   baseURL: string,
@@ -484,18 +534,8 @@ async function recoveryOwnershipLoss(
       await owner.waitForFunction(
         () => (globalThis as any).lockTest.disposal().status !== "pending",
       );
-      assert(
-        (await owner.evaluate(() => (globalThis as any).lockTest.disposal())).status ===
-          "fulfilled",
-        "failed owner's disposal did not settle",
-      );
     }
-    await dispose(owner);
-    const resources = await owner.evaluate(() => (globalThis as any).lockTest.resources());
-    assert(
-      resources.terminations === 1 && resources.clientDisposals === 1,
-      `ownership loss released resources more than once: ${JSON.stringify(resources)}`,
-    );
+    if (timing !== "ready") await assertStartupOwnerDisposed(owner);
     await assertReady(successor, "takeover successor");
     if (timing !== "ready") {
       await owner.waitForFunction(
@@ -522,6 +562,9 @@ async function recoveryOwnershipLoss(
           "durable marker",
         "ready owner's flushed data did not survive takeover",
       );
+      await assertRetainedReadyOwner(owner);
+      await owner.close();
+      assert(owner.isClosed(), "failed owner's page teardown did not finish");
     }
   } finally {
     await closePages(pages);
@@ -691,7 +734,7 @@ function cases(): TestCase[] {
     },
     {
       backend: "indexeddb",
-      label: "ownership loss after gated recovery cleans up once",
+      label: "ownership loss after gated recovery retains failed cleanup owner",
       run: (context, url, name) => recoveryOwnershipLoss(context, url, name, "ready"),
     },
     {
