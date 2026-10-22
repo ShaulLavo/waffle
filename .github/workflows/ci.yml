@@ -127,6 +127,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('node_modules/playwright-core/browsers.json') }}
+      - name: Use Ubuntu HTTPS archives for browser dependencies
+        run: |
+          sudo sed -i '\|^http://azure\.archive\.ubuntu\.com/ubuntu/|d' /etc/apt/apt-mirrors.txt
+          test -s /etc/apt/apt-mirrors.txt
+          cat /etc/apt/apt-mirrors.txt
       - run: bunx playwright install --with-deps chromium firefox webkit
       - run: bun run test:browser
         env:
