@@ -25,6 +25,7 @@ export default {
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",
         "tests/fixtures/filesystem-shutdown-{page,worker}.ts",
         "tests/fixtures/{browser-cell-clone,interrupt-browser-worker,preopen-node-host}.ts",
+        "tests/fixtures/opfs-close-{page,worker}.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
         "tests/fixtures/publication-resident-{authority,guest}.ts",
