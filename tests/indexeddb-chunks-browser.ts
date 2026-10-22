@@ -1,7 +1,7 @@
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
-import { encodeSnapshot, decodeSnapshot } from "../fs/storage.js";
+import { encodeRecord, encodeSnapshot, decodeSnapshot } from "../fs/storage.js";
 import { assert, batch, storageTests } from "./indexeddb-storage-browser.js";
 
 function nativeRequest<T>(request: IDBRequest<T>): Promise<T> {
@@ -604,6 +604,138 @@ async function missingChunkRecovery() {
     return "missing latest chunks recover previous complete base; no complete base rejects, never empty";
   });
 }
+async function abandonedLegacyJournal(marked: boolean) {
+  return owned(async (name, open) => {
+    await seedV1(name, marked);
+    const successor = batch(3);
+    await edit(
+      name,
+      "journal",
+      3,
+      await encodeRecord({
+        version: 1,
+        previous: 2,
+        generation: 3,
+        root: 1,
+        upserts: successor.upserts,
+        removes: [],
+      }),
+    );
+    await edit(name, "metadata", "active", 3);
+    const storage = await open();
+    await assertMigrated(storage, name);
+    await storage.close();
+    const reopened = await open();
+    await assertMigrated(reopened, name);
+    await reopened.persist(batch(3, "replacement"));
+    await reopened.close();
+    const current = await open();
+    assert((await current.load())?.generation === 3, "replacement generation stays current");
+    assert(
+      new TextDecoder().decode(await current.read("file:3")) === "replacement",
+      "abandoned successor cannot reconnect after migration",
+    );
+    return { marked, recoveredGeneration: 2, nextGeneration: 3 };
+  });
+}
+type RevisionDamage = "missing-chunk" | "malformed-manifest" | "missing-manifest";
+async function damageRevision(name: string, damage: RevisionDamage): Promise<void> {
+  if (damage === "missing-chunk") return edit(name, "data", ["file:3", 0]);
+  if (damage === "missing-manifest") return edit(name, "data", "file:3");
+  await edit(name, "data", "file:3", { version: 2, size: CHUNK_SIZE + 1, chunkSize: 1, count: 2 });
+}
+async function physicalRevisionKeys(name: string, revision: string): Promise<IDBValidKey[]> {
+  const keys = await raw(name, (db) =>
+    nativeRequest(db.transaction("data").objectStore("data").getAllKeys()),
+  );
+  return keys.filter((key) => key === revision || (Array.isArray(key) && key[0] === revision));
+}
+async function damagedRevisionRecovery(damage: RevisionDamage) {
+  return owned(async (name, open) => {
+    const storage = await open();
+    for (const generation of [1, 2]) await storage.persist(batch(generation));
+    const large = largeBatch(3, pattern(CHUNK_SIZE + 1));
+    large.upserts[1]!.data = "file:3";
+    large.data = new Map([["file:3", pattern(CHUNK_SIZE + 1)]]);
+    await storage.persist(large);
+    await storage.close();
+    await damageRevision(name, damage);
+    const before = await physicalRevisionKeys(name, "file:3");
+    const recovered = await open();
+    assert((await recovered.load())?.generation === 2, `${damage} recovers generation 2`);
+    assert(
+      new TextDecoder().decode(await recovered.read("file:2")) === "v2",
+      "recovered bytes match the older complete namespace",
+    );
+    for (const generation of [4, 5, 6])
+      await recovered.persist({ ...batch(generation), retainedData: ["file:1"] });
+    assert(
+      new TextDecoder().decode(await recovered.read("file:1")) === "v1",
+      "runtime pin protects a detached healthy revision during damaged-revision collection",
+    );
+    for (const generation of [7, 8]) await recovered.persist(batch(generation));
+    await recovered.close();
+    const after = await physicalRevisionKeys(name, "file:3");
+    assert(after.length === 0, `${damage} reclaim left ${JSON.stringify(after)}`);
+    assert(
+      (await physicalRevisionKeys(name, "file:1")).length === 0,
+      "expired runtime pin is reclaimed after both recovery bases retire",
+    );
+    const reopened = await open();
+    assert((await reopened.load())?.generation === 8, "collected root reopens at generation 8");
+    assert(
+      new TextDecoder().decode(await reopened.read("file:6")) === "v6",
+      "older recovery-base bytes survive collection",
+    );
+    await reopened.close();
+    await edit(name, "data", ["file:8", 0]);
+    const older = await open();
+    assert((await older.load())?.generation === 7, "older recovery base and journal remain usable");
+    assert(
+      new TextDecoder().decode(await older.read("file:7")) === "v7",
+      "second recovery bytes survive damaged-revision reclamation",
+    );
+    await older.close();
+    await breakSnapshots(name);
+    const broken = await open();
+    await rejected(broken.load(), "corrupt");
+    return { damage, recoveredGeneration: 2, afterGeneration: 8, before, after };
+  });
+}
+export async function indexedDBReviewRepairControls() {
+  const controls: [string, () => Promise<unknown>][] = [
+    ["marked abandoned v1 journal", () => abandonedLegacyJournal(true)],
+    ["unmarked abandoned v1 journal", () => abandonedLegacyJournal(false)],
+    ["malformed newest manifest", () => damagedRevisionRecovery("malformed-manifest")],
+    ["incomplete chunk reclaim", () => damagedRevisionRecovery("missing-chunk")],
+    ["orphan chunk reclaim", () => damagedRevisionRecovery("missing-manifest")],
+  ];
+  const results = [];
+  for (const [label, run] of controls) {
+    const result = await run().then(
+      (evidence) => ({ label, ok: true, evidence }),
+      (error: unknown) => ({ label, ok: false, error: String(error) }),
+    );
+    results.push(result);
+  }
+  return results;
+}
+export async function indexedDBReviewPreservationControls() {
+  const migration = [];
+  for (const marked of [true, false])
+    for (let schedule = 0; schedule <= 4; schedule++)
+      migration.push(await migrationInterruption(schedule, marked));
+  return {
+    migration,
+    cancelled: await migrationCancellation(),
+    corrupt: await corruptLegacy(),
+    retained: await retainedRevisions(),
+    epoch: await migrationEpochFence(),
+    close: await migrationCloseDrain(),
+    recovery: await missingChunkRecovery(),
+    existing: await indexedDBExistingControls(),
+  };
+}
 export async function indexedDBChunkControls() {
   const ranges = await rangeControls();
   const migration = [];
@@ -616,7 +748,12 @@ export async function indexedDBChunkControls() {
   const epoch = await migrationEpochFence();
   const close = await migrationCloseDrain();
   const recovery = await missingChunkRecovery();
-  return { ranges, migration, cancelled, corrupt, retained, epoch, close, recovery };
+  const review = await indexedDBReviewRepairControls();
+  assert(
+    review.every((result) => result.ok),
+    JSON.stringify(review),
+  );
+  return { ranges, migration, cancelled, corrupt, retained, epoch, close, recovery, review };
 }
 export async function indexedDBExistingControls() {
   const passed: string[] = [];
