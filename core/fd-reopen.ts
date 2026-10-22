@@ -22,7 +22,13 @@ export function reopenDescriptor(
   if (oflags & ~15 || fdflags & ~31 || oflags & 5) return -28;
   base = BigInt.asUintN(64, base);
   inheriting = BigInt.asUintN(64, inheriting);
-  if (source.resource.kind !== "file") return reopenShared(table, source, oflags, base, inheriting);
+  if (source.resource.kind !== "file") {
+    if (oflags & 2 && source.resource.kind !== "directory") return -54;
+    if (oflags & 8 && source.resource.kind === "directory") return -31;
+    if ((base & source.rightsBase) !== base) return -2;
+    if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
+    return table.add(source.description, { rightsBase: base, rightsInheriting: inheriting });
+  }
   if (oflags & 2) return -54;
   const root = table.rootPreopen();
   if (!root || !(root.rightsBase & PATH_OPEN)) return -76;
@@ -63,20 +69,6 @@ export function openInode(
   );
 }
 
-function reopenShared(
-  table: DescriptorTable,
-  source: Descriptor,
-  oflags: number,
-  base: bigint,
-  inheriting: bigint,
-): number {
-  if (oflags & 2 && source.resource.kind !== "directory") return -54;
-  if (oflags & 8 && source.resource.kind === "directory") return -31;
-  if ((base & source.rightsBase) !== base) return -2;
-  if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
-  return table.add(source.description, { rightsBase: base, rightsInheriting: inheriting });
-}
-
 /** These names are process-local WASI paths, never entries in the shared filesystem. */
 function descriptorPath(path: string): number | undefined {
   if (path === "/dev/stdin") return 0;
@@ -92,7 +84,7 @@ interface PathEntry {
   handle?: number;
   source?: number;
 }
-const virtualDirectories = new Set(["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"]);
+const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
 function lookupEntry(
   table: DescriptorTable,
@@ -116,7 +108,7 @@ function lookupEntry(
   const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name);
   if (typeof path === "number") return path;
   if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
-  if (virtualDirectories.has(prefix)) return { prefix, kind: "directory" };
+  if (virtualDirectories.includes(prefix)) return { prefix, kind: "directory" };
   return 44;
 }
 
