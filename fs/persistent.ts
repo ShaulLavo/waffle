@@ -8,7 +8,14 @@ import {
 import { FilesystemError } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan } from "./backend.js";
-import { MemFS, adoptInodes, type Node, type DirNode, type FileNode, type NamespacePlan } from "./memory.js";
+import {
+  MemFS,
+  adoptInodes,
+  type Node,
+  type DirNode,
+  type FileNode,
+  type NamespacePlan,
+} from "./memory.js";
 import type { PersistedIndex, PersistedNode, PersistenceBatch, StorageBackend } from "./storage.js";
 
 interface CheckpointRequest {
@@ -91,7 +98,11 @@ export class PersistentBackend extends MemoryBackend {
   }
   static async open(
     storage: StorageBackend,
-    options: { intervalMs?: number; checkpointLimits?: Partial<CheckpointLimits>; dirtyLimits?: Partial<DirtyLimits> | false } = {},
+    options: {
+      intervalMs?: number;
+      checkpointLimits?: Partial<CheckpointLimits>;
+      dirtyLimits?: Partial<DirtyLimits> | false;
+    } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
     if (!index)
@@ -308,7 +319,11 @@ export class PersistentBackend extends MemoryBackend {
   }
   private configureDirty(): void {
     if (this.dirtyLimits === false) return;
-    this.shared.dirtyAdmission.configure(this.dirtyLimits, this.pressure.limits, this.namespaceUnits());
+    this.shared.dirtyAdmission.configure(
+      this.dirtyLimits,
+      this.pressure.limits,
+      this.namespaceUnits(),
+    );
   }
   override attachShared(...args: Parameters<MemoryBackend["attachShared"]>): void {
     const previous = this.shared;
@@ -325,15 +340,32 @@ export class PersistentBackend extends MemoryBackend {
     const action = plan.action;
     const namespace = action.kind === "writeFile" ? action.namespace : action;
     if (namespace.kind === "namespace") {
-      this.shared.dirtyAdmission.namespace(this.namespaceGrowth(namespace.plan), this.shared.resources().usedBytes);
+      this.shared.dirtyAdmission.namespace(
+        this.namespaceGrowth(namespace.plan),
+        this.shared.resources().usedBytes,
+      );
       for (const handle of namespace.registered) this.shared.prepareDirty(handle, 0);
-      for (const parent of namespace.plan.parents) this.shared.prepareDirty(this.fs.handleForNode(parent), 0);
+      for (const parent of namespace.plan.parents) {
+        const handle = this.fs.handleForNode(parent);
+        this.sync(handle);
+        this.shared.prepareDirty(handle, 0);
+      }
     }
     if (action.kind === "write" || action.kind === "writeFile") {
-      const size = action.kind === "writeFile" && !action.append ? action.data.length : Math.max(this.shared.info(action.handle)!.size, action.offset + action.data.length);
+      const size =
+        action.kind === "writeFile" && !action.append
+          ? action.data.length
+          : Math.max(this.shared.info(action.handle)!.size, action.offset + action.data.length);
       this.shared.prepareDirty(action.handle, size);
     }
-    if (action.kind === "setMode" || action.kind === "setMtime") this.shared.prepareDirty(action.handle);
+    if (action.kind === "resize") {
+      const size = action.truncate
+        ? action.size
+        : Math.max(this.shared.info(action.handle)!.size, action.size);
+      this.shared.prepareDirty(action.handle, size);
+    }
+    if (action.kind === "setMode" || action.kind === "setMtime")
+      this.shared.prepareDirty(action.handle);
   }
   override execute(
     operation: string,
@@ -350,6 +382,7 @@ export class PersistentBackend extends MemoryBackend {
     let plan: LocalMutationPlan | undefined;
     try {
       plan = this.planPublication(intent, data);
+      this.prepareMutation(plan);
       this.applyPublication(plan);
       return mutationValue(plan.result);
     } catch (error) {
@@ -364,8 +397,16 @@ export class PersistentBackend extends MemoryBackend {
   }
   async waitForDirtyCapacity(changed: number, cancelled: () => boolean): Promise<void> {
     this.assertAdmitting();
-    const wait = this.shared.dirtyAdmission.wait(changed, () => cancelled() || this.stopped || !!this.closing);
-    if (!this.pendingCheckpoints) void this.checkpoint().catch(() => {});
+    let failure: unknown;
+    const wait = this.shared.dirtyAdmission.wait(
+      changed,
+      () => cancelled() || this.stopped || !!this.closing,
+      () => failure,
+    );
+    const progress = this.pendingCheckpoints ? this.lastCommit : this.checkpoint();
+    void progress.catch((error) => {
+      if (!(error instanceof FilesystemError) || error.errno !== 6) failure = error;
+    });
     return wait;
   }
   prepare(operation: string, args: any[]): void | Promise<void> {
@@ -498,21 +539,29 @@ export class PersistentBackend extends MemoryBackend {
             ? undefined
             : this.fs.nodeForHandle(target);
       const request = { durable, target, selected };
-      const cost = this.captureCost(request);
+      const cost = { ...this.captureCost(request) };
       this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
       let reservation: number;
-      try { reservation = this.pressure.reserve(cost); } catch (error) {
+      try {
+        reservation = this.pressure.reserve(cost);
+      } catch (error) {
         this.shared.dirtyAdmission.releaseCopy(cost);
         throw error;
       }
       const revision = this.shared.dirtyAdmission.revision;
       try {
-        return this.captureReserved(request, reservation, cost.metadataBytes).then(() => {
-          this.shared.mutate(undefined, undefined, () => this.shared.cleanDirty(revision, this.namespaceUnits()));
-        }).finally(() => {
-          this.pressure.release(reservation);
-          this.shared.mutate(undefined, undefined, () => this.shared.dirtyAdmission.releaseCopy(cost));
-        });
+        return this.captureReserved(request, reservation, cost)
+          .then(() => {
+            this.shared.mutate(undefined, undefined, () =>
+              this.shared.cleanDirty(revision, this.namespaceUnits()),
+            );
+          })
+          .finally(() => {
+            this.pressure.release(reservation);
+            this.shared.mutate(undefined, undefined, () =>
+              this.shared.dirtyAdmission.releaseCopy(cost),
+            );
+          });
       } catch (error) {
         this.pressure.release(reservation);
         this.shared.dirtyAdmission.releaseCopy(cost);
@@ -557,8 +606,17 @@ export class PersistentBackend extends MemoryBackend {
   private captureReserved(
     request: CheckpointRequest,
     reservation: number,
-    metadataBytes: number,
+    cost: { bytes: number; metadataBytes: number },
   ): Promise<void> {
+    const metadataBytes = cost.metadataBytes;
+    const start = (metadata: number) => {
+      this.pressure.start(reservation, metadata);
+      const growth = Math.max(0, metadata - cost.metadataBytes);
+      this.shared.mutate(undefined, undefined, () =>
+        this.shared.dirtyAdmission.growCopyMetadata(growth),
+      );
+      cost.metadataBytes += growth;
+    };
     const { durable, target, selected } = request;
     this.pruneDetached();
     const capture: CheckpointCapture = {
@@ -601,7 +659,7 @@ export class PersistentBackend extends MemoryBackend {
     if (!upserts.length && !removes.length && !data.size)
       return this.lastCommit.then(() => {
         this.assertOpen();
-        this.pressure.start(reservation, metadataBytes);
+        start(metadataBytes);
         return durable ? this.flushOpen(flushKeys) : undefined;
       });
     const epoch = this.checkpointEpoch;
@@ -618,7 +676,7 @@ export class PersistentBackend extends MemoryBackend {
         this.assertOpen();
         if (epoch !== this.checkpointEpoch)
           throw new Error("filesystem checkpoint invalidated by a failed commit");
-        this.pressure.start(reservation, metadataBytes + this.pinMetadataBytes() * 4);
+        start(metadataBytes + this.pinMetadataBytes() * 4);
         batch.generation = this.generation + 1;
         // A later request may have reattached an inode removed by this older checkpoint.
         // Its next upsert still needs the durable payload even though it is no longer detached.

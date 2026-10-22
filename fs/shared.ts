@@ -263,7 +263,8 @@ export class SharedFilesystemState {
     owner = this.lockOwner,
     access: "data" | "release" = "data",
   ): void {
-    const global = (this.dirtyAdmission.enabled || !!this.publication) && this.globalOwner === undefined;
+    const global =
+      (this.dirtyAdmission.enabled || !!this.publication) && this.globalOwner === undefined;
     if (global) this.globalLock(revoked, owner, false, access);
     else this.assertLockAccess(access);
     this.section?.enter();
@@ -393,16 +394,23 @@ export class SharedFilesystemState {
   private residentBytes(): number {
     return Atomics.load(this.cells, USED_PAGES) * PAGE;
   }
-  private checkDirty(slot: number, size: number): void {
+  private checkDirty(slot: number, size: number, resident = this.residentBytes()): void {
     this.dirtyAdmission.checkFile(
-      this.residentBytes(), this.slots[this.at(slot, DIRTY_SIZE)]!, size,
+      resident,
+      this.slots[this.at(slot, DIRTY_SIZE)]!,
+      size,
       this.slots[this.at(slot, DIRTY_MARK)] !== 1,
     );
   }
   private dirty(slot: number, size = this.slots[this.at(slot, FILE_SIZE)]!): void {
     if (!this.dirtyAdmission.enabled) return;
     const previous = this.slots[this.at(slot, DIRTY_SIZE)]!;
-    this.dirtyAdmission.file(this.residentBytes(), previous, size, this.slots[this.at(slot, DIRTY_MARK)] !== 1);
+    this.dirtyAdmission.file(
+      this.residentBytes(),
+      previous,
+      size,
+      this.slots[this.at(slot, DIRTY_MARK)] !== 1,
+    );
     this.slots[this.at(slot, DIRTY_SIZE)] = Math.max(previous, size);
     this.slots[this.at(slot, DIRTY_MARK)] = 1;
   }
@@ -441,7 +449,9 @@ export class SharedFilesystemState {
     const current = Atomics.load(this.slots, this.at(slot, CAPACITY));
     if (needed <= current) return;
     if (needed > MAX_FILE_PAGES) throw new RangeError("shared filesystem file is too large");
-    const target = this.dirtyAdmission.enabled ? needed : Math.max(needed, Math.min(MAX_FILE_PAGES, Math.max(1, current * 2)));
+    const target = this.dirtyAdmission.enabled
+      ? needed
+      : Math.max(needed, Math.min(MAX_FILE_PAGES, Math.max(1, current * 2)));
     this.dirtyAdmission.resident(this.residentBytes() + (target - current) * PAGE);
     const allocated: number[] = [];
     const rollback = () => {
@@ -491,6 +501,7 @@ export class SharedFilesystemState {
       const slot = this.findSlot(handle, true);
       if (!slot) throw new FilesystemError(51, "shared filesystem identity table exhausted");
       this.lock(this.at(slot, FILE_LOCK));
+      let pinned = false;
       try {
         if (this.slots[this.at(slot, 0)] && this.slots[this.at(slot, INO)] === stat.ino) {
           if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
@@ -504,6 +515,7 @@ export class SharedFilesystemState {
           return;
         }
         this.dirtyAdmission.pin(1, this.residentBytes());
+        pinned = true;
         const loaded = resident || stat.size === 0;
         if (stat.kind === "file" && loaded) {
           this.allocate(slot, Math.ceil(Math.max(data?.length ?? 0, stat.size) / PAGE));
@@ -523,7 +535,7 @@ export class SharedFilesystemState {
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
         Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
       } catch (error) {
-        if (this.slots[this.at(slot, HANDLE)] !== handle + 1) this.dirtyAdmission.pin(-1, this.residentBytes());
+        if (pinned) this.dirtyAdmission.pin(-1, this.residentBytes());
         throw error;
       } finally {
         this.unlock(this.at(slot, FILE_LOCK));
@@ -1262,8 +1274,11 @@ export class SharedFilesystemState {
     return result;
   }
   growLocked(handle: FileHandle, size: number): void {
-    this.checkDirtyGrowth(handle, size);
-    this.allocate(this.slot(handle), Math.ceil(size / PAGE));
+    const slot = this.slot(handle);
+    const needed = Math.ceil(size / PAGE);
+    const capacity = this.slots[this.at(slot, CAPACITY)]!;
+    this.checkDirty(slot, size, this.residentBytes() + Math.max(0, needed - capacity) * PAGE);
+    this.allocate(slot, needed);
   }
   grow(handle: FileHandle, size: number): void {
     this.globalLock();
@@ -1371,6 +1386,7 @@ export class SharedFilesystemState {
       }
       Atomics.store(this.slots, this.at(slot, CAPACITY), needed);
       Atomics.sub(this.cells, USED_PAGES, capacity - needed);
+      this.dirtyAdmission.capacityReleased();
       this.trimPageTables(slot, needed);
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
@@ -1467,6 +1483,7 @@ export class SharedFilesystemState {
       Atomics.store(this.pages, this.pageAt(slot, logical), 0);
     }
     Atomics.sub(this.cells, USED_PAGES, count);
+    this.dirtyAdmission.capacityReleased();
     this.trimPageTables(slot, 0);
     Atomics.store(this.slots, this.at(slot, CAPACITY), 0);
   }

@@ -3,7 +3,12 @@ import { PersistentBackend } from "../fs/persistent";
 import { FilesystemClient } from "../fs/client";
 import { FilesystemService } from "../fs/service";
 import { createFilesystemConnection } from "../fs/protocol";
-import { snapshotBatch, type PersistedIndex, type PersistenceBatch, type StorageBackend } from "../fs/storage";
+import {
+  snapshotBatch,
+  type PersistedIndex,
+  type PersistenceBatch,
+  type StorageBackend,
+} from "../fs/storage";
 
 class ControlledStorage implements StorageBackend {
   index?: PersistedIndex;
@@ -12,26 +17,45 @@ class ControlledStorage implements StorageBackend {
   readonly released = Promise.withResolvers<void>();
   hold = false;
   failure?: Error;
-  async load() { return this.index; }
-  async read(key: string) { return this.bytes.get(key)!.slice(); }
+  async load() {
+    return this.index;
+  }
+  async read(key: string) {
+    return this.bytes.get(key)!.slice();
+  }
   async persist(input: PersistenceBatch) {
     const batch = snapshotBatch(input);
     this.entered.resolve();
     if (this.hold) await this.released.promise;
     if (this.failure) throw this.failure;
-    const nodes = new Map(this.index?.nodes.map(node => [node.ino, node]));
+    const nodes = new Map(this.index?.nodes.map((node) => [node.ino, node]));
     for (const node of batch.upserts) nodes.set(node.ino, node);
     for (const ino of batch.removes) nodes.delete(ino);
     for (const [key, data] of batch.data) this.bytes.set(key, data);
-    this.index = { version: 1, generation: batch.generation, root: batch.root, nodes: Array.from(nodes.values()) };
+    this.index = {
+      version: 1,
+      generation: batch.generation,
+      root: batch.root,
+      nodes: Array.from(nodes.values()),
+    };
   }
   async flush() {}
   async close() {}
 }
 
-async function fixture(run: (backend: PersistentBackend, client: FilesystemClient, handle: number, storage: ControlledStorage) => Promise<void>) {
+async function fixture(
+  run: (
+    backend: PersistentBackend,
+    client: FilesystemClient,
+    handle: number,
+    storage: ControlledStorage,
+  ) => Promise<void>,
+) {
   const storage = new ControlledStorage();
-  const backend = await PersistentBackend.open(storage, { intervalMs: 0, checkpointLimits: { maxBytes: 16, maxMetadataBytes: 65536 } });
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    checkpointLimits: { maxBytes: 16, maxMetadataBytes: 65536 },
+  });
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection();
   service.connect(pair.server);

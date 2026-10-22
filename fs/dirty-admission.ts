@@ -14,10 +14,21 @@ export class DirtyCapacityError extends FilesystemError {
 }
 
 // These words are inside the fixed shared header. All Float64 access owns the global lock.
-const ENABLED = 0, MAX_BYTES = 1, MAX_METADATA = 2, MAX_WAITERS = 3;
-const CAPTURE_BYTES = 4, CAPTURE_METADATA = 5, DIRTY_BYTES = 6, DIRTY_METADATA = 7;
-const NAMESPACE = 8, PINS = 9, COPIES = 10, COPY_METADATA = 11, OPERATIONS = 12;
-const REVISION = 13, REJECTED = 14;
+const ENABLED = 0,
+  MAX_BYTES = 1,
+  MAX_METADATA = 2,
+  MAX_WAITERS = 3;
+const CAPTURE_BYTES = 4,
+  CAPTURE_METADATA = 5,
+  DIRTY_BYTES = 6,
+  DIRTY_METADATA = 7;
+const NAMESPACE = 8,
+  PINS = 9,
+  COPIES = 10,
+  COPY_METADATA = 11,
+  OPERATIONS = 12;
+const REVISION = 13,
+  REJECTED = 14;
 export const DIRTY_HEADER_WORDS = 48;
 export const DIRTY_PIN_UNITS = 2048;
 export const DIRTY_NODE_UNITS = 1024;
@@ -31,7 +42,9 @@ export class DirtyAdmission {
     this.values = new Float64Array(buffer, 16 * 4, 20);
     this.signals = new Int32Array(buffer, 9 * 4, 2);
   }
-  get enabled(): boolean { return this.values[ENABLED] === 1; }
+  get enabled(): boolean {
+    return this.values[ENABLED] === 1;
+  }
   configure(limits: Partial<DirtyLimits>, capture: CheckpointLimits, namespace: number): void {
     const maxBytes = limits.maxBytes ?? 2 * 1024 * 1024 * 1024;
     const maxMetadataBytes = limits.maxMetadataBytes ?? capture.maxMetadataBytes * 2;
@@ -47,7 +60,7 @@ export class DirtyAdmission {
     this.values[ENABLED] = 1;
   }
   private reject(permanent = false): never {
-    this.values[REJECTED]++;
+    this.values[REJECTED]!++;
     throw new DirtyCapacityError(permanent);
   }
   private metadata(): number {
@@ -57,12 +70,17 @@ export class DirtyAdmission {
     if (!this.enabled) return;
     if (this.values[DIRTY_BYTES]! + bytes > this.values[CAPTURE_BYTES]!) this.reject();
     if (this.metadata() + metadata > this.values[CAPTURE_METADATA]!) this.reject();
-    if (resident + this.values[DIRTY_BYTES]! + bytes + this.values[COPIES]! > this.values[MAX_BYTES]!) this.reject();
-    if (this.metadata() + metadata + this.values[COPY_METADATA]! > this.values[MAX_METADATA]!) this.reject();
+    if (
+      resident + (this.values[DIRTY_BYTES]! + bytes) * 2 + this.values[COPIES]! >
+      this.values[MAX_BYTES]!
+    )
+      this.reject();
+    if ((this.metadata() + metadata) * 2 + this.values[COPY_METADATA]! > this.values[MAX_METADATA]!)
+      this.reject();
   }
   checkFile(resident: number, previous: number, size: number, first: boolean): void {
     if (!this.enabled) return;
-    if (size * 2 > this.values[CAPTURE_BYTES]!) this.reject(true);
+    if (size * 2 > this.values[CAPTURE_BYTES]! || Math.ceil(size / 65536) * 65536 + size * 4 > this.values[MAX_BYTES]!) this.reject(true);
     this.check(resident, Math.max(0, size - previous) * 2, first ? DIRTY_NODE_UNITS : 0);
   }
   file(resident: number, previous: number, size: number, first: boolean): void {
@@ -70,15 +88,18 @@ export class DirtyAdmission {
     this.checkFile(resident, previous, size, first);
     this.values[DIRTY_BYTES]! += Math.max(0, size - previous) * 2;
     if (first) this.values[DIRTY_METADATA]! += DIRTY_NODE_UNITS;
-    this.values[REVISION]++;
+    this.values[REVISION]!++;
   }
-  resident(bytes: number): void { this.check(bytes, 0, 0); }
+  resident(bytes: number): void {
+    this.check(bytes, 0, 0);
+  }
   namespace(units: number, resident: number): void {
     if (!this.enabled || !units) return;
-    if (this.values[NAMESPACE]! + units + BASE_UNITS > this.values[CAPTURE_METADATA]!) this.reject(true);
+    if (this.values[NAMESPACE]! + units + BASE_UNITS > this.values[CAPTURE_METADATA]!)
+      this.reject(true);
     this.check(resident, 0, units);
     this.values[NAMESPACE]! += units;
-    this.values[REVISION]++;
+    this.values[REVISION]!++;
   }
   pin(delta: 1 | -1, resident: number): void {
     if (!this.enabled) return;
@@ -87,20 +108,36 @@ export class DirtyAdmission {
   }
   reserveCopy(cost: CheckpointCost, resident: number): void {
     if (!this.enabled) return;
-    if (resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! + cost.bytes > this.values[MAX_BYTES]!) this.reject();
-    if (this.metadata() + this.values[COPY_METADATA]! + cost.metadataBytes > this.values[MAX_METADATA]!) this.reject();
+    if (
+      resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! + cost.bytes >
+      this.values[MAX_BYTES]!
+    )
+      this.reject();
+    if (
+      this.metadata() + this.values[COPY_METADATA]! + cost.metadataBytes >
+      this.values[MAX_METADATA]!
+    )
+      this.reject();
     this.values[COPIES]! += cost.bytes;
     this.values[COPY_METADATA]! += cost.metadataBytes;
-    this.values[OPERATIONS]++;
+    this.values[OPERATIONS]!++;
+  }
+  growCopyMetadata(units: number): void {
+    if (!this.enabled || !units) return;
+    if (this.metadata() + this.values[COPY_METADATA]! + units > this.values[MAX_METADATA]!)
+      this.reject();
+    this.values[COPY_METADATA]! += units;
   }
   releaseCopy(cost: CheckpointCost): void {
     if (!this.enabled) return;
     this.values[COPIES]! -= cost.bytes;
     this.values[COPY_METADATA]! -= cost.metadataBytes;
-    this.values[OPERATIONS]--;
+    this.values[OPERATIONS]!--;
     this.notify();
   }
-  get revision(): number { return this.values[REVISION]!; }
+  get revision(): number {
+    return this.values[REVISION]!;
+  }
   clean(revision: number, namespace: number): boolean {
     if (!this.enabled || this.revision !== revision) return false;
     this.values[DIRTY_BYTES] = 0;
@@ -109,9 +146,11 @@ export class DirtyAdmission {
     this.notify();
     return true;
   }
-  private notify(): void { Atomics.add(this.signals, 0, 1); }
+  private notify(): void {
+    Atomics.add(this.signals, 0, 1);
+  }
   /** Bounded observation records. Cancellation is checked without entering a mutation lock. */
-  async wait(changed: number, cancelled: () => boolean): Promise<void> {
+  async wait(changed: number, cancelled: () => boolean, failure: () => unknown): Promise<void> {
     const count = Atomics.add(this.signals, 1, 1);
     if (count >= this.values[MAX_WAITERS]!) {
       Atomics.sub(this.signals, 1, 1);
@@ -120,12 +159,21 @@ export class DirtyAdmission {
     try {
       while (Atomics.load(this.signals, 0) === changed) {
         if (cancelled()) throw new FilesystemError(11);
-        await new Promise<void>(resolve => setTimeout(resolve, 2));
+        const error = failure();
+        if (error !== undefined) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 2));
       }
       if (cancelled()) throw new FilesystemError(11);
-    } finally { Atomics.sub(this.signals, 1, 1); }
+    } finally {
+      Atomics.sub(this.signals, 1, 1);
+    }
   }
-  get change(): number { return Atomics.load(this.signals, 0); }
+  capacityReleased(): void {
+    if (this.enabled) this.notify();
+  }
+  get change(): number {
+    return Atomics.load(this.signals, 0);
+  }
   diagnostics(residentBytes: number) {
     return {
       enabled: this.enabled,
@@ -141,7 +189,11 @@ export class DirtyAdmission {
       rejected: this.values[REJECTED]!,
       accountedBytes: residentBytes + this.values[DIRTY_BYTES]! + this.values[COPIES]!,
       accountedMetadataUnits: this.metadata() + this.values[COPY_METADATA]!,
-      limits: { maxBytes: this.values[MAX_BYTES]!, maxMetadataBytes: this.values[MAX_METADATA]!, maxWaiters: this.values[MAX_WAITERS]! },
+      limits: {
+        maxBytes: this.values[MAX_BYTES]!,
+        maxMetadataBytes: this.values[MAX_METADATA]!,
+        maxWaiters: this.values[MAX_WAITERS]!,
+      },
     };
   }
 }

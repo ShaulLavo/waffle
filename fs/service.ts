@@ -587,7 +587,12 @@ export class FilesystemService {
         state = State.Overflow;
       } else bytes.set(result);
     } catch (error) {
-      if (error instanceof DirtyCapacityError && !error.permanent && this.backend instanceof MemoryBackend && this.backend.waitForDirtyCapacity) {
+      if (
+        error instanceof DirtyCapacityError &&
+        !error.permanent &&
+        this.backend.waitForDirtyCapacity &&
+        this.backend instanceof MemoryBackend
+      ) {
         dirtyRetry = this.backend.shared.dirtyAdmission.change;
         prepared ??= { handles: [] };
         const input = unpack(bytes.subarray(0, cells[1]!));
@@ -597,7 +602,6 @@ export class FilesystemService {
         cells[3] = errno(error);
         state = cells[3] === 11 ? State.Cancelled : State.Failed;
       }
-
     } finally {
       // Allocation may complete before cancellation/failure. Publish every allocated segment,
       // indexed so a newly connected peer can receive both its snapshot and this broadcast.
@@ -625,11 +629,20 @@ export class FilesystemService {
       }
     }
     if (dirtyRetry !== undefined && prepared) {
-      const wait = this.backend.waitForDirtyCapacity!(dirtyRetry, () => isRevoked(session.connection) || Atomics.load(cells, 6) !== 0);
+      const wait = this.backend.waitForDirtyCapacity!(
+        dirtyRetry,
+        () => isRevoked(session.connection) || Atomics.load(cells, 6) !== 0,
+      );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
   }
-  private joinPreparation(session: Session, id: number, buffer: SharedArrayBuffer, continuation: PreparedRequest, preparation: Promise<void>): void {
+  private joinPreparation(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    continuation: PreparedRequest,
+    preparation: Promise<void>,
+  ): void {
     const original = this.trackWork(session, preparation);
     const joined = original.then(
       () => this.enqueue(session, id, buffer, continuation),
@@ -657,13 +670,19 @@ export class FilesystemService {
   ): PreparedRequest | undefined {
     if (operation === "flush" || operation === "sync") return;
     if (operation === "dirtyWait" && prepared) return;
-    const preparation = operation === "dirtyWait"
-      ? this.backend.waitForDirtyCapacity?.(args[1], () => isRevoked(session.connection) || Atomics.load(new Int32Array(buffer, 0, HEADER / 4), 6) !== 0)
-      : this.backend.prepare?.(
-      operation === "publicationPin" ? "read" : operation,
-      operation === "publicationPin" ? [args[1]] : args,
-      payload,
-    );
+    const preparation =
+      operation === "dirtyWait"
+        ? this.backend.waitForDirtyCapacity?.(
+            args[1],
+            () =>
+              isRevoked(session.connection) ||
+              Atomics.load(new Int32Array(buffer, 0, HEADER / 4), 6) !== 0,
+          )
+        : this.backend.prepare?.(
+            operation === "publicationPin" ? "read" : operation,
+            operation === "publicationPin" ? [args[1]] : args,
+            payload,
+          );
     if (!preparation) return;
     const continuation = prepared ?? { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
@@ -717,6 +736,7 @@ export class FilesystemService {
           !session.freeEntries.length
         )
           throw new FilesystemError(51);
+        backend.prepareMutation(plan);
         publication = domain.prepare(admission, plan.result, plan.changes);
       } catch (error) {
         backend.discardPublication(plan);

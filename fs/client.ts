@@ -1203,7 +1203,16 @@ export class FilesystemClient implements FileSystem {
           let written: number | undefined;
           const changed = this.shared.dirtyAdmission.change;
           try {
-            written = this.shared.directWrite(slot, handle, chunks, offset, total, this.epoch, this.revoked, this.connection.owner);
+            written = this.shared.directWrite(
+              slot,
+              handle,
+              chunks,
+              offset,
+              total,
+              this.epoch,
+              this.revoked,
+              this.connection.owner,
+            );
           } catch (error) {
             if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
             this.call("dirtyWait", [handle, changed]);
@@ -1265,7 +1274,15 @@ export class FilesystemClient implements FileSystem {
         let result: ReturnType<SharedFilesystemState["directAppend"]>;
         const changed = this.shared.dirtyAdmission.change;
         try {
-          result = this.shared.directAppend(slot, handle, chunks, total, this.epoch, this.revoked, this.connection.owner);
+          result = this.shared.directAppend(
+            slot,
+            handle,
+            chunks,
+            total,
+            this.epoch,
+            this.revoked,
+            this.connection.owner,
+          );
         } catch (error) {
           if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
           this.call("dirtyWait", [handle, changed]);
@@ -1383,7 +1400,11 @@ export class FilesystemClient implements FileSystem {
         );
         return result === undefined ? this.call("resize", [handle, size, truncate]) : result;
       } catch (error) {
-        if (error instanceof DirtyCapacityError || error instanceof MissingSegmentError || error instanceof MissingDataError)
+        if (
+          error instanceof DirtyCapacityError ||
+          error instanceof MissingSegmentError ||
+          error instanceof MissingDataError
+        )
           return this.call("resize", [handle, size, truncate]);
         return errno(error);
       }
