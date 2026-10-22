@@ -28,6 +28,8 @@ export default {
         "tests/fixtures/opfs-close-{page,worker}.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
+        "tests/persistent-authority-browser-runner.ts",
+        "tests/fixtures/persistent-authority-observer.ts",
         "tests/fixtures/publication-resident-{authority,guest}.ts",
         "tests/storage-lock-browser.ts",
         "tests/storage-lock-recovery-worker.ts",
