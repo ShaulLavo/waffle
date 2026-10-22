@@ -12,10 +12,10 @@ const schedule = [
   "native persistent factory and peers",
   "seed and actual guest bootstrap",
   "host append and other-page read after ACK",
-  "WASI append ACK without final settlement nudge",
+  "runtime_proc append ACK without final settlement nudge",
   "other-page current read imports missing nudge",
   "host replacement rename and coherent namespace",
-  "runtime_proc append and WASI current read",
+  "WASI append and runtime_proc current read",
   "explicit append identity and replay",
   "WASI rename and complete ordered effects",
   "completed flush",
@@ -133,7 +133,7 @@ function cut(value: unknown): PublicationCut {
   return { history: data.history, generation: data.generation };
 }
 async function appendGuest(page: Page, key: "wasi" | "proc", byte: number): Promise<unknown> {
-  await guest(page, key, "prepare", { kind: "append", maxBytes: 1 });
+  if (key === "proc") await guest(page, key, "prepare", { kind: "append", maxBytes: 1 });
   const ack = record(await guest(page, key, "call", { kind: "append", bytes: [byte] }));
   equal(ack.result, key === "wasi" ? 0 : 1);
   if (key === "wasi") equal(ack.count, 1);
@@ -246,13 +246,13 @@ async function scenario(browser: Browser, origin: string): Promise<void> {
       await read(c, "dir/a", [10, 20, 30, 41]);
     });
     await step(schedule[4]!, async () => {
-      const ack = await appendGuest(b, "wasi", 42);
+      const ack = await appendGuest(d, "proc", 42);
       return { ack, finalSettlementNudgesSent: 0, omitted: 1 };
     });
     await step(schedule[5]!, async () => {
       await read(c, "dir/a", [10, 20, 30, 41, 42]);
-      const settled = await guest(b, "wasi", "settle");
-      equal(await guest(b, "wasi", "settle"), settled);
+      const settled = await guest(d, "proc", "settle");
+      equal(await guest(d, "proc", "settle"), settled);
       return settled;
     });
     await step(schedule[6]!, async () => {
@@ -261,16 +261,14 @@ async function scenario(browser: Browser, origin: string): Promise<void> {
       await read(a, "dir/target", [10, 20, 30, 41, 42]);
     });
     await step(schedule[7]!, async () => {
-      const ack = await appendGuest(d, "proc", 43);
-      const settled = await guest(d, "proc", "settle");
-      await guest(b, "wasi", "prepare", { kind: "read", offset: 0, maxBytes: 6 });
+      const ack = await appendGuest(b, "wasi", 43);
+      await guest(d, "proc", "prepare", { kind: "read", offset: 0, maxBytes: 6 });
       const read = record(
-        await guest(b, "wasi", "call", { kind: "read", offset: 0, bytes: [0, 0, 0, 0, 0, 0] }),
+        await guest(d, "proc", "call", { kind: "read", offset: 0, bytes: [0, 0, 0, 0, 0, 0] }),
       );
-      equal(read.result, 0);
-      equal(read.count, 6);
+      equal(read.result, 6);
       equal(read.bytes, [10, 20, 30, 41, 42, 43]);
-      await guest(b, "wasi", "settle");
+      const settled = await guest(d, "proc", "settle");
       return { ack, settled, read };
     });
     let id: unknown;
