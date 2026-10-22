@@ -216,17 +216,22 @@ export async function acquirePublicationGuard(
   };
 }
 
-interface PendingCall {
-  readonly resolve: (value: unknown) => void;
-  readonly reject: (error: unknown) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
-}
+type CallAnswer = ReturnType<typeof Promise.withResolvers<unknown>>;
+type ReceiveValue = (value: unknown, late: boolean) => void;
+type PendingCall = { readonly terminal: CallAnswer; readonly receive: ReceiveValue | undefined } & (
+  | {
+      readonly kind: "waiting";
+      readonly answer: CallAnswer;
+      readonly timer: ReturnType<typeof setTimeout>;
+    }
+  | { readonly kind: "unconfirmed" }
+);
 /** The channel never transfers an authority SAB. Status asks the original cell owner. */
 export class ResidentChannel {
   readonly id = crypto.randomUUID();
   readonly channel: BroadcastChannel;
   private pending = new Map<string, PendingCall>();
-  private unconfirmed = false;
+  private closed = false;
   status: (() => ResidentOutcome | undefined) | undefined;
   constructor(workspace: string) {
     this.channel = new NativeChannel(`waffle:resident:${workspace}`);
@@ -254,44 +259,87 @@ export class ResidentChannel {
     if (data.kind !== "reply") return;
     const pending = this.pending.get(id);
     if (!pending) return;
+    const error =
+      data.errno === undefined ? undefined : new FilesystemError(integer(data.errno, 76));
+    if (!error) pending.receive?.(data.value, pending.kind === "unconfirmed");
     this.pending.delete(id);
-    clearTimeout(pending.timer);
-    if (data.errno !== undefined) pending.reject(new FilesystemError(integer(data.errno)));
-    else pending.resolve(data.value);
+    if (pending.kind === "waiting") {
+      clearTimeout(pending.timer);
+      if (error) pending.answer.reject(error);
+      else pending.answer.resolve(data.value);
+    }
+    if (error) pending.terminal.reject(error);
+    else pending.terminal.resolve(data.value);
   }
-  call(operation: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
-    if (this.pending.size >= 16) return Promise.reject(new FilesystemError(6));
-    if (signal?.aborted) return Promise.reject(new FilesystemError(11));
+  private send(
+    operation: string,
+    body: unknown,
+    signal?: AbortSignal,
+    receive?: ReceiveValue,
+  ): { answer: Promise<unknown>; terminal: Promise<unknown> } {
+    if (this.closed || this.pending.size >= 16) throw new FilesystemError(6);
+    if (signal?.aborted) throw new FilesystemError(11);
     const id = crypto.randomUUID();
     const answer = Promise.withResolvers<unknown>();
+    const terminal = Promise.withResolvers<unknown>();
+    void terminal.promise.catch(() => {});
     const timer = setTimeout(() => {
-      this.unconfirmed = true;
-      this.pending.delete(id);
+      const pending = this.pending.get(id);
+      if (!pending || pending.kind !== "waiting") return;
+      this.pending.set(id, { kind: "unconfirmed", terminal, receive });
       this.channel.postMessage({ kind: "cancel", client: this.id, id });
       answer.reject(new FilesystemError(6));
     }, callBound);
-    this.pending.set(id, { ...answer, timer });
+    this.pending.set(id, { kind: "waiting", answer, terminal, timer, receive });
     try {
       this.channel.postMessage({ kind: "request", id, client: this.id, operation, body });
     } catch (error) {
       clearTimeout(timer);
       this.pending.delete(id);
       answer.reject(error);
+      terminal.reject(error);
     }
     const cancel = () => this.channel.postMessage({ kind: "cancel", client: this.id, id });
     signal?.addEventListener("abort", cancel, { once: true });
-    return answer.promise.finally(() => signal?.removeEventListener("abort", cancel));
+    return {
+      answer: answer.promise.finally(() => signal?.removeEventListener("abort", cancel)),
+      terminal: terminal.promise,
+    };
+  }
+  async call(
+    operation: string,
+    body: unknown,
+    signal?: AbortSignal,
+    receive?: ReceiveValue,
+  ): Promise<unknown> {
+    return this.send(operation, body, signal, receive).answer;
+  }
+  /** Cleanup consumes the original reply even when its caller deadline expires. */
+  async finish(operation: "close" | "closeConnection" | "settle", body: unknown): Promise<unknown> {
+    const request = this.send(operation, body);
+    void request.answer.catch(() => {});
+    return request.terminal;
+  }
+  async joinSettled(): Promise<void> {
+    await Promise.all(
+      Array.from(this.pending.values(), (pending) => pending.terminal.promise.catch(() => {})),
+    );
+    this.assertSettled();
   }
   assertSettled(): void {
-    if (this.unconfirmed || this.pending.size) throw new FilesystemError(6);
+    if (this.closed || this.pending.size) throw new FilesystemError(6);
   }
   cancelSession(token: string): void {
     this.channel.postMessage({ kind: "cancelSession", token });
   }
   close(): void {
+    this.closed = true;
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new FilesystemError(11));
+      if (pending.kind === "waiting") {
+        clearTimeout(pending.timer);
+        pending.answer.reject(new FilesystemError(11));
+      }
+      pending.terminal.reject(new FilesystemError(11));
     }
     this.pending.clear();
     this.channel.close();
@@ -358,16 +406,23 @@ export class ResidentGrantClient {
       if (status.kind === "pending" || status.kind === "unknown") throw new FilesystemError(6);
     }
     if (this.stopped || this.revoked()) throw new FilesystemError(11);
-    const grant = residentGrant(
-      await this.channel.call("prepare", { token: this.session.token, request, handle }),
+    await this.channel.call(
+      "prepare",
+      { token: this.session.token, request, handle },
+      undefined,
+      (value, late) => this.receiveGrant(value, late),
     );
+    if (!this.stopped && !this.revoked()) return;
+    this.cell?.cancel();
+    await this.settle();
+    throw new FilesystemError(11);
+  }
+  private receiveGrant(value: unknown, late: boolean): void {
+    const grant = residentGrant(value);
     if (JSON.stringify(grant.session) !== JSON.stringify(this.session))
       throw new FilesystemError(11);
     this.cell = new ResidentGrantCell(grant, undefined, () => !this.stopped && !this.revoked());
-    if (!this.stopped && !this.revoked()) return;
-    this.cell.cancel();
-    await this.settle();
-    throw new FilesystemError(11);
+    if (late || this.stopped || this.revoked()) this.cell.cancel();
   }
   tryRead(handle: number, chunks: readonly Uint8Array[], offset: number): number {
     return this.stopped || this.revoked()
@@ -407,11 +462,17 @@ export class ResidentGrantClient {
   }
   private async stopOwned(): Promise<void> {
     await this.preparing?.catch(() => {});
+    await this.channel.joinSettled();
     if (this.cell) {
-      const result = await this.settle();
+      const result = settlement(
+        await this.channel.finish("settle", {
+          token: this.session.token,
+          outcome: encodeResidentOutcome(this.cell.snapshot()),
+        }),
+      );
       if (result.kind === "pending" || result.kind === "unknown") throw new FilesystemError(6);
     }
-    await this.channel.call("close", { token: this.session.token });
+    await this.channel.finish("close", { token: this.session.token });
     this.channel.close();
     await this.guard.release();
   }
@@ -483,7 +544,8 @@ export class ResidentAttachment {
       const resources = attempt.resources;
       if (resources.kind === "client") await resources.client.stop();
       if (resources.kind === "channel") {
-        await resources.channel.call("closeConnection", null);
+        await resources.channel.joinSettled();
+        await resources.channel.finish("closeConnection", null);
         resources.channel.close();
         await resources.guard.release();
       }
@@ -627,7 +689,6 @@ function receiveWorkspaceCleanup(
 export async function stopWorkspaceBridge(connection: FilesystemConnection): Promise<void> {
   const ports = new NativeMessageChannel();
   const answer = Promise.withResolvers<void>();
-  const timer = setTimeout(() => answer.reject(new FilesystemError(6)), callBound);
   try {
     ports.port1.onmessage = ({ data }: MessageEvent<unknown>) =>
       receiveWorkspaceCleanup(data, answer);
@@ -636,7 +697,6 @@ export async function stopWorkspaceBridge(connection: FilesystemConnection): Pro
     connection.port.postMessage({ stopWorkspace: ports.port2 }, [ports.port2]);
     await answer.promise;
   } finally {
-    clearTimeout(timer);
     ports.port1.close();
     ports.port2.close();
   }
@@ -973,7 +1033,7 @@ class WorkspaceBridge {
     for (const pending of this.pending.values()) pending.abort.abort();
     await Promise.all(Array.from(this.pending.values(), (pending) => pending.joined));
     await this.bound;
-    if (this.endpoint.kind === "live") this.endpoint.channel.assertSettled();
+    if (this.endpoint.kind === "live") await this.endpoint.channel.joinSettled();
     while (this.children.size) {
       for (const child of this.children) child.cancelTransferred();
       await Promise.all(Array.from(this.children, (child) => child.transfer.promise));

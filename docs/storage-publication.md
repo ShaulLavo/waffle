@@ -152,7 +152,19 @@ Malformed or unproven connections receive no cleanup-success listener. Started
 adoption still joins its real result, and a failed join retains continuity.
 Only successful bridge cleanup proceeds to the separate resident session close
 and continuity release. Local transport timeout is not proof of authority
-completion. Failed cleanup retains the worker guard and cannot publish exit ACK.
+completion. A request deadline still returns errno 6 and sends cancellation. Its
+exact transport identity remains in the sixteen-call admission bound until its
+matching reply arrives. Late success and error replies clear transport uncertainty,
+not semantic `pending` or `unknown` grant outcomes. Duplicate, foreign, and malformed
+replies cannot clear another identity. Cleanup joins those original replies instead
+of replacing its stop promise. The local cleanup reply port has no elapsed-time
+success or failure inference. Session close still joins actual service preparation.
+A late unused prepared grant is cancelled and settled before close. Cleanup control
+requests consume their original replies after the same three-second deadline, and
+the authority processes close and settlement even if their cancellation has arrived.
+No mutation is replayed, and `retired` remains distinct from `committed`. A missing
+reply keeps the original cleanup pending and its guard held. Definitive failed
+cleanup retains the worker guard and cannot publish exit ACK.
 File-only sessions may prepare only their issued retained handle; workspace handle
 overrides still require the authority session's actual capability ownership.
 

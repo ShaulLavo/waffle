@@ -11,6 +11,9 @@ import {
   ResidentGrantClient,
   createResidentConnection,
   residentDescriptor,
+  record,
+  residentGrant,
+  encodeResidentOutcome,
   residentSession,
   sameWorkspaceBacking,
   stopWorkspaceBridge,
@@ -35,6 +38,7 @@ import {
   revokeFilesystem,
   releaseFilesystemReservation,
 } from "../fs/protocol";
+import { ResidentGrantCell } from "../fs/publication-grant";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -84,7 +88,7 @@ async function fixture(backend = new MemoryBackend()) {
     directory,
     file: file.node,
     async stop() {
-      await channel.call("close", { token: session.token });
+      await channel.call("closeConnection", null);
       channel.close();
       await server.stop();
       root.dispose();
@@ -108,7 +112,10 @@ async function call(
   return Object.fromEntries(Object.entries(value));
 }
 async function rejectsErrno(action: Promise<unknown>, errno: number): Promise<void> {
-  const failure: unknown = await action.then(() => undefined, (error: unknown) => error);
+  const failure: unknown = await action.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   expect(failure).toMatchObject({ errno });
 }
 test("private connection queries the sole workspace namespace", async () => {
@@ -735,7 +742,7 @@ for (const [name, invalid] of invalidCleanupConnections) {
 }
 
 function transportClock() {
-  const deadlines = new Map<ReturnType<typeof setTimeout>, () => void>();
+  const deadlines = new Map<Parameters<typeof clearTimeout>[0], () => void>();
   const native = globalThis.setTimeout;
   const nativeClear = globalThis.clearTimeout;
   globalThis.clearTimeout = new Proxy(nativeClear, {
@@ -745,12 +752,12 @@ function transportClock() {
     },
   });
   globalThis.setTimeout = new Proxy(native, {
-      apply(target, receiver, args: Parameters<typeof setTimeout>) {
-        const timer = Reflect.apply(target, receiver, args);
-        if (args[1] === 3000) deadlines.set(timer, () => args[0]());
-        return timer;
-      },
-    });
+    apply(target, receiver, args: Parameters<typeof setTimeout>) {
+      const timer = Reflect.apply(target, receiver, args);
+      if (args[1] === 3000) deadlines.set(timer, () => args[0]());
+      return timer;
+    },
+  });
   return {
     expire() {
       const due = Array.from(deadlines);
@@ -772,12 +779,19 @@ function holdTransportReplies(client?: string) {
   const held: { channel: BroadcastChannel; message: unknown }[] = [];
   const native = BroadcastChannel.prototype.postMessage;
   BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
-      if (message && typeof message === "object" && "client" in message && (client === undefined || message.client === client) && "kind" in message && message.kind === "reply") {
-        held.push({ channel: this, message: structuredClone(message) });
-        return;
-      }
-      native.call(this, message);
-    };
+    if (
+      message &&
+      typeof message === "object" &&
+      "client" in message &&
+      (client === undefined || message.client === client) &&
+      "kind" in message &&
+      message.kind === "reply"
+    ) {
+      held.push({ channel: this, message: structuredClone(message) });
+      return;
+    }
+    native.call(this, message);
+  };
   return {
     held,
     release() {
@@ -789,7 +803,14 @@ function holdTransportReplies(client?: string) {
 
 async function remainsPending(promise: Promise<unknown>) {
   let settled = false;
-  void promise.then(() => { settled = true; }, () => { settled = true; });
+  void promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
   await Bun.sleep(10);
   expect(settled).toBe(false);
 }
@@ -811,11 +832,20 @@ for (const operation of ["writeFile", "missing-operation"]) {
       observer.postMessage({ kind: "reply", client: "foreign", id: "foreign", value: null });
       observer.postMessage({ kind: "reply", client: f.channel.id, id: "foreign", value: null });
       await Bun.sleep(10);
+      observer.postMessage({
+        kind: "reply",
+        client: f.channel.id,
+        id: record(held.held[0]!.message).id,
+        errno: "invalid",
+      });
+      await Bun.sleep(10);
       expect(() => f.channel.assertSettled()).toThrow();
       held.release();
       await Bun.sleep(10);
       expect(() => f.channel.assertSettled()).not.toThrow();
-      expect(f.backend.shared.publication!.cut().generation).toBe(before.generation + (operation === "writeFile" ? 1 : 0));
+      expect(f.backend.shared.publication!.cut().generation).toBe(
+        before.generation + (operation === "writeFile" ? 1 : 0),
+      );
       observer.postMessage(held.held[0]!.message);
       await Bun.sleep(10);
       expect(() => f.channel.assertSettled()).not.toThrow();
@@ -838,7 +868,9 @@ test("unresolved timeout identities keep the original sixteen-call admission bou
     const refused = channel.call("workspace", {});
     const failure = refused.catch((error: unknown) => error);
     let rejected = false;
-    void refused.catch(() => { rejected = true; });
+    void refused.catch(() => {
+      rejected = true;
+    });
     await Bun.sleep(10);
     expect(rejected).toBe(true);
     expect(await failure).toMatchObject({ errno: 6 });
@@ -859,9 +891,14 @@ test("original bridge stop joins unknown cancellation and actual service prepara
   try {
     await client.asyncCall("workspaceBind", [f.session]);
     await client.asyncCall("preopen", ["/"]);
+    const id = await f.channel.call("workspaceNext", { token: f.session.token });
     held = holdTransportReplies();
     backend.pause = true;
-    const writing = client.asyncCall("writeFile", ["/dir/timeout"], new Uint8Array([9]));
+    const writing = client.asyncCall(
+      "workspaceMutation",
+      [id, "writeFile", ["/dir/timeout"]],
+      new Uint8Array([9]),
+    );
     const failed = rejectsErrno(writing, 6);
     await backend.started.promise;
     clock.expire();
@@ -870,8 +907,15 @@ test("original bridge stop joins unknown cancellation and actual service prepara
     stopping = stopWorkspaceBridge(connection);
     void stopping.catch(() => {});
     await remainsPending(stopping);
+    const repeated = stopWorkspaceBridge(connection);
+    await remainsPending(repeated);
+    clock.expire();
+    await remainsPending(stopping);
     held.release();
-    await stopping;
+    await Promise.all([stopping, repeated]);
+    expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id })).toEqual({
+      kind: "retired",
+    });
     const close = f.channel.call("close", { token: f.session.token });
     await remainsPending(close);
     backend.released.resolve();
@@ -883,6 +927,164 @@ test("original bridge stop joins unknown cancellation and actual service prepara
     clock.restore();
     await stopping?.catch(() => {});
     client.dispose();
+    await f.stop();
+  }
+});
+
+test("original resident stop consumes a late close reply once without releasing its guard early", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  const held = holdTransportReplies(channel.id);
+  const clock = transportClock();
+  let stopped: Promise<void> | undefined;
+  try {
+    stopped = client.stop();
+    expect(client.stop()).toBe(stopped);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await remainsPending(stopped);
+    expect(released).toBe(0);
+    held.release();
+    await stopped;
+    expect(released).toBe(1);
+    expect(client.stop()).toBe(stopped);
+    await stopped;
+    expect(released).toBe(1);
+  } finally {
+    held.release();
+    clock.restore();
+    await stopped?.catch(() => {});
+    channel.close();
+    await f.stop();
+  }
+});
+
+test("a claimed grant is not retired by a timeout reply or an original close attempt", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  let cell: ResidentGrantCell | undefined;
+  let held: ReturnType<typeof holdTransportReplies> | undefined;
+  const clock = transportClock();
+  try {
+    await call(f, "preopen", ["/"]);
+    await call(f, "resolve", [f.directory, "dir/a"]);
+    await f.channel.call("workspaceAdopt", {
+      token: session.token,
+      source: f.session.token,
+      handles: [f.file],
+    });
+    const grant = residentGrant(
+      await channel.call("prepare", {
+        token: session.token,
+        handle: f.file,
+        request: { kind: "read", offset: 0, maxBytes: 1 },
+      }),
+    );
+    cell = new ResidentGrantCell(grant);
+    Atomics.store(cell.state, 0, 1);
+    channel.status = () => cell?.snapshot();
+    held = holdTransportReplies(channel.id);
+    const settling = channel.call("settle", {
+      token: session.token,
+      outcome: encodeResidentOutcome(cell.snapshot()),
+    });
+    const failure = rejectsErrno(settling, 6);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await failure;
+    expect(() => channel.assertSettled()).toThrow();
+    held.release();
+    await channel.joinSettled();
+    const stopped = client.stop();
+    await rejectsErrno(stopped, 6);
+    expect(client.stop()).toBe(stopped);
+    expect(released).toBe(0);
+    expect(cell.snapshot()).toEqual({ kind: "claimed", grant: grant.key });
+    Atomics.store(cell.state, 0, 0);
+    cell.cancel();
+    await channel.finish("settle", {
+      token: session.token,
+      outcome: encodeResidentOutcome(cell.snapshot()),
+    });
+    await channel.finish("close", { token: session.token });
+    await rejectsErrno(stopped, 6);
+    expect(released).toBe(0);
+  } finally {
+    held?.release();
+    clock.restore();
+    channel.close();
+    await f.stop();
+  }
+});
+
+test("late prepared grant is cancelled and settled by the original stop without a write", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  await call(f, "preopen", ["/"]);
+  await call(f, "resolve", [f.directory, "dir/a"]);
+  await f.channel.call("workspaceAdopt", {
+    token: session.token,
+    source: f.session.token,
+    handles: [f.file],
+  });
+  const held = holdTransportReplies(channel.id);
+  const clock = transportClock();
+  let stopped: Promise<void> | undefined;
+  try {
+    const before = f.backend.shared.publication!.cut();
+    const preparing = client.prepare({ kind: "append", maxBytes: 1 }, f.file);
+    const failed = rejectsErrno(preparing, 6);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await failed;
+    expect(client.tryAppend(f.file, [new Uint8Array([9])])).toBe(-6);
+    stopped = client.stop();
+    void stopped.catch(() => {});
+    await remainsPending(stopped);
+    expect(released).toBe(0);
+    held.release();
+    await stopped;
+    expect(released).toBe(1);
+    expect(f.backend.shared.publication!.cut()).toEqual(before);
+    expect(client.stop()).toBe(stopped);
+  } finally {
+    held.release();
+    clock.restore();
+    await stopped?.catch(() => {});
+    // A failed implementation leaves the actual issued grant for fixture teardown.
+    const late = held.held[0];
+    if (late && released === 0) {
+      const grant = residentGrant(record(late.message).value);
+      const cell = new ResidentGrantCell(grant);
+      cell.cancel();
+      await channel.finish("settle", {
+        token: session.token,
+        outcome: encodeResidentOutcome(cell.snapshot()),
+      });
+      await channel.finish("close", { token: session.token });
+    }
+    channel.close();
     await f.stop();
   }
 });
