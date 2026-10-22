@@ -63,6 +63,7 @@ type Options = NonNullable<Parameters<typeof PersistentBackend.open>[1]>;
 interface Fixture {
   backend: PersistentBackend;
   client: FilesystemClient;
+  service: FilesystemService;
   handle: number;
   storage: ControlledStorage;
   track: (work: Promise<void>) => Promise<void>;
@@ -94,7 +95,7 @@ async function fixture(
     const path = await client.asyncCall("resolve", [root, "file"]);
     client.retain(path.node);
     await backend.checkpoint(true);
-    await run({ backend, client, handle: path.node, storage, track });
+    await run({ backend, client, service, handle: path.node, storage, track });
   } finally {
     storage.gate?.released.resolve();
     client.dispose();
@@ -196,9 +197,9 @@ test("resize, mode and time reserve whole-file cuts before changing metadata", a
     const before = backend.shared.snapshot(handle);
     expect(() => backend.execute("resize", [handle, 17, true], data(0))).toThrow("dirty capacity");
     expect(backend.shared.snapshot(handle)).toEqual(before);
-    backend.execute("setMode", [handle, 0o700], data(0));
+    backend.execute("setMode", [handle, 0o200], data(0));
     backend.execute("setMtime", [handle, 1234], data(0));
-    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o700, mtime: 1234 });
+    expect(backend.shared.stat(handle)).toMatchObject({ mode: 0o200, mtime: 1234 });
     expect(client.tryAppend(handle, [data(1)])).toEqual({ written: 1, offset: 5 });
     backend.execute("resize", [handle, 2, true], data(0));
     expect(backend.shared.snapshot(handle)!.data).toEqual(data(2));
@@ -294,10 +295,11 @@ for (const enabled of [false, true])
   test(`actual blocking worker resumes outside shared locks, publication=${enabled}`, async () => {
     await fixture(
       async (context) => {
-        const { backend, client, handle } = context;
+        const { backend, client, service, handle } = context;
         const { gate, checkpoint } = await held(context);
         expect(client.tryWrite(handle, [data(8, 67)], 0)).toBe(8);
-        const connection = client.fork();
+        const pair = createFilesystemConnection(client.connection);
+        const connection = pair.client;
         const descriptors = new DescriptorTable();
         const fd = descriptors.open(
           { kind: "file", handle, offset: 8, append: false },
@@ -306,6 +308,7 @@ for (const enabled of [false, true])
         );
         const codec = createFilesystemDescriptorCodec(client, connection);
         const token = codec.export(descriptors.get(fd)!, 2);
+        service.connect(pair.server);
         const worker = new Worker(
           new URL("./fixtures/filesystem-offset-guest.ts", import.meta.url).href,
         );
