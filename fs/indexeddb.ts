@@ -1,3 +1,19 @@
+import {
+  CHUNK_SIZE,
+  chunkChecksum,
+  chunkError,
+  chunkLength,
+  checkPayload,
+  deletePayload,
+  parseChunk,
+  parseManifest,
+  preparePayload,
+  preparePayloads,
+  copyLegacyChunks,
+  validateRange,
+  type ChunkManifest,
+  type IndexedDBRange,
+} from "./indexeddb-chunks.js";
 import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -598,11 +614,87 @@ export class IndexedDBStorage implements StorageBackend {
   read(key: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
       await this.initialize();
-      const tx = this.db.transaction("data", "readonly");
-      const [data] = await Promise.all([request(tx.objectStore("data").get(key)), completed(tx)]);
-      if (!(data instanceof Uint8Array)) throw new Error(`Missing filesystem payload: ${key}`);
-      return data;
+      const manifest = await this.manifest(key);
+      return this.readChunks(key, manifest, { offset: 0, length: manifest.size });
     });
+  }
+
+  readRange(key: string, options: IndexedDBRange): Promise<Uint8Array> {
+    const range = { offset: options.offset, length: options.length, signal: options.signal };
+    try {
+      validateRange(range);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.enqueue(async () => {
+      range.signal?.throwIfAborted();
+      await this.initialize(range.signal);
+      const manifest = await this.manifest(key, range.signal);
+      return this.readChunks(key, manifest, range);
+    }).catch((error: unknown) => {
+      range.signal?.throwIfAborted();
+      throw error;
+    });
+  }
+
+  private async readRecord(key: IDBValidKey, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
+    this.assertOwner();
+    const tx = this.db.transaction("data", "readonly");
+    this.transactions.add(tx);
+    const abort = () => {
+      try {
+        tx.abort();
+      } catch {}
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const [value] = await Promise.all([request(tx.objectStore("data").get(key)), completed(tx)]);
+      signal?.throwIfAborted();
+      this.assertOwner();
+      return value;
+    } catch (error) {
+      throw signal?.aborted ? signal.reason : (this.ownershipError ?? error);
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      this.transactions.delete(tx);
+    }
+  }
+
+  private async manifest(key: string, signal?: AbortSignal): Promise<ChunkManifest> {
+    const value = await this.readRecord(key, signal);
+    if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
+    return parseManifest(value, key);
+  }
+
+  private async readChunks(
+    key: string,
+    manifest: ChunkManifest,
+    range: IndexedDBRange,
+  ): Promise<Uint8Array> {
+    const length = Math.max(0, Math.min(range.length, manifest.size - range.offset));
+    const result = new Uint8Array(length);
+    range.signal?.throwIfAborted();
+    if (!length) return result;
+    const end = range.offset + length;
+    for (let index = Math.floor(range.offset / CHUNK_SIZE); index * CHUNK_SIZE < end; index++) {
+      const chunk = parseChunk(
+        await this.readRecord([key, index], range.signal),
+        chunkLength(manifest, index),
+        key,
+      );
+      if ((await chunkChecksum(chunk.bytes)) !== chunk.checksum) chunkError(key);
+      range.signal?.throwIfAborted();
+      this.assertOwner();
+      const start = Math.max(range.offset, index * CHUNK_SIZE);
+      const stop = Math.min(end, (index + 1) * CHUNK_SIZE);
+      result.set(
+        chunk.bytes.subarray(start - index * CHUNK_SIZE, stop - index * CHUNK_SIZE),
+        start - range.offset,
+      );
+    }
+    range.signal?.throwIfAborted();
+    return result;
   }
 
   persist(batch: PersistenceBatch): Promise<void> {
@@ -652,7 +744,7 @@ export class IndexedDBStorage implements StorageBackend {
     };
   }
 
-  private async initialize(): Promise<void> {
+  private async initialize(signal?: AbortSignal): Promise<void> {
     if (this.initialized) return;
     const tx = this.db.transaction(["metadata", "journal", "data"], "readonly");
     const metadata = tx.objectStore("metadata"),
@@ -669,7 +761,7 @@ export class IndexedDBStorage implements StorageBackend {
         completed(tx),
       ]);
     const formatPresent = metadataKeys.includes("format");
-    if (formatPresent && format !== INDEXEDDB_FORMAT)
+    if (formatPresent && format !== INDEXEDDB_FORMAT && format !== "waffle-indexeddb-v1")
       throw new VfsError(
         "INVALID_VFS_FORMAT",
         "indexeddb",
@@ -686,15 +778,26 @@ export class IndexedDBStorage implements StorageBackend {
         "Incompatible IndexedDB metadata layout",
       );
     const payloadKeys = new Set(dataKeys.filter((key): key is string => typeof key === "string"));
+    const physical =
+      format === INDEXEDDB_FORMAT ? await this.validateChunks(dataKeys, signal) : undefined;
+    if (physical) for (const key of payloadKeys) if (!physical.has(key)) payloadKeys.delete(key);
     const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
     for (const slot of [0, 1] as const)
-      if (bases[slot] && !hasPayloads(bases[slot]!, payloadKeys)) bases[slot] = undefined;
+      if (
+        bases[slot] &&
+        (!hasPayloads(bases[slot]!, payloadKeys) || !this.matchSizes(bases[slot]!.nodes, physical))
+      )
+        bases[slot] = undefined;
     const journals = new Map<number, Journal>();
     await Promise.all(
       journalValues.map(async (value, i) => {
         const entry = await decodeRecord(value);
-        if (validateJournal(entry) && entry.generation === journalKeys[i])
+        if (
+          validateJournal(entry) &&
+          entry.generation === journalKeys[i] &&
+          this.matchSizes(entry.upserts, physical)
+        )
           journals.set(entry.generation, entry);
       }),
     );
@@ -730,34 +833,132 @@ export class IndexedDBStorage implements StorageBackend {
         ).length,
       };
     }
-    if (!formatPresent) await this.installFormat();
+    if (format !== INDEXEDDB_FORMAT) await this.migrateLegacy(dataKeys, signal);
     this.initialized = true;
   }
 
-  /** Adopt only a validated legacy layout, fenced by the same ownership epoch. */
-  private async installFormat(): Promise<void> {
+  private matchSizes(
+    nodes: readonly PersistedNode[],
+    manifests?: ReadonlyMap<string, ChunkManifest>,
+  ): boolean {
+    return (
+      !manifests ||
+      nodes.every((node) => node.data === undefined || manifests.get(node.data)?.size === node.size)
+    );
+  }
+
+  private async validateChunks(
+    keys: IDBValidKey[],
+    signal?: AbortSignal,
+  ): Promise<Map<string, ChunkManifest>> {
+    const manifests = new Map<string, ChunkManifest>();
+    const chunks = new Map<string, Set<number>>();
+    for (const key of keys) {
+      if (typeof key === "string") {
+        manifests.set(key, await this.manifest(key, signal));
+        continue;
+      }
+      if (
+        !Array.isArray(key) ||
+        key.length !== 2 ||
+        typeof key[0] !== "string" ||
+        !validInteger(key[1])
+      )
+        chunkError(String(key));
+      const indices = chunks.get(key[0]) ?? new Set<number>();
+      indices.add(key[1]);
+      chunks.set(key[0], indices);
+    }
+    for (const [key, manifest] of manifests) {
+      const indices = chunks.get(key);
+      if ((indices?.size ?? 0) !== manifest.count) {
+        manifests.delete(key);
+        continue;
+      }
+      if (indices && Array.from(indices).some((index) => index >= manifest.count))
+        manifests.delete(key);
+    }
+    return manifests;
+  }
+
+  private async fencedWrite(
+    work: (data: IDBObjectStore, metadata: IDBObjectStore) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     this.assertOwner();
-    const tx = this.db.transaction("metadata", "readwrite", { durability: "strict" });
+    const tx = this.db.transaction(["metadata", "data"], "readwrite", { durability: "strict" });
     this.transactions.add(tx);
+    let failure: unknown;
+    const abort = () => {
+      try {
+        tx.abort();
+      } catch {}
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     const done = completed(tx);
     const metadata = tx.objectStore("metadata");
     const epoch = metadata.get("epoch");
     epoch.onsuccess = () => {
-      if (epoch.result !== this.epoch) {
-        this.loseOwnership();
-        return;
+      try {
+        if (epoch.result !== this.epoch) throw this.loseOwnership();
+        signal?.throwIfAborted();
+        work(tx.objectStore("data"), metadata);
+      } catch (error) {
+        failure = error;
+        abort();
       }
-      metadata.put(INDEXEDDB_FORMAT, "format");
     };
     try {
       await done;
       this.assertOwner();
+      signal?.throwIfAborted();
+    } catch (error) {
+      throw signal?.aborted ? signal.reason : (this.ownershipError ?? failure ?? error);
     } finally {
+      signal?.removeEventListener("abort", abort);
       this.transactions.delete(tx);
     }
   }
 
+  private async migrateLegacy(keys: IDBValidKey[], signal?: AbortSignal): Promise<void> {
+    const strings = new Set(keys.filter((key): key is string => typeof key === "string"));
+    for (const key of keys) {
+      if (typeof key === "string") continue;
+      if (
+        !Array.isArray(key) ||
+        key.length !== 2 ||
+        typeof key[0] !== "string" ||
+        !strings.has(key[0]) ||
+        !validInteger(key[1])
+      )
+        chunkError(String(key));
+    }
+    const manifests = new Map<string, ChunkManifest>();
+    for (const key of strings) {
+      const value = await this.readRecord(key, signal);
+      if (!(value instanceof Uint8Array)) chunkError(key);
+      const prepared = await preparePayload(value, signal);
+      signal?.throwIfAborted();
+      await this.fencedWrite((data) => copyLegacyChunks(data, key, prepared), signal);
+      manifests.set(key, prepared.manifest);
+    }
+    if (this.state) {
+      const nodes = Array.from(this.state.nodes.values());
+      if (!this.matchSizes(nodes, manifests)) chunkError("legacy root");
+      for (const base of this.state.bases)
+        if (base && !this.matchSizes(base.nodes, manifests)) chunkError("legacy recovery base");
+      for (const journal of this.state.journals.values())
+        if (!this.matchSizes(journal.upserts, manifests)) chunkError("legacy journal");
+    }
+    await this.fencedWrite((data, metadata) => {
+      for (const [key, manifest] of manifests) data.put(manifest, key);
+      metadata.put(INDEXEDDB_FORMAT, "format");
+    }, signal);
+  }
+
   private async commit(batch: PersistenceBatch): Promise<void> {
+    const prepared = await preparePayloads(batch.data);
     const staged = stageChanges(this.state, batch),
       old = this.state;
     // A recovered generation may be reused. Its abandoned successors must not reconnect
@@ -854,13 +1055,16 @@ export class IndexedDBStorage implements StorageBackend {
             for (const key of Array.from(old?.payloadKeys ?? []).concat(
               Array.from(batch.data.keys()),
             ))
-              if (!retained.has(key)) data.delete(key);
+              if (!retained.has(key)) deletePayload(data, key);
           }
         } catch (error) {
           abort(error);
         }
       };
       let remaining = checking.size + pinChecks.size;
+      const checked = () => {
+        if (--remaining === 0) finish();
+      };
       const checkEpoch = tx.objectStore("metadata").get("epoch");
       checkEpoch.onsuccess = () => {
         if (checkEpoch.result !== this.epoch) {
@@ -874,24 +1078,15 @@ export class IndexedDBStorage implements StorageBackend {
           const get = data.get(key);
           get.onsuccess = () => {
             try {
-              const existing: unknown = get.result,
-                supplied = batch.data.get(key);
-              if (existing !== undefined && !(existing instanceof Uint8Array))
-                throw new Error(`Invalid immutable payload: ${key}`);
-              if (
-                existing instanceof Uint8Array &&
-                supplied &&
-                (existing.length !== supplied.length ||
-                  existing.some((byte, i) => byte !== supplied[i]))
-              )
-                throw new Error(`Cannot overwrite immutable filesystem payload: ${key}`);
-              const bytes = existing ?? supplied;
-              if (!(bytes instanceof Uint8Array))
-                throw new Error(`Missing filesystem payload: ${key}`);
-              if (expected.has(key) && expected.get(key) !== bytes.length)
-                throw new Error(`Invalid filesystem payload size: ${key}`);
-              if (existing === undefined) data.put(bytes, key);
-              if (--remaining === 0) finish();
+              checkPayload(
+                data,
+                key,
+                get.result,
+                prepared.get(key),
+                expected.get(key),
+                checked,
+                abort,
+              );
             } catch (error) {
               abort(error);
             }

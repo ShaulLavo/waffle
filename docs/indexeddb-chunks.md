@@ -47,11 +47,12 @@ Compound keys left by an interrupted copy are staging only and are replaced on
 retry. No new-format manifest is exposed until every copy completes.
 
 One final strict epoch-fenced transaction replaces the legacy string records with
-manifests and publishes the v2 marker. Failure, cancellation, close or epoch loss
+manifests and publishes the v2 marker. Failure, cancellation or epoch loss
 before that commit leaves the complete old namespace and bytes authoritative.
 After commit the complete v2 root is authoritative. An abort racing after durable
 publication may reject its caller without rolling back that completed migration.
-Unknown markers and invalid legacy layouts are not adopted. Downgrade is unsupported.
+Close drains admitted work before releasing ownership. Unknown markers and invalid
+legacy layouts are not adopted. Downgrade is unsupported.
 This is saved-data migration, not concurrent code-version negotiation.
 
 ## Immutable revisions and reclamation

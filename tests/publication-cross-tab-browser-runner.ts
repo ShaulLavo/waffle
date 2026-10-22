@@ -1,3 +1,4 @@
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import type { Browser, Page } from "playwright";
@@ -487,7 +488,7 @@ async function currentPersistentBaseline(page: Page): Promise<void> {
   equal(seeded.name, reopened.name);
   for (const value of [seeded, reopened]) {
     equal(value.implementation, "indexeddb");
-    equal(value.format, "waffle-indexeddb-v1");
+    equal(value.format, INDEXEDDB_FORMAT);
     equal(value.first, [11, 22, 33, 44]);
     equal(value.second, [91, 82, 73]);
     equal(value.mode, 0o400);
