@@ -9,6 +9,7 @@ import {
   pending,
   requireValue,
   shutdownArms,
+  verifyOriginalWorkerLocation,
   type FailureReason,
   type Outcome,
   type PageSettlement,
@@ -106,13 +107,7 @@ async function liveLocation(
   owner.evaluatedLocation = await before(deadline, "original live location", () =>
     owner.worker.evaluate(() => globalThis.location.href),
   );
-  const live = value(owner.evaluatedLocation, "original evaluated location");
-  const raw = value(owner.rawUrl, "original raw URL");
-  assert(
-    new URL(live).searchParams.get("nonce") === report.spec.nonce,
-    "Wrong original live nonce",
-  );
-  assert(live === raw, "Raw and evaluated original worker URLs differ");
+  verifyOriginalWorkerLocation(owner.rawUrl, owner.evaluatedLocation, report.spec.nonce);
   assert(owner.closeEvent.kind === "pending", "Original Worker already closed before observations");
   assert(ledger.owners.length === 1, "Expected exactly one original dedicated Worker");
   assert(ledger.observerErrors.length === 0, "Original worker/page observer failed");

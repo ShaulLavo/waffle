@@ -119,6 +119,21 @@ export function requireValue<T>(result: Outcome<T>, phase: string): T {
   if (result.kind === "invalid") throw new Error(`${phase}: ${result.cause}`);
   return result.value;
 }
+function observedLocation(result: Stage<string>, phase: string): string {
+  if (result.kind === "pending") throw new Error(`${phase}: missing original outcome`);
+  return requireValue(result, phase);
+}
+export function verifyOriginalWorkerLocation(
+  rawUrl: Stage<string>,
+  evaluatedLocation: Stage<string>,
+  nonce: string,
+): void {
+  const live = observedLocation(evaluatedLocation, "original evaluated location");
+  const raw = observedLocation(rawUrl, "original raw URL");
+  if (new URL(live).searchParams.get("nonce") !== nonce)
+    throw new Error("Wrong original live nonce");
+  if (live !== raw) throw new Error("Raw and evaluated original worker URLs differ");
+}
 export function parseOutcome(value: unknown): Outcome<unknown> {
   if (!isRecord(value)) throw new Error("Missing fixture outcome");
   if (value.kind === "fulfilled") return { kind: "fulfilled", value: value.value };
