@@ -2,6 +2,9 @@ import { resolve } from "node:path";
 import type { Browser, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import type { PublicationCut } from "../fs/publication";
+import { validatePersistedIndex } from "../fs/storage";
+import { CHUNK_SIZE, chunkChecksum } from "../fs/indexeddb-chunks";
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format";
 
 const lifecycle = new BrowserRunnerLifecycle(180_000);
 const negative = process.argv.includes("--negative-control");
@@ -348,9 +351,64 @@ async function history(
     return changes;
   });
   await step(schedule[10]!, async () => {
+    const root = roots.get(c);
+    const directory = record(await host(c, "resolve", [root, "dir"]));
+    const file = record(await host(c, "resolve", [root, "dir/final"]));
+    const directoryStat = record(await host(c, "stat", [directory.node]));
+    const fileStat = record(await host(c, "stat", [file.node]));
     await host(c, "flush");
-    evidence.saved = await control(a, "persistentInspect", name);
-    return evidence.saved;
+    const saved = record(await control(a, "persistentInspect", name));
+    evidence.saved = saved;
+    equal(saved.format, INDEXEDDB_FORMAT);
+    equal(saved.schemaVersion, 1);
+    validatePersistedIndex(saved.index);
+    const index = saved.index;
+    equal(saved.active, index.generation);
+    equal(index.nodes.length, 3);
+    const nativeFile = index.nodes.find((node) => node.ino === fileStat.ino);
+    const nativeDirectory = index.nodes.find((node) => node.ino === directoryStat.ino);
+    const nativeRoot = index.nodes.find((node) => node.ino === index.root);
+    if (!nativeFile || !nativeDirectory || !nativeRoot || typeof nativeFile.data !== "string")
+      throw new Error("native saved final inode or payload missing");
+    equal(
+      [nativeFile.ino, nativeFile.kind, nativeFile.mtime, nativeFile.mode, nativeFile.size],
+      [fileStat.ino, "file", fileStat.mtime, fileStat.mode, 8],
+    );
+    equal(
+      [
+        nativeDirectory.ino,
+        nativeDirectory.kind,
+        nativeDirectory.mtime,
+        nativeDirectory.mode,
+        nativeDirectory.size,
+      ],
+      [directoryStat.ino, "dir", directoryStat.mtime, directoryStat.mode, 0],
+    );
+    equal(nativeDirectory.children, [["final", nativeFile.ino]]);
+    equal(nativeRoot.children, [["dir", nativeDirectory.ino]]);
+    if (!Array.isArray(saved.payloads) || !Array.isArray(saved.physicalRecords))
+      throw new Error("native payload or physical record observation missing");
+    const payload = saved.payloads.map(record).find((entry) => entry.key === nativeFile.data);
+    equal(payload, { key: nativeFile.data, bytes: [10, 20, 30, 41, 42, 43, 44, 45] });
+    const physical = saved.physicalRecords.map(record);
+    equal(
+      physical.find((entry) => entry.key === nativeFile.data),
+      {
+        kind: "manifest",
+        key: nativeFile.data,
+        manifest: { version: 2, size: 8, chunkSize: CHUNK_SIZE, count: 1 },
+      },
+    );
+    equal(
+      physical.find((entry) => JSON.stringify(entry.key) === JSON.stringify([nativeFile.data, 0])),
+      {
+        kind: "chunk",
+        key: [nativeFile.data, 0],
+        length: 8,
+        checksum: await chunkChecksum(new Uint8Array([10, 20, 30, 41, 42, 43, 44, 45])),
+      },
+    );
+    return saved;
   });
   await step(schedule[11]!, async () => {
     await control(b, "workspaceGuestStop", { key: "wasi" });
