@@ -1,4 +1,4 @@
-import { type DirtyLimits } from "./dirty-admission.js";
+import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
 import { mutationIntent, mutationValue } from "./publication.js";
 import {
   CheckpointPressure,
@@ -336,19 +336,18 @@ export class PersistentBackend extends MemoryBackend {
     return units * 4;
   }
   protected override admitMutation(plan: LocalMutationPlan): void {
-    if (!this.shared.dirtyAdmission.enabled) return;
+    if (!this.shared.dirtyAdmission.enabled || !plan.changes.length) return;
     const action = plan.action;
     const namespace = action.kind === "writeFile" ? action.namespace : action;
+    const files = new Map<FileHandle, number>();
+    let units = 0;
     if (namespace.kind === "namespace") {
-      this.shared.dirtyAdmission.namespace(
-        this.namespaceGrowth(namespace.plan),
-        this.shared.resources().usedBytes,
-      );
-      for (const handle of namespace.registered) this.shared.prepareDirty(handle, 0);
+      units = this.namespaceGrowth(namespace.plan);
+      for (const handle of namespace.registered) files.set(handle, 0);
       for (const parent of namespace.plan.parents) {
         const handle = this.fs.handleForNode(parent);
         this.sync(handle);
-        this.shared.prepareDirty(handle, 0);
+        files.set(handle, 0);
       }
     }
     if (action.kind === "write" || action.kind === "writeFile") {
@@ -356,16 +355,18 @@ export class PersistentBackend extends MemoryBackend {
         action.kind === "writeFile" && !action.append
           ? action.data.length
           : Math.max(this.shared.info(action.handle)!.size, action.offset + action.data.length);
-      this.shared.prepareDirty(action.handle, size);
+      files.set(action.handle, size);
     }
-    if (action.kind === "resize") {
-      const size = action.truncate
-        ? action.size
-        : Math.max(this.shared.info(action.handle)!.size, action.size);
-      this.shared.prepareDirty(action.handle, size);
-    }
+    if (action.kind === "resize")
+      files.set(
+        action.handle,
+        action.truncate
+          ? action.size
+          : Math.max(this.shared.info(action.handle)!.size, action.size),
+      );
     if (action.kind === "setMode" || action.kind === "setMtime")
-      this.shared.prepareDirty(action.handle);
+      files.set(action.handle, this.shared.info(action.handle)!.size);
+    this.shared.prepareDirtyMutation(files, units);
   }
   override execute(
     operation: string,
@@ -397,15 +398,20 @@ export class PersistentBackend extends MemoryBackend {
   }
   async waitForDirtyCapacity(changed: number, cancelled: () => boolean): Promise<void> {
     this.assertAdmitting();
+    this.evictClean();
+    const admission = this.shared.dirtyAdmission;
+    if (admission.change !== changed) return;
+    const pending = this.pressure.diagnostics().pendingOperations > 0;
+    if (!pending && !admission.hasDebt) throw new DirtyCapacityError(true);
     let failure: unknown;
-    const wait = this.shared.dirtyAdmission.wait(
+    const wait = admission.wait(
       changed,
       () => cancelled() || this.stopped || !!this.closing,
       () => failure,
     );
-    const progress = this.pendingCheckpoints ? this.lastCommit : this.checkpoint();
+    const progress = pending ? this.lastCommit : this.checkpoint();
     void progress.catch((error) => {
-      if (!(error instanceof FilesystemError) || error.errno !== 6) failure = error;
+      failure = error;
     });
     return wait;
   }

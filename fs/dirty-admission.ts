@@ -80,7 +80,11 @@ export class DirtyAdmission {
   }
   checkFile(resident: number, previous: number, size: number, first: boolean): void {
     if (!this.enabled) return;
-    if (size * 2 > this.values[CAPTURE_BYTES]! || Math.ceil(size / 65536) * 65536 + size * 4 > this.values[MAX_BYTES]!) this.reject(true);
+    if (
+      size * 2 > this.values[CAPTURE_BYTES]! ||
+      Math.ceil(size / 65536) * 65536 + size * 4 > this.values[MAX_BYTES]!
+    )
+      this.reject(true);
     this.check(resident, Math.max(0, size - previous) * 2, first ? DIRTY_NODE_UNITS : 0);
   }
   file(resident: number, previous: number, size: number, first: boolean): void {
@@ -93,12 +97,13 @@ export class DirtyAdmission {
   resident(bytes: number): void {
     this.check(bytes, 0, 0);
   }
-  namespace(units: number, resident: number): void {
-    if (!this.enabled || !units) return;
-    if (this.values[NAMESPACE]! + units + BASE_UNITS > this.values[CAPTURE_METADATA]!)
-      this.reject(true);
-    this.check(resident, 0, units);
-    this.values[NAMESPACE]! += units;
+  mutation(resident: number, namespace: number, bytes: number, metadata: number): void {
+    if (!this.enabled) return;
+    if (namespace + BASE_UNITS > this.values[CAPTURE_METADATA]!) this.reject(true);
+    this.check(resident, bytes, namespace + metadata);
+    this.values[NAMESPACE]! += namespace;
+    this.values[DIRTY_BYTES]! += bytes;
+    this.values[DIRTY_METADATA]! += metadata;
     this.values[REVISION]!++;
   }
   pin(delta: 1 | -1, resident: number): void {
@@ -154,7 +159,7 @@ export class DirtyAdmission {
     const count = Atomics.add(this.signals, 1, 1);
     if (count >= this.values[MAX_WAITERS]!) {
       Atomics.sub(this.signals, 1, 1);
-      throw new DirtyCapacityError();
+      throw new DirtyCapacityError(true);
     }
     try {
       while (Atomics.load(this.signals, 0) === changed) {
@@ -167,6 +172,9 @@ export class DirtyAdmission {
     } finally {
       Atomics.sub(this.signals, 1, 1);
     }
+  }
+  get hasDebt(): boolean {
+    return this.values[DIRTY_BYTES]! > 0 || this.values[DIRTY_METADATA]! > 0;
   }
   capacityReleased(): void {
     if (this.enabled) this.notify();

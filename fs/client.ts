@@ -880,7 +880,7 @@ export class FilesystemClient implements FileSystem {
   ): { written: number; offset: number } | number {
     if (!slot) return this.publicationFallback(handle, input, offset, append, admission);
     for (;;) {
-      const result = this.attemptPublicationIO(
+      const result = this.blockingPublicationAttempt(
         slot,
         handle,
         input,
@@ -896,6 +896,22 @@ export class FilesystemClient implements FileSystem {
         return -6;
       }
       this.call("grow", [handle, size]);
+    }
+  }
+  private blockingPublicationAttempt(
+    slot: number,
+    handle: FileHandle,
+    input: Uint8Array,
+    offset: number,
+    append: boolean,
+    nonblocking: boolean,
+    admission: PublicationAdmission,
+  ): { written: number; offset: number } | number {
+    try {
+      return this.attemptPublicationIO(slot, handle, input, offset, append, nonblocking, admission);
+    } catch (error) {
+      if (!(error instanceof DirtyCapacityError) || error.permanent || nonblocking) throw error;
+      return this.publicationFallback(handle, input, offset, append, admission);
     }
   }
   private attemptPublicationIO(
@@ -1370,7 +1386,11 @@ export class FilesystemClient implements FileSystem {
         this.connection.owner,
       );
     } catch (error) {
-      if (error instanceof MissingSegmentError || error instanceof MissingDataError)
+      if (
+        error instanceof MissingSegmentError ||
+        error instanceof MissingDataError ||
+        error instanceof DirtyCapacityError
+      )
         return undefined;
       throw error;
     }

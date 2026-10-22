@@ -1,4 +1,4 @@
-import { DirtyAdmission, DIRTY_HEADER_WORDS } from "./dirty-admission.js";
+import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
 import { typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
@@ -417,8 +417,24 @@ export class SharedFilesystemState {
   checkDirtyGrowth(handle: FileHandle, size: number): void {
     this.checkDirty(this.slot(handle), size);
   }
-  prepareDirty(handle: FileHandle, size?: number): void {
-    this.dirty(this.slot(handle), size);
+  prepareDirtyMutation(files: ReadonlyMap<FileHandle, number>, namespace: number): void {
+    let bytes = 0,
+      metadata = 0;
+    for (const [handle, size] of files) {
+      const slot = this.slot(handle);
+      this.checkDirty(slot, size);
+      bytes += Math.max(0, size - this.slots[this.at(slot, DIRTY_SIZE)]!) * 2;
+      if (this.slots[this.at(slot, DIRTY_MARK)] !== 1) metadata += DIRTY_NODE_UNITS;
+    }
+    this.dirtyAdmission.mutation(this.residentBytes(), namespace, bytes, metadata);
+    for (const [handle, size] of files) {
+      const slot = this.slot(handle);
+      this.slots[this.at(slot, DIRTY_SIZE)] = Math.max(
+        size,
+        this.slots[this.at(slot, DIRTY_SIZE)]!,
+      );
+      this.slots[this.at(slot, DIRTY_MARK)] = 1;
+    }
   }
   cleanDirty(revision: number, namespace: number): void {
     if (!this.dirtyAdmission.clean(revision, namespace)) return;
@@ -1017,6 +1033,7 @@ export class SharedFilesystemState {
         if (nonblocking || this.publication)
           for (let page = Math.floor(at / PAGE); page < Math.ceil(end / PAGE); page++)
             this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
+        this.checkDirty(slot, Math.max(size, end));
         const mtime = Date.now();
         const prepared = this.prepareDirectPublication(
           slot,
@@ -1309,6 +1326,7 @@ export class SharedFilesystemState {
         throw new RangeError("file needs growth");
       const next = truncate ? size : Math.max(old, size);
       const mtime = truncate ? Date.now() : this.getMtime(slot);
+      if (truncate || next !== old) this.checkDirty(slot, next);
       const publication = admission
         ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
         : undefined;
@@ -1404,6 +1422,7 @@ export class SharedFilesystemState {
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
+      this.checkDirty(slot, this.slots[this.at(slot, FILE_SIZE)]!);
       const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
       this.dirty(slot);
       this.setTimestamp(slot, mtime);

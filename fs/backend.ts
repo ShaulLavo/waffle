@@ -648,6 +648,8 @@ export class MemoryBackend implements FilesystemBackend {
   }
   private applyNamespace(action: NamespaceAction): void {
     this.fs.applyNamespace(action.plan);
+    for (const edge of action.plan.edges)
+      if (edge.after) this.shared.relink(this.fs.handleForNode(edge.after));
     for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
     for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
     for (const entry of action.removed) {
