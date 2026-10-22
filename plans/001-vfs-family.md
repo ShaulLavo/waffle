@@ -111,7 +111,7 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 
 ## 7. Formats, migration and export
 
-- **DERIVED [O, S]** — Every persisted format has an identity and version distinct from mode/implementation. Current identities are `waffle-indexeddb-v1` and `waffle-opfs-snapshots-v1`; reject mismatches with typed `INVALID_VFS_FORMAT`, never an empty tree. Existing validated unmarked layouts gain markers without moving data.
+- **DERIVED [O, S]** — Every persisted format has an identity and version distinct from mode/implementation. Current identities are `waffle-indexeddb-chunks-v2` and `waffle-opfs-snapshots-v1`; reject unknown identities with typed `INVALID_VFS_FORMAT`, never an empty tree. Marked or validated unmarked IndexedDB v1 layouts migrate through staged chunks, retaining the v1 root until the complete v2 root is published. Downgrade to v1 is unsupported. OPFS validated unmarked layouts gain their marker without moving data.
 - **DERIVED [O, B §adaptive]** — Before introducing a packed format specify reopen, interruption-safe migration and export/import. Keep the old format authoritative until the new complete root is durably published; recovery selects one valid authoritative state. Export logical entries/bytes/metadata independently of physical packing, with bounded streaming and integrity validation. No automatic adapter switch hides a saved workspace.
 - **DERIVED [O, C §2.6]** — Persisted tool indexes carry filesystem format/schema, generation and change watermark. Recovery validates them or explicitly rebuilds; “files reopened” alone does not prove index freshness. Document downgrade behavior as unsupported, not version-skew negotiation code.
 
@@ -238,3 +238,33 @@ results and cleanup live under
 `/work/reports/waffle-finish-20261021/storage-workspace-connect-repair-r3/`.
 This source is not final-head acceptance; independent review and the full immutable
 wave remain required before a PR can be review-ready.
+
+### Native owner freeze and timeout cleanup, 2026-10-23
+
+Status: Approved follow-up. The bounded tests-only proof at
+`86ca440a198b0c4bc1284421f95e26506a70fbe4` pauses the actual persistent
+IndexedDB authority execution context in native Chromium. Four independent pages
+and a real WASI guest observe short-pause same-history publication and a second
+pause crossing the real transport deadline. Timeout remains an unknown outcome,
+not evidence of owner death or permission to take over.
+
+The saved positive schedule completes 8 steps; the intentional no-pause control
+fails the pause oracle. Neither result qualifies OS/mobile suspension, stale-owner
+replacement, SAFE, durable receipt continuity, last-client shutdown or endurance.
+Exact source, commands and raw schedules live in
+`/work/reports/wave-20261022/waffle/owner-freeze/RESULT.md`.
+
+The resumed authority can read and flush, but original client cleanup remains
+unresolved. At that pin, `fs/publication-attachment.ts:268` permanently marks a
+transport timeout unconfirmed; `assertSettled` at lines 285-286 prevents the
+original bridge stop at lines 972-976. The guest reports `cleanup-error`, peer
+stop returns errno 6, and `browser/publication-authority.ts:278-281` refuses drain
+while original resident sessions remain. Native realm teardown contains those
+resources; it is not a successful protocol cleanup join.
+
+Implement request-identity, cancellation and terminal-outcome reconciliation for
+that original cleanup debt without inferring death from elapsed time. Initial
+write set is `fs/publication-attachment.ts`, `fs/publication-workspace.ts`,
+`browser/publication-authority.ts` and focused tests. Coordinate serial ownership
+with the reversible write-barrier lane. Preserve uncertainty when no authoritative
+outcome exists; do not add stale-version compatibility or a timeout-based takeover.

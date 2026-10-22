@@ -156,6 +156,33 @@ async function cleanup(): Promise<unknown> {
   return result;
 }
 
+function guestAppend(data: Record<string, unknown>): Promise<unknown> {
+  const target = workers.get("guest");
+  if (!target) throw new Error("guest missing");
+  const id = crypto.randomUUID(),
+    answer = Promise.withResolvers<unknown>();
+  pending.set(id, answer);
+  target.postMessage({ id, operation: "append", byte: integer(data.byte, 255) });
+  return answer.promise;
+}
+function begin(body: unknown): null {
+  const data = record(body),
+    key = text(data.key);
+  if (data.kind === "host") {
+    track(key, () => host(data.request));
+    return null;
+  }
+  if (data.kind === "probe") {
+    track(key, () => rpc("owner", "probe"));
+    return null;
+  }
+  if (data.kind === "guest") {
+    track(key, () => guestAppend(data));
+    return null;
+  }
+  throw new Error("invalid pending work");
+}
+
 /** @browserEntry Dedicated native owner freeze control. */
 export async function control(operation: string, body?: unknown): Promise<unknown> {
   if (operation === "start") {
@@ -180,24 +207,7 @@ export async function control(operation: string, body?: unknown): Promise<unknow
   if (operation === "wire") return startWire(body);
   if (operation === "messages") return messages;
   if (operation === "status") return Object.fromEntries(operations);
-  if (operation === "begin") {
-    const data = record(body),
-      key = text(data.key);
-    if (data.kind === "host") track(key, () => host(data.request));
-    else if (data.kind === "probe") track(key, () => rpc("owner", "probe"));
-    else if (data.kind === "guest")
-      track(key, () => {
-        const target = workers.get("guest");
-        if (!target) throw new Error("guest missing");
-        const id = crypto.randomUUID(),
-          answer = Promise.withResolvers<unknown>();
-        pending.set(id, answer);
-        target.postMessage({ id, operation: "append", byte: integer(data.byte, 255) });
-        return answer.promise;
-      });
-    else throw new Error("invalid pending work");
-    return null;
-  }
+  if (operation === "begin") return begin(body);
   if (operation === "join") {
     await Promise.all(debts.values());
     return Object.fromEntries(operations);

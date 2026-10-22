@@ -34,6 +34,12 @@ export interface OpfsStorageOptions {
   /** Default 64. Cache + in-flight creates + metadata must stay well below Safari's 253. */
   handleCacheSize?: number;
 }
+/** A bounded read of an existing immutable payload key, not a pathname or stable file ID. */
+export interface OpfsRangeOptions {
+  offset: number;
+  length: number;
+  signal?: AbortSignal;
+}
 interface SyncAccess {
   getSize(): number;
   read(buffer: Uint8Array, options: { at: number }): number;
@@ -294,6 +300,45 @@ export class OpfsStorage implements StorageBackend {
       }
     });
   }
+  readRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
+    const { offset, length, signal } = options;
+    if (!validInteger(offset) || !validInteger(length) || !Number.isSafeInteger(offset + length))
+      return Promise.reject(new RangeError("Invalid OPFS payload range"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return this.enqueue(async () => {
+      signal?.throwIfAborted();
+      await this.initialize();
+      signal?.throwIfAborted();
+      const size = this.known.get(key);
+      if (size === undefined) throw new Error(`Missing filesystem payload: ${key}`);
+      try {
+        const access = await this.cached(key, signal);
+        signal?.throwIfAborted();
+        if (access.getSize() !== size) throw new Error(`Invalid filesystem payload size: ${key}`);
+        const bytes = new Uint8Array(Math.min(length, Math.max(0, size - offset)));
+        this.readPayloadRange(access, bytes, offset, signal);
+        return bytes;
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw translate(error, "read payload range");
+      }
+    });
+  }
+  private readPayloadRange(
+    access: SyncAccess,
+    bytes: Uint8Array,
+    offset: number,
+    signal?: AbortSignal,
+  ): void {
+    for (let filled = 0; filled < bytes.length;) {
+      signal?.throwIfAborted();
+      const count = access.read(bytes.subarray(filled), { at: offset + filled });
+      if (!Number.isSafeInteger(count) || count <= 0 || count > bytes.length - filled)
+        throw new Error("Short or invalid filesystem payload range read");
+      filled += count;
+    }
+    signal?.throwIfAborted();
+  }
   persist(batch: PersistenceBatch): Promise<void> {
     let copy: PersistenceBatch;
     try {
@@ -376,17 +421,19 @@ export class OpfsStorage implements StorageBackend {
     this.owned.delete(access);
     return { kind: "closed" };
   }
-  private async access(handle: FileSystemFileHandle): Promise<SyncAccess> {
+  private async access(handle: FileSystemFileHandle, signal?: AbortSignal): Promise<SyncAccess> {
     if (typeof (handle as SyncFile).createSyncAccessHandle !== "function")
       throw new Error("OPFS storage requires sync access handles in a dedicated worker");
     for (let attempt = 0; ; attempt++) {
       this.assertHandleOwnership();
+      signal?.throwIfAborted();
       try {
         const access = await (handle as SyncFile).createSyncAccessHandle();
         this.owned.set(access, { kind: "open" });
         this.peakHandles = Math.max(this.peakHandles, this.owned.size);
         return access;
       } catch (error) {
+        signal?.throwIfAborted();
         const delay = BACKOFF_MS[attempt];
         if (!LOCKED.has((error as { name?: string })?.name ?? "") || delay === undefined)
           throw translate(error, "open sync handle");
@@ -401,7 +448,7 @@ export class OpfsStorage implements StorageBackend {
       this.handles.delete(key);
     }
   }
-  private async cached(key: string): Promise<SyncAccess> {
+  private async cached(key: string, signal?: AbortSignal): Promise<SyncAccess> {
     let access = this.handles.get(key);
     if (access) {
       this.handles.delete(key);
@@ -410,7 +457,9 @@ export class OpfsStorage implements StorageBackend {
     }
     // Evict before opening, including the transient handle in the cap.
     if (this.handles.size >= this.cacheSize) this.drop(this.handles.keys().next().value!);
-    access = await this.access(await this.data.getFileHandle(payloadName(key)));
+    const handle = await this.data.getFileHandle(payloadName(key));
+    signal?.throwIfAborted();
+    access = await this.access(handle, signal);
     this.handles.set(key, access);
     return access;
   }
