@@ -46,6 +46,13 @@ root and Worker until the original service shutdown ACK and root section fence
 finish. A failed ACK or Worker error rejects that promise and retains the failed
 owner. A success ACK followed by an error before the fence finishes still fails.
 
+Ownership loss after readiness also rejects the original disposal promise with the
+same error object as the failed page state. It does not send a new dispose request,
+claim a cleanup ACK, or terminate the failed owner. The storage-lock browser test
+checks that the original native Worker remains live, then awaits page teardown.
+Takeover lets the successor run and read flushed data. That does not prove that the
+failed owner's backend closed successfully or independently observe Worker death.
+
 The service joins admitted preparations, requests, maintenance and section fences
 before releasing pins and closing its backend. `PersistentBackend.close()` also
 returns one original promise, rejects new work, and joins admitted reads/checkpoints
