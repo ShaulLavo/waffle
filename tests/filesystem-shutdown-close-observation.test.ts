@@ -29,12 +29,15 @@ function clockFixture() {
   let delay: number | undefined;
   const wall = spyOn(Date, "now").mockImplementation(() => wallMs);
   const monotonic = spyOn(performance, "now").mockImplementation(() => monotonicMs);
-  const timer = spyOn(globalThis, "setTimeout").mockImplementation((callback, timeout) => {
-    if (typeof callback !== "function") throw new Error("Expected a timer callback");
-    fire = () => callback();
-    delay = timeout;
-    return handle;
-  });
+  const schedule = Object.assign(
+    (callback: () => void, timeout?: number) => {
+      fire = callback;
+      delay = timeout;
+      return handle;
+    },
+    { __promisify__: setTimeout.__promisify__ },
+  );
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(schedule);
   return {
     expire() {
       wallMs += 1000;
