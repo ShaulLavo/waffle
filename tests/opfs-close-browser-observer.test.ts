@@ -255,22 +255,57 @@ async function scenario(): Promise<void> {
     }),
   );
 }
-if (selected) await scenario();
-else
+function startObserver(name: string, timeout = 7500) {
+  return Bun.spawn([process.execPath, import.meta.path], {
+    env: { ...process.env, OPFS_OBSERVER_SCENARIO: name },
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout,
+    killSignal: "SIGKILL",
+  });
+}
+async function collectObserver(child: ReturnType<typeof startObserver>) {
+  const readers: Promise<unknown>[] = [];
+  try {
+    const stdout = new Response(child.stdout).text();
+    readers.push(stdout);
+    const stderr = new Response(child.stderr).text();
+    readers.push(stderr);
+    const [out, err, status] = await Promise.all([stdout, stderr, child.exited]);
+    return { status, stdout: out, stderr: err };
+  } finally {
+    child.kill("SIGKILL");
+    await Promise.allSettled(readers.concat([child.exited]));
+  }
+}
+async function checkHangingChild(): Promise<void> {
+  const child = startObserver("hang", 100);
+  const observation = collectObserver(child);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("child survived its cancellation budget")), 1500);
+  });
+  try {
+    const result = await Promise.race([observation, deadline]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toBe("");
+    expect(child.signalCode).toBe("SIGKILL");
+    expect(() => process.kill(child.pid, 0)).toThrow();
+  } finally {
+    clearTimeout(timer);
+    child.kill("SIGKILL");
+    await Promise.allSettled([observation, child.exited]);
+  }
+}
+if (selected === "hang") await new Promise<never>(() => setInterval(() => undefined, 1000));
+else if (selected) await scenario();
+else {
+  test("observer subprocess timeout kills and joins a hanging child", checkHangingChild, 3000);
   test.each(scenarios)(
     "actual observer source with labelled stand-ins: %s",
     async (name) => {
-      const child = Bun.spawn([process.execPath, import.meta.path], {
-        env: { ...process.env, OPFS_OBSERVER_SCENARIO: name },
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, status] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      expect({ status, stdout, stderr }).toEqual({
+      const result = await collectObserver(startObserver(name));
+      expect(result).toEqual({
         status: 0,
         stdout: expect.any(String),
         stderr: "",
@@ -278,3 +313,4 @@ else
     },
     10_000,
   );
+}
