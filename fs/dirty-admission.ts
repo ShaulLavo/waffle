@@ -30,7 +30,7 @@ const NAMESPACE = 8,
 const REVISION = 13,
   REJECTED = 14;
 export const DIRTY_HEADER_WORDS = 48;
-export const DIRTY_PIN_UNITS = 2048;
+const DIRTY_PIN_UNITS = 2048;
 export const DIRTY_NODE_UNITS = 1024;
 const BASE_UNITS = 1024;
 
