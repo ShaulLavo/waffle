@@ -108,7 +108,10 @@ async function liveLocation(
   );
   const live = value(owner.evaluatedLocation, "original evaluated location");
   const raw = value(owner.rawUrl, "original raw URL");
-  assert(new URL(live).searchParams.get("nonce") === report.spec.nonce, "Wrong original live nonce");
+  assert(
+    new URL(live).searchParams.get("nonce") === report.spec.nonce,
+    "Wrong original live nonce",
+  );
   assert(live === raw, "Raw and evaluated original worker URLs differ");
   assert(owner.closeEvent.kind === "pending", "Original Worker already closed before observations");
   assert(ledger.owners.length === 1, "Expected exactly one original dedicated Worker");
@@ -116,7 +119,10 @@ async function liveLocation(
 }
 function verifyPending(snapshot: WorkerSnapshot, spec: ShutdownSpec): void {
   assert(snapshot.nonce === spec.nonce, "Wrong ready/gate rendezvous nonce");
-  assert(snapshot.backendCloseCalls === 0, "Backend close entered before original preparation joined");
+  assert(
+    snapshot.backendCloseCalls === 0,
+    "Backend close entered before original preparation joined",
+  );
   assert(snapshot.rawCloseCalls === 0, "Raw storage close entered while original gate held");
   assert(snapshot.preparation.kind === "pending", "Original preparation gate was not pending");
 }
@@ -137,19 +143,32 @@ function verifySettlement(settled: PageSettlement, spec: ShutdownSpec): void {
     typeof settled.serviceAck.reason === "string" && settled.serviceAck.reason.length > 0,
     "Failed production ACK must preserve a nonempty diagnostic",
   );
-  assert(value(worker.originalReasonMatched, "in-realm original reason") === true, "Original rejection identity changed");
+  assert(
+    value(worker.originalReasonMatched, "in-realm original reason") === true,
+    "Original rejection identity changed",
+  );
   if (spec.arm === "drain-failure") {
     assert(worker.preparation.kind === "rejected", "Original preparation rejection lost");
     assert(worker.backendCloseCalls === 0, "Backend closed after failed original drain");
-    assert(worker.nativeCloseCalls === 0 && worker.rawCloseCalls === 0, "Storage closed after failed drain");
+    assert(
+      worker.nativeCloseCalls === 0 && worker.rawCloseCalls === 0,
+      "Storage closed after failed drain",
+    );
     return;
   }
   assert(worker.backendCloseCalls === 1, "Missing original terminal backend close");
   assert(worker.backendClose.kind === "rejected", "Original backend failure lost");
   const released = spec.arm === "raw-close-failure";
-  assert(worker.rawCloseCalls === Number(released), "Unexpected raw close after final-save failure");
-  assert(worker.nativeCloseCalls === Number(released), "Unexpected native close after final-save failure");
-  if (released) assert(worker.nativeClose.kind === "fulfilled", "Real close before injected failure missing");
+  assert(
+    worker.rawCloseCalls === Number(released),
+    "Unexpected raw close after final-save failure",
+  );
+  assert(
+    worker.nativeCloseCalls === Number(released),
+    "Unexpected native close after final-save failure",
+  );
+  if (released)
+    assert(worker.nativeClose.kind === "fulfilled", "Real close before injected failure missing");
 }
 function initialReport(spec: ShutdownSpec, engine: Engine): ArmReport {
   return {
@@ -182,9 +201,15 @@ async function storageObservations(page: Page, report: ArmReport, deadline: numb
     page.evaluate(() => window.filesystemShutdownFixture.lockAvailable()),
   );
   const released = report.spec.arm === "success" || report.spec.arm === "raw-close-failure";
-  assert(value(report.releasedLock, "post-ACK exact lock") === released, "Wrong post-ACK lock state");
+  assert(
+    value(report.releasedLock, "post-ACK exact lock") === released,
+    "Wrong post-ACK lock state",
+  );
   if (!released) {
-    report.reopened = { kind: "invalid", cause: "Not attempted: failed original owner retains lock" };
+    report.reopened = {
+      kind: "invalid",
+      cause: "Not attempted: failed original owner retains lock",
+    };
     return;
   }
   report.reopened = await before(deadline, "real reopen/read/close", () =>
@@ -192,7 +217,10 @@ async function storageObservations(page: Page, report: ArmReport, deadline: numb
   );
   const reopened = value(report.reopened, "real reopen");
   value(reopened.open, "native reopen");
-  assert(value(reopened.readMarker, "native marker read") === report.spec.marker, "Dirty marker lost");
+  assert(
+    value(reopened.readMarker, "native marker read") === report.spec.marker,
+    "Dirty marker lost",
+  );
   value(reopened.close, "native reopened owner close");
   value(reopened.rawCleanup, "native reopened raw cleanup");
 }
@@ -200,33 +228,54 @@ async function proveArm(page: Page, ledger: TargetLedger, report: ArmReport): Pr
   // Reserve cleanup time WITHIN the unchanged whole-arm 45-second deadline.
   const proofDeadline = report.deadline - 20_000;
   report.ready = await before(proofDeadline, "original ready/gate rendezvous", () =>
-    page.evaluate(({ spec, deadline }) => window.filesystemShutdownFixture.start(spec, deadline), { spec: report.spec, deadline: proofDeadline }),
+    page.evaluate(({ spec, deadline }) => window.filesystemShutdownFixture.start(spec, deadline), {
+      spec: report.spec,
+      deadline: proofDeadline,
+    }),
   );
   value(report.ready, "original ready/gate rendezvous");
-  const owner = value(await before(proofDeadline, "original Worker observer", () => ledger.created), "original target");
+  const owner = value(
+    await before(proofDeadline, "original Worker observer", () => ledger.created),
+    "original target",
+  );
   await liveLocation(owner, report, ledger, proofDeadline);
   const snapshot = await before(proofDeadline, "pending original storage", () =>
     page.evaluate(() => window.filesystemShutdownFixture.snapshot()),
   );
   verifyPending(value(snapshot, "pending original storage"), report.spec);
-  const pendingAck = value(await before(proofDeadline, "pending ACK observation", () =>
-    page.evaluate(() => window.filesystemShutdownFixture.ackState()),
-  ), "pending ACK observation");
+  const pendingAck = value(
+    await before(proofDeadline, "pending ACK observation", () =>
+      page.evaluate(() => window.filesystemShutdownFixture.ackState()),
+    ),
+    "pending ACK observation",
+  );
   assert(pendingAck.kind === "pending", "Service ACK settled while original gate held");
   report.pendingLock = await before(proofDeadline, "pending exact native lock", () =>
     page.evaluate(() => window.filesystemShutdownFixture.lockAvailable()),
   );
-  assert(value(report.pendingLock, "pending exact native lock") === false, "Original native lock released early");
-  value(await before(proofDeadline, "release same original gate", () =>
-    page.evaluate(() => window.filesystemShutdownFixture.release()),
-  ), "original gate release");
+  assert(
+    value(report.pendingLock, "pending exact native lock") === false,
+    "Original native lock released early",
+  );
+  value(
+    await before(proofDeadline, "release same original gate", () =>
+      page.evaluate(() => window.filesystemShutdownFixture.release()),
+    ),
+    "original gate release",
+  );
   const [request, ack] = await Promise.all([
-    before(proofDeadline, "original request", () => page.evaluate(() => window.filesystemShutdownFixture.originalRequest())),
-    before(proofDeadline, "original service ACK", () => page.evaluate(() => window.filesystemShutdownFixture.serviceAck())),
+    before(proofDeadline, "original request", () =>
+      page.evaluate(() => window.filesystemShutdownFixture.originalRequest()),
+    ),
+    before(proofDeadline, "original service ACK", () =>
+      page.evaluate(() => window.filesystemShutdownFixture.serviceAck()),
+    ),
   ]);
   report.originalRequest = flatten(request);
   report.serviceAck = flatten(ack);
-  report.originalStorage = await before(proofDeadline, "original storage outcome", () => page.evaluate(() => window.filesystemShutdownFixture.snapshot()));
+  report.originalStorage = await before(proofDeadline, "original storage outcome", () =>
+    page.evaluate(() => window.filesystemShutdownFixture.snapshot()),
+  );
   const settled: PageSettlement = {
     request: flatten(request),
     serviceAck: flatten(ack),
@@ -250,47 +299,115 @@ async function cleanupArm(
   ledger: TargetLedger,
   report: ArmReport,
 ): Promise<void> {
-  report.cleanupRelease = await before(report.deadline, "cleanup original gate release", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.release()), 1000);
-  report.cleanupRequest = await before(report.deadline, "cleanup original request join", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.originalRequest()), 2000);
-  report.cleanupStorage = await before(report.deadline, "explicit original storage cleanup", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupOriginalStorage()), 2000);
-  report.cleanupReopenedBackend = await before(report.deadline, "reopened backend cleanup", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupReopenedBackend()), 2000);
-  report.cleanupReopenedStorage = await before(report.deadline, "reopened raw storage cleanup", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupReopenedStorage()), 2000);
-  report.cleanupClient = await before(report.deadline, "client/port cleanup", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.closeClient()), 1000);
-  report.cleanupIntervention = await before(report.deadline, "explicit original termination", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.terminate()), 1000);
+  report.cleanupRelease = await before(
+    report.deadline,
+    "cleanup original gate release",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.release()),
+    1000,
+  );
+  report.cleanupRequest = await before(
+    report.deadline,
+    "cleanup original request join",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.originalRequest()),
+    2000,
+  );
+  report.cleanupStorage = await before(
+    report.deadline,
+    "explicit original storage cleanup",
+    () =>
+      requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupOriginalStorage()),
+    2000,
+  );
+  report.cleanupReopenedBackend = await before(
+    report.deadline,
+    "reopened backend cleanup",
+    () =>
+      requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupReopenedBackend()),
+    2000,
+  );
+  report.cleanupReopenedStorage = await before(
+    report.deadline,
+    "reopened raw storage cleanup",
+    () =>
+      requirePage(page).evaluate(() => window.filesystemShutdownFixture.cleanupReopenedStorage()),
+    2000,
+  );
+  report.cleanupClient = await before(
+    report.deadline,
+    "client/port cleanup",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.closeClient()),
+    1000,
+  );
+  report.cleanupIntervention = await before(
+    report.deadline,
+    "explicit original termination",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.terminate()),
+    1000,
+  );
   const original = ledger.owners[0];
   report.originalTargetJoin = original
-    ? await before(report.deadline - 3000, "original Worker close event", () => original.closed, 10_000)
+    ? await before(
+        report.deadline - 3000,
+        "original Worker close event",
+        () => original.closed,
+        10_000,
+      )
     : { kind: "invalid", cause: "Original Worker target/close observer absent" };
-  report.cleanupLock = await before(report.deadline, "cleanup exact lock observation", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.lockAvailable()), 1000);
-  report.deleteDatabase = await before(report.deadline, "native owned database deletion", () =>
-    requirePage(page).evaluate(() => window.filesystemShutdownFixture.deleteDatabase()), 1000);
-  report.context = await before(report.deadline, "owned context close", async () => (await context).close(), 1000);
+  report.cleanupLock = await before(
+    report.deadline,
+    "cleanup exact lock observation",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.lockAvailable()),
+    1000,
+  );
+  report.deleteDatabase = await before(
+    report.deadline,
+    "native owned database deletion",
+    () => requirePage(page).evaluate(() => window.filesystemShutdownFixture.deleteDatabase()),
+    1000,
+  );
+  report.context = await before(
+    report.deadline,
+    "owned context close",
+    async () => (await context).close(),
+    1000,
+  );
 }
 function cleanupPassed(report: ArmReport): boolean {
-  return report.cleanupRelease.kind === "fulfilled" &&
-    report.cleanupRequest.kind === "fulfilled" && report.cleanupRequest.value.kind !== "invalid" &&
-    report.cleanupStorage.kind === "fulfilled" && report.cleanupStorage.value.kind === "fulfilled" &&
-    report.cleanupReopenedBackend.kind === "fulfilled" && report.cleanupReopenedStorage.kind === "fulfilled" &&
-    report.cleanupClient.kind === "fulfilled" && report.cleanupClient.value.every((item) => item.kind === "fulfilled") &&
-    report.cleanupIntervention.kind === "fulfilled" && report.originalTargetJoin.kind === "fulfilled" &&
-    report.cleanupLock.kind === "fulfilled" && report.cleanupLock.value &&
-    report.deleteDatabase.kind === "fulfilled" && report.context.kind === "fulfilled";
+  return (
+    report.cleanupRelease.kind === "fulfilled" &&
+    report.cleanupRequest.kind === "fulfilled" &&
+    report.cleanupRequest.value.kind !== "invalid" &&
+    report.cleanupStorage.kind === "fulfilled" &&
+    report.cleanupStorage.value.kind === "fulfilled" &&
+    report.cleanupReopenedBackend.kind === "fulfilled" &&
+    report.cleanupReopenedStorage.kind === "fulfilled" &&
+    report.cleanupClient.kind === "fulfilled" &&
+    report.cleanupClient.value.every((item) => item.kind === "fulfilled") &&
+    report.cleanupIntervention.kind === "fulfilled" &&
+    report.originalTargetJoin.kind === "fulfilled" &&
+    report.cleanupLock.kind === "fulfilled" &&
+    report.cleanupLock.value &&
+    report.deleteDatabase.kind === "fulfilled" &&
+    report.context.kind === "fulfilled"
+  );
 }
 function emptyLedger(): TargetLedger {
   return { owners: [], created: new Promise(() => {}), observerErrors: [] };
 }
 function targetEvidence(owner: OriginalTarget) {
-  return { creationIndex: owner.creationIndex, rawUrl: owner.rawUrl, evaluatedLocation: owner.evaluatedLocation, closeEvent: owner.closeEvent };
+  return {
+    creationIndex: owner.creationIndex,
+    rawUrl: owner.rawUrl,
+    evaluatedLocation: owner.evaluatedLocation,
+    closeEvent: owner.closeEvent,
+  };
 }
-async function runArm(browser: Browser, engine: Engine, origin: string, spec: ShutdownSpec): Promise<void> {
+async function runArm(
+  browser: Browser,
+  engine: Engine,
+  origin: string,
+  spec: ShutdownSpec,
+): Promise<void> {
   const report = initialReport(spec, engine);
   // The enclosing lifecycle already owns the browser. Keep this allocation promise
   // before awaiting it, so setup failure still reaches independent context cleanup.
@@ -298,16 +415,38 @@ async function runArm(browser: Browser, engine: Engine, origin: string, spec: Sh
   void observe(context);
   let page: Page | undefined;
   let ledger = emptyLedger();
-  const primary = await observe((async () => {
-    const allocated = value(await before(report.deadline - 20_000, "context allocation", () => context), "context allocation");
-    page = value(await before(report.deadline - 20_000, "page allocation", () => allocated.newPage()), "page allocation");
-    ledger = captureTargets(page);
-    value(await before(report.deadline - 20_000, "fixture navigation", () => requirePage(page).goto(origin)), "fixture navigation");
-    await proveArm(page, ledger, report);
-  })());
+  const primary = await observe(
+    (async () => {
+      const allocated = value(
+        await before(report.deadline - 20_000, "context allocation", () => context),
+        "context allocation",
+      );
+      page = value(
+        await before(report.deadline - 20_000, "page allocation", () => allocated.newPage()),
+        "page allocation",
+      );
+      ledger = captureTargets(page);
+      value(
+        await before(report.deadline - 20_000, "fixture navigation", () =>
+          requirePage(page).goto(origin),
+        ),
+        "fixture navigation",
+      );
+      await proveArm(page, ledger, report);
+    })(),
+  );
   report.primary = primary;
   await cleanupArm(page, context, ledger, report);
-  console.log(evidenceJson({ report, targets: ledger.owners.map(targetEvidence), observerErrors: ledger.observerErrors, seamLimits: "raw-close rejection follows real close/unlock; no native failed-close retention claim", retirement: "explicit cleanup intervention only" }));
+  console.log(
+    evidenceJson({
+      report,
+      targets: ledger.owners.map(targetEvidence),
+      observerErrors: ledger.observerErrors,
+      seamLimits:
+        "raw-close rejection follows real close/unlock; no native failed-close retention claim",
+      retirement: "explicit cleanup intervention only",
+    }),
+  );
   value(primary, "arm primary");
   assert(cleanupPassed(report), "Independent cleanup or original target join failed");
 }
@@ -321,8 +460,14 @@ function options() {
   let reason: FailureReason | "all" = "all";
   for (let i = 0; i < args.length; i++) {
     const item = args[i]!;
-    if (item === "--backend") { backend = args[++i] ?? ""; continue; }
-    if (item === "--reason") { reason = selectedReason(args[++i]); continue; }
+    if (item === "--backend") {
+      backend = args[++i] ?? "";
+      continue;
+    }
+    if (item === "--reason") {
+      reason = selectedReason(args[++i]);
+      continue;
+    }
     if (!isEngine(item)) throw new Error(`Unknown shutdown engine/option: ${item}`);
     if (selected.includes(item)) throw new Error(`Duplicate engine: ${item}`);
     selected.push(item);
@@ -338,19 +483,25 @@ function selectedReason(input: string | undefined): FailureReason | "all" {
   return found;
 }
 function specifications(reasons: readonly FailureReason[]): ShutdownSpec[] {
-  return shutdownArms.flatMap((arm) => (arm === "success" ? ["error" as const] : reasons).map((reason) => ({
-    arm,
-    reason,
-    database: `waffle-shutdown-${crypto.randomUUID()}`,
-    nonce: crypto.randomUUID(),
-    marker: `dirty-original-${crypto.randomUUID()}`,
-  })));
+  return shutdownArms.flatMap((arm) =>
+    (arm === "success" ? ["error" as const] : reasons).map((reason) => ({
+      arm,
+      reason,
+      database: `waffle-shutdown-${crypto.randomUUID()}`,
+      nonce: crypto.randomUUID(),
+      marker: `dirty-original-${crypto.randomUUID()}`,
+    })),
+  );
 }
 async function run(): Promise<void> {
   const selected = options();
   await lifecycle.init();
-  const page = await browserBundle(resolve(import.meta.dir, "fixtures/filesystem-shutdown-page.ts"));
-  const worker = await browserBundle(resolve(import.meta.dir, "fixtures/filesystem-shutdown-worker.ts"));
+  const page = await browserBundle(
+    resolve(import.meta.dir, "fixtures/filesystem-shutdown-page.ts"),
+  );
+  const worker = await browserBundle(
+    resolve(import.meta.dir, "fixtures/filesystem-shutdown-worker.ts"),
+  );
   const origin = lifecycle.serve({
     "/": '<!doctype html><script type="module" src="/filesystem-shutdown-page.js"></script>',
     "/filesystem-shutdown-page.js": page,
@@ -358,7 +509,11 @@ async function run(): Promise<void> {
   });
   for (const engine of selected.selected) await runEngine(engine, origin, selected.reasons);
 }
-async function runEngine(engine: Engine, origin: string, reasons: readonly FailureReason[]): Promise<void> {
+async function runEngine(
+  engine: Engine,
+  origin: string,
+  reasons: readonly FailureReason[],
+): Promise<void> {
   const browser = await lifecycle.launch(engine);
   for (const spec of specifications(reasons)) await runArm(browser, engine, origin, spec);
   await lifecycle.closeBrowser(browser);

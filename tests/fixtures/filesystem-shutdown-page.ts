@@ -95,19 +95,26 @@ async function start(next: ShutdownSpec, deadline: number): Promise<void> {
   target = new Worker(`/filesystem-shutdown-worker.js?nonce=${next.nonce}`, { type: "module" });
   target.onmessage = receiveService;
   target.onerror = workerError;
-  target.onmessageerror = () => workerError(new ErrorEvent("error", { message: "Worker message decode failed" }));
+  target.onmessageerror = () =>
+    workerError(new ErrorEvent("error", { message: "Worker message decode failed" }));
   target.postMessage({ fixture: "configure", ...next, port: otherControl }, [otherControl]);
   const connection = createFilesystemConnection();
   client = new FilesystemClient(connection.client);
   target.postMessage({ connect: connection.server }, [connection.server.port]);
   requireValue(await before(deadline, "ready", () => ready.promise), "ready");
   const originalClient = client;
-  requireValue(await before(deadline, "write dirty marker", () =>
-    originalClient.asyncCall("writeFile", ["/marker"], new TextEncoder().encode(next.marker)),
-  ), "write dirty marker");
+  requireValue(
+    await before(deadline, "write dirty marker", () =>
+      originalClient.asyncCall("writeFile", ["/marker"], new TextEncoder().encode(next.marker)),
+    ),
+    "write dirty marker",
+  );
   if (Date.now() >= deadline) throw new Error("Original preparation deadline exhausted");
   requestOutcome = observe(client.asyncCall("listFiles", ["/"]));
-  requireValue(await before(deadline, "original preparation gate", () => entered.promise), "original preparation gate");
+  requireValue(
+    await before(deadline, "original preparation gate", () => entered.promise),
+    "original preparation gate",
+  );
   target.postMessage({ dispose: true });
 }
 async function lockAvailable(): Promise<boolean> {
@@ -142,11 +149,18 @@ async function readMarker(): Promise<string> {
 async function openReopened(deadline: number): Promise<void> {
   if (!spec) throw new Error("Missing original database identity");
   const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(new Error("Reopen deadline expired")), Math.max(0, deadline - Date.now()));
+  const timer = setTimeout(
+    () => abort.abort(new Error("Reopen deadline expired")),
+    Math.max(0, deadline - Date.now()),
+  );
   try {
     storageCreation = IndexedDBStorage.open(spec.database, {
-      whenBusy: "wait", signal: abort.signal,
-      retainOpeningDebt: (debt) => { openingDebts.push(debt); void observe(debt); },
+      whenBusy: "wait",
+      signal: abort.signal,
+      retainOpeningDebt: (debt) => {
+        openingDebts.push(debt);
+        void observe(debt);
+      },
     });
     void observe(storageCreation);
     reopenedStorage = await storageCreation;
@@ -186,7 +200,8 @@ const fixture: ShutdownPage = {
   async release() {
     requireValue(await controlCall("release"), "original gate release");
   },
-  originalRequest: () => requestOutcome ?? Promise.resolve({ kind: "invalid", cause: "Original request absent" }),
+  originalRequest: () =>
+    requestOutcome ?? Promise.resolve({ kind: "invalid", cause: "Original request absent" }),
   serviceAck: () => ackOutcome,
   snapshot: workerSnapshot,
   ackState: () => ackState,
