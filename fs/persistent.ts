@@ -26,7 +26,7 @@ interface CheckpointRequest {
 interface CheckpointCapture {
   readonly changed: Set<Node>;
   readonly data: Map<string, Uint8Array>;
-  readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string }>;
+  readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string; revision: number }>;
 }
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
@@ -173,6 +173,7 @@ export class PersistentBackend extends MemoryBackend {
         this.detachedKeys.delete(node.ino);
       }
       this.removed.delete(node.ino);
+      if (node.kind === "file") this.revisions.delete(this.fs.handleForNode(node));
       this.dirty.add(node);
       if (node.kind === "dir")
         for (const child of node.children.values()) this.changeLinks(child, 1);
@@ -409,7 +410,7 @@ export class PersistentBackend extends MemoryBackend {
       () => cancelled() || this.stopped || !!this.closing,
       () => failure,
     );
-    const progress = pending ? this.lastCommit : this.checkpoint();
+    const progress = pending ? this.lastCommit : this.checkpoint(true);
     void progress.catch((error) => {
       failure = error;
     });
@@ -544,38 +545,52 @@ export class PersistentBackend extends MemoryBackend {
           : target === undefined
             ? undefined
             : this.fs.nodeForHandle(target);
-      const request = { durable, target, selected };
-      const cost = { ...this.captureCost(request) };
-      this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
-      let reservation: number;
-      try {
-        reservation = this.pressure.reserve(cost);
-      } catch (error) {
-        this.shared.dirtyAdmission.releaseCopy(cost);
-        throw error;
-      }
-      const revision = this.shared.dirtyAdmission.revision;
-      try {
-        return this.captureReserved(request, reservation, cost)
-          .then(() => {
-            this.shared.mutate(undefined, undefined, () =>
-              this.shared.cleanDirty(revision, this.namespaceUnits()),
-            );
-          })
-          .finally(() => {
-            this.pressure.release(reservation);
-            this.shared.mutate(undefined, undefined, () =>
-              this.shared.dirtyAdmission.releaseCopy(cost),
-            );
-          });
-      } catch (error) {
-        this.pressure.release(reservation);
-        this.shared.dirtyAdmission.releaseCopy(cost);
-        this.keys = new Map(this.committedKeys);
-        this.revisions.clear();
-        throw error;
-      }
+      return this.reserveCheckpoint({ durable, target, selected });
     });
+  }
+  private includesDetachedWriters({ durable, target, selected }: CheckpointRequest): boolean {
+    for (const [handle, node] of this.registeredNodes) {
+      if (node.kind !== "file" || !this.detached.has(node)) continue;
+      const revision = this.shared.revision(handle);
+      if (revision === undefined || revision === this.revisions.get(handle)) continue;
+      if (!durable || (target !== undefined && selected !== node)) return false;
+    }
+    return true;
+  }
+  private reserveCheckpoint(request: CheckpointRequest): Promise<void> {
+    const cost = { ...this.captureCost(request) };
+    this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
+    let reservation: number;
+    try {
+      reservation = this.pressure.reserve(cost);
+    } catch (error) {
+      this.shared.dirtyAdmission.releaseCopy(cost);
+      throw error;
+    }
+    const revision = this.includesDetachedWriters(request)
+      ? this.shared.dirtyAdmission.revision
+      : undefined;
+    try {
+      return this.captureReserved(request, reservation, cost)
+        .then(() => {
+          if (revision === undefined) return;
+          this.shared.mutate(undefined, undefined, () =>
+            this.shared.cleanDirty(revision, this.namespaceUnits()),
+          );
+        })
+        .finally(() => {
+          this.pressure.release(reservation);
+          this.shared.mutate(undefined, undefined, () =>
+            this.shared.dirtyAdmission.releaseCopy(cost),
+          );
+        });
+    } catch (error) {
+      this.pressure.release(reservation);
+      this.shared.dirtyAdmission.releaseCopy(cost);
+      this.keys = new Map(this.committedKeys);
+      this.revisions.clear();
+      throw error;
+    }
   }
   private captureFile(
     handle: FileHandle,
@@ -592,7 +607,7 @@ export class PersistentBackend extends MemoryBackend {
       if (!snapshot) return;
       const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
       data.set(key, snapshot.data);
-      detachedSnapshots.set(node, { handle, key });
+      detachedSnapshots.set(node, { handle, key, revision });
       // A detached fd owns bytes, not a name. A later relink must recapture its dirty revision.
       return;
     }
@@ -713,8 +728,10 @@ export class PersistentBackend extends MemoryBackend {
             this.detached.has(node) &&
             this.registeredNodes.get(snapshot.handle) === node &&
             this.shared.revision(snapshot.handle) !== undefined
-          )
+          ) {
             this.detachedKeys.set(node.ino, snapshot.key);
+            this.revisions.set(snapshot.handle, snapshot.revision);
+          }
         }
       })
       .finally(() => {

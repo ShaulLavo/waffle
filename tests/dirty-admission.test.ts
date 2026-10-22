@@ -392,5 +392,8 @@ test("a checkpoint that skips a detached writer cannot retire its pressure debt"
     expect(backend.fs.lookup("/other")).toBeUndefined();
     await backend.checkpoint(true);
     expect(backend.dirtyPressure().dirtyCaptureBytes).toBe(0);
+    backend.execute("writeFile", ["/other"], data(12));
+    await backend.checkpoint(true);
+    expect(backend.shared.snapshot(handle)!.data).toEqual(data(8));
   });
 });
