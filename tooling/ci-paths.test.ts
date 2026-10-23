@@ -116,6 +116,9 @@ test("package installs share one Bun package-manager cache contract", () => {
     expect(cacheKey).toContain("${{ runner.arch }}");
     expect(cacheKey).toContain("${{ env.BUN_VERSION }}");
     expect(cacheKey).toContain("${{ hashFiles('bun.lock', 'site/bun.lock') }}");
+    expect(cacheKey).toBe(
+      "${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}",
+    );
     if (sharedKey === undefined) sharedKey = cacheKey;
     expect(cacheKey).toBe(sharedKey);
 
