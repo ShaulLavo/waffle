@@ -945,7 +945,8 @@ export class IndexedDBStorage implements StorageBackend {
   }
 
   private recordRecovery(state: State): void {
-    const retained = new Set<string>(state.references.keys());
+    const retained = new Set<string>();
+    payloads(state.nodes.values(), retained);
     for (const base of state.bases) if (base) payloads(base.nodes, retained);
     for (const journal of state.journals.values()) payloads(journal.upserts, retained);
     this.readers.recovery(retained);

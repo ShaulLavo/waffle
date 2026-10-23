@@ -105,3 +105,54 @@ for (const reason of [undefined, null, false, 0, new Error("reader release faile
     }
   });
 }
+
+for (const reason of [undefined, null, false, 0, new Error("held reader release failed")]) {
+  test(`held public reader shutdown preserves failed cleanup identity: ${String(reason)}`, async () => {
+    const physical = new RangeFixture();
+    const gate = physical.gate(), entered = Promise.withResolvers<void>();
+    let value: ReturnType<typeof publicReadFixture> | undefined;
+    let reading: Promise<unknown> | undefined, closing: Promise<unknown> | undefined;
+    const releases: (() => void)[] = [];
+    try {
+      await physical.seed([PAGE * 3]);
+      const storage = await physical.open();
+      const retain = storage.retainPayload.bind(storage);
+      storage.retainPayload = (...args) => {
+        const token = retain(...args);
+        releases.push(() => token.release());
+        return { release() { throw reason; } };
+      };
+      const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+      value = publicReadFixture(backend);
+      let closes = 0;
+      const close = backend.close.bind(backend);
+      backend.close = () => { closes++; return close(); };
+      physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+      reading = outcome(value.workspace.read("/file", { offset: PAGE, length: 4096 }));
+      await entered.promise;
+      const original = value.service.shutdown();
+      closing = outcome(original);
+      let settled = false;
+      void closing.then(() => { settled = true; });
+      await turn();
+      expect(settled).toBe(false);
+      expect(closes).toBe(0);
+      expect(storage.resources().opfsReaderWork).toBe(1);
+      gate.resolve();
+      const result = await outcome(original);
+      expect(result.kind).toBe("failed");
+      if (result.kind === "failed") expect(Object.is(result.reason, reason)).toBe(true);
+      expect(closes).toBe(0);
+      expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
+      expect(value.service.resources().readerTickets).toBe(1);
+      expect(value.service.shutdown()).toBe(original);
+      await reading;
+    } finally {
+      gate.resolve();
+      await Promise.allSettled([reading, closing]);
+      for (const release of releases) release();
+      await Promise.allSettled([value?.close()]);
+      await physical.cleanup();
+    }
+  });
+}

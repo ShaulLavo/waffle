@@ -162,6 +162,12 @@ async function adapter(kind: "indexeddb" | "opfs") {
     view = await projection(cold);
     const live = view;
     const before = live.backend.shared.resources().usedBytes;
+    const recoveryToken = cold.retainPayload("original", SIZE);
+    recoveryToken.release();
+    check(
+      cold.resources().readerStorageBytes === 0 && cold.resources().readerStorageDebt === 0,
+      "normal recovery root became reader-only debt",
+    );
     const ranges = [];
     for (const offset of [65539, PAGE - 3, SIZE - 4096]) {
       const observed = await measured(cold, () =>
