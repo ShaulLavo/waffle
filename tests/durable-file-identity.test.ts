@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { MemoryBackend } from "../fs/backend";
@@ -29,6 +30,8 @@ const limits: PublicationLimits = {
 class IdentityStore implements StorageBackend {
   index?: PersistedIndex;
   readonly data = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.data).readRange;
+  retainPayload = fixturePayloadHooks(this.data).retainPayload;
   reservation?: IdentityReservation;
   reserveCalls = 0;
   persistCalls = 0;

@@ -179,10 +179,20 @@ export class SharedFilesystemState {
         offset + length > size
       )
         throw new RangeError("invalid retained extent");
+      let additional = 0;
+      for (
+        let logical = Math.floor(offset / PAGE);
+        length && logical < Math.ceil((offset + length) / PAGE);
+        logical++
+      ) {
+        if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) additional += PAGE;
+      }
+      if (additional > 256 * 1024 * 1024 - this.readerPinBytes())
+        throw new FilesystemError(6, "reader page capacity exhausted");
       const pages: RetainedSharedPage[] = [];
       for (
         let logical = Math.floor(offset / PAGE);
-        logical < Math.ceil((offset + length) / PAGE);
+        length > 0 && logical < Math.ceil((offset + length) / PAGE);
         logical++
       ) {
         const physical = this.pages[this.pageAt(slot, logical)]! - 1;
@@ -196,6 +206,12 @@ export class SharedFilesystemState {
     } finally {
       this.globalUnlock();
     }
+  }
+  readerPinBytes(): number {
+    if (!this.pageReaders) return 0;
+    let pages = 0;
+    for (const count of this.pageReaders) if (count > 0) pages++;
+    return pages * PAGE;
   }
   private releaseVersionPages(pages: readonly RetainedSharedPage[]): void {
     this.globalLock(undefined, this.lockOwner, false, "release");
@@ -227,8 +243,8 @@ export class SharedFilesystemState {
     }
     throw new FilesystemError(6, "retained page copy capacity exhausted");
   }
-  private prepareVersionPages(slot: number, offset: number, end: number): void {
-    if (!this.pageReaders || offset === end) return;
+  private prepareVersionPages(slot: number, offset: number, end: number): () => void {
+    if (!this.pageReaders || offset === end) return () => {};
     const replacements: { entry: number; previous: number; physical: number }[] = [];
     try {
       for (let logical = Math.floor(offset / PAGE); logical < Math.ceil(end / PAGE); logical++) {
@@ -248,16 +264,56 @@ export class SharedFilesystemState {
       this.owners[previous] = RETIRED_PAGE;
     }
     Atomics.add(this.cells, USED_PAGES, replacements.length);
+    return () => {
+      for (const { entry, previous, physical } of replacements) {
+        this.pages[entry] = previous + 1;
+        this.owners[previous] = slot;
+        this.detachVersionPage(physical);
+      }
+    };
   }
-  /** The caller owns the operation-wide publication lock, before applying any namespace edit. */
-  prepareVersionWrite(handle: FileHandle, offset: number, length: number): void {
+  /** Reserves growth and every COW page before publication can change any logical state. */
+  prepareVersionWrite(
+    handle: FileHandle,
+    offset: number,
+    length: number,
+    size: number,
+  ): { rollback(): void; commit(): void } {
     const slot = this.slot(handle);
     this.lock(this.at(slot, FILE_LOCK));
+    const capacity = this.slots[this.at(slot, CAPACITY)]!;
+    let undo: (() => void) | undefined;
     try {
-      this.prepareVersionPages(slot, offset, offset + length);
+      this.allocate(slot, Math.ceil(size / PAGE));
+      undo = this.prepareVersionPages(slot, offset, offset + length);
+    } catch (error) {
+      this.trimCapacity(slot, capacity);
+      throw error;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
     }
+    let active = true;
+    return {
+      commit: () => {
+        active = false;
+      },
+      rollback: () => {
+        if (!active) return;
+        active = false;
+        undo();
+        this.trimCapacity(slot, capacity);
+      },
+    };
+  }
+  private trimCapacity(slot: number, needed: number): void {
+    const capacity = this.slots[this.at(slot, CAPACITY)]!;
+    for (let logical = needed; logical < capacity; logical++) {
+      const entry = this.pageAt(slot, logical);
+      this.detachVersionPage(this.pages[entry]! - 1);
+      this.pages[entry] = 0;
+    }
+    this.slots[this.at(slot, CAPACITY)] = needed;
+    this.trimPageTables(slot, needed);
   }
   static createBuffer(): SharedArrayBuffer {
     return new SharedArrayBuffer(BUFFER_SIZE);
@@ -1706,7 +1762,8 @@ export class SharedFilesystemState {
     const poolBytes = this.segments
       .slice(1)
       .reduce((bytes, buffer) => bytes + buffer.byteLength, SEGMENT_BYTES);
-    const metadataBytes = this.buffer.byteLength - SEGMENT_BYTES;
+    const metadataBytes =
+      this.buffer.byteLength - SEGMENT_BYTES + (this.pageReaders?.byteLength ?? 0);
     return {
       bytes: poolBytes + metadataBytes,
       poolBytes,

@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
@@ -14,6 +15,8 @@ class Store implements StorageBackend {
   }
   index?: PersistedIndex;
   payloads = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.payloads).readRange;
+  retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
   syncs: (readonly string[] | undefined)[] = [];
   async load() {
     return this.index;

@@ -1,6 +1,19 @@
 import type { FilesystemClient } from "./client.js";
 import { FilesystemError, isRevoked } from "./protocol.js";
-import { namespacePage, namespaceCut, watermark, workspaceChanges } from "./workspace-protocol.js";
+import {
+  namespacePage,
+  namespaceCut,
+  watermark,
+  workspaceChanges,
+  ReadRefusal,
+  readTarget,
+  readRange,
+  readVersion,
+  readCut,
+  readReply,
+  readOpenReply,
+  versionStat,
+} from "./workspace-protocol.js";
 import { ChangeBudget, NamespaceIndex, ProjectionPressure } from "./workspace-index.js";
 import {
   WORKSPACE_LIMITS,
@@ -12,6 +25,14 @@ import {
   type SnapshotPage,
   type WorkspaceChangePage,
   type ChangeBatch,
+  type FileTarget,
+  type ByteRange,
+  type FileVersion,
+  type VersionStat,
+  type ReadValue,
+  type ReadOutcome,
+  type VersionLease,
+  WORKSPACE_READ_LIMITS,
 } from "./workspace-types.js";
 export * from "./workspace-types.js";
 export type { WorkspaceConfiguration } from "./workspace-protocol.js";
@@ -45,6 +66,9 @@ export function createWorkspaceVfs(client: FilesystemClient): WorkspaceVfs {
   if (previous) return previous;
   const owner = new WorkspaceOwner(client);
   const workspace: WorkspaceVfs = Object.freeze({
+    read: owner.read.bind(owner),
+    stat: owner.stat.bind(owner),
+    pin: owner.pin.bind(owner),
     snapshot: owner.snapshot.bind(owner),
     changes: owner.changes.bind(owner),
     close: owner.close.bind(owner),
@@ -60,6 +84,7 @@ class WorkspaceOwner implements WorkspaceVfs {
   private accepted: Accepted | undefined;
   private closing: Promise<void> | undefined;
   private readonly lifetime = new AbortController();
+  private readonly leases = new Set<RemoteVersionLease>();
   constructor(readonly client: FilesystemClient) {}
   get stopped(): boolean {
     return this.closed || isRevoked(this.client.connection);
@@ -88,10 +113,15 @@ class WorkspaceOwner implements WorkspaceVfs {
   accept(cut: NamespaceCut, index: NamespaceIndex): void {
     if (!this.stopped) this.accepted = { cut, index, next: cut.watermark };
   }
-  async request(operation: string, args: unknown[] = [], signal?: AbortSignal): Promise<unknown> {
+  async request(
+    operation: string,
+    args: unknown[] = [],
+    signal?: AbortSignal,
+    capacity?: number,
+  ): Promise<unknown> {
     if (signal?.aborted) throw new FilesystemError(11);
     const grant: unknown[] = [this.client.connection.publication!.observer];
-    const completion = this.client.submit(operation, grant.concat(args));
+    const completion = this.client.submit(operation, grant.concat(args), undefined, capacity);
     const cancel = () => completion.cancel();
     signal?.addEventListener("abort", cancel, { once: true });
     try {
@@ -100,6 +130,143 @@ class WorkspaceOwner implements WorkspaceVfs {
       signal?.removeEventListener("abort", cancel);
       completion.release();
     }
+  }
+  private readSignal(signal?: AbortSignal): AbortSignal {
+    return signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+  }
+  private readFailure(error: unknown, signal?: AbortSignal): ReadOutcome<never> {
+    if (this.stopped) return { kind: "stopped" };
+    if (signal?.aborted) return { kind: "cancelled" };
+    if (error instanceof ReadRefusal) return error.failure;
+    if (error instanceof FilesystemError && error.errno === 6)
+      return { kind: "pressure", resource: "operations" };
+    return {
+      kind: "io",
+      message: error instanceof Error ? error.message : "Filesystem read failed",
+    };
+  }
+  async stat(
+    target: FileTarget,
+    at?: NamespaceCut,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<VersionStat>> {
+    if (this.stopped) return { kind: "stopped" };
+    if (signal?.aborted) return { kind: "cancelled" };
+    try {
+      const result = readReply(
+        await this.request(
+          "publicationReadStat",
+          [this.nextSerial(), readTarget(target), undefined, undefined, readCut(at)],
+          this.readSignal(signal),
+        ),
+      );
+      return result.kind === "ok" ? { kind: "ok", value: versionStat(result.value) } : result;
+    } catch (error) {
+      return this.readFailure(error, signal);
+    }
+  }
+  async pin(
+    target: FileTarget,
+    atVersion?: FileVersion,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<VersionLease>> {
+    if (this.stopped) return { kind: "stopped" };
+    if (signal?.aborted) return { kind: "cancelled" };
+    const id = this.nextSerial();
+    let adopted = false;
+    try {
+      const result = readReply(
+        await this.request(
+          "publicationReadPin",
+          [id, readTarget(target), undefined, readVersion(atVersion)],
+          this.readSignal(signal),
+        ),
+      );
+      if (result.kind !== "ok") return result;
+      const opened = readOpenReply(result.value);
+      if (opened.serial !== id) throw new FilesystemError(29);
+      if (this.stopped || signal?.aborted)
+        return this.stopped ? { kind: "stopped" } : { kind: "cancelled" };
+      const lease = new RemoteVersionLease(this, id, opened.stat);
+      this.leases.add(lease);
+      adopted = true;
+      return { kind: "ok", value: lease };
+    } catch (error) {
+      return this.readFailure(error, signal);
+    } finally {
+      if (!adopted) await this.closeRead(id);
+    }
+  }
+  read(
+    target: FileTarget,
+    range?: ByteRange,
+    atVersion?: FileVersion,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<ReadValue>> {
+    return this.copyRead(
+      "publicationReadOpen",
+      () => [readTarget(target), readRange(range), readVersion(atVersion)],
+      signal,
+    );
+  }
+  readLease(id: number, range?: ByteRange, signal?: AbortSignal): Promise<ReadOutcome<ReadValue>> {
+    return this.copyRead("publicationReadLeaseOpen", () => [id, readRange(range)], signal);
+  }
+  private async copyRead(
+    operation: string,
+    args: () => unknown[],
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<ReadValue>> {
+    if (this.stopped) return { kind: "stopped" };
+    if (signal?.aborted) return { kind: "cancelled" };
+    const id = this.nextSerial(),
+      lifetime = this.readSignal(signal);
+    try {
+      const parameters: unknown[] = [id];
+      const result = readReply(await this.request(operation, parameters.concat(args()), lifetime));
+      if (result.kind !== "ok") return result;
+      const opened = readOpenReply(result.value);
+      if (opened.serial !== id || opened.range.length > WORKSPACE_READ_LIMITS.result)
+        throw new FilesystemError(29);
+      const bytes = new Uint8Array(opened.range.length);
+      for (let offset = 0; offset < bytes.length; offset += WORKSPACE_READ_LIMITS.chunk) {
+        const part = await this.request(
+          "publicationReadChunk",
+          [id, offset],
+          lifetime,
+          WORKSPACE_READ_LIMITS.chunk,
+        );
+        if (!(part instanceof Uint8Array)) {
+          const refusal = readReply(part);
+          if (refusal.kind === "ok") throw new FilesystemError(29);
+          return refusal;
+        }
+        if (part.length !== Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset))
+          throw new FilesystemError(29);
+        bytes.set(part, offset);
+      }
+      if (this.stopped || signal?.aborted)
+        return this.stopped ? { kind: "stopped" } : { kind: "cancelled" };
+      return {
+        kind: "ok",
+        value: { stat: opened.stat, range: Object.freeze(opened.range), bytes },
+      };
+    } catch (error) {
+      return this.readFailure(error, signal);
+    } finally {
+      await this.closeRead(id);
+    }
+  }
+  async closeRead(id?: number): Promise<void> {
+    if (isRevoked(this.client.connection)) return;
+    try {
+      await this.request("publicationReadClose", [id]);
+    } catch (error) {
+      if (!this.stopped) throw error;
+    }
+  }
+  forgetLease(lease: RemoteVersionLease): void {
+    this.leases.delete(lease);
   }
   async closeCursor(serial?: number): Promise<void> {
     if (isRevoked(this.client.connection)) return;
@@ -179,7 +346,12 @@ class WorkspaceOwner implements WorkspaceVfs {
     this.accepted = undefined;
     this.lifetime.abort();
     const closing = Array.from(this.cursors, (cursor) => cursor.stop());
-    this.closing = Promise.all(closing.concat([this.closeCursor()])).then(() => undefined);
+    this.closing = Promise.all(
+      closing.concat(
+        Array.from(this.leases, (lease) => lease.close()),
+        [this.closeCursor(), this.closeRead()],
+      ),
+    ).then(() => undefined);
     return this.closing;
   }
 }
@@ -282,5 +454,32 @@ class RemoteSnapshot implements SnapshotCursor {
   }
   close(): Promise<void> {
     return this.finish({ kind: "cancelled" });
+  }
+}
+
+class RemoteVersionLease implements VersionLease {
+  private closed = false;
+  private closing?: Promise<void>;
+  private readonly lifetime = new AbortController();
+  constructor(
+    private readonly owner: WorkspaceOwner,
+    private readonly id: number,
+    readonly stat: VersionStat,
+  ) {}
+  read(range?: ByteRange, signal?: AbortSignal): Promise<ReadOutcome<ReadValue>> {
+    if (this.owner.stopped) return Promise.resolve({ kind: "stopped" });
+    if (this.closed) return Promise.resolve({ kind: "lease-closed" });
+    return this.owner.readLease(
+      this.id,
+      range,
+      signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal,
+    );
+  }
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closed = true;
+    this.lifetime.abort();
+    this.owner.forgetLease(this);
+    return (this.closing = this.owner.closeRead(this.id));
   }
 }

@@ -11,3 +11,19 @@ export function coldPublicationRoot(): PersistedIndex {
     ],
   };
 }
+
+/** These stores never collect immutable payloads, so their map itself owns retention. */
+export function fixturePayloadHooks(payloads: ReadonlyMap<string, Uint8Array>) {
+  return {
+    async readRange(key: string, range: { offset: number; length: number; signal?: AbortSignal }) {
+      range.signal?.throwIfAborted();
+      const bytes = payloads.get(key);
+      if (!bytes) throw new Error("missing fixture payload");
+      return bytes.slice(range.offset, range.offset + range.length);
+    },
+    retainPayload(key: string, size: number) {
+      if (payloads.get(key)?.byteLength !== size) throw new Error("missing fixture payload");
+      return { release() {} };
+    },
+  };
+}

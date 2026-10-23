@@ -1,3 +1,4 @@
+import type { ReadBacking } from "./workspace-read.js";
 import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
   CheckpointPressure,
@@ -258,6 +259,26 @@ export class PersistentBackend extends MemoryBackend {
       const revision = this.shared.revision(handle);
       if (revision !== undefined) this.revisions.set(handle, revision);
     }
+  }
+  override selectReadBacking(
+    node: FileNode,
+    offset: number,
+    length: number,
+    full = false,
+  ): ReadBacking {
+    this.assertAdmitting();
+    const handle = this.fs.handleForNode(node);
+    if (!length || this.shared.isResident(handle) || node.size === undefined)
+      return super.selectReadBacking(node, offset, length, full);
+    const key = this.detachedKeys.get(node.ino) ?? this.committedKeys.get(node.ino);
+    if (
+      !key ||
+      (this.shared.hasFile(handle) && this.shared.revision(handle) !== this.revisions.get(handle))
+    )
+      throw new FilesystemError(6, "cold revision is not retained");
+    const size = this.readMetadata(node).size;
+    const retention = this.storage.retainPayload(key, size);
+    return { kind: "cold", key, size, storage: this.storage, retention };
   }
   private evictClean(except?: FileHandle): void {
     // Registration is bounded independently of workspace size. Idle metadata and clean payload

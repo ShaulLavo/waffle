@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { coldPublicationRoot } from "./fixtures/publication-storage";
 import { IdentityAllocator, nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
@@ -843,6 +844,7 @@ async function coldPublicationFixture() {
     hydrations = 0;
   const backend = await PersistentBackend.open(
     {
+      ...fixturePayloadHooks(new Map([["fixture-payload", new Uint8Array([1, 2, 3])]])),
       async reserveIdentity() {
         return nextReservation(undefined);
       },

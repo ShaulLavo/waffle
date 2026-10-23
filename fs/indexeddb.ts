@@ -19,6 +19,8 @@ import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
+  PayloadRetentions,
+  type PayloadRetention,
   decodeRecord,
   snapshotBatch,
   decodeSnapshot,
@@ -420,6 +422,9 @@ export function recoverIndex(
 /** One lock-owning connection. Writes are strict atomic transactions, never in-place payload edits. */
 export class IndexedDBStorage implements StorageBackend {
   private tail: Promise<void> = Promise.resolve();
+  private readonly readers = new PayloadRetentions();
+  private readonly readerWork = new Set<Promise<unknown>>();
+  private readonly deletingPayloads = new Set<string>();
   private persistenceError: unknown;
   private initialized = false;
   private state?: State;
@@ -653,6 +658,41 @@ export class IndexedDBStorage implements StorageBackend {
     });
   }
 
+  retainPayload(key: string, expectedSize: number): PayloadRetention {
+    this.assertOwner();
+    if (this.closed || !this.state?.payloadKeys.has(key) || this.deletingPayloads.has(key))
+      throw new Error("Missing retained filesystem payload");
+    if (this.payloadSize(key) !== expectedSize)
+      throw new Error("Retained filesystem payload size mismatch");
+    return this.readers.retain(key, expectedSize);
+  }
+  private payloadSize(key: string): number | undefined {
+    const retained = this.readers.size(key);
+    if (retained !== undefined) return retained;
+    for (const node of this.state!.nodes.values()) if (node.data === key) return node.size;
+    for (const base of this.state!.bases) {
+      for (const node of base?.nodes ?? []) if (node.data === key) return node.size;
+    }
+    for (const journal of this.state!.journals.values()) {
+      for (const node of journal.upserts) if (node.data === key) return node.size;
+    }
+    return undefined;
+  }
+  resources(): Record<string, number> {
+    return { ...this.readers.resources(), indexeddbReaderWork: this.readerWork.size };
+  }
+  private retainedRange(key: string, range: IndexedDBRange): Promise<Uint8Array> {
+    if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
+    const work = this.manifest(key, range.signal).then((manifest) =>
+      this.readChunks(key, manifest, range),
+    );
+    this.readerWork.add(work);
+    void work.then(
+      () => this.readerWork.delete(work),
+      () => this.readerWork.delete(work),
+    );
+    return work;
+  }
   readRange(key: string, options: IndexedDBRange): Promise<Uint8Array> {
     const range = { offset: options.offset, length: options.length, signal: options.signal };
     try {
@@ -660,6 +700,7 @@ export class IndexedDBStorage implements StorageBackend {
     } catch (error) {
       return Promise.reject(error);
     }
+    if (this.readers.has(key)) return this.retainedRange(key, range);
     return this.enqueue(async () => {
       range.signal?.throwIfAborted();
       await this.initialize(range.signal);
@@ -682,14 +723,18 @@ export class IndexedDBStorage implements StorageBackend {
       } catch {}
     };
     signal?.addEventListener("abort", abort, { once: true });
+    const settled = completed(tx);
+    void settled.catch(() => {});
     try {
-      const [value] = await Promise.all([request(tx.objectStore("data").get(key)), completed(tx)]);
+      const value = await request(tx.objectStore("data").get(key));
+      await settled;
       signal?.throwIfAborted();
       this.assertOwner();
       return value;
     } catch (error) {
       throw signal?.aborted ? signal.reason : (this.ownershipError ?? error);
     } finally {
+      await settled.catch(() => {});
       signal?.removeEventListener("abort", abort);
       this.transactions.delete(tx);
     }
@@ -761,7 +806,7 @@ export class IndexedDBStorage implements StorageBackend {
   close(): Promise<void> {
     if (!this.closing) {
       this.closed = true;
-      this.closing = this.tail.then(async () => {
+      this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(async () => {
         this.db.close();
         await this.unlock();
       });
@@ -1063,6 +1108,7 @@ export class IndexedDBStorage implements StorageBackend {
       }
       if (entry && entry.generation > cutoff) payloads(entry.upserts, retained);
     }
+    const deletedReaders: string[] = [];
     // No await inside this transaction: all hashes and compaction preparation are complete.
     this.assertOwner();
     const tx = this.db.transaction(["metadata", "journal", "data"], "readwrite", {
@@ -1080,10 +1126,12 @@ export class IndexedDBStorage implements StorageBackend {
       };
       tx.oncomplete = () => {
         this.transactions.delete(tx);
+        for (const key of deletedReaders) this.deletingPayloads.delete(key);
         resolve();
       };
       tx.onabort = () => {
         this.transactions.delete(tx);
+        for (const key of deletedReaders) this.deletingPayloads.delete(key);
         reject(
           this.ownershipError ?? failure ?? tx.error ?? new Error("Filesystem transaction aborted"),
         );
@@ -1102,7 +1150,11 @@ export class IndexedDBStorage implements StorageBackend {
             for (const key of Array.from(old?.payloadKeys ?? []).concat(
               Array.from(batch.data.keys()),
             ))
-              if (!retained.has(key)) deletePayload(data, key);
+              if (!retained.has(key) && !this.readers.has(key)) {
+                this.deletingPayloads.add(key);
+                deletedReaders.push(key);
+                deletePayload(data, key);
+              }
           }
         } catch (error) {
           abort(error);
@@ -1177,7 +1229,11 @@ export class IndexedDBStorage implements StorageBackend {
       state.journalKeys = state.journalKeys.filter(
         (key) => typeof key !== "number" || key > cutoff,
       );
-      for (const key of state.payloadKeys) if (!retained.has(key)) state.payloadKeys.delete(key);
+      for (const key of deletedReaders) {
+        state.payloadKeys.delete(key);
+        this.readers.deleted(key);
+      }
+      this.readers.recovery(retained);
     }
     state.sinceCompaction = compact ? 0 : state.sinceCompaction + 1;
     this.state = state;
