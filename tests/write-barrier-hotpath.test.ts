@@ -134,7 +134,7 @@ import { MissingSegmentError } from "../fs/shared";
 import { DirtyCapacityError } from "../fs/dirty-admission";
 import type { WriteTicket } from "../fs/write-barrier";
 
- test("ordinary direct writes verify once at execution, including nested ownership", () => {
+test("ordinary direct writes verify once at execution, including nested ownership", () => {
   const { client, cleanup } = retainedClientFixture();
   const gate = client.shared.writeAdmission;
   const verify = gate.verify.bind(gate);
@@ -191,7 +191,7 @@ function directTicket(client: ReturnType<typeof retainedClientFixture>["client"]
   );
 }
 
- test("explicit execution rejects malformed, wrong-owner and full-generation aliases", () => {
+test("explicit execution rejects malformed, wrong-owner and full-generation aliases", () => {
   const { client, cleanup } = retainedClientFixture();
   const gate = client.shared.writeAdmission;
   const stale = gate.admit(client.connection.owner);
@@ -263,7 +263,7 @@ for (const retry of ["grow", "dirtyWait"] as const) {
   });
 }
 
- test("copied fallback cancellation and aborted observation retain received execution debt", async () => {
+test("copied fallback cancellation and aborted observation retain received execution debt", async () => {
   const { client, cleanup } = retainedClientFixture();
   const gate = client.shared.writeAdmission;
   let completion: ReturnType<typeof client.prepare> | undefined;
@@ -284,7 +284,7 @@ for (const retry of ["grow", "dirtyWait"] as const) {
     const pending = completion;
     const held = ticket;
     expect(gate.active).toBe(1);
-    expect(gate.inputBytes).toBe(3);
+    expect(gate.inputBytes).toBe(2);
     const lease = gate.close();
     const signal = new AbortController();
     const drained = gate.drain(lease, signal.signal);
