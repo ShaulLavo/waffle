@@ -32,6 +32,27 @@ function sessionId(value: unknown): string {
   if (typeof id !== "string" || !id) throw new Error("WebDriver did not return a session ID");
   return id;
 }
+function browserFailure(error: unknown) {
+  let value: string;
+  try {
+    value = String(error);
+  } catch {
+    value = "<unprintable>";
+  }
+  const failure = { type: error === null ? "null" : typeof error, value };
+  try {
+    if (error === null || (typeof error !== "object" && typeof error !== "function"))
+      return { failure };
+    const stack = "stack" in error ? error.stack : undefined;
+    if (typeof stack === "string") return { failure: { ...failure, stack } };
+  } catch {
+    return { failure };
+  }
+  return { failure };
+}
+type SessionOutcome =
+  | { kind: "success"; value: { capabilities: unknown; report: unknown } }
+  | { kind: "failure"; error: unknown };
 /** @public Driver boundary also exercised by the portable runner tests. */
 export async function runWorkspaceSafariSession(
   driver: string,
@@ -45,6 +66,7 @@ export async function runWorkspaceSafariSession(
     }),
   );
   const id = sessionId(session);
+  let outcome: SessionOutcome;
   try {
     const capabilities = object(session.capabilities);
     if (
@@ -61,7 +83,7 @@ export async function runWorkspaceSafariSession(
         {
           script: `const done = arguments[arguments.length - 1];
           import('/browser.js').then(module => module.${entry}())
-            .then(report => done({ report }), error => done({ failure: String(error), stack: error.stack }));`,
+            .then(report => done({ report }), error => done((${browserFailure.toString()})(error)));`,
           args: [],
         },
         "POST",
@@ -70,10 +92,25 @@ export async function runWorkspaceSafariSession(
     );
     if ("failure" in report) throw new Error(JSON.stringify(report));
     if (!("report" in report)) throw new Error("Safari did not return a workspace report");
-    return { capabilities: session.capabilities, report: report.report };
-  } finally {
-    await command(driver, `/session/${id}`, undefined, "DELETE", AbortSignal.timeout(10_000));
+    outcome = {
+      kind: "success",
+      value: { capabilities: session.capabilities, report: report.report },
+    };
+  } catch (error) {
+    outcome = { kind: "failure", error };
   }
+  try {
+    await command(driver, `/session/${id}`, undefined, "DELETE", AbortSignal.timeout(10_000));
+  } catch (error) {
+    if (outcome.kind === "failure")
+      throw new AggregateError(
+        [outcome.error, error],
+        "Safari verification and session cleanup failed",
+      );
+    throw error;
+  }
+  if (outcome.kind === "failure") throw outcome.error;
+  return outcome.value;
 }
 /** @public Serves only the three prepared fixture bundles on loopback. */
 export function serveWorkspaceSafari(directory: string) {

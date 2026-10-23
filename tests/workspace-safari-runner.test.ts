@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   prepareWorkspaceSafari,
   runWorkspaceSafariSession,
@@ -79,7 +80,7 @@ test("Safari driver closes its session when verification is interrupted", async 
   await expect(driverFixture("abort")).rejects.toThrow();
 });
 test("prepared public-package bundles serve with isolation and no source-tree access", async () => {
-  const directory = await mkdtemp(resolve(process.env.TMPDIR ?? "/work/tmp", "w-safari-"));
+  const directory = await mkdtemp(resolve(tmpdir(), "w-safari-"));
   let server: ReturnType<typeof serveWorkspaceSafari> | undefined;
   try {
     await prepareWorkspaceSafari(directory);
@@ -92,6 +93,13 @@ test("prepared public-package bundles serve with isolation and no source-tree ac
     expect(await response.text()).toContain("runWorkspaceSafari");
     expect((await fetch(`${origin}/package.json`)).status).toBe(404);
     expect(await Bun.file(resolve(directory, "runner.mjs")).size).toBeGreaterThan(0);
+    const compiled: typeof import("../tooling/workspace-safari-runner.js") = await import(
+      resolve(directory, "runner.mjs")
+    );
+    const script = await generatedScript(compiled.runWorkspaceSafariSession);
+    const rejected = await executeGeneratedRejection(script, undefined);
+    expect(rejected.thrown).toBeUndefined();
+    expect(rejected.callbacks).toEqual([{ failure: { type: "undefined", value: "undefined" } }]);
   } finally {
     await server?.stop(true);
     await rm(directory, { recursive: true, force: true });
@@ -144,7 +152,7 @@ test("execution transport failure survives successful DELETE unchanged", async (
   expect(failure).not.toBeInstanceOf(AggregateError);
 });
 
-async function generatedScript(): Promise<string> {
+async function generatedScript(runSession = runWorkspaceSafariSession): Promise<string> {
   let script = "";
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -157,14 +165,19 @@ async function generatedScript(): Promise<string> {
         });
       if (!path.endsWith("/execute/async")) return Response.json({ value: null });
       const body: unknown = await request.json();
-      if (!body || typeof body !== "object" || !("script" in body) || typeof body.script !== "string")
+      if (
+        !body ||
+        typeof body !== "object" ||
+        !("script" in body) ||
+        typeof body.script !== "string"
+      )
         throw new Error("Runner did not send its generated script");
       script = body.script;
       return Response.json({ value: { report: "script captured" } });
     },
   });
   try {
-    await runWorkspaceSafariSession(`http://127.0.0.1:${server.port}`, "http://fixture.invalid");
+    await runSession(`http://127.0.0.1:${server.port}`, "http://fixture.invalid");
     if (!script) throw new Error("Runner did not execute the browser script");
     return script;
   } finally {
@@ -219,8 +232,12 @@ test("generated rejection handler narrows string stacks and tolerates unprintabl
   expect(nonString.thrown).toBeUndefined();
   expect(nonString.callbacks).toEqual([{ failure: { type: "object", value: "[object Object]" } }]);
   const unprintable = {
-    toString() { throw new Error("string conversion failed"); },
-    get stack() { throw new Error("stack access failed"); },
+    toString() {
+      throw new Error("string conversion failed");
+    },
+    get stack() {
+      throw new Error("stack access failed");
+    },
   };
   const guarded = await executeGeneratedRejection(script, unprintable);
   expect(guarded.thrown).toBeUndefined();
