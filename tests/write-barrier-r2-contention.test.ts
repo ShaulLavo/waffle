@@ -4,7 +4,9 @@ import { FilesystemClient } from "../fs/client";
 import { FilesystemService } from "../fs/service";
 import { createFilesystemConnection, reapFilesystem } from "../fs/protocol";
 
-async function heldGlobal(run: (client: FilesystemClient, handle: number, held: Int32Array) => Promise<void>) {
+async function heldGlobal(
+  run: (client: FilesystemClient, handle: number, held: Int32Array) => Promise<void>,
+) {
   const backend = new MemoryBackend();
   const service = new FilesystemService(backend);
   const pair = createFilesystemConnection();
@@ -26,7 +28,9 @@ async function heldGlobal(run: (client: FilesystemClient, handle: number, held: 
       { maxBytes: 1024 * 1024, maxMetadataBytes: 1024 * 1024, maxOperations: 64 },
       0,
     );
-    worker.postMessage({ connection: guest, mode: "global-lock", control: control.buffer }, [guest.port]);
+    worker.postMessage({ connection: guest, mode: "global-lock", control: control.buffer }, [
+      guest.port,
+    ]);
     await ready.promise;
     await run(client, path.node, control);
     expect(backend.shared.snapshot(path.node)?.data).toEqual(new Uint8Array([1]));
@@ -55,10 +59,15 @@ test("try admission returns while a real worker still holds the dirty global loc
 test("async page preparation yields under the dirty global lock without copying input", async () => {
   await heldGlobal(async (client, _handle, held) => {
     let copies = 0;
-    const preparing = client.prepareAsync("writeFile", ["/later"], () => {
-      copies++;
-      return new Uint8Array([2]);
-    }, 1);
+    const preparing = client.prepareAsync(
+      "writeFile",
+      ["/later"],
+      () => {
+        copies++;
+        return new Uint8Array([2]);
+      },
+      1,
+    );
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(Atomics.load(held, 1)).toBe(0);
