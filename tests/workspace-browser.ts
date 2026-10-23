@@ -110,7 +110,8 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     });
     await workerCall(guest, { connection: borrowed, mode: "wasi" }, [borrowed.port]);
     await workerCall(guest, { operation: "write", byte: 88 });
-    check(peer.tryWrite(resolved.node, [new Uint8Array([89])], 1) === 1, "Direct write failed");
+    const written = peer.tryWrite(resolved.node, [new Uint8Array([89])], 1);
+    check(written === 1, `Direct write failed in ${mode}: ${written}`);
     const old = await pinned.value.read({ offset: 0, length: 3 });
     check(
       old.kind === "ok" && old.value.bytes.join() === "97,98,99",
