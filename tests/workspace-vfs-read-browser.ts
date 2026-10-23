@@ -144,6 +144,32 @@ function holdCheckpoint(kind: "indexeddb" | "opfs") {
     },
   };
 }
+async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<void> {
+  const view = await projection(storage);
+  let replacement: IndexedDBStorage | undefined;
+  let reading: ReturnType<typeof view.workspace.read> | undefined;
+  const held = holdCheckpoint("indexeddb");
+  try {
+    const pinned = await view.workspace.pin("/file");
+    check(pinned.kind === "ok", "ownership-loss lease missing");
+    reading = pinned.value.read({ offset: 0, length: 1 });
+    await held.entered;
+    replacement = await IndexedDBStorage.open(name);
+    held.release();
+    const result = await reading;
+    check(result.kind === "io", `stale native reader returned ${result.kind}`);
+    await pinned.value.close();
+    check(storage.resources().indexeddbReaderWork === 0, "stale native read debt survived close");
+    check(storage.resources().readerStorageBytes === 0, "stale lease retention survived close");
+    check((await replacement.load())?.nodes.find((node) => node.ino === 2)?.size === 1,
+      "takeover recovered reader-only metadata");
+  } finally {
+    held.restore();
+    await reading;
+    await view.close();
+    await replacement?.close();
+  }
+}
 async function adapter(kind: "indexeddb" | "opfs") {
   const name = `waffle-public-range-${kind}-${crypto.randomUUID()}`;
   const open = () =>
@@ -227,6 +253,7 @@ async function adapter(kind: "indexeddb" | "opfs") {
     await lease.close();
     const resources = cold.resources();
     check(resources.readerStorageDebt === SIZE, "reader close hid deferred physical debt");
+    check(resources.readerStorageMetadataBytes > 0, "reader close hid deferred key metadata");
     await live.client.asyncCall("writeFile", ["/file"], new Uint8Array([10]));
     const held = holdCheckpoint(kind);
     let pending: Promise<unknown> | undefined;
@@ -252,7 +279,8 @@ async function adapter(kind: "indexeddb" | "opfs") {
       await live.backend.flush();
     }
     check(
-      cold.resources().readerStorageDebt === 0 && cold.resources().readerStorageBytes === 0,
+      cold.resources().readerStorageDebt === 0 && cold.resources().readerStorageBytes === 0 &&
+        cold.resources().readerStorageMetadataBytes === 0,
       "native deletion did not retire reader debt",
     );
     const missing = await cold.readRange("original", { offset: SIZE - 1, length: 1 }).then(
@@ -274,6 +302,7 @@ async function adapter(kind: "indexeddb" | "opfs") {
       index?.nodes.find((node) => node.ino === 2)?.size === 1,
       "recovery selected reader-only version",
     );
+    if (reopened instanceof IndexedDBStorage) await ownershipLoss(name, reopened);
     return { kind, ranges, resources };
   } finally {
     await view?.close();
