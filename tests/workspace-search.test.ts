@@ -684,3 +684,170 @@ test("memoized owners reuse their bounds and reject attempts to silently reconfi
   expect(() => createWorkspaceSearch(owner, { chunkBytes: 1 })).toThrow("different search limits");
   expect(() => createWorkspaceSearch(owner, { chunkBytes: 65537 })).toThrow("Invalid search limit");
 });
+
+test("signal registration reserves admission before a reentrant query", async () => {
+  await using value = await fixture();
+  await value.write("/file");
+  const search = value.search();
+  const controller = new AbortController();
+  const add = controller.signal.addEventListener.bind(controller.signal);
+  let nested: SearchCursor | undefined;
+  controller.signal.addEventListener = (...args) => {
+    add(...args);
+    nested = search.search(query);
+  };
+  const outer = search.search(query, controller.signal);
+  try {
+    await search.close();
+    expect(await nested?.next()).toEqual({ kind: "pressure", resource: "query" });
+    expect(await outer.next()).toEqual({ kind: "stopped" });
+    expect(value.boundary.snapshots).toBe(0);
+  } finally {
+    await outer.close();
+    await nested?.close();
+  }
+});
+
+test("query getters cannot reenter admission or reopen a closed owner", async () => {
+  await using value = await fixture();
+  const search = value.search();
+  let nested: SearchCursor | undefined;
+  let closing: Promise<void> | undefined;
+  const input: SearchQuery = {
+    kind: "text",
+    prefix: "/",
+    get text() {
+      nested = search.search(query);
+      closing = search.close();
+      return "TODO";
+    },
+  };
+  const cursor = search.search(input);
+  try {
+    await closing;
+    expect(await nested?.next()).toEqual({ kind: "pressure", resource: "query" });
+    expect(await cursor.next()).toEqual({ kind: "stopped" });
+    expect(value.boundary.snapshots).toBe(0);
+  } finally {
+    await cursor.close();
+    await nested?.close();
+  }
+});
+
+async function rejectsWith(promise: Promise<unknown>, failure: unknown) {
+  let rejected = false;
+  try {
+    await promise;
+  } catch (reason) {
+    rejected = true;
+    expect(reason).toBe(failure);
+  }
+  expect(rejected).toBe(true);
+}
+
+for (const failure of [undefined, null, false, 0, ""]) {
+  test(`failed signal registration preserves ${String(failure)} and unwinds its listener`, async () => {
+    await using value = await fixture();
+    const search = value.search();
+    const controller = new AbortController();
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    let removals = 0;
+    controller.signal.addEventListener = (...args) => {
+      add(...args);
+      throw failure;
+    };
+    controller.signal.removeEventListener = (...args) => {
+      removals++;
+      remove(...args);
+    };
+    const cursor = search.search(query, controller.signal);
+    expect(await cursor.next()).toEqual({ kind: "cleanup-failed", message: String(failure) });
+    await rejectsWith(cursor.close(), failure);
+    await rejectsWith(search.close(), failure);
+    expect(removals).toBe(1);
+    expect(value.boundary.snapshots).toBe(0);
+  });
+
+  test(`failed signal removal preserves ${String(failure)} after joining a held real reader`, async () => {
+    await using value = await fixture();
+    await value.write("/file");
+    const entered = gate();
+    const release = gate();
+    value.boundary.readReply = async () => {
+      entered.release();
+      await release.wait;
+    };
+    const search = value.search();
+    const controller = new AbortController();
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    let reentrant: Promise<void> | undefined;
+    controller.signal.removeEventListener = (...args) => {
+      remove(...args);
+      reentrant = cursor.close();
+      throw failure;
+    };
+    const cursor = search.search(query, controller.signal);
+    const pending = cursor.next();
+    let closing: Promise<void> | undefined;
+    try {
+      await entered.wait;
+      closing = cursor.close();
+      let delivered = false;
+      const repeated = cursor.next().then((page) => {
+        delivered = true;
+        return page;
+      });
+      for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+      expect(delivered).toBe(false);
+      expect(reentrant).toBe(closing);
+      expect(value.service.resources().readerLeases).toBe(1);
+      expect(value.boundary.closes).toBe(0);
+      expect(await search.search(query).next()).toEqual({ kind: "pressure", resource: "query" });
+      release.release();
+      const terminal = { kind: "cleanup-failed", message: String(failure) };
+      expect(await repeated).toEqual(terminal);
+      expect(await pending).toEqual(terminal);
+      await rejectsWith(closing, failure);
+      expect(cursor.close()).toBe(closing);
+      expect(value.service.resources().readerLeases).toBe(0);
+      expect(value.boundary.closes).toBe(1);
+      expect(await search.search(query).next()).toEqual({ kind: "pressure", resource: "query" });
+      await rejectsWith(search.close(), failure);
+    } finally {
+      controller.signal.removeEventListener = remove;
+      release.release();
+      await pending;
+      await closing?.catch(() => {});
+      await reentrant?.catch(() => {});
+      await cursor.close().catch(() => {});
+    }
+  });
+}
+
+test("only charged query fields survive admission and checkpoint creation", async () => {
+  await using value = await fixture();
+  await value.write("/file");
+  const extra = new Uint8Array(32 * 1024 * 1024);
+  const input: SearchQuery & { unrelated?: Uint8Array } = { ...query, unrelated: extra };
+  const cursor = value.search({ totalBytes: 2048 }).search(input);
+  delete input.unrelated;
+  const { stamp } = await caughtUp(cursor);
+  expect(Object.keys(stamp.query).sort()).toEqual(["kind", "prefix", "text"]);
+  expect(Reflect.get(stamp.query, "unrelated")).toBeUndefined();
+  await cursor.close();
+});
+
+
+test("limit normalization never reads unrelated caller fields", async () => {
+  await using value = await fixture();
+  const limits: Partial<SearchLimits> & { unrelated?: Uint8Array } = {
+    totalBytes: 2048,
+    get unrelated() {
+      throw new Error("unrelated limit getter must not be read");
+    },
+  };
+  const cursor = value.search(limits).search(query);
+  expect((await caughtUp(cursor)).stamp.query).toEqual(query);
+  await cursor.close();
+});
