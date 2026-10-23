@@ -21,7 +21,9 @@ const engines = process.argv.slice(2).join(",");
 if (name === "${continuity}") {
   if (engines !== "chromium") throw Error("continuity engine repeated or changed");
   if (existsSync(name + ".finished")) throw Error("continuity repeated");
-  if (process.env.STORAGE_SCRATCH_ROOT !== process.cwd()) throw Error("scratch missing");
+  const scratch = process.env.STORAGE_SCRATCH_ROOT;
+  if (scratch !== process.cwd() && !scratch?.startsWith(process.cwd() + "/wb-")) throw Error("scratch missing");
+  if (process.platform === "linux" && process.env.PROCESS_SCRATCH_ROOT !== scratch) throw Error("supervised scratch missing");
   writeFileSync(name + ".finished", engines);
   if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
   process.exit(0);
