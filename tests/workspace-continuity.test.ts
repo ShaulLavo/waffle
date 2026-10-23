@@ -547,10 +547,8 @@ test("completed native checkpoint restores publication identity without restorin
   } finally {
     try {
       await debug?.close();
-      if (root) {
-        if (evidence.failure === undefined) await owner(root, "stop").catch(() => {});
-        await call(root, "terminate");
-      }
+      if (root && evidence.failure === undefined) await owner(root, "stop").catch(() => {});
+      if (root) await call(root, "terminate");
       for (const page of pages.slice(0, 2)) await page.close();
       await observed(() => Array.from(workers.values()).every(Boolean), "containment worker close");
       if (audit) {
