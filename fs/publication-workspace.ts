@@ -36,6 +36,7 @@ interface WorkspaceCall {
 const requestBound = PAGE + 8192;
 
 const queryOperations = new Set([
+  "preopen",
   "stat",
   "permissions",
   "resolve",
@@ -100,7 +101,7 @@ export function workspaceRequest(
   if (!intent && !queryOperations.has(operation)) throw new FilesystemError(2);
   if (intent)
     return { operation, args, input: data.input, ...(data.id ? { id: identity(data.id) } : {}) };
-  if (operation === "lookup") text(args[0]);
+  if (operation === "lookup" || operation === "preopen") text(args[0]);
   else if (operation !== "flush") integer(args[0]);
   if (operation === "resolve") text(args[1]);
   if (operation === "read") {
