@@ -355,12 +355,7 @@ export class SharedFilesystem {
         throw error;
       },
     );
-    this.writes = Promise.all([
-      earlier,
-      result.catch((error) => {
-        this.failure ??= { error };
-      }),
-    ]);
+    this.writes = Promise.all([earlier, result.catch(() => {})]);
     return result;
   }
 
@@ -375,6 +370,7 @@ export class SharedFilesystem {
       return await prepared.value();
     } catch (error) {
       this.assertLive();
+      this.failure ??= { error };
       throw error;
     } finally {
       prepared.release();
