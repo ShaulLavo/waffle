@@ -1,15 +1,11 @@
 import type { Resource } from "./descriptors.js";
-import {
-  FilesystemError,
-  FilesystemSection,
-  isRevoked,
-  type FilesystemIdentity,
-} from "../fs/protocol.js";
+import { FilesystemError } from "./filesystem.js";
+import { FilesystemSection, isRevoked } from "../fs/section.js";
+import type { FilesystemIdentity } from "../fs/protocol.js";
 
 type FileResource = Extract<Resource, { kind: "file" }>;
 interface SharedOffset {
-  buffer: SharedArrayBuffer;
-  cells: Int32Array;
+  cells: Int32Array<SharedArrayBuffer>;
   identity: FilesystemIdentity;
   section: FilesystemSection;
 }
@@ -22,7 +18,7 @@ export function shareFileResource(
   buffer?: SharedArrayBuffer,
 ): SharedArrayBuffer {
   const existing = offsets.get(resource);
-  if (existing) return existing.buffer;
+  if (existing) return existing.cells.buffer;
   const shared = buffer ?? new SharedArrayBuffer(16);
   const cells = new Int32Array(shared);
   // Atomics has no Float64 operation. Share the number's bits, not a signed integer
@@ -36,7 +32,6 @@ export function shareFileResource(
     Atomics.store(offset, 0, bits[0]!);
   }
   offsets.set(resource, {
-    buffer: shared,
     cells,
     identity,
     section: new FilesystemSection(identity),

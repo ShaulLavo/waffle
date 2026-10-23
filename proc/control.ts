@@ -1,4 +1,4 @@
-import { ProcessErrno, ProcessError } from "./types.ts";
+import { ProcessErrno, ProcessError } from "./errors.ts";
 import {
   isInstance,
   atomicsCompareExchange,
@@ -12,7 +12,7 @@ import {
   typedArrayBuffer,
   typedArrayByteOffset,
   typedArrayLength,
-} from "./intrinsics.ts";
+} from "./intrinsics/core.ts";
 
 const MASK = 0xffffffffn;
 // Executors may replace the global clock with a guest polyfill. Wait deadlines

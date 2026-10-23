@@ -56,12 +56,15 @@ export async function isolatedProcess() {
             if (!path.startsWith(processRoot.endsWith(sep) ? processRoot : processRoot + sep))
               return { path, external: true };
           });
-          build.onLoad({ filter: /\/proc\/intrinsics\.ts$/ }, () => ({
-            loader: "ts",
-            contents: Object.keys(native)
-              .map((key) => `export const ${key} = __processIntrinsics.${key};`)
-              .join("\n"),
-          }));
+          build.onLoad(
+            { filter: /\/proc\/(?:intrinsics\.ts|intrinsics\/core\.ts|intrinsics\/host\.ts)$/ },
+            () => ({
+              loader: "ts",
+              contents: Object.keys(native)
+                .map((key) => `export const ${key} = __processIntrinsics.${key};`)
+                .join("\n"),
+            }),
+          );
         },
       },
     ],

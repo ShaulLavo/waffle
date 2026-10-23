@@ -1,4 +1,4 @@
-import { resolveDescriptorPath, reopenDescriptor } from "./fd-reopen.js";
+import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
 import { withFileOffset } from "./open-file.js";
@@ -226,22 +226,6 @@ export class Wasi {
     }
   }
 
-  private openFile(
-    resource: Extract<Resource, { handle: number }>,
-    base: bigint,
-    inheriting: bigint,
-    preopen?: string,
-  ): number {
-    this.opts.fs.retain(resource.handle);
-    return this.descriptors.open(
-      resource,
-      base,
-      inheriting,
-      () => this.opts.fs.release(resource.handle),
-      preopen,
-    );
-  }
-
   private openFileAt(
     fd: number,
     resource: Extract<Resource, { handle: number }>,
@@ -262,26 +246,15 @@ export class Wasi {
 
   /** runtime_proc uses positive errno and checks output memory before changing the inode. */
   fdReopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
-    if ((out >>> 0) + 4 > this.bytes().length) return 21;
     try {
-      const result = reopenDescriptor(
-        this.descriptors,
-        this.opts.fs,
-        fd >>> 0,
-        oflags,
-        fdflags,
-        base,
-      );
-      if (result < 0) return -result;
-      this.view().setUint32(out >>> 0, result, true);
-      return SUCCESS;
+      return this.reopen(fd >>> 0, oflags, fdflags, base, 0n, out);
     } catch (error) {
       if (error instanceof FilesystemError) return error.errno;
       throw error;
     }
   }
 
-  private openDescriptorPath(
+  private reopen(
     source: number,
     oflags: number,
     fdflags: number,
@@ -289,7 +262,6 @@ export class Wasi {
     inheriting: bigint,
     out: number,
   ): number {
-    if (!this.descriptors.get(source)) return ENOENT;
     if ((out >>> 0) + 4 > this.bytes().length) return 21;
     const result = reopenDescriptor(
       this.descriptors,
@@ -300,8 +272,12 @@ export class Wasi {
       base,
       inheriting,
     );
+    return this.opened(result, out >>> 0);
+  }
+
+  private opened(result: number, out: number): number {
     if (result < 0) return -result;
-    this.view().setUint32(out >>> 0, result, true);
+    this.view().setUint32(out, result, true);
     return SUCCESS;
   }
 
@@ -879,14 +855,8 @@ export class Wasi {
         const alias = resolveDescriptorPath(this.descriptors, this.opts.fs, dir, name);
         if (typeof alias === "number") return alias;
         if (alias !== undefined) {
-          return this.openDescriptorPath(
-            alias.source,
-            oflags,
-            fdflags,
-            rightsBase,
-            rightsInheriting,
-            fdOut,
-          );
+          if (!this.descriptors.get(alias.source)) return ENOENT;
+          return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
         const path = this.opts.fs.resolve(dir.resource.handle, name);
         if (typeof path === "number") return path;
@@ -899,23 +869,19 @@ export class Wasi {
           if (typeof result !== "number") return result.error;
           node = result;
         }
-        const kind = this.opts.fs.stat(node).kind;
-        const permissions = this.opts.fs.permissions?.(node);
-        const access = (rightsBase & RIGHT_FD_READ ? 4 : 0) | (rightsBase & RIGHT_FD_WRITE ? 2 : 0);
-        if (permissions && permissions.accessSupported & access & ~permissions.access) return 2;
-        if (oflags & O_DIRECTORY && kind !== "directory") return ENOTDIR;
-        if (kind === "directory" && oflags & O_TRUNC) return EISDIR;
-        if (kind === "file" && oflags & O_TRUNC) {
-          const error = this.opts.fs.resize(node, 0, true);
-          if (error) return error;
-        }
-        const resource: Resource =
-          kind === "directory"
-            ? { kind, handle: node }
-            : { kind, handle: node, offset: 0, append: (fdflags & FDFLAG_APPEND) !== 0, fdflags };
-        const newFd = this.openFile(resource, rightsBase, rightsInheriting);
-        this.view().setUint32(fdOut, newFd, true);
-        return SUCCESS;
+        return this.opened(
+          openInode(
+            this.descriptors,
+            this.opts.fs,
+            node,
+            this.opts.fs.stat(node).kind,
+            oflags,
+            fdflags,
+            rightsBase,
+            rightsInheriting,
+          ),
+          fdOut,
+        );
       },
       path_readlink: (fd: number, ptr: number, len: number) => {
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_READLINK);
