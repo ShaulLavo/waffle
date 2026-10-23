@@ -442,6 +442,7 @@
     "build": "bun build.ts",
     "prepare": "bun prepare.ts",
     "test": "bun test ./tests",
+    "test:ci": "bun test ./tooling/ci-paths.test.ts",
     "test:libc": "bun scripts/test-wasi-libc.ts",
     "test:browser": "bun scripts/test-browser.ts",
     "check": "tsc -p .",
