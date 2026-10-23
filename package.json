@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.78",
+  "version": "0.0.84",
   "private": true,
   "type": "module",
   "exports": {
@@ -386,6 +386,13 @@
       "bun": "./browser/preview1-worker.ts",
       "browser": "./browser/preview1-worker.ts",
       "default": "./browser/preview1-worker.ts"
+    },
+    "./browser/process-context": {
+      "types": "./browser/process-context.ts",
+      "node": "./dist/browser/process-context.js",
+      "bun": "./browser/process-context.ts",
+      "browser": "./browser/process-context.ts",
+      "default": "./browser/process-context.ts"
     },
     "./browser/process-broker": {
       "types": "./browser/process-broker.ts",

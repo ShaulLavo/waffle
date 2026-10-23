@@ -1,3 +1,8 @@
+import {
+  createProcessIdentity,
+  type RuntimeHostIdentity,
+  type RuntimeProcessIdentity,
+} from "./process-context.js";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
@@ -46,6 +51,8 @@ import {
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
+  /** Supplied by the owning page or broker, never read from guest env. */
+  hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
   args: string[];
   env: Record<string, string>;
@@ -112,6 +119,7 @@ export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWork
   outcome: OutcomeWord | null;
   interrupt?: ControlCells;
   runtimeState: RuntimeWorkerState | null;
+  identity: RuntimeProcessIdentity | null;
   checkActive(): void;
   defaultSignal(signal: number): void;
   post(type: "stdout" | "stderr", data: Uint8Array): boolean;
@@ -543,7 +551,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       }
     };
     const post = (type: "stdout" | "stderr", data: Uint8Array) => write(type, data) === data.length;
+    const identity = createProcessIdentity(runtimeState, req.hostIdentity);
     const context: WorkerSetupContext<R> = {
+      identity,
       request: req,
       fs,
       isolated,

@@ -42,3 +42,17 @@ export { getVfsDescriptor, VfsError } from "./vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./vfs.js";
 
 export * from "./workspace.js";
+
+export {
+  createWorkspaceSearch,
+  WORKSPACE_SEARCH_LIMITS,
+  type SearchQuery,
+  type SearchHit,
+  type IndexStamp,
+  type SearchTerminal,
+  type SearchPage,
+  type IndexValidation,
+  type SearchCursor,
+  type WorkspaceSearch,
+  type SearchLimits,
+} from "./workspace-search.js";

@@ -1,4 +1,4 @@
-import type { StorageLockManager } from "../../fs/indexeddb";
+import type { StorageLockManager } from "../../fs/indexeddb.js";
 
 type Entry =
   | { kind: "file"; name: string; bytes: Uint8Array }
@@ -99,6 +99,18 @@ export function identityOpfsFixture() {
     events,
     fault(next?: typeof fault) {
       fault = next;
+    },
+    inventory() {
+      const workspace = Array.from(tree.entries.values())[0];
+      if (workspace?.kind !== "directory") throw new Error("missing workspace");
+      const data = workspace.entries.get("data");
+      if (data?.kind !== "directory") throw new Error("missing data");
+      return {
+        data: Array.from(data.entries.keys()).sort(),
+        snapshots: Array.from(metadata().entries.keys())
+          .filter((name) => name.startsWith("snapshot-"))
+          .sort(),
+      };
     },
     markers() {
       return Array.from(metadata().entries.keys()).filter((name) => name.startsWith("identity-"));

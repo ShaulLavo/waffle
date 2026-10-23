@@ -176,6 +176,10 @@ export class MemFS implements FileSystem {
     return this.handle(node);
   }
 
+  existingHandle(node: Node): FileHandle | undefined {
+    return this.nodeHandles.get(node);
+  }
+
   private directory(handle: FileHandle): DirNode {
     const node = this.nodeForHandle(handle);
     if (node.kind !== "dir") throw new Error("not a directory handle");

@@ -1,4 +1,6 @@
 import type { ReadBacking } from "./workspace-read.js";
+import type { MemoryBudget } from "./memory-budget.js";
+import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
 import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
   CheckpointPressure,
@@ -7,8 +9,15 @@ import {
 } from "./checkpoint-pressure.js";
 import { FilesystemError } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
-import { MemoryBackend } from "./backend.js";
-import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory.js";
+import { MemoryBackend, type LocalMutationPlan } from "./backend.js";
+import {
+  MemFS,
+  adoptInodes,
+  type Node,
+  type DirNode,
+  type FileNode,
+  type NamespacePlan,
+} from "./memory.js";
 import {
   validatePersistedIndex,
   type PersistedIndex,
@@ -26,7 +35,7 @@ interface CheckpointRequest {
 interface CheckpointCapture {
   readonly changed: Set<Node>;
   readonly data: Map<string, Uint8Array>;
-  readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string }>;
+  readonly detachedSnapshots: Map<FileNode, { handle: FileHandle; key: string; revision: number }>;
 }
 
 /** Memory is authoritative while running. Storage receives immutable, ordered checkpoints;
@@ -63,8 +72,10 @@ export class PersistentBackend extends MemoryBackend {
     index?: PersistedIndex,
     intervalMs = 50,
     checkpointLimits?: Partial<CheckpointLimits>,
+    private readonly dirtyLimits: Partial<DirtyLimits> | false = {},
+    startupRoot?: MemoryBudget,
   ) {
-    super(fs, reservation);
+    super(fs, reservation, startupRoot);
     this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
@@ -73,6 +84,7 @@ export class PersistentBackend extends MemoryBackend {
       if (node.kind === "dir") for (const child of node.children.values()) visit(child);
     };
     visit(fs.root);
+    this.configureDirty();
     if (index) {
       this.generation = index.generation;
       for (const node of index.nodes) {
@@ -98,7 +110,12 @@ export class PersistentBackend extends MemoryBackend {
   }
   static async open(
     storage: StorageBackend,
-    options: { intervalMs?: number; checkpointLimits?: Partial<CheckpointLimits> } = {},
+    options: {
+      intervalMs?: number;
+      checkpointLimits?: Partial<CheckpointLimits>;
+      dirtyLimits?: Partial<DirtyLimits> | false;
+      startupRoot?: MemoryBudget;
+    } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
     if (index) validatePersistedIndex(index);
@@ -112,6 +129,8 @@ export class PersistentBackend extends MemoryBackend {
         undefined,
         options.intervalMs,
         options.checkpointLimits,
+        options.dirtyLimits,
+        options.startupRoot,
       );
     const nodes = new Map<number, Node>();
     for (const entry of index.nodes)
@@ -155,6 +174,8 @@ export class PersistentBackend extends MemoryBackend {
       index,
       0,
       options.checkpointLimits,
+      options.dirtyLimits,
+      options.startupRoot,
     );
     try {
       if (!index.nodes[0]?.identity) {
@@ -186,6 +207,7 @@ export class PersistentBackend extends MemoryBackend {
         this.detachedKeys.delete(node.ino);
       }
       this.removed.delete(node.ino);
+      if (node.kind === "file") this.revisions.delete(this.fs.handleForNode(node));
       this.dirty.add(node);
       if (node.kind === "dir")
         for (const child of node.children.values()) this.changeLinks(child, 1);
@@ -303,9 +325,9 @@ export class PersistentBackend extends MemoryBackend {
       )
         continue;
       node.identity = this.shared.identity(handle) ?? node.identity;
+      node.size = stat.size;
+      node.mtime = stat.mtime;
       if (this.shared.evict(handle, revision)) {
-        node.size = stat.size;
-        node.mtime = stat.mtime;
         this.revisions.delete(handle);
         this.registeredNodes.delete(handle);
       } else this.shared.unload(handle, revision);
@@ -356,13 +378,97 @@ export class PersistentBackend extends MemoryBackend {
     this.loading.set(handle, load);
     return this.ownWork(load);
   }
+  private namespaceUnits(): number {
+    let units = 0;
+    for (const node of this.nodes.values()) units += this.nodeMetadataBytes(node) * 4;
+    return units;
+  }
+  private configureDirty(): void {
+    if (this.dirtyLimits === false) return;
+    this.shared.dirtyAdmission.configure(
+      this.dirtyLimits,
+      this.pressure.limits,
+      this.namespaceUnits(),
+    );
+  }
+  override attachShared(...args: Parameters<MemoryBackend["attachShared"]>): void {
+    const previous = this.shared;
+    super.attachShared(...args);
+    if (previous !== this.shared) this.configureDirty();
+  }
+  private namespaceGrowth(plan: NamespacePlan): number {
+    let units = plan.created.length * 256;
+    for (const edge of plan.edges) if (edge.after) units += 64 + edge.name.length * 2;
+    for (const parent of plan.parents)
+      if (!this.dirty.has(parent)) units += this.nodeMetadataBytes(parent);
+    return units * 4;
+  }
+  protected override admitMutation(plan: LocalMutationPlan): void {
+    if (!this.shared.dirtyAdmission.enabled || !plan.changes.length) return;
+    const action = plan.action;
+    const namespace = action.kind === "writeFile" ? action.namespace : action;
+    const files = new Map<FileHandle, number>();
+    let units = 0;
+    if (namespace.kind === "namespace") {
+      units = this.namespaceGrowth(namespace.plan);
+      for (const handle of namespace.registered) files.set(handle, 0);
+      for (const parent of namespace.plan.parents) {
+        const handle = this.fs.handleForNode(parent);
+        this.sync(handle);
+        files.set(handle, 0);
+      }
+    }
+    if (action.kind === "write" || action.kind === "writeFile") {
+      const size =
+        action.kind === "writeFile" && !action.append
+          ? action.data.length
+          : Math.max(this.shared.info(action.handle)!.size, action.offset + action.data.length);
+      files.set(action.handle, size);
+    }
+    if (action.kind === "resize")
+      files.set(
+        action.handle,
+        action.truncate
+          ? action.size
+          : Math.max(this.shared.info(action.handle)!.size, action.size),
+      );
+    if (action.kind === "setMode" || action.kind === "setMtime") {
+      const node = this.fs.nodeForHandle(action.handle);
+      if (node.kind === "dir" && !this.dirty.has(node)) units += this.nodeMetadataBytes(node) * 4;
+      files.set(action.handle, this.shared.stat(action.handle)!.size);
+    }
+    this.shared.prepareDirtyMutation(files, units);
+  }
   override execute(
     operation: string,
     args: Parameters<MemoryBackend["execute"]>[1],
     data: Uint8Array,
   ): unknown {
     this.assertAdmitting();
+    if (operation === "dirtyWait") return;
     return super.execute(operation, args, data);
+  }
+  dirtyPressure() {
+    return this.shared.dirtyAdmission.diagnostics(this.shared.resources().usedBytes);
+  }
+  async waitForDirtyCapacity(changed: number, cancelled: () => boolean): Promise<void> {
+    this.assertAdmitting();
+    this.evictClean();
+    const admission = this.shared.dirtyAdmission;
+    if (admission.change !== changed) return;
+    const pending = this.pressure.diagnostics().pendingOperations > 0;
+    if (!pending && !admission.hasDebt) throw new DirtyCapacityError(true);
+    let failure: unknown;
+    const wait = admission.wait(
+      changed,
+      () => cancelled() || this.stopped || !!this.closing,
+      () => failure,
+    );
+    const progress = pending ? this.lastCommit : this.checkpoint(true);
+    void progress.catch((error) => {
+      failure = error;
+    });
+    return wait;
   }
   renewIdentityReservation(): Promise<void> {
     this.assertAdmitting();
@@ -511,20 +617,52 @@ export class PersistentBackend extends MemoryBackend {
           : target === undefined
             ? undefined
             : this.fs.nodeForHandle(target);
-      const request = { durable, target, selected };
-      const cost = this.captureCost(request);
-      const reservation = this.pressure.reserve(cost);
-      try {
-        return this.captureReserved(request, reservation, cost.metadataBytes).finally(() =>
-          this.pressure.release(reservation),
-        );
-      } catch (error) {
-        this.pressure.release(reservation);
-        this.keys = new Map(this.committedKeys);
-        this.revisions.clear();
-        throw error;
-      }
+      return this.reserveCheckpoint({ durable, target, selected });
     });
+  }
+  private includesDetachedWriters({ durable, target, selected }: CheckpointRequest): boolean {
+    for (const [handle, node] of this.registeredNodes) {
+      if (node.kind !== "file" || !this.detached.has(node)) continue;
+      const revision = this.shared.revision(handle);
+      if (revision === undefined || revision === this.revisions.get(handle)) continue;
+      if (!durable || (target !== undefined && selected !== node)) return false;
+    }
+    return true;
+  }
+  private reserveCheckpoint(request: CheckpointRequest): Promise<void> {
+    const cost = { ...this.captureCost(request) };
+    this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
+    let reservation: number;
+    try {
+      reservation = this.pressure.reserve(cost);
+    } catch (error) {
+      this.shared.dirtyAdmission.releaseCopy(cost);
+      throw error;
+    }
+    const revision = this.includesDetachedWriters(request)
+      ? this.shared.dirtyAdmission.revision
+      : undefined;
+    try {
+      return this.captureReserved(request, reservation, cost)
+        .then(() => {
+          if (revision === undefined) return;
+          this.shared.mutate(undefined, undefined, () =>
+            this.shared.cleanDirty(revision, this.namespaceUnits()),
+          );
+        })
+        .finally(() => {
+          this.pressure.release(reservation);
+          this.shared.mutate(undefined, undefined, () =>
+            this.shared.dirtyAdmission.releaseCopy(cost),
+          );
+        });
+    } catch (error) {
+      this.pressure.release(reservation);
+      this.shared.dirtyAdmission.releaseCopy(cost);
+      this.keys = new Map(this.committedKeys);
+      this.revisions.clear();
+      throw error;
+    }
   }
   private captureFile(
     handle: FileHandle,
@@ -541,7 +679,7 @@ export class PersistentBackend extends MemoryBackend {
       if (!snapshot) return;
       const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
       data.set(key, snapshot.data);
-      detachedSnapshots.set(node, { handle, key });
+      detachedSnapshots.set(node, { handle, key, revision });
       // A detached fd owns bytes, not a name. A later relink must recapture its dirty revision.
       return;
     }
@@ -562,8 +700,17 @@ export class PersistentBackend extends MemoryBackend {
   private captureReserved(
     request: CheckpointRequest,
     reservation: number,
-    metadataBytes: number,
+    cost: { bytes: number; metadataBytes: number },
   ): Promise<void> {
+    const metadataBytes = cost.metadataBytes;
+    const start = (metadata: number) => {
+      this.pressure.start(reservation, metadata);
+      const growth = Math.max(0, metadata - cost.metadataBytes);
+      this.shared.mutate(undefined, undefined, () =>
+        this.shared.dirtyAdmission.growCopyMetadata(growth),
+      );
+      cost.metadataBytes += growth;
+    };
     const { durable, target, selected } = request;
     this.pruneDetached();
     const capture: CheckpointCapture = {
@@ -608,7 +755,7 @@ export class PersistentBackend extends MemoryBackend {
     if (!upserts.length && !removes.length && !data.size)
       return this.lastCommit.then(() => {
         this.assertOpen();
-        this.pressure.start(reservation, metadataBytes);
+        start(metadataBytes);
         return durable ? this.flushOpen(flushKeys) : undefined;
       });
     const epoch = this.checkpointEpoch;
@@ -625,7 +772,7 @@ export class PersistentBackend extends MemoryBackend {
         this.assertOpen();
         if (epoch !== this.checkpointEpoch)
           throw new Error("filesystem checkpoint invalidated by a failed commit");
-        this.pressure.start(reservation, metadataBytes + this.pinMetadataBytes() * 4);
+        start(metadataBytes + this.pinMetadataBytes() * 4);
         batch.generation = this.generation + 1;
         // A later request may have reattached an inode removed by this older checkpoint.
         // Its next upsert still needs the durable payload even though it is no longer detached.
@@ -656,8 +803,10 @@ export class PersistentBackend extends MemoryBackend {
             this.detached.has(node) &&
             this.registeredNodes.get(snapshot.handle) === node &&
             this.shared.revision(snapshot.handle) !== undefined
-          )
+          ) {
             this.detachedKeys.set(node.ino, snapshot.key);
+            this.revisions.set(snapshot.handle, snapshot.revision);
+          }
         }
       })
       .finally(() => {
