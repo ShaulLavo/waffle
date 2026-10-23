@@ -613,6 +613,13 @@ async function publicCorpus(index = coldCorpus()) {
       counters.reads++;
       throw new Error("namespace hydrated cold payload");
     },
+    async readRange() {
+      counters.reads++;
+      throw new Error("namespace hydrated cold payload");
+    },
+    retainPayload() {
+      throw new Error("namespace retained cold payload");
+    },
     async persist() {
       counters.persists++;
     },
