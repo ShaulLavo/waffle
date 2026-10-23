@@ -52,6 +52,105 @@ function lockName(backend: Backend, name: string): string {
     : `bun-wasm:filesystem:${name}`;
 }
 
+type LifecycleTrace = {
+  engine: string;
+  label: string;
+  started: number;
+  pages: number;
+  events: { ms: number; page: number; role: string; event: string; detail: string }[];
+};
+let activeTrace: LifecycleTrace | undefined;
+const pageTraces = new WeakMap<Page, (event: string, detail?: string) => void>();
+function reportLifecycle(trace: LifecycleTrace, outcome: string): void {
+  if (outcome === "case-finished" && !process.env.STORAGE_LOCK_TRACE) return;
+  console.error(JSON.stringify({ storageLockLifecycle: { ...trace, outcome } }));
+}
+function observePage(page: Page): void {
+  const trace = activeTrace;
+  if (!trace) return;
+  const id = ++trace.pages;
+  const role =
+    trace.label === "startup" ? "startup" : id === 1 ? "owner" : id === 2 ? "waiter" : `peer-${id}`;
+  const record = (event: string, detail = "") => {
+    if (trace.events.length === 128) trace.events.shift();
+    trace.events.push({
+      ms: Date.now() - trace.started,
+      page: id,
+      role,
+      event,
+      detail: detail.slice(0, 512),
+    });
+  };
+  pageTraces.set(page, record);
+  const path = (url: string) => URL.parse(url)?.pathname ?? (url || "<pending-url>");
+  record("created", path(page.url()));
+  page.on("request", (request) => record("request", `${request.method()} ${path(request.url())}`));
+  page.on("response", (response) =>
+    record("response", `${response.status()} ${path(response.url())}`),
+  );
+  page.on("requestfinished", (request) => record("requestfinished", path(request.url())));
+  page.on("requestfailed", (request) =>
+    record("requestfailed", `${path(request.url())} ${request.failure()?.errorText}`),
+  );
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) record("navigation", path(frame.url()));
+  });
+  page.on("domcontentloaded", () => record("domcontentloaded", path(page.url())));
+  page.on("load", () => record("load", path(page.url())));
+  page.on("pageerror", (error) => record("pageerror", text(error)));
+  page.on("console", (message) => {
+    if (message.text().startsWith("STORAGE_LOCK_HANDLE ")) record("handle", message.text());
+  });
+  let workers = 0;
+  page.on("worker", (worker) => {
+    const id = ++workers;
+    record("worker-created", `${id} ${path(worker.url())}`);
+    worker.on("close", () => record("worker-closed", `${id} ${path(worker.url())}`));
+  });
+  page.on("close", () => record("closed", path(page.url())));
+  page.on("crash", () => {
+    record("crash", path(page.url()));
+    reportLifecycle(trace, "page-crash");
+  });
+}
+async function closePage(page: Page): Promise<void> {
+  const record = pageTraces.get(page);
+  record?.("close-requested");
+  await page.close();
+  record?.("close-fulfilled");
+}
+function storageHandleTrace(): void {
+  const constructor: unknown = Reflect.get(globalThis, "FileSystemSyncAccessHandle");
+  if (typeof constructor !== "function") return;
+  const prototype: unknown = Reflect.get(constructor, "prototype");
+  if (typeof prototype !== "object" || prototype === null) return;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "close");
+  if (!descriptor || typeof descriptor.value !== "function") return;
+  const close: (...args: unknown[]) => unknown = descriptor.value;
+  const ids = new WeakMap<object, number>();
+  let next = 0,
+    events = 0;
+  const record = (id: number, event: string) => {
+    if (events++ < 64) console.debug("STORAGE_LOCK_HANDLE " + JSON.stringify({ id, event }));
+  };
+  Object.defineProperty(prototype, "close", {
+    ...descriptor,
+    value: function (this: object, ...args: unknown[]): unknown {
+      const id = ids.get(this) ?? ++next;
+      ids.set(this, id);
+      record(id, "close-requested");
+      try {
+        const result = Reflect.apply(close, this, args);
+        record(id, "close-returned");
+        return result;
+      } catch (error) {
+        record(id, "close-threw");
+        throw error;
+      }
+    },
+  });
+}
+
 async function pageFixture(context: BrowserContext, baseURL: string): Promise<Page> {
   const page = await storageLockNavigate(context, baseURL, (navigation) =>
     console.error(JSON.stringify({ source, purpose: "fixture", navigation })),
@@ -128,7 +227,7 @@ async function query(page: Page): Promise<any> {
   return await page.evaluate(() => (globalThis as any).lockTest.queryLocks());
 }
 async function closePages(pages: Page[]): Promise<void> {
-  for (const page of pages) if (!page.isClosed()) await page.close();
+  for (const page of pages) if (!page.isClosed()) await closePage(page);
 }
 
 async function contested(
@@ -162,7 +261,7 @@ async function contested(
       `waiting ${backend} page did not queue ${applicationLock}`,
     );
     await dispose(owner);
-    await owner.close();
+    await closePage(owner);
     await assertReady(waiter, "waiter after owner disposal");
     assert(
       (await waiter.evaluate(() => (globalThis as any).lockTest.readSaved())) === "durable marker",
@@ -188,8 +287,10 @@ async function earlyReload(
     const waiter = await openFilesystem(context, baseURL, backend, name, "wait");
     pages.push(waiter);
     await assertWaiting(waiter, "early-reload waiter");
-    await owner.close();
+    await closePage(owner);
+    pageTraces.get(waiter)?.("reload-requested");
     await waiter.reload();
+    pageTraces.get(waiter)?.("reload-fulfilled");
     await waiter.waitForFunction(() => (globalThis as any).lockTest !== undefined);
     await startPage(waiter, backend, name, "wait");
     await assertReady(waiter, "reloaded waiter");
@@ -218,7 +319,7 @@ async function crashedOwner(
     pages.push(waiter);
     await assertWaiting(waiter, "crash waiter");
     // Deliberately skip dispose: this models a tab/worker crash and exercises browser cleanup.
-    await owner.close();
+    await closePage(owner);
     await assertReady(waiter, "waiter after owner crash");
     assert(
       (await waiter.evaluate(() => (globalThis as any).lockTest.readSaved())) === "durable marker",
@@ -563,7 +664,7 @@ async function recoveryOwnershipLoss(
         "ready owner's flushed data did not survive takeover",
       );
       await assertRetainedReadyOwner(owner);
-      await owner.close();
+      await closePage(owner);
       assert(owner.isClosed(), "failed owner's page teardown did not finish");
     }
   } finally {
@@ -815,6 +916,7 @@ try {
   const workerBuild = await Bun.build({
     entrypoints: [resolve(source, "browser/fs-worker.ts")],
     target: "browser",
+    banner: `(${storageHandleTrace.toString()})();`,
   });
   if (!workerBuild.success)
     throw new AggregateError(workerBuild.logs, "Filesystem worker build failed");
@@ -883,6 +985,14 @@ try {
     });
     context = await launching!;
     context.setDefaultTimeout(15_000);
+    activeTrace = { engine: name, label: "startup", started: Date.now(), pages: 0, events: [] };
+    context.on("page", observePage);
+    context.on("close", () => {
+      if (activeTrace) reportLifecycle(activeTrace, "context-closed");
+    });
+    context.browser()?.on("disconnected", () => {
+      if (activeTrace) reportLifecycle(activeTrace, "browser-disconnected");
+    });
     console.log(JSON.stringify({ engine: name, version: context.browser()?.version(), source }));
     await storageLockNavigate(context, `http://127.0.0.1:${server.port}/blank`, (diagnostic) =>
       console.error(JSON.stringify({ engine: name, source, startup: diagnostic })),
@@ -896,6 +1006,13 @@ try {
         continue;
       selected++;
       const testName = uniqueName(`${name}-${test.backend}`);
+      activeTrace = {
+        engine: name,
+        label: `${test.backend}: ${test.label}`,
+        started: Date.now(),
+        pages: 0,
+        events: [],
+      };
       try {
         await test.run(context, `http://127.0.0.1:${server.port}/`, testName);
         console.log(`PASS ${name} ${test.backend}: ${test.label}`);
@@ -903,6 +1020,9 @@ try {
         const failure = `${name} ${test.backend}: ${test.label}\n${text(error)}`;
         failures.push(failure);
         console.error(`FAIL ${failure}`);
+        reportLifecycle(activeTrace, "case-failed");
+      } finally {
+        reportLifecycle(activeTrace, "case-finished");
       }
     }
     if (selected === 0)

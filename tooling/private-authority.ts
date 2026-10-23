@@ -18,12 +18,18 @@ export interface AuthorityFinding {
   expression: string;
 }
 
-// These implementations run in the trusted page/service realm, never in the
-// guest Worker. Barrels may re-export them; that does not make their methods
-// guest-reachable. New modules are NOT implicitly excluded.
+// Capture modules run before guests. Other trusted implementations run only in
+// the page/service realm. Reexports do not make their methods guest-reachable.
+// New modules are NOT implicitly excluded.
+const intrinsicModules: Readonly<Record<string, string>> = {
+  "proc/intrinsics.ts": "Reexports the manually reviewed initialization-time capture modules.",
+  "proc/intrinsics/core.ts":
+    "Initialization-time core collection, typed-array and atomic captures, before guest execution.",
+  "proc/intrinsics/host.ts":
+    "Initialization-time shared-buffer, DataView, identity, timer and collection captures, before guest execution.",
+};
 const trustedModules: Readonly<Record<string, string>> = {
-  "proc/intrinsics.ts":
-    "Initialization-time native captures; review changes to this trust root manually.",
+  ...intrinsicModules,
   "proc/supervisor.ts": "Page-owned supervisor, not imported by the guest bootstrap.",
   "proc/table.ts": "Page-owned process table, not imported by the guest bootstrap.",
   "proc/registry.ts": "Page-owned process registry, not imported by the guest bootstrap.",
@@ -133,6 +139,9 @@ export const payloadExceptions: readonly PayloadException[] = [
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
 export const enforcedModules = [
   "proc/intrinsics.ts",
+  "proc/intrinsics/core.ts",
+  "proc/intrinsics/host.ts",
+  "proc/errors.ts",
   "browser/worker.ts",
   "browser/guarded-stream.ts",
   "browser/runtime-terminals.ts",
@@ -508,14 +517,16 @@ function inferVariable(
   return new Set();
 }
 
-function inferImport(node: ast.ImportSpecifier): Set<string> {
+function inferImport(context: InferenceContext, node: ast.ImportSpecifier): Set<string> {
   const result = new Set([(node.propertyName ?? node.name).text]);
   const declaration = node.parent.parent.parent;
-  if (
-    ast.isImportDeclaration(declaration) &&
-    /(?:^|\/)intrinsics\.(?:ts|js)$/.test(declaration.moduleSpecifier.getText().slice(1, -1))
-  )
-    result.add("#captured");
+  if (!ast.isImportDeclaration(declaration)) return result;
+  const specifier = declaration.moduleSpecifier.getText().slice(1, -1);
+  const path = relative(
+    context.root,
+    resolve(dirname(node.getSourceFile().fileName), specifier).replace(/\.js$/, ".ts"),
+  );
+  if (specifier.startsWith(".") && Object.hasOwn(intrinsicModules, path)) result.add("#captured");
   return result;
 }
 
@@ -796,7 +807,7 @@ function inferNode(
     ast.isPropertySignatureDeclaration(node)
   )
     result = inferVariable(context, node, seen);
-  else if (ast.isImportSpecifier(node)) result = inferImport(node);
+  else if (ast.isImportSpecifier(node)) result = inferImport(context, node);
   else if (ast.isIdentifier(node)) {
     const declared = lookupInference(context, node, node.text);
     result =
@@ -905,7 +916,10 @@ async function loadReachableFiles(project: Project, root: string): Promise<Autho
 function isSkippedAuthorityPath(files: AuthorityFiles, root: string, path: string): boolean {
   return (
     files.has(path) ||
-    Boolean(trustedModules[relative(root, path)] && relative(root, path) !== "proc/intrinsics.ts")
+    Boolean(
+      trustedModules[relative(root, path)] &&
+      !Object.hasOwn(intrinsicModules, relative(root, path)),
+    )
   );
 }
 
@@ -1246,7 +1260,7 @@ function scanNode(node: ast.Node, context: ScanContext): void {
     );
     if (!hasNullPrototype) context.report(literal, "native-conversion");
   });
-  if (context.path === "proc/intrinsics.ts") return;
+  if (Object.hasOwn(intrinsicModules, context.path)) return;
   if (context.path === "proc/worker-pipes.ts" && scopeOf(node).split(".")[0] === "WorkerPipeBroker")
     return;
   if (ast.isForOfStatement(node) || ast.isSpreadElement(node)) {
