@@ -387,6 +387,13 @@
       "browser": "./browser/preview1-worker.ts",
       "default": "./browser/preview1-worker.ts"
     },
+    "./browser/process-context": {
+      "types": "./browser/process-context.ts",
+      "node": "./dist/browser/process-context.js",
+      "bun": "./browser/process-context.ts",
+      "browser": "./browser/process-context.ts",
+      "default": "./browser/process-context.ts"
+    },
     "./browser/process-broker": {
       "types": "./browser/process-broker.ts",
       "node": "./dist/browser/process-broker.js",
