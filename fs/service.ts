@@ -513,14 +513,6 @@ export class FilesystemService {
     data: Uint8Array,
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
-    if (operation === "preopen" && b === true) {
-      if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
-      const path = this.backend.fs.resolveAbsolute(a);
-      if (typeof path === "number") throw new FilesystemError(path);
-      if (path.node === undefined) throw new FilesystemError(44);
-      if (this.backend.fs.nodeForHandle(path.node).kind !== "dir") throw new FilesystemError(54);
-      return this.finishResult(session, id, operation, path.node);
-    }
     if (operation === "take") {
       const response = session.responses.get(a);
       if (!response) throw new FilesystemError(11);

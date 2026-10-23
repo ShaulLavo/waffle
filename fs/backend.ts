@@ -262,6 +262,13 @@ export class MemoryBackend implements FilesystemBackend {
   private executeOperation(operation: string, args: any[], _data: Uint8Array): unknown {
     const [a, b, c] = args;
     switch (operation) {
+      case "preopen": {
+        const path = this.fs.resolveAbsolute(a);
+        if (typeof path === "number") throw new FilesystemError(path);
+        if (path.node === undefined) throw new FilesystemError(44);
+        if (this.fs.nodeForHandle(path.node).kind !== "dir") throw new FilesystemError(54);
+        return path.node;
+      }
       case "flush":
         return;
       case "sync":

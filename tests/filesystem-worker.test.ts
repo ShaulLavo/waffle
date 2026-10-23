@@ -368,7 +368,12 @@ test("unaligned large request buffers do not break the cancellation guard", asyn
   const { client } = fixture();
   const operation = "writeFile";
   const args = ["/unaligned"];
-  const inputLength = pack({ operation, args, publication: undefined }).length;
+  const inputLength = pack({
+    operation,
+    args,
+    publication: undefined,
+    writeTicket: { slot: 10, serial: 1, owner: client.connection.owner },
+  }).length;
   const bytes = new Uint8Array(PAGE + 5 - (inputLength % 4)).fill(91);
   const request = client.submit(operation, args, bytes);
   expect((request.buffer.byteLength - HEADER) % 4).not.toBe(0);

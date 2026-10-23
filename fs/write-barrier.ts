@@ -1,4 +1,4 @@
-import { atomicsWaitAsync } from "../proc/intrinsics.js";
+import { atomicsWaitAsync, BigIntConstructor } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
 
 export interface FilesystemWriteBarrier {
@@ -129,7 +129,7 @@ export class WriteAdmission {
         Atomics.store(this.cells, slot + REMOTE, 0);
         Atomics.store(this.cells, slot + INPUT, bytes);
         Atomics.store(this.cells, slot + INPUT_METADATA, metadata);
-        Atomics.store(this.states, (slot + ID) / 2, (BigInt(serial) << 2n) | LOCAL_REF);
+        Atomics.store(this.states, (slot + ID) / 2, (BigIntConstructor(serial) << 2n) | LOCAL_REF);
         return { slot, serial, owner };
       },
       interrupted,
@@ -176,7 +176,7 @@ export class WriteAdmission {
     throw new AdmissionBusy();
   }
   private matches(ticket: WriteTicket): boolean {
-    return Atomics.load(this.states, (ticket.slot + ID) / 2) >> 2n === BigInt(ticket.serial);
+    return Atomics.load(this.states, (ticket.slot + ID) / 2) >> 2n === BigIntConstructor(ticket.serial);
   }
   verify(ticket: WriteTicket, owner = ticket.owner, finishing = false): void {
     const { slot, serial } = ticket;
@@ -226,7 +226,7 @@ export class WriteAdmission {
     if (!Number.isSafeInteger(request) || request <= 0 || request >= 0x7fffffff)
       throw new FilesystemError(33);
     const index = (ticket.slot + ID) / 2;
-    const local = (BigInt(ticket.serial) << 2n) | LOCAL_REF;
+    const local = (BigIntConstructor(ticket.serial) << 2n) | LOCAL_REF;
     if (Atomics.compareExchange(this.states, index, local, local | REMOTE_REF) !== local)
       throw new FilesystemError(6, "write ticket already has an executing request");
     Atomics.store(this.cells, ticket.slot + REMOTE, request);
@@ -244,7 +244,7 @@ export class WriteAdmission {
     if (request && Atomics.load(this.cells, ticket.slot + REMOTE) !== request) return;
     this.releaseReference(
       ticket.slot,
-      BigInt(ticket.serial),
+      BigIntConstructor(ticket.serial),
       request ? REMOTE_REF : LOCAL_REF,
       failed,
     );
