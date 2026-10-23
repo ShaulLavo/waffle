@@ -1,7 +1,15 @@
 import { OpfsStorage } from "../fs/opfs.js";
 import { identityOpfsFixture } from "./fixtures/durable-identity-opfs.js";
 import { FaultScheduler, type FaultSchedule } from "./storage-crash-r2-scheduler.js";
-import { checkReopen, equal, invariant, opened, recoveredState, replaceAndRename, seedChange } from "./storage-crash-r2-state.js";
+import {
+  checkReopen,
+  equal,
+  invariant,
+  opened,
+  recoveredState,
+  replaceAndRename,
+  seedChange,
+} from "./storage-crash-r2-state.js";
 
 interface Cell {
   id: string;
@@ -9,9 +17,20 @@ interface Cell {
   outcome: "old-complete" | "new-complete";
   flush: "rejected" | "fulfilled";
 }
-function fault(operation: string, target: string, occurrence: number, outcome: Cell["outcome"], flush: Cell["flush"]): Cell {
+function fault(
+  operation: string,
+  target: string,
+  occurrence: number,
+  outcome: Cell["outcome"],
+  flush: Cell["flush"],
+): Cell {
   const id = `opfs-${operation}-${target}-${occurrence}`;
-  return { id, outcome, flush, schedule: { id, occurrence, at: { adapter: "opfs", operation, target } } };
+  return {
+    id,
+    outcome,
+    flush,
+    schedule: { id, occurrence, at: { adapter: "opfs", operation, target } },
+  };
 }
 const cells: Cell[] = [
   fault("create", "snapshot", 1, "old-complete", "rejected"),
@@ -45,29 +64,69 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     const oldGeneration = (await first.storage.load())?.generation;
     replaceAndRename(first.backend);
     const after = await recoveredState(first.backend);
-    const ids = before.metadata.concat(after.metadata).flatMap((entry) => entry.id ? [entry.id] : []);
+    const ids = before.metadata
+      .concat(after.metadata)
+      .flatMap((entry) => (entry.id ? [entry.id] : []));
     fixture.fault((operation, name) => {
-      const target = name.startsWith("snapshot-") ? "snapshot" : name.startsWith("p-") ? "payload" : "identity";
+      const target = name.startsWith("snapshot-")
+        ? "snapshot"
+        : name.startsWith("p-")
+          ? "payload"
+          : "identity";
       if (scheduler.visit({ adapter: "opfs", operation, target })) throw scheduler.reason;
     });
     let failure: unknown;
-    try { await first.backend.flush(); } catch (error) { failure = error; } finally { fixture.fault(); }
+    try {
+      await first.backend.flush();
+    } catch (error) {
+      failure = error;
+    } finally {
+      fixture.fault();
+    }
     scheduler.assertReached();
-    invariant((failure !== undefined) === (cell.flush === "rejected"), "only publication or explicit flush failure rejects; cleanup cannot uncommit");
+    invariant(
+      (failure !== undefined) === (cell.flush === "rejected"),
+      "only publication or explicit flush failure rejects; cleanup cannot uncommit",
+    );
     first.backend.dispose();
     await first.storage.close();
     const expected = cell.outcome === "old-complete" ? before : after;
     const second = await open();
-    await checkReopen(second.backend, expected, ids);
+    const firstReopen = await checkReopen(second.backend, expected, ids);
     const recoveredGeneration = (await second.storage.load())?.generation;
-    equal(recoveredGeneration, cell.outcome === "old-complete" ? oldGeneration : (oldGeneration ?? 0) + 1, "OPFS recovered generation matches publication boundary");
+    equal(
+      recoveredGeneration,
+      cell.outcome === "old-complete" ? oldGeneration : (oldGeneration ?? 0) + 1,
+      "OPFS recovered generation matches publication boundary",
+    );
     second.backend.dispose();
     await second.storage.close();
     const third = await open();
-    await checkReopen(third.backend, expected, ids);
-    return { id: cell.id, ok: true, schedule: cell.schedule, events: scheduler.events, oldGeneration, recoveredGeneration, outcome: cell.outcome, flush: cell.flush,
-      model: "existing in-memory OPFS fixture with real OpfsStorage; write/flush API failures only, not physical durability or process death",
-      invariants: ["namespace", "mode", "bytes", "FileId", "revision", "no-reuse", "generation", "second-reopen"] };
+    const secondReopen = await checkReopen(third.backend, expected, ids);
+    return {
+      id: cell.id,
+      ok: true,
+      schedule: cell.schedule,
+      events: scheduler.events,
+      oldGeneration,
+      recoveredGeneration,
+      firstReopen,
+      secondReopen,
+      outcome: cell.outcome,
+      flush: cell.flush,
+      model:
+        "existing in-memory OPFS fixture with real OpfsStorage; write/flush API failures only, not physical durability or process death",
+      invariants: [
+        "namespace",
+        "mode",
+        "bytes",
+        "FileId",
+        "revision",
+        "no-reuse",
+        "generation",
+        "second-reopen",
+      ],
+    };
   } finally {
     fixture.fault();
     for (const backend of backends) backend.dispose();
@@ -78,8 +137,17 @@ export async function opfsCrashMatrix() {
   const results = [];
   for (const cell of cells) {
     const scheduler = new FaultScheduler(cell.schedule);
-    try { results.push(await runCell(cell, scheduler)); }
-    catch (error) { results.push({ id: cell.id, ok: false, schedule: cell.schedule, events: scheduler.events, error: error instanceof Error ? error.stack : String(error) }); }
+    try {
+      results.push(await runCell(cell, scheduler));
+    } catch (error) {
+      results.push({
+        id: cell.id,
+        ok: false,
+        schedule: cell.schedule,
+        events: scheduler.events,
+        error: error instanceof Error ? error.stack : String(error),
+      });
+    }
   }
   return results;
 }

@@ -17,7 +17,8 @@ export class FaultScheduler {
     this.reason = new Error(`Injected storage fault: ${schedule?.id ?? "control"}`);
   }
   visit(event: FaultEvent): boolean {
-    const matches = this.schedule !== null &&
+    const matches =
+      this.schedule !== null &&
       event.adapter === this.schedule.at.adapter &&
       event.operation === this.schedule.at.operation &&
       event.target === this.schedule.at.target;

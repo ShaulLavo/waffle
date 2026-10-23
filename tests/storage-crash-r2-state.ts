@@ -25,7 +25,7 @@ export function replaceAndRename(backend: PersistentBackend): void {
   invariant(node, "renamed file exists");
   backend.execute("setMode", [backend.fs.handleForNode(node), 0o640], empty);
 }
-export function logicalState(backend: PersistentBackend) {
+function logicalState(backend: PersistentBackend) {
   return ["/source", "/target", "/added"].map((path) => {
     const node = backend.fs.lookup(path);
     if (!node) return { path, absent: true };
@@ -62,11 +62,34 @@ export async function checkReopen(
   backend: PersistentBackend,
   expected: Awaited<ReturnType<typeof recoveredState>>,
   discardedIds: readonly string[],
-): Promise<void> {
-  equal(await recoveredState(backend), expected, "reopen selects one complete namespace, mode, identity and payload state");
+) {
+  const actual = await recoveredState(backend);
+  equal(
+    actual,
+    expected,
+    "reopen selects one complete namespace, mode, identity and payload state",
+  );
   backend.execute("writeFile", ["/after-reopen"], new Uint8Array([7]));
   const node = backend.fs.lookup("/after-reopen");
   invariant(node, "new file exists");
   const identity = backend.identity(backend.fs.handleForNode(node));
-  invariant(!discardedIds.includes(identity.id.toString()), "reopen allocation never reuses old or abandoned FileId");
+  invariant(
+    !discardedIds.includes(identity.id.toString()),
+    "reopen allocation never reuses old or abandoned FileId",
+  );
+  return {
+    namespace: actual.namespace,
+    metadata: actual.metadata,
+    files: await Promise.all(actual.files.map(fileProof)),
+    freshId: identity.id.toString(),
+  };
+}
+
+async function fileProof(file: Awaited<ReturnType<typeof recoveredState>>["files"][number]) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(file.bytes)));
+  return {
+    path: file.path,
+    length: file.bytes.length,
+    sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  };
 }

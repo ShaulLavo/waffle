@@ -5,10 +5,13 @@ import { opfsCrashMatrix } from "../tests/storage-crash-r2-opfs.js";
 const lifecycle = new BrowserRunnerLifecycle(180_000);
 try {
   await lifecycle.init();
-  const origin = lifecycle.serve({
-    "/": "<!doctype html><title>Bounded storage crash schedules</title>",
-    "/tests.js": await browserBundle("tests/storage-crash-r2-indexeddb.ts"),
-  }, 46437);
+  const origin = lifecycle.serve(
+    {
+      "/": "<!doctype html><title>Bounded storage crash schedules</title>",
+      "/tests.js": await browserBundle("tests/storage-crash-r2-indexeddb.ts"),
+    },
+    46437,
+  );
   const browser = await lifecycle.launch("chromium");
   const page = await browser.newPage();
   await page.goto(origin);
@@ -18,10 +21,20 @@ try {
     return suite.indexedDBCrashMatrix();
   });
   const opfs = await opfsCrashMatrix();
-  const result = { browser: browser.version(), indexeddb, opfs,
-    limits: ["FAST memory ACK is not durable flush", "SAFE unsupported and untested", "no browser-kill or physical power-loss claim", "bounded next E6/W8 proof, not full certification"] };
+  const result = {
+    browser: browser.version(),
+    indexeddb,
+    opfs,
+    limits: [
+      "FAST memory ACK is not durable flush",
+      "SAFE unsupported and untested",
+      "no browser-kill or physical power-loss claim",
+      "bounded next E6/W8 proof, not full certification",
+    ],
+  };
   console.log(JSON.stringify(result, null, 2));
-  if ([indexeddb, opfs].some((cells) => cells.some((cell) => !cell.ok))) throw new Error("Storage crash schedules failed");
+  if ([indexeddb, opfs].some((cells) => cells.some((cell) => !cell.ok)))
+    throw new Error("Storage crash schedules failed");
 } finally {
   await lifecycle.close();
   const removed = !existsSync(lifecycle.scratch);
