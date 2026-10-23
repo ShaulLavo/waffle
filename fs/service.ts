@@ -102,7 +102,7 @@ export class FilesystemService {
     if (this.ownerStopping || options.signal?.aborted) throw new FilesystemError(11);
     if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
     const gate = this.backend.shared.writeAdmission;
-    const lease = gate.close();
+    const lease = await gate.closeAsync(options.signal);
     try {
       await gate.drain(lease, options.signal);
     } catch (error) {
@@ -225,6 +225,16 @@ export class FilesystemService {
       else {
         const cells = new Int32Array(data.buffer, 0, HEADER / 4);
         if (Atomics.compareExchange(cells, 7, 0, 1)) return;
+        try {
+          this.requestTicket(session, data.id, unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)), false);
+        } catch (error) {
+          cells[3] = errno(error);
+          Atomics.store(cells, 0, State.Failed);
+          Atomics.notify(cells, 0);
+          wake(connection);
+          connection.port.postMessage({ completed: data.id });
+          return;
+        }
         session.pending.set(data.id, data.buffer);
         this.enqueue(session, data.id, data.buffer);
       }
@@ -498,6 +508,14 @@ export class FilesystemService {
     data: Uint8Array,
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
+    if (operation === "preopen" && b === true) {
+      if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+      const path = this.backend.fs.resolveAbsolute(a);
+      if (typeof path === "number") throw new FilesystemError(path);
+      if (path.node === undefined) throw new FilesystemError(44);
+      if (this.backend.fs.nodeForHandle(path.node).kind !== "dir") throw new FilesystemError(54);
+      return this.finishResult(session, id, operation, path.node);
+    }
     if (operation === "take") {
       const response = session.responses.get(a);
       if (!response) throw new FilesystemError(11);
@@ -590,7 +608,7 @@ export class FilesystemService {
     state: State,
   ): void {
     if (Atomics.exchange(cells, 7, 2) !== 1 || !ticket) return;
-    new WriteAdmission(session.connection.shared).finish(ticket, -id, state === State.Failed);
+    new WriteAdmission(session.connection.shared).finish(ticket, -id, state === State.Failed && cells[3] === 29);
   }
   private requestTicket(
     session: Session,
@@ -650,7 +668,7 @@ export class FilesystemService {
       const dataLength = cells[2]!;
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
-      ticket = this.requestTicket(session, id, input, !!prepared);
+      ticket = this.requestTicket(session, id, input, true);
       if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
         throw new FilesystemError(11);
       if (session.connection.publication && input.publication)
@@ -675,7 +693,7 @@ export class FilesystemService {
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
       const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
-      mutation = mutations.has(operation) && !local;
+      mutation = mutations.has(operation) && !local && !(operation === "preopen" && args[1] === true);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
@@ -1138,6 +1156,7 @@ export class FilesystemService {
         this.backend.shared.publication?.releasePin(id);
     session.publicationPins?.clear();
     session.connection.port.close();
+    new WriteAdmission(session.connection.shared).discardUnreceived(session.connection.owner);
     session.closed = true;
     if (!session.handles.size) {
       const publication = session.connection.publication;
@@ -1400,29 +1419,25 @@ function ownerBarrierControls(
     current = { kind: "released", lease: state.lease, done };
     return done;
   };
-  const execute = async (operation: string, lease: number) => {
-    if (operation === "acquire") {
-      if (current?.kind === "active") throw new FilesystemError(6);
-      const abort = new AbortController();
-      const service = owner();
-      if (!service) throw new FilesystemError(6);
-      const done = service.then((service) =>
-        service.pauseFilesystemWrites({ signal: abort.signal }),
-      );
-      const state: Active = { kind: "active", lease, abort, done };
-      current = state;
-      try {
-        await done;
-      } catch (error) {
-        if (current === state) current = undefined;
-        throw error;
-      }
-      if (abort.signal.aborted) {
-        await release(state);
-        throw new FilesystemError(11);
-      }
-      return;
+  const acquire = async (lease: number): Promise<void> => {
+    if (current?.kind === "active") throw new FilesystemError(10);
+    const abort = new AbortController();
+    const service = owner();
+    if (!service) throw new FilesystemError(6);
+    const done = service.then((service) => service.pauseFilesystemWrites({ signal: abort.signal }));
+    const state: Active = { kind: "active", lease, abort, done };
+    current = state;
+    try { await done; }
+    catch (error) {
+      if (current === state) current = undefined;
+      throw error;
     }
+    if (!abort.signal.aborted) return;
+    await release(state);
+    throw new FilesystemError(11);
+  };
+  const execute = async (operation: string, lease: number) => {
+    if (operation === "acquire") return acquire(lease);
     if (!current || current.lease !== lease) throw new FilesystemError(11);
     if (operation === "release") return release(current);
     if (operation === "flush" && current.kind === "active") return (await current.done).flush();

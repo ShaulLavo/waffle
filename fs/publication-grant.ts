@@ -562,14 +562,23 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(11);
     if (outcome.kind === "ready" || outcome.kind === "claimed") return { kind: "pending" };
     if (outcome.kind === "stopped") {
-      this.domain.stop();
+      this.failGrant(issued);
       throw new FilesystemError(29);
     }
     const settle = () =>
       this.boundary(issued.serial, () => this.importOutcome(owner, issued, outcome));
-    return issued.writeTicket
-      ? this.backend.shared.withWrite(issued.writeTicket, settle)
-      : settle();
+    try {
+      return issued.writeTicket ? this.backend.shared.withWrite(issued.writeTicket, settle) : settle();
+    } catch (error) {
+      this.failGrant(issued);
+      throw error;
+    }
+  }
+  private failGrant(issued: Extract<OutstandingGrant, { kind: "issued" }>): void {
+    this.domain.stop();
+    if (issued.writeTicket) this.backend.shared.writeAdmission.finish(issued.writeTicket, 0, true);
+    this.outstanding = { kind: "idle" };
+    this.domain.releaseResidentGrant(issued.serial);
   }
   private importOutcome(
     owner: AuthoritySession,

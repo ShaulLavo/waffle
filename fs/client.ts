@@ -467,6 +467,30 @@ export class FilesystemClient implements FileSystem {
       HEADER + capacity + (argumentBytes + 512) * 4,
     );
   }
+  async prepareAsync(
+    operation: string,
+    args: unknown[] = [],
+    data: Uint8Array | (() => Uint8Array) = new Uint8ArrayConstructor(),
+    inputBytes = typeof data === "function" ? 0 : data.length * (this.shared.publication ? 3 : 1),
+    publication?: PublicationAdmission,
+  ): Promise<FilesystemCompletion> {
+    if (!mutationIntent(operation, args))
+      return this.prepare(operation, args, typeof data === "function" ? data() : data, undefined, publication);
+    const metadata = HEADER + 1024 + (writeArgumentSize(args) + 512) * 4;
+    const ticket = await this.shared.writeAdmission.admitAsync(
+      this.connection.owner, inputBytes, metadata, this.revoked,
+    );
+    try {
+      await this.shared.waitWriteInput(this.revoked);
+      this.activeWrite = ticket;
+      return this.shared.withWrite(ticket, () => this.prepareAdmitted(
+        operation, args, typeof data === "function" ? data() : data, 1024, publication,
+      ));
+    } finally {
+      this.activeWrite = undefined;
+      this.shared.writeAdmission.finish(ticket);
+    }
+  }
   private prepareAdmitted(
     operation: string,
     args: unknown[],
@@ -571,14 +595,13 @@ export class FilesystemClient implements FileSystem {
       if (inputBytes || metadataBytes) {
         this.shared.writeAdmission.reserveInput(this.activeWrite, inputBytes, interrupted);
         this.shared.writeAdmission.reserveMetadata(this.activeWrite, metadataBytes, interrupted);
-        this.shared.checkWriteInput();
+        this.shared.checkWriteInput(!interrupted);
       }
       return run();
     }
-    const ticket = this.shared.writeAdmission.admit(this.connection.owner, inputBytes, interrupted);
+    const ticket = this.shared.writeAdmission.admit(this.connection.owner, inputBytes, interrupted, metadataBytes);
     try {
-      this.shared.writeAdmission.reserveMetadata(ticket, metadataBytes, interrupted);
-      this.shared.checkWriteInput();
+      this.shared.checkWriteInput(!interrupted);
       this.activeWrite = ticket;
       this.admissionInterrupted = interrupted;
       return this.shared.withWrite(ticket, run);
@@ -591,7 +614,7 @@ export class FilesystemClient implements FileSystem {
   private reserveWriteInput(bytes: number): void {
     if (!this.activeWrite) throw new FilesystemError(11);
     this.shared.writeAdmission.reserveInput(this.activeWrite, bytes, this.admissionInterrupted);
-    this.shared.checkWriteInput();
+    this.shared.checkWriteInput(!this.admissionInterrupted);
   }
   cancelPublication(admission: PublicationAdmission): void {
     const connection = this.connection.publication;
@@ -602,12 +625,16 @@ export class FilesystemClient implements FileSystem {
     return completion && { kind: 3, id, ready: completion.ready };
   }
   call(operation: string, args: unknown[] = [], data?: Uint8Array): any {
-    const completion = this.submit(operation, args, data);
-    try {
-      return completion.wait();
-    } finally {
-      completion.release();
+    if (operation === "preopen" && args[1] !== true) {
+      try { return this.call(operation, [args[0], true]); }
+      catch (error) { if (!(error instanceof FilesystemError) || error.errno !== 44) throw error; }
     }
+    const run = () => {
+      const completion = this.submit(operation, args, data);
+      try { return completion.wait(); }
+      finally { completion.release(); }
+    };
+    return mutationIntent(operation, args) ? this.withMutation(run, 0, 0, true) : run();
   }
   async asyncCall(
     operation: string,
@@ -615,12 +642,15 @@ export class FilesystemClient implements FileSystem {
     data?: Uint8Array,
     publication?: PublicationAdmission,
   ): Promise<any> {
-    const completion = this.submit(operation, args, data, undefined, publication);
-    try {
-      return await completion.value();
-    } finally {
-      completion.release();
+    if (operation === "preopen" && args[1] !== true) {
+      try { return await this.asyncCall(operation, [args[0], true]); }
+      catch (error) { if (!(error instanceof FilesystemError) || error.errno !== 44) throw error; }
     }
+    const completion = await this.prepareAsync(operation, args, data, undefined, publication);
+    try {
+      this.dispatch(completion);
+      return await completion.value();
+    } finally { completion.release(); }
   }
   dispose(): void {
     this.resident?.invalidate();

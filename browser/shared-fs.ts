@@ -103,7 +103,7 @@ export class SharedFilesystem {
   readonly workspace: WorkspaceVfs | undefined;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
-  private failure: unknown;
+  private failure: { readonly error: unknown } | undefined;
   private fatal: Error | undefined;
   private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
   private startupComplete = false;
@@ -334,26 +334,27 @@ export class SharedFilesystem {
       throw error;
     }
   }
-  private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
-    let completion;
+  private mutate(operation: string, args: unknown[], input?: Uint8Array | string): Promise<any> {
+    let preparing: Promise<import("../fs/client.js").FilesystemCompletion>;
     try {
       this.assertLive();
-      completion = this.client.prepare(operation, args, bytes);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    const prepared = completion;
-    const result = this.writes
-      .then(async () => {
+      const bytes = typeof input === "string" ? () => new TextEncoder().encode(input) : input;
+      const size = typeof input === "string" ? utf8Size(input) * (this.client.shared.publication ? 3 : 2) : undefined;
+      preparing = this.client.prepareAsync(operation, args, bytes, size);
+    } catch (error) { return Promise.reject(error); }
+    void preparing.catch(() => {});
+    const result = this.writes.then(async () => {
+      const prepared = await preparing;
+      try {
         this.assertLive();
         this.client.dispatch(prepared);
-        return prepared.value();
-      })
-      .finally(() => prepared.release());
-    // Keep ordering after an error, while returning the failure to the caller that owns it.
-    this.writes = result.catch((error) => {
-      this.failure ??= error;
+        return await prepared.value();
+      } catch (error) {
+        this.assertLive();
+        throw error;
+      } finally { prepared.release(); }
     });
+    this.writes = result.catch((error) => { this.failure ??= { error }; });
     return result;
   }
   private barrierRequest(operation: "acquire" | "flush" | "release", lease: number): Promise<void> {
@@ -386,12 +387,6 @@ export class SharedFilesystem {
     try {
       await this.barrierRequest("acquire", lease);
       await earlier;
-      if (this.failure !== undefined) {
-        await this.barrierRequest("release", lease);
-        const failure = this.failure;
-        this.failure = undefined;
-        throw failure;
-      }
       if (options.signal?.aborted) {
         await this.barrierRequest("release", lease);
         throw new FilesystemError(11);
@@ -421,7 +416,7 @@ export class SharedFilesystem {
     await this.writes;
     this.assertLive();
     if (this.failure !== undefined) {
-      const error = this.failure;
+      const { error } = this.failure;
       this.failure = undefined;
       throw error;
     }
@@ -454,16 +449,7 @@ export class SharedFilesystem {
   }
   writeFile(path: string, text: string | Uint8Array, mode: WriteFileMode = false): Promise<void> {
     const { append, exclusive } = resolveWriteFileMode(mode);
-    if (typeof text !== "string") return this.mutate("writeFile", [path, append, exclusive], text);
-    try {
-      this.assertLive();
-      return this.client.withMutation(
-        () => this.mutate("writeFile", [path, append, exclusive], new TextEncoder().encode(text)),
-        utf8Size(text) * (this.client.shared.publication ? 3 : 2),
-      );
-    } catch (error) {
-      return Promise.reject(error);
-    }
+    return this.mutate("writeFile", [path, append, exclusive], text);
   }
   remove(path: string): Promise<boolean> {
     return this.mutate("remove", [path]);

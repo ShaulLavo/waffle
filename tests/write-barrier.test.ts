@@ -349,7 +349,7 @@ test("flush failure is retryable; release joins settlement and cannot reopen a n
   const backend = new Retry();
   await fixture(async ({ service, client, handle }) => {
     const lease = await service.pauseFilesystemWrites();
-    await expect(service.pauseFilesystemWrites()).rejects.toMatchObject({ errno: 6 });
+    await expect(service.pauseFilesystemWrites()).rejects.toMatchObject({ errno: 10 });
     const first = lease.flush();
     expect(lease.flush()).toBe(first);
     await backend.entered.promise;

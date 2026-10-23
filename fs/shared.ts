@@ -1,5 +1,5 @@
 import { WriteAdmission, WRITE_BARRIER_WORDS, type WriteTicket } from "./write-barrier.js";
-import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
+import { DirtyCapacityError, DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
 import {
   IdentityAllocator,
   readIdentityWords,
@@ -8,7 +8,7 @@ import {
   type FileId,
   type FileVersion,
 } from "./file-identity.js";
-import { typedArraySet } from "../proc/intrinsics.js";
+import { atomicsWaitAsync, typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
   type PublicationAdmission,
@@ -188,11 +188,26 @@ export class SharedFilesystemState {
       this.writeAdmission.finish(ticket);
     }
   }
-  checkWriteInput(): void {
+  checkWriteInput(nonblocking = false): void {
     if (!this.dirtyAdmission.enabled) return;
     const check = () => this.dirtyAdmission.checkInput(this.resources().usedBytes);
     if (this.serviceMutation) return check();
-    this.mutate(undefined, undefined, check);
+    this.globalLock(undefined, this.lockOwner, nonblocking);
+    try { check(); }
+    finally { this.globalUnlock(); }
+  }
+  async waitWriteInput(interrupted: () => boolean): Promise<void> {
+    if (!this.dirtyAdmission.enabled) return;
+    for (;;) {
+      if (interrupted()) throw new FilesystemError(11);
+      const observed = Atomics.load(this.cells, GLOBAL_LOCK);
+      try { return this.checkWriteInput(true); }
+      catch (error) {
+        if (!(error instanceof FilesystemError) || error instanceof DirtyCapacityError || error.errno !== 6) throw error;
+      }
+      const waiting = atomicsWaitAsync(this.cells, GLOBAL_LOCK, observed, 50);
+      if (waiting.async) await waiting.value;
+    }
   }
   static createBuffer(): SharedArrayBuffer {
     return new SharedArrayBuffer(BUFFER_SIZE);
