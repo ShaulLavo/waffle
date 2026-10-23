@@ -4,7 +4,7 @@ import { FilesystemService } from "../fs/service.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
 import { FilesystemError } from "../core/filesystem.js";
 import type { StorageBackend } from "../fs/storage.js";
-import type { PublicationCut } from "../fs/publication.js";
+import { validatePublicationLimits, type PublicationCut } from "../fs/publication.js";
 import type { PublicationConfiguration, PublicationLimits } from "../fs/publication-internal.js";
 import type { ResidentDescriptor } from "../fs/publication-grant.js";
 import {
@@ -51,11 +51,18 @@ interface V1ReopenNotice {
   readonly oldMutationOutcomes: "not-restored";
   readonly acknowledgedTail: "may-be-lost";
 }
+interface RecoveredNotice {
+  readonly kind: "completed-cut-recovered";
+  readonly durablePublicationCut: PublicationCut;
+  readonly oldCapabilities: "not-restored";
+  readonly oldMutationOutcomes: "bounded-retained";
+  readonly acknowledgedTail: "may-be-lost";
+}
 interface PersistentResidentReady {
   readonly request: PersistentOwnerRequest;
   readonly identity: AuthorityIdentity;
   readonly descriptor: ResidentDescriptor;
-  readonly notice: V1ReopenNotice;
+  readonly notice: V1ReopenNotice | RecoveredNotice;
 }
 export interface PersistentResidentOwner {
   readonly ready: Promise<PersistentResidentReady>;
@@ -97,6 +104,9 @@ function snapshotLimits(limits: PublicationLimits): PublicationLimits {
   const result = {
     sessions: integer(limits.sessions),
     operations: integer(limits.operations),
+    ...(limits.operationsPerSession === undefined
+      ? {}
+      : { operationsPerSession: integer(limits.operationsPerSession) }),
     inputBytes: integer(limits.inputBytes),
     argumentBytes: integer(limits.argumentBytes),
     effectBytes: integer(limits.effectBytes),
@@ -107,7 +117,7 @@ function snapshotLimits(limits: PublicationLimits): PublicationLimits {
     pins: integer(limits.pins),
     pinBytes: integer(limits.pinBytes),
   };
-  return Object.freeze(result);
+  return validatePublicationLimits(result);
 }
 function snapshotRequest(request: PersistentOwnerRequest): PersistentOwnerRequest {
   const selected = Object.freeze({
@@ -158,8 +168,8 @@ class PersistentOwner implements PersistentResidentOwner {
   private readonly abort = new AbortController();
   private readonly opening: Promise<void>;
   private readonly openingDebts: Promise<void>[] = [];
-  private readonly connection: ReturnType<typeof createFilesystemConnection>;
-  private readonly root: FilesystemClient;
+  private connection: ReturnType<typeof createFilesystemConnection> | undefined;
+  private root: FilesystemClient | undefined;
   private readonly workspace: string;
   private storage: StorageBackend | undefined;
   private backend: PersistentBackend | undefined;
@@ -174,12 +184,6 @@ class PersistentOwner implements PersistentResidentOwner {
   ) {
     const { origin, implementation, name } = request.selected;
     this.workspace = text(JSON.stringify([origin, implementation, name]));
-    // Validate the complete arena before acquiring guards or opening native storage.
-    this.connection = createFilesystemConnection(undefined, {
-      ...request.publication,
-      observe: true,
-    });
-    this.root = new FilesystemClient(this.connection.client);
     this.opening = Promise.resolve()
       .then(() => this.open())
       .catch((error: unknown) => {
@@ -233,14 +237,37 @@ class PersistentOwner implements PersistentResidentOwner {
     if (!(backend instanceof PersistentBackend)) throw new FilesystemError(58);
     this.backend = backend;
     this.checkLive();
+    if (!this.storage) throw new FilesystemError(58);
+    const selected = await this.storage.load();
+    this.checkLive();
+    const recovered =
+      this.request.kind === "initial-open" && this.request.selected.implementation === "indexeddb"
+        ? selected?.publication
+        : undefined;
+    const connection = createFilesystemConnection(undefined, {
+      ...this.request.publication,
+      observe: true,
+      restore: recovered ?? {
+        kind: "settled-publication-v1",
+        cut: { history: crypto.randomUUID(), generation: 0 },
+        sessionSerial: 0,
+        limits: this.request.publication.limits,
+        receipts: [],
+        changes: [],
+        contentVersions: [],
+      },
+    });
+    this.connection = connection;
+    const root = new FilesystemClient(connection.client);
+    this.root = root;
     this.service = new FilesystemService(backend);
-    this.service.connect(this.connection.server);
-    const handle: number = await this.root.asyncCall("preopen", ["/"]);
+    this.service.connect(connection.server);
+    const handle: number = await root.asyncCall("preopen", ["/"]);
     this.checkLive();
     const descriptor = Object.freeze(
       residentDescriptor(
-        await this.root.asyncCall("publicationWorkspace", [
-          this.root.connection.publication!.observer,
+        await root.asyncCall("publicationWorkspace", [
+          root.connection.publication!.observer,
           handle,
           this.workspace,
         ]),
@@ -251,7 +278,7 @@ class PersistentOwner implements PersistentResidentOwner {
     if (!authority) throw new FilesystemError(58);
     const identity = Object.freeze({
       instance: authority.instance,
-      history: this.root.connection.publication!.buffers.history,
+      history: root.connection.publication!.buffers.history,
     });
     if (
       this.request.kind === "reopen-v1" &&
@@ -259,6 +286,8 @@ class PersistentOwner implements PersistentResidentOwner {
         identity.history === this.request.original.history)
     )
       throw new FilesystemError(28, "reopen did not create a fresh history");
+    await backend.flush();
+    this.checkLive();
     await continuity.release();
     this.guards = { kind: "bootstrap", bootstrap };
     this.checkLive();
@@ -267,7 +296,21 @@ class PersistentOwner implements PersistentResidentOwner {
     this.checkLive();
     const server = new ResidentAuthorityServer(authority, shared, bootstrap);
     this.guards = { kind: "server", server };
-    const ready = Object.freeze({ request: this.request, identity, descriptor, notice });
+    const recoveryNotice: RecoveredNotice | V1ReopenNotice = recovered
+      ? Object.freeze({
+          kind: "completed-cut-recovered",
+          durablePublicationCut: recovered.cut,
+          oldCapabilities: "not-restored",
+          oldMutationOutcomes: "bounded-retained",
+          acknowledgedTail: "may-be-lost",
+        })
+      : notice;
+    const ready = Object.freeze({
+      request: this.request,
+      identity,
+      descriptor,
+      notice: recoveryNotice,
+    });
     reportRuntimeStartup(this.observer, "filesystem-ready");
     this.checkLive();
     authority.activate();
@@ -291,9 +334,9 @@ class PersistentOwner implements PersistentResidentOwner {
     await this.service?.drainForOwner();
     if (predecessor === "ready") await this.backend?.flush();
     this.backend?.dispose();
-    this.root.dispose();
+    this.root?.dispose();
     this.service?.dispose();
-    this.connection.server.port.close();
+    this.connection?.server.port.close();
     await this.storage?.close();
     await this.releaseGuards();
     this.signal.removeEventListener("abort", this.interrupted);

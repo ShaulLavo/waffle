@@ -588,6 +588,7 @@ export class PersistentBackend extends MemoryBackend {
   private captureCost({ durable, target, selected }: CheckpointRequest): CheckpointCost {
     let bytes = 0;
     let metadataBytes = 256 + this.removed.size * 256;
+    metadataBytes += this.shared.publication?.checkpointMetadataBytes() ?? 0;
     for (const node of this.dirty) metadataBytes += this.nodeMetadataBytes(node);
     for (const handle of this.shared.registeredHandles()) {
       const revision = this.shared.revision(handle);
@@ -707,6 +708,7 @@ export class PersistentBackend extends MemoryBackend {
       cost.metadataBytes += growth;
     };
     const { durable, target, selected } = request;
+    const publication = this.shared.publication?.checkpoint();
     this.pruneDetached();
     const capture: CheckpointCapture = {
       changed: new Set(this.dirty),
@@ -747,7 +749,7 @@ export class PersistentBackend extends MemoryBackend {
           this.detachedKeys.get(selected.ino))
         : undefined;
     const flushKeys = target === undefined ? undefined : key ? [key] : [];
-    if (!upserts.length && !removes.length && !data.size)
+    if (!publication && !upserts.length && !removes.length && !data.size)
       return this.lastCommit.then(() => {
         this.assertOpen();
         start(metadataBytes);
@@ -755,6 +757,7 @@ export class PersistentBackend extends MemoryBackend {
       });
     const epoch = this.checkpointEpoch;
     const batch: PersistenceBatch = {
+      ...(publication ? { publication } : {}),
       generation: 0,
       root: this.fs.root.ino,
       upserts,

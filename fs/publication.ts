@@ -204,6 +204,7 @@ const enum Status {
   Cancelling,
 }
 const MAX_COUNTER = 0x7ffffffe;
+const SESSION_RESERVATION = 65536;
 const STATUS_MASK = 7;
 const MAX_OPERATION = Math.floor(MAX_COUNTER / 8);
 const encoder = new TextEncoder();
@@ -249,10 +250,20 @@ export function validatePublicationLimits(limits: PublicationLimits): Publicatio
 export function createPublicationBuffers(
   limits: PublicationLimits,
   observe = false,
+  checkpoint?: CheckpointPublication,
 ): PublicationBuffers {
   limits = validatePublicationLimits(limits);
-  return {
-    history: crypto.randomUUID(),
+  const saved = checkpoint === undefined ? undefined : snapshotPublicationCheckpoint(checkpoint);
+  if (saved && !sameLimits(limits, saved.limits))
+    throw new FilesystemError(28, "checkpoint publication limits differ");
+  const sessionLimit = saved
+    ? Math.min(MAX_COUNTER, saved.sessionSerial + SESSION_RESERVATION)
+    : MAX_COUNTER;
+  if (sessionLimit === saved?.sessionSerial)
+    throw new FilesystemError(33, "publication session frontier exhausted");
+  const buffers: PublicationBuffers = {
+    sessionLimit,
+    history: saved?.cut.history ?? crypto.randomUUID(),
     ...(observe
       ? {
           pageReaders: new SharedArrayBuffer(16_384 * 4),
@@ -271,6 +282,8 @@ export function createPublicationBuffers(
     pinData: new SharedArrayBuffer(limits.pinBytes),
     versions: new SharedArrayBuffer(VERSION_SLOTS * VERSION_WORDS * 4),
   };
+  if (saved) new PublicationDomain(buffers, 0x7fffffff, undefined, saved);
+  return Object.freeze(buffers);
 }
 function same(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
@@ -342,6 +355,12 @@ function checkpointLimits(value: unknown): PublicationLimits {
     pinBytes: checkpointInteger(limits.pinBytes),
   });
 }
+function sameLimits(left: PublicationLimits, right: PublicationLimits): boolean {
+  return (
+    Object.entries(left).every(([key, value]) => Reflect.get(right, key) === value) &&
+    Object.keys(left).length === Object.keys(right).length
+  );
+}
 function checkpointReceipt(
   value: unknown,
   cut: PublicationCut,
@@ -363,6 +382,8 @@ export function snapshotPublicationCheckpoint(value: unknown): CheckpointPublica
     throw new FilesystemError(29, "invalid publication checkpoint kind");
   const limits = checkpointLimits(data.limits),
     cut = publicationCut(data.cut);
+  if (!cut.history.length || cut.history.length > 256)
+    throw new FilesystemError(29, "invalid checkpoint history bound");
   const sessionSerial = checkpointInteger(data.sessionSerial, MAX_COUNTER);
   if (
     !Array.isArray(data.receipts) ||
@@ -444,6 +465,7 @@ export class PublicationDomain {
     readonly buffers: PublicationBuffers,
     private readonly owner = 0x7fffffff,
     private readonly section?: Pick<FilesystemSection, "enter" | "exit">,
+    checkpoint?: CheckpointPublication,
   ) {
     this.limits = buffers.limits;
     this.control = new Int32Array(buffers.control);
@@ -456,6 +478,106 @@ export class PublicationDomain {
     this.pins = new Int32Array(buffers.pins);
     this.pinData = new Uint8Array(buffers.pinData);
     this.versions = new Int32Array(buffers.versions);
+    if (checkpoint) this.restore(checkpoint);
+  }
+  private restore(checkpoint: CheckpointPublication): void {
+    const [low, high] = words(checkpoint.cut.generation);
+    this.control[Control.GenerationLow] = low;
+    this.control[Control.GenerationHigh] = high;
+    this.control[Control.Serial] = checkpoint.sessionSerial;
+    checkpoint.receipts.forEach((receipt, slot) => {
+      const base = slot * OP_WORDS,
+        result = json(receipt.result, this.limits.resultBytes);
+      const [receiptLow, receiptHigh] = words(receipt.cut.generation);
+      this.operations[base + Op.State] = (slot + 1) * 8 + Status.Committed;
+      this.operations[base + Op.Session] = receipt.id.session;
+      this.operations[base + Op.Sequence] = receipt.id.sequence;
+      this.operations[base + Op.GenerationLow] = receiptLow;
+      this.operations[base + Op.GenerationHigh] = receiptHigh;
+      this.operations[base + Op.Result] = result.length;
+      this.operations[base + Op.Reserved] = 2;
+      typedArraySet(this.results, result, slot * this.limits.resultBytes);
+    });
+    this.control[Control.OperationSerial] = checkpoint.receipts.length;
+    for (const bytes of checkpoint.changes) {
+      const cut = decodeEffects(bytes).receipt.cut;
+      const [changeLow, changeHigh] = words(cut.generation);
+      this.appendLog(bytes, changeLow, changeHigh);
+    }
+    checkpoint.contentVersions.forEach((entry, slot) => {
+      const [versionLow, versionHigh] = words(entry.version);
+      this.versions[slot * VERSION_WORDS] = entry.ino;
+      this.versions[slot * VERSION_WORDS + 1] = versionLow;
+      this.versions[slot * VERSION_WORDS + 2] = versionHigh;
+    });
+  }
+  /** Conservative units include capture, typed bytes, JSON arrays and adapter copies. */
+  checkpointMetadataBytes(): number {
+    let bytes = 1024 + this.buffers.history.length * 2;
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed ||
+        this.operations[base + Op.Reserved] === 1
+      )
+        continue;
+      bytes += 512 + this.operations[base + Op.Result]! * 2;
+    }
+    for (let slot = 0; slot < this.limits.logRecords; slot++)
+      bytes += 64 + this.log[slot * LOG_WORDS]! * 16;
+    for (let slot = 0; slot < VERSION_SLOTS; slot++)
+      if (this.versions[slot * VERSION_WORDS]) bytes += 128;
+    return bytes;
+  }
+  /** Capture under the filesystem mutation lock, never across a native storage await. */
+  checkpoint(): CheckpointPublication {
+    const cut = this.cut();
+    const receipts: PublicationReceipt[] = [],
+      changes: Uint8Array[] = [];
+    const contentVersions: { ino: number; version: number }[] = [];
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) !== Status.Committed ||
+        this.operations[base + Op.Reserved] === 1
+      )
+        continue;
+      receipts.push(this.receiptAt(slot));
+    }
+    receipts.sort(
+      (left, right) =>
+        left.cut.generation - right.cut.generation ||
+        left.id.session - right.id.session ||
+        left.id.sequence - right.id.sequence,
+    );
+    const count = this.control[Control.LogCount]!,
+      stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
+    for (let index = 0; index < count; index++) {
+      const slot = (first + index) % this.limits.logRecords;
+      changes.push(this.logData.slice(slot * stride, slot * stride + this.log[slot * LOG_WORDS]!));
+    }
+    for (let slot = 0; slot < VERSION_SLOTS; slot++) {
+      const ino = this.versions[slot * VERSION_WORDS]!;
+      if (ino)
+        contentVersions.push({
+          ino,
+          version: number(
+            this.versions[slot * VERSION_WORDS + 1]!,
+            this.versions[slot * VERSION_WORDS + 2]!,
+          ),
+        });
+    }
+    return {
+      kind: "settled-publication-v1",
+      cut,
+      sessionSerial: this.buffers.sessionLimit,
+      limits: this.limits,
+      receipts,
+      changes,
+      contentVersions,
+    };
   }
   get stopped(): boolean {
     return Atomics.load(this.control, Control.Stopped) !== 0;
@@ -540,7 +662,7 @@ export class PublicationDomain {
   openSession(): PublicationSession {
     return this.arena(() => {
       const serial = this.control[Control.Serial]! + 1;
-      if (serial > MAX_COUNTER) throw new FilesystemError(33);
+      if (serial > this.buffers.sessionLimit) throw new FilesystemError(33);
       const slot = this.findSession();
       this.control[Control.Serial] = serial;
       const base = slot * SESSION_WORDS;
@@ -718,6 +840,10 @@ export class PublicationDomain {
       throw new FilesystemError(28, "conflicting publication intent");
   }
   lookupAny(id: MutationId): ReceiptLookup {
+    this.assertLive();
+    const recovered = this.operation(id);
+    if (recovered >= 0 && this.operations[recovered * OP_WORDS + Op.Reserved] === 2)
+      return { kind: "committed", receipt: this.receiptAt(recovered) };
     for (let slot = 0; slot < this.limits.sessions; slot++)
       if (
         this.sessions[slot * SESSION_WORDS + Session.Serial] === id.session &&
@@ -729,12 +855,21 @@ export class PublicationDomain {
   private available(session: PublicationSession): number {
     let oldest = -1,
       empty = -1,
+      recovered = -1,
       own = 0;
     let sequence = MAX_COUNTER + 1;
     for (let slot = 0; slot < this.limits.operations; slot++) {
       const base = slot * OP_WORDS;
       if (!this.operations[base + Op.State]) {
         empty = empty < 0 ? slot : empty;
+        continue;
+      }
+      if (this.operations[base + Op.Reserved] === 2) {
+        if (
+          recovered < 0 ||
+          this.operations[base + Op.State]! < this.operations[recovered * OP_WORDS + Op.State]!
+        )
+          recovered = slot;
         continue;
       }
       if (this.operations[base + Op.Session] !== session.serial) continue;
@@ -745,6 +880,10 @@ export class PublicationDomain {
     }
     if (empty >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations))
       return empty;
+    if (recovered >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations)) {
+      this.clearOperation(recovered);
+      return recovered;
+    }
     if (
       oldest < 0 ||
       (this.operations[oldest * OP_WORDS + Op.State]! & STATUS_MASK) !== Status.Committed
@@ -1048,8 +1187,22 @@ export class PublicationDomain {
   }
   private clearSession(serial: number): void {
     if (!serial) return;
-    for (let slot = 0; slot < this.limits.operations; slot++)
-      if (this.operations[slot * OP_WORDS + Op.Session] === serial) this.clearOperation(slot);
+    for (let slot = 0; slot < this.limits.operations; slot++) {
+      const base = slot * OP_WORDS;
+      if (this.operations[base + Op.Session] !== serial) continue;
+      if (
+        (this.operations[base + Op.State]! & STATUS_MASK) === Status.Committed &&
+        this.operations[base + Op.Reserved] !== 1
+      ) {
+        const at = this.inputAt(slot);
+        this.inputs.fill(0, at, at + this.limits.argumentBytes + this.limits.inputBytes);
+        this.operations[base + Op.Arguments] = 0;
+        this.operations[base + Op.Input] = 0;
+        this.operations[base + Op.Reserved] = 2;
+        continue;
+      }
+      this.clearOperation(slot);
+    }
   }
   pin(file: FileKey, version: number, bytes: Uint8Array): PublicationPin {
     const cut = this.cut();
