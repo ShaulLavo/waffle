@@ -125,7 +125,7 @@ async function copyProbe(kind: "ordinary" | "buffer" | "subclass"): Promise<void
     }
   }
   const backing = new ArrayBuffer(1024 * 1024);
-  const transport =
+  const transport: Uint8Array =
     kind === "buffer"
       ? Buffer.from(backing, 0, bytes.length)
       : kind === "subclass"
@@ -141,8 +141,9 @@ async function copyProbe(kind: "ordinary" | "buffer" | "subclass"): Promise<void
     normalSet.call(this, source, offset);
   };
   transport.slice = (start, end) => {
-    retained = normalSlice(start, end);
-    return retained;
+    const copied = normalSlice(start, end);
+    retained = copied;
+    return copied;
   };
   const parser = parseWorkspaceArchive(values([transport]));
   try {
@@ -427,13 +428,13 @@ if (process.argv.includes("--archive-abort-child")) {
     let added = 0,
       removed = 0,
       returned = 0;
-    signal.addEventListener = (type, callback, options) => {
+    signal.addEventListener = (...args: Parameters<typeof add>) => {
       controller.abort("listener-install");
-      add(type, callback, options);
+      add(...args);
       added++;
     };
-    signal.removeEventListener = (type, callback, options) => {
-      remove(type, callback, options);
+    signal.removeEventListener = (...args: Parameters<typeof remove>) => {
+      remove(...args);
       removed++;
     };
     const source: AsyncIterable<Uint8Array> = {
