@@ -181,15 +181,23 @@ async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<v
   } finally {
     held.restore();
     await reading;
-    const cleanup = await Promise.allSettled([view.close(), storage.close(), replacement?.close()]);
-    const closed = cleanup[0]!;
-    check(
-      closed.status === "rejected" && closed.reason instanceof Error &&
-        closed.reason.message === lostMessage,
-      "stale backend close did not preserve the original ownership loss",
-    );
-    for (const result of cleanup.slice(1)) if (result.status === "rejected") throw result.reason;
+    await retireTakenOverFixture(view, storage, replacement, lostMessage);
   }
+}
+async function retireTakenOverFixture(
+  view: Awaited<ReturnType<typeof projection>>,
+  storage: IndexedDBStorage,
+  replacement: IndexedDBStorage | undefined,
+  lostMessage: string | undefined,
+): Promise<void> {
+  const cleanup = await Promise.allSettled([view.close(), storage.close(), replacement?.close()]);
+  const closed = cleanup[0]!;
+  check(
+    closed.status === "rejected" && closed.reason instanceof Error &&
+      closed.reason.message === lostMessage,
+    "stale backend close did not preserve the original ownership loss",
+  );
+  for (const result of cleanup.slice(1)) if (result.status === "rejected") throw result.reason;
 }
 async function adapter(kind: "indexeddb" | "opfs") {
   const name = `waffle-public-range-${kind}-${crypto.randomUUID()}`;
