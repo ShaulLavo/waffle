@@ -3,6 +3,7 @@ import type { Browser, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import {
   proofEqual as equal,
+  proofFileAdvance,
   proofReport,
   reportJson,
   type ProofStep,
@@ -338,12 +339,17 @@ async function history(
     const proc = appendEffects(groups[1]!, 4, [42]);
     const wasi = appendEffects(groups[3]!, 5, [43]);
     const replay = appendEffects(groups[4]!, 6, [44, 45]);
-    equal(proc, { file: first.file, version: first.version + 1 });
-    equal(wasi, { file: first.file, version: first.version + 2 });
-    equal(replay, { file: first.file, version: first.version + 3 });
+    const replacement = renameEffects(groups[2]!, "a", "target", true);
+    const renamed = renameEffects(groups[5]!, "target", "final", false);
+    proofFileAdvance(proc.file, first.file);
+    proofFileAdvance(replacement, proc.file);
+    proofFileAdvance(wasi.file, replacement);
+    proofFileAdvance(replay.file, wasi.file);
+    proofFileAdvance(renamed, replay.file);
+    equal(proc.version, first.version + 1);
+    equal(wasi.version, first.version + 2);
+    equal(replay.version, first.version + 3);
     equal(groups[1]!.receipt, record(evidence.missingNudgeReceipt).receipt);
-    equal(renameEffects(groups[2]!, "a", "target", true), first.file);
-    equal(renameEffects(groups[5]!, "target", "final", false), first.file);
     equal(record(groups[4]!.receipt).id, id);
     equal(record(groups[4]!.receipt), record(receipt).receipt);
     return changes;

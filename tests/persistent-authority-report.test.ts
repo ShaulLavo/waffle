@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { parseFileIdentity } from "../fs/file-identity";
-import { proofEqual, proofReport, reportJson, type ProofStep } from "./persistent-authority-report";
+import { proofEqual, proofFileAdvance, proofReport, reportJson, type ProofStep } from "./persistent-authority-report";
 
 const identity = {
   birthHistory: "b4b7fc40-2b55-43f8-bf12-43c88f4465cc",
@@ -186,3 +186,16 @@ for (const { runner, variable, total } of [
     }
   });
 }
+
+
+test("publication groups preserve file identity while advancing bigint revisions", () => {
+  proofFileAdvance(identity, freezeIdentity);
+  proofEqual({ ...freezeIdentity, version: identity.version }, identity);
+  expect(() => proofFileAdvance(identity, identity)).toThrow("did not advance");
+  expect(() => proofFileAdvance(freezeIdentity, identity)).toThrow("did not advance");
+  expect(() => proofFileAdvance({ ...identity, id: identity.id + 1n }, freezeIdentity)).toThrow();
+  expect(() => proofFileAdvance({ ...identity, ino: 99 }, freezeIdentity)).toThrow();
+  expect(() => proofFileAdvance({ ...identity, birthHistory: "other" }, freezeIdentity)).toThrow();
+  expect(() => proofFileAdvance({ ...identity, version: String(identity.version) }, freezeIdentity)).toThrow();
+  expect(() => proofFileAdvance({}, freezeIdentity)).toThrow("Missing bigint");
+});

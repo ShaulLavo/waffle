@@ -3,6 +3,7 @@ import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwrig
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import {
   proofEqual as equal,
+  proofFileAdvance,
   proofReport,
   reportJson,
   type ProofStep,
@@ -237,11 +238,11 @@ function shortEffects(publications: Record<string, unknown>[]): void {
   const removed = record(rename.changes[0]),
     added = record(rename.changes[1]);
   equal(removed.name, "a");
-  equal(removed.before, bytes.file);
+  proofFileAdvance(removed.before, bytes.file);
   equal(removed.after, null);
   equal(added.name, "target");
   equal(added.before, null);
-  equal(added.after, bytes.file);
+  equal(added.after, removed.before);
   equal(removed.parent, added.parent);
   equal(record(rename.changes[2]).file, added.parent);
 }
