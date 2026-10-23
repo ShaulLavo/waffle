@@ -272,10 +272,10 @@ export class Wasi {
       base,
       inheriting,
     );
-    return this.opened(result, out >>> 0);
+    return this.writeResult(result, out >>> 0);
   }
 
-  private opened(result: number, out: number): number {
+  private writeResult(result: number, out: number): number {
     if (result < 0) return -result;
     this.view().setUint32(out, result, true);
     return SUCCESS;
@@ -490,6 +490,18 @@ export class Wasi {
     return at === null ? withFileOffset(file, read) : read();
   }
 
+  private descriptorCall<Args extends unknown[]>(
+    right: bigint,
+    operation: (resource: Resource, ...args: Args) => number,
+  ): (fd: number, ...args: Args) => number {
+    return (fd, ...args) => {
+      const entry = this.descriptors.get(fd);
+      if (!entry) return EBADF;
+      if ((entry.rightsBase & right) !== right) return ENOTCAPABLE;
+      return operation(entry.resource, ...args);
+    };
+  }
+
   private functions() {
     const sizes = (list: Uint8Array[], countPtr: number, sizePtr: number) => {
       const view = this.view();
@@ -512,6 +524,11 @@ export class Wasi {
       return SUCCESS;
     };
 
+    const sync = (resource: Resource) =>
+      resource.kind === "file" || resource.kind === "directory"
+        ? (this.opts.fs.sync?.(resource.handle) ?? SUCCESS)
+        : SUCCESS;
+
     return {
       args_sizes_get: (countPtr: number, sizePtr: number) => sizes(this.args, countPtr, sizePtr),
       args_get: (argv: number, buf: number) => fill(this.args, argv, buf),
@@ -528,34 +545,17 @@ export class Wasi {
         return SUCCESS;
       },
 
-      fd_advise: (fd: number) => {
-        const entry = this.descriptors.get(fd);
-        return !entry ? EBADF : entry.rightsBase & RIGHT_FD_ADVISE ? SUCCESS : ENOTCAPABLE;
-      },
-      fd_allocate: (fd: number, offset: bigint, len: bigint) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_ALLOCATE) !== RIGHT_FD_ALLOCATE) return ENOTCAPABLE;
-        if (entry.resource.kind !== "file") return EINVAL;
-        return this.opts.fs.resize(entry.resource.handle, Number(offset + len), false);
-      },
+      fd_advise: this.descriptorCall(RIGHT_FD_ADVISE, () => SUCCESS),
+      fd_allocate: this.descriptorCall(
+        RIGHT_FD_ALLOCATE,
+        (resource, offset: bigint, len: bigint) => {
+          if (resource.kind !== "file") return EINVAL;
+          return this.opts.fs.resize(resource.handle, Number(offset + len), false);
+        },
+      ),
       fd_close: (fd: number) => (this.descriptors.close(fd) ? SUCCESS : EBADF),
-      fd_datasync: (fd: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if (!(entry.rightsBase & RIGHT_FD_DATASYNC)) return ENOTCAPABLE;
-        return entry.resource.kind === "file" || entry.resource.kind === "directory"
-          ? (this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS)
-          : SUCCESS;
-      },
-      fd_sync: (fd: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if (!(entry.rightsBase & RIGHT_FD_SYNC)) return ENOTCAPABLE;
-        return entry.resource.kind === "file" || entry.resource.kind === "directory"
-          ? (this.opts.fs.sync?.(entry.resource.handle) ?? SUCCESS)
-          : SUCCESS;
-      },
+      fd_datasync: this.descriptorCall(RIGHT_FD_DATASYNC, sync),
+      fd_sync: this.descriptorCall(RIGHT_FD_SYNC, sync),
       fd_fdstat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
@@ -581,18 +581,17 @@ export class Wasi {
         view.setBigUint64(ptr + 16, entry.rightsInheriting, true);
         return SUCCESS;
       },
-      fd_fdstat_set_flags: (fd: number, flags: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FDSTAT_SET_FLAGS) !== RIGHT_FD_FDSTAT_SET_FLAGS)
-          return ENOTCAPABLE;
-        if (flags & ~31) return EINVAL;
-        if (entry.resource.kind === "file") {
-          entry.resource.fdflags = flags;
-          entry.resource.append = (flags & FDFLAG_APPEND) !== 0;
-        }
-        return SUCCESS;
-      },
+      fd_fdstat_set_flags: this.descriptorCall(
+        RIGHT_FD_FDSTAT_SET_FLAGS,
+        (resource, flags: number) => {
+          if (flags & ~31) return EINVAL;
+          if (resource.kind === "file") {
+            resource.fdflags = flags;
+            resource.append = (flags & FDFLAG_APPEND) !== 0;
+          }
+          return SUCCESS;
+        },
+      ),
       fd_fdstat_set_rights: (fd: number, base: bigint, inheriting: bigint) => {
         const entry = this.descriptors.get(fd);
         if (!entry) return EBADF;
@@ -607,72 +606,58 @@ export class Wasi {
         entry.rightsInheriting = inheriting;
         return SUCCESS;
       },
-      fd_filestat_get: (fd: number, ptr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_GET) !== RIGHT_FD_FILESTAT_GET)
-          return ENOTCAPABLE;
+      fd_filestat_get: this.descriptorCall(RIGHT_FD_FILESTAT_GET, (resource, ptr: number) => {
         this.writeFilestat(
           ptr,
-          entry.resource.kind === "file" || entry.resource.kind === "directory"
-            ? this.opts.fs.stat(entry.resource.handle)
+          resource.kind === "file" || resource.kind === "directory"
+            ? this.opts.fs.stat(resource.handle)
             : null,
-          entry.resource.kind === "pipe" ? 0 : FT_CHAR,
+          resource.kind === "pipe" ? 0 : FT_CHAR,
         );
         return SUCCESS;
-      },
-      fd_filestat_set_size: (fd: number, size: bigint) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_SIZE) !== RIGHT_FD_FILESTAT_SET_SIZE)
-          return ENOTCAPABLE;
-        if (entry.resource.kind !== "file") return EINVAL;
-        return this.opts.fs.resize(entry.resource.handle, Number(size), true);
-      },
-      fd_filestat_set_times: (fd: number, _atim: bigint, mtim: bigint, flags: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_FILESTAT_SET_TIMES) !== RIGHT_FD_FILESTAT_SET_TIMES)
-          return ENOTCAPABLE;
-        if ((entry.resource.kind === "file" || entry.resource.kind === "directory") && flags & 12)
-          return this.opts.fs.setMtime(
-            entry.resource.handle,
-            flags & 8 ? Date.now() : Number(mtim / 1_000_000n),
+      }),
+      fd_filestat_set_size: this.descriptorCall(
+        RIGHT_FD_FILESTAT_SET_SIZE,
+        (resource, size: bigint) => {
+          if (resource.kind !== "file") return EINVAL;
+          return this.opts.fs.resize(resource.handle, Number(size), true);
+        },
+      ),
+      fd_filestat_set_times: this.descriptorCall(
+        RIGHT_FD_FILESTAT_SET_TIMES,
+        (resource, _atim: bigint, mtim: bigint, flags: number) => {
+          if ((resource.kind === "file" || resource.kind === "directory") && flags & 12)
+            return this.opts.fs.setMtime(
+              resource.handle,
+              flags & 8 ? Date.now() : Number(mtim / 1_000_000n),
+            );
+          return SUCCESS;
+        },
+      ),
+      fd_pread: this.descriptorCall(
+        RIGHT_FD_READ | RIGHT_FD_SEEK,
+        (resource, iovs: number, count: number, offset: bigint, nreadPtr: number) => {
+          if (resource.kind === "directory") return EISDIR;
+          if (resource.kind !== "file") return ESPIPE;
+          if (offset < 0n) return EINVAL;
+          return this.writeResult(
+            this.readIn(resource, this.iovecs(iovs, count), Number(offset)),
+            nreadPtr,
           );
-        return SUCCESS;
-      },
-      fd_pread: (fd: number, iovs: number, count: number, offset: bigint, nreadPtr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if (
-          (entry.rightsBase & (RIGHT_FD_READ | RIGHT_FD_SEEK)) !==
-          (RIGHT_FD_READ | RIGHT_FD_SEEK)
-        )
-          return ENOTCAPABLE;
-        if (entry.resource.kind === "directory") return EISDIR;
-        if (entry.resource.kind !== "file") return ESPIPE;
-        if (offset < 0n) return EINVAL;
-        const read = this.readIn(entry.resource, this.iovecs(iovs, count), Number(offset));
-        if (read < 0) return -read;
-        this.view().setUint32(nreadPtr, read, true);
-        return SUCCESS;
-      },
-      fd_pwrite: (fd: number, iovs: number, count: number, offset: bigint, nwrittenPtr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if (
-          (entry.rightsBase & (RIGHT_FD_WRITE | RIGHT_FD_SEEK)) !==
-          (RIGHT_FD_WRITE | RIGHT_FD_SEEK)
-        )
-          return ENOTCAPABLE;
-        if (entry.resource.kind === "directory") return EISDIR;
-        if (entry.resource.kind !== "file") return ESPIPE;
-        if (offset < 0n) return EINVAL;
-        const written = this.writeOut(entry.resource, iovs, count, Number(offset));
-        if (written < 0) return -written;
-        this.view().setUint32(nwrittenPtr, written, true);
-        return SUCCESS;
-      },
+        },
+      ),
+      fd_pwrite: this.descriptorCall(
+        RIGHT_FD_WRITE | RIGHT_FD_SEEK,
+        (resource, iovs: number, count: number, offset: bigint, nwrittenPtr: number) => {
+          if (resource.kind === "directory") return EISDIR;
+          if (resource.kind !== "file") return ESPIPE;
+          if (offset < 0n) return EINVAL;
+          return this.writeResult(
+            this.writeOut(resource, iovs, count, Number(offset)),
+            nwrittenPtr,
+          );
+        },
+      ),
       fd_prestat_get: (fd: number, ptr: number) => {
         const entry = this.descriptors.get(fd);
         if (!entry || entry.resource.kind !== "directory" || entry.preopen === undefined)
@@ -689,46 +674,43 @@ export class Wasi {
         this.bytes().set(encoder.encode(entry.preopen).subarray(0, len), ptr);
         return SUCCESS;
       },
-      fd_read: (fd: number, iovs: number, count: number, nreadPtr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_READ) !== RIGHT_FD_READ) return ENOTCAPABLE;
-        if (entry.resource.kind === "directory") return EISDIR;
-        const chunks = this.iovecs(iovs, count);
-        const n =
-          entry.resource.kind === "file"
-            ? this.readIn(entry.resource, chunks, null)
-            : entry.resource.read(chunks);
-        if (n < 0) return -n;
-        this.view().setUint32(nreadPtr, n, true);
-        return SUCCESS;
-      },
-      fd_readdir: (fd: number, buf: number, bufLen: number, cookie: bigint, usedPtr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_READDIR) !== RIGHT_FD_READDIR) return ENOTCAPABLE;
-        if (entry.resource.kind !== "directory") return ENOTDIR;
-        const list = this.opts.fs.readdir(entry.resource.handle);
-        const mem = this.bytes();
-        let used = 0;
-        for (let i = Number(cookie); i < list.length; i++) {
-          const { name, ino, kind } = list[i]!;
-          const nameBytes = encoder.encode(name);
-          const record = new Uint8Array(24 + nameBytes.length);
-          const rv = new DataView(record.buffer);
-          rv.setBigUint64(0, BigInt(i + 1), true);
-          rv.setBigUint64(8, BigInt(ino), true);
-          rv.setUint32(16, nameBytes.length, true);
-          rv.setUint8(20, kind === "directory" ? FT_DIR : FT_FILE);
-          record.set(nameBytes, 24);
-          const room = bufLen - used;
-          mem.set(record.subarray(0, Math.min(room, record.length)), buf + used);
-          used += Math.min(room, record.length);
-          if (used >= bufLen) break;
-        }
-        this.view().setUint32(usedPtr, used, true);
-        return SUCCESS;
-      },
+      fd_read: this.descriptorCall(
+        RIGHT_FD_READ,
+        (resource, iovs: number, count: number, nreadPtr: number) => {
+          if (resource.kind === "directory") return EISDIR;
+          const chunks = this.iovecs(iovs, count);
+          return this.writeResult(
+            resource.kind === "file" ? this.readIn(resource, chunks, null) : resource.read(chunks),
+            nreadPtr,
+          );
+        },
+      ),
+      fd_readdir: this.descriptorCall(
+        RIGHT_FD_READDIR,
+        (resource, buf: number, bufLen: number, cookie: bigint, usedPtr: number) => {
+          if (resource.kind !== "directory") return ENOTDIR;
+          const list = this.opts.fs.readdir(resource.handle);
+          const mem = this.bytes();
+          let used = 0;
+          for (let i = Number(cookie); i < list.length; i++) {
+            const { name, ino, kind } = list[i]!;
+            const nameBytes = encoder.encode(name);
+            const record = new Uint8Array(24 + nameBytes.length);
+            const rv = new DataView(record.buffer);
+            rv.setBigUint64(0, BigInt(i + 1), true);
+            rv.setBigUint64(8, BigInt(ino), true);
+            rv.setUint32(16, nameBytes.length, true);
+            rv.setUint8(20, kind === "directory" ? FT_DIR : FT_FILE);
+            record.set(nameBytes, 24);
+            const room = bufLen - used;
+            mem.set(record.subarray(0, Math.min(room, record.length)), buf + used);
+            used += Math.min(room, record.length);
+            if (used >= bufLen) break;
+          }
+          this.view().setUint32(usedPtr, used, true);
+          return SUCCESS;
+        },
+      ),
       fd_renumber: (from: number, to: number) => {
         return this.descriptors.renumber(from, to) ? SUCCESS : EBADF;
       },
@@ -757,27 +739,23 @@ export class Wasi {
         });
         return result < 0 ? -result : result;
       },
-      fd_tell: (fd: number, ptr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_TELL) !== RIGHT_FD_TELL) return ENOTCAPABLE;
-        if (entry.resource.kind !== "file") return ESPIPE;
-        this.view().setBigUint64(ptr, BigInt(entry.resource.offset), true);
+      fd_tell: this.descriptorCall(RIGHT_FD_TELL, (resource, ptr: number) => {
+        if (resource.kind !== "file") return ESPIPE;
+        this.view().setBigUint64(ptr, BigInt(resource.offset), true);
         return SUCCESS;
-      },
-      fd_write: (fd: number, iovs: number, count: number, nwrittenPtr: number) => {
-        const entry = this.descriptors.get(fd);
-        if (!entry) return EBADF;
-        if ((entry.rightsBase & RIGHT_FD_WRITE) !== RIGHT_FD_WRITE) return ENOTCAPABLE;
-        if (entry.resource.kind === "directory") return EISDIR;
-        const written =
-          entry.resource.kind === "file"
-            ? this.writeOut(entry.resource, iovs, count, null)
-            : entry.resource.write(this.iovecs(iovs, count));
-        if (written < 0) return -written;
-        this.view().setUint32(nwrittenPtr, written, true);
-        return SUCCESS;
-      },
+      }),
+      fd_write: this.descriptorCall(
+        RIGHT_FD_WRITE,
+        (resource, iovs: number, count: number, nwrittenPtr: number) => {
+          if (resource.kind === "directory") return EISDIR;
+          return this.writeResult(
+            resource.kind === "file"
+              ? this.writeOut(resource, iovs, count, null)
+              : resource.write(this.iovecs(iovs, count)),
+            nwrittenPtr,
+          );
+        },
+      ),
 
       path_create_directory: (fd: number, ptr: number, len: number) => {
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_CREATE_DIRECTORY);
@@ -869,7 +847,7 @@ export class Wasi {
           if (typeof result !== "number") return result.error;
           node = result;
         }
-        return this.opened(
+        return this.writeResult(
           openInode(
             this.descriptors,
             this.opts.fs,

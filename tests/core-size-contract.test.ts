@@ -14,6 +14,14 @@ const module = guestModule("wasi_snapshot_preview1", [
   { name: "fd_pwrite", parameters: ["i32", "i32", "i32", "i64", "i32"] },
   { name: "fd_sync", parameters: ["i32"] },
   { name: "fd_datasync", parameters: ["i32"] },
+  { name: "fd_advise", parameters: ["i32"] },
+  { name: "fd_allocate", parameters: ["i32", "i64", "i64"] },
+  { name: "fd_fdstat_set_flags", parameters: ["i32", "i32"] },
+  { name: "fd_filestat_get", parameters: ["i32", "i32"] },
+  { name: "fd_filestat_set_size", parameters: ["i32", "i64"] },
+  { name: "fd_filestat_set_times", parameters: ["i32", "i64", "i64", "i32"] },
+  { name: "fd_readdir", parameters: ["i32", "i32", "i32", "i64", "i32"] },
+  { name: "fd_tell", parameters: ["i32", "i32"] },
   { name: "fd_fdstat_set_rights", parameters: ["i32", "i64", "i64"] },
   {
     name: "path_open",
@@ -262,3 +270,58 @@ for (const fixed of [false, true]) {
     }
   });
 }
+
+const descriptorOperations: readonly { name: string; args: (number | bigint)[] }[] = [
+  { name: "fd_advise", args: [] },
+  { name: "fd_allocate", args: [-1n, -1n] },
+  { name: "fd_datasync", args: [] },
+  { name: "fd_sync", args: [] },
+  { name: "fd_fdstat_set_flags", args: [32] },
+  { name: "fd_filestat_get", args: [-1] },
+  { name: "fd_filestat_set_size", args: [-1n] },
+  { name: "fd_filestat_set_times", args: [0n, -1n, 0] },
+  { name: "fd_readdir", args: [-1, 0, 0n, -1] },
+  { name: "fd_tell", args: [-1] },
+];
+for (const { name, args } of descriptorOperations) {
+  test(`${name} admits the descriptor and rights before operation arguments`, () => {
+    using((f) => {
+      expect(f.call(name, 999, ...args)).toBe(8);
+      f.wasi.descriptors.get(f.fd)!.rightsBase = 0n;
+      expect(f.call(name, f.fd, ...args)).toBe(76);
+      f.wasi.descriptors.get(3)!.rightsBase = 0n;
+      expect(f.call(name, 3, ...args)).toBe(76);
+      f.wasi.descriptors.get(0)!.rightsBase = 0n;
+      expect(f.call(name, 0, ...args)).toBe(76);
+      expect(f.traces).toHaveLength(4);
+      expect(f.diagnostics).toEqual([]);
+    });
+  });
+}
+
+test("file-only operations preserve directory and stream errno choices", () => {
+  using((f) => {
+    f.wasi.descriptors.get(0)!.rightsBase = allRights;
+    for (const fd of [0, 3]) {
+      expect(f.call("fd_allocate", fd, 0n, 1n)).toBe(28);
+      expect(f.call("fd_filestat_set_size", fd, 1n)).toBe(28);
+      expect(f.call("fd_tell", fd, -1)).toBe(70);
+    }
+    expect(f.call("fd_readdir", 0, -1, 0, 0n, -1)).toBe(54);
+    expect(f.traces).toHaveLength(7);
+    expect(f.diagnostics).toEqual([]);
+  });
+});
+
+test("sync callbacks keep optional file service errors and stream success distinct", () => {
+  using((f) => {
+    Object.defineProperty(f.fs, "sync", { value: () => 2 });
+    for (const name of ["fd_sync", "fd_datasync"]) {
+      expect(f.call(name, f.fd)).toBe(2);
+      expect(f.call(name, 3)).toBe(2);
+      expect(f.call(name, 0)).toBe(0);
+    }
+    expect(f.traces).toHaveLength(6);
+    expect(f.diagnostics).toEqual([]);
+  });
+});
