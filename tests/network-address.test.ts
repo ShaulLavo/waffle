@@ -144,7 +144,6 @@ for (const shared of [false, true]) {
   });
 }
 
-
 async function settleFetch(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
@@ -213,21 +212,31 @@ for (const shared of [false, true]) {
         await settleFetch();
         const accepted = server.accept(listener);
         expect(accepted).toBeGreaterThan(0);
-        expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({ address, family, port: 32159 });
+        expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({
+          address,
+          family,
+          port: 32159,
+        });
         expect(JSON.parse(String(server.peerAddr(accepted)))).toEqual({
-          address, family, port: shared ? 49152 : 40000 + (CONN_BASE % 20000),
+          address,
+          family,
+          port: shared ? 49152 : 40000 + (CONN_BASE % 20000),
         });
         const request = server.read(accepted, 65536);
         expect(request).toBeInstanceOf(Uint8Array);
-        expect(new TextDecoder().decode(request instanceof Uint8Array ? request : undefined))
-          .toStartWith("GET /family?check=1 HTTP/1.1\r\n");
+        expect(
+          new TextDecoder().decode(request instanceof Uint8Array ? request : undefined),
+        ).toStartWith("GET /family?check=1 HTTP/1.1\r\n");
         const response = new TextEncoder().encode("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         expect(server.write(accepted, response)).toBe(response.length);
         server.shutdown(accepted);
         await settleFetch();
         const head = client.fetchHead(fetched);
         expect(head).toBeInstanceOf(Uint8Array);
-        expect(JSON.parse(new TextDecoder().decode(head instanceof Uint8Array ? head : undefined)).status).toBe(200);
+        expect(
+          JSON.parse(new TextDecoder().decode(head instanceof Uint8Array ? head : undefined))
+            .status,
+        ).toBe(200);
         const body = client.read(fetched, 1024);
         expect(new TextDecoder().decode(body instanceof Uint8Array ? body : undefined)).toBe("ok");
         expect(client.read(fetched, 1024)).toBe(0);

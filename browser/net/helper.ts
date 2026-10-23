@@ -208,14 +208,18 @@ export class NetHelper {
       },
     };
     const parser = new ResponseParser(finish, isHead);
-    connection = this.connect(port, {
-      data: (bytes) => {
-        parser.push(bytes);
-        return delivered;
+    connection = this.connect(
+      port,
+      {
+        data: (bytes) => {
+          parser.push(bytes);
+          return delivered;
+        },
+        end: () => parser.end(),
+        error: (message) => finish.error(message),
       },
-      end: () => parser.end(),
-      error: (message) => finish.error(message),
-    }, host);
+      host,
+    );
     if (!connection) return null;
     connection.write(request);
     return connection;
@@ -298,23 +302,31 @@ export class NetHelper {
     };
   }
 
-  private connectNamespace(port: number, sink: ConnectionSink, host?: string): PreviewConnection | null {
+  private connectNamespace(
+    port: number,
+    sink: ConnectionSink,
+    host?: string,
+  ): PreviewConnection | null {
     let socket: LoopbackSocket | undefined = undefined;
-    const connected = this.namespace.connect(port, {
-      data: (bytes) => {
-        const receipt = sink.data(bytes);
-        if (!receipt) socket?.consumed(bytes.length);
-        else
-          void receipt.then(
-            () => socket?.consumed(bytes.length),
-            (error: unknown) => {
-              socket?.close();
-              sink.error(String(error));
-            },
-          );
+    const connected = this.namespace.connect(
+      port,
+      {
+        data: (bytes) => {
+          const receipt = sink.data(bytes);
+          if (!receipt) socket?.consumed(bytes.length);
+          else
+            void receipt.then(
+              () => socket?.consumed(bytes.length),
+              (error: unknown) => {
+                socket?.close();
+                sink.error(String(error));
+              },
+            );
+        },
+        end: () => sink.end(),
       },
-      end: () => sink.end(),
-    }, host);
+      host,
+    );
     if (typeof connected === "number") return null;
     const id = this.nextConn++;
     socket = connected.socket;
@@ -571,7 +583,10 @@ export class NetHelper {
       url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname,
     );
     if (!connection) {
-      void finish(Kind.Error, json({ name: "TypeError", message: `connect ECONNREFUSED ${url.host}` } satisfies NetError));
+      void finish(
+        Kind.Error,
+        json({ name: "TypeError", message: `connect ECONNREFUSED ${url.host}` } satisfies NetError),
+      );
       return;
     }
     // A cancelled fetch owns the other end of this virtual connection, not just its job entry.
