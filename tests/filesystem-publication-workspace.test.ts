@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { failWorkspaceCleanupPost, workspaceCleanupPostFailure } from "./fixtures/publication-cleanup-failure";
+import {
+  failWorkspaceCleanupPost,
+  workspaceCleanupPostFailure,
+} from "./fixtures/publication-cleanup-failure";
 import {
   FilesystemClient,
   FilesystemService,
@@ -403,13 +406,9 @@ test("synchronous cleanup posting failure is memoized without skipping local dis
   try {
     expect(() => client.dispose()).not.toThrow();
     expect(isRevoked(pair.client)).toBe(true);
-    await expect(client.stopResidentPublication()).rejects.toThrow(
-      workspaceCleanupPostFailure,
-    );
+    await expect(client.stopResidentPublication()).rejects.toThrow(workspaceCleanupPostFailure);
     client.dispose();
-    await expect(client.stopResidentPublication()).rejects.toThrow(
-      workspaceCleanupPostFailure,
-    );
+    await expect(client.stopResidentPublication()).rejects.toThrow(workspaceCleanupPostFailure);
     expect(attempted()).toBe(1);
   } finally {
     pair.client.port.close();
@@ -1099,7 +1098,10 @@ for (const operation of ["stat", "missing-operation"]) {
       clock.expire();
       await failed;
       stopping = stopWorkspaceBridge(connection);
-      void stopping.then(() => terminal.push("stopped"), () => terminal.push("cleanup-error"));
+      void stopping.then(
+        () => terminal.push("stopped"),
+        () => terminal.push("cleanup-error"),
+      );
       clock.expire();
       await remainsPending(stopping);
       expect(terminal).toEqual([]);
