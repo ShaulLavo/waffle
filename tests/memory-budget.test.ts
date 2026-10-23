@@ -646,7 +646,15 @@ test("one admitted operation cannot spend another operation's reserved serials",
 });
 
 const observerFailures: readonly unknown[] = [
-  undefined, null, false, 0, -0, 0n, NaN, "", new Error("observer hook"),
+  undefined,
+  null,
+  false,
+  0,
+  -0,
+  0n,
+  NaN,
+  "",
+  new Error("observer hook"),
 ];
 
 function observed(pending: Promise<void>) {
@@ -677,6 +685,7 @@ async function failedRegistration(reason: unknown, install: boolean): Promise<vo
   for (let attempt = 0; attempt < 3; attempt++) {
     expect(failure(() => budget.observe(budget.snapshot().changed, signal))).toBe(reason);
     expect(budget.snapshot().waiting).toBe(0);
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
   }
   const next = observed(budget.observe(budget.snapshot().changed, new AbortController().signal));
   for (const callback of callbacks) replayAbort(callback, signal);
@@ -689,68 +698,106 @@ async function failedRegistration(reason: unknown, install: boolean): Promise<vo
   oracle.check();
 }
 
-test.each(observerFailures)("ledger observer registration rolls back arbitrary throws %p", async (reason) => {
-  await failedRegistration(reason, false);
-  await failedRegistration(reason, true);
-});
+test.each(observerFailures)(
+  "ledger observer registration rolls back arbitrary throws %p",
+  async (reason) => {
+    await failedRegistration(reason, false);
+    await failedRegistration(reason, true);
+  },
+);
 
-test.each(observerFailures)("ledger observer cleanup cannot strand close or throw %p", async (reason) => {
-  const { budget, oracle } = rig({ waiters: 2 });
-  operation(budget, 8);
-  operation(budget, 8);
-  const signal = new AbortController().signal;
-  let cleanupCalls = 0;
-  signal.removeEventListener = () => { cleanupCalls++; throw reason; };
-  const outcomes: unknown[] = [];
-  void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
-  void observed(budget.observe(budget.snapshot().changed, new AbortController().signal)).then((value) => outcomes.push(value));
-  expect(() => budget.close()).not.toThrow();
-  budget.close();
-  await Promise.resolve();
-  await Promise.resolve();
-  expect(outcomes).toHaveLength(2);
-  expect(outcomes).toEqual([
-    { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
-    { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
-  ]);
-  expect(cleanupCalls).toBe(1);
-  expect(budget.snapshot()).toMatchObject({ stopped: true, waiting: 0, obligations: 0, reserve: 0 });
-  expect(budget.snapshot().producerFree).toEqual(producerRecords);
-  oracle.check();
-});
+test.each(observerFailures)(
+  "ledger observer cleanup cannot strand close or throw %p",
+  async (reason) => {
+    const { budget, oracle } = rig({ waiters: 2 });
+    operation(budget, 8);
+    operation(budget, 8);
+    const signal = new AbortController().signal;
+    let cleanupCalls = 0;
+    signal.removeEventListener = () => {
+      cleanupCalls++;
+      throw reason;
+    };
+    const outcomes: unknown[] = [];
+    void observed(budget.observe(budget.snapshot().changed, signal)).then((value) =>
+      outcomes.push(value),
+    );
+    void observed(budget.observe(budget.snapshot().changed, new AbortController().signal)).then(
+      (value) => outcomes.push(value),
+    );
+    expect(() => budget.close()).not.toThrow();
+    budget.close();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes).toEqual([
+      { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
+      { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
+    ]);
+    expect(cleanupCalls).toBe(1);
+    expect(budget.snapshot()).toMatchObject({
+      stopped: true,
+      waiting: 0,
+      obligations: 0,
+      reserve: 0,
+    });
+    expect(budget.snapshot().producerFree).toEqual(producerRecords);
+    oracle.check();
+  },
+);
 
-async function allocatorFailureWithCleanup(reason: unknown, mode: "allocate" | "beforeGrow" | "afterGrow"): Promise<void> {
+async function allocatorFailureWithCleanup(
+  reason: unknown,
+  mode: "allocate" | "beforeGrow" | "afterGrow",
+): Promise<void> {
   const { budget, oracle } = rig({ room: 16, waiters: 1 });
   const lease = operation(budget, 16);
-  const owned = mode === "allocate" ? null : lease.allocate({ kind: "shared", bytes: 4, maximum: 16 });
+  const owned =
+    mode === "allocate" ? null : lease.allocate({ kind: "shared", bytes: 4, maximum: 16 });
   const signal = new AbortController().signal;
-  signal.removeEventListener = () => { throw new Error("cleanup must not replace allocator error"); };
+  signal.removeEventListener = () => {
+    throw new Error("cleanup must not replace allocator error");
+  };
   const outcomes: unknown[] = [];
-  void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
-  const throwReason = () => { throw reason; };
+  void observed(budget.observe(budget.snapshot().changed, signal)).then((value) =>
+    outcomes.push(value),
+  );
+  const throwReason = () => {
+    throw reason;
+  };
   if (mode === "allocate") oracle.beforeAllocate = throwReason;
   if (mode === "beforeGrow") oracle.beforeGrow = throwReason;
   if (mode === "afterGrow") oracle.afterGrow = throwReason;
-  const run = () => owned ? lease.grow(owned.backing, owned.ref, 12) : lease.allocate({ kind: "array", bytes: 8 });
+  const run = () =>
+    owned ? lease.grow(owned.backing, owned.ref, 12) : lease.allocate({ kind: "array", bytes: 8 });
   expect(failure(run)).toBe(reason);
   await Promise.resolve();
   await Promise.resolve();
   expect(outcomes).toEqual([{ kind: "resolved" }]);
   expect(budget.snapshot().waiting).toBe(0);
-  expect(owned?.backing.buffer.byteLength ?? 0).toBe(mode === "afterGrow" ? 12 : mode === "beforeGrow" ? 4 : 0);
+  expect(owned?.backing.buffer.byteLength ?? 0).toBe(
+    mode === "afterGrow" ? 12 : mode === "beforeGrow" ? 4 : 0,
+  );
   oracle.check();
   lease.close();
   if (owned) release(oracle, lease, owned.ref, owned.backing);
   budget.close();
 }
 
-test.each(observerFailures)("ledger observer cleanup preserves allocator and growth throws %p", async (reason) => {
-  await allocatorFailureWithCleanup(reason, "allocate");
-  await allocatorFailureWithCleanup(reason, "beforeGrow");
-  await allocatorFailureWithCleanup(reason, "afterGrow");
-});
+test.each(observerFailures)(
+  "ledger observer cleanup preserves allocator and growth throws %p",
+  async (reason) => {
+    await allocatorFailureWithCleanup(reason, "allocate");
+    await allocatorFailureWithCleanup(reason, "beforeGrow");
+    await allocatorFailureWithCleanup(reason, "afterGrow");
+  },
+);
 
-function consumptionResults(lease: MemoryLease, ref: MemoryReference, backing: MemoryBacking): unknown[] {
+function consumptionResults(
+  lease: MemoryLease,
+  ref: MemoryReference,
+  backing: MemoryBacking,
+): unknown[] {
   const attempts = [
     () => lease.allocate({ kind: "array", bytes: 1 }),
     () => lease.account({ metadataUnits: 1, nativeAllowance: 0 }),
@@ -759,8 +806,12 @@ function consumptionResults(lease: MemoryLease, ref: MemoryReference, backing: M
     () => lease.grow(backing, ref, 8),
   ];
   return attempts.map((attempt) => {
-    try { attempt(); return "unexpected consumption"; }
-    catch (reason) { return reason; }
+    try {
+      attempt();
+      return "unexpected consumption";
+    } catch (reason) {
+      return reason;
+    }
   });
 }
 
@@ -768,7 +819,9 @@ test("ledger observer reentrant cleanup fences every producer and progress lease
   const { budget, oracle } = rig({ room: 32, reserve: 16 });
   operation(budget, 0);
   const producer = operation(budget, 16, { references: 2, leases: 1 });
-  const progress = granted(budget.tryProgress({ bytes: 16, allocations: 1, references: 2, leases: 1 }));
+  const progress = granted(
+    budget.tryProgress({ bytes: 16, allocations: 1, references: 2, leases: 1 }),
+  );
   const a = producer.allocate({ kind: "shared", bytes: 4, maximum: 16 });
   const b = progress.allocate({ kind: "shared", bytes: 4, maximum: 16 });
   const signal = new AbortController().signal;
@@ -797,7 +850,10 @@ test("ledger observer reentrant cleanup fences every producer and progress lease
   release(oracle, progress, b.ref, b.backing);
 });
 
-async function lateRegistration(action: "abort" | "close" | "notify", throws: boolean): Promise<void> {
+async function lateRegistration(
+  action: "abort" | "close" | "notify",
+  throws: boolean,
+): Promise<void> {
   const { budget, oracle } = rig({ waiters: 1 });
   const lease = operation(budget, 0);
   const controller = new AbortController();
@@ -805,7 +861,10 @@ async function lateRegistration(action: "abort" | "close" | "notify", throws: bo
   const nativeAdd = signal.addEventListener.bind(signal);
   let cleanupCalls = 0;
   const registrationError = new Error("registration after reentry");
-  signal.removeEventListener = () => { cleanupCalls++; throw null; };
+  signal.removeEventListener = () => {
+    cleanupCalls++;
+    throw null;
+  };
   signal.addEventListener = (
     type: string,
     listener: EventListenerOrEventListenerObject | null,
@@ -817,9 +876,15 @@ async function lateRegistration(action: "abort" | "close" | "notify", throws: bo
     if (listener) nativeAdd(type, listener, options);
     if (throws) throw registrationError;
   };
-  if (throws) expect(failure(() => budget.observe(budget.snapshot().changed, signal))).toBe(registrationError);
+  if (throws)
+    expect(failure(() => budget.observe(budget.snapshot().changed, signal))).toBe(
+      registrationError,
+    );
   const outcomes: unknown[] = [];
-  if (!throws) void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
+  if (!throws)
+    void observed(budget.observe(budget.snapshot().changed, signal)).then((value) =>
+      outcomes.push(value),
+    );
   await Promise.resolve();
   await Promise.resolve();
   if (!throws) expect(outcomes).toHaveLength(1);
@@ -844,7 +909,7 @@ test.each(["abort", "close", "notify"] satisfies ("abort" | "close" | "notify")[
   },
 );
 
-test("ledger observer cleanup can reuse a slot without stale cancellation or same-epoch notification", async () => {
+async function reusedObserverSlots(currentFirst: boolean): Promise<void> {
   const { budget, oracle } = rig({ waiters: 2 });
   const first = new AbortController();
   const signal = new AbortController().signal;
@@ -858,8 +923,9 @@ test("ledger observer cleanup can reuse a slot without stale cancellation or sam
     if (listener) saved.push(listener);
     if (listener) nativeAdd(type, listener, options);
   };
+  const early = currentFirst ? observed(budget.observe(budget.snapshot().changed, signal)) : null;
   const initial = observed(budget.observe(budget.snapshot().changed, first.signal));
-  const current = observed(budget.observe(budget.snapshot().changed, signal));
+  const current = early ?? observed(budget.observe(budget.snapshot().changed, signal));
   first.abort(false);
   expect(await initial).toEqual({ kind: "rejected", reason: false });
   const next: Promise<unknown>[] = [];
@@ -878,4 +944,9 @@ test("ledger observer cleanup can reuse a slot without stale cancellation or sam
   expect(budget.snapshot().waiting).toBe(0);
   budget.close();
   oracle.check();
-});
+}
+
+test.each([false, true])(
+  "ledger observer cleanup reuses slots without stale cancellation or same-epoch notification, first %p",
+  reusedObserverSlots,
+);
