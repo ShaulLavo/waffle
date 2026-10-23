@@ -719,7 +719,10 @@ export class StagedCommitDriver {
       }
     }
   }
-  private complete(work: PromiseWithResolvers<StagingOutcome>, outcome: StagingOutcome): void {
+  private complete(
+    work: ReturnType<typeof Promise.withResolvers<StagingOutcome>>,
+    outcome: StagingOutcome,
+  ): void {
     work.resolve(outcome);
     for (const observer of this.observers)
       if (observer.work === work.promise) observer.settle(outcome);
