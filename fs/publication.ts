@@ -511,8 +511,7 @@ export class PublicationDomain {
       this.versions[slot * VERSION_WORDS + 2] = versionHigh;
     });
   }
-  /** Conservative units include capture, typed bytes, JSON arrays and adapter copies. */
-  checkpointMetadataBytes(): number {
+  private checkpointFixedMetadataBytes(): number {
     let bytes = 1024 + this.buffers.history.length * 2;
     for (let slot = 0; slot < this.limits.operations; slot++) {
       const base = slot * OP_WORDS;
@@ -523,14 +522,36 @@ export class PublicationDomain {
         continue;
       bytes += 512 + this.operations[base + Op.Result]! * 2;
     }
-    for (let slot = 0; slot < this.limits.logRecords; slot++)
-      bytes += 64 + this.log[slot * LOG_WORDS]! * 16;
+    bytes += this.limits.logRecords * 64;
     for (let slot = 0; slot < VERSION_SLOTS; slot++)
       if (this.versions[slot * VERSION_WORDS]) bytes += 128;
     return bytes;
   }
+  private checkpointLogCount(remaining: number): number {
+    let count = 0;
+    for (; count < this.control[Control.LogCount]!; count++) {
+      const slot =
+        (this.control[Control.LogNext]! + this.limits.logRecords - 1 - count) %
+        this.limits.logRecords;
+      remaining -= this.log[slot * LOG_WORDS]! * 16;
+      if (remaining < 0) break;
+    }
+    return count;
+  }
+  /** Conservative units include capture, typed bytes, JSON arrays and adapter copies. */
+  checkpointMetadataBytes(maxMetadataBytes = Infinity): number {
+    let bytes = this.checkpointFixedMetadataBytes();
+    const count = this.checkpointLogCount(maxMetadataBytes - bytes);
+    for (let index = 0; index < count; index++) {
+      const slot =
+        (this.control[Control.LogNext]! + this.limits.logRecords - 1 - index) %
+        this.limits.logRecords;
+      bytes += this.log[slot * LOG_WORDS]! * 16;
+    }
+    return bytes;
+  }
   /** Capture under the filesystem mutation lock, never across a native storage await. */
-  checkpoint(): CheckpointPublication {
+  checkpoint(maxMetadataBytes = Infinity): CheckpointPublication {
     const cut = this.cut();
     const receipts: PublicationReceipt[] = [],
       changes: Uint8Array[] = [];
@@ -550,7 +571,7 @@ export class PublicationDomain {
         left.id.session - right.id.session ||
         left.id.sequence - right.id.sequence,
     );
-    const count = this.control[Control.LogCount]!,
+    const count = this.checkpointLogCount(maxMetadataBytes - this.checkpointFixedMetadataBytes()),
       stride = Math.floor(this.limits.logBytes / this.limits.logRecords);
     const first =
       (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;

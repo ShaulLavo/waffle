@@ -26,6 +26,11 @@ import {
   type ReaderMetadataBudget,
 } from "./storage.js";
 
+interface CheckpointCaptureCost extends CheckpointCost {
+  metadataBytes: number;
+  readonly publicationMetadataLimit: number;
+}
+
 interface CheckpointRequest {
   readonly durable: boolean;
   readonly target: FileHandle | string | undefined;
@@ -585,10 +590,9 @@ export class PersistentBackend extends MemoryBackend {
     }
     return bytes;
   }
-  private captureCost({ durable, target, selected }: CheckpointRequest): CheckpointCost {
+  private captureCost({ durable, target, selected }: CheckpointRequest): CheckpointCaptureCost {
     let bytes = 0;
     let metadataBytes = 256 + this.removed.size * 256;
-    metadataBytes += this.shared.publication?.checkpointMetadataBytes() ?? 0;
     for (const node of this.dirty) metadataBytes += this.nodeMetadataBytes(node);
     for (const handle of this.shared.registeredHandles()) {
       const revision = this.shared.revision(handle);
@@ -600,8 +604,16 @@ export class PersistentBackend extends MemoryBackend {
       if (!this.dirty.has(node)) metadataBytes += this.nodeMetadataBytes(node);
       if (this.shared.isResident(handle)) bytes += (this.shared.stat(handle)?.size ?? 0) * 2;
     }
+    metadataBytes += this.pinMetadataBytes();
+    // Retention uses the configured ceiling, never transient room behind queued captures.
+    const publicationMetadataLimit = Math.max(
+      0,
+      Math.floor(this.pressure.limits.maxMetadataBytes / 4) - metadataBytes,
+    );
+    metadataBytes +=
+      this.shared.publication?.checkpointMetadataBytes(publicationMetadataLimit) ?? 0;
     // Metadata units cover capture containers, adapter cloning and runtime pin lists.
-    return { bytes, metadataBytes: (metadataBytes + this.pinMetadataBytes()) * 4 };
+    return { bytes, metadataBytes: metadataBytes * 4, publicationMetadataLimit };
   }
   private captureCheckpoint(durable = false, target?: FileHandle | string): Promise<void> {
     this.assertOpen();
@@ -696,7 +708,7 @@ export class PersistentBackend extends MemoryBackend {
   private captureReserved(
     request: CheckpointRequest,
     reservation: number,
-    cost: { bytes: number; metadataBytes: number },
+    cost: CheckpointCaptureCost,
   ): Promise<void> {
     const metadataBytes = cost.metadataBytes;
     const start = (metadata: number) => {
@@ -708,7 +720,7 @@ export class PersistentBackend extends MemoryBackend {
       cost.metadataBytes += growth;
     };
     const { durable, target, selected } = request;
-    const publication = this.shared.publication?.checkpoint();
+    const publication = this.shared.publication?.checkpoint(cost.publicationMetadataLimit);
     this.pruneDetached();
     const capture: CheckpointCapture = {
       changed: new Set(this.dirty),
