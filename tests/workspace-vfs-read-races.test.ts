@@ -21,7 +21,7 @@ async function coldFixture(size: number) {
     await physical.seed([size]);
     const storage = await physical.open();
     value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-    return { ...value, storage, physical, close };
+    return { ...value, closeProjection: value.close, storage, physical, close };
   } catch (error) {
     await close();
     throw error;
@@ -337,4 +337,120 @@ test("a missing current pathname stays not-found even with an explicitly leased 
     expect((await value.workspace.read(opened.value.stat.id, { offset: 0, length: 1 }, opened.value.stat.version)).kind).toBe("ok");
     await opened.value.close();
   } finally { await value.close(); }
+});
+
+test("generation stat distinguishes retained IDs, old paths, foreign cuts, future cuts and reopen history", async () => {
+  const value = await coldFixture(PAGE * 3);
+  let reopened: ReturnType<typeof publicReadFixture> | undefined;
+  try {
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    const stat = held.value.stat;
+    const foreign = await residentReadFixture(1);
+    try {
+      const other = await foreign.workspace.stat("/file");
+      if (other.kind !== "ok") throw new Error(other.kind);
+      expect((await value.workspace.stat(stat.id, other.value.cut)).kind).toBe("generation-gone");
+    } finally { await foreign.close(); }
+    const future = { ...stat.cut, generation: stat.cut.generation + 1n, watermark: { ...stat.cut.watermark, seq: stat.cut.watermark.seq + 1n } };
+    const grant = value.client.connection.publication!.observer;
+    expect((await value.client.asyncCall("publicationReadStat", [grant, 100, stat.id, undefined, undefined, future])).kind).toBe("generation-gone");
+    await value.client.asyncCall("move", ["/file", "/renamed"]);
+    expect(await value.workspace.stat(stat.id, stat.cut)).toEqual({ kind: "ok", value: stat });
+    expect((await value.workspace.stat("/file", stat.cut)).kind).toBe("generation-gone");
+    await held.value.close();
+    expect((await value.workspace.stat(stat.id, stat.cut)).kind).toBe("generation-gone");
+    await value.backend.flush();
+    const before = await value.workspace.stat(stat.id);
+    if (before.kind !== "ok") throw new Error(before.kind);
+    await value.closeProjection();
+    const storage = await value.physical.open();
+    reopened = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
+    const after = await reopened.workspace.stat("/renamed");
+    expect(after.kind).toBe("ok");
+    if (after.kind === "ok") {
+      expect(after.value.id).toBe(before.value.id);
+      expect(after.value.version).toBe(before.value.version);
+      expect(after.value.cut.watermark.history).not.toBe(before.value.cut.watermark.history);
+    }
+    expect((await reopened.workspace.stat(before.value.id, before.value.cut)).kind).toBe("generation-gone");
+    expect(await held.value.read({ offset: 0, length: 1 })).toEqual({ kind: "stopped" });
+  } finally { await reopened?.close(); await value.close(); }
+});
+
+test("closing a cold lease joins an active native borrow and preserves debt until it settles", async () => {
+  const value = await coldFixture(PAGE * 3);
+  const entered = Promise.withResolvers<void>(), gate = value.physical.gate();
+  let reading: ReturnType<typeof value.workspace.read> | undefined;
+  let closing: Promise<void> | undefined;
+  try {
+    const opened = await value.workspace.pin("/file");
+    if (opened.kind !== "ok") throw new Error(opened.kind);
+    value.physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    reading = opened.value.read({ offset: 0, length: PAGE });
+    await entered.promise;
+    let settled = false;
+    closing = opened.value.close().then(() => { settled = true; });
+    expect(opened.value.close()).not.toBeUndefined();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    expect(value.storage.resources().opfsReaderWork).toBe(1);
+    expect(value.storage.resources().readerStorageBytes).toBe(PAGE * 3);
+    expect(await opened.value.read()).toEqual({ kind: "lease-closed" });
+    gate.resolve();
+    expect(await reading).toEqual({ kind: "cancelled" });
+    await closing;
+    expect(value.storage.resources().opfsReaderWork).toBe(0);
+    expect(value.storage.resources().readerStorageBytes).toBe(0);
+    expect(value.service.resources().readerLeases).toBe(0);
+  } finally { gate.resolve(); await reading; await closing; await value.close(); }
+});
+
+for (const after of ["open", "chunk"] as const) {
+  test(`abort after real ${after} completion before delivery cannot resurrect a reader`, async () => {
+    const value = await residentReadFixture(PAGE * 3);
+    const submit = value.client.submit;
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    let held = false;
+    let reading: ReturnType<typeof value.workspace.read> | undefined;
+    try {
+      value.client.submit = function (...args) {
+        const completion = submit.apply(this, args);
+        if (held || args[0] !== (after === "open" ? "publicationReadOpen" : "publicationReadChunk")) return completion;
+        held = true;
+        const original = completion.value.bind(completion);
+        completion.value = async () => {
+          const result: unknown = await original();
+          entered.resolve(); await gate.promise;
+          return result;
+        };
+        return completion;
+      };
+      reading = value.workspace.read("/file", { offset: 0, length: PAGE * 3 }, undefined, controller.signal);
+      await entered.promise;
+      expect(value.service.resources().readerTickets).toBe(1);
+      controller.abort();
+      gate.resolve();
+      expect(await reading).toEqual({ kind: "cancelled" });
+      expect(value.service.resources().readerTickets).toBe(0);
+      expect(value.service.resources().readerPinBytes).toBe(0);
+      expect(value.service.resources().readerResultBytes).toBe(0);
+      expect(value.service.resources().readerOperations).toBe(0);
+    } finally { gate.resolve(); value.client.submit = submit; await reading; await value.close(); }
+  });
+}
+
+test("reopened normal recovery roots do not become reader-only debt on token release", async () => {
+  const physical = new RangeFixture();
+  try {
+    await physical.seed([PAGE]);
+    const storage = await physical.open();
+    await storage.load();
+    const token = storage.retainPayload("revision:0", PAGE);
+    expect(storage.resources().readerStorageBytes).toBe(PAGE);
+    token.release();
+    expect(storage.resources().readerStorageDebt).toBe(0);
+    expect(storage.resources().readerStorageBytes).toBe(0);
+  } finally { await physical.cleanup(); }
 });
