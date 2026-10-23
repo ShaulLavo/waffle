@@ -422,7 +422,7 @@ test("direct metadata pressure fallback returns service errno without throwing",
 });
 
 
-test("parent regression: held checkpoint parks a namespace writer until capacity returns", async () => {
+test("held checkpoint parks a namespace writer until capacity returns", async () => {
   await fixture(async (context) => {
     const { backend, client, track } = context;
     await client.asyncCall("mkdirp", ["/d"]);
@@ -438,7 +438,7 @@ test("parent regression: held checkpoint parks a namespace writer until capacity
   }, tiny);
 });
 
-test("parent regression: clean detached descriptor reload preserves the captured length", async () => {
+test("clean detached descriptor reload preserves the captured length", async () => {
   await fixture(async ({ backend, client, handle }) => {
     expect(client.tryWrite(handle, [data(8, 66)], 0)).toBe(8);
     await client.asyncCall("remove", ["/file"]);
@@ -455,7 +455,7 @@ test("parent regression: clean detached descriptor reload preserves the captured
   }, { checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 } });
 });
 
-test("parent regression: cold namespace is not pending checkpoint debt", async () => {
+test("cold namespace is not pending checkpoint debt", async () => {
   const storage = new ControlledStorage();
   const seed = await PersistentBackend.open(storage, { intervalMs: 0, dirtyLimits: false });
   try {
@@ -477,7 +477,9 @@ test("parent regression: cold namespace is not pending checkpoint debt", async (
   const client = new FilesystemClient(pair.client);
   try {
     const root = await client.asyncCall("preopen", ["/"]);
-    const file = await client.asyncCall("resolve", [root, "d/file-1"]);
+    const directory = await client.asyncCall("resolve", [root, "d"]);
+    const file = await client.asyncCall("resolve", [directory.node, "file-1"]);
+    client.retain(file.node);
     await client.asyncCall("read", [file.node, 1, 0]);
     expect(client.tryWrite(file.node, [data(1, 66)], 0)).toBe(1);
     await backend.flush();
@@ -488,6 +490,38 @@ test("parent regression: cold namespace is not pending checkpoint debt", async (
   } finally {
     client.dispose();
     service.dispose();
+    await backend.close();
+    backend.dispose();
+  }
+});
+
+
+test("directory metadata reserves the complete dirty child list before mutation", async () => {
+  const storage = new ControlledStorage();
+  const seed = await PersistentBackend.open(storage, { intervalMs: 0, dirtyLimits: false });
+  try {
+    seed.execute("mkdirp", ["/d"], data(0));
+    for (let index = 0; index < 30; index++) seed.execute("writeFile", [`/d/f${index}`], data(0));
+    await seed.close();
+  } finally {
+    seed.dispose();
+  }
+  const backend = await PersistentBackend.open(storage, {
+    intervalMs: 0,
+    checkpointLimits: { maxMetadataBytes: 4096 },
+  });
+  try {
+    const directory = backend.fs.lookup("/d")!;
+    const handle = backend.fs.handleForNode(directory);
+    await backend.prepare("stat", [handle]);
+    const before = backend.shared.stat(handle);
+    expect(() => backend.execute("setMode", [handle, 0o700], data(0))).toThrow("dirty capacity");
+    expect(backend.shared.stat(handle)).toEqual(before);
+    expect(() => backend.execute("setMtime", [handle, 1234], data(0))).toThrow("dirty capacity");
+    expect(backend.shared.stat(handle)).toEqual(before);
+    await backend.flush();
+    expect(storage.index!.nodes.find((node) => node.ino === directory.ino)!.mtime).toBe(before!.mtime);
+  } finally {
     await backend.close();
     backend.dispose();
   }
