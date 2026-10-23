@@ -191,15 +191,15 @@ async function retireTakenOverFixture(
   replacement: IndexedDBStorage | undefined,
   lostMessage: string | undefined,
 ): Promise<void> {
-  const cleanup = await Promise.allSettled([view.close(), storage.close(), replacement?.close()]);
-  const closed = cleanup[0]!;
+  const closed = (await Promise.allSettled([view.close()]))[0]!;
+  const cleanup = await Promise.allSettled([storage.close(), replacement?.close()]);
   check(
     closed.status === "rejected" &&
       closed.reason instanceof Error &&
       closed.reason.message === lostMessage,
     "stale backend close did not preserve the original ownership loss",
   );
-  for (const result of cleanup.slice(1)) if (result.status === "rejected") throw result.reason;
+  for (const result of cleanup) if (result.status === "rejected") throw result.reason;
 }
 async function adapter(kind: "indexeddb" | "opfs") {
   const name = `waffle-public-range-${kind}-${crypto.randomUUID()}`;
