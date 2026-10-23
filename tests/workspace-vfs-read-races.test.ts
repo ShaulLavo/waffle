@@ -762,3 +762,48 @@ test("a metadata mutation preserves leased stat and read permission without copy
     await value.close();
   }
 });
+
+test("a stopped publication domain refuses retained leases and joins their release", async () => {
+  const value = await residentReadFixture(PAGE * 3);
+  try {
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    value.backend.shared.publication!.stop();
+    expect(await held.value.read({ offset: PAGE * 2, length: 1 })).toEqual({ kind: "stopped" });
+    expect(await value.workspace.stat("/file")).toEqual({ kind: "stopped" });
+    await held.value.close();
+    expect(value.service.resources().readerPinBytes).toBe(0);
+    expect(value.service.resources().readerLeases).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+for (const fault of ["missing", "size", "short", "native"] as const) {
+  test(`public retained native ${fault} is an explicit failure, never EOF success`, async () => {
+    const value = await coldFixture(PAGE * 3);
+    try {
+      const file = value.physical.file();
+      if (fault === "missing") file.lookup = async () => { throw new DOMException("removed", "NotFoundError"); };
+      if (fault === "size") file.size++;
+      if (fault === "native") file.readError = new Error("native range failed");
+      if (fault === "short") {
+        const get = file.getFile.bind(file);
+        file.getFile = async () => {
+          const snapshot = await get();
+          snapshot.slice = () => new Blob([new Uint8Array(1)]);
+          return snapshot;
+        };
+      }
+      const result = await value.workspace.read("/file", { offset: PAGE, length: 4096 });
+      expect(result.kind).toBe(fault === "size" ? "corrupt" : "io");
+      expect(value.service.resources().readerTickets).toBe(0);
+      expect(value.service.resources().readerOperations).toBe(0);
+      expect(value.service.resources().readerResultBytes).toBe(0);
+      expect(value.storage.resources().readerStorageBytes).toBe(0);
+      expect(value.storage.resources().opfsReaderWork).toBe(0);
+    } finally {
+      await value.close();
+    }
+  });
+}
