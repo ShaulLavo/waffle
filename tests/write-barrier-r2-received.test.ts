@@ -17,7 +17,7 @@ function observe<T>(promise: Promise<T>): Promise<Outcome<T>> {
 
 class DeferredExecution extends MemoryBackend {
   readonly entered = Promise.withResolvers<void>();
-  readonly pending: PromiseWithResolvers<unknown>;
+  readonly pending: ReturnType<typeof Promise.withResolvers<unknown>>;
   observedThen = false;
   executions = 0;
   constructor(readonly shape: ResultShape) {
