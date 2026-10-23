@@ -147,6 +147,7 @@ async function proveDebt(
   assert(
     after.result.kind === "rejected" &&
       after.samePromise &&
+      after.ackCount === Number(mode !== "runtime-stop-error") &&
       after.terminationRoles.length === Number(mode === "runtime-stop-error"),
     "Late callback released failed original owner",
   );

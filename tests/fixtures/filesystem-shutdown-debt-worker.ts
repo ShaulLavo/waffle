@@ -93,6 +93,7 @@ function installStorage(): void {
     }
     if (event.data?.probe === "late") {
       lateCallbacks++;
+      scope.onmessage?.(new MessageEvent("message", { data: { dispose: true } }));
       if (!storage) throw new Error("Missing original storage");
       sameStoragePromise = storage.close() === closing;
       globalThis.postMessage({ probe: "late", value: snapshot() });
