@@ -10,6 +10,13 @@ import type {
   BrowserProcessBroker,
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
+import {
+  createProcessIdentity,
+  snapshotHostIdentity,
+  type RuntimeHostIdentity,
+  type RuntimeProcessIdentity,
+} from "./browser/process-context.js";
+export type { RuntimeHostIdentity, RuntimeProcessIdentity } from "./browser/process-context.js";
 import { ProcessIdentityAllocator } from "./proc/identity.js";
 import type { ExecutableRegistry, Executable } from "./proc/registry.js";
 import type { ProcessSupervisor } from "./proc/supervisor.js";
@@ -46,8 +53,11 @@ export type ProcessService = Omit<
 > & {
   ready(): Promise<RuntimeSupervisor>;
 };
+export type RuntimeProcessContext = ProcessContext & {
+  readonly identity: RuntimeProcessIdentity;
+};
 export type GuestLauncher = (
-  context: ProcessContext,
+  context: RuntimeProcessContext,
   service: ProcessService,
 ) => ProcessHandle | Promise<ProcessHandle>;
 export type ProgramDefinition = { readonly adapter: string } & (
@@ -65,6 +75,8 @@ export type ProgramDefinition = { readonly adapter: string } & (
     }
 );
 export interface RuntimeOptions {
+  /** Explicit runtime host identity. Omission leaves host identity unsupported. */
+  hostIdentity?: RuntimeHostIdentity;
   filesystem?: SharedFilesystemOptions;
   /** Inject a host, not a second runtime. The factory receives this runtime's exact owners. */
   processHost?: (
@@ -77,6 +89,7 @@ export interface RuntimeOptions {
   onStartupStage?: RuntimeStartupObserver;
 }
 export interface Runtime {
+  readonly hostIdentity: RuntimeHostIdentity | null;
   readonly filesystem: RuntimeFilesystem;
   /** Shared before process activation so synchronous worker stubs can reserve identities. */
   readonly identities: ProcessIdentityAllocator;
@@ -277,6 +290,7 @@ function stopFailures(results: readonly PromiseSettledResult<void>[]): unknown[]
 
 /** The page is the sole owner. Duplicate bundles share only the guard, not a service locator. */
 export function createRuntime(options: RuntimeOptions = {}): Runtime {
+  const hostIdentity = snapshotHostIdentity(options.hostIdentity);
   if (owners[ownerKey] !== undefined) throw new Error("A live page runtime already owns this page");
   const token = {};
   owners[ownerKey] = token;
@@ -324,6 +338,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
     }
   };
   const runtime: Runtime = {
+    hostIdentity,
     filesystem: borrowedFilesystem,
     identities,
     get disposed() {
@@ -450,6 +465,7 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
         for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {
+          hostIdentity,
           filesystem: {
             connect: (identity) => filesystem.connect(identity),
             revoke: (identity) => filesystem.revoke(identity),
@@ -465,7 +481,12 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
             assertLive();
             const launch = adapters.get(context.adapter);
             if (!launch) throw new Error(`Unknown adapter: ${context.adapter}`);
-            const pending = Promise.resolve(launch(context, service!)).then((handle) => {
+            const pending = Promise.resolve(
+              launch(
+                { ...context, identity: createProcessIdentity(context, hostIdentity) },
+                service!,
+              ),
+            ).then((handle) => {
               if (!handle || typeof handle.terminate !== "function")
                 throw new TypeError("Adapter launcher must return a process handle");
               let stopping: Promise<void> | undefined;

@@ -1,6 +1,13 @@
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import {
+  proofEqual as equal,
+  proofFileAdvance,
+  proofReport,
+  reportJson,
+  type ProofStep,
+} from "./persistent-authority-report";
 import { record, text } from "../fs/publication-attachment";
 import { publicationCut, type PublicationCut } from "../fs/publication";
 
@@ -22,15 +29,7 @@ const names = [
   "transport deadline is not death or no-effect",
   "original owner resumes and reconciles timed-out work",
 ];
-type Step =
-  | { name: string; kind: "unrun" }
-  | { name: string; kind: "completed"; value: unknown }
-  | { name: string; kind: "failed"; failure: string };
-const steps: Step[] = names.map((name) => ({ name, kind: "unrun" }));
-function equal(actual: unknown, expected: unknown): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected))
-    throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-}
+const steps: ProofStep[] = names.map((name) => ({ name, kind: "unrun" }));
 async function bounded<T>(promise: Promise<T>, label: string, ms = 12000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -48,7 +47,7 @@ async function step(index: number, action: () => Promise<unknown>): Promise<void
   const name = names[index]!;
   try {
     const value = await bounded(action(), name);
-    steps[index] = { name, kind: "completed", value: value ?? null };
+    steps[index] = { name, kind: "completed", value };
     console.log(`PASS ${name}`);
   } catch (error) {
     steps[index] = { name, kind: "failed", failure: String(error) };
@@ -239,11 +238,11 @@ function shortEffects(publications: Record<string, unknown>[]): void {
   const removed = record(rename.changes[0]),
     added = record(rename.changes[1]);
   equal(removed.name, "a");
-  equal(removed.before, bytes.file);
+  proofFileAdvance(removed.before, bytes.file);
   equal(removed.after, null);
   equal(added.name, "target");
   equal(added.before, null);
-  equal(added.after, bytes.file);
+  equal(added.after, removed.before);
   equal(removed.parent, added.parent);
   equal(record(rename.changes[2]).file, added.parent);
 }
@@ -556,13 +555,16 @@ try {
   const browser = await lifecycle.launch("chromium");
   evidence.browser = browser.version();
   await scenario(browser, origin);
+} catch (error) {
+  evidence.failure = error;
+  throw error;
 } finally {
   try {
     await lifecycle.close();
     evidence.outerCleanup = "browser, server, profile and scratch retired";
   } finally {
-    const report = { ...evidence, steps };
-    console.log(JSON.stringify(report));
-    if (reportPath) await Bun.write(reportPath, JSON.stringify(report, null, 2) + "\n");
+    const report = proofReport(evidence, steps);
+    console.log(reportJson(report));
+    if (reportPath) await Bun.write(reportPath, reportJson(report, 2) + "\n");
   }
 }
