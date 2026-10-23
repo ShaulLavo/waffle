@@ -1,3 +1,4 @@
+import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
 import { directoryGroups, directoryProcesses, isCollectedProcess } from "../proc/directory.js";
@@ -74,6 +75,7 @@ export interface ProcessController {
   retired?(): void;
 }
 export interface BrowserProcessBrokerOptions {
+  hostIdentity?: RuntimeHostIdentity | null;
   filesystem: ProcessFilesystem;
   /** Injectable lazy supervisor module loader; pipe-only roots never invoke it. */
   activate?: () => Promise<typeof import("../proc/index.js")>;
@@ -96,7 +98,7 @@ export interface RuntimeRootOptions {
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   workerUrl: string;
-  request: Omit<T, "filesystem" | "runtimeProcess" | "startupStderr">;
+  request: Omit<T, "filesystem" | "runtimeProcess" | "startupStderr" | "hostIdentity">;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
@@ -118,6 +120,7 @@ interface RuntimeChild {
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
 export class BrowserProcessBroker {
+  private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
   private disposing?: Promise<void>;
   private activation?: Promise<ProcessSupervisor>;
@@ -155,6 +158,7 @@ export class BrowserProcessBroker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
+    this.hostIdentity = snapshotHostIdentity(options.hostIdentity);
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(),
       codec: (transport) => this.descriptorCodec(transport),
@@ -869,6 +873,7 @@ export class BrowserProcessBroker {
     }
     const request = {
       ...options.request,
+      hostIdentity: this.hostIdentity,
       filesystem: connection,
       runtimeProcess: transport,
       outcome: serializeOutcome(context.outcome),
