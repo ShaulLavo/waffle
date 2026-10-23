@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { MemoryBackend } from "../fs";
 import { MemFS } from "../fs/memory";
+import { FilesystemError } from "../fs/protocol";
 import { storeIdentity, parseFileIdentity } from "../fs/file-identity";
 import {
   exportWorkspaceArchive,
@@ -186,7 +187,9 @@ test("canonical component order spans unsorted multi-page public snapshots witho
         "/😀/z",
       ]),
     );
-    expect(observed.counts.scans).toBe(ordered.length + 1);
+    expect(observed.counts.scans).toBe(
+      Math.ceil(ordered.length / WORKSPACE_EXPORT_LIMITS.windowEntries) + 1,
+    );
     expect(observed.counts.pulls).toBeGreaterThan(observed.counts.scans * 2);
     released(value);
   } finally {
@@ -217,8 +220,8 @@ for (const phase of [
         async page(page, scan) {
           if (phase === "scan" && scan === 1 && page.kind === "entries") await mutate();
           if (phase === "between-scans" && scan === 1 && page.kind === "complete") await mutate();
-          if (phase === "final-scan" && scan === 3 && page.kind === "complete") await mutate();
-          if (phase === "final-pull" && scan === 3 && page.kind === "entries") await mutate();
+          if (phase === "final-scan" && scan === 2 && page.kind === "complete") await mutate();
+          if (phase === "final-pull" && scan === 2 && page.kind === "entries") await mutate();
           return page;
         },
         async beforePin() {
@@ -614,7 +617,7 @@ for (const dimension of ["workspace", "history", "generation", "sequence"] as co
     const value = fixture();
     const observed = observe(value.workspace, {
       async page(page, scan) {
-        if (page.kind !== "complete" || scan !== 3) return page;
+        if (page.kind !== "complete" || scan !== 2) return page;
         const cut = page.cut;
         if (dimension === "workspace")
           return { kind: "complete", cut: { ...cut, workspace: crypto.randomUUID() } };
@@ -791,7 +794,9 @@ for (const size of [0, 3]) {
       const value = fixture(["/file"], size);
       const observed = observe(value.workspace, { pinStat: (stat) => changedStat(stat, field) });
       try {
-        expect(refusal(await rejected(observed.workspace)).kind).toBe(field === "cut" ? "resnapshot" : "contract");
+        expect(refusal(await rejected(observed.workspace)).kind).toBe(
+          field === "cut" ? "resnapshot" : "contract",
+        );
         expect(observed.counts.pins).toBe(1);
         expect(observed.counts.reads).toBe(0);
         expect(observed.counts.closed).toBe(1);
@@ -809,7 +814,10 @@ for (const field of ["kind", "size", "mtime", "mode"]) {
     const observed = observe(value.workspace, {
       async read(result) {
         if (result.kind !== "ok") return result;
-        return { kind: "ok", value: { ...result.value, stat: changedStat(result.value.stat, field) } };
+        return {
+          kind: "ok",
+          value: { ...result.value, stat: changedStat(result.value.stat, field) },
+        };
       },
     });
     try {
@@ -822,6 +830,39 @@ for (const field of ["kind", "size", "mtime", "mode"]) {
   });
 }
 
+function deliveredWorkspace(
+  workspace: WorkspaceVfs,
+  delivery: "page" | "read",
+  delivered: <T extends object & { kind: string }>(original: T) => T,
+): WorkspaceVfs {
+  return {
+    ...workspace,
+    snapshot(options, signal) {
+      const cursor = workspace.snapshot(options, signal);
+      return {
+        next: () => cursor.next().then((page) => (delivery === "page" ? delivered(page) : page)),
+        close: () => cursor.close(),
+      };
+    },
+    async pin(target, version, signal) {
+      const result = await workspace.pin(target, version, signal);
+      if (result.kind !== "ok") return result;
+      const lease = result.value;
+      return {
+        kind: "ok",
+        value: {
+          stat: lease.stat,
+          read: (range, readSignal) =>
+            lease
+              .read(range, readSignal)
+              .then((read) => (delivery === "read" ? delivered(read) : read)),
+          close: () => lease.close(),
+        },
+      };
+    },
+  };
+}
+
 for (const delivery of ["page", "read"] as const) {
   test(`fulfilled ${delivery} observes then once and preserves delivered accessors`, async () => {
     const value = fixture();
@@ -830,31 +871,26 @@ for (const delivery of ["page", "read"] as const) {
     const sentinel = new Error("second observation");
     function delivered<T extends object & { kind: string }>(original: T): T {
       if (thenReads) return original;
-      return Object.defineProperties({ ...original }, {
-        then: { get() { if (++thenReads > 1) throw sentinel; return undefined; } },
-        kind: { get() { kindReads++; return original.kind; } },
-      });
+      return Object.defineProperties(
+        { ...original },
+        {
+          // oxlint-disable-next-line unicorn/no-thenable -- Detect repeated promise assimilation.
+          then: {
+            get() {
+              if (++thenReads > 1) throw sentinel;
+              return undefined;
+            },
+          },
+          kind: {
+            get() {
+              kindReads++;
+              return original.kind;
+            },
+          },
+        },
+      );
     }
-    const workspace: WorkspaceVfs = {
-      ...value.workspace,
-      snapshot(options, signal) {
-        const cursor = value.workspace.snapshot(options, signal);
-        return {
-          next: () => cursor.next().then((page) => delivery === "page" ? delivered(page) : page),
-          close: () => cursor.close(),
-        };
-      },
-      async pin(target, version, signal) {
-        const result = await value.workspace.pin(target, version, signal);
-        if (result.kind !== "ok") return result;
-        const lease = result.value;
-        return { kind: "ok", value: {
-          stat: lease.stat,
-          read: (range, readSignal) => lease.read(range, readSignal).then((read) => delivery === "read" ? delivered(read) : read),
-          close: () => lease.close(),
-        } };
-      },
-    };
+    const workspace = deliveredWorkspace(value.workspace, delivery, delivered);
     try {
       expect((await consume(workspace)).at(-1)?.kind).toBe("complete");
       expect(thenReads).toBe(1);
@@ -866,28 +902,29 @@ for (const delivery of ["page", "read"] as const) {
   });
 }
 
-for (const reason of [undefined, null, false, 0, ""]) {
-  test(`provider then getter rejection retains exact falsy ${String(reason)}`, async () => {
-    const value = fixture();
-    let reads = 0;
-    const workspace: WorkspaceVfs = {
-      ...value.workspace,
-      snapshot(options, signal) {
-        const cursor = value.workspace.snapshot(options, signal);
-        return {
-          next: () => cursor.next().then((page) => Object.defineProperty(page, "then", { get() { reads++; throw reason; } })),
-          close: () => cursor.close(),
-        };
-      },
-    };
-    try {
-      expect(await rejected(workspace)).toBe(reason);
-      expect(reads).toBe(1);
-      released(value);
-    } finally {
-      await value.close();
-    }
-  });
+for (const delivery of ["page", "read"] as const) {
+  for (const reason of [undefined, null, false, 0, ""]) {
+    test(`${delivery} then getter rejection retains exact falsy ${String(reason)}`, async () => {
+      const value = fixture();
+      let reads = 0;
+      const workspace = deliveredWorkspace(value.workspace, delivery, (original) =>
+        // oxlint-disable-next-line unicorn/no-thenable -- Exercise exact getter rejection reasons.
+        Object.defineProperty(original, "then", {
+          get() {
+            reads++;
+            throw reason;
+          },
+        }),
+      );
+      try {
+        expect(await rejected(workspace)).toBe(reason);
+        expect(reads).toBe(1);
+        released(value);
+      } finally {
+        await value.close();
+      }
+    });
+  }
 }
 
 for (const path of ["/a\\b", "/a\ud800b", "/a\udfffb"]) {
@@ -910,8 +947,16 @@ for (const backing of ["shared", "resizable"] as const) {
       async read(result) {
         if (result.kind !== "ok") return result;
         const length = result.value.bytes.length;
-        const buffer = backing === "shared" ? new SharedArrayBuffer(length) : new ArrayBuffer(length, { maxByteLength: length * 2 });
-        return { kind: "ok", value: Object.defineProperty({ ...result.value }, "bytes", { value: new Uint8Array(buffer) }) };
+        const buffer =
+          backing === "shared"
+            ? new SharedArrayBuffer(length)
+            : new ArrayBuffer(length, { maxByteLength: length * 2 });
+        return {
+          kind: "ok",
+          value: Object.defineProperty({ ...result.value }, "bytes", {
+            value: new Uint8Array(buffer),
+          }),
+        };
       },
     });
     try {
@@ -929,7 +974,9 @@ test("directory traversal denial maps to the same explicit denial as file reads"
     const root = await value.client.asyncCall("preopen", ["/"]);
     const handle = (await value.client.asyncCall("resolve", [root, "directory"])).node;
     value.client.retain(handle);
-    value.backend.shared.mutate(undefined, undefined, () => value.backend.shared.setMode(handle, 0));
+    value.backend.shared.mutate(undefined, undefined, () =>
+      value.backend.shared.setMode(handle, 0),
+    );
     expect(refusal(await rejected(value.workspace))).toEqual({ kind: "denied" });
     released(value);
   } finally {
@@ -941,12 +988,17 @@ for (const kind of ["count", "metadata"] as const) {
   test(`bounded successor windows preserve every path across ${kind} limits`, async () => {
     const prefix = kind === "metadata" ? "p".repeat(3500) : "p";
     const count = kind === "metadata" ? 24 : 384;
-    const paths = Array.from({ length: count }, (_, index) => `/${prefix}${String(index).padStart(4, "0")}`);
+    const paths = Array.from(
+      { length: count },
+      (_, index) => `/${prefix}${String(index).padStart(4, "0")}`,
+    );
     const value = fixture(paths.toReversed(), 0);
     const observed = observe(value.workspace);
     try {
       const events = await consume(observed.workspace);
-      expect(events.flatMap((event) => event.kind === "entry" ? [event.entry.path] : [])).toEqual(["/"].concat(paths));
+      expect(events.flatMap((event) => (event.kind === "entry" ? [event.entry.path] : []))).toEqual(
+        ["/"].concat(paths),
+      );
       expect(events.at(-1)?.kind).toBe("complete");
       expect(observed.counts.scans).toBeLessThan(count / 2);
       expect(observed.counts.scans).toBeGreaterThan(2);
@@ -956,3 +1008,173 @@ for (const kind of ["count", "metadata"] as const) {
     }
   });
 }
+
+test("metadata-window trimming never skips an earlier excluded path when space reopens", async () => {
+  const paths = Array.from(
+    { length: 100 },
+    (_, index) => `/k${String(index).padStart(3, "0")}${index % 2 ? "" : "x".repeat(3900)}`,
+  );
+  const unsorted = paths
+    .filter((_, index) => index % 2 === 0)
+    .concat(paths.filter((_, index) => index % 2 !== 0));
+  const value = fixture(unsorted, 0);
+  try {
+    const events = await consume(value.workspace);
+    expect(events.flatMap((event) => (event.kind === "entry" ? [event.entry.path] : []))).toEqual(
+      ["/"].concat(paths),
+    );
+    expect(events.at(-1)?.kind).toBe("complete");
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+for (const path of ["relative", "/a//b", "/a/./b", "/a/../b", "/a\0b"]) {
+  test(`malformed provider path ${JSON.stringify(path)} remains a contract refusal`, async () => {
+    const value = fixture();
+    const observed = observe(value.workspace, {
+      async page(page) {
+        if (page.kind !== "entries") return page;
+        return { kind: "entries", entries: page.entries.map((entry) => ({ ...entry, path })) };
+      },
+    });
+    try {
+      expect(refusal(await rejected(observed.workspace)).kind).toBe("contract");
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const limit of ["count", "bytes"] as const) {
+  test(`broken public snapshot page ${limit} bound refuses and releases the cursor`, async () => {
+    const value = fixture();
+    const observed = observe(value.workspace, {
+      async page(page) {
+        if (page.kind !== "entries") return page;
+        const entry = page.entries[0]!;
+        const entries =
+          limit === "count"
+            ? Array.from({ length: 129 }, () => entry)
+            : Array.from({ length: 9 }, (_, index) => ({
+                ...entry,
+                path: `/${index}${"x".repeat(3999)}`,
+              }));
+        return { kind: "entries", entries };
+      },
+    });
+    try {
+      expect(refusal(await rejected(observed.workspace))).toEqual({
+        kind: "contract",
+        detail: limit === "count" ? "Snapshot page count exceeded" : "Snapshot page bytes exceeded",
+      });
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const delivery of ["page", "read"] as const) {
+  test(`abort before fulfilled ${delivery} observation preserves reason without reading late accessors`, async () => {
+    const value = fixture();
+    const controller = new AbortController();
+    let getters = 0;
+    const workspace = deliveredWorkspace(value.workspace, delivery, (original) => {
+      controller.abort(false);
+      return Object.defineProperty({ ...original }, "kind", {
+        get() {
+          getters++;
+          throw new Error("late accessor");
+        },
+      });
+    });
+    try {
+      expect(await rejected(workspace, { signal: controller.signal })).toBe(false);
+      expect(getters).toBe(0);
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+test("a permission-shaped abort reason is not remapped as directory denial", async () => {
+  const value = fixture();
+  const controller = new AbortController();
+  const reason = new FilesystemError(2);
+  const workspace = deliveredWorkspace(value.workspace, "page", (original) => {
+    controller.abort(reason);
+    return original;
+  });
+  try {
+    expect(await rejected(workspace, { signal: controller.signal })).toBe(reason);
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+test("a pin refusal delivered after abort cannot replace the exact cancellation reason", async () => {
+  const value = fixture();
+  const controller = new AbortController();
+  const workspace: WorkspaceVfs = {
+    ...value.workspace,
+    async pin(target, version, signal) {
+      const result = await value.workspace.pin(target, version, signal);
+      if (result.kind === "ok") await result.value.close();
+      controller.abort(false);
+      return { kind: "denied" };
+    },
+  };
+  try {
+    expect(await rejected(workspace, { signal: controller.signal })).toBe(false);
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+test("a range subclass is a provider contract violation, not archive byte ownership", async () => {
+  const value = fixture();
+  class BorrowedBytes extends Uint8Array {}
+  const observed = observe(value.workspace, {
+    async read(result) {
+      if (result.kind !== "ok") return result;
+      return {
+        kind: "ok",
+        value: { ...result.value, bytes: new BorrowedBytes(result.value.bytes) },
+      };
+    },
+  });
+  try {
+    expect(refusal(await rejected(observed.workspace))).toEqual({
+      kind: "contract",
+      detail: "Lease returned an invalid bounded range",
+    });
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+test("a completed provider snapshot missing its root is a contract refusal before encoding", async () => {
+  const value = fixture();
+  const observed = observe(value.workspace, {
+    async page(page) {
+      if (page.kind !== "entries") return page;
+      return { kind: "entries", entries: page.entries.filter((entry) => entry.path !== "/") };
+    },
+  });
+  try {
+    expect(refusal(await rejected(observed.workspace))).toEqual({
+      kind: "contract",
+      detail: "Completed snapshot has no root directory",
+    });
+    released(value);
+  } finally {
+    await value.close();
+  }
+});

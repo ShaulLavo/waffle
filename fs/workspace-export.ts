@@ -1,3 +1,4 @@
+import { FilesystemError } from "./protocol.js";
 import { storeIdentity } from "./file-identity.js";
 import {
   encodeWorkspaceArchive,
@@ -20,13 +21,16 @@ import {
 export const WORKSPACE_EXPORT_LIMITS = Object.freeze({
   scanPages: WORKSPACE_LIMITS.indexEdges + 2,
   chunkBytes: WORKSPACE_ARCHIVE_LIMITS.chunkBytes,
+  windowEntries: 128,
+  windowMetadataBytes: 64 * 1024,
 });
 type SnapshotFailure = Exclude<SnapshotPage, { kind: "entries" | "complete" }>;
-type ExportRefusal =
+export type ExportRefusal =
   | SnapshotFailure
   | ReadFailure
   | { readonly kind: "resnapshot"; readonly expected: NamespaceCut; readonly current: NamespaceCut }
   | { readonly kind: "contract"; readonly detail: string }
+  | { readonly kind: "format-path"; readonly path: string }
   | { readonly kind: "scan-limit" };
 export class WorkspaceExportError extends Error {
   constructor(readonly refusal: ExportRefusal) {
@@ -80,12 +84,13 @@ class ExportScope {
       );
     return this.closing;
   }
-  async wait<T>(start: () => Promise<T>): Promise<T> {
+  async wait<T>(start: () => Promise<T>): Promise<{ readonly then: undefined; readonly value: T }> {
     checkSignal(this.signal);
     try {
       const result = await start();
       checkSignal(this.signal);
-      return result;
+      // oxlint-disable-next-line unicorn/no-thenable -- Own undefined then prevents a second observation of result.
+      return { then: undefined, value: result };
     } catch (error) {
       checkSignal(this.signal);
       throw error;
@@ -103,7 +108,7 @@ function pathParts(path: string): string[] {
   if (
     path.length > WORKSPACE_ARCHIVE_LIMITS.pathUnits ||
     !path.startsWith("/") ||
-    /[\0\\\uD800-\uDFFF]/u.test(path)
+    path.includes("\0")
   )
     contract("Invalid snapshot path");
   if (path === "/") return [];
@@ -113,6 +118,7 @@ function pathParts(path: string): string[] {
     parts.some((part) => !part || part === "." || part === "..")
   )
     contract("Invalid snapshot path components");
+  if (/[\\\uD800-\uDFFF]/u.test(path)) refuse({ kind: "format-path", path });
   return parts;
 }
 function compare(first: readonly string[], second: readonly string[]): number {
@@ -123,9 +129,15 @@ function compare(first: readonly string[], second: readonly string[]): number {
   }
   return first.length - second.length;
 }
+interface Candidate {
+  readonly entry: NamespaceEntry;
+  readonly parts: string[];
+  readonly charge: number;
+}
 class Successor {
-  entry: NamespaceEntry | undefined;
-  private parts: string[] | undefined;
+  readonly entries: Candidate[] = [];
+  private charge = 0;
+  private excluded: string[] | undefined;
   private readonly after: string[] | undefined;
   constructor(previous?: string) {
     this.after = previous === undefined ? undefined : pathParts(previous);
@@ -142,9 +154,34 @@ class Successor {
   private take(entry: NamespaceEntry): void {
     const parts = pathParts(entry.path);
     if (this.after && compare(parts, this.after) <= 0) return;
-    if (this.parts && compare(parts, this.parts) >= 0) return;
-    this.entry = { ...entry };
-    this.parts = parts;
+    if (this.excluded && compare(parts, this.excluded) >= 0) return;
+    const at = this.position(parts);
+    if (this.entries[at] && compare(parts, this.entries[at].parts) === 0) return;
+    const charge = 256 + entry.path.length * 4 + parts.length * 32;
+    this.entries.splice(at, 0, { entry: { ...entry }, parts, charge });
+    this.charge += charge;
+    this.trim();
+  }
+  private position(parts: readonly string[]): number {
+    let first = 0,
+      end = this.entries.length;
+    while (first < end) {
+      const middle = (first + end) >>> 1;
+      if (compare(this.entries[middle]!.parts, parts) < 0) first = middle + 1;
+      else end = middle;
+    }
+    return first;
+  }
+  private trim(): void {
+    while (
+      this.entries.length > WORKSPACE_EXPORT_LIMITS.windowEntries ||
+      this.charge > WORKSPACE_EXPORT_LIMITS.windowMetadataBytes
+    ) {
+      const removed = this.entries.pop()!;
+      this.charge -= removed.charge;
+      // Once excluded, a path stays the window boundary even if later insertions free space.
+      this.excluded = removed.parts;
+    }
   }
 }
 async function successor(
@@ -152,7 +189,7 @@ async function successor(
   previous: string | undefined,
   expected: NamespaceCut | undefined,
   signal?: AbortSignal,
-): Promise<{ readonly entry: NamespaceEntry | undefined; readonly cut: NamespaceCut }> {
+): Promise<{ readonly entries: Candidate[]; readonly cut: NamespaceCut }> {
   checkSignal(signal);
   const cursor = workspace.snapshot({ prefix: "/", includeDirs: true }, signal);
   const scope = new ExportScope(() => cursor.close(), signal);
@@ -161,8 +198,12 @@ async function successor(
   try {
     return await scan(cursor, selected, scope, expected);
   } catch (error) {
-    failure = { error };
-    throw error;
+    const primary =
+      !signal?.aborted && error instanceof FilesystemError && error.errno === 2
+        ? new WorkspaceExportError({ kind: "denied" })
+        : error;
+    failure = { error: primary };
+    throw primary;
   } finally {
     await scope.finish(failure);
   }
@@ -172,16 +213,16 @@ async function scan(
   selected: Successor,
   scope: ExportScope,
   expected?: NamespaceCut,
-): Promise<{ readonly entry: NamespaceEntry | undefined; readonly cut: NamespaceCut }> {
+): Promise<{ readonly entries: Candidate[]; readonly cut: NamespaceCut }> {
   for (let pages = 0; pages < WORKSPACE_EXPORT_LIMITS.scanPages; pages++) {
-    const page = await scope.wait(() => cursor.next());
+    const { value: page } = await scope.wait(() => cursor.next());
     if (page.kind === "entries") {
       selected.consider(page.entries);
       continue;
     }
     if (page.kind !== "complete") refuse(page);
     if (expected) requireCut(expected, page.cut);
-    return { entry: selected.entry, cut: page.cut };
+    return { entries: selected.entries, cut: page.cut };
   }
   return refuse({ kind: "scan-limit" });
 }
@@ -206,7 +247,7 @@ async function* fileBytes(
 ): AsyncGenerator<Uint8Array> {
   for (let offset = 0; offset < entry.size;) {
     const length = Math.min(WORKSPACE_EXPORT_LIMITS.chunkBytes, entry.size - offset);
-    const result = await scope.wait(() => lease.read({ offset, length }, signal));
+    const { value: result } = await scope.wait(() => lease.read({ offset, length }, signal));
     if (result.kind !== "ok") refuse(result);
     requireStat(entry, cut, result.value.stat);
     const value = result.value;
@@ -216,13 +257,14 @@ async function* fileBytes(
       value.bytes.length !== length ||
       value.bytes.constructor !== Uint8Array ||
       value.bytes.byteOffset !== 0 ||
-      value.bytes.buffer.byteLength !== length
+      value.bytes.buffer.byteLength !== length ||
+      !(value.bytes.buffer instanceof ArrayBuffer) ||
+      ("resizable" in value.bytes.buffer && value.bytes.buffer.resizable)
     )
       contract("Lease returned an invalid bounded range");
     yield value.bytes;
     offset += length;
   }
-  checkSignal(signal);
 }
 async function* sourceEntry(
   workspace: WorkspaceVfs,
@@ -244,10 +286,7 @@ async function* sourceEntry(
     return;
   }
   const result = await workspace.pin(entry.id, entry.version, signal);
-  if (result.kind !== "ok") {
-    checkSignal(signal);
-    refuse(result);
-  }
+  if (result.kind !== "ok") refuse(result);
   const lease = result.value;
   const scope = new ExportScope(() => lease.close(), signal);
   let failure: Failure | undefined;
@@ -267,14 +306,16 @@ async function* sourceEntry(
 }
 async function* sourceEntries(
   workspace: WorkspaceVfs,
-  root: NamespaceEntry,
+  pending: Candidate[],
   cut: NamespaceCut,
   signal?: AbortSignal,
 ): AsyncGenerator<ArchiveSourceEntry> {
-  let entry: NamespaceEntry | undefined = root;
-  while (entry) {
+  let previous: string | undefined;
+  while (pending.length) {
+    const { entry } = pending.shift()!;
     yield* sourceEntry(workspace, entry, cut, signal);
-    entry = (await successor(workspace, entry.path, cut, signal)).entry;
+    previous = entry.path;
+    if (!pending.length) pending = (await successor(workspace, previous, cut, signal)).entries;
   }
 }
 
@@ -288,7 +329,8 @@ export async function* exportWorkspaceArchive(
     budget: options.budget && { ...options.budget },
   };
   const initial = await successor(workspace, undefined, undefined, settings.signal);
-  if (initial.entry?.path !== "/" || initial.entry.kind !== "directory")
+  const root = initial.entries[0]?.entry;
+  if (root?.path !== "/" || root.kind !== "directory")
     contract("Completed snapshot has no root directory");
   yield* encodeWorkspaceArchive(
     {
@@ -296,7 +338,7 @@ export async function* exportWorkspaceArchive(
       sourceFormat: null,
       sourceWorkspace: initial.cut.workspace,
     },
-    sourceEntries(workspace, initial.entry, initial.cut, settings.signal),
+    sourceEntries(workspace, initial.entries, initial.cut, settings.signal),
     settings,
   );
 }

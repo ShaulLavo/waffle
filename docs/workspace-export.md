@@ -64,29 +64,65 @@ restoration promise. Archive data has checksum integrity, not exporter authentic
 
 Public snapshots use authority traversal order, which is not lexical order. The
 codec requires canonical depth-first order with sorted child names. The adapter
-therefore completes one full namespace scan to select the smallest path after
-the previously emitted path, comparing components by JavaScript string order.
-Ancestors precede descendants. For example, `/a/x` precedes `/a-`, even though a
-comparison of whole path strings gives the opposite result.
+therefore completes a full namespace scan to select a bounded window of the
+smallest paths after the previously emitted path. It compares components by
+JavaScript string order. Ancestors precede descendants. For example, `/a/x`
+precedes `/a-`, even though whole-path comparison gives the opposite result.
 
-Only the next candidate and previous path are retained. No whole-tree array,
-corpus sort, background prefetch, or collection of file leases is created.
-At most one snapshot cursor or one file lease is owned at a time. Snapshot pages
-are consumed one at a time under the public count and metadata bounds. Paths use
-the codec's 4,096-unit and 128-component limits. One scan accepts at most
-`WORKSPACE_EXPORT_LIMITS.scanPages`, currently 32,770 pulls, including empty pages.
-An endless or broken producer cannot extend a scan without bound.
+Each window holds at most 128 candidates and 64 KiB of charged metadata. The
+charge per candidate is `256 + 4 * path.length + 32 * componentCount`, including
+path and component strings. Insertion can temporarily add one extra candidate.
+The selector also retains the previous path and the earliest excluded path,
+each under the codec's path and depth limits. The excluded path prevents gaps
+when inserting an earlier, cheaper candidate frees space. A window can therefore
+be smaller than its limits. The adapter drains the owned candidate array before
+starting another selection scan.
 
-This choice trades time for space. For N namespace entries, export performs
-N + 1 full scans and up to quadratic namespace work, plus file bytes. Public
-snapshots also rebuild their bounded derived index. Every scan still has the
-public index, path, and page pressure limits. This implementation is not a
-large-tree throughput claim. An efficient successor cursor would require a
-separate authority contract, not an unbounded client-side sort.
+No whole-tree array, corpus sort, background prefetch, or collection of file
+leases is created. At most one snapshot cursor or one file lease is owned at a
+time. Snapshot pages are consumed one at a time under the public count and
+metadata bounds. The page guards detect provider violations after delivery;
+they do not constrain allocations made by a broken provider. The metadata
+charges do not claim a bound on JavaScript object overhead or aggregate heap.
+Paths use the codec's 4,096-unit and 128-component limits. Backslashes and lone
+UTF-16 surrogates are valid workspace names but cannot be represented by this
+archive format. They produce `format-path` with the offending path, without
+renaming or silently omitting the entry. Well-formed Unicode, including astral
+characters, is supported.
+
+One scan accepts at most `WORKSPACE_EXPORT_LIMITS.scanPages`, currently 32,770
+pulls, including empty pages. An endless producer cannot extend a scan without
+bound. Every window-selection scan must complete at the initial cut. After the
+last window, an empty same-cut selection scan remains mandatory before END.
+
+### Measured cost and remaining limit
+
+The original one-candidate implementation at `e866426e` made N + 1 complete
+namespace scans. The independent review measured 1,000 empty files at 4.8 seconds
+and 2,000 at 20.9 seconds. This repair reproduced 4.724 and 19.921 seconds on the
+PC with the same in-process MemoryBackend fixture, ten directories plus root,
+Bun 1.4.4, and the canonical build queue. Those are baseline measurements, not
+bounds or remote-worker measurements.
+
+With the bounded window, the same probe measured 0.756 and 3.694 seconds. Archive
+byte counts were unchanged. Short-path windows amortize namespace scans over up
+to 128 entries. Long paths can reduce that count. This is a practical reduction
+in rescans, not a fast-large-tree claim. Work remains quadratic at fixed window
+size. Public FileId lookup also scans the namespace per pin, and snapshot pulls
+rebuild authority metadata and the projection's bounded index. The adapter does
+not change those authority costs or their existing pressure limits.
+
+A large-tree user-facing export still needs separate authority work: a bounded
+canonical successor cursor and efficient version-pinned FileId lookup, retaining
+cut validation and resource admission. Neither change is granted by this module's
+three-file scope. Under churn, a longer attempt still has more opportunities to
+fail and require a fresh export.
 
 The adapter requests 64 KiB chunks and uses caller-owned range outputs directly.
-The codec owns frame and digest buffers. A tiny view with larger backing is
-rejected instead of retaining its unbounded backing. Consumers own memory they
+The codec owns frame and digest buffers. Range bytes must be an exact-size,
+zero-offset Uint8Array over a fixed ArrayBuffer. SharedArrayBuffer, resizable
+ArrayBuffer, subclasses, and views with larger backing are contract violations.
+They are rejected rather than retained. Consumers own memory they
 retain after delivery. Public leases also have their existing backing/page/key
 charges, which can be larger than a chunk and can refuse acquisition. Nothing
 here claims an aggregate runtime heap or disk bound.
@@ -102,14 +138,20 @@ snapshot side effect when sharing the same projection with a change reader.
 ## Failure and cancellation ownership
 
 `WorkspaceExportError.refusal` retains public snapshot/read refusals, or reports
-`resnapshot` with expected/current cuts, `scan-limit`, or a violated public
-`contract`. These errors describe an unsuccessful attempt, not missing entries.
-Raw operation failures retain their original values.
+`resnapshot` with expected/current cuts, `scan-limit`, `format-path` with the
+offending path, or a violated public `contract`. The module exports the
+`ExportRefusal` type, but adds no package export. A directory traversal
+`FilesystemError` with permission errno 2 maps to `denied`, matching file-read
+denial. These errors describe an unsuccessful attempt, not missing entries.
+Other raw operation failures retain their original values, including falsy values.
+An abort reason is never remapped as a permission denial.
 
 Before starting each operation, the adapter checks cancellation. Once work has
 started, it observes and awaits that original Promise. Abort starts the owned
 cursor or lease's `close` immediately and then joins both close and the original
-pending operation. A late result or rejection cannot replace the cancellation
+pending operation. The wait result uses a non-thenable envelope so fulfillment
+does not re-observe a delivered value's `then` getter. Delivered accessors stay
+intact. A late result or rejection cannot replace the cancellation
 reason, recreate ownership, or escape as an unhandled rejection. The adapter
 never declares native work gone merely because an abort or deadline fired.
 
@@ -130,7 +172,13 @@ large bounded reads, backpressure, mutation and rename/replacement timing, stale
 versions, actual cursor/lease pressure, permissions, and final-cut validation.
 Held native work and delayed public responses prove joined cancellation. Tests
 also check exact falsy failures, early-return cleanup and deliberately corrupted
-cut/metadata/range replies.
+cut/metadata/range replies. Acquired lease stat corruption is checked for empty
+and nonempty files across id, version, kind, size, mtime, mode, and cut. Read
+metadata tests include kind, size, mtime, and mode. Deliberate removed-check
+controls must fail those tests. Real-source window tests exercise both metadata
+and count limits, including insertions that reopen space behind an excluded path.
+Promise-delivery tests count exactly one `then` observation for pages and read
+outcomes, preserve fulfilled accessors, and retain exact falsy getter rejections.
 
 The test suite does not certify browser import/export, durable import staging,
 crash recovery, public package wiring, SAFE, aggregate memory admission, or
