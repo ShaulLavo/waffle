@@ -1389,6 +1389,8 @@ export class FilesystemClient implements FileSystem {
     if (this.connection.residentPublication?.kind === "file")
       return this.writeImpl(handle, chunks, offset);
     try {
+      if (!this.resident && !this.shared.publication)
+        return this.ordinaryWrite(handle, chunks, offset);
       return this.withMutation(
         () => this.writeImpl(handle, chunks, offset),
         this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
@@ -1397,6 +1399,21 @@ export class FilesystemClient implements FileSystem {
       );
     } catch (error) {
       return -errno(error);
+    }
+  }
+  private ordinaryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.activeWrite) return this.writeImpl(handle, chunks, offset);
+    const interrupted = this.admissionInterrupted ?? this.revoked;
+    const ticket = this.shared.writeAdmission.admit(this.connection.owner, 0, interrupted);
+    try {
+      this.shared.checkWriteInput();
+      this.activeWrite = ticket;
+      this.admissionInterrupted = interrupted;
+      return this.writeImpl(handle, chunks, offset);
+    } finally {
+      this.activeWrite = undefined;
+      this.admissionInterrupted = undefined;
+      this.shared.writeAdmission.finish(ticket);
     }
   }
   private writeImpl(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
@@ -1431,6 +1448,8 @@ export class FilesystemClient implements FileSystem {
   ): number {
     try {
       if (!total) {
+        if (this.activeWrite)
+          this.shared.writeAdmission.verify(this.activeWrite, this.connection.owner);
         if (this.revoked()) throw new FilesystemError(11);
         return 0;
       }
@@ -1482,6 +1501,9 @@ export class FilesystemClient implements FileSystem {
           this.epoch,
           this.revoked,
           this.connection.owner,
+          false,
+          undefined,
+          this.activeWrite,
         );
       } catch (error) {
         if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;

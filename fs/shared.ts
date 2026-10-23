@@ -1141,11 +1141,12 @@ export class SharedFilesystemState {
     owner: number,
     nonblocking = false,
     admission?: PublicationAdmission,
+    ticket = this.writeTicket,
   ): number {
     const slots = this.slots,
       base = slot * SLOT_WORDS,
       lock = base + FILE_LOCK;
-    if (!this.writeTicket)
+    if (!ticket)
       return this.admitWrite(
         () =>
           this.direct(
@@ -1163,7 +1164,7 @@ export class SharedFilesystemState {
           ),
         owner,
       );
-    this.writeAdmission.verify(this.writeTicket, owner);
+    this.writeAdmission.verify(ticket, owner);
     this.globalLock(revoked, owner, nonblocking, "data", "file");
     Atomics.add(epoch, 0, 1);
     try {
@@ -1324,6 +1325,7 @@ export class SharedFilesystemState {
     owner: number,
     nonblocking = false,
     admission?: PublicationAdmission,
+    ticket?: WriteTicket,
   ): number | undefined {
     return this.direct(
       slot,
@@ -1337,6 +1339,7 @@ export class SharedFilesystemState {
       owner,
       nonblocking,
       admission,
+      ticket,
     ) < 0
       ? undefined
       : total;
