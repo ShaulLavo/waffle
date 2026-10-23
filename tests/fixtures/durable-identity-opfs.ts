@@ -1,4 +1,4 @@
-import type { StorageLockManager } from "../../fs/indexeddb";
+import type { StorageLockManager } from "../../fs/indexeddb.js";
 
 type Entry =
   | { kind: "file"; name: string; bytes: Uint8Array }
