@@ -62,6 +62,7 @@ type LifecycleTrace = {
 let activeTrace: LifecycleTrace | undefined;
 const pageTraces = new WeakMap<Page, (event: string, detail?: string) => void>();
 function reportLifecycle(trace: LifecycleTrace, outcome: string): void {
+  if (outcome === "case-finished" && !process.env.STORAGE_LOCK_TRACE) return;
   console.error(JSON.stringify({ storageLockLifecycle: { ...trace, outcome } }));
 }
 function observePage(page: Page): void {
@@ -1021,7 +1022,7 @@ try {
         console.error(`FAIL ${failure}`);
         reportLifecycle(activeTrace, "case-failed");
       } finally {
-        if (process.env.STORAGE_LOCK_TRACE) reportLifecycle(activeTrace, "case-finished");
+        reportLifecycle(activeTrace, "case-finished");
       }
     }
     if (selected === 0)
