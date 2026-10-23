@@ -76,8 +76,11 @@ and cannot be reversed by release.
 
 The optional signal cancels acquisition only. Abort does not cancel earlier
 mutations and cannot reopen a delivered lease. Overlapping acquisition rejects
-with errno 6 instead of queueing another owner. A failed earlier mutation rejects
-acquisition and reopens the gate rather than returning a successful cut.
+instead of queueing another owner. An overlapping page acquisition in progress
+reports errno 6. An already-owned service gate reports errno 10. Handled ordinary
+errno results do not fail a cut.
+An indeterminate earlier mutation, reported as EIO, rejects acquisition and reopens
+the gate rather than returning a successful cut.
 
 Admission has 64 producer records per root, 512 MiB of reserved payload copies,
 and a 16 MiB transport-metadata reservation cap. Encoded mutation arguments are
@@ -85,7 +88,9 @@ bounded to 8192 bytes and response capacity to 64 KiB. Transport reservations
 have their own bound and do not change dirty-growth byte or metadata limits.
 Pending transport counters are reported separately. String encoding and fallback
 copies reserve before allocation. A single 128 MiB ASCII `writeFile` fits the
-default limits. Capacity exhaustion rejects without a queued write. Completed
+default limits. Async producers wait for capacity before copying, leaving one
+record for synchronous guests. Page and try admission never block a thread. A
+closed gate or an oversized request rejects without a delayed mutation. Completed
 low-level `FilesystemCompletion` objects remain caller-owned until `release()`.
 No persistence wait holds a guest mutation lock, and FAST acknowledgements do not
 become durable acknowledgements.

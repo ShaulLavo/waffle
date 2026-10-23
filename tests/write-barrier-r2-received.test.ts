@@ -66,20 +66,30 @@ for (const shape of shapes) {
     const completion = value.client.submit("writeFile", ["/deferred"], new Uint8Array([1]));
     const writing = observe(completion.value());
     let settled = false;
-    void writing.then(() => { settled = true; });
+    void writing.then(() => {
+      settled = true;
+    });
     const abort = new AbortController();
     let lease: Awaited<ReturnType<FilesystemService["pauseFilesystemWrites"]>> | undefined;
     let acquired = false;
     const acquiring = backend.entered.promise.then(() =>
       value.service.pauseFilesystemWrites({ signal: abort.signal }),
     );
-    void acquiring.then((held) => { lease = held; acquired = true; }, () => {});
+    void acquiring.then(
+      (held) => {
+        lease = held;
+        acquired = true;
+      },
+      () => {},
+    );
     try {
       await backend.entered.promise;
       await turn();
       expect(backend.pending.promise instanceof Promise).toBe(false);
       expect({ settled, acquired, active: value.gate.active }).toEqual({
-        settled: false, acquired: false, active: 1,
+        settled: false,
+        acquired: false,
+        active: 1,
       });
       expect(value.gate.inputBytes).toBe(1);
       expect(value.gate.metadataBytes).toBeGreaterThan(0);
@@ -111,7 +121,9 @@ for (const shape of shapes.slice(1)) {
       const completion = value.client.submit("writeFile", ["/rejected"], new Uint8Array([1]));
       const writing = observe(completion.value());
       let settled = false;
-      void writing.then(() => { settled = true; });
+      void writing.then(() => {
+        settled = true;
+      });
       try {
         await backend.entered.promise;
         await turn();
@@ -147,10 +159,14 @@ for (const shape of shapes.slice(1)) {
       completion.release();
       let stopped = false;
       const stopping = value.service.shutdown();
-      void stopping.then(() => { stopped = true; });
+      void stopping.then(() => {
+        stopped = true;
+      });
       await turn();
       expect({ stopped, active: value.gate.active, input: value.gate.inputBytes }).toEqual({
-        stopped: false, active: 1, input: 1,
+        stopped: false,
+        active: 1,
+        input: 1,
       });
       backend.pending.resolve(undefined);
       await stopping;
@@ -243,7 +259,6 @@ for (const reason of [undefined, new Error("cold preparation failed")]) {
     }
   });
 }
-
 
 test("shutdown retires a received request queued behind unsettled execution without executing it", async () => {
   const backend = new DeferredExecution("normalized");

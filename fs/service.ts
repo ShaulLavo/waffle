@@ -234,12 +234,9 @@ export class FilesystemService {
         const cells = new Int32Array(data.buffer, 0, HEADER / 4);
         if (Atomics.compareExchange(cells, 7, 0, 1)) return;
         try {
-          this.requestTicket(
-            session,
-            data.id,
-            unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)),
-            false,
-          );
+          const ticket = this.requestTicket(unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)));
+          if (ticket)
+            new WriteAdmission(connection.shared).receive(ticket, connection.owner, data.id, false);
         } catch (error) {
           cells[3] = errno(error);
           Atomics.store(cells, 0, State.Failed);
@@ -573,12 +570,10 @@ export class FilesystemService {
         this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
       );
     }
-    const result = this.backend.execute(operation, args, data);
-    if (result instanceof Promise)
-      return this.trackWork(session, result).then((value) =>
-        this.finishResult(session, id, operation, value),
-      );
-    return this.finishResult(session, id, operation, result);
+    const result = Promise.resolve(this.backend.execute(operation, args, data));
+    return this.trackWork(session, result).then((value) =>
+      this.finishResult(session, id, operation, value),
+    );
   }
   private finishResult(session: Session, id: number, operation: string, result: any): unknown {
     const pending = session.pending.get(id);
@@ -613,31 +608,25 @@ export class FilesystemService {
     state: State,
   ): void {
     if (Atomics.exchange(cells, 7, 2) !== 1 || !ticket) return;
-    new WriteAdmission(session.connection.shared).finish(
-      ticket,
-      -id,
-      state === State.Failed && cells[3] === 29,
-    );
+    const admission = new WriteAdmission(session.connection.shared);
+    try {
+      admission.verify(ticket, session.connection.owner, true);
+    } catch {
+      return;
+    }
+    admission.finish(ticket, -id, state === State.Failed && cells[3] === 29);
   }
-  private requestTicket(
-    session: Session,
-    id: number,
-    input: { operation: string; args: unknown[]; writeTicket?: unknown },
-    prepared: boolean,
-  ): WriteTicket | undefined {
+  private requestTicket(input: {
+    operation: string;
+    args: unknown[];
+    writeTicket?: unknown;
+  }): WriteTicket | undefined {
     if (!input.writeTicket) {
       if (mutationIntent(input.operation, input.args))
         throw new FilesystemError(28, "write ticket required");
       return;
     }
-    const ticket = readWriteTicket(input.writeTicket);
-    new WriteAdmission(session.connection.shared).receive(
-      ticket,
-      session.connection.owner,
-      id,
-      prepared,
-    );
-    return ticket;
+    return readWriteTicket(input.writeTicket);
   }
   private executeAdmitted(
     session: Session,
@@ -685,7 +674,14 @@ export class FilesystemService {
       const dataLength = cells[2]!;
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
-      ticket = this.requestTicket(session, id, input, true);
+      ticket = this.requestTicket(input);
+      if (ticket)
+        new WriteAdmission(session.connection.shared).receive(
+          ticket,
+          session.connection.owner,
+          id,
+          true,
+        );
       if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
         throw new FilesystemError(11);
       if (session.connection.publication && input.publication)
@@ -724,7 +720,7 @@ export class FilesystemService {
         else Atomics.add(epoch, 0, 1);
         mutation = false;
       }
-      const value = executed instanceof Promise ? await executed : executed;
+      const value = await executed;
       const segments = this.backend.takeSharedSegments?.() ?? [];
       for (const segment of segments)
         for (const peer of this.sessions)
