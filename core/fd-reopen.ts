@@ -79,12 +79,10 @@ function descriptorPath(path: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-interface PathEntry {
-  prefix: string;
-  kind: "file" | "directory" | "symlink";
-  handle?: number;
-  source?: number;
-}
+type PathEntry = { prefix: string } & (
+  | { kind: "symlink"; handle: number; source?: never }
+  | { kind: "file" | "directory"; handle?: number; source?: number }
+);
 const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
 function lookupEntry(
@@ -106,7 +104,7 @@ function lookupEntry(
         resource.kind === "directory" || resource.kind === "file" ? resource.handle : undefined,
     };
   }
-  const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name);
+  const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name, false);
   if (typeof path === "number") return path;
   if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
   if (virtualDirectories.includes(prefix)) return { prefix, kind: "directory" };
@@ -137,7 +135,11 @@ export function resolveDescriptorPath(
     return undefined;
   let current: PathEntry = { prefix: "", kind: "directory", handle };
   const parents: PathEntry[] = [];
-  for (const part of path.split("/")) {
+  let pending = path.split("/"),
+    offset = 0,
+    expansions = 0;
+  while (offset < pending.length) {
+    const part = pending[offset++];
     if (!part) continue;
     const error = searchEntry(fs, current);
     if (error) return error;
@@ -150,6 +152,15 @@ export function resolveDescriptorPath(
     }
     const next = lookupEntry(table, fs, current, part);
     if (typeof next === "number") return next;
+    if (next.kind === "symlink") {
+      if (++expansions > 40) return 32;
+      const target = fs.readlink(next.handle);
+      if (!target) return 44;
+      if (target.startsWith("/")) return 63;
+      pending = target.split("/").concat(pending.slice(offset));
+      offset = 0;
+      continue;
+    }
     parents.push(current);
     current = next;
   }
