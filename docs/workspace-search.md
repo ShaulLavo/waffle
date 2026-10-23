@@ -11,8 +11,7 @@ import { createWorkspaceSearch } from "./fs/workspace-search.js";
 const search = createWorkspaceSearch(runtime.filesystem);
 const cursor = search.search({ kind: "text", prefix: "/src", text: "TODO" }, signal);
 try {
-  const page = await cursor.next();
-  // Handle the tagged page as described below.
+  await cursor.next();
 } finally {
   await cursor.close();
   await search.close();
@@ -85,7 +84,9 @@ before search reports a newer cut. Cancellation discards late read results.
 
 ## Ownership and bounds
 
-The factory is memoized by workspace object. One search cursor or validator
+The factory is memoized by workspace object. Its first construction fixes the
+limits. Later calls reuse that helper and reject conflicting explicit limits.
+One search cursor or validator
 owns the feed at a time. Another receives `pressure/query`. Work starts only
 on `next()` and does not prefetch, poll, or hold a lease while the caller is
 idle. Each range borrows the exact file version and joins lease close before

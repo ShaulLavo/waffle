@@ -104,6 +104,7 @@ export const WORKSPACE_SEARCH_LIMITS = Object.freeze({
   totalBytes: 16 * 1024 * 1024,
 });
 export type SearchLimits = { readonly [K in keyof typeof WORKSPACE_SEARCH_LIMITS]: number };
+const limitKeys = Object.keys(WORKSPACE_SEARCH_LIMITS) as (keyof SearchLimits)[];
 type SearchOwner = { readonly workspace: WorkspaceVfs | undefined; readonly vfs: VfsDescriptor };
 type Pattern = {
   readonly query: SearchQuery;
@@ -165,7 +166,7 @@ function validQuery(value: SearchQuery): boolean {
 }
 function limitsFrom(overrides: Partial<SearchLimits>): SearchLimits {
   const limits = { ...WORKSPACE_SEARCH_LIMITS, ...overrides };
-  for (const key of Object.keys(WORKSPACE_SEARCH_LIMITS) as (keyof SearchLimits)[]) {
+  for (const key of limitKeys) {
     if (
       !Number.isSafeInteger(limits[key]) ||
       limits[key] < 0 ||
@@ -213,12 +214,15 @@ export function createWorkspaceSearch(
   if (!owner.workspace || !owner.vfs)
     throw new Error("Search requires a workspace and its VFS descriptor");
   const existing = owners.get(owner.workspace);
+  const selectedLimits = limitsFrom(limits);
   const format = owner.vfs.format?.id ?? null;
   if (existing) {
     if (existing.format !== format) throw new Error("Workspace already has a different VFS format");
+    if (limitKeys.some((key) => key in limits && selectedLimits[key] !== existing.limits[key]))
+      throw new Error("Workspace already has different search limits");
     return existing;
   }
-  const search = new Search(owner.workspace, format, limitsFrom(limits));
+  const search = new Search(owner.workspace, format, selectedLimits);
   owners.set(owner.workspace, search);
   return search;
 }

@@ -674,3 +674,13 @@ test("an output budget below page overhead cannot certify a matchless scan", asy
   expect(page).toEqual({ kind: "pressure", resource: "results" });
   expect(value.boundary.pins).toBe(0);
 });
+
+test("memoized owners reuse their bounds and reject attempts to silently reconfigure them", async () => {
+  await using value = await fixture();
+  const search = value.search({ chunkBytes: 2 });
+  const owner = { workspace: value.boundary, vfs: getVfsDescriptor("memory") };
+  expect(createWorkspaceSearch(owner)).toBe(search);
+  expect(createWorkspaceSearch(owner, { chunkBytes: 2 })).toBe(search);
+  expect(() => createWorkspaceSearch(owner, { chunkBytes: 1 })).toThrow("different search limits");
+  expect(() => createWorkspaceSearch(owner, { chunkBytes: 65537 })).toThrow("Invalid search limit");
+});
