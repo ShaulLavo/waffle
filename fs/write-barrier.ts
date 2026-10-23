@@ -176,7 +176,9 @@ export class WriteAdmission {
     throw new AdmissionBusy();
   }
   private matches(ticket: WriteTicket): boolean {
-    return Atomics.load(this.states, (ticket.slot + ID) / 2) >> 2n === BigIntConstructor(ticket.serial);
+    return (
+      Atomics.load(this.states, (ticket.slot + ID) / 2) >> 2n === BigIntConstructor(ticket.serial)
+    );
   }
   verify(ticket: WriteTicket, owner = ticket.owner, finishing = false): void {
     const { slot, serial } = ticket;
