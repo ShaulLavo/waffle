@@ -96,124 +96,129 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     return { storage, backend };
   };
   return withCellCleanup(
-    async () => {
-      const first = await open();
-      for (let generation = 1; generation <= 2; generation++) {
-        seedChange(first.backend, generation);
-        await first.backend.flush();
-      }
-      const before = await recoveredState(first.backend);
-      const oldGeneration = (await first.storage.load())?.generation;
-      replaceAndRename(first.backend);
-      const after = await recoveredState(first.backend);
-      const changedMode = modeDelta(before, after);
-      const inventoryBefore = fixture.inventory();
-      const ids = before.metadata
-        .concat(after.metadata)
-        .flatMap((entry) => (entry.id ? [entry.id] : []));
-      const thrown = installFault(fixture, scheduler);
-      let failure: unknown;
-      try {
-        await first.backend.flush();
-      } catch (error) {
-        failure = error;
-      } finally {
-        fixture.fault();
-      }
-      const inventoryAfter = fixture.inventory();
-      scheduler.assertReached();
-      equal(thrown.length, cell.schedule ? 1 : 0, "exactly the selected fixture hook throws");
-      if (cell.flush === "rejected")
-        invariant(
-          causedBy(failure, scheduler.reason),
-          "rejected flush preserves the injected OPFS error identity through cause",
-        );
-      if (cell.outcome === "old-complete")
-        equal(
-          inventoryAfter,
-          inventoryBefore,
-          "failed save preserves exact data and snapshot inventories before reopen",
-        );
-      const cleanup = cleanupEffect(scheduler, inventoryAfter);
-      invariant(
-        (failure !== undefined) === (cell.flush === "rejected"),
-        "only publication or explicit flush failure rejects; cleanup cannot uncommit",
-      );
-      first.backend.dispose();
-      await first.storage.close();
-      const expected = cell.outcome === "old-complete" ? before : after;
-      const second = await open();
-      const firstReopen = await checkReopen(second.backend, expected, ids);
-      const recoveredGeneration = (await second.storage.load())?.generation;
-      equal(
-        recoveredGeneration,
-        cell.outcome === "old-complete" ? oldGeneration : (oldGeneration ?? 0) + 1,
-        "OPFS recovered generation matches publication boundary",
-      );
-      second.backend.dispose();
-      await second.storage.close();
-      const third = await open();
-      const secondReopen = await checkReopen(third.backend, expected, ids);
-      invariant(
-        firstReopen.freshId !== secondReopen.freshId,
-        "an abandoned allocation from the first reopen is never reused",
-      );
-      let inventoryAfterRetry = null;
-      if (cleanup) {
-        seedChange(third.backend, 3);
-        await third.backend.flush();
-        inventoryAfterRetry = fixture.inventory();
-        const names =
-          cleanup.target === "snapshot" ? inventoryAfterRetry.snapshots : inventoryAfterRetry.data;
-        invariant(
-          !names.includes(cleanup.resource),
-          "later checkpoint collects the selected obsolete resource",
-        );
-      }
-      return {
-        id: cell.id,
-        ok: true,
-        schedule: cell.schedule,
-        events: scheduler.events,
-        oldGeneration,
-        recoveredGeneration,
-        changedMode,
-        inventoryBefore,
-        inventoryAfter,
-        cleanup,
-        inventoryAfterRetry,
-        firstReopen,
-        secondReopen,
-        outcome: cell.outcome,
-        flush: cell.flush,
-        model:
-          "existing in-memory OPFS fixture with real OpfsStorage; write/flush API failures only, not physical durability or process death",
-        invariants: [
-          "namespace",
-          "mode",
-          "bytes",
-          "FileId",
-          "revision",
-          "no-reuse",
-          "generation",
-          "checked-mutations",
-          "target-mode-delta-600-to-400",
-          "second-reopen",
-        ].concat(
-          cell.outcome === "old-complete"
-            ? ["exact-failed-save-data-and-snapshot-inventories"]
-            : [],
-          cell.flush === "rejected" ? ["injected-error-cause-identity"] : [],
-          cleanup ? ["exact-cleanup-unlink-effect", "later-checkpoint-collection"] : [],
-        ),
-      };
-    },
+    () => performCell(cell, scheduler, open, fixture),
     async () => {
       fixture.fault();
       await closeCells(backends, owners);
     },
   );
 }
+async function performCell(
+  cell: Cell,
+  scheduler: FaultScheduler,
+  open: () => Promise<{ storage: OpfsStorage; backend: Awaited<ReturnType<typeof opened>> }>,
+  fixture: ReturnType<typeof identityOpfsFixture>,
+) {
+  const first = await open();
+  for (let generation = 1; generation <= 2; generation++) {
+    seedChange(first.backend, generation);
+    await first.backend.flush();
+  }
+  const before = await recoveredState(first.backend);
+  const oldGeneration = (await first.storage.load())?.generation;
+  replaceAndRename(first.backend);
+  const after = await recoveredState(first.backend);
+  const changedMode = modeDelta(before, after);
+  const inventoryBefore = fixture.inventory();
+  const ids = before.metadata
+    .concat(after.metadata)
+    .flatMap((entry) => (entry.id ? [entry.id] : []));
+  const thrown = installFault(fixture, scheduler);
+  let failure: unknown;
+  try {
+    await first.backend.flush();
+  } catch (error) {
+    failure = error;
+  } finally {
+    fixture.fault();
+  }
+  const inventoryAfter = fixture.inventory();
+  scheduler.assertReached();
+  equal(thrown.length, cell.schedule ? 1 : 0, "exactly the selected fixture hook throws");
+  if (cell.flush === "rejected")
+    invariant(
+      causedBy(failure, scheduler.reason),
+      "rejected flush preserves the injected OPFS error identity through cause",
+    );
+  if (cell.outcome === "old-complete")
+    equal(
+      inventoryAfter,
+      inventoryBefore,
+      "failed save preserves exact data and snapshot inventories before reopen",
+    );
+  const cleanup = cleanupEffect(scheduler, inventoryAfter);
+  invariant(
+    (failure !== undefined) === (cell.flush === "rejected"),
+    "only publication or explicit flush failure rejects; cleanup cannot uncommit",
+  );
+  first.backend.dispose();
+  await first.storage.close();
+  const expected = cell.outcome === "old-complete" ? before : after;
+  const second = await open();
+  const firstReopen = await checkReopen(second.backend, expected, ids);
+  const recoveredGeneration = (await second.storage.load())?.generation;
+  equal(
+    recoveredGeneration,
+    cell.outcome === "old-complete" ? oldGeneration : (oldGeneration ?? 0) + 1,
+    "OPFS recovered generation matches publication boundary",
+  );
+  second.backend.dispose();
+  await second.storage.close();
+  const third = await open();
+  const secondReopen = await checkReopen(third.backend, expected, ids);
+  invariant(
+    firstReopen.freshId !== secondReopen.freshId,
+    "an abandoned allocation from the first reopen is never reused",
+  );
+  let inventoryAfterRetry = null;
+  if (cleanup) {
+    seedChange(third.backend, 3);
+    await third.backend.flush();
+    inventoryAfterRetry = fixture.inventory();
+    const names =
+      cleanup.target === "snapshot" ? inventoryAfterRetry.snapshots : inventoryAfterRetry.data;
+    invariant(
+      !names.includes(cleanup.resource),
+      "later checkpoint collects the selected obsolete resource",
+    );
+  }
+  return {
+    id: cell.id,
+    ok: true,
+    schedule: cell.schedule,
+    events: scheduler.events,
+    oldGeneration,
+    recoveredGeneration,
+    changedMode,
+    inventoryBefore,
+    inventoryAfter,
+    cleanup,
+    inventoryAfterRetry,
+    firstReopen,
+    secondReopen,
+    outcome: cell.outcome,
+    flush: cell.flush,
+    model:
+      "existing in-memory OPFS fixture with real OpfsStorage; write/flush API failures only, not physical durability or process death",
+    invariants: [
+      "namespace",
+      "mode",
+      "bytes",
+      "FileId",
+      "revision",
+      "no-reuse",
+      "generation",
+      "checked-mutations",
+      "target-mode-delta-600-to-400",
+      "second-reopen",
+    ].concat(
+      cell.outcome === "old-complete" ? ["exact-failed-save-data-and-snapshot-inventories"] : [],
+      cell.flush === "rejected" ? ["injected-error-cause-identity"] : [],
+      cleanup ? ["exact-cleanup-unlink-effect", "later-checkpoint-collection"] : [],
+    ),
+  };
+}
+
 export async function opfsCrashMatrix() {
   return runFaultSchedules(cells, runCell);
 }

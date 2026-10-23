@@ -176,108 +176,117 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     return { storage, backend };
   };
   return withCellCleanup(
-    async () => {
-      const first = await open();
-      for (let generation = 1; generation <= cell.checkpoints; generation++) {
-        seedChange(first.backend, generation);
-        await first.backend.flush();
-      }
-      const before = await recoveredState(first.backend);
-      const keysBefore = await physicalKeys(databaseName);
-      const oldGeneration = (await first.storage.load())?.generation;
-      replaceAndRename(first.backend);
-      const after = await recoveredState(first.backend);
-      const changedMode = modeDelta(before, after);
-      const ids = before.metadata
-        .concat(after.metadata)
-        .flatMap((entry) => (entry.id ? [entry.id] : []));
-      const observation = instrument(scheduler);
-      let failure: unknown;
-      try {
-        if (cell.kind === "flush") await first.backend.flush();
-      } catch (error) {
-        failure = error;
-      } finally {
-        observation.restore();
-      }
-      scheduler.assertReached();
-      invariant(
-        observation.transactions.length === (cell.kind === "flush" ? 1 : 0),
-        "exactly one publishing transaction, none for memory-only ACK",
-      );
-      invariant(
-        observation.transactions.every(
-          (tx) =>
-            tx.durability === "strict" &&
-            tx.stores.includes("data") &&
-            tx.stores.includes("metadata") &&
-            tx.stores.includes("journal"),
-        ),
-        "publication uses the actual strict cross-store transaction",
-      );
-      if (cell.schedule) assertInjectedAbort(observation.transactions, failure);
-      else equal(failure, undefined, "normal control flush fulfills");
-      first.backend.dispose();
-      await first.storage.close();
-      const second = await open();
-      const old = cell.schedule !== null || cell.kind === "drop-memory";
-      const expected = old ? before : after;
-      const firstReopen = await checkReopen(second.backend, expected, ids);
-      const recoveredGeneration = (await second.storage.load())?.generation;
-      equal(
-        recoveredGeneration,
-        old ? oldGeneration : (oldGeneration ?? 0) + 1,
-        "recovered generation matches publication outcome",
-      );
-      if (old)
-        equal(
-          await physicalKeys(databaseName),
-          keysBefore,
-          "old outcome preserves exact data-store manifest and chunk keys",
-        );
-      second.backend.dispose();
-      await second.storage.close();
-      const third = await open();
-      const secondReopen = await checkReopen(third.backend, expected, ids);
-      invariant(
-        firstReopen.freshId !== secondReopen.freshId,
-        "an abandoned allocation from the first reopen is never reused",
-      );
-      return {
-        id: cell.id,
-        ok: true,
-        schedule: cell.schedule,
-        events: scheduler.events,
-        transactions: observation.transactions,
-        oldGeneration,
-        recoveredGeneration,
-        changedMode,
-        firstReopen,
-        secondReopen,
-        outcome: old ? "old-complete" : "new-complete",
-        ack: "FAST memory ACK precedes tested explicit flush",
-        model:
-          "native IDB transaction abort after successful request; no browser kill or power loss",
-        invariants: [
-          "namespace",
-          "mode",
-          "bytes",
-          "FileId",
-          "revision",
-          "no-reuse",
-          "generation",
-          "checked-mutations",
-          "target-mode-delta-600-to-400",
-          "second-reopen",
-        ].concat(
-          old ? ["exact-old-data-store-keys"] : [],
-          cell.schedule ? ["injected-native-transaction-aborted"] : [],
-        ),
-      };
-    },
+    () => performCell(cell, scheduler, open, databaseName),
     () => closeCells(backends, owners, () => nativeRequest(indexedDB.deleteDatabase(databaseName))),
   );
 }
+async function performCell(
+  cell: Cell,
+  scheduler: FaultScheduler,
+  open: () => Promise<{ storage: IndexedDBStorage; backend: Awaited<ReturnType<typeof opened>> }>,
+  databaseName: string,
+) {
+  const first = await open();
+  for (let generation = 1; generation <= cell.checkpoints; generation++) {
+    seedChange(first.backend, generation);
+    await first.backend.flush();
+  }
+  const before = await recoveredState(first.backend);
+  const keysBefore = await physicalKeys(databaseName);
+  const oldGeneration = (await first.storage.load())?.generation;
+  replaceAndRename(first.backend);
+  const after = await recoveredState(first.backend);
+  const changedMode = modeDelta(before, after);
+  const ids = before.metadata
+    .concat(after.metadata)
+    .flatMap((entry) => (entry.id ? [entry.id] : []));
+  const observation = instrument(scheduler);
+  let failure: unknown;
+  try {
+    if (cell.kind === "flush") await first.backend.flush();
+  } catch (error) {
+    failure = error;
+  } finally {
+    observation.restore();
+  }
+  scheduler.assertReached();
+  invariant(
+    observation.transactions.length === (cell.kind === "flush" ? 1 : 0),
+    "exactly one publishing transaction, none for memory-only ACK",
+  );
+  invariant(
+    observation.transactions.every(
+      (tx) =>
+        tx.durability === "strict" &&
+        tx.stores.includes("data") &&
+        tx.stores.includes("metadata") &&
+        tx.stores.includes("journal"),
+    ),
+    "publication uses the actual strict cross-store transaction",
+  );
+  if (cell.schedule) assertInjectedAbort(observation.transactions, failure);
+  else equal(failure, undefined, "normal control flush fulfills");
+  first.backend.dispose();
+  await first.storage.close();
+  const second = await open();
+  const old = cell.schedule !== null || cell.kind === "drop-memory";
+  const expected = old ? before : after;
+  const firstReopen = await checkReopen(second.backend, expected, ids);
+  const recoveredGeneration = (await second.storage.load())?.generation;
+  equal(
+    recoveredGeneration,
+    old ? oldGeneration : (oldGeneration ?? 0) + 1,
+    "recovered generation matches publication outcome",
+  );
+  if (old)
+    equal(
+      await physicalKeys(databaseName),
+      keysBefore,
+      "old outcome preserves exact data-store manifest and chunk keys",
+    );
+  second.backend.dispose();
+  await second.storage.close();
+  const third = await open();
+  const secondReopen = await checkReopen(third.backend, expected, ids);
+  invariant(
+    firstReopen.freshId !== secondReopen.freshId,
+    "an abandoned allocation from the first reopen is never reused",
+  );
+  return {
+    id: cell.id,
+    ok: true,
+    schedule: cell.schedule,
+    events: scheduler.events,
+    transactions: observation.transactions,
+    oldGeneration,
+    recoveredGeneration,
+    changedMode,
+    firstReopen,
+    secondReopen,
+    outcome: old ? "old-complete" : "new-complete",
+    ack:
+      cell.kind === "drop-memory"
+        ? "FAST memory ACK without flush; timer checkpoint disabled"
+        : "FAST memory ACK precedes tested explicit flush",
+    model: "native IDB transaction abort after successful request; no browser kill or power loss",
+    invariants: [
+      "namespace",
+      "mode",
+      "bytes",
+      "FileId",
+      "revision",
+      "no-reuse",
+      "generation",
+      "checked-mutations",
+      "target-mode-delta-600-to-400",
+      "second-reopen",
+    ].concat(
+      old ? ["exact-old-data-store-keys"] : [],
+      cell.schedule ? ["injected-native-transaction-aborted"] : [],
+    ),
+  };
+}
+
 function assertInjectedAbort(
   transactions: readonly TransactionObservation[],
   failure: unknown,
