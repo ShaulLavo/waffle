@@ -64,7 +64,7 @@ class IdentityStore implements StorageBackend {
 
 async function fixture(backend: MemoryBackend) {
   const service = new FilesystemService(backend);
-  const connection = createFilesystemConnection(undefined, undefined, { limits, observe: true });
+  const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
   const client = new FilesystemClient(connection.client);
   await client.asyncCall("writeFile", ["/file"], bytes("seed"));
