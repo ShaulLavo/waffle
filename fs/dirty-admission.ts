@@ -28,7 +28,8 @@ const NAMESPACE = 8,
   COPY_METADATA = 11,
   OPERATIONS = 12;
 const REVISION = 13,
-  REJECTED = 14;
+  REJECTED = 14,
+  BASE_NAMESPACE = 15;
 export const DIRTY_HEADER_WORDS = 48;
 const DIRTY_PIN_UNITS = 2048;
 export const DIRTY_NODE_UNITS = 1024;
@@ -57,6 +58,7 @@ export class DirtyAdmission {
     this.values[CAPTURE_BYTES] = capture.maxBytes;
     this.values[CAPTURE_METADATA] = capture.maxMetadataBytes;
     this.values[NAMESPACE] = namespace;
+    this.values[BASE_NAMESPACE] = namespace;
     this.values[ENABLED] = 1;
   }
   private reject(permanent = false): never {
@@ -64,7 +66,13 @@ export class DirtyAdmission {
     throw new DirtyCapacityError(permanent);
   }
   private metadata(): number {
-    return BASE_UNITS + this.values[NAMESPACE]! + this.values[PINS]! + this.values[DIRTY_METADATA]!;
+    return (
+      BASE_UNITS +
+      this.values[NAMESPACE]! -
+      this.values[BASE_NAMESPACE]! +
+      this.values[PINS]! +
+      this.values[DIRTY_METADATA]!
+    );
   }
   private check(resident: number, bytes: number, metadata: number): void {
     if (!this.enabled) return;
@@ -148,6 +156,7 @@ export class DirtyAdmission {
     this.values[DIRTY_BYTES] = 0;
     this.values[DIRTY_METADATA] = 0;
     this.values[NAMESPACE] = namespace;
+    this.values[BASE_NAMESPACE] = namespace;
     this.notify();
     return true;
   }

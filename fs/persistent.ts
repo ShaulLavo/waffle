@@ -297,9 +297,9 @@ export class PersistentBackend extends MemoryBackend {
       )
         continue;
       node.identity = this.shared.identity(handle) ?? node.identity;
+      node.size = stat.size;
+      node.mtime = stat.mtime;
       if (this.shared.evict(handle, revision)) {
-        node.size = stat.size;
-        node.mtime = stat.mtime;
         this.revisions.delete(handle);
         this.registeredNodes.delete(handle);
       } else this.shared.unload(handle, revision);
@@ -371,6 +371,8 @@ export class PersistentBackend extends MemoryBackend {
   private namespaceGrowth(plan: NamespacePlan): number {
     let units = plan.created.length * 256;
     for (const edge of plan.edges) if (edge.after) units += 64 + edge.name.length * 2;
+    for (const parent of plan.parents)
+      if (!this.dirty.has(parent)) units += this.nodeMetadataBytes(parent);
     return units * 4;
   }
   protected override admitMutation(plan: LocalMutationPlan): void {

@@ -20,7 +20,7 @@ The fixed shared ledger uses these charges:
 | Resident payload       | Assigned shared pages, once per physical page, rounded to 64 KiB.                                                                                                                                                   |
 | Dirty payload headroom | Twice each slot's maximum logical size since the last complete, successful, quiescent capture. Shrink and unlink do not erase this debt.                                                                            |
 | Immutable copies       | The checkpoint reservation includes the private snapshot and adapter submission copy. It survives cancellation until the owned persist and requested flush settle.                                                  |
-| Namespace              | Four times 256 units per inode plus 64 units and twice the UTF-16 name length per directory entry. Baseline and additions stay charged until a successful complete cut. Removed names retain their previous charge. |
+| Namespace              | Four times 256 units per new inode plus 64 units and twice the UTF-16 name length per new directory entry, including the whole prior contents of each first-dirty directory. Clean cold namespace is diagnostic only. Removed names retain their dirty charge until a successful complete cut. |
 | Dirty metadata         | 1024 units per first-dirty slot.                                                                                                                                                                                    |
 | Runtime pins           | 2048 units per registered slot, released when the slot is freed. This covers conservative retained-key lists in queued checkpoints.                                                                                 |
 | Operation metadata     | A fixed 1024-unit base plus the existing checkpoint reservation for each admitted immutable operation.                                                                                                              |
@@ -41,7 +41,7 @@ cannot fit returns EAGAIN rather than waiting for impossible progress.
 
 These are conservative accounting units, not JavaScript heap byte measurements.
 The counters distinguish resident pages, dirty headroom, immutable copies,
-namespace, dirty metadata, pins, operations, waiters, and rejected attempts.
+namespace, dirty metadata, pins, operations, waiters, and rejected attempts. Loaded clean namespace is not pending checkpoint debt.
 `accountedBytes` reports resident plus dirty headroom plus live immutable copies.
 Admission reserves more than that diagnostic sum.
 

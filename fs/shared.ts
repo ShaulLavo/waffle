@@ -1507,7 +1507,7 @@ export class SharedFilesystemState {
       }
       Atomics.store(this.slots, this.at(slot, CAPACITY), needed);
       Atomics.sub(this.cells, USED_PAGES, capacity - needed);
-      this.dirtyAdmission.capacityReleased();
+      if (capacity > needed) this.dirtyAdmission.capacityReleased();
       this.trimPageTables(slot, needed);
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
@@ -1609,7 +1609,7 @@ export class SharedFilesystemState {
       Atomics.store(this.pages, this.pageAt(slot, logical), 0);
     }
     Atomics.sub(this.cells, USED_PAGES, count);
-    this.dirtyAdmission.capacityReleased();
+    if (count > 0) this.dirtyAdmission.capacityReleased();
     this.trimPageTables(slot, 0);
     Atomics.store(this.slots, this.at(slot, CAPACITY), 0);
   }

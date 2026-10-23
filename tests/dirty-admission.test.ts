@@ -420,3 +420,75 @@ test("direct metadata pressure fallback returns service errno without throwing",
     }
   });
 });
+
+
+test("parent regression: held checkpoint parks a namespace writer until capacity returns", async () => {
+  await fixture(async (context) => {
+    const { backend, client, track } = context;
+    await client.asyncCall("mkdirp", ["/d"]);
+    await backend.checkpoint(true);
+    const { gate, checkpoint } = await held(context);
+    expect(client.tryWrite(context.handle, [data(8, 67)], 0)).toBe(8);
+    const pending = track(client.asyncCall("writeFile", ["/d/new"], data(4, 70)));
+    await waiters(backend, 1);
+    gate.released.resolve();
+    await checkpoint;
+    await pending;
+    expect(await client.asyncCall("readFile", ["/d/new"])).toEqual(data(4, 70));
+  }, tiny);
+});
+
+test("parent regression: clean detached descriptor reload preserves the captured length", async () => {
+  await fixture(async ({ backend, client, handle }) => {
+    expect(client.tryWrite(handle, [data(8, 66)], 0)).toBe(8);
+    await client.asyncCall("remove", ["/file"]);
+    await backend.checkpoint(true);
+    await client.asyncCall("mkdirp", ["/many"]);
+    for (let index = 0; index < 1100; index++) {
+      await client.asyncCall("writeFile", [`/many/f${index}`], data(1));
+      if (index % 200 === 199) await backend.checkpoint(true);
+    }
+    await backend.checkpoint(true);
+    await client.asyncCall("writeFile", ["/many/trigger"], data(1));
+    expect(backend.shared.isResident(handle)).toBe(false);
+    expect(await client.asyncCall("read", [handle, 8, 0])).toEqual(data(8, 66));
+  }, { checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 } });
+});
+
+test("parent regression: cold namespace is not pending checkpoint debt", async () => {
+  const storage = new ControlledStorage();
+  const seed = await PersistentBackend.open(storage, { intervalMs: 0, dirtyLimits: false });
+  try {
+    seed.execute("mkdirp", ["/d"], data(0));
+    for (let index = 0; index < 7000; index++) {
+      const args = [`/d/file-${index}`];
+      await seed.prepare("writeFile", args);
+      seed.execute("writeFile", args, data(1));
+      if (index % 500 === 499) await seed.flush();
+    }
+    await seed.close();
+  } finally {
+    seed.dispose();
+  }
+  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const service = new FilesystemService(backend);
+  const pair = createFilesystemConnection();
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  try {
+    const root = await client.asyncCall("preopen", ["/"]);
+    const file = await client.asyncCall("resolve", [root, "d/file-1"]);
+    await client.asyncCall("read", [file.node, 1, 0]);
+    expect(client.tryWrite(file.node, [data(1, 66)], 0)).toBe(1);
+    await backend.flush();
+    expect(await client.asyncCall("readFile", ["/d/file-1"])).toEqual(data(1, 66));
+    await client.asyncCall("writeFile", ["/d/added"], data(1, 67));
+    await backend.flush();
+    expect(await client.asyncCall("readFile", ["/d/added"])).toEqual(data(1, 67));
+  } finally {
+    client.dispose();
+    service.dispose();
+    await backend.close();
+    backend.dispose();
+  }
+});
