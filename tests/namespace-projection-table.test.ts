@@ -706,9 +706,10 @@ function inspectCorpus(order: IdentityOrder, pristine = true) {
     expect(serial).toBeLessThan(seen.length);
     expect(seen[serial]).toBe(0);
     seen[serial] = 1;
-    expect(entry.id).toBe(parseFileIdentity(recoveredIdentity(serial, order)).id);
-    if (pristine) expect(entry.version).toBe(entry.id);
-    else expect(entry.version).toBeGreaterThanOrEqual(entry.id);
+    const expected = parseFileIdentity(recoveredIdentity(serial, order));
+    expect(entry.id).toBe(expected.id);
+    if (pristine) expect(entry.version).toBe(expected.version);
+    else expect(entry.version).toBeGreaterThanOrEqual(expected.version);
   };
 }
 
