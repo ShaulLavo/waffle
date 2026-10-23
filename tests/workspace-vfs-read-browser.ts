@@ -201,6 +201,30 @@ async function retireTakenOverFixture(
   );
   for (const result of cleanup) if (result.status === "rejected") throw result.reason;
 }
+async function retainDuringGc(
+  kind: "indexeddb" | "opfs",
+  cold: StorageBackend,
+  live: Awaited<ReturnType<typeof projection>>,
+) {
+  const held = holdCheckpoint(kind);
+  let pending: Promise<unknown> | undefined;
+  try {
+    pending = live.backend.flush();
+    await held.entered;
+    const racing = cold.retainPayload("original", SIZE);
+    try {
+      held.release();
+      await pending;
+      const distant = await cold.readRange("original", { offset: SIZE - 1, length: 1 });
+      check(distant[0] === 65, "captured GC batch deleted newly retained key");
+    } finally {
+      racing.release();
+    }
+  } finally {
+    held.restore();
+    await pending;
+  }
+}
 async function adapter(kind: "indexeddb" | "opfs") {
   const name = `waffle-public-range-${kind}-${crypto.randomUUID()}`;
   const open = () =>
@@ -290,24 +314,7 @@ async function adapter(kind: "indexeddb" | "opfs") {
       "reader close hid deferred key metadata",
     );
     await live.client.asyncCall("writeFile", ["/file"], new Uint8Array([10]));
-    const held = holdCheckpoint(kind);
-    let pending: Promise<unknown> | undefined;
-    try {
-      pending = live.backend.flush();
-      await held.entered;
-      const racing = cold.retainPayload("original", SIZE);
-      try {
-        held.release();
-        await pending;
-        const distant = await cold.readRange("original", { offset: SIZE - 1, length: 1 });
-        check(distant[0] === 65, "captured GC batch deleted newly retained key");
-      } finally {
-        racing.release();
-      }
-    } finally {
-      held.restore();
-      await pending;
-    }
+    await retainDuringGc(kind, cold, live);
     check(cold.resources().readerStorageDebt === SIZE, "racing release hid physical debt");
     for (let generation = 11; generation <= 15; generation++) {
       await live.client.asyncCall("writeFile", ["/file"], new Uint8Array([generation]));
