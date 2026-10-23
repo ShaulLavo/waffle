@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { Int32Array as UnlistedView } from "./fixtures/intrinsics.ts";
 import type * as Intrinsics from "../proc/intrinsics.ts";
 import {
   enforcedModules,
@@ -12,19 +12,22 @@ import {
 const root = resolve(import.meta.dir, "..");
 const fixture = "tests/fixtures/private-authority-cases.ts";
 
-function isolatedIntrinsics(
+async function isolatedIntrinsics(
   cryptoHost: { getRandomValues: typeof crypto.getRandomValues; randomUUID?: () => string } = {
     getRandomValues: crypto.getRandomValues.bind(crypto),
   },
 ) {
-  const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
-    readFileSync(resolve(root, "proc/intrinsics.ts"), "utf8")
-      .replace(/^export /gm, "")
-      .concat(
-        "\nglobalThis.captured = { arrayAppend, cryptoRandomUUID }; globalThis.guestObject = Object;\n",
-      ),
+  const built = await Bun.build({
+    entrypoints: [resolve(root, "proc/intrinsics.ts")],
+    target: "browser",
+    format: "cjs",
+  });
+  if (!built.success || !built.outputs[0]) throw new Error("cannot bundle isolated intrinsics");
+  const source = (await built.outputs[0].text()).concat(
+    "\nglobalThis.captured = { arrayAppend: module.exports.arrayAppend, cryptoRandomUUID: module.exports.cryptoRandomUUID }; globalThis.guestObject = Object;\n",
   );
   const context = {
+    module: { exports: {} },
     crypto: cryptoHost,
     setTimeout,
     captured: undefined as unknown as Pick<typeof Intrinsics, "arrayAppend" | "cryptoRandomUUID">,
@@ -35,8 +38,8 @@ function isolatedIntrinsics(
 }
 
 describe("private process authority builtin boundary", () => {
-  test("captured array appends ignore inherited descriptor fields and replaced defineProperty", () => {
-    const { captured, guestObject } = isolatedIntrinsics();
+  test("captured array appends ignore inherited descriptor fields and replaced defineProperty", async () => {
+    const { captured, guestObject } = await isolatedIntrinsics();
     const inherited = () => {
       throw new Error("inherited descriptor field consulted");
     };
@@ -56,7 +59,7 @@ describe("private process authority builtin boundary", () => {
     });
   });
 
-  test("UUID capture retains both its method and crypto receiver", () => {
+  test("UUID capture retains both its method and crypto receiver", async () => {
     const cryptoHost = {
       getRandomValues: crypto.getRandomValues.bind(crypto),
       randomUUID() {
@@ -64,7 +67,7 @@ describe("private process authority builtin boundary", () => {
         return "captured-uuid";
       },
     };
-    const context = isolatedIntrinsics(cryptoHost);
+    const context = await isolatedIntrinsics(cryptoHost);
     cryptoHost.randomUUID = () => "guest-uuid";
     context.crypto = {
       getRandomValues: cryptoHost.getRandomValues,
@@ -73,8 +76,8 @@ describe("private process authority builtin boundary", () => {
     expect(context.captured.cryptoRandomUUID()).toBe("captured-uuid");
   });
 
-  test("capturing absent UUID allocation allows core imports but never uses a later replacement", () => {
-    const { captured, crypto: cryptoHost } = isolatedIntrinsics();
+  test("capturing absent UUID allocation allows core imports but never uses a later replacement", async () => {
+    const { captured, crypto: cryptoHost } = await isolatedIntrinsics();
     expect(typeof captured.arrayAppend).toBe("function");
     cryptoHost.randomUUID = () => "guest-uuid";
     expect(() => captured.cryptoRandomUUID()).toThrow(/undefined|function/);
@@ -149,3 +152,24 @@ describe("private process authority builtin boundary", () => {
     }
   });
 });
+
+function unlistedConstructor(buffer: SharedArrayBuffer): Int32Array {
+  return new UnlistedView(buffer);
+}
+
+test("similarly named unlisted modules are neither captured imports nor trusted implementations", async () => {
+  expect(unlistedConstructor(new SharedArrayBuffer(4))).toBeInstanceOf(Int32Array);
+  const unlisted = "tests/fixtures/intrinsics.ts";
+  const findings = await scanAuthorityProject(root, [
+    unlisted,
+    "tests/intrinsics-boundary.test.ts",
+  ]);
+  expect(
+    findings.some((finding) => finding.file === unlisted && finding.scope === "unlistedGetter"),
+  ).toBe(true);
+  expect(
+    findings.some(
+      (finding) => finding.scope === "unlistedConstructor" && finding.rule === "mutable-builtin",
+    ),
+  ).toBe(true);
+}, 20_000);

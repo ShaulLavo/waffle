@@ -1,11 +1,12 @@
+import {
+  RIGHT_FD_READ as READ,
+  RIGHT_FD_WRITE as WRITE,
+  RIGHT_PATH_OPEN as PATH_OPEN,
+  RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
+} from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem } from "./filesystem.js";
+import type { FileSystem, FileStat } from "./filesystem.js";
 import { normalize } from "./path.js";
-
-const READ = 1n << 1n;
-const WRITE = 1n << 6n;
-const PATH_OPEN = 1n << 13n;
-const PATH_RESIZE = 1n << 19n;
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
@@ -22,42 +23,51 @@ export function reopenDescriptor(
   if (oflags & ~15 || fdflags & ~31 || oflags & 5) return -28;
   base = BigInt.asUintN(64, base);
   inheriting = BigInt.asUintN(64, inheriting);
-  if (source.resource.kind !== "file") return reopenShared(table, source, oflags, base, inheriting);
+  if (source.resource.kind !== "file") {
+    if (oflags & 2 && source.resource.kind !== "directory") return -54;
+    if (oflags & 8 && source.resource.kind === "directory") return -31;
+    if ((base & source.rightsBase) !== base) return -2;
+    if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
+    return table.add(source.description, { rightsBase: base, rightsInheriting: inheriting });
+  }
   if (oflags & 2) return -54;
   const root = table.rootPreopen();
   if (!root || !(root.rightsBase & PATH_OPEN)) return -76;
   if ((base & root.rightsInheriting) !== base) return -76;
   if ((inheriting & root.rightsInheriting) !== inheriting) return -76;
   if (oflags & 8 && !(root.rightsBase & PATH_RESIZE)) return -76;
-  const handle = source.resource.handle;
+  return openInode(table, fs, source.resource.handle, "file", oflags, fdflags, base, inheriting);
+}
+
+/** A new open description owns its flags, offset and one inode reference. */
+export function openInode(
+  table: DescriptorTable,
+  fs: FileSystem,
+  handle: number,
+  kind: FileStat["kind"],
+  oflags: number,
+  fdflags: number,
+  base: bigint,
+  inheriting: bigint,
+): number {
   const access = (base & READ ? 4 : 0) | (base & WRITE ? 2 : 0);
   const permissions = fs.permissions?.(handle);
   if (permissions && permissions.accessSupported & access & ~permissions.access) return -2;
+  if (oflags & 2 && kind !== "directory") return -54;
   if (oflags & 8) {
+    if (kind === "directory") return -31;
     const error = fs.resize(handle, 0, true);
     if (error) return -error;
   }
   fs.retain(handle);
   return table.open(
-    { kind: "file", handle, offset: 0, append: (fdflags & 1) !== 0, fdflags },
+    kind === "directory"
+      ? { kind, handle }
+      : { kind, handle, offset: 0, append: (fdflags & 1) !== 0, fdflags },
     base,
     inheriting,
     () => fs.release(handle),
   );
-}
-
-function reopenShared(
-  table: DescriptorTable,
-  source: Descriptor,
-  oflags: number,
-  base: bigint,
-  inheriting: bigint,
-): number {
-  if (oflags & 2 && source.resource.kind !== "directory") return -54;
-  if (oflags & 8 && source.resource.kind === "directory") return -31;
-  if ((base & source.rightsBase) !== base) return -2;
-  if ((inheriting & source.rightsInheriting) !== inheriting) return -2;
-  return table.add(source.description, { rightsBase: base, rightsInheriting: inheriting });
 }
 
 /** These names are process-local WASI paths, never entries in the shared filesystem. */
@@ -75,7 +85,7 @@ interface PathEntry {
   handle?: number;
   source?: number;
 }
-const virtualDirectories = new Set(["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"]);
+const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
 function lookupEntry(
   table: DescriptorTable,
@@ -99,7 +109,7 @@ function lookupEntry(
   const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name);
   if (typeof path === "number") return path;
   if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
-  if (virtualDirectories.has(prefix)) return { prefix, kind: "directory" };
+  if (virtualDirectories.includes(prefix)) return { prefix, kind: "directory" };
   return 44;
 }
 

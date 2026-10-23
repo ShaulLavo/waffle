@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.79",
+  "version": "0.0.84",
   "private": true,
   "type": "module",
   "exports": {
