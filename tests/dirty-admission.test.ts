@@ -522,7 +522,7 @@ test("directory metadata reserves the complete dirty child list before mutation"
     await backend.flush();
     expect(storage.index!.nodes.find((node) => node.ino === directory.ino)!.mtime).toBe(before!.mtime);
   } finally {
-    await backend.close();
+    await Promise.allSettled([backend.close()]);
     backend.dispose();
   }
 });
