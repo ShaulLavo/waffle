@@ -8,6 +8,21 @@ import {
 import type { PublicationEffect } from "../fs/publication.js";
 import { ChangeBudget, NamespaceIndex } from "../fs/workspace-index.js";
 import type { NamespaceRecord } from "../fs/workspace-protocol.js";
+import {
+  createFilesystemConnection,
+  createWorkspaceVfs,
+  FilesystemClient,
+  FilesystemService,
+  PersistentBackend,
+  WORKSPACE_LIMITS,
+  type SnapshotOptions,
+  type WorkspaceVfs,
+  type NamespaceEntry,
+  type NamespaceCut,
+  type WorkspaceChange,
+  type Watermark,
+} from "../fs/index.js";
+import type { PersistedIndex, PersistedNode, StorageBackend } from "../fs/storage.js";
 import { SIZES } from "../tooling/vfs-workloads.js";
 
 function identity(serial: number) {
@@ -513,3 +528,189 @@ test.each(["nodes", "edges", "extraLinks"])(
     expect(paths(table, 2)).toEqual(["/old"]);
   },
 );
+
+const capacityWorkspace = "a110ca7e-0000-4000-8000-000000000001";
+type IdentityOrder = "forward" | "reverse" | "permuted";
+
+function recoveredIdentity(serial: number, order: IdentityOrder) {
+  const reordered =
+    order === "reverse" ? 55034 - serial : order === "permuted" ? shuffleIdentity(serial) : serial;
+  const era = order === "permuted" ? 0x8000000000000001n + BigInt(reordered % 17) : 1n;
+  const token = ((era << 64n) | BigInt(reordered)).toString(16);
+  return {
+    format: "waffle-file-identity-v1",
+    workspace: capacityWorkspace,
+    id: token,
+    version: token,
+  } as const;
+}
+
+function coldCorpus(order: IdentityOrder = "forward", flat = 0): PersistedIndex {
+  const nodes: PersistedNode[] = [];
+  const add = (kind: "file" | "dir", size = 0): PersistedNode => {
+    const ino = nodes.length + 1;
+    const node: PersistedNode = {
+      ino,
+      kind,
+      size,
+      mode: kind === "dir" ? 0o700 : 0o600,
+      mtime: 0,
+      identity: recoveredIdentity(ino, order),
+      ...(kind === "dir" ? { children: [] } : { data: `fixture-${ino}` }),
+    };
+    nodes.push(node);
+    return node;
+  };
+  const root = add("dir");
+  if (!root.children) throw new Error("missing root children");
+  if (flat) {
+    for (let file = 0; file < flat; file++) root.children.push([`f${file}`, add("file").ino]);
+    return { version: 1, generation: 1, root: root.ino, nodes };
+  }
+  for (let dir = 0; dir < SIZES.W1.directories; dir++) {
+    const directory = add("dir");
+    root.children.push([`d${String(dir).padStart(5, "0")}`, directory.ino]);
+    addColdFiles(directory, dir, add);
+  }
+  return { version: 1, generation: 1, root: root.ino, nodes };
+}
+
+function addColdFiles(
+  directory: PersistedNode,
+  dir: number,
+  add: (kind: "file" | "dir", size?: number) => PersistedNode,
+) {
+  if (!directory.children) throw new Error("missing directory children");
+  for (let file = dir * 10; file < dir * 10 + 10; file++)
+    directory.children.push([`f${String(file).padStart(5, "0")}`, add("file", SIZES.W1.bytes).ino]);
+  if (dir < SIZES.W1.largeFiles)
+    directory.children.push(["large", add("file", SIZES.W1.largeBytes).ino]);
+}
+
+async function publicCorpus(index = coldCorpus()) {
+  const counters = { reads: 0, persists: 0, closes: 0 };
+  const storage: StorageBackend = {
+    async load() {
+      return index;
+    },
+    async reserveIdentity() {
+      return { workspace: capacityWorkspace, era: 0xffffffffffffffffn };
+    },
+    async read() {
+      counters.reads++;
+      throw new Error("namespace hydrated cold payload");
+    },
+    async persist() {
+      counters.persists++;
+    },
+    async flush() {},
+    async close() {
+      counters.closes++;
+    },
+  };
+  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const pair = createFilesystemConnection(undefined, { workspace: true });
+  const service = new FilesystemService(backend);
+  service.connect(pair.server);
+  const client = new FilesystemClient(pair.client);
+  const workspace = createWorkspaceVfs(client);
+  return {
+    backend,
+    pair,
+    service,
+    client,
+    workspace,
+    counters,
+    async close() {
+      try {
+        await workspace.close();
+      } finally {
+        client.dispose();
+        service.dispose();
+        await backend.close();
+      }
+      expect(service.resources()).toMatchObject({ clients: 0, workspaceCursors: 0, responses: 0 });
+      expect(client.completions.size).toBe(0);
+      expect(counters.closes).toBe(1);
+    },
+  };
+}
+
+async function publicScan(
+  workspace: WorkspaceVfs,
+  options?: SnapshotOptions,
+  inspect: (entry: NamespaceEntry) => void = () => {},
+) {
+  const cursor = workspace.snapshot(options);
+  let entries = 0,
+    pages = 0,
+    files = 0,
+    directories = 0;
+  try {
+    for (;;) {
+      const page = await cursor.next();
+      if (page.kind === "complete") {
+        expect(await cursor.next()).toEqual(page);
+        return { cut: page.cut, entries, pages, files, directories };
+      }
+      if (page.kind !== "entries")
+        throw new Error(
+          `public snapshot returned ${JSON.stringify(page)} after ${entries} entries`,
+        );
+      expect(page.entries.length).toBeLessThanOrEqual(WORKSPACE_LIMITS.pageEntries);
+      expect(
+        page.entries.reduce((sum, entry) => sum + 192 + 2 * entry.path.length, 0),
+      ).toBeLessThanOrEqual(WORKSPACE_LIMITS.pageBytes);
+      pages++;
+      entries += page.entries.length;
+      for (const entry of page.entries) {
+        if (entry.kind === "file") files++;
+        else directories++;
+        inspect(entry);
+      }
+    }
+  } finally {
+    await cursor.close();
+  }
+}
+
+function corpusSerial(path: string): number {
+  if (path === "/") return 1;
+  const [directory, name] = path.slice(1).split("/");
+  const dir = Number(directory!.slice(1));
+  const parent = 2 + dir * 11 + Math.min(dir, SIZES.W1.largeFiles);
+  return name === undefined
+    ? parent
+    : name === "large"
+      ? parent + 11
+      : parent + 1 + (Number(name.slice(1)) % 10);
+}
+
+function inspectCorpus(order: IdentityOrder) {
+  const seen = new Uint8Array(55034);
+  return (entry: NamespaceEntry) => {
+    const serial = corpusSerial(entry.path);
+    expect(serial).toBeGreaterThan(0);
+    expect(serial).toBeLessThan(seen.length);
+    expect(seen[serial]).toBe(0);
+    seen[serial] = 1;
+    expect(entry.id).toBe(parseFileIdentity(recoveredIdentity(serial, order)).id);
+    expect(entry.version).toBe(entry.id);
+  };
+}
+
+test("public W1 snapshot completes all 55,033 cold entries without payload hydration", async () => {
+  const current = await publicCorpus();
+  try {
+    const result = await publicScan(current.workspace, undefined, inspectCorpus("forward"));
+    expect(result).toMatchObject({ entries: 55033, files: 50032, directories: 5001 });
+    expect(await current.workspace.changes(result.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+    expect(current.counters).toMatchObject({ reads: 0, persists: 0 });
+    expect(current.service.resources()).toMatchObject({ workspaceCursors: 0, responses: 0 });
+  } finally {
+    await current.close();
+  }
+}, 30000);
