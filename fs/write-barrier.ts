@@ -30,7 +30,7 @@ const WRITE_ARGUMENT_LIMIT = 8192;
 const WRITE_METADATA_LIMIT = 16 * 1024 * 1024;
 
 export const WRITE_BARRIER_WORDS = HEADER + WORDS * RECORDS;
-export const WRITE_BARRIER_OFFSET = 64 * 4;
+export const WRITE_BARRIER_OFFSET = 80 * 4;
 
 /** A root-wide fixed record pool. Local stacks and executing transport each own a reference.
  * A cancelled caller cannot release the executing reference. No lock spans a callback or wait. */

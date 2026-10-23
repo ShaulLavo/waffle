@@ -1,3 +1,4 @@
+import type { FileIdentity } from "./file-identity.js";
 import { permissionsFor, FilesystemError } from "../core/filesystem.js";
 import {
   normalize,
@@ -17,6 +18,7 @@ export { normalize, splitPath, dirname, basename } from "../core/index.js";
 // The browser filesystem service is the sole owner of this tree.
 
 export interface FileNode {
+  identity?: FileIdentity;
   kind: "file";
   data: Uint8Array;
   /** Logical size when the persistence backend keeps the payload outside this object. */
@@ -27,6 +29,7 @@ export interface FileNode {
 }
 
 export interface DirNode {
+  identity?: FileIdentity;
   kind: "dir";
   children: Map<string, Node>;
   mode: number;

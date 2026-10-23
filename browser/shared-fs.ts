@@ -7,6 +7,8 @@ import {
   type RuntimeStartupObserver,
 } from "../fs/startup.js";
 import {
+  createWorkspaceVfs,
+  type WorkspaceVfs,
   FilesystemClient,
   FilesystemError,
   resolveWriteFileMode,
@@ -47,6 +49,8 @@ export type SharedFilesystemStateObserver = (
 ) => void | PromiseLike<void>;
 
 export type SharedFilesystemOptions = VfsSelection & {
+  /** Allocate all-writer namespace history before the filesystem worker starts. */
+  workspace?: boolean;
   [localPublication]?: PublicationConfiguration;
   workerURL?: string | URL;
   name?: string;
@@ -96,6 +100,7 @@ function workerError(data: unknown): Error | undefined {
 export class SharedFilesystem {
   readonly client: FilesystemClient;
   readonly vfs: VfsDescriptor;
+  readonly workspace: WorkspaceVfs | undefined;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
   private failure: unknown;
@@ -122,7 +127,10 @@ export class SharedFilesystem {
     this.onStateChange = options.onStateChange;
     this.cancellableStartup = this.vfs.persistent;
     // Allocate transport before starting a consumer, and own both endpoints until transfer.
-    const connection = createFilesystemConnection(undefined, options[localPublication]);
+    const connection = createFilesystemConnection(
+      undefined,
+      options[localPublication] ?? (options.workspace ? { workspace: true } : undefined),
+    );
     let worker: Worker | undefined;
     let client: FilesystemClient | undefined;
     try {
@@ -132,6 +140,7 @@ export class SharedFilesystem {
       );
       reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
       this.client = client = new FilesystemClient(connection.client);
+      this.workspace = options.workspace ? createWorkspaceVfs(client) : undefined;
       worker.addEventListener("message", (event) => this.receiveMessage(event, onStartupStage));
       worker.addEventListener("error", (event) => {
         event.preventDefault();
@@ -271,6 +280,7 @@ export class SharedFilesystem {
   private stopClient(): void {
     if (this.clientStopped) return;
     this.clientStopped = true;
+    void this.workspace?.close().catch(() => {});
     this.client.dispose();
   }
   private assertLive(): void {

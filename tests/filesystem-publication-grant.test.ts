@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { withLateBigintHooks } from "./fixtures/bigint-hooks";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
 import {
   ResidentChannel,
@@ -101,10 +102,14 @@ test("remote ACK excludes local direct and service operations until exact one-ti
   const f = await residentFixture();
   try {
     const before = await f.observer.cut();
+    const identityBefore = f.backend.identity(f.handle);
+    const available = f.backend.shared.identities.available;
     const cell = new ResidentGrantCell(
       f.authority.prepare(f.session, { kind: "append", maxBytes: 2 }),
     );
     expect(Atomics.load(f.backend.shared.cells, 1)).toBe(0);
+    expect(f.backend.identity(f.handle)).toEqual(identityBefore);
+    expect(f.backend.shared.identities.available).toBe(available);
     const untouched = new Uint8Array([91, 92, 93]);
     expect(f.root.tryRead(f.handle, [untouched], 0)).toBe(-6);
     expect(Array.from(untouched)).toEqual([91, 92, 93]);
@@ -128,12 +133,19 @@ test("remote ACK excludes local direct and service operations until exact one-ti
     expect(changes.kind).toBe("changes");
     if (changes.kind !== "changes") throw new Error("missing group");
     expect(changes.publications).toHaveLength(1);
-    // The existing service protocol represents typed bytes as numeric JSON keys.
-    expect(JSON.stringify(changes.publications[0])).toBe(
-      JSON.stringify(publication.kind === "committed" ? publication.publication : undefined),
+    expect(changes.publications[0]).toEqual(
+      publication.kind === "committed" ? publication.publication : undefined,
     );
     if (publication.kind !== "committed") throw new Error("missing immutable publication");
     const original = publication.publication;
+    const committedIdentity = f.backend.identity(f.handle);
+    expect(committedIdentity.id).toBe(identityBefore.id);
+    expect(committedIdentity.version).not.toBe(identityBefore.version);
+    expect(available - f.backend.shared.identities.available).toBe(1n);
+    for (const effect of original.changes) {
+      if (effect.kind === "entry") throw new Error("unexpected namespace effect");
+      expect(effect.file).toMatchObject(committedIdentity);
+    }
     const changed = {
       ...publication,
       publication: {
@@ -146,6 +158,15 @@ test("remote ACK excludes local direct and service operations until exact one-ti
     };
     expect(() => f.authority.settle(f.session, changed)).toThrow();
     expect(f.authority.settle(f.session, publication)).toEqual(imported);
+    const subsequent = new ResidentGrantCell(
+      f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 }),
+    );
+    expect(subsequent.tryWrite(f.handle, [new Uint8Array([7])], 0)).toBe(1);
+    f.authority.settle(f.session, subsequent.snapshot());
+    expect(f.backend.identity(f.handle).version).not.toBe(committedIdentity.version);
+    const historical = await f.observer.changes(before, limits.logBytes);
+    if (historical.kind !== "changes") throw new Error("missing historical group");
+    expect(historical.publications[0]).toEqual(original);
   } finally {
     f.stop();
   }
@@ -544,6 +565,7 @@ function installClaimHooks(restorations: (() => void)[], observe: () => void): v
     [DataView.prototype, "setUint32"],
     [TextEncoder.prototype, "encode"],
     [TextDecoder.prototype, "decode"],
+    [BigInt.prototype, "toString"],
   ];
   for (const [prototype, name] of methods)
     restorations.push(installMethodHook(prototype, name, observe));
@@ -622,6 +644,31 @@ test("file-only authority rejects another retained file handle without issuing a
     await channel.call("close", { token: session.token });
     channel.close();
     await server.stop();
+    f.stop();
+  }
+});
+
+test("resident ACK settles with exact history after late bigint conversion hooks", async () => {
+  const f = await residentFixture();
+  try {
+    const cut = await f.observer.cut();
+    const grant = f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 });
+    const cell = new ResidentGrantCell(grant);
+    const input = new Uint8Array([9]);
+    const result = withLateBigintHooks(() => cell.tryWrite(f.handle, [input], 0));
+    expect(result.value).toBe(1);
+    const outcome = cell.snapshot();
+    expect(outcome.kind).toBe("committed");
+    expect(f.authority.settle(f.session, outcome).kind).toBe("committed");
+    expect(result.calls).toBe(0);
+    const page = await f.observer.changes(cut, limits.logBytes);
+    if (page.kind !== "changes") throw new Error("unexpected history gap");
+    expect(page.publications).toHaveLength(1);
+    for (const change of page.publications[0]!.changes) {
+      if (change.kind === "entry") throw new Error("unexpected namespace effect");
+      expect(change.file).toMatchObject(f.backend.identity(f.handle));
+    }
+  } finally {
     f.stop();
   }
 });

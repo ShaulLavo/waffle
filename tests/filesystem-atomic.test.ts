@@ -1,3 +1,4 @@
+import { nextReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { MemFS } from "../fs/memory";
 import {
@@ -167,6 +168,9 @@ test("persistent exclusive creation does not hydrate an existing cold file", asy
   let flushed: readonly string[] | undefined;
   const backend = await PersistentBackend.open(
     {
+      async reserveIdentity() {
+        return nextReservation(undefined);
+      },
       async load() {
         return {
           version: 1,

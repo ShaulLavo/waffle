@@ -40,3 +40,5 @@ export type { StorageBackend, PersistedIndex, PersistedNode, PersistenceBatch } 
 
 export { getVfsDescriptor, VfsError } from "./vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./vfs.js";
+
+export * from "./workspace.js";

@@ -13,22 +13,16 @@ const gate = new Promise<void>((resolve) => {
 const open = PersistentBackend.open;
 PersistentBackend.open = async (...args: Parameters<typeof PersistentBackend.open>) => {
   if (new URL(location.href).searchParams.has("recovered")) {
-    // Hold load's successful result before PersistentBackend.open receives it.
-    // Subsequent ownership loss cannot retroactively fence this completed read.
-    const storage = args[0];
-    const load = storage.load.bind(storage);
-    storage.load = async () => {
-      const index = await load();
-      scope.postMessage({ type: "probe-recovered" });
-      await gate;
-      return index;
-    };
     const backend = await open.apply(PersistentBackend, args);
     const dispose = backend.dispose.bind(backend);
     backend.dispose = () => {
       dispose();
       scope.postMessage({ type: "probe-backend-disposed" });
     };
+    // Hold the completed backend, including its durable identity reservation,
+    // before the production factory receives it.
+    scope.postMessage({ type: "probe-recovered" });
+    await gate;
     return backend;
   }
   scope.postMessage({ type: "probe-recovery" });

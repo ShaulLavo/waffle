@@ -1,5 +1,12 @@
 import { WriteAdmission } from "./write-barrier.js";
-import { Int32ArrayConstructor, SharedArrayBufferConstructor } from "../proc/intrinsics.js";
+import { workspacePublication, type WorkspaceConfiguration } from "./workspace-protocol.js";
+import {
+  BigIntConstructor,
+  bigintToString,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  Uint8ArrayConstructor,
+} from "../proc/intrinsics.js";
 import type { ResidentDescriptor } from "./publication-grant.js";
 import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
@@ -90,7 +97,7 @@ export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
 export function createFilesystemIdentity(
   parent?: FilesystemIdentity,
   maxBytes = DEFAULT_SHARED_MAX_BYTES,
-  publication?: PublicationConfiguration,
+  publication?: PublicationConfiguration | WorkspaceConfiguration,
 ): FilesystemIdentity {
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared = parent?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
@@ -113,12 +120,13 @@ export function createFilesystemIdentity(
   if (parent?.publication)
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
-    const buffers = createPublicationBuffers(publication.limits);
+    const configuration = "workspace" in publication ? workspacePublication : publication;
+    const buffers = createPublicationBuffers(configuration.limits);
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,
       session,
-      ...(publication.observe ? { observer: crypto.randomUUID() } : {}),
+      ...(configuration.observe ? { observer: crypto.randomUUID() } : {}),
     };
   }
   return {
@@ -173,7 +181,7 @@ export function connectFilesystemIdentity(identity: FilesystemIdentity) {
 }
 export function createFilesystemConnection(
   parent?: FilesystemIdentity,
-  publication?: PublicationConfiguration,
+  publication?: PublicationConfiguration | WorkspaceConfiguration,
 ) {
   return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
 }
@@ -266,27 +274,100 @@ export function wake(connection: FilesystemIdentity): void {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 export function pack(value: unknown): Uint8Array {
-  return encoder.encode(
-    JSON.stringify(value, (_key, item) =>
-      item === undefined
-        ? { $undefined: true }
-        : item instanceof Map
-          ? { $map: Array.from(item) }
-          : item,
-    ),
-  );
+  return encoder.encode(JSON.stringify(value, storedTransportValue));
+}
+function storedTransportValue(_key: string, item: unknown): unknown {
+  if (item === undefined) return { $undefined: true };
+  if (typeof item === "bigint") return { $bigint: bigintToString(item) };
+  if (item instanceof Uint8ArrayConstructor) return { $bytes: Array.from(item) };
+  if (item instanceof Map) return { $map: Array.from(item) };
+  if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+  // Replacer results are not visited again. Escape literal records before their children
+  // are encoded, so even bare tags and nested escape records retain their meaning.
+  if (
+    "$undefined" in item ||
+    "$bigint" in item ||
+    "$bytes" in item ||
+    "$map" in item ||
+    "$record" in item
+  )
+    return { $record: Object.entries(item) };
+  return item;
 }
 export function unpack(bytes: Uint8Array): any {
-  // Revivers returning undefined delete object properties, which is correct for resolved paths.
-  return JSON.parse(
+  const value: unknown = JSON.parse(
     decoder.decode(
       Reflect.get(bytes.buffer, "resizable") ||
         Object.prototype.toString.call(bytes.buffer) === "[object SharedArrayBuffer]"
         ? new Uint8Array(bytes)
         : bytes,
     ),
-    (_key, item) => (item?.$undefined ? undefined : item?.$map ? new Map(item.$map) : item),
   );
+  return transportValue(value);
+}
+function transportRecord(value: unknown): Record<string, unknown> {
+  if (!Array.isArray(value)) throw new FilesystemError(28, "invalid record transport value");
+  const entries: [string, unknown][] = [];
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string")
+      throw new FilesystemError(28, "invalid record transport entry");
+    const decoded = transportValue(entry[1]);
+    if (decoded !== undefined) entries.push([entry[0], decoded]);
+  }
+  return Object.fromEntries(entries);
+}
+function transportArray(value: readonly unknown[]): unknown[] {
+  const result: unknown[] = [];
+  result.length = value.length;
+  for (let index = 0; index < value.length; index++) {
+    const decoded = transportValue(value[index]);
+    // Match JSON reviver deletion without erasing unvalidated byte positions.
+    if (decoded !== undefined) result[index] = decoded;
+  }
+  return result;
+}
+function transportMap(value: unknown): Map<unknown, unknown> {
+  if (!Array.isArray(value)) throw new FilesystemError(28, "invalid map transport value");
+  const entries: [unknown, unknown][] = [];
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length !== 2)
+      throw new FilesystemError(28, "invalid map transport entry");
+    entries.push([transportValue(entry[0]), transportValue(entry[1])]);
+  }
+  return new Map(entries);
+}
+function transportValue(item: unknown): unknown {
+  if (!item || typeof item !== "object") return item;
+  if (Array.isArray(item)) return transportArray(item);
+  if ("$record" in item) return transportRecord(item.$record);
+  if ("$undefined" in item) {
+    if (item.$undefined !== true)
+      throw new FilesystemError(28, "invalid undefined transport value");
+    return undefined;
+  }
+  if ("$map" in item) return transportMap(item.$map);
+  if ("$bigint" in item) {
+    if (typeof item.$bigint !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(item.$bigint))
+      throw new FilesystemError(28, "invalid bigint transport value");
+    return BigIntConstructor(item.$bigint);
+  }
+  if ("$bytes" in item) return transportBytes(item.$bytes);
+  return transportRecord(Object.entries(item));
+}
+function transportBytes(value: unknown): Uint8Array {
+  if (!Array.isArray(value)) throw new FilesystemError(28, "invalid byte transport value");
+  for (let index = 0; index < value.length; index++) {
+    const byte: unknown = value[index];
+    if (
+      !Object.hasOwn(value, index) ||
+      typeof byte !== "number" ||
+      !Number.isInteger(byte) ||
+      byte < 0 ||
+      byte > 255
+    )
+      throw new FilesystemError(28, "invalid byte transport value");
+  }
+  return new Uint8ArrayConstructor(value);
 }
 export type RequestMessage =
   | { id: number; buffer: SharedArrayBuffer }

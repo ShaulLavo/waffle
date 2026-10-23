@@ -13,6 +13,8 @@ export const localPublication = Symbol("waffle.local-publication");
 export interface PublicationLimits {
   readonly sessions: number;
   readonly operations: number;
+  /** Public mode reserves this many operation slots for each live writer session. */
+  readonly operationsPerSession?: number;
   readonly inputBytes: number;
   readonly argumentBytes: number;
   readonly effectBytes: number;

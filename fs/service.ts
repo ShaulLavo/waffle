@@ -5,8 +5,10 @@ import {
   type FilesystemWriteBarrier,
 } from "./write-barrier.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
+import { NamespaceAuthority } from "./workspace-namespace.js";
 import { ResidentGrantAuthority } from "./publication-grant.js";
 import {
+  encodeEffects,
   mutationIntent,
   mutationValue,
   publicationAdmission,
@@ -70,6 +72,7 @@ interface Session {
   closed?: boolean;
   retirement?: ReturnType<typeof setTimeout>;
   publicationPins?: Set<number>;
+  namespace?: NamespaceAuthority;
 }
 interface ShutdownOwner {
   readonly done: Promise<void>;
@@ -887,11 +890,74 @@ export class FilesystemService {
     }
     return this.finishResult(session, id, operation, mutationValue(plan.result));
   }
+  private namespaceControl(
+    backend: MemoryBackend,
+    session: Session,
+    operation: string,
+    args: unknown[],
+  ): unknown {
+    const domain = backend.shared.publication!;
+    switch (operation) {
+      case "publicationNamespaceNext": {
+        const serial = args[1],
+          options = args[2];
+        if (
+          typeof serial !== "number" ||
+          !Number.isSafeInteger(serial) ||
+          serial < 1 ||
+          !options ||
+          typeof options !== "object" ||
+          !("prefix" in options) ||
+          typeof options.prefix !== "string" ||
+          !("includeDirs" in options) ||
+          typeof options.includeDirs !== "boolean"
+        )
+          throw new FilesystemError(28);
+        session.namespace ??= new NamespaceAuthority(backend);
+        return session.namespace.next(serial, {
+          prefix: options.prefix,
+          includeDirs: options.includeDirs,
+        });
+      }
+      case "publicationNamespaceClose": {
+        const serial = args[1];
+        if (
+          serial !== undefined &&
+          (typeof serial !== "number" || !Number.isSafeInteger(serial) || serial < 1)
+        )
+          throw new FilesystemError(28);
+        session.namespace ??= new NamespaceAuthority(backend);
+        session.namespace.close(serial);
+        return;
+      }
+      case "publicationNamespaceChanges": {
+        const after = publicationCut(args[1]);
+        const available = domain.availability();
+        const page = domain.changes(after, domain.limits.effectBytes);
+        return {
+          workspace: backend.workspaceId,
+          ...available,
+          kind: page.kind,
+          publications:
+            page.kind === "changes"
+              ? page.publications.map((group) =>
+                  encodeEffects(group.receipt, group.changes, domain.limits.effectBytes),
+                )
+              : [],
+          next: page.kind === "changes" ? page.next : available.current,
+        };
+      }
+      default:
+        throw new FilesystemError(58);
+    }
+  }
   private publicationControl(session: Session, operation: string, args: unknown[]): unknown {
     if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
     const grant = session.connection.publication?.observer;
     if (!grant || args[0] !== grant) throw new FilesystemError(2);
     const domain = this.backend.shared.publication!;
+    if (operation.startsWith("publicationNamespace"))
+      return this.namespaceControl(this.backend, session, operation, args);
     switch (operation) {
       case "publicationWorkspace":
       case "publicationResident": {
@@ -1025,6 +1091,7 @@ export class FilesystemService {
     }
   }
   private releaseSessionPins(session: Session): void {
+    session.namespace?.close();
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
@@ -1105,11 +1172,13 @@ export class FilesystemService {
   }
   resources() {
     const backend = this.backend.resources?.() ?? {};
+    let workspaceCursors = 0;
     let retained = 0,
       transient = 0,
       responses = 0,
       capabilityBytes = 0;
     for (const session of this.sessions) {
+      workspaceCursors += session.namespace?.size ?? 0;
       retained += session.handles.size;
       responses += session.responses.size;
       capabilityBytes += session.connection.capabilities.byteLength;
@@ -1120,6 +1189,7 @@ export class FilesystemService {
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
     return {
       ...backend,
+      workspaceCursors,
       ownerStateBytes,
       clients: this.sessions.size,
       retained,

@@ -73,7 +73,9 @@ waiting, ownership loss, cancellation and asynchronous disposal.
 
 Default workspace: `waffle-workspace`. IndexedDB uses the exact workspace name,
 database version 1, and metadata/journal/data stores. Its persisted metadata key
-`format` is `waffle-indexeddb-v1`. OPFS keeps
+`format` is `waffle-indexeddb-chunks-v2`. Marked or validated unmarked v1
+workspaces migrate through staged chunks; the v1 root stays authoritative until
+the complete v2 root is published. Downgrade to v1 is unsupported. OPFS keeps
 `bun-wasm-<base64url(UTF-8(JSON.stringify(name)))>/{data,metadata}` and adds
 `metadata/format-waffle-opfs-snapshots-v1`. Identity is in the OPFS directory-entry
 name, so an interrupted empty marker payload cannot change it. Existing unmarked

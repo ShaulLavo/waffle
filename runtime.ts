@@ -129,6 +129,7 @@ const filesystemCapabilities = {
   writeFile: "async",
   remove: "async",
   move: "async",
+  workspace: "readonly",
   state: "readonly",
   vfs: "readonly",
   ownershipLost: "readonly",

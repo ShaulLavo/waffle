@@ -26,3 +26,22 @@ export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";
 
 export type { FilesystemWriteBarrier } from "./fs/write-barrier.js";
+export type {
+  WorkspaceVfs,
+  SnapshotOptions,
+  SnapshotCursor,
+  SnapshotPage,
+  NamespaceEntry,
+  NamespaceCut,
+  Watermark,
+  Generation,
+  ChangeSeq,
+  FileId,
+  FileVersion,
+  WorkspaceChange,
+  ChangeBatch,
+  WorkspaceChangePage,
+  WorkspaceTerminal,
+  WorkspacePressure,
+  HistoryGap,
+} from "./fs/workspace.js";

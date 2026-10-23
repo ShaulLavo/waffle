@@ -1,3 +1,5 @@
+import { nextReservation } from "../fs/file-identity";
+import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { expect, test } from "bun:test";
 import { FilesystemClient } from "../fs/client";
 import { PersistentBackend } from "../fs/persistent";
@@ -21,8 +23,12 @@ const limits: PublicationLimits = {
 async function fixture(kind: "read" | "flush") {
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
+  let armed = false;
   const backend = await PersistentBackend.open(
     {
+      async reserveIdentity() {
+        return nextReservation(undefined);
+      },
       async load() {
         return {
           version: 1,
@@ -43,7 +49,7 @@ async function fixture(kind: "read" | "flush") {
       },
       async persist() {},
       async flush() {
-        if (kind === "flush") {
+        if (armed && kind === "flush") {
           started.resolve();
           await release.promise;
         }
@@ -52,6 +58,7 @@ async function fixture(kind: "read" | "flush") {
     },
     { intervalMs: 0 },
   );
+  armed = true;
   const service = new FilesystemService(backend);
   const connection = createFilesystemConnection(undefined, { limits, observe: true });
   service.connect(connection.server);
@@ -294,7 +301,7 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
         origin: values.location.origin,
         name: `unit-pending-${crypto.randomUUID()}`,
         implementation: "indexeddb",
-        format: "waffle-indexeddb-v1",
+        format: INDEXEDDB_FORMAT,
       },
       publication: { limits },
     },
