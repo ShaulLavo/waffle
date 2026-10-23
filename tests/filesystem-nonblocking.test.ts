@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { afterEach, expect, test } from "bun:test";
@@ -153,6 +154,7 @@ async function persistentFixture(failure = false) {
   let reads = 0;
   const backend = await PersistentBackend.open(
     {
+      ...fixturePayloadHooks(new Map([["payload", new Uint8Array([65, 66, 67, 68])]])),
       async reserveIdentity() {
         return nextReservation(undefined);
       },

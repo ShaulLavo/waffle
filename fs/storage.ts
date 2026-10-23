@@ -72,6 +72,15 @@ export interface StorageBackend {
   reserveIdentity(workspace?: string): Promise<IdentityReservation>;
   load(): Promise<PersistedIndex | undefined>;
   read(key: string): Promise<Uint8Array>;
+  readRange(
+    key: string,
+    range: { offset: number; length: number; signal?: AbortSignal },
+  ): Promise<Uint8Array>;
+  retainPayload(
+    key: string,
+    expectedSize: number,
+    metadata?: ReaderMetadataBudget,
+  ): PayloadRetention;
   persist(batch: PersistenceBatch): Promise<void>;
   /** Make the selected immutable payloads durable; omitted means all outstanding payloads. */
   flush(keys?: readonly string[]): Promise<void>;
@@ -213,5 +222,108 @@ export async function decodeSnapshot(value: unknown): Promise<PersistedIndex | u
     return index;
   } catch {
     return undefined;
+  }
+}
+
+export interface ReaderMetadataBudget {
+  takeMetadata(bytes: number): void;
+  releaseMetadata(bytes: number): void;
+}
+export interface PayloadRetention {
+  release(): void;
+}
+export class PayloadRetentionPressure extends Error {}
+export class PayloadMetadataPressure extends Error {}
+export class PayloadCorruption extends Error {}
+
+/** Runtime references, never recovery metadata. Released reader-only keys stay charged until deletion. */
+export class PayloadRetentions {
+  private readonly entries = new Map<
+    string,
+    {
+      size: number;
+      refs: number;
+      metadata: number;
+      budget?: ReaderMetadataBudget;
+    }
+  >();
+  private metadata = 0;
+  private metadataPeak = 0;
+  private roots: ReadonlySet<string> = new Set();
+  private bytes = 0;
+  private peak = 0;
+  size(key: string): number | undefined {
+    return this.entries.get(key)?.size;
+  }
+  has(key: string): boolean {
+    return (this.entries.get(key)?.refs ?? 0) > 0;
+  }
+  retain(key: string, size: number, budget?: ReaderMetadataBudget): PayloadRetention {
+    const entry = this.entry(key, size, budget);
+    if (budget && entry.budget !== budget) {
+      if (entry.budget) throw new PayloadMetadataPressure();
+      budget.takeMetadata(entry.metadata);
+      entry.budget = budget;
+    }
+    entry.refs++;
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        entry.refs--;
+        if (!entry.refs && this.roots.has(key)) this.deleted(key);
+      },
+    };
+  }
+  private entry(key: string, size: number, budget?: ReaderMetadataBudget) {
+    const existing = this.entries.get(key);
+    if (existing) {
+      if (existing.size !== size) throw new Error("Retained payload size mismatch");
+      return existing;
+    }
+    if (size > 512 * 1024 * 1024 - this.bytes) throw new PayloadRetentionPressure();
+    const metadata = 256 + key.length * 2;
+    if (metadata > 2 * 1024 * 1024 - this.metadata) throw new PayloadMetadataPressure();
+    budget?.takeMetadata(metadata);
+    const entry: { size: number; refs: number; metadata: number; budget?: ReaderMetadataBudget } = {
+      size,
+      refs: 0,
+      metadata,
+      budget,
+    };
+    this.entries.set(key, entry);
+    this.bytes += size;
+    this.peak = Math.max(this.peak, this.bytes);
+    this.metadata += metadata;
+    this.metadataPeak = Math.max(this.metadataPeak, this.metadata);
+    return entry;
+  }
+  recovery(roots: ReadonlySet<string>): void {
+    this.roots = roots;
+    for (const [key, entry] of this.entries) {
+      if (!entry.refs && roots.has(key)) this.deleted(key);
+    }
+  }
+  deleted(key: string): void {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    if (entry.refs) throw new Error("Deleting retained payload");
+    this.bytes -= entry.size;
+    this.metadata -= entry.metadata;
+    entry.budget?.releaseMetadata(entry.metadata);
+    this.entries.delete(key);
+  }
+  resources(): Record<string, number> {
+    let debt = 0;
+    for (const [key, entry] of this.entries)
+      if (!entry.refs && !this.roots.has(key)) debt += entry.size;
+    return {
+      readerStorageMetadataBytes: this.metadata,
+      readerStorageMetadataPeak: this.metadataPeak,
+      readerStorageBytes: this.bytes,
+      readerStorageDebt: debt,
+      readerStoragePeak: this.peak,
+    };
   }
 }

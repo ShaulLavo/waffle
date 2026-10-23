@@ -246,10 +246,19 @@ export function validatePublicationLimits(limits: PublicationLimits): Publicatio
     throw new RangeError("publication arena is too large");
   return Object.freeze({ ...limits });
 }
-export function createPublicationBuffers(limits: PublicationLimits): PublicationBuffers {
+export function createPublicationBuffers(
+  limits: PublicationLimits,
+  observe = false,
+): PublicationBuffers {
   limits = validatePublicationLimits(limits);
   return {
     history: crypto.randomUUID(),
+    ...(observe
+      ? {
+          pageReaders: new SharedArrayBuffer(16_384 * 4),
+          readerLifetimes: new SharedArrayBuffer(limits.sessions * 8),
+        }
+      : {}),
     limits,
     control: new SharedArrayBuffer(CONTROL_WORDS * 4),
     sessions: new SharedArrayBuffer(limits.sessions * SESSION_WORDS * 4),

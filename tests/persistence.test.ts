@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessABI } from "../proc/abi.js";
@@ -30,6 +31,8 @@ class Store {
   }
   index: any;
   payloads = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.payloads).readRange;
+  retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
   reads = 0;
   batches: any[] = [];
   fail = false;

@@ -94,6 +94,19 @@ completed-cut handoff and bounded historical projection through the installed
 package and root runtime. This delivery does not complete the remaining §4 APIs
 or certify the full-plan workloads and durability guarantees.
 
+### Public read and lease implementation unit
+
+The public read unit adds current path/ID reads before snapshots, exact-version
+reads with owned full-file leases, and generation-qualified stat. Resident
+versions use page retention and operation-wide COW preflight. Cold versions use
+immutable adapter keys protected from GC. Missing history is explicit, never a
+newer version relabelled as old. The API, limits, and shutdown ownership are in
+[WorkspaceVfs](../docs/workspace-vfs.md).
+
+This unit does not accept SAFE, a combined runtime/index/cache budget,
+above-RAM endurance, live search, import/export, real Safari, or consumer release.
+Those requirements and all existing workload gates below remain open.
+
 ## 5. Coherent multiple writers and coordinator lifecycle
 
 - **DERIVED [O, C §3.4, B §ordering]** — Several tabs/workers may write the same workspace with correct ordering/coherent reads. One commit coordinator is allowed; physical overlapping writes are not required. Coordinator topology is an experiment decision, not a product guarantee or mandatory unsafe-handle mode.

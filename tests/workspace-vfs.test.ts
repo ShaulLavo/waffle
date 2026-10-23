@@ -403,6 +403,13 @@ test("cold persistent scan reads zero payload and creates no per-node shared han
         reads++;
         throw new Error("metadata scan hydrated payload");
       },
+      async readRange() {
+        reads++;
+        throw new Error("metadata scan hydrated payload");
+      },
+      retainPayload() {
+        throw new Error("metadata scan retained payload");
+      },
       async persist() {},
       async flush() {},
       async close() {},
