@@ -1,9 +1,20 @@
 import { expect, test } from "bun:test";
-import { FaultScheduler, runFaultSchedules } from "./storage-crash-r2-scheduler.js";
+import {
+  FaultScheduler,
+  runFaultSchedules,
+  withCellCleanup,
+  causedBy,
+} from "./storage-crash-r2-scheduler.js";
 import { crashMatrixBundle } from "../tooling/storage-crash-r2.js";
+import { closeCells } from "./storage-crash-r2-state.js";
 import { opfsCrashMatrix } from "./storage-crash-r2-opfs.js";
 
-const event = { adapter: "indexeddb", operation: "put-success", target: "data/chunk:1" } as const;
+const event = {
+  adapter: "indexeddb",
+  operation: "put-success",
+  target: "data/chunk:1",
+  resource: "payload-key/1",
+} as const;
 test("fault schedules match exact boundaries, fire once, and replay identically", () => {
   const schedule = { id: "second-chunk", at: event, occurrence: 2 };
   const replay = () => {
@@ -53,4 +64,46 @@ test("a failed schedule keeps its causal trace and does not stop the next contro
     events: [{ ...event, ordinal: 1, injected: true }],
   });
   expect(results[1]).toEqual({ id: "control", ok: true });
+});
+
+test("OPFS cause matching requires the exact injected error", () => {
+  const injected = new Error("injected");
+  expect(causedBy(new Error("translated", { cause: injected }), injected)).toBe(true);
+  expect(causedBy(new Error("injected"), injected)).toBe(false);
+});
+test("all cell cleanup attempts run and primary plus cleanup failures survive", async () => {
+  const calls: string[] = [];
+  const primary = new Error("primary failure");
+  const close = new Error("close failure");
+  const deletion = new Error("delete failure");
+  const cleanup = () =>
+    closeCells(
+      [],
+      [
+        {
+          async close() {
+            calls.push("close one");
+            throw close;
+          },
+        },
+        {
+          async close() {
+            calls.push("close two");
+          },
+        },
+      ],
+      async () => {
+        calls.push("delete");
+        throw deletion;
+      },
+    );
+  const error = await withCellCleanup(async () => {
+    throw primary;
+  }, cleanup).catch((error: unknown) => error);
+  expect(calls).toEqual(["close one", "close two", "delete"]);
+  expect(error).toBeInstanceOf(AggregateError);
+  if (!(error instanceof AggregateError)) throw new Error("missing combined errors");
+  expect(error.errors[0]).toBe(primary);
+  expect(error.errors[1]).toBeInstanceOf(AggregateError);
+  expect(error.errors[1].errors).toEqual([close, deletion]);
 });

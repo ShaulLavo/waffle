@@ -3,9 +3,12 @@ import {
   type FaultScheduler,
   type FaultSchedule,
   runFaultSchedules,
+  withCellCleanup,
 } from "./storage-crash-r2-scheduler.js";
 import {
   checkReopen,
+  closeCells,
+  modeDelta,
   equal,
   invariant,
   opened,
@@ -21,13 +24,44 @@ function target(store: string, key: IDBValidKey | IDBKeyRange | undefined): stri
   if (store === "journal") return "journal";
   return String(key);
 }
+interface TransactionObservation {
+  stores: string[];
+  durability: IDBTransactionDurability;
+  state: "pending" | "aborted" | "completed";
+  injected: boolean;
+  error: DOMException | null;
+}
 function instrument(scheduler: FaultScheduler) {
   const transaction = IDBDatabase.prototype.transaction;
-  const transactions: { stores: string[]; durability: IDBTransactionDurability }[] = [];
+  const transactions: TransactionObservation[] = [];
+  const records = new Map<IDBTransaction, TransactionObservation>();
   IDBDatabase.prototype.transaction = function (stores, mode, options) {
     const tx = transaction.call(this, stores, mode, options);
-    if (mode === "readwrite")
-      transactions.push({ stores: Array.from(tx.objectStoreNames), durability: tx.durability });
+    if (mode !== "readwrite") return tx;
+    const record: TransactionObservation = {
+      stores: Array.from(tx.objectStoreNames),
+      durability: tx.durability,
+      state: "pending",
+      injected: false,
+      error: null,
+    };
+    transactions.push(record);
+    records.set(tx, record);
+    tx.addEventListener(
+      "abort",
+      () => {
+        record.state = "aborted";
+        record.error = tx.error;
+      },
+      { once: true },
+    );
+    tx.addEventListener(
+      "complete",
+      () => {
+        record.state = "completed";
+      },
+      { once: true },
+    );
     return tx;
   };
   const put = IDBObjectStore.prototype.put;
@@ -38,15 +72,27 @@ function instrument(scheduler: FaultScheduler) {
     operation: string,
     key?: IDBValidKey | IDBKeyRange,
   ) {
+    request.addEventListener("success", () => abortSelected(store, operation, key), { once: true });
+  }
+  function abortSelected(
+    store: IDBObjectStore,
+    operation: string,
+    key?: IDBValidKey | IDBKeyRange,
+  ) {
     const destination = `${store.name}/${target(store.name, key)}`;
-    request.addEventListener(
-      "success",
-      () => {
-        if (scheduler.visit({ adapter: "indexeddb", operation, target: destination }))
-          store.transaction.abort();
-      },
-      { once: true },
-    );
+    if (
+      !scheduler.visit({
+        adapter: "indexeddb",
+        operation,
+        target: destination,
+        resource: `${store.name}/${JSON.stringify(key)}`,
+      })
+    )
+      return;
+    const record = records.get(store.transaction);
+    invariant(record, "injection belongs to an observed native transaction");
+    record.injected = true;
+    store.transaction.abort();
   }
   IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
     const request = put.call(this, value, key);
@@ -129,108 +175,123 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     backends.push(backend);
     return { storage, backend };
   };
-  try {
-    const first = await open();
-    for (let generation = 1; generation <= cell.checkpoints; generation++) {
-      seedChange(first.backend, generation);
-      await first.backend.flush();
-    }
-    const before = await recoveredState(first.backend);
-    const keysBefore = await physicalKeys(databaseName);
-    const oldGeneration = (await first.storage.load())?.generation;
-    replaceAndRename(first.backend);
-    const after = await recoveredState(first.backend);
-    invariant(
-      JSON.stringify(before) !== JSON.stringify(after),
-      "control mutation changes the state",
-    );
-    const ids = before.metadata
-      .concat(after.metadata)
-      .flatMap((entry) => (entry.id ? [entry.id] : []));
-    const observation = instrument(scheduler);
-    let failure: unknown;
-    try {
-      if (cell.kind === "flush") await first.backend.flush();
-    } catch (error) {
-      failure = error;
-    } finally {
-      observation.restore();
-    }
-    scheduler.assertReached();
-    invariant(
-      observation.transactions.length === (cell.kind === "flush" ? 1 : 0),
-      "exactly one publishing transaction, none for memory-only ACK",
-    );
-    invariant(
-      observation.transactions.every(
-        (tx) =>
-          tx.durability === "strict" &&
-          tx.stores.includes("data") &&
-          tx.stores.includes("metadata") &&
-          tx.stores.includes("journal"),
-      ),
-      "publication uses the actual strict cross-store transaction",
-    );
-    invariant(
-      cell.schedule ? failure !== undefined : failure === undefined,
-      "only injected commit abort rejects flush",
-    );
-    first.backend.dispose();
-    await first.storage.close();
-    const second = await open();
-    const old = cell.schedule !== null || cell.kind === "drop-memory";
-    const expected = old ? before : after;
-    const firstReopen = await checkReopen(second.backend, expected, ids);
-    const recoveredGeneration = (await second.storage.load())?.generation;
-    equal(
-      recoveredGeneration,
-      old ? oldGeneration : (oldGeneration ?? 0) + 1,
-      "recovered generation matches publication outcome",
-    );
-    if (old)
-      equal(
-        await physicalKeys(databaseName),
-        keysBefore,
-        "abort leaves no partial manifest, chunks or reclaimed keys",
+  return withCellCleanup(
+    async () => {
+      const first = await open();
+      for (let generation = 1; generation <= cell.checkpoints; generation++) {
+        seedChange(first.backend, generation);
+        await first.backend.flush();
+      }
+      const before = await recoveredState(first.backend);
+      const keysBefore = await physicalKeys(databaseName);
+      const oldGeneration = (await first.storage.load())?.generation;
+      replaceAndRename(first.backend);
+      const after = await recoveredState(first.backend);
+      const changedMode = modeDelta(before, after);
+      const ids = before.metadata
+        .concat(after.metadata)
+        .flatMap((entry) => (entry.id ? [entry.id] : []));
+      const observation = instrument(scheduler);
+      let failure: unknown;
+      try {
+        if (cell.kind === "flush") await first.backend.flush();
+      } catch (error) {
+        failure = error;
+      } finally {
+        observation.restore();
+      }
+      scheduler.assertReached();
+      invariant(
+        observation.transactions.length === (cell.kind === "flush" ? 1 : 0),
+        "exactly one publishing transaction, none for memory-only ACK",
       );
-    second.backend.dispose();
-    await second.storage.close();
-    const third = await open();
-    const secondReopen = await checkReopen(third.backend, expected, ids);
-    invariant(
-      firstReopen.freshId !== secondReopen.freshId,
-      "an abandoned allocation from the first reopen is never reused",
-    );
-    return {
-      id: cell.id,
-      ok: true,
-      schedule: cell.schedule,
-      events: scheduler.events,
-      transactions: observation.transactions,
-      oldGeneration,
-      recoveredGeneration,
-      firstReopen,
-      secondReopen,
-      outcome: old ? "old-complete" : "new-complete",
-      ack: "FAST memory ACK precedes tested explicit flush",
-      model: "native IDB transaction abort after successful request; no browser kill or power loss",
-      invariants: [
-        "namespace",
-        "mode",
-        "bytes",
-        "FileId",
-        "revision",
-        "no-reuse",
-        "generation",
-        "no-partial-chunks",
-        "second-reopen",
-      ],
-    };
-  } finally {
-    for (const backend of backends) backend.dispose();
-    await Promise.all(owners.map((storage) => storage.close()));
-    await nativeRequest(indexedDB.deleteDatabase(databaseName));
-  }
+      invariant(
+        observation.transactions.every(
+          (tx) =>
+            tx.durability === "strict" &&
+            tx.stores.includes("data") &&
+            tx.stores.includes("metadata") &&
+            tx.stores.includes("journal"),
+        ),
+        "publication uses the actual strict cross-store transaction",
+      );
+      if (cell.schedule) assertInjectedAbort(observation.transactions, failure);
+      else equal(failure, undefined, "normal control flush fulfills");
+      first.backend.dispose();
+      await first.storage.close();
+      const second = await open();
+      const old = cell.schedule !== null || cell.kind === "drop-memory";
+      const expected = old ? before : after;
+      const firstReopen = await checkReopen(second.backend, expected, ids);
+      const recoveredGeneration = (await second.storage.load())?.generation;
+      equal(
+        recoveredGeneration,
+        old ? oldGeneration : (oldGeneration ?? 0) + 1,
+        "recovered generation matches publication outcome",
+      );
+      if (old)
+        equal(
+          await physicalKeys(databaseName),
+          keysBefore,
+          "old outcome preserves exact data-store manifest and chunk keys",
+        );
+      second.backend.dispose();
+      await second.storage.close();
+      const third = await open();
+      const secondReopen = await checkReopen(third.backend, expected, ids);
+      invariant(
+        firstReopen.freshId !== secondReopen.freshId,
+        "an abandoned allocation from the first reopen is never reused",
+      );
+      return {
+        id: cell.id,
+        ok: true,
+        schedule: cell.schedule,
+        events: scheduler.events,
+        transactions: observation.transactions,
+        oldGeneration,
+        recoveredGeneration,
+        changedMode,
+        firstReopen,
+        secondReopen,
+        outcome: old ? "old-complete" : "new-complete",
+        ack: "FAST memory ACK precedes tested explicit flush",
+        model:
+          "native IDB transaction abort after successful request; no browser kill or power loss",
+        invariants: [
+          "namespace",
+          "mode",
+          "bytes",
+          "FileId",
+          "revision",
+          "no-reuse",
+          "generation",
+          "checked-mutations",
+          "target-mode-delta-600-to-400",
+          "second-reopen",
+        ].concat(
+          old ? ["exact-old-data-store-keys"] : [],
+          cell.schedule ? ["injected-native-transaction-aborted"] : [],
+        ),
+      };
+    },
+    () => closeCells(backends, owners, () => nativeRequest(indexedDB.deleteDatabase(databaseName))),
+  );
+}
+function assertInjectedAbort(
+  transactions: readonly TransactionObservation[],
+  failure: unknown,
+): void {
+  const injected = transactions.filter((tx) => tx.injected);
+  equal(injected.length, 1, "exactly the selected native transaction received abort");
+  const tx = injected[0];
+  invariant(tx?.state === "aborted", "selected native transaction emitted abort, not completion");
+  invariant(failure instanceof Error, "injected native abort rejects the flush");
+  invariant(
+    failure === tx.error ||
+      (tx.error === null && failure.message === "Filesystem transaction aborted"),
+    "flush rejection is the selected native abort cause or adapter fallback",
+  );
 }
 /** @browserEntry */
 export async function indexedDBCrashMatrix() {

@@ -9,21 +9,28 @@ const empty = new Uint8Array();
 function payload(generation: number) {
   return new Uint8Array(CHUNK_SIZE * 2 + 17).fill(generation);
 }
+function writeFile(backend: PersistentBackend, path: string, bytes: Uint8Array): void {
+  equal(backend.execute("writeFile", [path], bytes), undefined, `writeFile ${path} succeeds`);
+}
 export function seedChange(backend: PersistentBackend, generation: number): void {
-  backend.execute("writeFile", ["/source"], payload(generation));
-  if (generation === 1) backend.execute("writeFile", ["/target"], new Uint8Array([91, 92]));
+  writeFile(backend, "/source", payload(generation));
+  if (generation === 1) writeFile(backend, "/target", new Uint8Array([91, 92]));
 }
 export function replaceAndRename(backend: PersistentBackend): void {
-  backend.execute("writeFile", ["/source"], payload(99));
-  backend.execute("writeFile", ["/added"], new Uint8Array([17]));
+  writeFile(backend, "/source", payload(99));
+  writeFile(backend, "/added", new Uint8Array([17]));
   const root = backend.fs.handleForNode(backend.fs.root);
   const source = backend.fs.resolve(root, "source");
   const target = backend.fs.resolve(root, "target");
   invariant(typeof source !== "number" && typeof target !== "number", "rename resolves both paths");
-  backend.execute("rename", [source, target], empty);
+  equal(backend.execute("rename", [source, target], empty), 0, "rename succeeds without errno");
   const node = backend.fs.lookup("/target");
   invariant(node, "renamed file exists");
-  backend.execute("setMode", [backend.fs.handleForNode(node), 0o640], empty);
+  equal(
+    backend.execute("setMode", [backend.fs.handleForNode(node), 0o400], empty),
+    0,
+    "supported setMode succeeds without errno",
+  );
 }
 function logicalState(backend: PersistentBackend) {
   return ["/source", "/target", "/added"].map((path) => {
@@ -69,7 +76,7 @@ export async function checkReopen(
     expected,
     "reopen selects one complete namespace, mode, identity and payload state",
   );
-  backend.execute("writeFile", ["/after-reopen"], new Uint8Array([7]));
+  writeFile(backend, "/after-reopen", new Uint8Array([7]));
   const node = backend.fs.lookup("/after-reopen");
   invariant(node, "new file exists");
   const identity = backend.identity(backend.fs.handleForNode(node));
@@ -92,4 +99,34 @@ async function fileProof(file: Awaited<ReturnType<typeof recoveredState>>["files
     length: file.bytes.length,
     sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
   };
+}
+
+export function modeDelta(
+  before: Awaited<ReturnType<typeof recoveredState>>,
+  after: Awaited<ReturnType<typeof recoveredState>>,
+) {
+  const from = before.metadata.find((entry) => entry.path === "/target")?.mode;
+  const to = after.metadata.find((entry) => entry.path === "/target")?.mode;
+  equal(from, 0o600, "target starts with the seeded writable mode");
+  equal(to, 0o400, "mutation changes target mode to supported read-only mode");
+  invariant(from !== to, "checkpoint states have a nontrivial target mode delta");
+  return { from, to };
+}
+
+export async function closeCells(
+  backends: readonly Pick<PersistentBackend, "dispose">[],
+  owners: readonly Pick<StorageBackend, "close">[],
+  remove: () => Promise<unknown> = async () => undefined,
+): Promise<void> {
+  const disposed = await Promise.allSettled(
+    backends.map((backend) => Promise.resolve().then(() => backend.dispose())),
+  );
+  const closed = await Promise.allSettled(
+    owners.map((storage) => Promise.resolve().then(() => storage.close())),
+  );
+  const removed = await Promise.allSettled([Promise.resolve().then(remove)]);
+  const failures = disposed
+    .concat(closed, removed)
+    .flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length) throw new AggregateError(failures, "Storage cell cleanup failed");
 }

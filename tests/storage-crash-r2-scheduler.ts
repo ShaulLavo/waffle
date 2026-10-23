@@ -1,11 +1,14 @@
-export interface FaultEvent {
+interface FaultPoint {
   adapter: "indexeddb" | "opfs";
   operation: string;
   target: string;
 }
+export interface FaultEvent extends FaultPoint {
+  resource: string;
+}
 export interface FaultSchedule {
   id: string;
-  at: FaultEvent;
+  at: FaultPoint;
   occurrence: number;
 }
 export class FaultScheduler {
@@ -28,6 +31,9 @@ export class FaultScheduler {
     if (injected) this.fired = true;
     return injected;
   }
+  inject(event: FaultEvent): void {
+    if (this.visit(event)) throw this.reason;
+  }
   assertReached(): void {
     if (this.schedule && !this.fired) throw new Error(`Unreached schedule: ${this.schedule.id}`);
   }
@@ -48,9 +54,35 @@ export async function runFaultSchedules<
         ok: false,
         schedule: cell.schedule,
         events: scheduler.events,
-        error: error instanceof Error ? error.stack : String(error),
+        error: failureText(error),
       });
     }
   }
   return results;
+}
+
+function failureText(error: unknown): string {
+  if (error instanceof AggregateError)
+    return `${error.message}\n${error.errors.map(failureText).join("\n")}`;
+  return error instanceof Error ? (error.stack ?? error.message) : String(error);
+}
+
+export async function withCellCleanup<Result>(
+  run: () => Promise<Result>,
+  cleanup: () => Promise<void>,
+): Promise<Result> {
+  const [operation] = await Promise.allSettled([Promise.resolve().then(run)]);
+  const [released] = await Promise.allSettled([Promise.resolve().then(cleanup)]);
+  const failures = [operation, released].flatMap((result) =>
+    result?.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length)
+    throw new AggregateError(failures, "Storage cell operation or cleanup failed");
+  if (operation?.status !== "fulfilled") throw new Error("Storage cell did not settle");
+  return operation.value;
+}
+
+export function causedBy(error: unknown, expected: Error): boolean {
+  if (error === expected) return true;
+  return error instanceof Error && causedBy(error.cause, expected);
 }
