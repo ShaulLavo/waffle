@@ -183,11 +183,22 @@ for (const event of ["stop", "reap"] as const) {
   });
 }
 
-function directTicket(client: ReturnType<typeof retainedClientFixture>["client"], ticket: WriteTicket) {
+function directTicket(
+  client: ReturnType<typeof retainedClientFixture>["client"],
+  ticket: WriteTicket,
+) {
   return client.shared.directWrite(
-    client.shared.fileSlot(0), 0, [new Uint8Array([90])], 0, 1,
-    new Int32Array(client.connection.epoch), () => false, client.connection.owner,
-    false, undefined, ticket,
+    client.shared.fileSlot(0),
+    0,
+    [new Uint8Array([90])],
+    0,
+    1,
+    new Int32Array(client.connection.epoch),
+    () => false,
+    client.connection.owner,
+    false,
+    undefined,
+    ticket,
   );
 }
 
@@ -268,7 +279,9 @@ test("copied fallback cancellation and aborted observation retain received execu
   const gate = client.shared.writeAdmission;
   let completion: ReturnType<typeof client.prepare> | undefined;
   let ticket: WriteTicket | undefined;
-  client.shared.directWrite = () => { throw new MissingSegmentError(); };
+  client.shared.directWrite = () => {
+    throw new MissingSegmentError();
+  };
   client.call = (operation, args, data) => {
     expect(operation).toBe("write");
     completion = client.prepare(operation, args, data);
@@ -306,3 +319,35 @@ test("copied fallback cancellation and aborted observation retain received execu
     cleanup();
   }
 });
+
+for (const retry of ["grow", "dirtyWait"] as const) {
+  test(`${retry} retries with the identical admitted ticket before a successful effect`, () => {
+    const { client, cleanup } = retainedClientFixture();
+    const gate = client.shared.writeAdmission;
+    const direct = client.shared.directWrite.bind(client.shared);
+    let first: WriteTicket | undefined;
+    let attempts = 0;
+    client.shared.directWrite = (...args) => {
+      attempts++;
+      if (attempts === 1) first = args[10];
+      else expect(args[10]).toBe(first);
+      if (attempts > 1) return direct(...args);
+      if (retry === "dirtyWait") throw new DirtyCapacityError();
+      return undefined;
+    };
+    client.call = (operation) => {
+      expect(operation).toBe(retry);
+      expect(gate.active).toBe(1);
+      if (!first) throw new Error("missing retry ticket");
+      gate.verify(first, client.connection.owner);
+    };
+    try {
+      expect(client.write(0, [new Uint8Array([90])], 0)).toBe(1);
+      expect(attempts).toBe(2);
+      expect(client.shared.snapshot(0)?.data).toEqual(new Uint8Array([90, 66, 67, 68]));
+      expect(gate.active).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+}
