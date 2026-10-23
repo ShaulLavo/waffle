@@ -6,7 +6,7 @@ import {
   NamespaceProjectionPressure,
 } from "../fs/namespace-projection-table.js";
 import type { PublicationEffect } from "../fs/publication.js";
-import { ChangeBudget, NamespaceIndex } from "../fs/workspace-index.js";
+import { NamespaceIndex, ProjectionPressure } from "../fs/workspace-index.js";
 import type { NamespaceRecord } from "../fs/workspace-protocol.js";
 import {
   createFilesystemConnection,
@@ -365,10 +365,8 @@ test("reuses node slots, overflow slots and arena bytes under repeated churn", (
   expect(table.allocation()).toMatchObject({ nodes: 1, edges: 0, extraLinks: 0, nameBytes: 0 });
 });
 
-test("matches the accepted projection for deterministic ordered mutation groups", () => {
+test("matches an independent namespace model for deterministic ordered mutation groups", () => {
   const table = small({ nodes: 128, nameBytes: 4096, edges: 128, extraLinks: 64 });
-  const oracle = new NamespaceIndex();
-  oracle.add(record(1, null, "", true));
   let random = 0x12345678;
   const next = () => {
     random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
@@ -384,7 +382,22 @@ test("matches the accepted projection for deterministic ordered mutation groups"
     else names.set(name, after);
     const target = 2 + (next() % 20);
     effects.push({ kind: "metadata", file: file(target), mode: 0o600, mtime: step });
-    expect(table.project(effects, budget())).toEqual(oracle.project(effects, new ChangeBudget()));
+    const expectedPaths = Array.from(names, ([path, serial]) =>
+      serial === target ? `/${path}` : null,
+    ).filter((path) => path !== null);
+    expectedPaths.sort();
+    expect(table.project(effects, budget())).toEqual([
+      {
+        kind: "entry",
+        parent: identity(1),
+        name,
+        before: before === null ? null : identity(before),
+        after: after === null ? null : identity(after),
+        beforePath: before === null ? null : `/${name}`,
+        afterPath: after === null ? null : `/${name}`,
+      },
+      { kind: "metadata", ...identity(target), mode: 0o600, mtime: step, paths: expectedPaths },
+    ]);
   }
 });
 
@@ -663,11 +676,10 @@ async function publicScan(
       ).toBeLessThanOrEqual(WORKSPACE_LIMITS.pageBytes);
       pages++;
       entries += page.entries.length;
-      for (const entry of page.entries) {
-        if (entry.kind === "file") files++;
-        else directories++;
-        inspect(entry);
-      }
+      const pageFiles = page.entries.reduce((sum, entry) => sum + Number(entry.kind === "file"), 0);
+      files += pageFiles;
+      directories += page.entries.length - pageFiles;
+      page.entries.forEach(inspect);
     }
   } finally {
     await cursor.close();
@@ -686,7 +698,7 @@ function corpusSerial(path: string): number {
       : parent + 1 + (Number(name.slice(1)) % 10);
 }
 
-function inspectCorpus(order: IdentityOrder) {
+function inspectCorpus(order: IdentityOrder, pristine = true) {
   const seen = new Uint8Array(55034);
   return (entry: NamespaceEntry) => {
     const serial = corpusSerial(entry.path);
@@ -695,7 +707,8 @@ function inspectCorpus(order: IdentityOrder) {
     expect(seen[serial]).toBe(0);
     seen[serial] = 1;
     expect(entry.id).toBe(parseFileIdentity(recoveredIdentity(serial, order)).id);
-    expect(entry.version).toBe(entry.id);
+    if (pristine) expect(entry.version).toBe(entry.id);
+    else expect(entry.version).toBeGreaterThanOrEqual(entry.id);
   };
 }
 
@@ -714,3 +727,385 @@ test("public W1 snapshot completes all 55,033 cold entries without payload hydra
     await current.close();
   }
 }, 30000);
+
+test("existing public index and pressure names are the exact compact implementation", () => {
+  expect(NamespaceIndex).toBe(NamespaceProjectionTable);
+  expect(ProjectionPressure).toBe(NamespaceProjectionPressure);
+  expect(WORKSPACE_LIMITS.indexBytes).toBe(2 * 1024 * 1024);
+  expect(WORKSPACE_LIMITS.indexEdges).toBe(65536);
+});
+
+test("the old 8,000-name pressure fixture now completes through the public API", async () => {
+  const current = await publicCorpus(coldCorpus("forward", 8000));
+  try {
+    expect(await publicScan(current.workspace)).toMatchObject({
+      entries: 8001,
+      files: 8000,
+      directories: 1,
+    });
+    expect(current.counters).toMatchObject({ reads: 0, persists: 0 });
+  } finally {
+    await current.close();
+  }
+});
+
+test("public W1 scans cover recovered identity order, narrow prefixes and five complete runs", async () => {
+  const timings: { order: string; ms: number; pages: number }[] = [];
+  const orders: IdentityOrder[] = [
+    "forward",
+    "forward",
+    "forward",
+    "forward",
+    "forward",
+    "reverse",
+    "permuted",
+  ];
+  for (const order of orders) {
+    const current = await publicCorpus(coldCorpus(order));
+    const registered = current.backend.shared.registeredHandles().length;
+    try {
+      const start = performance.now();
+      const result = await publicScan(current.workspace, undefined, inspectCorpus(order));
+      timings.push({ order, ms: performance.now() - start, pages: result.pages });
+      expect(result).toMatchObject({ entries: 55033, files: 50032, directories: 5001 });
+      expect(await current.workspace.changes(result.cut.watermark)).toMatchObject({
+        kind: "changes",
+        batches: [],
+      });
+      expect(current.backend.shared.registeredHandles().length).toBe(registered);
+      expect(current.counters).toMatchObject({ reads: 0, persists: 0 });
+    } finally {
+      await current.close();
+    }
+    Bun.gc(true);
+  }
+  const current = await publicCorpus();
+  try {
+    expect(
+      await publicScan(current.workspace, { prefix: "/d04999", includeDirs: false }),
+    ).toMatchObject({ entries: 10, files: 10, directories: 0 });
+    const missing = await publicScan(current.workspace, { prefix: "/missing", includeDirs: false });
+    expect(missing.entries).toBe(0);
+    expect(missing.pages).toBeGreaterThan(400);
+    expect(await current.workspace.changes(missing.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+    expect(current.counters).toMatchObject({ reads: 0, persists: 0 });
+  } finally {
+    await current.close();
+  }
+  console.log(
+    JSON.stringify({
+      kind: "namespace-public-scan-screen",
+      timings,
+      memory: process.memoryUsage(),
+      processMaxRssKiB: resourceUsage().maxRSS,
+      runtime: Bun.version,
+    }),
+  );
+}, 120000);
+
+function publicFeed(workspace: WorkspaceVfs, cut: NamespaceCut) {
+  let position: Watermark = cut.watermark;
+  return async () => {
+    const page = await workspace.changes(position);
+    if (page.kind !== "changes") throw new Error(`change pull returned ${page.kind}`);
+    expect(page.batches).toHaveLength(1);
+    expect(page.next.seq - position.seq).toBe(1n);
+    position = page.next;
+    return page.batches[0]!.changes;
+  };
+}
+
+async function linkPublic(
+  current: Awaited<ReturnType<typeof publicCorpus>>,
+  from: string,
+  to: string,
+) {
+  const root = await current.client.asyncCall("preopen", ["/"]);
+  const source = await current.client.asyncCall("resolve", [root, from.slice(1)]);
+  const destination = await current.client.asyncCall("resolve", [root, to.slice(1)]);
+  expect(await current.client.asyncCall("link", [source, destination])).toBe(0);
+}
+
+function expectEntry(
+  changes: readonly WorkspaceChange[],
+  before: string | null,
+  after: string | null,
+  serial: number,
+) {
+  const id = identity(serial).id;
+  expect(changes).toContainEqual(
+    expect.objectContaining({
+      kind: "entry",
+      beforePath: before,
+      afterPath: after,
+      ...(before === null ? { before: null } : { before: expect.objectContaining({ id }) }),
+      ...(after === null ? { after: null } : { after: expect.objectContaining({ id }) }),
+    }),
+  );
+}
+
+test("public W1 directory rename, replacement, hardlinks and 1,000 ordered operations preserve paths", async () => {
+  const current = await publicCorpus();
+  try {
+    const initial = await publicScan(current.workspace);
+    let pull = publicFeed(current.workspace, initial.cut);
+    await current.client.asyncCall("move", ["/d00000", "/renamed"]);
+    const moved = await pull();
+    expectEntry(moved, "/d00000", null, 2);
+    expectEntry(moved, null, "/renamed", 2);
+    const source = moved.find(
+      (change) => change.kind === "entry" && change.before?.id === identity(2).id,
+    );
+    const destination = moved.find(
+      (change) => change.kind === "entry" && change.after?.id === identity(2).id,
+    );
+    if (source?.kind !== "entry" || destination?.kind !== "entry")
+      throw new Error("missing directory rename effects");
+    expect(source.before!.version).toBe(destination.after!.version);
+    const root = await current.client.asyncCall("preopen", ["/"]);
+    const child = await current.client.asyncCall("resolve", [root, "renamed/f00000"]);
+    expect(await current.client.asyncCall("setMtime", [child.node, 42])).toBe(0);
+    expect(await pull()).toContainEqual(
+      expect.objectContaining({ kind: "metadata", id: identity(3).id, paths: ["/renamed/f00000"] }),
+    );
+    await current.client.asyncCall("move", ["/renamed", "/d00000"]);
+    await pull();
+    await linkPublic(current, "/d00000/f00000", "/d00001/linked");
+    expectEntry(await pull(), null, "/d00001/linked", 3);
+    await current.client.asyncCall("move", ["/d00001/linked", "/d00002/f00020"]);
+    const replaced = await pull();
+    expectEntry(replaced, "/d00001/linked", null, 3);
+    expect(replaced).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        beforePath: "/d00002/f00020",
+        afterPath: "/d00002/f00020",
+        before: expect.objectContaining({ id: identity(corpusSerial("/d00002/f00020")).id }),
+        after: expect.objectContaining({ id: identity(3).id }),
+      }),
+    );
+    await current.client.asyncCall("remove", ["/d00002/f00020"]);
+    expectEntry(await pull(), "/d00002/f00020", null, 3);
+    await current.client.asyncCall("writeFile", ["/d00002/f00020"], new Uint8Array([1]));
+    const recreated = await pull();
+    expect(recreated).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        before: null,
+        afterPath: "/d00002/f00020",
+        after: expect.objectContaining({ id: expect.any(BigInt) }),
+      }),
+    );
+    const restart = await publicScan(current.workspace);
+    pull = publicFeed(current.workspace, restart.cut);
+    await publicChurn(current, pull);
+    const final = await publicScan(current.workspace);
+    expect(final.entries).toBe(55033);
+    expect(current.counters.reads).toBe(0);
+  } finally {
+    await current.close();
+  }
+}, 120000);
+
+async function publicChurn(
+  current: Awaited<ReturnType<typeof publicCorpus>>,
+  pull: ReturnType<typeof publicFeed>,
+) {
+  const start = performance.now();
+  let created: WorkspaceChange | undefined;
+  for (let step = 0; step < 1000; step++) {
+    const cell = step % 6;
+    if (cell < 2) {
+      const from = cell === 0 ? "/d00000/f00000" : "/d00000/tmp",
+        to = cell === 0 ? "/d00000/tmp" : "/d00000/f00000";
+      await current.client.asyncCall("move", [from, to]);
+      const changes = await pull();
+      expectEntry(changes, from, null, 3);
+      expectEntry(changes, null, to, 3);
+      continue;
+    }
+    if (cell === 2) {
+      await linkPublic(current, "/d00001/f00010", "/d00001/link");
+      expectEntry(await pull(), null, "/d00001/link", corpusSerial("/d00001/f00010"));
+      continue;
+    }
+    if (cell === 3) {
+      await current.client.asyncCall("remove", ["/d00001/link"]);
+      expectEntry(await pull(), "/d00001/link", null, corpusSerial("/d00001/f00010"));
+      continue;
+    }
+    if (cell === 4) {
+      await current.client.asyncCall("writeFile", ["/d00002/transient"], new Uint8Array([1]));
+      const changes = await pull();
+      created = changes.find(
+        (change) => change.kind === "entry" && change.afterPath === "/d00002/transient",
+      );
+      expect(created?.kind).toBe("entry");
+      continue;
+    }
+    await current.client.asyncCall("remove", ["/d00002/transient"]);
+    const changes = await pull();
+    if (created?.kind !== "entry") throw new Error("missing created identity");
+    expect(changes).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        beforePath: "/d00002/transient",
+        before: expect.objectContaining({ id: created.after!.id }),
+        after: null,
+      }),
+    );
+  }
+  console.log(
+    JSON.stringify({
+      kind: "namespace-public-churn-screen",
+      operations: 1000,
+      ms: performance.now() - start,
+      memory: process.memoryUsage(),
+    }),
+  );
+}
+
+test("public projection pressure is atomic, never rolls back the writer, and requires a fresh cut", async () => {
+  const corpus = coldCorpus("forward", 1024);
+  const root = corpus.nodes[0]!;
+  if (!root.children) throw new Error("missing root");
+  root.children = root.children.map(([name, ino]) => [name.padEnd(384, "x"), ino]);
+  const extra = `/${"additional".padEnd(256, "x")}`;
+  const before = root.children[0]![0],
+    after = "renamed".padEnd(384, "x");
+  const current = await publicCorpus(corpus);
+  try {
+    const initial = await publicScan(current.workspace);
+    expect(initial.entries).toBe(1025);
+    await current.client.asyncCall("move", [`/${before}`, `/${after}`]);
+    expect(await current.workspace.changes(initial.cut.watermark)).toEqual({
+      kind: "pressure",
+      resource: "index",
+    });
+    expect((await current.workspace.changes(initial.cut.watermark)).kind).toBe("gap");
+    let renamed = false;
+    const fresh = await publicScan(current.workspace, undefined, (entry) => {
+      if (entry.path === `/${after}`) renamed = true;
+      expect(entry.path).not.toBe(`/${before}`);
+    });
+    expect(renamed).toBe(true);
+    await current.client.asyncCall("writeFile", [extra], new Uint8Array([1]));
+    const failed = current.workspace.snapshot();
+    let terminal = await failed.next();
+    while (terminal.kind === "entries") terminal = await failed.next();
+    expect(terminal).toEqual({ kind: "pressure", resource: "index" });
+    expect(await failed.next()).toEqual(terminal);
+    await failed.close();
+    expect(current.service.resources()).toMatchObject({ workspaceCursors: 0, responses: 0 });
+    expect(await current.workspace.changes(fresh.cut.watermark)).toEqual({
+      kind: "pressure",
+      resource: "index",
+    });
+    await current.client.asyncCall("remove", [extra]);
+    const recovered = await publicScan(current.workspace);
+    expect(recovered.entries).toBe(1025);
+    expect(await current.workspace.changes(recovered.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+    expect(current.counters.reads).toBe(0);
+  } finally {
+    await current.close();
+  }
+});
+
+test("two W1 scans, between-page abort, a held reply and stopped owner release public resources", async () => {
+  const current = await publicCorpus();
+  const release = Promise.withResolvers<() => void>();
+  const port = current.pair.server.port;
+  const post = port.postMessage.bind(port);
+  let deliver: (() => void) | undefined;
+  try {
+    const accepted = await publicScan(current.workspace);
+    const abort = new AbortController();
+    const first = current.workspace.snapshot(undefined, abort.signal),
+      second = current.workspace.snapshot();
+    expect((await first.next()).kind).toBe("entries");
+    expect((await second.next()).kind).toBe("entries");
+    expect(current.service.resources().workspaceCursors).toBe(2);
+    abort.abort();
+    expect(await first.next()).toEqual({ kind: "cancelled" });
+    await first.close();
+    await second.close();
+    expect(current.service.resources()).toMatchObject({ workspaceCursors: 0, responses: 0 });
+    expect(await current.workspace.changes(accepted.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+    port.postMessage = (message: unknown) => {
+      port.postMessage = post;
+      release.resolve(() => post(message));
+    };
+    const heldAbort = new AbortController();
+    const held = current.workspace.snapshot(undefined, heldAbort.signal);
+    const pending = held.next();
+    deliver = await release.promise;
+    expect(current.service.resources().workspaceCursors).toBe(1);
+    heldAbort.abort();
+    expect(await pending).toEqual({ kind: "cancelled" });
+    await held.close();
+    deliver();
+    deliver = undefined;
+    expect(await held.next()).toEqual({ kind: "cancelled" });
+    await current.workspace.close();
+    expect(await current.workspace.snapshot().next()).toEqual({ kind: "stopped" });
+    expect(current.service.resources()).toMatchObject({ workspaceCursors: 0, responses: 0 });
+    expect(await current.client.asyncCall("preopen", ["/"])).toBeGreaterThanOrEqual(0);
+  } finally {
+    port.postMessage = post;
+    deliver?.();
+    await current.close();
+  }
+}, 30000);
+
+test("a real W1 change-ring overrun yields a gap and a full fresh resnapshot", async () => {
+  const current = await publicCorpus();
+  try {
+    const initial = await publicScan(current.workspace);
+    const root = await current.client.asyncCall("preopen", ["/"]);
+    const node = await current.client.asyncCall("resolve", [root, "d00000"]);
+    for (let step = 1; step <= 40; step++)
+      expect(await current.client.asyncCall("setMtime", [node.node, step])).toBe(0);
+    const page = await current.workspace.changes(initial.cut.watermark);
+    expect(page.kind).toBe("gap");
+    if (page.kind !== "gap") throw new Error("missing real ring gap");
+    expect(page.current.watermark.seq - page.oldestAvailable.seq).toBe(31n);
+    expect((await current.workspace.changes(page.current.watermark)).kind).toBe("gap");
+    const fresh = await publicScan(current.workspace, undefined, inspectCorpus("forward", false));
+    expect(fresh.entries).toBe(55033);
+    expect(await current.workspace.changes(fresh.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+  } finally {
+    await current.close();
+  }
+}, 30000);
+
+test("the public wire and accepted projection preserve valid lone-surrogate filenames", async () => {
+  const corpus = coldCorpus("forward", 1);
+  const name = "a\ud800b\udc00🧇";
+  corpus.nodes[0]!.children = [[name, 2]];
+  const current = await publicCorpus(corpus);
+  try {
+    const initial = await publicScan(current.workspace, undefined, (entry) => {
+      if (entry.kind === "file") expect(entry.path).toBe(`/${name}`);
+    });
+    const root = await current.client.asyncCall("preopen", ["/"]);
+    const child = await current.client.asyncCall("resolve", [root, name]);
+    await current.client.asyncCall("setMtime", [child.node, 42]);
+    expect(await publicFeed(current.workspace, initial.cut)()).toContainEqual(
+      expect.objectContaining({ kind: "metadata", id: identity(2).id, paths: [`/${name}`] }),
+    );
+  } finally {
+    await current.close();
+  }
+});

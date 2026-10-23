@@ -169,7 +169,7 @@ export class NamespaceProjectionTable {
   constructor(options: Partial<Capacity> = {}) {
     this.capacity = {
       nodes: 65535,
-      edges: 65536,
+      edges: WORKSPACE_LIMITS.indexEdges,
       extraLinks: 4096,
       nameBytes: 393216,
       scratchSlots: 4096,

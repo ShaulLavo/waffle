@@ -507,7 +507,8 @@ test("cancellation wakes an in-flight response and late delivery cannot resurrec
 
 test("index and depth limits return typed pressure and free held scan slots", async () => {
   const fs = new MemFS();
-  for (let index = 0; index < 8000; index++) fs.writeFile(`/f${index}`, bytes("x"));
+  for (let index = 0; index < 8000; index++)
+    fs.writeFile(`/f${index}-${"n".repeat(64)}`, bytes("x"));
   fs.mkdirp(`/${Array.from({ length: WORKSPACE_LIMITS.depth + 1 }, () => "d").join("/")}`);
   const current = await fixture(new MemoryBackend(fs));
   try {

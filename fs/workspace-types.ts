@@ -108,7 +108,7 @@ export const WORKSPACE_LIMITS = Object.freeze({
   visitedEdges: 512,
   depth: 128,
   pathUnits: 4096,
-  indexEdges: 32768,
+  indexEdges: 65536,
   indexBytes: 2 * 1024 * 1024,
   changeBytes: 1024 * 1024,
 });
