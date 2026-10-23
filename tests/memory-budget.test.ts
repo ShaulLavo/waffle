@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { getEventListeners } from "node:events";
 import {
   MemoryBudget,
   MemoryBudgetError,
@@ -642,4 +643,239 @@ test("one admitted operation cannot spend another operation's reserved serials",
   second.close();
   release(oracle, second, b.ref, b.backing);
   expect(budget.snapshot().producerFree).toEqual(producerRecords);
+});
+
+const observerFailures: readonly unknown[] = [
+  undefined, null, false, 0, -0, 0n, NaN, "", new Error("observer hook"),
+];
+
+function observed(pending: Promise<void>) {
+  return pending.then(
+    () => ({ kind: "resolved" }),
+    (reason: unknown) => ({ kind: "rejected", reason }),
+  );
+}
+function replayAbort(listener: EventListenerOrEventListenerObject, signal: AbortSignal): void {
+  const event = new Event("abort");
+  if (typeof listener === "function") listener.call(signal, event);
+  else listener.handleEvent(event);
+}
+async function failedRegistration(reason: unknown, install: boolean): Promise<void> {
+  const { budget, oracle } = rig({ waiters: 1 });
+  const signal = new AbortController().signal;
+  const nativeAdd = signal.addEventListener.bind(signal);
+  const callbacks: EventListenerOrEventListenerObject[] = [];
+  signal.addEventListener = (
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) => {
+    if (listener) callbacks.push(listener);
+    if (install && listener) nativeAdd(type, listener, options);
+    throw reason;
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    expect(failure(() => budget.observe(budget.snapshot().changed, signal))).toBe(reason);
+    expect(budget.snapshot().waiting).toBe(0);
+  }
+  const next = observed(budget.observe(budget.snapshot().changed, new AbortController().signal));
+  for (const callback of callbacks) replayAbort(callback, signal);
+  signal.dispatchEvent(new Event("abort"));
+  expect(budget.snapshot().waiting).toBe(1);
+  operation(budget, 0).close();
+  expect(await next).toEqual({ kind: "resolved" });
+  expect(budget.snapshot().waiting).toBe(0);
+  budget.close();
+  oracle.check();
+}
+
+test.each(observerFailures)("ledger observer registration rolls back arbitrary throws %p", async (reason) => {
+  await failedRegistration(reason, false);
+  await failedRegistration(reason, true);
+});
+
+test.each(observerFailures)("ledger observer cleanup cannot strand close or throw %p", async (reason) => {
+  const { budget, oracle } = rig({ waiters: 2 });
+  operation(budget, 8);
+  operation(budget, 8);
+  const signal = new AbortController().signal;
+  let cleanupCalls = 0;
+  signal.removeEventListener = () => { cleanupCalls++; throw reason; };
+  const outcomes: unknown[] = [];
+  void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
+  void observed(budget.observe(budget.snapshot().changed, new AbortController().signal)).then((value) => outcomes.push(value));
+  expect(() => budget.close()).not.toThrow();
+  budget.close();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(outcomes).toHaveLength(2);
+  expect(outcomes).toEqual([
+    { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
+    { kind: "rejected", reason: expect.objectContaining({ code: "closed" }) },
+  ]);
+  expect(cleanupCalls).toBe(1);
+  expect(budget.snapshot()).toMatchObject({ stopped: true, waiting: 0, obligations: 0, reserve: 0 });
+  expect(budget.snapshot().producerFree).toEqual(producerRecords);
+  oracle.check();
+});
+
+async function allocatorFailureWithCleanup(reason: unknown, mode: "allocate" | "beforeGrow" | "afterGrow"): Promise<void> {
+  const { budget, oracle } = rig({ room: 16, waiters: 1 });
+  const lease = operation(budget, 16);
+  const owned = mode === "allocate" ? null : lease.allocate({ kind: "shared", bytes: 4, maximum: 16 });
+  const signal = new AbortController().signal;
+  signal.removeEventListener = () => { throw new Error("cleanup must not replace allocator error"); };
+  const outcomes: unknown[] = [];
+  void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
+  const throwReason = () => { throw reason; };
+  if (mode === "allocate") oracle.beforeAllocate = throwReason;
+  if (mode === "beforeGrow") oracle.beforeGrow = throwReason;
+  if (mode === "afterGrow") oracle.afterGrow = throwReason;
+  const run = () => owned ? lease.grow(owned.backing, owned.ref, 12) : lease.allocate({ kind: "array", bytes: 8 });
+  expect(failure(run)).toBe(reason);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(outcomes).toEqual([{ kind: "resolved" }]);
+  expect(budget.snapshot().waiting).toBe(0);
+  expect(owned?.backing.buffer.byteLength ?? 0).toBe(mode === "afterGrow" ? 12 : mode === "beforeGrow" ? 4 : 0);
+  oracle.check();
+  lease.close();
+  if (owned) release(oracle, lease, owned.ref, owned.backing);
+  budget.close();
+}
+
+test.each(observerFailures)("ledger observer cleanup preserves allocator and growth throws %p", async (reason) => {
+  await allocatorFailureWithCleanup(reason, "allocate");
+  await allocatorFailureWithCleanup(reason, "beforeGrow");
+  await allocatorFailureWithCleanup(reason, "afterGrow");
+});
+
+function consumptionResults(lease: MemoryLease, ref: MemoryReference, backing: MemoryBacking): unknown[] {
+  const attempts = [
+    () => lease.allocate({ kind: "array", bytes: 1 }),
+    () => lease.account({ metadataUnits: 1, nativeAllowance: 0 }),
+    () => lease.retain(ref),
+    () => lease.delegate(emptyPlan),
+    () => lease.grow(backing, ref, 8),
+  ];
+  return attempts.map((attempt) => {
+    try { attempt(); return "unexpected consumption"; }
+    catch (reason) { return reason; }
+  });
+}
+
+test("ledger observer reentrant cleanup fences every producer and progress lease before root drain", async () => {
+  const { budget, oracle } = rig({ room: 32, reserve: 16 });
+  operation(budget, 0);
+  const producer = operation(budget, 16, { references: 2, leases: 1 });
+  const progress = granted(budget.tryProgress({ bytes: 16, allocations: 1, references: 2, leases: 1 }));
+  const a = producer.allocate({ kind: "shared", bytes: 4, maximum: 16 });
+  const b = progress.allocate({ kind: "shared", bytes: 4, maximum: 16 });
+  const signal = new AbortController().signal;
+  let cleanupCalls = 0;
+  const reentrant: unknown[] = [];
+  signal.removeEventListener = () => {
+    cleanupCalls++;
+    reentrant.push(consumptionResults(producer, a.ref, a.backing));
+    reentrant.push(consumptionResults(progress, b.ref, b.backing));
+    budget.close();
+    throw false;
+  };
+  const pending = observed(budget.observe(budget.snapshot().changed, signal));
+  expect(() => budget.close()).not.toThrow();
+  expect(cleanupCalls).toBe(1);
+  expect(await pending).toMatchObject({ kind: "rejected", reason: { code: "closed" } });
+  expect(budget.snapshot()).toMatchObject({ waiting: 0, obligations: 0, reserve: 0 });
+  expect(oracle.calls).toBe(2);
+  expect(oracle.grows).toBe(0);
+  oracle.check();
+  const closed = Array.from({ length: 5 }, () => expect.objectContaining({ code: "closed" }));
+  expect(reentrant).toEqual([closed, closed]);
+  expect(consumptionResults(producer, a.ref, a.backing)).toEqual(closed);
+  expect(consumptionResults(progress, b.ref, b.backing)).toEqual(closed);
+  release(oracle, producer, a.ref, a.backing);
+  release(oracle, progress, b.ref, b.backing);
+});
+
+async function lateRegistration(action: "abort" | "close" | "notify", throws: boolean): Promise<void> {
+  const { budget, oracle } = rig({ waiters: 1 });
+  const lease = operation(budget, 0);
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const nativeAdd = signal.addEventListener.bind(signal);
+  let cleanupCalls = 0;
+  const registrationError = new Error("registration after reentry");
+  signal.removeEventListener = () => { cleanupCalls++; throw null; };
+  signal.addEventListener = (
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) => {
+    if (action === "abort") controller.abort(false);
+    if (action === "close") budget.close();
+    if (action === "notify") lease.close();
+    if (listener) nativeAdd(type, listener, options);
+    if (throws) throw registrationError;
+  };
+  if (throws) expect(failure(() => budget.observe(budget.snapshot().changed, signal))).toBe(registrationError);
+  const outcomes: unknown[] = [];
+  if (!throws) void observed(budget.observe(budget.snapshot().changed, signal)).then((value) => outcomes.push(value));
+  await Promise.resolve();
+  await Promise.resolve();
+  if (!throws) expect(outcomes).toHaveLength(1);
+  expect(budget.snapshot().waiting).toBe(0);
+  expect(cleanupCalls).toBe(1);
+  expect(getEventListeners(signal, "abort")).toHaveLength(0);
+  signal.dispatchEvent(new Event("abort"));
+  const next = observed(budget.observe(budget.snapshot().changed, new AbortController().signal));
+  if (action !== "close") expect(budget.snapshot().waiting).toBe(1);
+  signal.dispatchEvent(new Event("abort"));
+  if (action !== "close") expect(budget.snapshot().waiting).toBe(1);
+  budget.close();
+  expect(await next).toMatchObject({ kind: "rejected", reason: { code: "closed" } });
+  oracle.check();
+}
+
+test.each(["abort", "close", "notify"] satisfies ("abort" | "close" | "notify")[])(
+  "ledger observer registration handles %s before late install and preserves registration error",
+  async (action) => {
+    await lateRegistration(action, false);
+    await lateRegistration(action, true);
+  },
+);
+
+test("ledger observer cleanup can reuse a slot without stale cancellation or same-epoch notification", async () => {
+  const { budget, oracle } = rig({ waiters: 2 });
+  const first = new AbortController();
+  const signal = new AbortController().signal;
+  const nativeAdd = signal.addEventListener.bind(signal);
+  const saved: EventListenerOrEventListenerObject[] = [];
+  signal.addEventListener = (
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) => {
+    if (listener) saved.push(listener);
+    if (listener) nativeAdd(type, listener, options);
+  };
+  const initial = observed(budget.observe(budget.snapshot().changed, first.signal));
+  const current = observed(budget.observe(budget.snapshot().changed, signal));
+  first.abort(false);
+  expect(await initial).toEqual({ kind: "rejected", reason: false });
+  const next: Promise<unknown>[] = [];
+  signal.removeEventListener = () => {
+    next.push(observed(budget.observe(budget.snapshot().changed, signal)));
+    next.push(observed(budget.observe(budget.snapshot().changed, signal)));
+    for (const listener of saved.slice(0, 1)) replayAbort(listener, signal);
+    throw 0;
+  };
+  operation(budget, 0).close();
+  expect(budget.snapshot().waiting).toBe(2);
+  expect(await current).toEqual({ kind: "resolved" });
+  signal.removeEventListener = AbortSignal.prototype.removeEventListener;
+  operation(budget, 0).close();
+  expect(await Promise.all(next)).toEqual([{ kind: "resolved" }, { kind: "resolved" }]);
+  expect(budget.snapshot().waiting).toBe(0);
+  budget.close();
+  oracle.check();
 });
