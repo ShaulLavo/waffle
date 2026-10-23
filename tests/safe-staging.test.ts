@@ -96,6 +96,6 @@ test("admission bounds run before producer allocation", async () => {
 });
 if (process.env.SAFE_STAGING_ENGINE) {
   test("native staged adapter causal controls", async () => {
-    await runSafeStagingNative(process.env.SAFE_STAGING_ENGINE!);
+    await runSafeStagingNative(process.env.SAFE_STAGING_ENGINE!, process.env.SAFE_STAGING_CONTROL);
   }, 180_000);
 }

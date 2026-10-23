@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 
-export async function runSafeStagingNative(engine: string): Promise<void> {
+export async function runSafeStagingNative(engine: string, control?: string): Promise<void> {
   if (!(engine in engines)) throw new Error(`Unknown staging test engine ${engine}`);
   const lifecycle = new BrowserRunnerLifecycle(180_000);
   let removed = false;
@@ -16,11 +16,11 @@ export async function runSafeStagingNative(engine: string): Promise<void> {
     const page = await browser.newPage();
     page.on("console", (message) => console.log(message.text()));
     await page.goto(origin);
-    const passed = await page.evaluate(async () => {
+    const passed = await page.evaluate(async (selected) => {
       const path = "/test.js";
       const fixture: typeof import("./safe-staging-browser.js") = await import(path);
-      return fixture.safeStagingNative();
-    });
+      return fixture.safeStagingNative(selected);
+    }, control);
     console.log(JSON.stringify({ engine, browser: browser.version(), passed }));
   } finally {
     await lifecycle.close();

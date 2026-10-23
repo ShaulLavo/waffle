@@ -308,6 +308,11 @@ function checkCommitHead(
     checked();
   };
 }
+function snapshotSlot(bases: State["bases"]): 0 | 1 {
+  if (!bases[0]) return 0;
+  if (!bases[1]) return 1;
+  return bases[0].generation <= bases[1].generation ? 0 : 1;
+}
 function metadataError(): never {
   throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid persisted filesystem metadata");
 }
@@ -995,8 +1000,6 @@ export class IndexedDBStorage implements StorageBackend {
   }
 
   persist(batch: PersistenceBatch): Promise<void> {
-    if (this.committedMode)
-      return Promise.reject(new Error("Committed storage requires a complete durable group"));
     // Snapshot at submission, not when this operation reaches the asynchronous write queue.
     let copy: PersistenceBatch;
     try {
@@ -1322,6 +1325,8 @@ export class IndexedDBStorage implements StorageBackend {
   }
 
   private async commit(batch: PersistenceBatch, committed?: CommittedTransaction): Promise<void> {
+    if (this.committedMode !== !!committed)
+      throw new Error("Committed storage requires a complete durable group");
     const prepared = await preparePayloads(batch.data);
     const staged = stageChanges(this.state, batch),
       old = this.state;
@@ -1354,7 +1359,7 @@ export class IndexedDBStorage implements StorageBackend {
         nodes: Array.from(nodes.values()),
       };
       validatePersistedIndex(snapshot);
-      slot = !bases[0] ? 0 : !bases[1] ? 1 : bases[0].generation <= bases[1].generation ? 0 : 1;
+      slot = snapshotSlot(bases);
       bases[slot] = snapshot;
     }
     const encodedSnapshot = snapshot && (await encodeSnapshot(snapshot));
@@ -1395,7 +1400,7 @@ export class IndexedDBStorage implements StorageBackend {
       };
       tx.oncomplete = () => {
         this.transactions.delete(tx);
-        if (committed) committed.control.committed(committed.group.receipt);
+        committed?.control.committed(committed.group.receipt);
         resolve();
       };
       tx.onabort = () => {

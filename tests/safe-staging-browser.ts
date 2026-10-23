@@ -360,6 +360,12 @@ async function commitBeforeReply(
       (await readRaw(name, "metadata", "active")) === 1,
       "real database has committed before terminal delivery",
     );
+    const durable = await decodeCommit(await readRaw(name, "metadata", "commit"));
+    assert(
+      durable.head.sequence === 1n &&
+        lookupReceipt(durable, operationKey(1n, 1n), request).kind === "retained",
+      "receipt and required head are durable before reply",
+    );
     const debt = driver.resources();
     assert(
       debt.nativeDebt === 1 && debt.debtBytes >= 4 * 6 && publishes === 0,
@@ -424,6 +430,55 @@ async function commitBeforeReply(
   assert(
     (await reopened.recoverCommitted()).envelope.head.sequence === 1n,
     "replay never executes a second append",
+  );
+}
+async function preNativeCancellation(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open(),
+    driver = await StagedCommitDriver.open(storage);
+  const started = Promise.withResolvers<void>(),
+    resume = Promise.withResolvers<void>();
+  const observer = new AbortController(),
+    cause = { exact: "cancel during staging" };
+  let released = 0,
+    published = 0;
+  const observed = driver.submit({
+    key: operationKey(1n, 1n),
+    request,
+    signal: observer.signal,
+    charge: { inputBytes: 1, payloadBytes: 4, metadataBytes: 4096, publicationBytes: 64 },
+    async prepare() {
+      started.resolve();
+      await resume.promise;
+      return {
+        ...stage(1, () => {
+          published++;
+        }),
+        release() {
+          released++;
+        },
+      };
+    },
+  });
+  await started.promise;
+  observer.abort(cause);
+  const outcome = await observed;
+  assert(
+    outcome.kind === "indeterminate" && outcome.cause === cause && driver.resources().debtBytes > 0,
+    "staging cancellation retains producer debt",
+  );
+  resume.resolve();
+  await driver.drain();
+  assert(
+    equal(released, 1) && published === 0 && driver.resources().debtBytes === 0,
+    "cancelled private stage releases without publication",
+  );
+  assert(
+    (await storage.recoverCommitted()).envelope.head.sequence === 0n &&
+      (await readRaw(name, "metadata", "active")) === undefined,
+    "pre-native cancellation leaves genesis unchanged",
   );
 }
 async function requiredHead(name: string, open: () => Promise<CommittedStorage>): Promise<void> {
@@ -620,6 +675,7 @@ const cases = {
   nullAbortCauses,
   nativeAbortRequest,
   commitBeforeReply,
+  preNativeCancellation,
   requiredHead,
   headFence,
   retainedRoots,
@@ -630,9 +686,11 @@ const cases = {
   corruptEnvelope,
 };
 /** @browserEntry Invoked by the dedicated native staging runner. */
-export async function safeStagingNative(): Promise<string[]> {
+export async function safeStagingNative(selected?: string): Promise<string[]> {
+  if (selected && !(selected in cases)) throw new Error(`Unknown staged control ${selected}`);
   const passed: string[] = [];
   for (const [name, run] of Object.entries(cases)) {
+    if (selected && selected !== name) continue;
     await fixture(run);
     passed.push(name);
     console.log(`staged control passed: ${name}`);
