@@ -128,3 +128,181 @@ test("a failed local execution still poisons its held cut", async () => {
   await expect(gate.drain(lease)).rejects.toThrow("earlier mutation failed");
   gate.open(lease);
 });
+
+import { retainedClientFixture } from "./fixtures/retained-client";
+import { MissingSegmentError } from "../fs/shared";
+import { DirtyCapacityError } from "../fs/dirty-admission";
+import type { WriteTicket } from "../fs/write-barrier";
+
+ test("ordinary direct writes verify once at execution, including nested ownership", () => {
+  const { client, cleanup } = retainedClientFixture();
+  const gate = client.shared.writeAdmission;
+  const verify = gate.verify.bind(gate);
+  let checks = 0;
+  gate.verify = (...args) => {
+    checks++;
+    return verify(...args);
+  };
+  try {
+    expect(client.write(0, [new Uint8Array([90])], 0)).toBe(1);
+    expect(checks).toBe(1);
+    expect(gate.active).toBe(0);
+    client.withMutation(() => {
+      checks = 0;
+      expect(client.write(0, [new Uint8Array([89])], 0)).toBe(1);
+      expect(checks).toBe(1);
+      expect(gate.active).toBe(1);
+    });
+    expect(gate.active).toBe(0);
+  } finally {
+    cleanup();
+  }
+});
+
+for (const event of ["stop", "reap"] as const) {
+  test(`late ${event} before direct execution cannot change bytes or epoch`, () => {
+    const { client, cleanup } = retainedClientFixture();
+    const gate = client.shared.writeAdmission;
+    const direct = client.shared.directWrite.bind(client.shared);
+    const before = client.shared.snapshot(0);
+    const epoch = new Int32Array(client.connection.epoch);
+    const observed = Atomics.load(epoch, 0);
+    client.shared.directWrite = (...args) => {
+      if (event === "stop") gate.stop();
+      else gate.reapLocal(client.connection.owner);
+      return direct(...args);
+    };
+    try {
+      expect(client.write(0, [new Uint8Array([90])], 0)).toBe(-11);
+      expect(client.shared.snapshot(0)).toEqual(before);
+      expect(Atomics.load(epoch, 0)).toBe(observed);
+      expect(gate.active).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+function directTicket(client: ReturnType<typeof retainedClientFixture>["client"], ticket: WriteTicket) {
+  return client.shared.directWrite(
+    client.shared.fileSlot(0), 0, [new Uint8Array([90])], 0, 1,
+    new Int32Array(client.connection.epoch), () => false, client.connection.owner,
+    false, undefined, ticket,
+  );
+}
+
+ test("explicit execution rejects malformed, wrong-owner and full-generation aliases", () => {
+  const { client, cleanup } = retainedClientFixture();
+  const gate = client.shared.writeAdmission;
+  const stale = gate.admit(client.connection.owner);
+  gate.finish(stale);
+  const cells = new Int32Array(gate.buffer, WRITE_BARRIER_OFFSET);
+  Atomics.store(cells, 2, 0x7fffffff);
+  const ticket = gate.admit(client.connection.owner);
+  const before = client.shared.snapshot(0);
+  const epoch = new Int32Array(client.connection.epoch);
+  const observed = Atomics.load(epoch, 0);
+  const invalid = [
+    stale,
+    { ...ticket, slot: ticket.slot + 1 },
+    { ...ticket, slot: -1 },
+    { ...ticket, slot: 10.5 },
+    { ...ticket, slot: Infinity },
+    { ...ticket, slot: cells.length },
+    { ...ticket, owner: ticket.owner + 1 },
+    { ...ticket, serial: ticket.serial + 0.5 },
+    { ...ticket, serial: Number.MAX_SAFE_INTEGER + 1 },
+    { ...ticket, serial: ticket.serial + 0x80000000 },
+  ];
+  try {
+    expect(ticket.slot).toBe(stale.slot);
+    expect(ticket.serial % 0x80000000).toBe(stale.serial);
+    for (const rejected of invalid) expect(() => directTicket(client, rejected)).toThrow();
+    expect(client.shared.snapshot(0)).toEqual(before);
+    expect(Atomics.load(epoch, 0)).toBe(observed);
+    expect(gate.active).toBe(1);
+    expect(directTicket(client, { ...ticket })).toBe(1);
+    gate.finish(ticket);
+    expect(() => directTicket(client, ticket)).toThrow();
+    expect(gate.active).toBe(0);
+  } finally {
+    gate.finish(ticket);
+    cleanup();
+  }
+});
+
+for (const retry of ["grow", "dirtyWait"] as const) {
+  test(`${retry} keeps the same actual ticket and rechecks late stop`, () => {
+    const { client, cleanup } = retainedClientFixture();
+    const gate = client.shared.writeAdmission;
+    const direct = client.shared.directWrite.bind(client.shared);
+    const before = client.shared.snapshot(0);
+    let attempts = 0;
+    let waits = 0;
+    client.shared.directWrite = (...args) => {
+      attempts++;
+      if (attempts > 1) return direct(...args);
+      if (retry === "dirtyWait") throw new DirtyCapacityError();
+      return undefined;
+    };
+    client.call = (operation) => {
+      expect(operation).toBe(retry);
+      expect(gate.active).toBe(1);
+      waits++;
+      gate.stop();
+    };
+    try {
+      expect(client.write(0, [new Uint8Array([90])], 0)).toBe(-11);
+      expect(attempts).toBe(2);
+      expect(waits).toBe(1);
+      expect(gate.active).toBe(0);
+      expect(client.shared.snapshot(0)).toEqual(before);
+    } finally {
+      cleanup();
+    }
+  });
+}
+
+ test("copied fallback cancellation and aborted observation retain received execution debt", async () => {
+  const { client, cleanup } = retainedClientFixture();
+  const gate = client.shared.writeAdmission;
+  let completion: ReturnType<typeof client.prepare> | undefined;
+  let ticket: WriteTicket | undefined;
+  client.shared.directWrite = () => { throw new MissingSegmentError(); };
+  client.call = (operation, args, data) => {
+    expect(operation).toBe("write");
+    completion = client.prepare(operation, args, data);
+    ticket = completion.writeTicket;
+    if (!ticket) throw new Error("missing fallback ticket");
+    gate.receive(ticket, client.connection.owner, completion.id, false);
+    completion.posted = true;
+    return data?.length;
+  };
+  try {
+    expect(client.write(0, [new Uint8Array([90])], 0)).toBe(1);
+    if (!completion || !ticket) throw new Error("missing received execution");
+    const pending = completion;
+    const held = ticket;
+    expect(gate.active).toBe(1);
+    expect(gate.inputBytes).toBe(3);
+    const lease = gate.close();
+    const signal = new AbortController();
+    const drained = gate.drain(lease, signal.signal);
+    pending.cancel();
+    gate.reapLocal(client.connection.owner);
+    gate.discardUnreceived(client.connection.owner);
+    expect(gate.active).toBe(1);
+    signal.abort();
+    await expect(drained).rejects.toMatchObject({ errno: 11 });
+    expect(gate.active).toBe(1);
+    gate.verify(held);
+    gate.finish(held, -pending.id);
+    expect(gate.active).toBe(0);
+    expect(gate.inputBytes).toBe(0);
+    expect(gate.metadataBytes).toBe(0);
+  } finally {
+    if (completion && ticket) gate.finish(ticket, -completion.id);
+    completion?.release();
+    cleanup();
+  }
+});
