@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import { MemoryBackend } from "../fs/backend";
 import { FilesystemClient } from "../fs/client";
@@ -324,7 +325,7 @@ test("pending, future and independent identities inherit the same root gate", as
       expect(new SharedFilesystemState(backend.shared.buffer).writeAdmission.closed).toBe(true);
       await lease.release();
       for (const guest of guests) await guest.asyncCall("writeFile", ["/late"], bytes("live"));
-      expect(backend.fs.readFile("/late")).toEqual(bytes("live"));
+      expect(backend.execute("readFile", ["/late"], new Uint8Array())).toEqual(bytes("live"));
     } finally {
       await lease.release();
       for (const guest of guests) guest.dispose();
@@ -399,7 +400,7 @@ test("acquisition abort preserves earlier work and post-delivery abort does not 
     delivered.abort();
     expect(backend.shared.writeAdmission.closed).toBe(true);
     await lease.release();
-    expect(backend.fs.readFile("/queued")).toEqual(bytes("owned"));
+    expect(backend.execute("readFile", ["/queued"], new Uint8Array())).toEqual(bytes("owned"));
   });
 });
 
@@ -472,6 +473,12 @@ test("outstanding resident writer remains owned until exact settlement", async (
 });
 
 class TestStorage implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index?: PersistedIndex;
   readonly payloads = new Map<string, Uint8Array>();
   flushGate?: {
@@ -688,7 +695,7 @@ test("successful cold requeue keeps its pre-cut ticket through final publication
       cold.release.resolve();
       await completion.value();
       const lease = await acquisition;
-      expect(backend.fs.readFile("/cold")).toEqual(bytes("earlier"));
+      expect(backend.execute("readFile", ["/cold"], new Uint8Array())).toEqual(bytes("earlier"));
       await lease.flush();
       await lease.release();
     } finally {
