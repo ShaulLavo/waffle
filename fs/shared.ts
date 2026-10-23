@@ -1,3 +1,4 @@
+import { SharedPageVersion, type RetainedSharedPage } from "./shared-version-pages.js";
 import {
   IdentityAllocator,
   readIdentityWords,
@@ -129,6 +130,7 @@ export class SharedFilesystemState {
   private fileOwnsGlobal = new Set<number>();
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
+  private readonly pageReaders?: Int32Array;
   onContention?: () => void;
   constructor(
     readonly buffer: SharedArrayBuffer = SharedFilesystemState.createBuffer(),
@@ -139,6 +141,7 @@ export class SharedFilesystemState {
     publication?: PublicationBuffers,
   ) {
     if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
+    if (publication?.pageReaders) this.pageReaders = new Int32Array(publication.pageReaders);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
     this.identities = new IdentityAllocator(new Int32Array(buffer, 16 * 4, 9));
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
@@ -155,6 +158,51 @@ export class SharedFilesystemState {
     this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
     this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
     this.segments = [buffer].concat(segments);
+  }
+  retainVersionPages(handle: FileHandle, offset: number, length: number): SharedPageVersion {
+    this.globalLock();
+    try {
+      const slot = this.slot(handle);
+      this.checkFile(slot, handle);
+      this.checkAccess(slot, 4);
+      if (!this.pageReaders) throw new FilesystemError(58, "page retention is not enabled");
+      const size = this.slots[this.at(slot, FILE_SIZE)]!;
+      if (!(this.slots[this.at(slot, REVISION_STATE)]! & RESIDENT))
+        throw new MissingDataError("shared filesystem file has not been loaded");
+      if (
+        !Number.isSafeInteger(offset) ||
+        !Number.isSafeInteger(length) ||
+        offset < 0 ||
+        length < 0 ||
+        offset > Number.MAX_SAFE_INTEGER - length ||
+        offset + length > size
+      )
+        throw new RangeError("invalid retained extent");
+      const pages: RetainedSharedPage[] = [];
+      for (
+        let logical = Math.floor(offset / PAGE);
+        logical < Math.ceil((offset + length) / PAGE);
+        logical++
+      ) {
+        const physical = this.pages[this.pageAt(slot, logical)]! - 1;
+        pages.push({ physical, bytes: this.segmentFor(physical) });
+      }
+      const version = new SharedPageVersion(offset, length, pages, () =>
+        this.releaseVersionPages(pages),
+      );
+      for (const page of pages) Atomics.add(this.pageReaders, page.physical, 1);
+      return version;
+    } finally {
+      this.globalUnlock();
+    }
+  }
+  private releaseVersionPages(pages: readonly RetainedSharedPage[]): void {
+    this.globalLock(undefined, this.lockOwner, false, "release");
+    try {
+      for (const { physical } of pages) Atomics.sub(this.pageReaders!, physical, 1);
+    } finally {
+      this.globalUnlock();
+    }
   }
   static createBuffer(): SharedArrayBuffer {
     return new SharedArrayBuffer(BUFFER_SIZE);

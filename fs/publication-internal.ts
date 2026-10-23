@@ -42,6 +42,7 @@ export interface PublicationBuffers {
   readonly pins: SharedArrayBuffer;
   readonly pinData: SharedArrayBuffer;
   readonly versions: SharedArrayBuffer;
+  readonly pageReaders?: SharedArrayBuffer;
 }
 export interface PublicationSession {
   readonly slot: number;
