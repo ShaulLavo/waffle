@@ -944,8 +944,8 @@ export class IndexedDBStorage implements StorageBackend {
     this.initialized = true;
   }
 
-  private recordRecovery(state: State): void {
-    const retained = new Set<string>();
+  private recordRecovery(state: State, extra?: readonly string[]): void {
+    const retained = new Set<string>(extra);
     payloads(state.nodes.values(), retained);
     for (const base of state.bases) if (base) payloads(base.nodes, retained);
     for (const journal of state.journals.values()) payloads(journal.upserts, retained);
@@ -1261,6 +1261,6 @@ export class IndexedDBStorage implements StorageBackend {
     }
     state.sinceCompaction = compact ? 0 : state.sinceCompaction + 1;
     this.state = state;
-    this.recordRecovery(state);
+    this.recordRecovery(state, batch.retainedData);
   }
 }

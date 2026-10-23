@@ -676,3 +676,60 @@ test("reopened normal recovery roots do not become reader-only debt on token rel
     await physical.cleanup();
   }
 });
+
+for (const writer of ["append", "writeFile-append"] as const) {
+  test(`host ${writer} pressure is operation-wide and preserves the leased EOF`, async () => {
+    const size = 16 * 1024 * 1024 - 1;
+    const value = await residentReadFixture(size, 16 * 1024 * 1024);
+    try {
+      const opened = await value.workspace.pin("/file");
+      if (opened.kind !== "ok") throw new Error(opened.kind);
+      const before = await value.workspace.stat("/file");
+      const physical = value.backend.shared.resources().usedBytes;
+      const write = () => writer === "append"
+        ? value.client.asyncCall("append", [value.handle], new Uint8Array([90]))
+        : value.client.asyncCall("writeFile", ["/file", true], new Uint8Array([90]));
+      expect(await write().then(() => undefined, (error: unknown) => error)).toMatchObject({ errno: 6 });
+      expect(await value.workspace.stat("/file")).toEqual(before);
+      expect(value.backend.shared.resources().usedBytes).toBe(physical);
+      expect(await opened.value.read({ offset: size - 2, length: 2 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([65, 65]) } });
+      await opened.value.close();
+      await write();
+      expect(await value.workspace.read("/file", { offset: size, length: 1 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([90]) } });
+    } finally { await value.close(); }
+  });
+}
+
+test("shrink and regrow zero the current tail without changing a retained old tail", async () => {
+  const value = await residentReadFixture(PAGE * 3);
+  try {
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    await value.client.asyncCall("resize", [value.handle, PAGE + 3, true]);
+    await value.client.asyncCall("resize", [value.handle, PAGE * 3, true]);
+    const current = await value.workspace.read("/file", { offset: PAGE, length: PAGE * 2 });
+    expect(current.kind).toBe("ok");
+    if (current.kind === "ok") {
+      expect(current.value.bytes.subarray(0, 3)).toEqual(new Uint8Array([65, 65, 65]));
+      expect(current.value.bytes.subarray(3).every((byte) => byte === 0)).toBe(true);
+    }
+    expect(await held.value.read({ offset: PAGE * 3 - 8, length: 8 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array(8).fill(65) } });
+    await held.value.close();
+  } finally { await value.close(); }
+});
+
+test("a metadata mutation preserves leased stat and read permission without copying pages", async () => {
+  const value = await residentReadFixture(PAGE * 3);
+  try {
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    const before = value.backend.shared.resources().usedBytes;
+    await value.client.asyncCall("setMode", [value.handle, 0]);
+    await value.client.asyncCall("setMtime", [value.handle, 123]);
+    expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({ kind: "denied" });
+    expect(await value.workspace.stat(held.value.stat.id, held.value.stat.cut)).toEqual({ kind: "ok", value: held.value.stat });
+    expect(await held.value.read({ offset: PAGE * 2, length: 1 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([65]) } });
+    expect(value.backend.shared.resources().usedBytes).toBe(before);
+    await held.value.close();
+  } finally { await value.close(); }
+});

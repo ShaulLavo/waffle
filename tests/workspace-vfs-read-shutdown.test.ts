@@ -109,7 +109,8 @@ for (const reason of [undefined, null, false, 0, new Error("reader release faile
 for (const reason of [undefined, null, false, 0, new Error("held reader release failed")]) {
   test(`held public reader shutdown preserves failed cleanup identity: ${String(reason)}`, async () => {
     const physical = new RangeFixture();
-    const gate = physical.gate(), entered = Promise.withResolvers<void>();
+    const gate = physical.gate(),
+      entered = Promise.withResolvers<void>();
     let value: ReturnType<typeof publicReadFixture> | undefined;
     let reading: Promise<unknown> | undefined, closing: Promise<unknown> | undefined;
     const releases: (() => void)[] = [];
@@ -120,20 +121,32 @@ for (const reason of [undefined, null, false, 0, new Error("held reader release 
       storage.retainPayload = (...args) => {
         const token = retain(...args);
         releases.push(() => token.release());
-        return { release() { throw reason; } };
+        return {
+          release() {
+            throw reason;
+          },
+        };
       };
       const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
       value = publicReadFixture(backend);
       let closes = 0;
       const close = backend.close.bind(backend);
-      backend.close = () => { closes++; return close(); };
-      physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+      backend.close = () => {
+        closes++;
+        return close();
+      };
+      physical.file().snapshotRead = async () => {
+        entered.resolve();
+        await gate.promise;
+      };
       reading = outcome(value.workspace.read("/file", { offset: PAGE, length: 4096 }));
       await entered.promise;
       const original = value.service.shutdown();
       closing = outcome(original);
       let settled = false;
-      void closing.then(() => { settled = true; });
+      void closing.then(() => {
+        settled = true;
+      });
       await turn();
       expect(settled).toBe(false);
       expect(closes).toBe(0);
