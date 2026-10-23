@@ -46,12 +46,12 @@ function installStorage(): void {
     record.closed = true;
   }
   function snapshot() {
-    const retained = selected && !selected.closed;
+    const retained = selected !== undefined && !selected.closed;
     return {
       records: records.length,
       retained,
       selectedCalls: selected?.calls,
-      originalReadable: retained ? selected.native.getSize() >= 0 : false,
+      originalReadable: selected && retained ? selected.native.getSize() >= 0 : false,
       sameStoragePromise,
       reasonMatched,
       lateCallbacks,

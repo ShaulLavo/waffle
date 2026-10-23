@@ -418,3 +418,20 @@ test("close getter failure remains a missing call and retains its original reaso
     clock.close();
   }
 });
+
+
+test("remaining Firefox selection contains exactly the eight never-run raw-close cells", () => {
+  const selected = shutdownSelection(["firefox", "--remaining-firefox"]);
+  expect(selected.selected).toEqual(["firefox"]);
+  expect(selected.arms).toEqual(["raw-close-failure"]);
+  expect(selected.reasons).toEqual(failureReasons.filter((reason) => reason !== "error"));
+  expect(selected.reasons).toHaveLength(8);
+});
+for (const args of [
+  ["webkit", "--remaining-firefox"],
+  ["firefox", "webkit", "--remaining-firefox"],
+  ["firefox", "--remaining-firefox", "--reason", "error"],
+  ["firefox", "--remaining-firefox", "--remaining-firefox"],
+]) test(`remaining Firefox selector rejects ${args.join(" ")}`, () => {
+  expect(() => shutdownSelection(args)).toThrow();
+});

@@ -127,7 +127,7 @@ function installPage() {
     terminate() { for (const worker of consumers) worker.terminate(); storageWorker?.terminate(); },
     async deleteStorage() {
       const root = await navigator.storage.getDirectory();
-      await root.removeEntry(`bun-wasm-${btoa(name).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`, { recursive: true });
+      await root.removeEntry(`bun-wasm-${btoa(JSON.stringify(name)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`, { recursive: true });
     },
   };
 }
