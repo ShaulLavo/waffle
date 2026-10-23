@@ -284,7 +284,11 @@ export class NetHost {
     const host = hostname || "0.0.0.0";
     const address = tcpAddress(host);
     if (!address) {
-      this.lastError = { name: "Error", message: `listen ${host}: only virtual loopback binds are available in the browser`, code: "ENOTSUP" };
+      this.lastError = {
+        name: "Error",
+        message: `listen ${host}: only virtual loopback binds are available in the browser`,
+        code: "ENOTSUP",
+      };
       return UNSUPPORTED;
     }
     if (this.options.shared) return this.listenShared(host, port, address);
@@ -304,7 +308,12 @@ export class NetHost {
       });
     }
     const id = this.nextHandle++;
-    this.handles.set(id, { kind: "listener", local: { ...address, port }, pending: [], error: null });
+    this.handles.set(id, {
+      kind: "listener",
+      local: { ...address, port },
+      pending: [],
+      error: null,
+    });
     this.send({ type: "listen", id, port, host });
     return id;
   }
@@ -326,20 +335,18 @@ export class NetHost {
     }
     const target = loopbackAddress(address);
     if (this.options.shared) return this.connectShared(target, port);
-    const listener = Array.from(this.handles.entries()).find(
-      ([, h]) => h.kind === "listener" && h.local.port === port && acceptedAddress(h.local, target),
+    const state = Array.from(this.handles.values()).find(
+      (handle): handle is ListenerHandle =>
+        handle.kind === "listener" && handle.local.port === port,
     );
-    if (!listener) {
+    const accepted = state && acceptedAddress(state.local, target);
+    if (!state || !accepted) {
       return this.fail({
         name: "Error",
         message: `connect ECONNREFUSED ${host}:${port}`,
         code: "ECONNREFUSED",
       });
     }
-    if (listener[1].kind !== "listener") return BADF;
-    const state = listener[1];
-    const accepted = acceptedAddress(state.local, target);
-    if (!accepted) return BADF;
     const client = this.nextHandle++;
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);
@@ -397,7 +404,12 @@ export class NetHost {
     const id = this.nextHandle++;
     const [status, bound] = this.call({ type: "tcp-listen", id, host, port });
     if (status < 0) return this.fail(this.tcpError(status));
-    this.handles.set(id, { kind: "listener", local: { ...address, port: bound }, pending: [], error: null });
+    this.handles.set(id, {
+      kind: "listener",
+      local: { ...address, port: bound },
+      pending: [],
+      error: null,
+    });
     return id;
   }
 

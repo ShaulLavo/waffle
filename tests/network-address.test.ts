@@ -10,7 +10,14 @@ function fixture(shared: boolean) {
   const hosts: NetHost[] = [];
   const add = () => {
     const ring = createRing();
-    const helper = new NetHelper(ring, async () => { throw Error("External fetch forbidden"); }, {}, namespace);
+    const helper = new NetHelper(
+      ring,
+      async () => {
+        throw Error("External fetch forbidden");
+      },
+      {},
+      namespace,
+    );
     const host = new NetHost(ring, helper.handle.bind(helper), undefined, { shared });
     helpers.push(helper);
     hosts.push(host);
@@ -36,30 +43,56 @@ const bindings = [
 ] as const;
 
 for (const shared of [false, true]) {
-  test.each(bindings)(`endpoint metadata shared=${shared} bind=%s connect=%s`, async (bind, target, family, acceptedAddress, clientFamily) => {
-    const f = fixture(shared);
-    try {
-      const server = f.add().host;
-      const client = shared ? f.add().host : server;
-      const listener = server.listen(bind, 0);
-      const port = server.localPort(listener);
-      const address = bind === "localhost" ? "127.0.0.1" : bind === "0:0:0:0:0:0:0:1" ? "::1" : bind;
-      expect(JSON.parse(String(server.localAddr(listener)))).toEqual({ address, family, port });
-      const conn = client.connect(target, port);
-      expect(conn).toBeGreaterThan(0);
-      await Promise.resolve();
-      const accepted = server.accept(listener);
-      expect(accepted).toBeGreaterThan(0);
-      const clientPort = client.localPort(conn);
-      const clientAddress = clientFamily === "IPv6" ? "::1" : "127.0.0.1";
-      expect(JSON.parse(String(client.localAddr(conn)))).toEqual({ address: clientAddress, family: clientFamily, port: clientPort });
-      expect(JSON.parse(String(client.peerAddr(conn)))).toEqual({ address: clientAddress, family: clientFamily, port });
-      expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({ address: acceptedAddress, family, port });
-      expect(JSON.parse(String(server.peerAddr(accepted)))).toEqual({ address: acceptedAddress, family, port: clientPort });
-      server.close(listener);
-      expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({ address: acceptedAddress, family, port });
-    } finally { f.close(); }
-  });
+  test.each(bindings)(
+    `endpoint metadata shared=${shared} bind=%s connect=%s`,
+    async (bind, target, family, acceptedAddress, clientFamily) => {
+      const f = fixture(shared);
+      try {
+        const server = f.add().host;
+        const client = shared ? f.add().host : server;
+        const listener = server.listen(bind, 0);
+        const port = server.localPort(listener);
+        const address =
+          bind === "localhost" ? "127.0.0.1" : bind === "0:0:0:0:0:0:0:1" ? "::1" : bind;
+        expect(JSON.parse(String(server.localAddr(listener)))).toEqual({ address, family, port });
+        const conn = client.connect(target, port);
+        expect(conn).toBeGreaterThan(0);
+        await Promise.resolve();
+        const accepted = server.accept(listener);
+        expect(accepted).toBeGreaterThan(0);
+        const clientPort = client.localPort(conn);
+        const clientAddress = clientFamily === "IPv6" ? "::1" : "127.0.0.1";
+        expect(JSON.parse(String(client.localAddr(conn)))).toEqual({
+          address: clientAddress,
+          family: clientFamily,
+          port: clientPort,
+        });
+        expect(JSON.parse(String(client.peerAddr(conn)))).toEqual({
+          address: clientAddress,
+          family: clientFamily,
+          port,
+        });
+        expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({
+          address: acceptedAddress,
+          family,
+          port,
+        });
+        expect(JSON.parse(String(server.peerAddr(accepted)))).toEqual({
+          address: acceptedAddress,
+          family,
+          port: clientPort,
+        });
+        server.close(listener);
+        expect(JSON.parse(String(server.localAddr(accepted)))).toEqual({
+          address: acceptedAddress,
+          family,
+          port,
+        });
+      } finally {
+        f.close();
+      }
+    },
+  );
 
   test(`unsupported binds and family mismatch do not allocate shared=${shared}`, () => {
     const f = fixture(shared);
@@ -78,7 +111,9 @@ for (const shared of [false, true]) {
       expect(client.connect("::1", 32155)).toBe(ERROR);
       expect(String(client.error(0))).toContain("ECONNREFUSED");
       expect(client.connect("192.0.2.1", 32155)).toBe(UNSUPPORTED);
-    } finally { f.close(); }
+    } finally {
+      f.close();
+    }
   });
 
   test(`preview peers use the virtual listener family shared=${shared}`, async () => {
@@ -90,9 +125,18 @@ for (const shared of [false, true]) {
       expect(preview).not.toBeNull();
       await Promise.resolve();
       const accepted = host.accept(listener);
-      expect(JSON.parse(String(host.localAddr(accepted)))).toEqual({ address: "::1", family: "IPv6", port: 32156 });
-      expect(JSON.parse(String(host.peerAddr(accepted)))).toMatchObject({ address: "::1", family: "IPv6" });
+      expect(JSON.parse(String(host.localAddr(accepted)))).toEqual({
+        address: "::1",
+        family: "IPv6",
+        port: 32156,
+      });
+      expect(JSON.parse(String(host.peerAddr(accepted)))).toMatchObject({
+        address: "::1",
+        family: "IPv6",
+      });
       preview?.close();
-    } finally { f.close(); }
+    } finally {
+      f.close();
+    }
   });
 }

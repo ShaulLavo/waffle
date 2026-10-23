@@ -161,16 +161,34 @@ async function addressCases(server: Guest, client: Guest): Promise<void> {
   const listener = number(await server.call({ op: "listen", host: "::", port: 32157 }));
   check(listener > 0, "IPv6 listener failed");
   const address = { address: "::", family: "IPv6", port: 32157 };
-  check((await server.call({ op: "addr", handle: listener })) === JSON.stringify(address), "IPv6 wildcard bind metadata lost");
+  check(
+    (await server.call({ op: "addr", handle: listener })) === JSON.stringify(address),
+    "IPv6 wildcard bind metadata lost",
+  );
   for (const host of ["::1", "127.0.0.1"]) {
     const conn = number(await client.call({ op: "connect", host, port: 32157 }));
     check(conn > 0, "Dual-stack virtual connect failed");
-    const accepted = number(await until(() => server.call({ op: "accept", handle: listener }), (value) => typeof value === "number" && value > 0));
-    const local = { address: host === "::1" ? "::1" : "::ffff:127.0.0.1", family: "IPv6", port: 32157 };
-    check((await server.call({ op: "addr", handle: accepted })) === JSON.stringify(local), "Accepted local address differs");
+    const accepted = number(
+      await until(
+        () => server.call({ op: "accept", handle: listener }),
+        (value) => typeof value === "number" && value > 0,
+      ),
+    );
+    const local = {
+      address: host === "::1" ? "::1" : "::ffff:127.0.0.1",
+      family: "IPv6",
+      port: 32157,
+    };
+    check(
+      (await server.call({ op: "addr", handle: accepted })) === JSON.stringify(local),
+      "Accepted local address differs",
+    );
     const clientLocal = JSON.parse(String(await client.call({ op: "addr", handle: conn })));
     const peer = { ...local, port: clientLocal.port };
-    check((await server.call({ op: "peer", handle: accepted })) === JSON.stringify(peer), "Accepted peer family or address differs");
+    check(
+      (await server.call({ op: "peer", handle: accepted })) === JSON.stringify(peer),
+      "Accepted peer family or address differs",
+    );
     await client.call({ op: "write", handle: conn, bytes: bytes("ipv6") });
     check(text(await read(server, accepted)) === "ipv6", "IPv6 metadata path lost data");
     await client.call({ op: "close", handle: conn });
@@ -179,9 +197,15 @@ async function addressCases(server: Guest, client: Guest): Promise<void> {
   await server.call({ op: "close", handle: listener });
   const loopback = number(await server.call({ op: "listen", host: "::1", port: 32157 }));
   check(loopback > 0, "IPv6 loopback listener failed");
-  check((await client.call({ op: "connect", host: "127.0.0.1", port: 32157 })) === -1, "IPv4 reached IPv6 loopback-only bind");
+  check(
+    (await client.call({ op: "connect", host: "127.0.0.1", port: 32157 })) === -1,
+    "IPv4 reached IPv6 loopback-only bind",
+  );
   await server.call({ op: "close", handle: loopback });
-  check((await server.call({ op: "listen", host: "192.0.2.1", port: 32157 })) === -4, "Browser claimed an external bind");
+  check(
+    (await server.call({ op: "listen", host: "192.0.2.1", port: 32157 })) === -4,
+    "Browser claimed an external bind",
+  );
 }
 
 /** Executed in a real browser by network-browser-runner.ts. */

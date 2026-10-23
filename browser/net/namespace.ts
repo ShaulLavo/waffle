@@ -129,7 +129,11 @@ export class NetNamespace {
     return this.listeners.get(port)?.local;
   }
 
-  connect(port: number, sink: SocketSink, host?: string): { socket: LoopbackSocket; port: number } | number {
+  connect(
+    port: number,
+    sink: SocketSink,
+    host?: string,
+  ): { socket: LoopbackSocket; port: number } | number {
     const listener = this.listeners.get(port);
     if (!listener) return TCP_REFUSED;
     const target = host === undefined ? loopbackAddress(listener.local) : tcpAddress(host);

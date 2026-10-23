@@ -401,7 +401,12 @@ export class NetHelper {
     };
   }
 
-  private acceptSocket(listener: number, peer: PeerAddr, local: PeerAddr, socket: LoopbackSocket): void {
+  private acceptSocket(
+    listener: number,
+    peer: PeerAddr,
+    local: PeerAddr,
+    socket: LoopbackSocket,
+  ): void {
     const conn = this.nextConn++;
     this.sockets.set(conn, socket);
     this.pending.get(listener)?.add(conn);

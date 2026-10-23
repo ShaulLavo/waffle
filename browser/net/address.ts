@@ -3,8 +3,7 @@ import type { PeerAddr } from "./protocol.js";
 type TcpAddress = Omit<PeerAddr, "port">;
 
 export function tcpAddress(host: string): TcpAddress | undefined {
-  if (host === "localhost" || host === "127.0.0.1")
-    return { address: "127.0.0.1", family: "IPv4" };
+  if (host === "localhost" || host === "127.0.0.1") return { address: "127.0.0.1", family: "IPv4" };
   if (host === "0.0.0.0") return { address: host, family: "IPv4" };
   if (!/^[\da-f:]+$/i.test(host)) return undefined;
   try {
