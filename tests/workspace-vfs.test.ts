@@ -714,7 +714,7 @@ function assertRename(entries: readonly Extract<WorkspaceChange, { kind: "entry"
 
 function assertBatches(batches: readonly ChangeBatch[], after: Watermark): Watermark {
   for (const batch of batches) {
-    expect(batch.seq).toBe(after.seq + 1n);
+    expect(batch.seq - after.seq).toBe(1n);
     assertRename(batch.changes.filter((change) => change.kind === "entry"));
     after = { history: after.history, seq: batch.seq };
   }

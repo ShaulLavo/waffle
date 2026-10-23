@@ -1137,9 +1137,9 @@ test("public snapshot/change projection includes resident namespace authority wr
     const changes = await workspace.changes(page.cut.watermark);
     if (changes.kind !== "changes") throw new Error(`unexpected changes ${changes.kind}`);
     expect(changes.batches).toHaveLength(2);
-    expect(changes.batches[0]?.transaction.sequence).toBe(
-      record(record(result.receipt).id).sequence,
-    );
+    const sequence = record(record(result.receipt).id).sequence;
+    if (typeof sequence !== "number") throw new Error("missing resident sequence");
+    expect(changes.batches[0]?.transaction.sequence).toBe(sequence);
     expect(changes.batches[0]?.changes).toContainEqual(
       expect.objectContaining({ kind: "write", paths: ["/dir/resident"], size: 1 }),
     );
