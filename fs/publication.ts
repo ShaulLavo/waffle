@@ -1,3 +1,4 @@
+import type { CheckpointPublication } from "./storage.js";
 import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
   arrayAppend,
@@ -223,7 +224,7 @@ function bounded(value: number): number {
     throw new RangeError("publication limits must be positive bounded integers");
   return value;
 }
-function validateLimits(limits: PublicationLimits): PublicationLimits {
+export function validatePublicationLimits(limits: PublicationLimits): PublicationLimits {
   for (const value of Object.values(limits)) bounded(value);
   if (
     limits.operationsPerSession !== undefined &&
@@ -249,7 +250,7 @@ export function createPublicationBuffers(
   limits: PublicationLimits,
   observe = false,
 ): PublicationBuffers {
-  limits = validateLimits(limits);
+  limits = validatePublicationLimits(limits);
   return {
     history: crypto.randomUUID(),
     ...(observe
@@ -310,6 +311,115 @@ function parseResult(bytes: Uint8Array): MutationResult {
   )
     return { kind: "append", written: value.written, offset: value.offset };
   throw new FilesystemError(29, "invalid publication result");
+}
+
+function checkpointObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new FilesystemError(29, "invalid publication checkpoint");
+  return Object.fromEntries(Object.entries(value));
+}
+function checkpointInteger(value: unknown, max = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max)
+    throw new FilesystemError(29, "invalid checkpoint counter");
+  return value;
+}
+function checkpointLimits(value: unknown): PublicationLimits {
+  const limits = checkpointObject(value);
+  return validatePublicationLimits({
+    sessions: checkpointInteger(limits.sessions),
+    operations: checkpointInteger(limits.operations),
+    ...(limits.operationsPerSession === undefined
+      ? {}
+      : { operationsPerSession: checkpointInteger(limits.operationsPerSession) }),
+    inputBytes: checkpointInteger(limits.inputBytes),
+    argumentBytes: checkpointInteger(limits.argumentBytes),
+    effectBytes: checkpointInteger(limits.effectBytes),
+    effects: checkpointInteger(limits.effects),
+    resultBytes: checkpointInteger(limits.resultBytes),
+    logRecords: checkpointInteger(limits.logRecords),
+    logBytes: checkpointInteger(limits.logBytes),
+    pins: checkpointInteger(limits.pins),
+    pinBytes: checkpointInteger(limits.pinBytes),
+  });
+}
+function sameLimits(left: PublicationLimits, right: PublicationLimits): boolean {
+  return (
+    Object.entries(left).every(([key, value]) => Reflect.get(right, key) === value) &&
+    Object.keys(left).length === Object.keys(right).length
+  );
+}
+function checkpointReceipt(
+  value: unknown,
+  cut: PublicationCut,
+  serial: number,
+  resultBytes: number,
+): PublicationReceipt {
+  const receipt = decodeReceipt(value);
+  checkpointInteger(receipt.id.session, serial);
+  checkpointInteger(receipt.id.sequence, MAX_COUNTER);
+  checkpointInteger(receipt.cut.generation, cut.generation);
+  if (!receipt.id.session || !receipt.id.sequence || receipt.cut.history !== cut.history)
+    throw new FilesystemError(29, "invalid checkpoint receipt identity");
+  json(receipt.result, resultBytes);
+  return receipt;
+}
+export function snapshotPublicationCheckpoint(value: unknown): CheckpointPublication {
+  const data = checkpointObject(value);
+  if (data.kind !== "settled-publication-v1")
+    throw new FilesystemError(29, "invalid publication checkpoint kind");
+  const limits = checkpointLimits(data.limits),
+    cut = publicationCut(data.cut);
+  const sessionSerial = checkpointInteger(data.sessionSerial, MAX_COUNTER);
+  if (
+    !Array.isArray(data.receipts) ||
+    data.receipts.length > limits.operations ||
+    !Array.isArray(data.changes) ||
+    data.changes.length > limits.logRecords ||
+    !Array.isArray(data.contentVersions) ||
+    data.contentVersions.length > VERSION_SLOTS
+  )
+    throw new FilesystemError(29, "checkpoint publication bound exceeded");
+  const ids = new Set<string>();
+  const receipts = data.receipts.map((value: unknown) => {
+    const receipt = checkpointReceipt(value, cut, sessionSerial, limits.resultBytes);
+    const key = `${receipt.id.session}:${receipt.id.sequence}`;
+    if (ids.has(key)) throw new FilesystemError(29, "duplicate checkpoint receipt");
+    ids.add(key);
+    return receipt;
+  });
+  let generation = cut.generation - data.changes.length;
+  const changes = data.changes.map((value: unknown) => {
+    if (!(value instanceof Uint8Array) || value.length > limits.effectBytes)
+      throw new FilesystemError(29, "invalid checkpoint change bytes");
+    const bytes = value.slice(),
+      publication = decodeEffects(bytes);
+    const receipt = checkpointReceipt(publication.receipt, cut, sessionSerial, limits.resultBytes);
+    if (
+      receipt.cut.generation !== ++generation ||
+      publication.changes.length === 0 ||
+      publication.changes.length > limits.effects
+    )
+      throw new FilesystemError(29, "checkpoint changes are not a settled suffix");
+    return bytes;
+  });
+  const inos = new Set<number>();
+  const contentVersions = data.contentVersions.map((value: unknown) => {
+    const entry = checkpointObject(value),
+      ino = checkpointInteger(entry.ino, MAX_COUNTER),
+      version = checkpointInteger(entry.version, cut.generation);
+    if (!ino || inos.has(ino)) throw new FilesystemError(29, "invalid checkpoint content identity");
+    inos.add(ino);
+    return { ino, version };
+  });
+  return {
+    kind: "settled-publication-v1",
+    cut,
+    sessionSerial,
+    limits,
+    receipts,
+    changes,
+    contentVersions,
+  };
 }
 
 /** Fixed arenas shared by the service and actual direct clients. The filesystem global lock
