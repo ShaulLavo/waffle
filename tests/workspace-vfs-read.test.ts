@@ -125,7 +125,9 @@ test("only public roots allocate page-reader counters, fork shares without obser
   expect(publicRoot.publication!.buffers.pageReaders!.byteLength).toBe(65536);
   expect(fork.publication!.buffers.pageReaders).toBe(publicRoot.publication!.buffers.pageReaders);
   expect(publicRoot.publication!.buffers.readerLifetimes!.byteLength).toBe(64 * 8);
-  expect(fork.publication!.buffers.readerLifetimes).toBe(publicRoot.publication!.buffers.readerLifetimes);
+  expect(fork.publication!.buffers.readerLifetimes).toBe(
+    publicRoot.publication!.buffers.readerLifetimes,
+  );
   expect(fork.publication!.observer).toBeUndefined();
 });
 
@@ -578,9 +580,14 @@ test("all public projections of one actual root share the lease budget", async (
     workspace = createWorkspaceVfs(peer);
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);
-    expect(await peer.asyncCall("publicationReadLeaseOpen", [
-      peer.connection.publication!.observer, 900, 1, { offset: 0, length: 1 },
-    ])).toEqual({ kind: "lease-closed" });
+    expect(
+      await peer.asyncCall("publicationReadLeaseOpen", [
+        peer.connection.publication!.observer,
+        900,
+        1,
+        { offset: 0, length: 1 },
+      ]),
+    ).toEqual({ kind: "lease-closed" });
     expect((await held.value.read({ offset: 0, length: 1 })).kind).toBe("ok");
     for (let index = 0; index < 15; index++) {
       const held = await value.workspace.pin("/file");

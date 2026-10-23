@@ -170,10 +170,11 @@ for (const reason of [undefined, null, false, 0, new Error("held reader release 
   });
 }
 
-
-test("revoked public lease close joins the actual native borrow before acknowledging release", async () => {
+for (const revokeAt of ["before-close", "submission"]) {
+ test(`revoked public lease close joins actual native borrow at ${revokeAt}`, async () => {
   const physical = new RangeFixture();
-  const gate = physical.gate(), entered = Promise.withResolvers<void>();
+  const gate = physical.gate(),
+    entered = Promise.withResolvers<void>();
   let value: ReturnType<typeof publicReadFixture> | undefined;
   let reading: Promise<unknown> | undefined, closing: Promise<unknown> | undefined;
   try {
@@ -182,18 +183,31 @@ test("revoked public lease close joins the actual native borrow before acknowled
     value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);
-    physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    physical.file().snapshotRead = async () => {
+      entered.resolve();
+      await gate.promise;
+    };
     reading = held.value.read({ offset: PAGE, length: 4096 });
     await entered.promise;
-    revokeFilesystem(value.client.connection);
+    if (revokeAt === "before-close") revokeFilesystem(value.client.connection);
+    else {
+      const client = value.client, submit = client.submit.bind(client);
+      client.submit = (...args) => {
+        if (args[0] === "publicationReadClose") revokeFilesystem(client.connection);
+        return submit(...args);
+      };
+    }
     let settled = false;
-    closing = held.value.close().then(() => { settled = true; });
+    closing = outcome(held.value.close()).then((result) => {
+      settled = true;
+      return result;
+    });
     await turn();
     expect(settled).toBe(false);
     expect(storage.resources().opfsReaderWork).toBe(1);
     expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
     gate.resolve();
-    await closing;
+    expect(await closing).toEqual({ kind: "ok", value: undefined });
     expect(await reading).toEqual({ kind: "stopped" });
     expect(storage.resources().opfsReaderWork).toBe(0);
     expect(storage.resources().readerStorageBytes).toBe(0);
@@ -201,7 +215,8 @@ test("revoked public lease close joins the actual native borrow before acknowled
   } finally {
     gate.resolve();
     await Promise.allSettled([reading, closing]);
-    await value?.close();
+    await Promise.allSettled([value?.close()]);
     await physical.cleanup();
   }
 });
+}

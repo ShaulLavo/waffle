@@ -310,7 +310,6 @@ export function readOpenReply(value: unknown) {
   return { serial, stat, range: extent };
 }
 
-
 /** A slot cannot be reused before the service joins its serial-qualified reader owner. */
 export class ReaderLifetime {
   private readonly cells: Int32Array;
@@ -321,7 +320,10 @@ export class ReaderLifetime {
     this.index = connection.session.slot * 2;
   }
   begin(): void {
-    if (this.cells[this.index] !== this.connection.session.serial && this.cells[this.index + 1] === 1)
+    if (
+      this.cells[this.index] !== this.connection.session.serial &&
+      this.cells[this.index + 1] === 1
+    )
       throw new FilesystemError(6);
     Atomics.store(this.cells, this.index, this.connection.session.serial);
     Atomics.store(this.cells, this.index + 1, 1);
@@ -331,11 +333,17 @@ export class ReaderLifetime {
     Atomics.notify(this.cells, this.index + 1);
   }
   get drained(): boolean {
-    return this.cells[this.index] === this.connection.session.serial && this.cells[this.index + 1] === 2;
+    return (
+      this.cells[this.index] === this.connection.session.serial && this.cells[this.index + 1] === 2
+    );
   }
   async join(): Promise<void> {
     const atomics = Atomics as typeof Atomics & {
-      waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
+      waitAsync(
+        array: Int32Array,
+        index: number,
+        value: number,
+      ): { async: boolean; value: string | Promise<string> };
     };
     while (Atomics.load(this.cells, this.index) === this.connection.session.serial) {
       const state = Atomics.load(this.cells, this.index + 1);

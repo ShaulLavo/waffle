@@ -784,7 +784,10 @@ for (const fault of ["missing", "size", "short", "native"] as const) {
     const value = await coldFixture(PAGE * 3);
     try {
       const file = value.physical.file();
-      if (fault === "missing") file.lookup = async () => { throw new DOMException("removed", "NotFoundError"); };
+      if (fault === "missing")
+        file.lookup = async () => {
+          throw new DOMException("removed", "NotFoundError");
+        };
       if (fault === "size") file.size++;
       if (fault === "native") file.readError = new Error("native range failed");
       if (fault === "short") {

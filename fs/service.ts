@@ -982,7 +982,10 @@ export class FilesystemService {
   private stopSessionReader(session: Session): void {
     if (session.reader && !session.readerClosing) {
       session.readerClosing = this.trackWork(session, session.reader.stop());
-      void session.readerClosing.then(() => this.sweep(), () => {});
+      void session.readerClosing.then(
+        () => this.sweep(),
+        () => {},
+      );
     }
   }
   private releaseSessionPins(session: Session): void {
