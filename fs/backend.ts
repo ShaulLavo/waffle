@@ -1,3 +1,4 @@
+import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
 import {
   mapPublicationFiles,
@@ -163,6 +164,7 @@ export class MemoryBackend implements FilesystemBackend {
     offset: number,
     length: number,
     full = false,
+    _metadata?: ReaderMetadataBudget,
   ): ReadBacking {
     const handle = this.fs.handleForNode(node);
     if (!length) return { kind: "empty" };

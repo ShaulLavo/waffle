@@ -238,3 +238,9 @@ and explicit full-file version leases. Live search, index validation,
 import/export, aggregate memory pressure, SAFE durability, endurance
 certification, and real Safari proof remain
 in [the VFS plan](../plans/001-vfs-family.md#4-workspacevfs-beside-wasi).
+
+Cold-key retention metadata stays charged to the root's 2 MiB reader metadata
+limit while reader-only disk debt remains. Aliases share one key charge. Closing
+a lease returns that charge only when normal recovery still owns the key or
+native GC deletes it. The adapter also bounds independently acquired key tokens
+to 2 MiB of retention metadata.

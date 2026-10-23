@@ -3,6 +3,7 @@ import type { Node, DirNode } from "./memory.js";
 import { ReaderPagePressure, type SharedPageVersion } from "./shared-version-pages.js";
 import {
   PayloadRetentionPressure,
+  PayloadMetadataPressure,
   PayloadCorruption,
   type StorageBackend,
   type PayloadRetention,
@@ -92,6 +93,7 @@ function failure(error: unknown, signal?: AbortSignal): ReadFailure {
   if (error instanceof ReadRefusal) return error.failure;
   if (error instanceof ReaderPagePressure) return { kind: "pressure", resource: "pin-bytes" };
   if (error instanceof PayloadCorruption) return { kind: "corrupt", message: error.message };
+  if (error instanceof PayloadMetadataPressure) return { kind: "pressure", resource: "metadata" };
   if (error instanceof PayloadRetentionPressure)
     return { kind: "pressure", resource: "retained-storage" };
   if (error instanceof FilesystemError) {
@@ -150,6 +152,9 @@ export class WorkspaceReadBudget {
     if (bytes > LIMIT.metadata - this.metadata) pressure("metadata");
     this.metadata += bytes;
     this.metadataPeak = Math.max(this.metadataPeak, this.metadata);
+  }
+  releaseMetadata(bytes: number): void {
+    this.metadata -= bytes;
   }
   resources(backend: MemoryBackend): Record<string, number> {
     return {
@@ -446,6 +451,7 @@ export class WorkspaceReadAuthority {
         range.offset,
         range.length,
         operation === "publicationReadPin",
+        this.budget,
       );
     } catch (error) {
       this.budget.metadata -= charge;

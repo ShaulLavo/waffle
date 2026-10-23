@@ -22,6 +22,7 @@ import {
   PayloadRetentions,
   PayloadCorruption,
   type PayloadRetention,
+  type ReaderMetadataBudget,
   decodeRecord,
   snapshotBatch,
   decodeSnapshot,
@@ -659,13 +660,13 @@ export class IndexedDBStorage implements StorageBackend {
     });
   }
 
-  retainPayload(key: string, expectedSize: number): PayloadRetention {
+  retainPayload(key: string, expectedSize: number, metadata?: ReaderMetadataBudget): PayloadRetention {
     this.assertOwner();
     if (this.closed || !this.state?.payloadKeys.has(key) || this.deletingPayloads.has(key))
       throw new Error("Missing retained filesystem payload");
     if (this.payloadSize(key) !== expectedSize)
       throw new Error("Retained filesystem payload size mismatch");
-    return this.readers.retain(key, expectedSize);
+    return this.readers.retain(key, expectedSize, metadata);
   }
   private payloadSize(key: string): number | undefined {
     const retained = this.readers.size(key);

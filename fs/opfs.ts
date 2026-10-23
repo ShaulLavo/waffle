@@ -17,6 +17,7 @@ import {
   PayloadRetentions,
   PayloadCorruption,
   type PayloadRetention,
+  type ReaderMetadataBudget,
   snapshotBatch,
   decodeSnapshot,
   encodeSnapshot,
@@ -365,11 +366,11 @@ export class OpfsStorage implements StorageBackend {
       }
     });
   }
-  retainPayload(key: string, expectedSize: number): PayloadRetention {
+  retainPayload(key: string, expectedSize: number, metadata?: ReaderMetadataBudget): PayloadRetention {
     if (this.closed || this.known.get(key) !== expectedSize)
       throw new Error("Missing retained filesystem payload");
     this.assertHandleOwnership();
-    return this.readers.retain(key, expectedSize);
+    return this.readers.retain(key, expectedSize, metadata);
   }
   private retainedRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));

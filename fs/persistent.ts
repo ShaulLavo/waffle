@@ -1,3 +1,4 @@
+import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
 import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
@@ -265,6 +266,7 @@ export class PersistentBackend extends MemoryBackend {
     offset: number,
     length: number,
     full = false,
+    metadata?: ReaderMetadataBudget,
   ): ReadBacking {
     this.assertAdmitting();
     const handle = this.fs.handleForNode(node);
@@ -277,7 +279,7 @@ export class PersistentBackend extends MemoryBackend {
     )
       throw new FilesystemError(6, "cold revision is not retained");
     const size = this.readMetadata(node).size;
-    const retention = this.storage.retainPayload(key, size);
+    const retention = this.storage.retainPayload(key, size, metadata);
     return { kind: "cold", key, size, storage: this.storage, retention };
   }
   private evictClean(except?: FileHandle): void {

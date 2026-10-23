@@ -1,3 +1,5 @@
+import { PayloadRetentions, PayloadMetadataPressure } from "../fs/storage";
+import { WorkspaceReadBudget } from "../fs/workspace-read";
 import { expect, test } from "bun:test";
 import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
 import { Wasi } from "../core/wasi";
@@ -834,4 +836,29 @@ test("reader-only disk debt retains its actual metadata charge until native GC",
   } finally {
     await value.close();
   }
+});
+
+
+test("retained key metadata pressure refuses before allocation and aliases share one charge", () => {
+  const readers = new PayloadRetentions();
+  const budget = new WorkspaceReadBudget();
+  const initial = budget.metadata;
+  budget.takeMetadata(2 * 1024 * 1024 - initial - 32);
+  expect(() => readers.retain("first", 1, budget)).toThrow();
+  expect(readers.resources().readerStorageBytes).toBe(0);
+  expect(readers.resources().readerStorageMetadataBytes).toBe(0);
+  budget.releaseMetadata(budget.metadata - initial);
+  const first = readers.retain("first", 1, budget);
+  const charge = budget.metadata - initial;
+  const alias = readers.retain("first", 1, budget);
+  expect(budget.metadata - initial).toBe(charge);
+  first.release();
+  alias.release();
+  expect(budget.metadata - initial).toBe(charge);
+  expect(readers.resources().readerStorageDebt).toBe(1);
+  readers.deleted("first");
+  expect(budget.metadata).toBe(initial);
+  expect(readers.resources().readerStorageMetadataBytes).toBe(0);
+  expect(() => readers.retain("x".repeat(1024 * 1024), 1)).toThrow(PayloadMetadataPressure);
+  expect(readers.resources().readerStorageBytes).toBe(0);
 });
