@@ -189,9 +189,7 @@ export class QuotaProbe {
   fault: Fault | undefined;
   private restorers: (() => void)[] = [];
   private owners = new Set<StorageBackend>();
-  private held:
-    | { release: Completion; started: Completion }
-    | undefined;
+  private held: { release: Completion; started: Completion } | undefined;
   pause() {
     const held = { release: Promise.withResolvers<void>(), started: Promise.withResolvers<void>() };
     this.held = held;
