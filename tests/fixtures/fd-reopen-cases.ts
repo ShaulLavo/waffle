@@ -1,3 +1,4 @@
+import { FilesystemError } from "../../core/filesystem.js";
 import { Wasi } from "../../core/wasi.js";
 import { MemFS } from "../../fs/memory.js";
 import { ProcessABI } from "../../proc/abi.js";
@@ -14,6 +15,7 @@ function equal(actual: unknown, expected: unknown): void {
 }
 function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   const memory = new WebAssembly.Memory({ initial: 4 });
+  const traces: string[] = [];
   const wasi = new Wasi({
     args: [],
     env: {},
@@ -24,6 +26,7 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
     stdout() {},
     stderr() {},
     sleep() {},
+    trace: (line) => traces.push(line),
   });
   const supervisor = new ProcessSupervisor({
     registry: new ExecutableRegistry(),
@@ -96,6 +99,7 @@ function fixture(fs = new MemFS(), reservedFds: number[] = []) {
   const write = (fd: number, text: string) =>
     equal(io("fd_write", fd, put(text, 4096)), text.length);
   return {
+    traces,
     fs,
     wasi,
     supervisor,
@@ -239,6 +243,82 @@ test("invalid creation flags, DIRECTORY and bad output pointers cannot modify th
   equal(f.tryReopen(source, 8, WRITE, 0, 0xfffffff0), 21);
   equal(f.tryReopen(source, 0, READ, 32), 28);
   equal(f.read(f.reopen(source)), "abcdef");
+});
+
+test("direct WASI reopen keeps EBADF separate from absent alias ENOENT", (f) => {
+  f.view().setUint32(128, 0xabcdef01, true);
+  equal(f.wasi.fdReopen(99999, 0, 0, READ, 128), 8);
+  equal(f.wasi.fdReopen(-1, 0, 0, READ, 128), 8);
+  equal(f.tryPath("dev/fd/99999"), 44);
+  equal(f.view().getUint32(128, true), 0xabcdef01);
+  equal(f.wasi.fdReopen(99999, 8, 0, WRITE, 0xfffffff0), 21);
+  equal(
+    f.call("path_open", f.root, 0, 2048, f.put("dev/fd/99999"), 8, WRITE, 0n, 0, 0xfffffff0),
+    44,
+  );
+});
+test("direct and alias output spans are validated before TRUNC or allocation", (f) => {
+  const source = seed(f);
+  const last = f.reopen(source);
+  f.wasi.descriptors.close(last);
+  for (const out of [4 * 65536 - 3, 0xfffffff0, -1]) {
+    equal(f.wasi.fdReopen(source, 8, 0, WRITE, out), 21);
+    equal(
+      f.call("path_open", f.root, 0, 2048, f.put(`dev/fd/${source}`), 8, WRITE, 0n, 0, out),
+      21,
+    );
+  }
+  equal(f.wasi.fdReopen(source, 0, 0, READ, 4 * 65536 - 4), 0);
+  equal(f.view().getUint32(4 * 65536 - 4, true), last);
+  equal(f.read(last), "abcdef");
+});
+test("inode open failures keep positive errno and leave output and bytes untouched", (f) => {
+  const source = seed(f);
+  const permissions = f.fs.permissions.bind(f.fs);
+  const resize = f.fs.resize.bind(f.fs);
+  f.view().setUint32(128, 0xabcdef01, true);
+  const traces = f.traces.length;
+  f.fs.permissions = () => {
+    throw new FilesystemError(2);
+  };
+  equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 2);
+  equal(f.tryPath(`dev/fd/${source}`, 8, WRITE), 2);
+  equal(f.tryPath("file", 8, WRITE), 2);
+  equal(f.traces.length, traces);
+  f.fs.permissions = permissions;
+  f.fs.resize = () => 29;
+  equal(f.wasi.fdReopen(source, 8, 0, WRITE, 128), 29);
+  equal(f.tryPath(`dev/fd/${source}`, 8, WRITE), 29);
+  equal(f.tryPath("file", 8, WRITE), 29);
+  f.fs.resize = resize;
+  equal(f.view().getUint32(128, true), 0xabcdef01);
+  equal(f.read(f.reopen(source)), "abcdef");
+});
+test("ordinary opens and descriptor reopens keep their original policy order", (f) => {
+  const source = seed(f);
+  equal(f.fs.setMode(resource(f, source).handle, 0o200), 0);
+  equal(f.wasi.fdReopen(source, 2, 0, READ, 128), 54);
+  equal(f.tryPath(`dev/fd/${source}`, 2), 54);
+  equal(f.tryPath("file", 2), 2);
+  equal(f.wasi.fdReopen(f.root, 8, 0, READ, 128), 31);
+  equal(f.tryPath(".", 8), 31);
+});
+test("direct reopen propagates unknown host errors while preview1 wraps them", (f) => {
+  const source = seed(f);
+  const permissions = f.fs.permissions.bind(f.fs);
+  const failure = new Error("fixture inode failure");
+  f.fs.permissions = () => {
+    throw failure;
+  };
+  let caught: unknown;
+  try {
+    f.wasi.fdReopen(source, 0, 0, READ, 128);
+  } catch (error) {
+    caught = error;
+  }
+  equal(caught, failure);
+  equal(f.tryPath(`dev/fd/${source}`), 29);
+  f.fs.permissions = permissions;
 });
 
 test("only root directory bindings resolve normalized descriptor aliases", (f) => {
