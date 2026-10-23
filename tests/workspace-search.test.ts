@@ -690,7 +690,7 @@ test("signal registration reserves admission before a reentrant query", async ()
   const controller = new AbortController();
   const add = controller.signal.addEventListener.bind(controller.signal);
   let nested: SearchCursor | undefined;
-  controller.signal.addEventListener = (...args) => {
+  controller.signal.addEventListener = (...args: Parameters<AbortSignal["addEventListener"]>) => {
     add(...args);
     nested = search.search(query);
   };
@@ -751,11 +751,13 @@ for (const failure of [undefined, null, false, 0, ""]) {
     const add = controller.signal.addEventListener.bind(controller.signal);
     const remove = controller.signal.removeEventListener.bind(controller.signal);
     let removals = 0;
-    controller.signal.addEventListener = (...args) => {
+    controller.signal.addEventListener = (...args: Parameters<AbortSignal["addEventListener"]>) => {
       add(...args);
       throw failure;
     };
-    controller.signal.removeEventListener = (...args) => {
+    controller.signal.removeEventListener = (
+      ...args: Parameters<AbortSignal["removeEventListener"]>
+    ) => {
       removals++;
       remove(...args);
     };
@@ -773,14 +775,14 @@ for (const failure of [undefined, null, false, 0, ""]) {
     const controller = new AbortController();
     const add = controller.signal.addEventListener.bind(controller.signal);
     let closing: Promise<void> | undefined;
-    controller.signal.addEventListener = (...args) => {
+    controller.signal.addEventListener = (...args: Parameters<AbortSignal["addEventListener"]>) => {
       add(...args);
       closing = search.close();
       throw failure;
     };
     const cursor = search.search(query, controller.signal);
     expect(await cursor.next()).toEqual({ kind: "cleanup-failed", message: String(failure) });
-    expect(cursor.close()).toBe(closing);
+    expect(closing).toBe(cursor.close());
     await rejectsWith(cursor.close(), failure);
     expect(value.boundary.snapshots).toBe(0);
   });
@@ -798,7 +800,9 @@ for (const failure of [undefined, null, false, 0, ""]) {
     const controller = new AbortController();
     const remove = controller.signal.removeEventListener.bind(controller.signal);
     let reentrant: Promise<void> | undefined;
-    controller.signal.removeEventListener = (...args) => {
+    controller.signal.removeEventListener = (
+      ...args: Parameters<AbortSignal["removeEventListener"]>
+    ) => {
       remove(...args);
       reentrant = cursor.close();
       throw failure;
@@ -821,7 +825,10 @@ for (const failure of [undefined, null, false, 0, ""]) {
       expect(value.boundary.closes).toBe(0);
       expect(await search.search(query).next()).toEqual({ kind: "pressure", resource: "query" });
       release.release();
-      const terminal = { kind: "cleanup-failed", message: String(failure) };
+      const terminal = {
+        kind: "cleanup-failed",
+        message: String(failure),
+      } satisfies SearchTerminal;
       expect(await repeated).toEqual(terminal);
       expect(await pending).toEqual(terminal);
       await rejectsWith(closing, failure);
@@ -858,7 +865,7 @@ test("limit normalization never reads unrelated caller fields", async () => {
   await using value = await fixture();
   const limits: Partial<SearchLimits> & { unrelated?: Uint8Array } = {
     totalBytes: 2048,
-    get unrelated() {
+    get unrelated(): Uint8Array {
       throw new Error("unrelated limit getter must not be read");
     },
   };
@@ -874,7 +881,7 @@ test("already aborted admission does not read caller query getters", async () =>
   const input: SearchQuery = {
     kind: "text",
     prefix: "/",
-    get text() {
+    get text(): string {
       throw new Error("cancelled admission must not compile");
     },
   };
