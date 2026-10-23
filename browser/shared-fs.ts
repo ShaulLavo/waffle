@@ -339,26 +339,46 @@ export class SharedFilesystem {
     try {
       this.assertLive();
       const bytes = typeof input === "string" ? () => new TextEncoder().encode(input) : input;
-      const size = typeof input === "string" ? utf8Size(input) * (this.client.shared.publication ? 3 : 2) : undefined;
+      const size =
+        typeof input === "string"
+          ? utf8Size(input) * (this.client.shared.publication ? 3 : 2)
+          : undefined;
       preparing = this.client.prepareAsync(operation, args, bytes, size);
-    } catch (error) { return Promise.reject(error); }
-    void preparing.catch(() => {});
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const earlier = this.writes;
-    const result = preparing.then((prepared) => earlier.then(async () => {
-      try {
-        this.assertLive();
-        this.client.dispatch(prepared);
-        return await prepared.value();
-      } catch (error) {
+    const result = preparing.then(
+      (prepared) => this.executePrepared(prepared, earlier),
+      (error) => {
         this.assertLive();
         throw error;
-      } finally { prepared.release(); }
-    }), (error) => {
+      },
+    );
+    this.writes = Promise.all([
+      earlier,
+      result.catch((error) => {
+        this.failure ??= { error };
+      }),
+    ]);
+    return result;
+  }
+
+  private async executePrepared(
+    prepared: import("../fs/client.js").FilesystemCompletion,
+    earlier: Promise<unknown>,
+  ): Promise<unknown> {
+    try {
+      await earlier;
+      this.assertLive();
+      this.client.dispatch(prepared);
+      return await prepared.value();
+    } catch (error) {
       this.assertLive();
       throw error;
-    });
-    this.writes = Promise.all([earlier, result.catch((error) => { this.failure ??= { error }; })]);
-    return result;
+    } finally {
+      prepared.release();
+    }
   }
   private barrierRequest(operation: "acquire" | "flush" | "release", lease: number): Promise<void> {
     if (this.stopped || this.disposal || this.fatal)

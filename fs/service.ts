@@ -226,7 +226,12 @@ export class FilesystemService {
         const cells = new Int32Array(data.buffer, 0, HEADER / 4);
         if (Atomics.compareExchange(cells, 7, 0, 1)) return;
         try {
-          this.requestTicket(session, data.id, unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)), false);
+          this.requestTicket(
+            session,
+            data.id,
+            unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)),
+            false,
+          );
         } catch (error) {
           cells[3] = errno(error);
           Atomics.store(cells, 0, State.Failed);
@@ -608,7 +613,11 @@ export class FilesystemService {
     state: State,
   ): void {
     if (Atomics.exchange(cells, 7, 2) !== 1 || !ticket) return;
-    new WriteAdmission(session.connection.shared).finish(ticket, -id, state === State.Failed && cells[3] === 29);
+    new WriteAdmission(session.connection.shared).finish(
+      ticket,
+      -id,
+      state === State.Failed && cells[3] === 29,
+    );
   }
   private requestTicket(
     session: Session,
@@ -641,7 +650,10 @@ export class FilesystemService {
   ): unknown {
     const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
     const execute = () =>
-      local && operation !== "flush" && operation !== "sync"
+      local &&
+      operation !== "flush" &&
+      operation !== "sync" &&
+      !(operation === "preopen" && args[1] === true)
         ? this.executePublication(session, id, operation, args, payload, admission)
         : this.execute(session, id, operation, args, payload);
     return ticket && this.backend instanceof MemoryBackend
@@ -693,7 +705,8 @@ export class FilesystemService {
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
       const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
-      mutation = mutations.has(operation) && !local && !(operation === "preopen" && args[1] === true);
+      mutation =
+        mutations.has(operation) && !local && !(operation === "preopen" && args[1] === true);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
@@ -1427,8 +1440,9 @@ function ownerBarrierControls(
     const done = service.then((service) => service.pauseFilesystemWrites({ signal: abort.signal }));
     const state: Active = { kind: "active", lease, abort, done };
     current = state;
-    try { await done; }
-    catch (error) {
+    try {
+      await done;
+    } catch (error) {
       if (current === state) current = undefined;
       throw error;
     }

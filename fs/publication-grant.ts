@@ -568,7 +568,9 @@ export class ResidentGrantAuthority {
     const settle = () =>
       this.boundary(issued.serial, () => this.importOutcome(owner, issued, outcome));
     try {
-      return issued.writeTicket ? this.backend.shared.withWrite(issued.writeTicket, settle) : settle();
+      return issued.writeTicket
+        ? this.backend.shared.withWrite(issued.writeTicket, settle)
+        : settle();
     } catch (error) {
       this.failGrant(issued);
       throw error;

@@ -125,20 +125,14 @@ test("R2b a handled page error from long before rejects a later unrelated acquis
     await filesystem.writeFile("/a", "1");
     const handled = await filesystem.writeFile("/a", "2", { exclusive: true }).catch(errnoOf);
     await filesystem.writeFile("/b", "3");
-    const first = await filesystem[ownerWriteBarrier]().then(
-      async (lease) => {
-        await lease.release();
-        return "acquired";
-      },
-      errnoOf,
-    );
-    const second = await filesystem[ownerWriteBarrier]().then(
-      async (lease) => {
-        await lease.release();
-        return "acquired";
-      },
-      errnoOf,
-    );
+    const first = await filesystem[ownerWriteBarrier]().then(async (lease) => {
+      await lease.release();
+      return "acquired";
+    }, errnoOf);
+    const second = await filesystem[ownerWriteBarrier]().then(async (lease) => {
+      await lease.release();
+      return "acquired";
+    }, errnoOf);
     log("R2b handled EEXIST, then two acquisitions", { handled, first, second });
     expect(handled).toBe(20);
     expect(first).toBe("acquired");
@@ -169,13 +163,12 @@ test("R3 a posted request dropped by session close leaks its ticket and acquisit
     reapFilesystem(guestPair.client);
     await turn();
     const active = backend.shared.writeAdmission.active;
-    const acquisition = service.pauseFilesystemWrites({ signal: abort.signal }).then(
-      async (lease) => {
+    const acquisition = service
+      .pauseFilesystemWrites({ signal: abort.signal })
+      .then(async (lease) => {
         await lease.release();
         return "acquired";
-      },
-      errnoOf,
-    );
+      }, errnoOf);
     const raced = await Promise.race([acquisition, sleep(1000).then(() => "still draining")]);
     abort.abort();
     const final = await acquisition;
@@ -248,7 +241,10 @@ test("R5 acquisition rejects EAGAIN whenever any writer briefly holds the admiss
       Atomics.notify(lock, 0);
     }, 20);
     const held = await service.pauseFilesystemWrites().then(
-      async (lease) => { await lease.release(); return "acquired"; },
+      async (lease) => {
+        await lease.release();
+        return "acquired";
+      },
       (error) => ({ errno: errnoOf(error), message: (error as Error).message }),
     );
     clearTimeout(releasing);
@@ -294,7 +290,12 @@ test("R7 admission serial exhaustion permanently disables every write", async ()
     const first = client.tryWrite(handle, [bytes("a")], 0);
     const again = client.tryWrite(handle, [bytes("a")], 0);
     const page = await client.asyncCall("writeFile", ["/new"], bytes("x")).then(() => 0, errnoOf);
-    log("R7 after 2^31-2 admissions", { first, again, page, active: backend.shared.writeAdmission.active });
+    log("R7 after 2^31-2 admissions", {
+      first,
+      again,
+      page,
+      active: backend.shared.writeAdmission.active,
+    });
     expect([first, again, page]).toEqual([1, 1, 0]);
   });
 });
@@ -308,7 +309,10 @@ test("R8 a pending page mutation loses the storage failure identity", async () =
     writes: Promise.resolve(),
     barrierRequests: new Map(),
     _state: { status: "opening" },
-  }) as unknown as { fail(error: Error): void; writeFile(path: string, text: string): Promise<void> };
+  }) as unknown as {
+    fail(error: Error): void;
+    writeFile(path: string, text: string): Promise<void>;
+  };
   try {
     const writing = fs.writeFile("/x", "y").then(
       () => "ok",
@@ -324,4 +328,3 @@ test("R8 a pending page mutation loses the storage failure identity", async () =
     root.server.port.close();
   }
 });
-

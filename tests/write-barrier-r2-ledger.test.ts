@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
-import { WriteAdmission, WRITE_BARRIER_OFFSET, WRITE_BARRIER_WORDS } from "../fs/write-barrier";
+import { WriteAdmission, WRITE_BARRIER_OFFSET } from "../fs/write-barrier";
 
 test("a full async ledger does not publish a change on a rejected admission", () => {
   const gate = new WriteAdmission(SharedFilesystemState.createBuffer());
@@ -17,7 +17,6 @@ test("a full async ledger does not publish a change on a rejected admission", ()
     for (const ticket of tickets) gate.finish(ticket);
   }
 });
-
 
 test("a stale ticket cannot release a reused slot across the low serial rollover", () => {
   const gate = new WriteAdmission(SharedFilesystemState.createBuffer());
