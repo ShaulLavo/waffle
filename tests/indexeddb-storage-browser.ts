@@ -12,6 +12,7 @@ import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { FilesystemError } from "../fs/protocol.js";
 import { gatedIndexedDB } from "./gated-indexeddb.js";
+import { assertRuntimeStartupTrace } from "./runtime-startup-proof.js";
 import type { PersistenceBatch, PersistedNode, StorageBackend } from "../fs/storage.js";
 
 export function assert(value: unknown, message: string): asserts value {
@@ -406,20 +407,7 @@ export async function runtimeStartupCase(
     if (storage === "indexeddb")
       expected.push("filesystem-epoch-requested", "filesystem-epoch-resolved");
     expected.push("filesystem-ready");
-    assert(
-      JSON.stringify(seen.map(([stage]) => stage)) === JSON.stringify(expected),
-      `unexpected startup sequence: ${JSON.stringify(seen)}`,
-    );
-    assert(
-      seen.every(
-        ([, timestamp]) => Number.isFinite(timestamp) && timestamp >= performance.timeOrigin,
-      ),
-      "comparable epoch clocks",
-    );
-    assert(
-      seen.every(([, timestamp], index) => index === 0 || timestamp >= seen[index - 1]![1]),
-      "milestone clocks follow operation order",
-    );
+    assertRuntimeStartupTrace(seen, expected, performance.timeOrigin);
   } finally {
     await runtime.dispose();
     // Worker.terminate() returns before Chromium releases that worker's Web Locks.

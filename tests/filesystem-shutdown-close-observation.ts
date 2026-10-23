@@ -149,11 +149,16 @@ export function shutdownSelection(args: readonly string[]) {
   let backend = "indexeddb";
   let reason: FailureReason | "all" = "all";
   let arm: "raw-close-failure" | undefined;
+  let remainingFirefox = false;
   for (let i = 0; i < args.length; i++) {
     const item = args[i]!;
     if (item.startsWith("--")) {
       duplicateOption ||= seen.has(item);
       seen.add(item);
+    }
+    if (item === "--remaining-firefox") {
+      remainingFirefox = true;
+      continue;
     }
     if (item === "--backend") {
       backend = args[++i] ?? "";
@@ -171,6 +176,15 @@ export function shutdownSelection(args: readonly string[]) {
       throw new Error(`Unknown shutdown engine/option: ${item}`);
     if (selected.includes(item)) throw new Error(`Duplicate engine: ${item}`);
     selected.push(item);
+  }
+  if (remainingFirefox) {
+    if (args.length !== 2 || selected.length !== 1 || selected[0] !== "firefox")
+      throw new Error("--remaining-firefox requires only firefox");
+    return {
+      selected,
+      reasons: failureReasons.filter((item) => item !== "error"),
+      arms: ["raw-close-failure"] satisfies readonly ShutdownArm[],
+    };
   }
   if (backend !== "indexeddb") throw new Error("Only IndexedDB ordinary shutdown is allocated");
   if (selected.length === 0) throw new Error("Select at least one engine explicitly");
