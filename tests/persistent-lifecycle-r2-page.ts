@@ -1,5 +1,6 @@
 import { FilesystemClient } from "../fs/client";
 import {
+  acquirePublicationGuard,
   createResidentConnection,
   integer,
   record,
@@ -106,6 +107,11 @@ function begin(body: unknown): null {
 async function staleOutcome(body: unknown): Promise<unknown> {
   const data = record(body),
     descriptor = residentDescriptor(data.descriptor);
+  const guard = await acquirePublicationGuard(
+    descriptor.workspace,
+    "shared",
+    new AbortController().signal,
+  );
   const channel = new ResidentChannel(descriptor.workspace);
   try {
     const fresh = residentSession(await channel.call("open", descriptor));
@@ -124,6 +130,7 @@ async function staleOutcome(body: unknown): Promise<unknown> {
     return failures;
   } finally {
     channel.close();
+    await guard.release();
   }
 }
 async function acknowledgedTail(): Promise<unknown> {
@@ -191,6 +198,11 @@ function observe(value: unknown): void {
 /** @browserEntry Native lifecycle controls with an explicit worker owner. */
 export async function control(operation: string, body?: unknown): Promise<unknown> {
   if (operation === "start") return start(body);
+  if (operation === "refusedStart")
+    return start(body).then(
+      () => ({ kind: "ready" }),
+      (error: unknown) => ({ kind: "rejected", errno: Reflect.get(Object(error), "errno") }),
+    );
   if (operation === "owner") {
     const data = record(body);
     return rpc(text(data.operation), data.body);

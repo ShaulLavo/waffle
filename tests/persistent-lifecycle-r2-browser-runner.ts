@@ -34,7 +34,7 @@ function equal(actual: unknown, expected: unknown): void {
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("expected lifecycle record");
+    throw new Error(`expected lifecycle record, got ${JSON.stringify(value)}`);
   return Object.fromEntries(Object.entries(value));
 }
 async function call(page: Page, operation: string, body?: unknown): Promise<unknown> {
@@ -98,11 +98,8 @@ async function locks(
 }
 async function refused(page: Page, name: string): Promise<unknown> {
   try {
-    const result = await call(page, "start", { name }).then(
-      (value) => ({ kind: "ready", value }),
-      (error: unknown) => ({ kind: "rejected", failure: String(error) }),
-    );
-    equal(result.kind, "rejected");
+    const result = await call(page, "refusedStart", { name });
+    equal(result, { kind: "rejected", errno: 6 });
     return result;
   } finally {
     await call(page, "terminate");
@@ -454,7 +451,7 @@ async function run(): Promise<void> {
     });
     await lifecycle(active, steps, evidence.negativeControl === true);
   } catch (error) {
-    evidence.failure = String(error);
+    evidence.failure = error instanceof Error ? error.stack : String(error);
     process.exitCode = 1;
   } finally {
     try {
