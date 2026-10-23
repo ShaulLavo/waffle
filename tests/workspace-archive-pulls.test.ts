@@ -37,7 +37,6 @@ async function* values<T>(items: readonly T[]): AsyncGenerator<T> {
 }
 async function consume(source: AsyncIterable<unknown>): Promise<void> {
   for await (const _item of source) {
-
   }
 }
 function deferred<T>() {
@@ -378,7 +377,7 @@ if (process.argv.includes("--archive-abort-child")) {
       yield { metadata: root };
       yield* entries;
     }
-    expectLeaves(await failure(consume(encodeWorkspaceArchive(manifest, rooted())))), [
+    expectLeaves(await failure(consume(encodeWorkspaceArchive(manifest, rooted()))), [
       0,
       payloadEnd,
       entriesEnd,
