@@ -769,6 +769,24 @@ for (const failure of [undefined, null, false, 0, ""]) {
     expect(value.boundary.snapshots).toBe(0);
   });
 
+  test(`registration failure ${String(failure)} survives reentrant owner close`, async () => {
+    await using value = await fixture();
+    const search = value.search();
+    const controller = new AbortController();
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    let closing: Promise<void> | undefined;
+    controller.signal.addEventListener = (...args) => {
+      add(...args);
+      closing = search.close();
+      throw failure;
+    };
+    const cursor = search.search(query, controller.signal);
+    expect(await cursor.next()).toEqual({ kind: "cleanup-failed", message: String(failure) });
+    expect(cursor.close()).toBe(closing);
+    await rejectsWith(cursor.close(), failure);
+    expect(value.boundary.snapshots).toBe(0);
+  });
+
   test(`failed signal removal preserves ${String(failure)} after joining a held real reader`, async () => {
     await using value = await fixture();
     await value.write("/file");
