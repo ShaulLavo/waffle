@@ -74,6 +74,9 @@ export interface LocalMutationPlan {
   readonly changes: readonly PublicationEffect[];
 }
 export class MemoryBackend implements FilesystemBackend {
+  identity(_handle: FileHandle): import("./file-identity.js").FileIdentity {
+    throw new FilesystemError(52, "durable file identity is not implemented");
+  }
   readonly fs: MemFS;
   constructor(fs = new MemFS()) {
     this.fs = fs;
