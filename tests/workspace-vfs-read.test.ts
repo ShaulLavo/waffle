@@ -574,7 +574,9 @@ test("all public projections of one actual root share the lease budget", async (
       const held = await value.workspace.pin("/file");
       expect(held.kind).toBe("ok");
     }
-    expect(await workspace.pin("/file")).toEqual({ kind: "pressure", resource: "leases" });
+    const extra = await workspace.pin("/file");
+    expect(extra.kind).toBe("pressure");
+    if (extra.kind === "pressure") expect(extra.resource).toBe("leases");
     expect(value.service.resources().readerPinBytes).toBe(PAGE);
   } finally {
     await workspace?.close();
