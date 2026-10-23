@@ -99,7 +99,22 @@ for (const outcome of ["stopped", "wrong-kind", "mismatched-import", "failed-app
     }
     const backend = new Backend();
     const service = new FilesystemService(backend);
-    const pair = createFilesystemConnection(undefined, { observe: true });
+    const pair = createFilesystemConnection(undefined, {
+      observe: true,
+      limits: {
+        sessions: 8,
+        operations: 16,
+        inputBytes: 64,
+        argumentBytes: 1024,
+        effectBytes: 4096,
+        effects: 16,
+        resultBytes: 256,
+        logRecords: 4,
+        logBytes: 16384,
+        pins: 2,
+        pinBytes: 256,
+      },
+    });
     service.connect(pair.server);
     const client = new FilesystemClient(pair.client);
     let pause: Promise<unknown> | undefined;
