@@ -516,6 +516,7 @@ export class FilesystemService {
     operation: string,
     args: any[],
     data: Uint8Array,
+    completion: "await" | "publication" = "await",
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
     if (operation === "take") {
@@ -570,8 +571,9 @@ export class FilesystemService {
         this.finishResult(session, id, operation, operation === "sync" ? 0 : undefined),
       );
     }
-    const result = Promise.resolve(this.backend.execute(operation, args, data));
-    return this.trackWork(session, result).then((value) =>
+    const result = this.backend.execute(operation, args, data);
+    if (completion === "publication") return this.finishResult(session, id, operation, result);
+    return this.trackWork(session, Promise.resolve(result)).then((value) =>
       this.finishResult(session, id, operation, value),
     );
   }
@@ -920,7 +922,7 @@ export class FilesystemService {
         return this.publicationControl(session, operation, args);
       const intent = mutationIntent(operation, args);
       if (!intent) {
-        const value = this.execute(session, id, operation, args, data);
+        const value = this.execute(session, id, operation, args, data, "publication");
         if (value instanceof Promise)
           throw new FilesystemError(58, "publication execute must be synchronous");
         return value;
