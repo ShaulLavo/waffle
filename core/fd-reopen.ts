@@ -5,7 +5,7 @@ import {
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem, FileStat } from "./filesystem.js";
+import type { FileSystem } from "./filesystem.js";
 import { normalize } from "./path.js";
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
@@ -44,7 +44,7 @@ export function openInode(
   table: DescriptorTable,
   fs: FileSystem,
   handle: number,
-  kind: FileStat["kind"],
+  kind: "file" | "directory",
   oflags: number,
   fdflags: number,
   base: bigint,
@@ -81,7 +81,7 @@ function descriptorPath(path: string): number | undefined {
 
 interface PathEntry {
   prefix: string;
-  kind: "file" | "directory";
+  kind: "file" | "directory" | "symlink";
   handle?: number;
   source?: number;
 }

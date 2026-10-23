@@ -14,6 +14,7 @@ import {
   readReply,
   readOpenReply,
   versionStat,
+  nodeMetadata,
 } from "./workspace-protocol.js";
 import { ChangeBudget, NamespaceIndex, ProjectionPressure } from "./workspace-index.js";
 import {
@@ -456,14 +457,14 @@ class RemoteSnapshot implements SnapshotCursor {
         kind: "entries",
         entries: reply.entries
           .filter((record) => record.selected)
-          .map(({ id, version, path, kind, size, mtime, mode }) => ({
-            id,
-            version,
-            path,
-            kind,
-            size,
-            mtime,
-            mode,
+          .map((record) => ({
+            id: record.id,
+            version: record.version,
+            path: record.path,
+            ...nodeMetadata(record),
+            size: record.size,
+            mtime: record.mtime,
+            mode: record.mode,
           })),
       };
     } catch (error) {

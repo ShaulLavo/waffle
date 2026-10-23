@@ -1,6 +1,5 @@
 import { FilesystemError } from "../core/filesystem.js";
-import { normalize } from "../core/path.js";
-import type { DirNode, Node } from "./memory.js";
+import { nodeMetadata, walkTree, type DirNode, type Node } from "./memory.js";
 import type { NamespacePage, NamespaceRecord } from "./workspace-protocol.js";
 import { WORKSPACE_LIMITS, type NamespaceCut, type SnapshotOptions } from "./workspace-types.js";
 
@@ -157,32 +156,27 @@ export class NamespaceCursor {
     const prefix = scan.prefix;
     if (prefix === null) return;
     if (!prefix.startsWith("/") || prefix.includes("\0")) throw new FilesystemError(28);
-    scan.prefix = this.resolvePrefix(scan, prefix) ? normalize(prefix) : null;
+    scan.prefix = this.resolvePrefix(scan, prefix);
     scan.initialized = true;
   }
-  private resolvePrefix(scan: Scan, path: string): boolean {
-    let node: Node = scan.source.root;
-    const parents: DirNode[] = [];
-    for (const part of path.split("/")) {
-      if (!part) continue;
-      if (node.kind !== "dir") throw new FilesystemError(54);
-      const metadata = scan.source.metadata(node);
-      if (this.terminal()) return false;
-      requireAccess(metadata.mode, 1);
-      if (part === ".") continue;
-      if (part === "..") {
-        node = parents.pop() ?? scan.source.root;
-        continue;
-      }
-      const child = node.children.get(part);
-      if (!child) return false;
-      if (parents.length >= this.bounds.depth) throw new CursorPressure("depth");
-      parents.push(node);
-      node = child;
-    }
-    if (path.endsWith("/") && node.kind !== "dir") throw new FilesystemError(54);
-    return true;
+  private resolvePrefix(scan: Scan, path: string): string | null {
+    const result = walkTree(scan.source.root, path, {
+      clampRoot: true,
+      depth: this.bounds.depth,
+      pathUnits: this.bounds.pathUnits,
+      search: (node) => {
+        const metadata = scan.source.metadata(node);
+        if (this.terminal()) throw new FilesystemError(11);
+        requireAccess(metadata.mode, 1);
+      },
+    });
+    if (result === 6) throw new CursorPressure("depth");
+    if (result === 37) throw new CursorPressure("path");
+    if (result === 44) return null;
+    if (typeof result === "number") throw new FilesystemError(result);
+    return result.node === undefined ? null : result.canonicalPath;
   }
+
   private pull(scan: Scan): NamespacePage {
     const entries: NamespaceRecord[] = [];
     let bytes = 0;
@@ -197,7 +191,12 @@ export class NamespaceCursor {
       if (!position && !scan.frames.length) break;
       if (!position) continue;
       const path = this.path(scan, position.name);
-      const charge = 192 + 2 * (path.length + position.name.length);
+      const charge =
+        192 +
+        2 * (path.length + position.name.length) +
+        (position.node.kind === "symlink"
+          ? 2 * position.node.target.length + new TextEncoder().encode(position.node.target).length
+          : 0);
       if (charge > this.bounds.pageBytes) throw new CursorPressure("page");
       if (bytes + charge > this.bounds.pageBytes) {
         scan.pending = position;
@@ -212,7 +211,7 @@ export class NamespaceCursor {
         parent: position.parent,
         name: position.name,
         path,
-        kind: position.node.kind === "dir" ? "directory" : "file",
+        ...nodeMetadata(position.node),
         selected: this.selected(scan, position.node, path),
       });
       bytes += charge;

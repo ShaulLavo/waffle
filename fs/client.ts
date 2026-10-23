@@ -1012,14 +1012,14 @@ export class FilesystemClient implements FileSystem {
       return { readable: true, writable: true, hangup: false };
     }
   }
-  resolve(directory: FileHandle, path: string): ResolvedPath | number {
+  resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
     try {
       const epoch = this.version();
-      const key = `${directory}\0${path}`;
+      const key = `${directory}\0${Number(followFinal)}\0${path}`;
       const cached = this.paths.get(key);
       if (!this.resident && !this.shared.publication && !(epoch & 1) && cached?.epoch === epoch)
         return typeof cached.path === "number" ? cached.path : { ...cached.path };
-      const completion = this.submit("resolve", [directory, path]);
+      const completion = this.submit("resolve", [directory, path, followFinal]);
       try {
         const resolved: ResolvedPath | number = completion.wait();
         if (this.paths.size >= 256) this.paths.clear();
@@ -1509,6 +1509,16 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       return { error: errno(error) };
     }
+  }
+  symlink(path: ResolvedPath, target: string): number {
+    try {
+      return this.call("symlink", [path, target]);
+    } catch (error) {
+      return errno(error);
+    }
+  }
+  readlink(handle: FileHandle): string {
+    return this.call("readlink", [handle]);
   }
   link(from: ResolvedPath, to: ResolvedPath): number {
     try {

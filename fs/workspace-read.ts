@@ -1,5 +1,5 @@
 import { MemoryBackend } from "./backend.js";
-import type { Node, DirNode } from "./memory.js";
+import { nodeMetadata, walkTree, type Node, type DirNode } from "./memory.js";
 import { ReaderPagePressure, type SharedPageVersion } from "./shared-version-pages.js";
 import {
   PayloadRetentionPressure,
@@ -321,25 +321,19 @@ export class WorkspaceReadAuthority {
     return this.lock(() => select(undefined));
   }
   private path(path: string): Node | undefined {
-    const parents: DirNode[] = [];
-    let node: Node = this.backend.fs.root;
-    for (const part of path.split("/")) {
-      if (!part) continue;
-      if (node.kind !== "dir") throw new FilesystemError(54);
-      if (!(this.backend.readMetadata(node).mode! & 0o100)) throw new FilesystemError(2);
-      if (part === ".") continue;
-      if (part === "..") {
-        node = parents.pop() ?? this.backend.fs.root;
-        continue;
-      }
-      if (parents.length >= WORKSPACE_LIMITS.depth) pressure("metadata");
-      parents.push(node);
-      const child = node.children.get(part);
-      if (!child) return undefined;
-      node = child;
-    }
-    if (path.endsWith("/") && node.kind !== "dir") throw new FilesystemError(54);
-    return node;
+    const result = walkTree(this.backend.fs.root, path, {
+      clampRoot: true,
+      followFinal: true,
+      depth: WORKSPACE_LIMITS.depth,
+      pathUnits: WORKSPACE_LIMITS.pathUnits,
+      search: (node) => {
+        if (!(this.backend.readMetadata(node).mode! & 0o100)) throw new FilesystemError(2);
+      },
+    });
+    if (result === 6 || result === 37) pressure("metadata");
+    if (result === 44) return undefined;
+    if (typeof result === "number") throw new FilesystemError(result);
+    return result.node;
   }
   private detached(target: FileTarget): Node | undefined {
     if (this.backend.ensureIdentity(this.backend.fs.root).id === target)
@@ -418,7 +412,7 @@ export class WorkspaceReadAuthority {
       id: metadata.id,
       version: metadata.version,
       cut: current,
-      kind: metadata.kind,
+      ...nodeMetadata(node),
       size: metadata.size,
       mtime: metadata.mtime,
       mode: metadata.mode!,

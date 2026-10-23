@@ -10,7 +10,7 @@ interface Edge {
   readonly charge: number;
 }
 interface IndexedNode {
-  readonly kind: "file" | "directory";
+  readonly kind: "file" | "directory" | "symlink";
   readonly links: Map<string, Edge>;
 }
 export class ProjectionPressure extends Error {
@@ -175,10 +175,14 @@ export class NamespaceIndex {
       case "metadata":
         return { ...file, kind: "metadata", mode: effect.mode, mtime: effect.mtime };
       case "inode":
+        if (effect.nodeKind === "symlink")
+          budget.take(effect.target.length * 2 + new TextEncoder().encode(effect.target).length);
         return {
           ...file,
           kind: "inode",
-          nodeKind: effect.nodeKind,
+          ...(effect.nodeKind === "symlink"
+            ? { nodeKind: "symlink", target: effect.target }
+            : { nodeKind: effect.nodeKind }),
           mode: effect.mode,
           mtime: effect.mtime,
         };

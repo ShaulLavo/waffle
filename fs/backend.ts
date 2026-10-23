@@ -37,6 +37,7 @@ export interface FilesystemBackend {
 const namespaceOperations = new Set([
   "preopen",
   "create",
+  "symlink",
   "link",
   "removePath",
   "rename",
@@ -247,9 +248,9 @@ export class MemoryBackend implements FilesystemBackend {
   private existing(
     path: string,
   ): { handle: FileHandle; node: Extract<Node, { kind: "file" }> } | undefined {
-    let node = this.fs.lookup(path);
+    let node: Node | undefined = this.fs.lookup(path);
     if (!node && path.startsWith("/")) {
-      const resolved = this.fs.resolveAbsolute(path);
+      const resolved = this.fs.resolveAbsolute(path, true);
       if (typeof resolved !== "number" && resolved.node !== undefined)
         node = this.fs.nodeForHandle(resolved.node);
     }
@@ -310,7 +311,10 @@ export class MemoryBackend implements FilesystemBackend {
         return 0;
       case "resolve":
         this.check(a, "directory");
-        return this.fs.resolve(a, b);
+        return this.fs.resolve(a, b, c === true);
+      case "readlink":
+        this.check(a);
+        return this.fs.readlink(a);
       case "stat":
         this.check(a);
         return this.shared.stat(a)!;
@@ -352,13 +356,18 @@ export class MemoryBackend implements FilesystemBackend {
     }
   }
   private lookup(path: string): unknown {
-    const node = this.fs.lookup(path);
+    const node = this.fs.lookup(path, false);
     if (!node) return;
     const metadata = (entry: Node) => {
       const stat = this.shared.stat(this.fs.handleForNode(entry));
-      return { kind: entry.kind, ino: entry.ino, mtime: stat?.mtime ?? entry.mtime };
+      return {
+        kind: entry.kind,
+        ino: entry.ino,
+        mtime: stat?.mtime ?? entry.mtime,
+        ...(entry.kind === "symlink" ? { target: entry.target } : {}),
+      };
     };
-    if (node.kind === "file") return metadata(node);
+    if (node.kind !== "dir") return metadata(node);
     this.fs.readdir(this.fs.handleForNode(node));
     return {
       ...metadata(node),
@@ -487,6 +496,15 @@ export class MemoryBackend implements FilesystemBackend {
           allocation,
         );
       }
+      case "symlink": {
+        this.path(intent.path);
+        const prepared = this.fs.planSymlink(intent.path, intent.target, this.effectBound);
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "number", value: prepared.result },
+          allocation,
+        );
+      }
       case "link":
       case "rename": {
         this.path(intent.from);
@@ -557,7 +575,9 @@ export class MemoryBackend implements FilesystemBackend {
       changes.push({
         kind: "inode",
         file: this.publicationKey(node.ino),
-        nodeKind: node.kind === "dir" ? "directory" : "file",
+        ...(node.kind === "symlink"
+          ? { nodeKind: "symlink", target: node.target }
+          : { nodeKind: node.kind === "dir" ? "directory" : "file" }),
         mode: node.mode,
         mtime: plan.mtime,
       });
@@ -611,17 +631,13 @@ export class MemoryBackend implements FilesystemBackend {
     allocation: IdentityAllocator,
   ): MutationPlan {
     if (intent.append && intent.exclusive) throw new FilesystemError(28);
-    const resolved = this.fs.resolveAbsolute(intent.path);
+    const resolved = this.fs.resolveAbsolute(intent.path, false);
     if (typeof resolved === "number" && resolved !== 44) throw new FilesystemError(resolved);
     if (typeof resolved === "number") this.checkMissingParent(intent.path);
     if (typeof resolved !== "number" && resolved.node !== undefined && intent.exclusive)
       throw new FilesystemError(20);
     if (intent.path.endsWith("/")) throw new FilesystemError(54);
-    const prepared = this.fs.planHostFile(
-      normalize(intent.path),
-      intent.exclusive,
-      this.effectBound,
-    );
+    const prepared = this.fs.planHostFile(intent.path, intent.exclusive, this.effectBound);
     const namespace = this.planNamespace(prepared.plan, { kind: "void" }, allocation);
     if (namespace.action.kind !== "namespace") throw new FilesystemError(29);
     try {

@@ -28,7 +28,7 @@ export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermis
 }
 
 export interface FileStat {
-  kind: "file" | "directory";
+  kind: "file" | "directory" | "symlink";
   ino: number;
   size: number;
   mtime: number;
@@ -56,7 +56,9 @@ export interface FileSystem {
   /** One retain/release pair per open description; duplicates share that lifetime. */
   retain(handle: FileHandle): void;
   release(handle: FileHandle): void;
-  resolve(directory: FileHandle, path: string): ResolvedPath | number;
+  resolve(directory: FileHandle, path: string, followFinal?: boolean): ResolvedPath | number;
+  symlink(path: ResolvedPath, target: string): number;
+  readlink(handle: FileHandle): string;
   stat(handle: FileHandle): FileStat;
   /** Supported clear bits deny access; unsupported bits carry no answer. */
   permissions?(handle: FileHandle): FilePermissions | undefined;

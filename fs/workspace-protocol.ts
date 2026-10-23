@@ -5,6 +5,7 @@ import { decodeEffects, publicationCut, type PublicationCut } from "./publicatio
 import { MAX_IDENTITY_PART, type FileId, type FileVersion } from "./file-identity.js";
 import {
   WORKSPACE_LIMITS,
+  type NodeMetadata,
   type NamespaceCut,
   type NamespaceEntry,
   type SnapshotPage,
@@ -33,11 +34,11 @@ export const workspacePublication: PublicationConfiguration = {
     pinBytes: 65536,
   },
 };
-export interface NamespaceRecord extends NamespaceEntry {
+export type NamespaceRecord = NamespaceEntry & {
   readonly parent: FileId | null;
   readonly selected: boolean;
   readonly name: string;
-}
+};
 export type NamespacePage =
   | Exclude<SnapshotPage, { kind: "entries" }>
   | {
@@ -108,10 +109,24 @@ function cut(value: unknown): NamespaceCut {
     watermark: { history: text(mark.history), seq: mark.seq as ChangeSeq },
   };
 }
+export function nodeMetadata(value: Record<string, unknown>): NodeMetadata {
+  if (value.kind === "file" || value.kind === "directory") {
+    if (value.target !== undefined) throw new FilesystemError(29);
+    return { kind: value.kind };
+  }
+  if (
+    value.kind !== "symlink" ||
+    typeof value.target !== "string" ||
+    !value.target ||
+    value.target.includes("\0")
+  )
+    throw new FilesystemError(29);
+  if (value.size !== new TextEncoder().encode(value.target).length) throw new FilesystemError(29);
+  return { kind: "symlink", target: value.target };
+}
 function entry(value: unknown): NamespaceRecord {
   const data = record(value);
-  if (typeof data.selected !== "boolean" || (data.kind !== "file" && data.kind !== "directory"))
-    throw new FilesystemError(29);
+  if (typeof data.selected !== "boolean") throw new FilesystemError(29);
   const id = identity(data.id),
     version = identity(data.version);
   if (version < id) throw new FilesystemError(29);
@@ -122,7 +137,7 @@ function entry(value: unknown): NamespaceRecord {
     name: text(data.name),
     parent: data.parent === null ? null : (identity(data.parent) as FileId),
     selected: data.selected,
-    kind: data.kind,
+    ...nodeMetadata(data),
     size: integer(data.size),
     mtime: timestamp(data.mtime),
     mode: integer(data.mode),
@@ -231,7 +246,7 @@ export function readCut(value: unknown): NamespaceCut | undefined {
 }
 export function versionStat(value: unknown): import("./workspace-types.js").VersionStat {
   const data = record(value);
-  if (data.kind !== "file" && data.kind !== "directory") throw new FilesystemError(29);
+  const metadata = nodeMetadata(data);
   const selected = cut(data.cut);
   Object.freeze(selected.watermark);
   Object.freeze(selected);
@@ -242,7 +257,7 @@ export function versionStat(value: unknown): import("./workspace-types.js").Vers
     id: id as FileId,
     version: version as FileVersion,
     cut: selected,
-    kind: data.kind,
+    ...metadata,
     size: integer(data.size),
     mtime: timestamp(data.mtime),
     mode: integer(data.mode),

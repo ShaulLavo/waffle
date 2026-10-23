@@ -43,6 +43,7 @@ const mutations = new Set([
   "setMtime",
   "setMode",
   "create",
+  "symlink",
   "link",
   "removePath",
   "rename",
@@ -410,6 +411,7 @@ export class FilesystemService {
         "release",
         "sync",
         "stat",
+        "readlink",
         "permissions",
         "setMode",
         "read",
@@ -423,7 +425,7 @@ export class FilesystemService {
       ].includes(operation)
     )
       this.check(session, a, held);
-    if (["create", "link", "removePath", "rename"].includes(operation)) {
+    if (["create", "symlink", "link", "removePath", "rename"].includes(operation)) {
       this.check(session, a.parent, held);
       this.check(session, a.node, held);
       if (operation === "link" || operation === "rename") {

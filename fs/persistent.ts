@@ -145,15 +145,24 @@ export class PersistentBackend extends MemoryBackend {
               mode: entry.mode ?? 0o700,
               children: new Map(),
             }
-          : {
-              kind: "file",
-              ino: entry.ino,
-              identity: entry.identity && restoreIdentity(entry.identity),
-              mtime: entry.mtime,
-              mode: entry.mode ?? 0o600,
-              size: entry.size,
-              data: new Uint8Array(),
-            },
+          : entry.kind === "symlink"
+            ? {
+                kind: "symlink",
+                ino: entry.ino,
+                identity: entry.identity && restoreIdentity(entry.identity),
+                mtime: entry.mtime,
+                mode: entry.mode ?? 0o600,
+                target: entry.target,
+              }
+            : {
+                kind: "file",
+                ino: entry.ino,
+                identity: entry.identity && restoreIdentity(entry.identity),
+                mtime: entry.mtime,
+                mode: entry.mode ?? 0o600,
+                size: entry.size,
+                data: new Uint8Array(),
+              },
       );
     for (const entry of index.nodes)
       if (entry.kind === "dir") {
@@ -227,9 +236,9 @@ export class PersistentBackend extends MemoryBackend {
     return this.nodes.has(node.ino);
   }
   private resolveNode(path: string): Node | undefined {
-    let node = this.fs.lookup(path);
+    let node: Node | undefined = this.fs.lookup(path);
     if (!node && path.startsWith("/")) {
-      const resolved = this.fs.resolveAbsolute(path);
+      const resolved = this.fs.resolveAbsolute(path, true);
       if (typeof resolved !== "number" && resolved.node !== undefined)
         node = this.fs.nodeForHandle(resolved.node);
     }
@@ -259,7 +268,7 @@ export class PersistentBackend extends MemoryBackend {
   protected sync(handle: FileHandle): void {
     const node = this.fs.nodeForHandle(handle);
     this.registeredNodes.set(handle, node);
-    if (node.kind === "dir") {
+    if (node.kind !== "file") {
       super.sync(handle);
       return;
     }
@@ -314,7 +323,7 @@ export class PersistentBackend extends MemoryBackend {
       if (!stat || revision === undefined) continue;
       const node = this.registeredNodes.get(handle);
       if (!node) continue;
-      if (node.kind === "dir") {
+      if (node.kind !== "file") {
         if (this.shared.evict(handle, revision)) this.registeredNodes.delete(handle);
         continue;
       }
@@ -397,7 +406,7 @@ export class PersistentBackend extends MemoryBackend {
     if (previous !== this.shared) this.configureDirty();
   }
   private namespaceGrowth(plan: NamespacePlan): number {
-    let units = plan.created.length * 256;
+    let units = plan.created.reduce((sum, node) => sum + this.nodeMetadataBytes(node), 0);
     for (const edge of plan.edges) if (edge.after) units += 64 + edge.name.length * 2;
     for (const parent of plan.parents)
       if (!this.dirty.has(parent)) units += this.nodeMetadataBytes(parent);
@@ -577,6 +586,8 @@ export class PersistentBackend extends MemoryBackend {
   }
   private nodeMetadataBytes(node: Node): number {
     let bytes = 256;
+    if (node.kind === "symlink")
+      return bytes + node.target.length * 2 + new TextEncoder().encode(node.target).length;
     if (node.kind !== "dir") return bytes;
     for (const name of node.children.keys()) bytes += 64 + name.length * 2;
     return bytes;
@@ -732,15 +743,25 @@ export class PersistentBackend extends MemoryBackend {
             size: 0,
             children: Array.from(node.children, ([name, child]) => [name, child.ino]),
           }
-        : {
-            ino: node.ino,
-            identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
-            kind: "file",
-            mtime: node.mtime,
-            mode: node.mode,
-            size: node.size ?? node.data.length,
-            data: this.keys.get(node.ino),
-          },
+        : node.kind === "symlink"
+          ? {
+              ino: node.ino,
+              identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+              kind: "symlink",
+              mtime: node.mtime,
+              mode: node.mode,
+              size: new TextEncoder().encode(node.target).length,
+              target: node.target,
+            }
+          : {
+              ino: node.ino,
+              identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
+              kind: "file",
+              mtime: node.mtime,
+              mode: node.mode,
+              size: node.size ?? node.data.length,
+              data: this.keys.get(node.ino),
+            },
     );
     this.dirty.clear();
     const removes = Array.from(this.removed);
