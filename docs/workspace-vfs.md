@@ -1,4 +1,4 @@
-# WorkspaceVfs snapshot and changes
+# WorkspaceVfs reads, snapshots, and changes
 
 `WorkspaceVfs` is the trusted root's read-only namespace projection. Memory and
 persistent runtimes use the same namespace and all-writer publication order as
@@ -12,6 +12,106 @@ Low-level owners can import `createFilesystemConnection`, `FilesystemService`,
 created with `createFilesystemConnection(undefined, { workspace: true })` grants
 observer access. Guest forks do not inherit that grant. Activation after writers
 start is not supported. The root package exports the public contract types.
+
+## Reads and stat
+
+`read(target, range?, atVersion?, signal?)` reads by current absolute path or
+`FileId`. It works before any snapshot. `range` has nonnegative safe-integer
+`offset` and `length` fields. Their sum must also be safe. An omitted range reads
+the selected complete file, subject to the per-result limit below.
+
+An `ok` result contains `value.stat`, `value.range`, and caller-owned
+`value.bytes`. Stat includes the actual `id`, `version`, acquisition `cut`,
+`kind`, `size`, `mtime`, and `mode`. Metadata and cuts are frozen. Byte arrays do
+not alias shared storage. `range.length` equals the returned byte count. Only
+EOF shortens a valid request. Beyond EOF returns zero bytes after identity and
+permission checks. Native missing, corrupt, or short payloads never become a
+short success.
+
+Selection uses the same namespace and lock as writers. A write after selection
+cannot change the bytes or relabel the returned version. Cold reads use bounded
+physical ranges without registering or hydrating the complete file. Resident
+reads retain only intersecting pages. Unregistered memory seed reads copy only
+the requested bytes.
+
+`stat(target, at?, signal?)` selects current metadata when `at` is omitted or
+matches the complete current `NamespaceCut`. A retained lease also supplies stat
+by FileId at its exact acquisition cut. Other old, foreign, or future cuts return
+`generation-gone`. Paths always name the current namespace. Historical path
+lookup is not inferred from a current name or a snapshot index.
+
+## Full version leases
+
+`pin(target, atVersion?, signal?)` returns an `ok` result containing a
+`VersionLease`. Its frozen `stat` records the complete selected version and its
+acquisition cut. `lease.read(range?, signal?)` can read any range of that version,
+including bytes never read before later writes. `lease.close()` forbids new
+borrows, cancels active borrows, and joins their actual I/O before releasing the
+backing. Repeated close returns the same Promise.
+
+A lease survives writes, resize, chmod, rename, unlink, replacement, final file
+handle release, and slot reuse. Resident writers copy pinned pages before any
+mutation. Cold leases retain immutable payload keys in the adapter's GC roots.
+Acquisition does not copy or read a complete payload. Seed leases retain and
+charge their original complete buffer.
+
+With `atVersion`, the current inode must match or this projection must hold a
+matching FileId/version lease. Otherwise read and pin return `version-gone`, even
+if recovery still retains the old physical key. A path naming a replacement
+inode never redirects to the former inode. An absent path is `not-found`; an
+absent ID with an explicit version is `version-gone` unless an owned lease
+supplies it. A lease remains readable after a later chmod because permission was
+checked at acquisition. It grants no write permission.
+
+Reopen preserves surviving FileIds and FileVersions but creates a fresh history.
+Old cuts and leases do not transfer to the new root. Snapshot completion alone
+retains neither historical bytes nor historical stat.
+
+## Read results and pressure
+
+Read, stat, and pin return a discriminated `ReadOutcome`, not a newer-version
+fallback. Refusals include `not-found`, `not-file`, `denied`, `version-gone`,
+`generation-gone`, `restart`, `lease-closed`, `cancelled`, `stopped`, `unavailable`,
+`pressure`, `invalid`, `io`, and `corrupt`. `invalid.field` names `target`,
+`range`, `version`, or `cut`. A bounded ID traversal interrupted by a mutation
+returns `restart` with the current cut. A private resident writer with a pending
+grant returns `unavailable`; staging bytes are never selected.
+
+`WORKSPACE_READ_LIMITS` is exported with these root-wide bounds:
+
+| Resource                                                       |   Bound |
+| -------------------------------------------------------------- | ------: |
+| Explicit leases                                                |      16 |
+| Active read, stat, or pin operations                           |       4 |
+| Returned bytes per read                                        |   1 MiB |
+| In-flight result and transport reservation                     |  16 MiB |
+| Unique retained resident pages and seed buffers                | 256 MiB |
+| Retained disk payloads, including deferred reader-only GC debt | 512 MiB |
+| Charged reader metadata                                        |   2 MiB |
+| Output chunk                                                   |  64 KiB |
+
+A whole-file read over 1 MiB returns `pressure/result-bytes` before payload I/O.
+Read a large file in ranges through its lease instead. Budgets are shared by all
+public projections of the same root. Duplicate leases share physical backing
+charges but each owns metadata and a lease slot. Public roots allocate a fixed
+64 KiB shared page-reference table and 512 bytes of serial-qualified reader
+lifetime state; private roots allocate neither. Guest forks share that
+table without receiving the observer grant.
+
+Result reservations include protocol buffers, service chunks, and the final
+caller array. These deterministic charges are not exact JS heap measurements or
+a combined runtime/index/cache budget. Backend `resources()` diagnostics report
+current and peak reader charges. `WorkspaceVfs` does not expose these diagnostics. Retired shared pages remain in physical `usedBytes` until their
+last reference closes. Released reader-only disk payloads remain charged as
+`readerStorageDebt` until actual native GC deletion. Closing a lease cannot erase
+that deferred debt.
+
+Cancellation and root shutdown stop admission first. Native work, completion
+replies, and backing references remain owned until their actual settlement.
+Close after revocation waits for the service
+to acknowledge the original reader drain. Late delivery cannot recreate a closed lease. Failed cleanup rejects and retains
+its original owner rather than pretending the resource is gone. Signals and
+wall-clock time are not proof that native storage work has stopped.
 
 ## Snapshot
 
@@ -133,7 +233,14 @@ and history. Consumers own previously returned pages and their memory.
 
 ## Scope
 
-This API implements namespace snapshots and changes only. Reads, range reads,
-version leases, live search, index validation, import/export, aggregate memory
-pressure, SAFE durability, endurance certification, and real Safari proof remain
+This API implements namespace snapshots, changes, bounded reads, generation stat,
+and explicit full-file version leases. Live search, index validation,
+import/export, aggregate memory pressure, SAFE durability, endurance
+certification, and real Safari proof remain
 in [the VFS plan](../plans/001-vfs-family.md#4-workspacevfs-beside-wasi).
+
+Cold-key retention metadata stays charged to the root's 2 MiB reader metadata
+limit while reader-only disk debt remains. Aliases share one key charge. Closing
+a lease returns that charge only when normal recovery still owns the key or
+native GC deletes it. The adapter also bounds independently acquired key tokens
+to 2 MiB of retention metadata.

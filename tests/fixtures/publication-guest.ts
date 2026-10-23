@@ -1,4 +1,4 @@
-import { coldPublicationRoot } from "./publication-storage";
+import { fixturePayloadHooks, coldPublicationRoot } from "./publication-storage";
 import { nextReservation } from "../../fs/file-identity";
 import {
   FilesystemClient,
@@ -177,6 +177,7 @@ async function installService(request: ServiceSetup): Promise<void> {
     });
     backend = await PersistentBackend.open(
       {
+        ...fixturePayloadHooks(new Map([["fixture-payload", new Uint8Array([1, 2, 3])]])),
         async reserveIdentity() {
           return nextReservation(undefined);
         },

@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, spyOn, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
@@ -25,6 +26,8 @@ class ControlledStorage implements StorageBackend {
   }
   index?: PersistedIndex;
   readonly payloads = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.payloads).readRange;
+  retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
   readonly events: string[] = [];
   onPersist?: () => void | Promise<void>;
   onFlush?: () => void | Promise<void>;

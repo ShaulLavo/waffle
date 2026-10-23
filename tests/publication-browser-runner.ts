@@ -56,6 +56,9 @@ try {
       resolve(import.meta.dir, workspace ? "workspace-browser.ts" : "publication-browser.ts"),
     ),
     "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+    "/read-worker.js": await browserBundle(
+      resolve(import.meta.dir, "workspace-vfs-read-browser.ts"),
+    ),
     "/guest.js": await browserBundle(resolve(import.meta.dir, "fixtures/publication-guest.ts")),
   });
   const names = process.argv.slice(2).filter((argument) => argument !== "--workspace");
