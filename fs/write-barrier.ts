@@ -80,7 +80,7 @@ export class WriteAdmission {
   }
   private notify(): void {
     Atomics.add(this.cells, CHANGE, 1);
-    if (Atomics.load(this.cells, WAITING)) Atomics.notify(this.cells, CHANGE);
+    Atomics.notify(this.cells, CHANGE);
   }
   get change(): number {
     return Atomics.load(this.cells, CHANGE);

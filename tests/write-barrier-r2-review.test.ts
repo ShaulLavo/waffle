@@ -1,3 +1,4 @@
+import { retainedFile } from "./fixtures/write-barrier-r2-fixture";
 import { expect, test } from "bun:test";
 import { MemoryBackend } from "../fs/backend";
 import { FilesystemClient } from "../fs/client";
@@ -28,11 +29,8 @@ async function fixture(
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
   try {
-    await client.asyncCall("writeFile", ["/shared"], bytes("before"));
-    const root: number = await client.asyncCall("preopen", ["/"]);
-    const path: { node: number } = await client.asyncCall("resolve", [root, "shared"]);
-    client.retain(path.node);
-    await run({ backend, service, client, handle: path.node });
+    const handle = await retainedFile(client);
+    await run({ backend, service, client, handle });
   } finally {
     client.dispose();
     service.dispose();
