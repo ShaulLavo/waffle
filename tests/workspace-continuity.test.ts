@@ -770,3 +770,57 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
     service.dispose();
   }
 });
+
+test("isolated startup flush failure retains and retires actual native guards", async () => {
+  const runner = new BrowserRunnerLifecycle(150000);
+  const name = `continuity-startup-failure-${crypto.randomUUID()}`;
+  const steps: ProofStep[] = [
+    "startup flush fails before ready under native guards",
+    "failed startup stop completes and releases guards",
+  ].map((name) => ({ name, kind: "unrun" }));
+  const evidence: Record<string, unknown> = {};
+  try {
+    await runner.init();
+    const origin = runner.serve(
+      {
+        "/": "<!doctype html><title>Continuity startup failure</title>",
+        "/persistent-lifecycle-r2-page.js": await browserBundle(
+          resolve(import.meta.dir, "persistent-lifecycle-r2-page.ts"),
+        ),
+        "/persistent-lifecycle-r2-owner.js": await ownerBundle(true),
+      },
+      await unusedPort(),
+    );
+    const browser = await runner.launch("chromium");
+    evidence.browser = browser.version();
+    const page = await browser.newPage();
+    page.on("pageerror", (error) => console.error("startup fixture page error", error));
+    page.on("console", (message) => console.log("startup fixture", message.text()));
+    await page.goto(origin);
+    await runStep(steps, 0, async () => {
+      const outcome = await call(page, "start", { name }).then(
+        (value) => ({ kind: "ready", value }),
+        (error: unknown) => ({ kind: "rejected", failure: String(error) }),
+      );
+      equal(outcome.kind, "rejected");
+      const failure = record(outcome).failure;
+      if (
+        typeof failure !== "string" ||
+        !failure.includes("injected-startup-flush-failure") ||
+        !failure.includes(`bun-wasm:filesystem:indexeddb:${name}`) ||
+        !failure.includes("continuity:bootstrap:")
+      )
+        throw new Error("startup failure did not observe native ownership guards");
+      return outcome;
+    });
+    await runStep(steps, 1, async () => {
+      await owner(page, "stop");
+      equal(await call(page, "locks"), { held: [], pending: [] });
+      await call(page, "terminate");
+      return { locks: await call(page, "locks"), deleted: await call(page, "delete", name) };
+    });
+  } finally {
+    await runner.close();
+    console.log(reportJson(proofReport(evidence, steps)));
+  }
+}, 150000);
