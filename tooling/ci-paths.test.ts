@@ -102,8 +102,8 @@ test("package runs each test root once without repeating preparation", () => {
   const steps = record(jobs.package).steps;
   if (!Array.isArray(steps)) throw new Error("expected package steps");
   const commands = steps.map((step) => record(step).run);
-  expect(
-    commands.filter((command) => command === "bun run test && bun run test:ci"),
-  ).toHaveLength(1);
+  expect(commands.filter((command) => command === "bun run test && bun run test:ci")).toHaveLength(
+    1,
+  );
   expect(commands).not.toContain("bun run prepare");
 });
