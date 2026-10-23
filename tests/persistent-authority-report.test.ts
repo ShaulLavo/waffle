@@ -33,6 +33,15 @@ test("equal native bigint identities do not need JSON coercion", () => {
   proofEqual([freezeIdentity], [{ ...freezeIdentity }]);
 });
 
+test("byte effects retain the runners' Uint8Array-to-record comparison", () => {
+  const actual = { file: identity, bytes: new Uint8Array([41]) };
+  const expected = { file: { ...identity }, bytes: { 0: 41 } };
+  proofEqual(actual, expected);
+  expect(() => proofEqual(actual, { ...expected, bytes: { 0: 42 } })).toThrow();
+  expect(() => proofEqual(actual, { ...expected, file: freezeIdentity })).toThrow();
+  expect(() => proofEqual(new Date(0), {})).toThrow();
+});
+
 test("unequal native identities retain the exact assertion diagnostic", () => {
   const failure = failedComparison();
   expect(failure).not.toBeInstanceOf(TypeError);

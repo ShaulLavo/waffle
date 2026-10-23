@@ -5,8 +5,19 @@ export type ProofStep =
   | { name: string; kind: "completed"; value: unknown }
   | { name: string; kind: "failed"; failure: string };
 
+function comparisonValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return Object.fromEntries(value.entries());
+  if (Array.isArray(value)) return value.map(comparisonValue);
+  if (value === null || typeof value !== "object") return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, comparisonValue(item)]),
+  );
+}
+
 export function proofEqual(actual: unknown, expected: unknown): void {
-  if (!isDeepStrictEqual(actual, expected))
+  if (!isDeepStrictEqual(comparisonValue(actual), comparisonValue(expected)))
     throw new Error(`Expected ${reportJson(expected)}, got ${reportJson(actual)}`);
 }
 
