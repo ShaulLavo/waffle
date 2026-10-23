@@ -344,15 +344,16 @@ export class SharedFilesystem {
     } catch (error) { return Promise.reject(error); }
     void preparing.catch(() => {});
     const result = this.writes.then(async () => {
-      const prepared = await preparing;
+      let prepared: Awaited<typeof preparing> | undefined;
       try {
+        prepared = await preparing;
         this.assertLive();
         this.client.dispatch(prepared);
         return await prepared.value();
       } catch (error) {
         this.assertLive();
         throw error;
-      } finally { prepared.release(); }
+      } finally { prepared?.release(); }
     });
     this.writes = result.catch((error) => { this.failure ??= { error }; });
     return result;
