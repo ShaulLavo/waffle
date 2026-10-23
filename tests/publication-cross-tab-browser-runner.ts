@@ -1,3 +1,4 @@
+import { workspaceCleanupPostFailure } from "./fixtures/publication-cleanup-failure";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { resolve } from "node:path";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
@@ -434,32 +435,94 @@ async function lateReservationCleanup(page: Page): Promise<void> {
     "PASS observed actual parent cleanup joins later pre-bind child cancellation before closed-once exit ACK",
   );
 }
-async function failedCleanup(page: Page): Promise<void> {
-  await control(page, "workspaceGuest", { key: "lost", mode: "proc", cleanupFailure: true });
+async function continuityGuards(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const locks = await navigator.locks.query();
+    return (locks.held ?? []).filter((lock) =>
+      lock.name?.startsWith("waffle:publication:continuity:"),
+    ).length;
+  });
+}
+async function unknownCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "lost", mode: "proc" });
   const before = record(await workspaceChannels(page));
+  const guards = await continuityGuards(page);
   await channelBarrier(page, "workspace");
   await workspaceGuest(page, "lost", "beginPending");
   await heldChannel(page);
   await control(page, "workspaceGuestSignalStop", { key: "lost" });
   await waitForCancellation(page, Number(before.cancelled));
+  await waitForCancellation(page, Number(before.cancelled) + 1);
+  await control(page, "workspaceGuestPendingSettled", { key: "lost" });
+  equal(await control(page, "workspaceGuestStatus", { key: "lost" }), {
+    exit: false,
+    finished: false,
+    cleanupError: false,
+  });
+  const held = record(await workspaceChannels(page));
+  equal(held.closed, before.closed);
+  equal(held.pending, 1);
+  equal(held.held, 1);
+  equal(held.closedPending, 0);
+  equal(await continuityGuards(page), guards);
+  equal(await control(page, "exclusive"), false);
+  await channelBarrier(page, "release");
   equal(
-    record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "cleanup-error" }))
-      .type,
-    "cleanup-error",
+    record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "exit" })).type,
+    "exit",
   );
-  equal(record(await control(page, "workspaceGuestStatus", { key: "lost" })).exit, false);
+  equal(await control(page, "workspaceGuestStatus", { key: "lost" }), {
+    exit: true,
+    finished: true,
+    cleanupError: false,
+  });
+  const reconciled = record(await workspaceChannels(page));
+  equal(reconciled.closed, Number(before.closed) + 1);
+  equal(reconciled.pending, 0);
+  equal(reconciled.held, 0);
+  equal(reconciled.closedPending, 0);
+  equal(await continuityGuards(page), guards - 1);
+  await control(page, "workspaceStop");
+  await control(page, "workspaceAuthorityStop");
+  equal(await control(page, "exclusive"), true);
+  console.log("WORKSPACE_UNKNOWN_CLEANUP=" + JSON.stringify({ before, held, reconciled, guards }));
+  await control(page, "workspaceGuestDeath", { key: "lost" });
+  console.log(
+    "PASS unknown workspace reply keeps original stop and guard pending past the caller deadline; delivery of its original matching reply reconciles exit and channel close before guest death",
+  );
+}
+async function failedCleanup(page: Page): Promise<void> {
+  await control(page, "workspaceGuest", { key: "failed", mode: "proc", cleanupFailure: true });
+  const before = record(await workspaceChannels(page));
+  await control(page, "workspaceGuestSignalStop", { key: "failed" });
+  const failure = record(
+    await control(page, "workspaceGuestTerminal", { key: "failed", event: "cleanup-error" }),
+  );
+  equal(failure.type, "cleanup-error");
+  if (typeof failure.message !== "string" || !failure.message.includes(workspaceCleanupPostFailure))
+    throw new Error("missing explicit cleanup post failure");
+  equal(await control(page, "workspaceGuestStatus", { key: "failed" }), {
+    exit: false,
+    finished: true,
+    cleanupError: true,
+  });
   equal(record(await workspaceChannels(page)).closed, before.closed);
+  equal(record(await workspaceChannels(page)).pending, 0);
+  console.log("WORKSPACE_EXPLICIT_CLEANUP_FAILURE=" + JSON.stringify(failure));
   await control(page, "workspaceStop");
   await control(page, "authorityDeath");
   equal(await control(page, "exclusive"), false);
-  await control(page, "workspaceGuestDeath", { key: "lost" });
+  await control(page, "workspaceGuestDeath", { key: "failed" });
   equal(await control(page, "exclusive"), true);
-  await channelBarrier(page, "release");
   console.log(
-    "PASS lost workspace reply emits cleanup-error without exit ACK/channel close; native worker death alone releases retained continuity",
+    "PASS explicit workspace cleanup post failure emits cleanup-error without exit ACK/channel close; native worker death alone releases retained continuity",
   );
 }
-async function workspaceCleanupControls(browser: Browser, origin: string): Promise<void> {
+async function workspaceCleanupPage(
+  browser: Browser,
+  origin: string,
+  exercise: (page: Page) => Promise<void>,
+): Promise<void> {
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
@@ -469,14 +532,31 @@ async function workspaceCleanupControls(browser: Browser, origin: string): Promi
     await page.goto(origin);
     const descriptor = await control(page, "workspaceAuthority", `cleanup-${crypto.randomUUID()}`);
     await control(page, "workspacePeer", descriptor);
+    await exercise(page);
+  } finally {
+    await context.close();
+  }
+}
+async function workspaceCleanupControls(browser: Browser, origin: string): Promise<void> {
+  await workspaceCleanupPage(browser, origin, async (page) => {
     await startupCleanup(page);
     await pendingCleanup(page);
     await transferCleanup(page);
     await repeatedCleanup(page);
     await lateReservationCleanup(page);
-    await failedCleanup(page);
+    await unknownCleanup(page);
+  });
+  await workspaceCleanupPage(browser, origin, failedCleanup);
+}
+async function runWorkspaceCleanup(name: string, origin: string): Promise<void> {
+  if (name !== "chromium" && name !== "firefox" && name !== "webkit")
+    throw new Error(`unknown browser ${name}`);
+  const browser = await lifecycle.launch(name);
+  try {
+    await workspaceCleanupControls(browser, origin);
+    console.log(`${name} ${browser.version()}: workspace cleanup controls passed`);
   } finally {
-    await context.close();
+    await lifecycle.closeBrowser(browser);
   }
 }
 async function currentPersistentBaseline(page: Page): Promise<void> {
@@ -909,20 +989,29 @@ async function run(name: string, origin: string, persistentOnly: boolean): Promi
 }
 try {
   await lifecycle.init();
-  const origin = lifecycle.serve({
-    "/": "<!doctype html><title>Private resident controls</title>",
-    "/cross-tab.js": await browserBundle(
-      resolve(import.meta.dir, "publication-cross-tab-browser.ts"),
-    ),
-    "/resident-authority.js": await browserBundle(
-      resolve(import.meta.dir, "fixtures/publication-resident-authority.ts"),
-    ),
-    "/resident-guest.js": await guestBundle(),
-    "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
-  });
+  const origin = lifecycle.serve(
+    {
+      "/": "<!doctype html><title>Private resident controls</title>",
+      "/cross-tab.js": await browserBundle(
+        resolve(import.meta.dir, "publication-cross-tab-browser.ts"),
+      ),
+      "/resident-authority.js": await browserBundle(
+        resolve(import.meta.dir, "fixtures/publication-resident-authority.ts"),
+      ),
+      "/resident-guest.js": await guestBundle(),
+      "/fs-worker.js": await browserBundle(resolve(import.meta.dir, "../browser/fs-worker.ts")),
+    },
+    Number(process.env.PUBLICATION_CROSS_TAB_PORT ?? 0),
+  );
+  const cleanupOnly = process.argv.includes("--workspace-cleanup-only");
   const persistentOnly = process.argv.includes("--persistent-owner-only");
-  const names = process.argv.slice(2).filter((name) => name !== "--persistent-owner-only");
-  for (const name of names.length ? names : ["chromium"]) await run(name, origin, persistentOnly);
+  const names = process.argv
+    .slice(2)
+    .filter((name) => name !== "--persistent-owner-only" && name !== "--workspace-cleanup-only");
+  for (const name of names.length ? names : ["chromium"]) {
+    if (cleanupOnly) await runWorkspaceCleanup(name, origin);
+    else await run(name, origin, persistentOnly);
+  }
 } finally {
   await lifecycle.close();
 }

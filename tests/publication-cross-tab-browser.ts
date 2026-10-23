@@ -549,6 +549,7 @@ async function workspaceGuestControl(
     return terminal;
   }
   if (operation === "workspaceGuestReady") return guest.worker.until("ready");
+  if (operation === "workspaceGuestPendingSettled") return guest.worker.until("pendingSettled");
   if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
   if (operation === "workspaceGuestRevoke") {
     revokeFilesystem(guest.connection);
@@ -609,7 +610,12 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     guests.set(text(body.key), { worker, connection });
     await worker.request(
       "start",
-      { mode: text(body.mode), connection, failSetup: body.failSetup },
+      {
+        mode: text(body.mode),
+        connection,
+        failSetup: body.failSetup,
+        cleanupFailure: body.cleanupFailure,
+      },
       [connection.port],
     );
     return worker.until(body.failSetup === true ? "finished" : "ready");

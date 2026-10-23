@@ -8,7 +8,7 @@ const lifecycle = new BrowserRunnerLifecycle(150_000);
 const negative = process.argv.includes("--negative-control");
 const reportPath = process.env.OWNER_FREEZE_REPORT;
 const evidence: Record<string, unknown> = {
-  base: "e0ef92157dcc8ac658be30a372dffa0534c63fa6",
+  base: "c80dcab9636486121e80463c81b8474b83408836",
   negativeControl: negative,
   mechanism: "CDP Debugger.pause on the actual persistent authority dedicated worker",
 };
@@ -347,6 +347,20 @@ async function teardown(
   }
   return result;
 }
+function assertDefinitiveCleanup(value: unknown): void {
+  const result = record(value);
+  for (let index = 0; index < 4; index++) {
+    const cleanup = record(record(result[`page${index}`]).cleanup);
+    equal(cleanup.pendingRpc, 0);
+    if (cleanup.peer !== undefined) equal(record(cleanup.peer).kind, "stopped");
+    if (index !== 1) continue;
+    equal(cleanup.guestCleanupError, null);
+    equal(record(cleanup.guestExit).code, 0);
+    equal(record(cleanup.guestFinished).event, "finished");
+  }
+  equal(record(result.ownerStop).kind, "stopped");
+  equal(record(record(result.ownerStop).value).stopped, true);
+}
 interface RunState {
   readonly browser: Browser;
   readonly context: BrowserContext;
@@ -512,6 +526,8 @@ async function scenario(browser: Browser, origin: string): Promise<void> {
   } finally {
     try {
       evidence.teardown = await teardown(state.pages, state.debug, state.deaths, state.name);
+      if (!negative && steps.every((step) => step.kind === "completed"))
+        assertDefinitiveCleanup(evidence.teardown);
     } finally {
       await context.close();
     }
