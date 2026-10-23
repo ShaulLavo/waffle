@@ -590,14 +590,7 @@ export class FilesystemService {
       for (const segment of segments)
         for (const peer of this.sessions)
           peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
-      const binary = value instanceof Uint8Array;
-      const result = binary ? value : pack(value);
-      cells[2] = result.length;
-      cells[4] = binary ? 1 : 0;
-      if (result.length > bytes.length) {
-        session.responses.set(id, result);
-        state = State.Overflow;
-      } else bytes.set(result);
+      state = this.writeResponse(session, id, cells, bytes, value);
     } catch (error) {
       if (
         error instanceof DirtyCapacityError &&
@@ -647,6 +640,24 @@ export class FilesystemService {
       );
       this.joinPreparation(session, id, buffer, prepared, wait);
     }
+  }
+  private writeResponse(
+    session: Session,
+    id: number,
+    cells: Int32Array,
+    bytes: Uint8Array,
+    value: unknown,
+  ): State {
+    const binary = value instanceof Uint8Array;
+    const result = binary ? value : pack(value);
+    cells[2] = result.length;
+    cells[4] = binary ? 1 : 0;
+    if (result.length > bytes.length) {
+      session.responses.set(id, result);
+      return State.Overflow;
+    }
+    bytes.set(result);
+    return State.Complete;
   }
   private joinPreparation(
     session: Session,
