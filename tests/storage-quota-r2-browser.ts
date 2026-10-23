@@ -1,5 +1,6 @@
 import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { PersistentBackend } from "../fs/persistent.js";
+import { FilesystemError } from "../core/filesystem.js";
 import type {
   PersistedIndex,
   PersistedNode,
@@ -73,44 +74,119 @@ function revision(generation: number, prefix = "churn"): PersistenceBatch {
   }
   return { generation, root: 1, upserts, removes: generation % 2 ? [] : [4], data };
 }
+type RootImage = { index: PersistedIndex; data: Map<string, Uint8Array> };
+function ordered(index: PersistedIndex): PersistedIndex {
+  return { ...index, nodes: index.nodes.toSorted((a, b) => a.ino - b.ino) };
+}
+async function captureRoot(storage: StorageBackend): Promise<RootImage> {
+  const index = structuredClone(await storage.load());
+  assert(index, "checkpoint root absent");
+  const data = new Map<string, Uint8Array>();
+  for (const node of index.nodes) {
+    if (node.data === undefined) continue;
+    data.set(node.data, new Uint8Array(await storage.read(node.data)));
+  }
+  return { index, data };
+}
+async function verifyImage(storage: StorageBackend, wanted: RootImage): Promise<PersistedIndex> {
+  const index = await storage.load();
+  assert(index, "selected root absent");
+  assert(
+    JSON.stringify(ordered(index)) === JSON.stringify(ordered(wanted.index)),
+    `generation ${wanted.index.generation} complete root differs`,
+  );
+  for (const [key, target] of wanted.data) {
+    const bytes = await storage.read(key);
+    assert(
+      bytes.length === target.length && bytes.every((value, i) => value === target[i]),
+      `payload ${key} changed`,
+    );
+  }
+  return index;
+}
+function candidateRoot(before: RootImage, batch: PersistenceBatch): RootImage {
+  const nodes = new Map(before.index.nodes.map((node) => [node.ino, structuredClone(node)]));
+  for (const ino of batch.removes) nodes.delete(ino);
+  for (const node of batch.upserts) nodes.set(node.ino, structuredClone(node));
+  const data = new Map(before.data);
+  for (const [key, bytes] of batch.data) data.set(key, new Uint8Array(bytes));
+  const selected = new Set(Array.from(nodes.values(), (node) => node.data));
+  for (const key of data.keys()) if (!selected.has(key)) data.delete(key);
+  return {
+    index: {
+      version: 1,
+      generation: batch.generation,
+      root: batch.root,
+      nodes: Array.from(nodes.values()),
+    },
+    data,
+  };
+}
+function verifyValue(image: RootImage, path: string, text: string): void {
+  const root = image.index.nodes.find((node) => node.ino === image.index.root);
+  assert(root?.kind === "dir", "candidate root is not a directory");
+  const ino = root.children?.find(([name]) => name === path)?.[1];
+  const node = image.index.nodes.find((entry) => entry.ino === ino);
+  assert(node?.kind === "file" && node.data !== undefined, `candidate /${path} absent`);
+  const bytes = image.data.get(node.data);
+  const target = new TextEncoder().encode(text);
+  assert(
+    bytes?.length === target.length && bytes.every((value, i) => value === target[i]),
+    `candidate /${path} bytes differ`,
+  );
+}
 async function verifyRoot(
   storage: StorageBackend,
   generation: number,
   prefix = "churn",
 ): Promise<PersistedIndex> {
-  const index = await storage.load();
-  assert(
-    index?.generation === generation,
-    `selected generation ${index?.generation}, expected ${generation}`,
-  );
   const wanted = revision(generation, prefix);
-  assert(
-    JSON.stringify(index.nodes.toSorted((a, b) => a.ino - b.ino)) ===
-      JSON.stringify(wanted.upserts),
-    `generation ${generation} namespace differs`,
-  );
-  for (const node of index.nodes) {
-    if (!node.data) continue;
-    const bytes = await storage.read(node.data);
-    const target = expected(node.data);
-    assert(
-      bytes.length === target.length && bytes.every((value, i) => value === target[i]),
-      `payload ${node.data} changed`,
-    );
-  }
-  return index;
+  return verifyImage(storage, {
+    index: { version: 1, generation, root: wanted.root, nodes: wanted.upserts },
+    data: new Map(
+      wanted.upserts.flatMap<[string, Uint8Array]>((node) =>
+        node.data === undefined ? [] : [[node.data, expected(node.data)]],
+      ),
+    ),
+  });
 }
-async function rejected(action: Promise<unknown>, match: RegExp): Promise<void> {
+async function rejected(action: Promise<unknown>): Promise<unknown> {
   try {
     await action;
   } catch (error) {
-    assert(match.test(String(error)), `wrong rejection ${String(error)}, expected ${match}`);
+    return error;
+  }
+  throw new Error("unexpected successful acknowledgement");
+}
+async function retainedFailure(action: Promise<unknown>, failure: unknown): Promise<void> {
+  assert(Object.is(await rejected(action), failure), "flush did not retain the save failure");
+}
+function verifyFault(probe: QuotaProbe, fault: Exclude<Fault, "cleanup">, error: unknown): void {
+  const injected = probe.failure;
+  assert(injected?.fault === fault, "expected native fault was not injected");
+  if (fault === "payload-quota")
+    assert(
+      injected.reason instanceof DOMException && injected.reason.name === "QuotaExceededError",
+      "injected quota fault has the wrong category",
+    );
+  if (probe.kind === "indexeddb") {
+    assert(Object.is(error, injected.reason), "IndexedDB did not propagate the injected fault");
     return;
   }
-  throw new Error(`unexpected successful acknowledgement, expected ${match}`);
+  assert(
+    error instanceof Error &&
+      "code" in error &&
+      error.code === (fault === "payload-quota" ? "ENOSPC" : "EIO") &&
+      Object.is(error.cause, injected.reason),
+    "OPFS did not preserve the fault code and injected cause",
+  );
 }
-async function writeCheckpoint(backend: PersistentBackend, text: string): Promise<void> {
-  const args = ["/value", false, false];
+async function writeCheckpoint(
+  backend: PersistentBackend,
+  text: string,
+  path = "/value",
+): Promise<void> {
+  const args = [path, false, false];
   await backend.prepare("writeFile", args);
   await backend.execute("writeFile", args, new TextEncoder().encode(text));
 }
@@ -239,8 +315,9 @@ class Scenario {
     for (let generation = 1; generation <= 6; generation++) await this.save(storage, generation);
     const before = await this.observe("before-failure", 6);
     this.probe.fault = fault;
-    await rejected(storage.persist(revision(7)), /injected|ENOSPC/);
-    await rejected(storage.flush(), /injected|ENOSPC/);
+    const failure = await rejected(storage.persist(revision(7)));
+    verifyFault(this.probe, fault, failure);
+    await retainedFailure(storage.flush(), failure);
     this.probe.fault = undefined;
     const after = await this.observe("failed-save", 6);
     assert(this.probe.counts.faultHits > 0, "fault did not hit the native write boundary");
@@ -326,17 +403,28 @@ class Scenario {
       intervalMs: 0,
       checkpointLimits: { maxOperations: 2 },
     });
+    let candidate: RootImage | undefined;
+    let submissions = 0;
     try {
+      await writeCheckpoint(backend, "unchanged sibling bytes", "/anchor");
       await writeCheckpoint(backend, "old acknowledged bytes");
       await backend.flush();
       const baseline = await storage.load();
       assert(baseline, "baseline checkpoint absent");
       await this.slowCheckpoints(backend);
-      const beforeFailure = await storage.load();
+      const beforeFailure = await captureRoot(storage);
       assert(
-        beforeFailure?.generation === baseline.generation + 2,
+        beforeFailure.index.generation === baseline.generation + 2,
         "slow saves did not commit exactly twice",
       );
+      verifyValue(beforeFailure, "value", "slow second bytes");
+      verifyValue(beforeFailure, "anchor", "unchanged sibling bytes");
+      const persist = storage.persist.bind(storage);
+      storage.persist = (batch) => {
+        candidate = candidateRoot(beforeFailure, batch);
+        submissions++;
+        return persist(batch);
+      };
       await writeCheckpoint(backend, "failed candidate bytes");
       this.probe.fault = "commit";
       const failed = backend.flush();
@@ -345,25 +433,26 @@ class Scenario {
         pending.pendingOperations === 1 && pending.pendingBytes > 0,
         "captured checkpoint debt was not observed",
       );
-      await rejected(failed, /injected/);
+      const failure = await rejected(failed);
+      verifyFault(this.probe, "commit", failure);
       this.probe.fault = undefined;
-      await this.observe("failed-checkpoint", beforeFailure.generation);
+      await this.observe("failed-checkpoint", beforeFailure.index.generation);
       const idle = this.debt(backend);
       assert(
         idle.pendingOperations === 0 && idle.pendingBytes === 0 && idle.pendingMetadataBytes === 0,
         "failed checkpoint retained capture debt",
       );
-      assert(
-        (await storage.load())?.generation === beforeFailure.generation,
-        "failed checkpoint advanced durable generation",
-      );
-      await rejected(storage.flush(), /injected/);
+      await verifyImage(storage, beforeFailure);
+      await retainedFailure(storage.flush(), failure);
       await backend.flush();
-      const saved = await storage.load();
+      assert(submissions === 2 && candidate, "retry did not submit exactly one new candidate root");
+      const saved = await verifyImage(storage, candidate);
       assert(
-        saved?.generation === beforeFailure.generation + 1,
+        saved.generation === beforeFailure.index.generation + 1,
         "retry did not advance exactly one durable generation",
       );
+      verifyValue(candidate, "value", "failed candidate bytes");
+      verifyValue(candidate, "anchor", "unchanged sibling bytes");
       const idleAfterRetry = this.debt(backend);
       assert(
         idleAfterRetry.pendingOperations === 0 && idleAfterRetry.pendingBytes === 0,
@@ -374,15 +463,13 @@ class Scenario {
       this.probe.fault = undefined;
       backend.dispose();
     }
-    const reopened = await this.probe.open();
-    const index = await reopened.load();
-    const node = index?.nodes.find((entry) => entry.kind === "file");
-    assert(node?.data, "retry payload absent after reopen");
-    assert(
-      new TextDecoder().decode(await reopened.read(node.data)) === "failed candidate bytes",
-      "retry failed to persist current dirty data",
-    );
-    await this.observe("checkpoint-retry-reopened", index!.generation);
+    assert(candidate, "retry candidate absent");
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const reopened = await this.probe.open();
+      await verifyImage(reopened, candidate);
+      await this.observe(`checkpoint-retry-reopened-${attempt}`, candidate.index.generation);
+      await this.probe.close(reopened);
+    }
   }
   private async slowCheckpoints(backend: PersistentBackend): Promise<void> {
     const gate = this.probe.pause();
@@ -398,7 +485,11 @@ class Scenario {
         debt.pendingOperations === 2 && debt.queuedOperations === 1,
         "slow storage did not hold one running and one queued checkpoint",
       );
-      await rejected(backend.flush(), /pressure/);
+      const pressure = await rejected(backend.flush());
+      assert(
+        pressure instanceof FilesystemError && pressure.errno === 6,
+        "wrong checkpoint pressure error",
+      );
       assert(
         this.debt(backend).pendingBytes === debt.pendingBytes,
         "rejected checkpoint added capture debt",

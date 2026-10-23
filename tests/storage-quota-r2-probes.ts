@@ -190,6 +190,7 @@ export class QuotaProbe {
     faultHits: 0,
   };
   fault: Fault | undefined;
+  failure: { fault: Exclude<Fault, "cleanup">; reason: unknown } | undefined;
   private restorers: (() => void)[] = [];
   private owners = new Set<StorageBackend>();
   private held: { release: Completion; started: Completion } | undefined;
@@ -282,12 +283,13 @@ export class QuotaProbe {
   }
   private failPut(store: string, key?: IDBValidKey): void {
     if (this.fault === "payload-quota" && store === "data" && Array.isArray(key)) {
-      this.counts.faultHits++;
-      throw new DOMException("injected quota after real chunk put", "QuotaExceededError");
+      this.fail(
+        "payload-quota",
+        new DOMException("injected quota after real chunk put", "QuotaExceededError"),
+      );
     }
     if (this.fault !== "commit" || store !== "metadata" || key !== "active") return;
-    this.counts.faultHits++;
-    throw new Error("injected commit failure after real active put");
+    this.fail("commit", new Error("injected commit failure after real active put"));
   }
   private instrumentOPFS(): void {
     const counts = this.counts;
@@ -347,8 +349,10 @@ export class QuotaProbe {
     const count = access.write(partial ? bytes.subarray(0, 1) : bytes, options);
     this.counts.writeBytes += count;
     if (!partial) return count;
-    this.counts.faultHits++;
-    throw new DOMException("injected quota after partial real payload write", "QuotaExceededError");
+    return this.fail(
+      "payload-quota",
+      new DOMException("injected quota after partial real payload write", "QuotaExceededError"),
+    );
   }
   private flush(access: SyncAccess, name: string): void {
     if (
@@ -359,8 +363,12 @@ export class QuotaProbe {
       access.flush();
       return;
     }
+    this.fail("commit", new Error("injected commit failure before snapshot flush"));
+  }
+  private fail(fault: Exclude<Fault, "cleanup">, reason: unknown): never {
     this.counts.faultHits++;
-    throw new Error("injected commit failure before snapshot flush");
+    this.failure = { fault, reason };
+    throw reason;
   }
   async destroy(): Promise<void> {
     this.fault = undefined;
