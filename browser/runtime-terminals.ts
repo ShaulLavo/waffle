@@ -118,3 +118,39 @@ export function createRuntimeTerminalCodec(
     },
   };
 }
+
+export {
+  createTerminalSession,
+  claimTerminalAuthority,
+  attachTerminal,
+  terminalControls,
+  TERMINAL_SESSION_LIMITS,
+} from "./terminal-session.js";
+export type {
+  TerminalIdentity,
+  TerminalContext,
+  TerminalGroup,
+  TerminalMember,
+  TerminalMemberPlan,
+  TerminalLease,
+  TerminalSelection,
+  TerminalMode,
+  TerminalTarget,
+  TerminalReason,
+  TerminalFailure,
+  TerminalResult,
+  TerminalGeometry,
+  TerminalGeometrySnapshot,
+  TerminalSnapshot,
+  TerminalTurn,
+  TerminalChange,
+  TerminalPolicy,
+  TerminalDisplay,
+  TerminalPlannedMember,
+  TerminalAdmittedMember,
+  TerminalMemberUpdate,
+  TerminalAuthority,
+  TerminalGeometrySubscription,
+  TerminalControls,
+  TerminalAttachment,
+} from "./terminal-session.js";

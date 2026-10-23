@@ -1,0 +1,1421 @@
+import type { Readiness, Resource, Stream } from "../core/descriptors.js";
+
+const identityBrand = Symbol();
+const contextBrand = Symbol();
+const groupBrand = Symbol();
+const memberBrand = Symbol();
+const planBrand = Symbol();
+const leaseBrand = Symbol();
+const stampBrand = Symbol();
+const turnBrand = Symbol();
+
+export interface TerminalIdentity {
+  readonly [identityBrand]: true;
+}
+
+export interface TerminalContext {
+  readonly [contextBrand]: true;
+}
+
+export interface TerminalGroup {
+  readonly [groupBrand]: true;
+}
+export interface TerminalMember {
+  readonly [memberBrand]: true;
+}
+export interface TerminalMemberPlan {
+  readonly [planBrand]: true;
+}
+
+export interface TerminalLease {
+  readonly [leaseBrand]: true;
+}
+
+export type TerminalSelection = number & { readonly [stampBrand]: true };
+export type TerminalMode = "raw" | "cooked";
+export type TerminalTarget = 0 | 1 | 2;
+export type TerminalReason = "completed" | "start-failed" | "cancelled" | "disposed" | "failed";
+export type TerminalFailure =
+  | "AGAIN"
+  | "CLOSED"
+  | "STALE"
+  | "DENIED"
+  | "CAPACITY"
+  | "INVALID"
+  | "PROCESS_GONE"
+  | "CANCELED"
+  | "EXHAUSTED";
+export type TerminalResult<T> =
+  | { readonly kind: "ok"; readonly value: T }
+  | { readonly kind: "error"; readonly code: TerminalFailure };
+
+export interface TerminalGeometry {
+  readonly columns: number;
+  readonly rows: number;
+}
+export interface TerminalGeometrySnapshot extends TerminalGeometry {
+  readonly revision: number;
+}
+export interface TerminalSnapshot {
+  readonly mode: TerminalMode;
+  readonly modeRevision: number;
+  readonly geometry: TerminalGeometrySnapshot;
+  readonly selection: TerminalSelection | null;
+}
+
+export interface TerminalTurn extends TerminalSnapshot {
+  readonly [turnBrand]: true;
+}
+export type TerminalChange =
+  | { readonly kind: "mode"; readonly previous: TerminalMode; readonly next: TerminalMode }
+  | {
+      readonly kind: "selection";
+      readonly previous: TerminalSelection | null;
+      readonly next: TerminalSelection | null;
+    }
+  | {
+      readonly kind: "membership";
+      readonly previous: TerminalSelection;
+      readonly next: TerminalSelection;
+    };
+
+export interface TerminalPolicy {
+  tryRead(turn: TerminalTurn, chunks: readonly Uint8Array[]): number;
+  inputReadiness(turn: TerminalTurn): Pick<Readiness, "readable" | "nbytes">;
+
+  transition(turn: TerminalTurn, change: TerminalChange): TerminalResult<void>;
+  tryWrite(target: 1 | 2, chunks: readonly Uint8Array[]): number;
+  outputReadiness(target: 1 | 2): Pick<Readiness, "writable">;
+}
+
+export interface TerminalDisplay {
+  readonly identity: TerminalIdentity;
+  inherit(): TerminalContext;
+  snapshot(): TerminalResult<TerminalSnapshot>;
+  input(accept: (turn: TerminalTurn) => number): TerminalResult<number>;
+
+  resize(geometry: TerminalGeometry): TerminalResult<TerminalGeometrySnapshot>;
+
+  outputDrained(): void;
+
+  close(reason: TerminalReason): void;
+}
+
+export interface TerminalPlannedMember {
+  readonly member: TerminalMemberPlan;
+
+  readonly context: TerminalContext;
+}
+export interface TerminalAdmittedMember {
+  readonly member: TerminalMember;
+
+  readonly context: TerminalContext;
+
+  readonly lease: TerminalLease | null;
+}
+export interface TerminalMemberUpdate {
+  readonly lease: TerminalLease | null;
+}
+
+export interface TerminalAuthority {
+  createGroup(options: { readonly initialMode: TerminalMode }): TerminalResult<TerminalGroup>;
+  planMember(options: {
+    readonly group: TerminalGroup;
+    readonly parent: TerminalMember;
+  }): TerminalResult<TerminalPlannedMember>;
+
+  bindMember(options: {
+    readonly planned: TerminalMemberPlan;
+    readonly pid: number;
+  }): TerminalResult<TerminalAdmittedMember>;
+
+  admitExisting(options: {
+    readonly group: TerminalGroup;
+    readonly pid: number;
+  }): TerminalResult<TerminalAdmittedMember>;
+
+  cancelPlan(planned: TerminalMemberPlan): TerminalResult<void>;
+
+  removeMember(member: TerminalMember): TerminalResult<TerminalMemberUpdate>;
+
+  acquire(options: {
+    readonly group: TerminalGroup;
+    readonly expected: null;
+  }): TerminalResult<TerminalLease>;
+
+  transfer(options: {
+    readonly from: TerminalLease;
+    readonly to: TerminalGroup;
+  }): TerminalResult<TerminalLease>;
+
+  startBackground(group: TerminalGroup): TerminalResult<void>;
+
+  release(options: {
+    readonly lease: TerminalLease;
+    readonly restore: TerminalGroup | null;
+  }): TerminalResult<TerminalLease | null>;
+
+  retireGroup(options: {
+    readonly group: TerminalGroup;
+    readonly reason: TerminalReason;
+  }): TerminalResult<void>;
+}
+
+export interface TerminalGeometrySubscription {
+  poll(): TerminalResult<TerminalGeometrySnapshot | null>;
+
+  wait(): Promise<TerminalResult<TerminalGeometrySnapshot>>;
+  dispose(): void;
+}
+export interface TerminalControls {
+  snapshot(): TerminalResult<TerminalSnapshot>;
+
+  setMode(options: {
+    readonly expected: TerminalSelection | null;
+    readonly mode: TerminalMode;
+  }): TerminalResult<void>;
+  subscribeGeometry(): TerminalResult<TerminalGeometrySubscription>;
+}
+
+export interface TerminalAttachment {
+  readonly identity: TerminalIdentity;
+  resolve(target: TerminalTarget): Stream;
+
+  inherit(): TerminalContext;
+
+  ready(): TerminalResult<void>;
+  dispose(): void;
+}
+
+import {
+  atomicsLoad,
+  atomicsStore,
+  atomicsCompareExchange,
+  atomicsAdd,
+  atomicsNotify,
+  atomicsWait,
+  atomicsWaitAsync,
+  BigInt64ArrayConstructor,
+  BigIntConstructor,
+  Int32ArrayConstructor,
+  SharedArrayBufferConstructor,
+  Uint32ArrayConstructor,
+  cryptoGetRandomValues,
+  isSharedArrayBuffer,
+  sharedArrayBufferByteLength,
+  objectFreeze,
+  isInstance,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayLength,
+  scheduleTimeout,
+  reflectGet,
+  reflectApply,
+  MapConstructor,
+  mapSet,
+  mapDelete,
+  mapSize,
+  mapForEach,
+} from "../proc/intrinsics.ts";
+import {
+  directoryControls,
+  directoryProcesses,
+  directoryState,
+  isCollectedProcess,
+} from "../proc/directory.js";
+import {
+  workerProcessDirectoryId,
+  workerProcessState,
+  type WorkerProcessTransport,
+} from "../proc/worker-client.js";
+import { readOutcome } from "../proc/outcome.js";
+import { controlLoad } from "../proc/control.js";
+import { requestSignal, signalPending } from "../proc/signals.js";
+import { ProcessError, ProcessErrno, Signal } from "../proc/types.js";
+
+export const TERMINAL_SESSION_LIMITS = objectFreeze({
+  controlBytes: 20736,
+  groups: 64,
+  memberships: 256,
+  wrappersPerAttachment: 256,
+  geometrySubscriptionsPerAttachment: 64,
+  inputBytesPerTurn: 4096,
+  maximumDimension: 65535,
+  maximumGeneration: 2147483647,
+} as const);
+const integer = Number.isInteger;
+const PromiseConstructor = Promise;
+const generatorNext = (function* () {})().next;
+const controlKey = Symbol("terminal controls");
+const H = objectFreeze({
+  closed: 0,
+  claimed: 1,
+  rootSlot: 2,
+  rootPid: 3,
+  nonce0: 4,
+  nonce1: 5,
+  selected: 8,
+  selection: 9,
+  mode: 10,
+  modeRevision: 11,
+  columns: 12,
+  rows: 13,
+  geometry: 14,
+  wake: 15,
+  gate: 16,
+});
+const GROUPS = 64,
+  MEMBERS = GROUPS + 64 * 16;
+const FREE = 0,
+  PREPARING = 1,
+  RUNNING = 2,
+  RETIRED = 3;
+const PENDING = 1,
+  BOUND = 2,
+  REMOVED = 3;
+const pageOwner = -9223372036854775808n;
+const timedWaitAsync = atomicsWaitAsync as
+  | ((
+      a: Int32Array,
+      i: number,
+      v: number,
+      ms: number,
+    ) => {
+      async: boolean;
+      value: string | Promise<string>;
+    })
+  | undefined;
+
+type ProcessState = ReturnType<typeof workerProcessState>;
+interface IdentityRecord extends TerminalIdentity {
+  readonly kind: "waffle-terminal";
+  readonly buffer: SharedArrayBuffer;
+  readonly directory: SharedArrayBuffer;
+  readonly directoryId: string;
+  readonly nonce0: number;
+  readonly nonce1: number;
+  readonly rootSlot: number;
+  readonly rootPid: number;
+}
+interface ContextRecord extends TerminalContext {
+  readonly identity: IdentityRecord;
+  readonly memberSlot: number;
+  readonly memberGeneration: number;
+}
+function ok<T>(value: T): TerminalResult<T> {
+  return { kind: "ok", value };
+}
+function error(code: TerminalFailure): { kind: "error"; code: TerminalFailure } {
+  return { kind: "error", code };
+}
+function validGeometry(size: TerminalGeometry): boolean {
+  return (
+    integer(size.columns) &&
+    integer(size.rows) &&
+    size.columns > 0 &&
+    size.rows > 0 &&
+    size.columns <= TERMINAL_SESSION_LIMITS.maximumDimension &&
+    size.rows <= TERMINAL_SESSION_LIMITS.maximumDimension
+  );
+}
+function isIdentity(value: unknown): value is IdentityRecord {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("kind" in value) || value.kind !== "waffle-terminal") return false;
+  if (!("buffer" in value) || !isSharedArrayBuffer(value.buffer)) return false;
+  if (!("directory" in value) || !isSharedArrayBuffer(value.directory)) return false;
+  if (!("directoryId" in value) || typeof value.directoryId !== "string") return false;
+  if (!("nonce0" in value) || typeof value.nonce0 !== "number") return false;
+  if (!("nonce1" in value) || typeof value.nonce1 !== "number") return false;
+  if (!("rootSlot" in value) || typeof value.rootSlot !== "number" || !integer(value.rootSlot))
+    return false;
+  return (
+    "rootPid" in value &&
+    typeof value.rootPid === "number" &&
+    integer(value.rootPid) &&
+    value.rootPid > 0
+  );
+}
+function parseIdentity(value: unknown): IdentityRecord {
+  if (
+    !isIdentity(value) ||
+    sharedArrayBufferByteLength(value.buffer) !== TERMINAL_SESSION_LIMITS.controlBytes
+  )
+    throw new TypeError("invalid terminal identity");
+  const words = new Int32ArrayConstructor(value.buffer);
+  if (
+    atomicsLoad(words, H.rootSlot) !== value.rootSlot ||
+    atomicsLoad(words, H.rootPid) !== value.rootPid ||
+    atomicsLoad(words, H.nonce0) !== value.nonce0 ||
+    atomicsLoad(words, H.nonce1) !== value.nonce1
+  )
+    throw new TypeError("terminal identity does not match control block");
+  const directoryHeader = new Uint32ArrayConstructor(value.directory, 0, 8);
+  if (`${directoryHeader[2]}:${directoryHeader[3]}` !== value.directoryId)
+    throw new TypeError("terminal directory identity does not match");
+  return value;
+}
+function parseContext(value: unknown): ContextRecord {
+  if (typeof value !== "object" || value === null || !("identity" in value))
+    throw new TypeError("invalid terminal context");
+  parseIdentity(value.identity);
+  if (
+    !("memberSlot" in value) ||
+    typeof value.memberSlot !== "number" ||
+    !integer(value.memberSlot) ||
+    value.memberSlot < -1 ||
+    value.memberSlot >= TERMINAL_SESSION_LIMITS.memberships
+  )
+    throw new TypeError("invalid terminal membership slot");
+  if (
+    !("memberGeneration" in value) ||
+    typeof value.memberGeneration !== "number" ||
+    !integer(value.memberGeneration) ||
+    value.memberGeneration < 0 ||
+    value.memberGeneration > TERMINAL_SESSION_LIMITS.maximumGeneration ||
+    (value.memberSlot === -1) !== (value.memberGeneration === 0)
+  )
+    throw new TypeError("invalid terminal membership generation");
+  return value as ContextRecord;
+}
+function context(identity: IdentityRecord, memberSlot = -1, memberGeneration = 0): ContextRecord {
+  return objectFreeze({ [contextBrand]: true as const, identity, memberSlot, memberGeneration });
+}
+function live(state: ProcessState): boolean {
+  return readOutcome(state.signals.outcome) === null;
+}
+function findProcess(identity: IdentityRecord, pid: number): ProcessState | undefined {
+  const processes = directoryProcesses(identity.directory);
+  for (;;) {
+    const step: IteratorResult<ProcessState> = reflectApply(generatorNext, processes, []);
+    if (step.done) return undefined;
+    if (step.value.pid === pid) return step.value;
+  }
+}
+function alive(identity: IdentityRecord, slot: number, pid: number): ProcessState | undefined {
+  try {
+    const state = directoryState({ directory: identity.directory, slot, pid });
+    return live(state) ? state : undefined;
+  } catch (cause) {
+    if (!isCollectedProcess(cause)) throw cause;
+    return undefined;
+  }
+}
+function mode(value: number): TerminalMode {
+  return value === 1 ? "raw" : "cooked";
+}
+function modeWord(value: TerminalMode): number {
+  return value === "raw" ? 1 : 0;
+}
+
+class Session {
+  private dirty = false;
+  readonly words: Int32Array;
+  readonly gate: BigInt64Array;
+  readonly wake: Int32Array;
+  readonly commonWake: Int32Array;
+  constructor(readonly identity: IdentityRecord) {
+    this.words = new Int32ArrayConstructor(identity.buffer);
+    this.gate = new BigInt64ArrayConstructor(identity.buffer, H.gate * 4, 1);
+    this.wake = new Int32ArrayConstructor(identity.buffer, H.wake * 4, 1);
+    this.commonWake = new Int32ArrayConstructor(identity.directory, 4, 1);
+  }
+  get(index: number): number {
+    return atomicsLoad(this.words, index);
+  }
+  put(index: number, value: number): void {
+    if (atomicsLoad(this.words, index) !== value) this.dirty = true;
+    atomicsStore(this.words, index, value);
+  }
+  closed(): boolean {
+    return this.get(H.closed) !== 0;
+  }
+  close(): void {
+    atomicsCompareExchange(this.words, H.closed, 0, 1);
+    this.notify();
+  }
+  notify(): void {
+    atomicsAdd(this.wake, 0, 1);
+    atomicsNotify(this.wake, 0);
+    atomicsAdd(this.commonWake, 0, 1);
+    atomicsNotify(this.commonWake, 0);
+  }
+  rootLive(): boolean {
+    return alive(this.identity, this.identity.rootSlot, this.identity.rootPid) !== undefined;
+  }
+  transact<T>(owner: bigint, operation: () => TerminalResult<T>): TerminalResult<T> {
+    if (this.closed()) return error("CLOSED");
+    if (!this.rootLive()) {
+      this.close();
+      return error("PROCESS_GONE");
+    }
+    if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return error("AGAIN");
+    this.dirty = false;
+    try {
+      if (this.closed()) return error("CLOSED");
+      return operation();
+    } finally {
+      atomicsStore(this.gate, 0, 0n);
+      if (this.dirty) this.notify();
+    }
+  }
+  next(index: number): TerminalResult<number> {
+    const previous = this.get(index);
+    if (previous >= TERMINAL_SESSION_LIMITS.maximumGeneration) {
+      this.close();
+      return error("EXHAUSTED");
+    }
+    return ok(previous + 1);
+  }
+  selection(): TerminalSelection | null {
+    return this.get(H.selected) === 0 ? null : (this.get(H.selection) as TerminalSelection);
+  }
+  geometry(): TerminalGeometrySnapshot {
+    return { columns: this.get(H.columns), rows: this.get(H.rows), revision: this.get(H.geometry) };
+  }
+  snapshot(): TerminalSnapshot {
+    return {
+      mode: mode(this.get(H.mode)),
+      modeRevision: this.get(H.modeRevision),
+      geometry: this.geometry(),
+      selection: this.selection(),
+    };
+  }
+  turn<T>(callback: (turn: TerminalTurn) => T): T {
+    let valid = true;
+    const snapshot = this.snapshot();
+    const read = <K extends keyof TerminalSnapshot>(key: K): TerminalSnapshot[K] => {
+      if (!valid) throw new TypeError("terminal turn expired");
+      return snapshot[key];
+    };
+    const turn: TerminalTurn = objectFreeze({
+      [turnBrand]: true as const,
+      get mode() {
+        return read("mode");
+      },
+      get modeRevision() {
+        return read("modeRevision");
+      },
+      get geometry() {
+        return read("geometry");
+      },
+      get selection() {
+        return read("selection");
+      },
+    });
+    try {
+      return callback(turn);
+    } catch (cause) {
+      this.close();
+      throw cause;
+    } finally {
+      valid = false;
+    }
+  }
+  transition(policy: TerminalPolicy, change: TerminalChange): TerminalResult<void> {
+    const result = this.turn((turn) => policy.transition(turn, change));
+    if (result.kind === "ok" && !this.closed() && this.rootLive()) return result;
+    this.close();
+    return error("CLOSED");
+  }
+  signalSelected(): void {
+    const selected = this.get(H.selected) - 1;
+    if (selected < 0) return;
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++)
+      this.signalMember(slot, selected);
+  }
+  private signalMember(slot: number, selected: number): void {
+    const row = MEMBERS + slot * 16;
+    if (this.get(row + 1) !== BOUND || this.get(row + 2) !== selected) return;
+    const state = alive(this.identity, this.get(row + 4), this.get(row + 5));
+    if (state) requestSignal(state.signals, Signal.SIGWINCH);
+  }
+}
+
+export function createTerminalSession(options: {
+  readonly controller: WorkerProcessTransport;
+  readonly geometry: TerminalGeometry;
+}): TerminalDisplay {
+  if (!validGeometry(options.geometry)) throw new RangeError("invalid terminal geometry");
+  const state = workerProcessState(options.controller);
+  if (!live(state) || state.rootPid !== state.pid)
+    throw new ProcessError(ProcessErrno.SRCH, "terminal root is not live");
+  const buffer = new SharedArrayBufferConstructor(TERMINAL_SESSION_LIMITS.controlBytes);
+  const random = cryptoGetRandomValues(new Uint32ArrayConstructor(2));
+  const identity: IdentityRecord = objectFreeze({
+    [identityBrand]: true as const,
+    kind: "waffle-terminal",
+    buffer,
+    directory: options.controller.directory,
+    directoryId: workerProcessDirectoryId(options.controller),
+    nonce0: random[0]! | 0,
+    nonce1: random[1]! | 0,
+    rootSlot: state.slot,
+    rootPid: state.pid,
+  });
+  const session = new Session(identity);
+  session.put(H.rootSlot, state.slot);
+  session.put(H.rootPid, state.pid);
+  session.put(H.nonce0, identity.nonce0);
+  session.put(H.nonce1, identity.nonce1);
+  session.put(H.columns, options.geometry.columns);
+  session.put(H.rows, options.geometry.rows);
+  session.put(H.geometry, 1);
+  session.put(H.modeRevision, 1);
+  return new Display(session);
+}
+class Display implements TerminalDisplay {
+  readonly identity: TerminalIdentity;
+  constructor(private readonly session: Session) {
+    this.identity = session.identity;
+  }
+  inherit(): TerminalContext {
+    return context(this.session.identity);
+  }
+  snapshot(): TerminalResult<TerminalSnapshot> {
+    return this.session.transact(pageOwner, () => ok(this.session.snapshot()));
+  }
+  input(accept: (turn: TerminalTurn) => number): TerminalResult<number> {
+    return this.session.transact(pageOwner, () => this.accept(accept));
+  }
+  private accept(callback: (turn: TerminalTurn) => number): TerminalResult<number> {
+    const count = this.session.turn(callback);
+    if (count === -ProcessErrno.AGAIN) return error("AGAIN");
+    if (!integer(count) || count < 0 || count > TERMINAL_SESSION_LIMITS.inputBytesPerTurn) {
+      this.session.close();
+      return error("INVALID");
+    }
+    if (!this.session.rootLive()) this.session.close();
+    if (count >= 0) this.session.notify();
+    return this.session.closed() ? error("CLOSED") : ok(count);
+  }
+  resize(geometry: TerminalGeometry): TerminalResult<TerminalGeometrySnapshot> {
+    if (!validGeometry(geometry)) return error("INVALID");
+    return this.session.transact(pageOwner, () => this.publishGeometry(geometry));
+  }
+  private publishGeometry(geometry: TerminalGeometry): TerminalResult<TerminalGeometrySnapshot> {
+    const s = this.session;
+    if (s.get(H.columns) === geometry.columns && s.get(H.rows) === geometry.rows)
+      return ok(s.geometry());
+    const next = s.next(H.geometry);
+    if (next.kind === "error") return next;
+    s.put(H.columns, geometry.columns);
+    s.put(H.rows, geometry.rows);
+    s.put(H.geometry, next.value);
+    s.signalSelected();
+    return ok(s.geometry());
+  }
+  outputDrained(): void {
+    this.session.notify();
+  }
+  close(_reason: TerminalReason): void {
+    this.session.close();
+  }
+}
+
+class Group implements TerminalGroup {
+  readonly [groupBrand] = true;
+  readonly local = () => {};
+  constructor(
+    readonly owner: Authority,
+    readonly row: number,
+    readonly generation: number,
+  ) {}
+}
+class Member implements TerminalMember {
+  readonly [memberBrand] = true;
+  readonly local = () => {};
+  constructor(
+    readonly owner: Authority,
+    readonly row: number,
+    readonly generation: number,
+  ) {}
+}
+class Plan implements TerminalMemberPlan {
+  readonly [planBrand] = true;
+  readonly local = () => {};
+  constructor(
+    readonly owner: Authority,
+    readonly row: number,
+    readonly generation: number,
+  ) {}
+}
+class Lease implements TerminalLease {
+  readonly [leaseBrand] = true;
+  readonly local = () => {};
+  constructor(
+    readonly owner: Authority,
+    readonly group: Group,
+    readonly generation: number,
+  ) {}
+}
+
+export function claimTerminalAuthority(options: {
+  readonly identity: TerminalIdentity;
+  readonly process: WorkerProcessTransport;
+  readonly checkActive: () => void;
+  readonly policy: TerminalPolicy;
+}): TerminalResult<TerminalAuthority> {
+  const identity = parseIdentity(options.identity);
+  options.checkActive();
+  if (
+    workerProcessDirectoryId(options.process) !== identity.directoryId ||
+    options.process.slot !== identity.rootSlot ||
+    options.process.pid !== identity.rootPid
+  )
+    return error("DENIED");
+  const session = new Session(identity);
+  return session.transact(BigIntConstructor(identity.rootPid), () => {
+    if (atomicsCompareExchange(session.words, H.claimed, 0, 1) !== 0) return error("DENIED");
+    return ok(new Authority(session, options.checkActive, options.policy));
+  });
+}
+class Authority implements TerminalAuthority {
+  readonly local = () => {};
+  constructor(
+    readonly session: Session,
+    private readonly checkActive: () => void,
+    private readonly policy: TerminalPolicy,
+  ) {}
+  private run<T>(operation: () => TerminalResult<T>): TerminalResult<T> {
+    this.checkActive();
+    return this.session.transact(BigIntConstructor(this.session.identity.rootPid), () => {
+      this.checkActive();
+      return operation();
+    });
+  }
+  private confirm(check: () => boolean): TerminalResult<void> {
+    try {
+      this.checkActive();
+      if (this.session.rootLive() && check()) return ok(undefined);
+    } catch (cause) {
+      this.session.close();
+      throw cause;
+    }
+    this.session.close();
+    return error("CLOSED");
+  }
+  private group(value: TerminalGroup): Group | undefined {
+    if (!isInstance(value, Group) || value.owner !== this) return undefined;
+    return this.session.get(value.row) === value.generation ? value : undefined;
+  }
+  private activeGroup(value: TerminalGroup): Group | undefined {
+    const group = this.group(value);
+    return group && this.session.get(group.row + 1) !== RETIRED ? group : undefined;
+  }
+  private member(value: TerminalMember): Member | undefined {
+    if (!isInstance(value, Member) || value.owner !== this) return undefined;
+    return this.session.get(value.row) === value.generation ? value : undefined;
+  }
+  private plan(value: TerminalMemberPlan): Plan | undefined {
+    if (!isInstance(value, Plan) || value.owner !== this) return undefined;
+    return this.session.get(value.row) === value.generation ? value : undefined;
+  }
+  private lease(value: TerminalLease): Lease | undefined {
+    if (!isInstance(value, Lease) || value.owner !== this) return undefined;
+    if (
+      !this.activeGroup(value.group) ||
+      this.session.get(H.selected) !== (value.group.row - GROUPS) / 16 + 1
+    )
+      return undefined;
+    return this.session.get(H.selection) === value.generation ? value : undefined;
+  }
+  private allocate(start: number, count: number): TerminalResult<number> {
+    for (let slot = 0; slot < count; slot++) {
+      const row = start + slot * 16,
+        state = this.session.get(row + 1);
+      if (state !== FREE && state !== RETIRED) continue;
+      const next = this.session.next(row);
+      if (next.kind === "error") return next;
+      return ok(row);
+    }
+    return error("CAPACITY");
+  }
+  createGroup(options: { readonly initialMode: TerminalMode }): TerminalResult<TerminalGroup> {
+    return this.run(() => {
+      const allocated = this.allocate(GROUPS, TERMINAL_SESSION_LIMITS.groups);
+      if (allocated.kind === "error") return allocated;
+      const row = allocated.value,
+        generation = this.session.get(row) + 1;
+      this.session.put(row, generation);
+      this.session.put(row + 1, PREPARING);
+      this.session.put(row + 2, modeWord(options.initialMode));
+      this.session.put(row + 3, 0);
+      return ok(new Group(this, row, generation));
+    });
+  }
+  planMember(options: {
+    readonly group: TerminalGroup;
+    readonly parent: TerminalMember;
+  }): TerminalResult<TerminalPlannedMember> {
+    return this.run(() => this.planInGroup(options));
+  }
+  private planInGroup(options: {
+    readonly group: TerminalGroup;
+    readonly parent: TerminalMember;
+  }): TerminalResult<TerminalPlannedMember> {
+    const group = this.activeGroup(options.group),
+      parent = this.member(options.parent),
+      s = this.session;
+    if (!group || !parent || s.get(parent.row + 1) !== BOUND) return error("STALE");
+    if (!alive(s.identity, s.get(parent.row + 4), s.get(parent.row + 5)))
+      return error("PROCESS_GONE");
+    const allocation = this.allocate(MEMBERS, TERMINAL_SESSION_LIMITS.memberships);
+    if (allocation.kind === "error") return allocation;
+    const row = allocation.value,
+      generation = s.get(row) + 1;
+    s.put(row, generation);
+    s.put(row + 1, PENDING);
+    s.put(row + 2, (group.row - GROUPS) / 16);
+    s.put(row + 3, group.generation);
+    s.put(row + 4, -1);
+    s.put(row + 5, 0);
+    s.put(row + 6, s.get(parent.row + 4));
+    s.put(row + 7, s.get(parent.row + 5));
+    return ok({
+      member: new Plan(this, row, generation),
+      context: context(s.identity, (row - MEMBERS) / 16, generation),
+    });
+  }
+  bindMember(options: {
+    readonly planned: TerminalMemberPlan;
+    readonly pid: number;
+  }): TerminalResult<TerminalAdmittedMember> {
+    const state = findProcess(this.session.identity, options.pid);
+    return this.run(() => this.bind(options.planned, state));
+  }
+  private bind(
+    value: TerminalMemberPlan,
+    state: ProcessState | undefined,
+  ): TerminalResult<TerminalAdmittedMember> {
+    const plan = this.plan(value),
+      s = this.session;
+    if (!plan || s.get(plan.row + 1) === REMOVED) return error("CANCELED");
+    if (!state || !alive(s.identity, state.slot, state.pid)) return error("PROCESS_GONE");
+    if (s.get(plan.row + 1) === BOUND)
+      return s.get(plan.row + 5) === state.pid ? ok(this.admitted(plan.row)) : error("INVALID");
+    if (
+      !this.authorized(state) ||
+      state.parentPid !== s.get(plan.row + 7) ||
+      !alive(s.identity, s.get(plan.row + 6), state.parentPid)
+    )
+      return error("DENIED");
+    const group = this.rowGroup(plan.row);
+    if (!group) return error("STALE");
+    if (this.existingMember(group, state.pid) !== undefined) return error("INVALID");
+    const changed = this.membershipChange(group);
+    if (changed.kind === "error") return changed;
+    const confirmed = this.confirm(
+      () =>
+        !!alive(s.identity, state.slot, state.pid) &&
+        this.authorized(state) &&
+        !!alive(s.identity, s.get(plan.row + 6), state.parentPid),
+    );
+    if (confirmed.kind === "error") return confirmed;
+    s.put(plan.row + 4, state.slot);
+    s.put(plan.row + 5, state.pid);
+    s.put(plan.row + 1, BOUND);
+    s.signalSelected();
+    return ok(this.admitted(plan.row));
+  }
+  private rowGroup(row: number): Group | undefined {
+    const s = this.session,
+      groupRow = GROUPS + s.get(row + 2) * 16;
+    const group = new Group(this, groupRow, s.get(row + 3));
+    return this.activeGroup(group);
+  }
+  private authorized(state: ProcessState): boolean {
+    return (
+      state.rootPid === this.session.identity.rootPid &&
+      directoryControls(
+        this.session.identity.directory,
+        () => controlLoad(state.controlParent),
+        this.session.identity.rootPid,
+      )
+    );
+  }
+  admitExisting(options: {
+    readonly group: TerminalGroup;
+    readonly pid: number;
+  }): TerminalResult<TerminalAdmittedMember> {
+    const state = findProcess(this.session.identity, options.pid);
+    return this.run(() => this.admit(options.group, state));
+  }
+  private admit(
+    value: TerminalGroup,
+    state: ProcessState | undefined,
+  ): TerminalResult<TerminalAdmittedMember> {
+    const group = this.activeGroup(value),
+      s = this.session;
+    if (!group) return error("STALE");
+    if (!state || !alive(s.identity, state.slot, state.pid)) return error("PROCESS_GONE");
+    if (state.pid !== s.identity.rootPid && !this.authorized(state)) return error("DENIED");
+    const duplicate = this.existingMember(group, state.pid);
+    if (duplicate !== undefined) return ok(this.admitted(duplicate));
+    const allocation = this.allocate(MEMBERS, TERMINAL_SESSION_LIMITS.memberships);
+    if (allocation.kind === "error") return allocation;
+    const changed = this.membershipChange(group);
+    if (changed.kind === "error") return changed;
+    const confirmed = this.confirm(
+      () =>
+        !!alive(s.identity, state.slot, state.pid) &&
+        (state.pid === s.identity.rootPid || this.authorized(state)),
+    );
+    if (confirmed.kind === "error") return confirmed;
+    const row = allocation.value;
+    s.put(row, s.get(row) + 1);
+    s.put(row + 1, BOUND);
+    s.put(row + 2, (group.row - GROUPS) / 16);
+    s.put(row + 3, group.generation);
+    s.put(row + 4, state.slot);
+    s.put(row + 5, state.pid);
+    return ok(this.admitted(row));
+  }
+  private existingMember(group: Group, pid: number): number | undefined {
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++) {
+      const row = MEMBERS + slot * 16;
+      if (
+        this.session.get(row + 1) === BOUND &&
+        this.session.get(row + 5) === pid &&
+        this.session.get(row + 2) === (group.row - GROUPS) / 16 &&
+        this.session.get(row + 3) === group.generation
+      )
+        return row;
+    }
+    return undefined;
+  }
+  private currentLease(group: Group): TerminalLease | null {
+    if (this.session.get(H.selected) !== (group.row - GROUPS) / 16 + 1) return null;
+    return new Lease(this, group, this.session.get(H.selection));
+  }
+  private admitted(row: number): TerminalAdmittedMember {
+    const group = this.rowGroup(row)!;
+    return {
+      member: new Member(this, row, this.session.get(row)),
+      context: context(this.session.identity, (row - MEMBERS) / 16, this.session.get(row)),
+      lease: this.currentLease(group),
+    };
+  }
+  private membershipChange(group: Group): TerminalResult<void> {
+    const s = this.session,
+      roster = s.next(group.row + 3);
+    if (roster.kind === "error") return roster;
+    if (this.currentLease(group) === null) {
+      s.put(group.row + 3, roster.value);
+      return ok(undefined);
+    }
+    const selection = s.next(H.selection);
+    if (selection.kind === "error") return selection;
+    const changed = s.transition(this.policy, {
+      kind: "membership",
+      previous: s.selection()!,
+      next: selection.value as TerminalSelection,
+    });
+    if (changed.kind === "error") return changed;
+    s.put(group.row + 3, roster.value);
+    s.put(H.selection, selection.value);
+    return ok(undefined);
+  }
+  cancelPlan(value: TerminalMemberPlan): TerminalResult<void> {
+    return this.run(() => {
+      const plan = this.plan(value);
+      if (!plan) return error("STALE");
+      if (this.session.get(plan.row + 1) === BOUND) return error("DENIED");
+      this.session.put(plan.row + 1, REMOVED);
+      return ok(undefined);
+    });
+  }
+  removeMember(value: TerminalMember): TerminalResult<TerminalMemberUpdate> {
+    return this.run(() => {
+      const member = this.member(value);
+      if (!member) return error("STALE");
+      const group = this.rowGroup(member.row);
+      if (!group) return error("STALE");
+      if (this.session.get(member.row + 1) === REMOVED)
+        return ok({ lease: this.currentLease(group) });
+      const changed = this.membershipChange(group);
+      if (changed.kind === "error") return changed;
+      this.session.put(member.row + 1, REMOVED);
+      return ok({ lease: this.currentLease(group) });
+    });
+  }
+  private membersLive(group: Group): boolean {
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++) {
+      const row = MEMBERS + slot * 16;
+      if (
+        this.session.get(row + 1) !== BOUND ||
+        this.session.get(row + 2) !== (group.row - GROUPS) / 16
+      )
+        continue;
+      if (!alive(this.session.identity, this.session.get(row + 4), this.session.get(row + 5)))
+        return false;
+    }
+    return true;
+  }
+  acquire(options: {
+    readonly group: TerminalGroup;
+    readonly expected: null;
+  }): TerminalResult<TerminalLease> {
+    return this.run(() => {
+      if (this.session.get(H.selected) !== 0) return error("STALE");
+      return this.select(options.group);
+    });
+  }
+  transfer(options: {
+    readonly from: TerminalLease;
+    readonly to: TerminalGroup;
+  }): TerminalResult<TerminalLease> {
+    return this.run(() => {
+      if (!this.lease(options.from)) return error("STALE");
+      return this.select(options.to);
+    });
+  }
+  private select(value: TerminalGroup): TerminalResult<Lease> {
+    const group = this.activeGroup(value),
+      s = this.session;
+    if (!group) return error("STALE");
+    if (!this.membersLive(group)) return error("PROCESS_GONE");
+    const next = s.next(H.selection),
+      revision = s.next(H.modeRevision);
+    if (next.kind === "error") return next;
+    if (revision.kind === "error") return revision;
+    const changed = s.transition(this.policy, {
+      kind: "selection",
+      previous: s.selection(),
+      next: next.value as TerminalSelection,
+    });
+    if (changed.kind === "error") return changed;
+    const confirmed = this.confirm(() => this.membersLive(group));
+    if (confirmed.kind === "error") return confirmed;
+    this.saveMode();
+    s.put(group.row + 1, RUNNING);
+    s.put(H.selected, (group.row - GROUPS) / 16 + 1);
+    s.put(H.selection, next.value);
+    s.put(H.mode, s.get(group.row + 2));
+    s.put(H.modeRevision, revision.value);
+    s.signalSelected();
+    return ok(new Lease(this, group, next.value));
+  }
+  private saveMode(): void {
+    const selected = this.session.get(H.selected) - 1;
+    if (selected >= 0) this.session.put(GROUPS + selected * 16 + 2, this.session.get(H.mode));
+  }
+  startBackground(value: TerminalGroup): TerminalResult<void> {
+    return this.run(() => {
+      const group = this.activeGroup(value);
+      if (!group) return error("STALE");
+      if (this.currentLease(group)) return error("DENIED");
+      if (!this.membersLive(group)) return error("PROCESS_GONE");
+      this.session.put(group.row + 1, RUNNING);
+      return ok(undefined);
+    });
+  }
+  release(options: {
+    readonly lease: TerminalLease;
+    readonly restore: TerminalGroup | null;
+  }): TerminalResult<TerminalLease | null> {
+    return this.run(() => {
+      if (!this.lease(options.lease)) return error("STALE");
+      if (options.restore !== null) return this.select(options.restore);
+      const next = this.session.next(H.selection);
+      if (next.kind === "error") return next;
+      const changed = this.session.transition(this.policy, {
+        kind: "selection",
+        previous: this.session.selection(),
+        next: null,
+      });
+      if (changed.kind === "error") return changed;
+      this.saveMode();
+      this.session.put(H.selected, 0);
+      this.session.put(H.selection, next.value);
+      return ok(null);
+    });
+  }
+  retireGroup(options: {
+    readonly group: TerminalGroup;
+    readonly reason: TerminalReason;
+  }): TerminalResult<void> {
+    return this.run(() => this.retire(options.group));
+  }
+  private retire(value: TerminalGroup): TerminalResult<void> {
+    const group = this.group(value),
+      s = this.session;
+    if (!group) return error("STALE");
+    if (this.currentLease(group)) return error("DENIED");
+    s.put(group.row + 1, RETIRED);
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++) {
+      const row = MEMBERS + slot * 16;
+      if (s.get(row + 2) === (group.row - GROUPS) / 16 && s.get(row + 3) === group.generation)
+        s.put(row + 1, REMOVED);
+    }
+    return ok(undefined);
+  }
+}
+
+export function attachTerminal(options: {
+  readonly context: unknown;
+  readonly process: WorkerProcessTransport;
+  readonly checkActive: () => void;
+  readonly policy: TerminalPolicy;
+}): TerminalAttachment {
+  const parsed = parseContext(options.context),
+    identity = parsed.identity;
+  if (workerProcessDirectoryId(options.process) !== identity.directoryId)
+    throw new ProcessError(ProcessErrno.NOTSUP, "terminal belongs to another process directory");
+  const state = workerProcessState(options.process);
+  if (!live(state)) throw new ProcessError(ProcessErrno.SRCH, "terminal process has exited");
+  if (state.rootPid !== identity.rootPid)
+    throw new ProcessError(ProcessErrno.NOTSUP, "terminal belongs to another root");
+  return new Attachment(new Session(identity), parsed, state, options.checkActive, options.policy);
+}
+
+async function waitForChange(session: Session, seen: number): Promise<void> {
+  if (!timedWaitAsync) {
+    await new PromiseConstructor<void>((resolve) => scheduleTimeout(resolve, 10));
+    return;
+  }
+  const waiting = timedWaitAsync(session.wake, 0, seen, 10);
+  if (waiting.async) await waiting.value;
+}
+function errno(failure: TerminalFailure): number {
+  if (failure === "AGAIN" || failure === "CAPACITY") return -ProcessErrno.AGAIN;
+  return -ProcessErrno.BADF;
+}
+function byteCapacity(chunks: readonly Uint8Array[]): number {
+  let total = 0;
+  for (let i = 0; i < chunks.length; i++) total += typedArrayLength(chunks[i]!);
+  return total;
+}
+
+class Attachment implements TerminalAttachment {
+  readonly identity: TerminalIdentity;
+  readonly endpoints = new MapConstructor<Endpoint, true>();
+  readonly cursors = new MapConstructor<GeometryCursor, true>();
+  private disposed = false;
+  constructor(
+    readonly session: Session,
+    readonly context: ContextRecord,
+    readonly state: ProcessState,
+    readonly checkActive: () => void,
+    readonly policy: TerminalPolicy,
+  ) {
+    this.identity = session.identity;
+  }
+  check(state = this.state): TerminalFailure | undefined {
+    this.checkActive();
+    if (this.disposed) return "CANCELED";
+    if (!alive(this.session.identity, state.slot, state.pid)) return "PROCESS_GONE";
+    if (!this.session.rootLive()) {
+      this.session.close();
+      return "PROCESS_GONE";
+    }
+    if (this.session.closed()) return "CLOSED";
+    return undefined;
+  }
+  run<T>(state: ProcessState, callback: () => TerminalResult<T>): TerminalResult<T> {
+    const denied = this.check(state);
+    if (denied) return error(denied);
+    return this.session.transact(BigIntConstructor(state.pid), () => {
+      const failure = this.check(state);
+      return failure ? error(failure) : callback();
+    });
+  }
+  private startup(): TerminalResult<void> {
+    const failure = this.check();
+    if (failure) return error(failure);
+    if (this.context.memberSlot < 0) return ok(undefined);
+    const s = this.session,
+      row = MEMBERS + this.context.memberSlot * 16;
+    if (s.get(row) !== this.context.memberGeneration || s.get(row + 1) === REMOVED)
+      return error("CANCELED");
+    if (s.get(row + 1) === PENDING) {
+      if (s.get(row + 7) !== this.state.parentPid) return error("DENIED");
+      return error("AGAIN");
+    }
+    if (s.get(row + 4) !== this.state.slot || s.get(row + 5) !== this.state.pid)
+      return error("DENIED");
+    const group = GROUPS + s.get(row + 2) * 16;
+    if (s.get(group) !== s.get(row + 3) || s.get(group + 1) === RETIRED) return error("CANCELED");
+    return s.get(group + 1) === RUNNING ? ok(undefined) : error("AGAIN");
+  }
+  ready(): TerminalResult<void> {
+    for (;;) {
+      const seen = this.session.get(H.wake);
+      const denied = this.check();
+      if (denied) return error(denied);
+      const result = this.session.transact(BigIntConstructor(this.state.pid), () => this.startup());
+      if (result.kind !== "error" || result.code !== "AGAIN") return result;
+      atomicsWait(this.session.wake, 0, seen, 10);
+    }
+  }
+  selected(state: ProcessState): boolean {
+    if (this.context.memberSlot >= 0 && state.pid === this.state.pid) {
+      const row = MEMBERS + this.context.memberSlot * 16;
+      return this.matches(row, state) && this.session.get(row) === this.context.memberGeneration;
+    }
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++)
+      if (this.matches(MEMBERS + slot * 16, state)) return true;
+    return false;
+  }
+  private matches(row: number, state: ProcessState): boolean {
+    const s = this.session,
+      group = s.get(H.selected) - 1;
+    if (group < 0 || s.get(row + 1) !== BOUND || s.get(row + 2) !== group) return false;
+    return (
+      s.get(row + 3) === s.get(GROUPS + group * 16) &&
+      s.get(row + 4) === state.slot &&
+      s.get(row + 5) === state.pid
+    );
+  }
+  resolve(target: TerminalTarget): Stream {
+    return this.endpoint(target, this.state);
+  }
+  endpoint(target: TerminalTarget, state: ProcessState): Endpoint {
+    if (target !== 0 && target !== 1 && target !== 2)
+      throw new TypeError("invalid terminal target");
+    if (this.disposed) throw new ProcessError(ProcessErrno.BADF, "terminal attachment disposed");
+    if (mapSize(this.endpoints) >= TERMINAL_SESSION_LIMITS.wrappersPerAttachment)
+      throw new ProcessError(ProcessErrno.AGAIN, "terminal wrapper capacity exceeded");
+    const endpoint = new Endpoint(this, target, state);
+    mapSet(this.endpoints, endpoint, true);
+    return endpoint;
+  }
+  inherit(): TerminalContext {
+    return context(this.session.identity);
+  }
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    mapForEach(this.endpoints, (_present, endpoint) => endpoint.close());
+    mapForEach(this.cursors, (_present, cursor) => cursor.dispose());
+    this.session.notify();
+  }
+}
+class Endpoint implements Stream {
+  readonly kind = "terminal";
+  readonly [controlKey]: Controls;
+  private closed = false;
+  constructor(
+    readonly attachment: Attachment,
+    readonly target: TerminalTarget,
+    readonly state: ProcessState,
+  ) {
+    this[controlKey] = new Controls(this);
+  }
+  get notification(): Int32Array {
+    return this.attachment.session.wake;
+  }
+  check(): TerminalFailure | undefined {
+    this.attachment.checkActive();
+    return this.closed ? "CANCELED" : this.attachment.check(this.state);
+  }
+  run<T>(callback: () => TerminalResult<T>): TerminalResult<T> {
+    const denied = this.check();
+    if (denied) return error(denied);
+    return this.attachment.run(this.state, callback);
+  }
+  tryRead(chunks: readonly Uint8Array[]): number {
+    const denied = this.check();
+    if (denied === "CLOSED") return 0;
+    if (denied) return errno(denied);
+    if (!byteCapacity(chunks)) return 0;
+    if (this.target !== 0) return -ProcessErrno.BADF;
+    const result = this.run(() => this.readInput(chunks));
+    return result.kind === "ok" ? result.value : result.code === "CLOSED" ? 0 : errno(result.code);
+  }
+  private readInput(chunks: readonly Uint8Array[]): TerminalResult<number> {
+    const a = this.attachment;
+    if (!a.selected(this.state)) return error("AGAIN");
+    const count = a.session.turn((turn) => {
+      if (!a.policy.inputReadiness(turn).readable) return -ProcessErrno.AGAIN;
+      return a.policy.tryRead(turn, chunks);
+    });
+    if (!a.session.rootLive()) a.session.close();
+    if (count >= 0) a.session.notify();
+    return a.session.closed() ? error("CLOSED") : ok(count);
+  }
+  read(chunks: readonly Uint8Array[]): number {
+    for (;;) {
+      const seen = this.attachment.session.get(H.wake);
+      if (signalPending(this.state.signals)) return -27;
+      const result = this.tryRead(chunks);
+      if (result !== -ProcessErrno.AGAIN) return result;
+      atomicsWait(this.attachment.session.wake, 0, seen, 10);
+    }
+  }
+  tryWrite(chunks: readonly Uint8Array[]): number {
+    const denied = this.check();
+    if (denied) return errno(denied);
+    if (!byteCapacity(chunks)) return 0;
+    if (this.target === 0) return -ProcessErrno.BADF;
+    let count: number;
+    try {
+      count = this.attachment.policy.tryWrite(this.target, chunks);
+    } catch (cause) {
+      this.attachment.session.close();
+      throw cause;
+    }
+    this.attachment.session.notify();
+    return this.check() ? -ProcessErrno.BADF : count;
+  }
+  write(chunks: readonly Uint8Array[]): number {
+    for (;;) {
+      const seen = this.attachment.session.get(H.wake);
+      if (signalPending(this.state.signals)) return -27;
+      const result = this.tryWrite(chunks);
+      if (result !== -ProcessErrno.AGAIN) return result;
+      atomicsWait(this.attachment.session.wake, 0, seen, 10);
+    }
+  }
+  readiness(): Readiness {
+    const denied = this.check();
+    if (denied)
+      return { readable: denied === "CLOSED", writable: false, hangup: denied === "CLOSED" };
+    if (this.target !== 0) return this.outputReady();
+    const result = this.run(() => {
+      if (!this.attachment.selected(this.state)) return ok({ readable: false, nbytes: 0 });
+      return ok(
+        this.attachment.session.turn((turn) => this.attachment.policy.inputReadiness(turn)),
+      );
+    });
+    const input =
+      result.kind === "ok" ? result.value : { readable: result.code === "CLOSED", nbytes: 0 };
+    return { ...input, writable: false, hangup: this.attachment.session.closed() };
+  }
+  private outputReady(): Readiness {
+    try {
+      return {
+        ...this.attachment.policy.outputReadiness(this.target as 1 | 2),
+        readable: false,
+        hangup: false,
+      };
+    } catch (cause) {
+      this.attachment.session.close();
+      throw cause;
+    }
+  }
+  forProcess(pid: number): Stream {
+    const denied = this.check();
+    if (denied) throw new ProcessError(ProcessErrno.BADF, "terminal view is not active");
+    const state = findProcess(this.attachment.session.identity, pid);
+    if (!state || !live(state))
+      throw new ProcessError(ProcessErrno.SRCH, "terminal child is not live");
+    return this.attachment.endpoint(this.target, state);
+  }
+  registerWake(wake: Int32Array): (() => void) | undefined {
+    const denied = this.check();
+    if (denied) return;
+    const common = this.attachment.session.commonWake;
+    if (
+      typedArrayBuffer(common) !== typedArrayBuffer(wake) ||
+      typedArrayByteOffset(common) !== typedArrayByteOffset(wake) ||
+      typedArrayLength(wake) !== 1
+    )
+      return;
+    return () => {};
+  }
+  revoke(): void {
+    this.close();
+  }
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    mapDelete(this.attachment.endpoints, this);
+    mapForEach(this.attachment.cursors, (_present, cursor) => {
+      if (cursor.endpoint === this) cursor.dispose();
+    });
+    this.attachment.session.notify();
+  }
+}
+class Controls implements TerminalControls {
+  constructor(private readonly endpoint: Endpoint) {}
+  snapshot(): TerminalResult<TerminalSnapshot> {
+    return this.endpoint.run(() => ok(this.endpoint.attachment.session.snapshot()));
+  }
+  setMode(options: {
+    readonly expected: TerminalSelection | null;
+    readonly mode: TerminalMode;
+  }): TerminalResult<void> {
+    return this.endpoint.run(() => this.set(options));
+  }
+  private set(options: {
+    readonly expected: TerminalSelection | null;
+    readonly mode: TerminalMode;
+  }): TerminalResult<void> {
+    const a = this.endpoint.attachment,
+      s = a.session;
+    if (!a.selected(this.endpoint.state)) return error("DENIED");
+    if (s.selection() !== options.expected) return error("STALE");
+    if (mode(s.get(H.mode)) === options.mode) return ok(undefined);
+    const next = s.next(H.modeRevision);
+    if (next.kind === "error") return next;
+    const changed = s.transition(a.policy, {
+      kind: "mode",
+      previous: mode(s.get(H.mode)),
+      next: options.mode,
+    });
+    if (changed.kind === "error") return changed;
+    const failure = this.endpoint.check();
+    if (failure) {
+      s.close();
+      return error(failure);
+    }
+    s.put(H.mode, modeWord(options.mode));
+    s.put(H.modeRevision, next.value);
+    return ok(undefined);
+  }
+  subscribeGeometry(): TerminalResult<TerminalGeometrySubscription> {
+    const denied = this.endpoint.check();
+    if (denied) return error(denied);
+    const a = this.endpoint.attachment;
+    if (mapSize(a.cursors) >= TERMINAL_SESSION_LIMITS.geometrySubscriptionsPerAttachment)
+      return error("CAPACITY");
+    const cursor = new GeometryCursor(this.endpoint);
+    mapSet(a.cursors, cursor, true);
+    return ok(cursor);
+  }
+}
+class GeometryCursor implements TerminalGeometrySubscription {
+  private revision = 0;
+  private disposed = false;
+  private waiting = false;
+  constructor(readonly endpoint: Endpoint) {}
+  poll(): TerminalResult<TerminalGeometrySnapshot | null> {
+    if (this.disposed) return error("CANCELED");
+    return this.endpoint.run(() => {
+      const geometry = this.endpoint.attachment.session.geometry();
+      if (geometry.revision === this.revision) return ok(null);
+      this.revision = geometry.revision;
+      return ok(geometry);
+    });
+  }
+  async wait(): Promise<TerminalResult<TerminalGeometrySnapshot>> {
+    if (this.waiting) return error("AGAIN");
+    this.waiting = true;
+    try {
+      return await this.waitForGeometry();
+    } finally {
+      this.waiting = false;
+    }
+  }
+  private async waitForGeometry(): Promise<TerminalResult<TerminalGeometrySnapshot>> {
+    const s = this.endpoint.attachment.session;
+    for (;;) {
+      const seen = s.get(H.wake),
+        result = this.poll();
+      if (result.kind === "error" && result.code !== "AGAIN") return result;
+      if (result.kind === "ok" && result.value !== null) return ok(result.value);
+      await waitForChange(s, seen);
+    }
+  }
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    mapDelete(this.endpoint.attachment.cursors, this);
+    this.endpoint.attachment.session.notify();
+  }
+}
+export function terminalControls(resource: Resource | undefined): TerminalControls | undefined {
+  if (!resource || resource.kind !== "terminal") return;
+  const controls = reflectGet(resource, controlKey);
+  return isInstance(controls, Controls) ? controls : undefined;
+}
