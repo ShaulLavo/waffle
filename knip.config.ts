@@ -29,6 +29,7 @@ export default {
         "tests/opfs-range-browser-runner.ts",
         "tests/indexeddb-chunks-browser-runner.ts",
         "tests/indexeddb-chunks-browser.ts",
+        "tests/workspace-vfs-read-browser.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
         "tests/persistent-authority-browser-runner.ts",

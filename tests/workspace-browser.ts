@@ -59,6 +59,209 @@ async function death(url: string): Promise<void> {
   check(typeof observe === "function", "Missing native worker-close observer");
   await observe(new URL(url, location.href).href);
 }
+type WriteObservation =
+  | { kind: "returned"; stage: string; value: unknown }
+  | { kind: "threw"; stage: string; error: unknown; state: ReturnType<typeof writeState> };
+
+function writeState(peer: FilesystemClient) {
+  const connection = peer.connection;
+  const control = connection.publication?.buffers.control;
+  return {
+    owner: connection.owner,
+    handleSections: Atomics.load(new Int32Array(connection.sections), 0),
+    epoch: Atomics.load(new Int32Array(connection.epoch), 0),
+    globalLock: Atomics.load(peer.shared.cells, 1),
+    publicationControl: control ? Array.from(new Int32Array(control)) : null,
+    residentKind: connection.residentPublication?.kind ?? null,
+    revocations: connection.revocations.map((buffer) => Atomics.load(new Int32Array(buffer), 0)),
+    dirty: peer.shared.dirtyAdmission.diagnostics(Atomics.load(peer.shared.cells, 2) * 65536),
+  };
+}
+function observeWrite<T>(
+  events: WriteObservation[],
+  peer: FilesystemClient,
+  stage: string,
+  invoke: () => T,
+): T {
+  try {
+    const value = invoke();
+    events.push({ kind: "returned", stage, value });
+    return value;
+  } catch (error) {
+    const detail =
+      error instanceof Error
+        ? {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+            errno: "errno" in error ? error.errno : null,
+          }
+        : String(error);
+    events.push({ kind: "threw", stage, error: detail, state: writeState(peer) });
+    throw error;
+  }
+}
+function diagnosticWrite(
+  peer: FilesystemClient,
+  handle: number,
+  mode: "memory" | "fast",
+  operation: { byte: number; offset: number; label: string },
+): number {
+  const events: WriteObservation[] = [];
+  const before = writeState(peer);
+  const directWrite = peer.shared.directWrite;
+  const domain = peer.shared.publication;
+  const admit = domain?.admit;
+  const next = domain?.next;
+  peer.shared.directWrite = (...args) => {
+    check(args[8] === true, "One-shot write changed to blocking I/O");
+    return observeWrite(events, peer, "shared.directWrite", () =>
+      directWrite.apply(peer.shared, args),
+    );
+  };
+  if (domain && admit && next) {
+    domain.admit = (...args) =>
+      observeWrite(events, peer, "publication.admit", () => admit.apply(domain, args));
+    domain.next = (...args) =>
+      observeWrite(events, peer, "publication.next", () => next.apply(domain, args));
+  }
+  try {
+    return observeWrite(events, peer, "tryWrite", () =>
+      peer.tryWrite(handle, [new Uint8Array([operation.byte])], operation.offset),
+    );
+  } finally {
+    peer.shared.directWrite = directWrite;
+    if (domain && admit && next) {
+      domain.admit = admit;
+      domain.next = next;
+    }
+    console.log(
+      "WORKSPACE_DIRECT_DIAGNOSTIC=" +
+        JSON.stringify(
+          {
+            mode,
+            handle,
+            operation,
+            before,
+            events,
+            after: writeState(peer),
+          },
+          (_, value) => (typeof value === "bigint" ? String(value) : value),
+        ),
+    );
+    check(
+      Atomics.load(new Int32Array(peer.connection.sections), 0) === before.handleSections,
+      "Direct write leaked its connection section",
+    );
+    check(
+      Atomics.load(peer.shared.cells, 1) === before.globalLock,
+      "Direct write changed enclosing global lock ownership",
+    );
+  }
+}
+function directWrites(
+  peer: FilesystemClient,
+  handle: number,
+  mode: "memory" | "fast",
+  otherOwner: number,
+): void {
+  const owner = peer.connection.owner;
+  const domain = peer.shared.publication;
+  check(domain && otherOwner !== owner, "Contention needs a distinct live owner");
+  // The fixture admits each synchronous cell before it calls nonblocking I/O.
+  // A completed guest RPC does not promise that the filesystem's global lock is idle.
+  peer.shared.mutate(
+    undefined,
+    undefined,
+    () => {
+      const before = peer.shared.snapshot(handle);
+      const cut = domain.cut();
+      const state = writeState(peer);
+      const slots = peer.shared.slots.slice();
+      const publication = domain.diagnostics();
+      check(before && state.globalLock === otherOwner, "Fixture did not hold the global lock");
+      const result = diagnosticWrite(peer, handle, mode, {
+        byte: 90,
+        offset: 2,
+        label: "other-owner-held",
+      });
+      const after = peer.shared.snapshot(handle);
+      const originalOneShotSuccess = result === 1;
+      check(result === -6, `Contended tryWrite returned ${result}, expected -6`);
+      check(
+        after && JSON.stringify(after) === JSON.stringify(before),
+        "Rejected write changed file bytes or metadata",
+      );
+      check(
+        slots.every((value, index) => value === peer.shared.slots[index]),
+        "Rejected write changed file slots or their lock owners",
+      );
+      check(domain.cut().generation === cut.generation, "Rejected write published a change");
+      check(
+        JSON.stringify(domain.diagnostics()) === JSON.stringify(publication),
+        "Rejected write leaked publication admission or a receipt",
+      );
+      check(
+        JSON.stringify(writeState(peer).dirty) === JSON.stringify(state.dirty),
+        "Rejected write changed dirty admission",
+      );
+      check(
+        Atomics.load(new Int32Array(peer.connection.epoch), 0) === state.epoch,
+        "Rejected write advanced the mutation epoch",
+      );
+      check(
+        Atomics.load(peer.shared.cells, 1) === otherOwner,
+        "Rejected write stole the enclosing global lock",
+      );
+      console.log(
+        "WORKSPACE_CAUSAL_RED=" +
+          JSON.stringify({
+            mode,
+            result,
+            originalOneShotSuccess,
+            owner,
+            otherOwner,
+            generation: String(cut.generation),
+            bytes: Array.from(after.data),
+          }),
+      );
+    },
+    otherOwner,
+  );
+  check(Atomics.load(peer.shared.cells, 1) !== otherOwner, "Fixture retained the other owner lock");
+  // This is a new admitted operation with different bytes and offset, not an EAGAIN retry.
+  peer.shared.mutate(
+    undefined,
+    undefined,
+    () => {
+      check(
+        Atomics.load(peer.shared.cells, 1) === owner,
+        "Successful cell lacks fixture admission",
+      );
+      const result = diagnosticWrite(peer, handle, mode, {
+        byte: 89,
+        offset: 1,
+        label: "explicitly-admitted",
+      });
+      check(result === 1, `Admitted tryWrite returned ${result}, expected 1`);
+      const bytes = new Uint8Array(3);
+      check(peer.tryRead(handle, [bytes], 0) === 3, "Admitted direct read failed");
+      check(
+        bytes[0] === 88 && bytes[1] === 89 && bytes[2] === 99,
+        "Incorrect direct write/read bytes",
+      );
+      console.log(
+        "WORKSPACE_CAUSAL_GREEN=" + JSON.stringify({ mode, result, bytes: Array.from(bytes) }),
+      );
+    },
+    owner,
+  );
+  check(Atomics.load(peer.shared.cells, 1) !== owner, "Fixture retained its admitted global lock");
+  check(
+    Atomics.load(new Int32Array(peer.connection.sections), 0) === 0,
+    "Fixture leaked its connection section",
+  );
+}
 async function run(mode: "memory" | "fast"): Promise<void> {
   const name = `workspace-public-${crypto.randomUUID()}`;
   const workerURL = `/fs-worker.js?owner=${name}`;
@@ -72,6 +275,13 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     check(workspace, "Public workspace capability missing");
     check(!("client" in workspace), "Projection leaked its root client");
     await fs.writeFile("/file", "abc");
+    const direct = await workspace.read("/file", { offset: 1, length: 2 });
+    check(
+      direct.kind === "ok" && direct.value.bytes.join() === "98,99",
+      "Public read before snapshot failed",
+    );
+    const pinned = await workspace.pin("/file");
+    check(pinned.kind === "ok", "Public lease missing");
     for (let index = 0; index < 130; index++) await fs.writeFile(`/src/f${index}`, "x");
     const connection = fs.fork();
     check(connection.publication?.observer === undefined, "Fork inherited root observer");
@@ -103,7 +313,32 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     });
     await workerCall(guest, { connection: borrowed, mode: "wasi" }, [borrowed.port]);
     await workerCall(guest, { operation: "write", byte: 88 });
-    check(peer.tryWrite(resolved.node, [new Uint8Array([89])], 1) === 1, "Direct write failed");
+    directWrites(peer, resolved.node, mode, borrowed.owner);
+    const old = await pinned.value.read({ offset: 0, length: 3 });
+    check(
+      old.kind === "ok" && old.value.bytes.join() === "97,98,99",
+      "Guest changed pinned version",
+    );
+    const current = await workspace.read(pinned.value.stat.id, { offset: 0, length: 3 });
+    check(
+      current.kind === "ok" && current.value.bytes.join() === "88,89,99",
+      "Public read missed writer ACK",
+    );
+    check(
+      (await workspace.stat(pinned.value.stat.id, pinned.value.stat.cut)).kind === "ok",
+      "Lease stat lost its cut",
+    );
+    await pinned.value.close();
+    check(
+      (
+        await workspace.read(
+          pinned.value.stat.id,
+          { offset: 0, length: 1 },
+          pinned.value.stat.version,
+        )
+      ).kind === "version-gone",
+      "Unretained version survived",
+    );
     const changes = await workspace.changes(initial.cut.watermark);
     check(
       changes.kind === "changes" && changes.batches.length === 2,
@@ -155,6 +390,13 @@ async function reopen(name: string, saved: Awaited<ReturnType<typeof complete>>)
     const bytes = await runtime.filesystem.readFile("/file");
     check(bytes?.[0] === 88 && bytes[1] === 89, "Public mode lost flushed data on reopen");
     check(runtime.filesystem.workspace, "Reopened projection missing");
+    const stat = await runtime.filesystem.workspace.stat("/file", saved.cut);
+    check(stat.kind === "generation-gone", "Reopen reused old generation");
+    const publicRead = await runtime.filesystem.workspace.read("/file", { offset: 0, length: 3 });
+    check(
+      publicRead.kind === "ok" && publicRead.value.bytes.join() === "88,89,99",
+      "Cold public reopen read failed",
+    );
     const recovered = await complete(runtime.filesystem.workspace);
     check(recovered.file?.id === saved.file?.id, "Reopen changed recovered FileId");
     check(recovered.file?.version === saved.file?.version, "Reopen changed recovered FileVersion");
@@ -184,6 +426,15 @@ function deleteDatabase(name: string): Promise<void> {
 export async function runWorkspaceBrowser(): Promise<string[]> {
   await run("memory");
   await run("fast");
+  const workerURL = `/read-worker.js?owner=${crypto.randomUUID()}`;
+  const worker = new Worker(workerURL, { type: "module" });
+  try {
+    const result = await workerCall(worker, {});
+    console.log(JSON.stringify(result));
+  } finally {
+    worker.terminate();
+    await death(workerURL);
+  }
   return [
     "public runtime worker memory",
     "public persistent worker flush/reopen",

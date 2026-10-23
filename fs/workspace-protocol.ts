@@ -1,6 +1,6 @@
 import { BigIntConstructor } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
-import type { PublicationConfiguration } from "./publication-internal.js";
+import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { decodeEffects, publicationCut, type PublicationCut } from "./publication.js";
 import { MAX_IDENTITY_PART, type FileId, type FileVersion } from "./file-identity.js";
 import {
@@ -180,4 +180,176 @@ export function workspaceChanges(value: unknown) {
     next: namespaceCut(workspace, next).watermark,
     publications,
   };
+}
+
+export class ReadRefusal extends Error {
+  constructor(readonly failure: import("./workspace-types.js").ReadFailure) {
+    super(failure.kind);
+  }
+}
+export function readTarget(value: unknown): import("./workspace-types.js").FileTarget {
+  if (
+    typeof value === "string" &&
+    value.startsWith("/") &&
+    !value.includes("\0") &&
+    value.length <= WORKSPACE_LIMITS.pathUnits
+  )
+    return value;
+  try {
+    return identity(value) as FileId;
+  } catch {
+    throw new ReadRefusal({ kind: "invalid", field: "target" });
+  }
+}
+export function readVersion(value: unknown): FileVersion | undefined {
+  if (value === undefined) return;
+  try {
+    return identity(value) as FileVersion;
+  } catch {
+    throw new ReadRefusal({ kind: "invalid", field: "version" });
+  }
+}
+export function readRange(value: unknown): import("./workspace-types.js").ByteRange | undefined {
+  if (value === undefined) return;
+  try {
+    const data = record(value),
+      offset = integer(data.offset),
+      length = integer(data.length);
+    if (offset > Number.MAX_SAFE_INTEGER - length) throw new Error();
+    return { offset, length };
+  } catch {
+    throw new ReadRefusal({ kind: "invalid", field: "range" });
+  }
+}
+export function readCut(value: unknown): NamespaceCut | undefined {
+  if (value === undefined) return;
+  try {
+    return cut(value);
+  } catch {
+    throw new ReadRefusal({ kind: "invalid", field: "cut" });
+  }
+}
+export function versionStat(value: unknown): import("./workspace-types.js").VersionStat {
+  const data = record(value);
+  if (data.kind !== "file" && data.kind !== "directory") throw new FilesystemError(29);
+  const selected = cut(data.cut);
+  Object.freeze(selected.watermark);
+  Object.freeze(selected);
+  const id = identity(data.id),
+    version = identity(data.version);
+  if (version < id) throw new FilesystemError(29);
+  return Object.freeze({
+    id: id as FileId,
+    version: version as FileVersion,
+    cut: selected,
+    kind: data.kind,
+    size: integer(data.size),
+    mtime: timestamp(data.mtime),
+    mode: integer(data.mode),
+  });
+}
+function readFailure(value: unknown): import("./workspace-types.js").ReadFailure {
+  const data = record(value);
+  switch (data.kind) {
+    case "not-found":
+    case "not-file":
+    case "denied":
+    case "lease-closed":
+    case "cancelled":
+    case "stopped":
+    case "unavailable":
+      return { kind: data.kind };
+    case "version-gone":
+      return { kind: "version-gone", requested: identity(data.requested) as FileVersion };
+    case "generation-gone":
+      return {
+        kind: "generation-gone",
+        requested: cut(data.requested),
+        current: cut(data.current),
+      };
+    case "restart":
+      return { kind: "restart", current: cut(data.current) };
+    case "pressure": {
+      const resource = data.resource;
+      if (
+        resource !== "operations" &&
+        resource !== "leases" &&
+        resource !== "result-bytes" &&
+        resource !== "pin-bytes" &&
+        resource !== "retained-storage" &&
+        resource !== "metadata"
+      )
+        throw new FilesystemError(29);
+      return { kind: "pressure", resource };
+    }
+    case "invalid": {
+      const field = data.field;
+      if (field !== "target" && field !== "range" && field !== "version" && field !== "cut")
+        throw new FilesystemError(29);
+      return { kind: "invalid", field };
+    }
+    case "io":
+    case "corrupt":
+      return { kind: data.kind, message: text(data.message) };
+    default:
+      throw new FilesystemError(29);
+  }
+}
+export function readReply(value: unknown): import("./workspace-types.js").ReadOutcome<unknown> {
+  const data = record(value);
+  return data.kind === "ok" ? { kind: "ok", value: data.value } : readFailure(value);
+}
+export function readOpenReply(value: unknown) {
+  const data = record(value),
+    extent = readRange(data.range);
+  if (!extent) throw new FilesystemError(29);
+  const serial = integer(data.serial),
+    stat = versionStat(data.stat);
+  if (!serial || extent.offset + extent.length > Math.max(stat.size, extent.offset))
+    throw new FilesystemError(29);
+  return { serial, stat, range: extent };
+}
+
+/** A slot cannot be reused before the service joins its serial-qualified reader owner. */
+export class ReaderLifetime {
+  private readonly cells: Int32Array;
+  private readonly index: number;
+  constructor(private readonly connection: PublicationConnection) {
+    if (!connection.buffers.readerLifetimes) throw new FilesystemError(58);
+    this.cells = new Int32Array(connection.buffers.readerLifetimes);
+    this.index = connection.session.slot * 2;
+  }
+  begin(): void {
+    if (
+      this.cells[this.index] !== this.connection.session.serial &&
+      this.cells[this.index + 1] === 1
+    )
+      throw new FilesystemError(6);
+    Atomics.store(this.cells, this.index, this.connection.session.serial);
+    Atomics.store(this.cells, this.index + 1, 1);
+  }
+  finish(failed: boolean): void {
+    Atomics.store(this.cells, this.index + 1, failed ? 3 : 2);
+    Atomics.notify(this.cells, this.index + 1);
+  }
+  get drained(): boolean {
+    return (
+      this.cells[this.index] === this.connection.session.serial && this.cells[this.index + 1] === 2
+    );
+  }
+  async join(): Promise<void> {
+    const atomics = Atomics as typeof Atomics & {
+      waitAsync(
+        array: Int32Array,
+        index: number,
+        value: number,
+      ): { async: boolean; value: string | Promise<string> };
+    };
+    while (Atomics.load(this.cells, this.index) === this.connection.session.serial) {
+      const state = Atomics.load(this.cells, this.index + 1);
+      if (state === 3) throw new FilesystemError(29, "Reader cleanup failed");
+      if (state !== 1) return;
+      await atomics.waitAsync(this.cells, this.index + 1, state).value;
+    }
+  }
 }

@@ -21,14 +21,21 @@ export class RangeAccess {
     this.file.onRead?.();
     if (this.file.readError) throw this.file.readError;
     const count = Math.min(buffer.length, this.file.step, Math.max(0, this.file.size - at));
-    for (let i = 0; i < count; i++) buffer[i] = pattern(at + i);
+    for (let i = 0; i < count; i++) buffer[i] = this.file.data?.[at + i] ?? pattern(at + i);
     return count;
   }
-  write(): number {
-    throw new Error("Range fixture must not write payloads");
+  write(bytes: Uint8Array, { at }: { at: number }): number {
+    if (!this.file.mutable) throw new Error("Range fixture must not write payloads");
+    if (at + bytes.length > this.file.size) this.truncate(at + bytes.length);
+    this.file.data!.set(bytes, at);
+    return bytes.length;
   }
-  truncate() {
-    throw new Error("Range fixture must not truncate payloads");
+  truncate(size: number) {
+    if (!this.file.mutable) throw new Error("Range fixture must not truncate payloads");
+    const bytes = new Uint8Array(size);
+    bytes.set(this.file.data!.subarray(0, size));
+    this.file.data = bytes;
+    this.file.size = size;
   }
   flush() {}
   close() {
@@ -49,6 +56,9 @@ export class RangeFile implements FileSystemFileHandle {
   lookup?: () => Promise<void>;
   acquire?: () => Promise<void>;
   opened?: (access: RangeAccess) => void;
+  snapshotRead?: () => Promise<void>;
+  data?: Uint8Array<ArrayBuffer>;
+  mutable = false;
   constructor(
     readonly name: string,
     public size: number,
@@ -62,13 +72,58 @@ export class RangeFile implements FileSystemFileHandle {
     return access;
   }
   async getFile() {
-    return new File([this.text], this.name);
+    if (this.name.startsWith("p-")) return new RangeSnapshot(this);
+    return new File([this.data ?? this.text], this.name);
   }
   async createWritable(): Promise<FileSystemWritableFileStream> {
     throw new Error("Unexpected writable stream");
   }
   async isSameEntry(other: FileSystemHandle): Promise<boolean> {
     return this === other;
+  }
+}
+
+class RangeSnapshot extends File {
+  private readonly capturedSize: number;
+  private readonly capturedData?: Uint8Array;
+  constructor(private readonly source: RangeFile) {
+    super([], source.name);
+    this.capturedSize = source.size;
+    this.capturedData = source.data;
+  }
+  override get size() {
+    return this.capturedSize;
+  }
+  override slice(start = 0, end = this.size): Blob {
+    return new RangeSlice(
+      this.source,
+      start,
+      Math.max(0, Math.min(end, this.size) - start),
+      this.capturedData,
+    );
+  }
+}
+class RangeSlice extends Blob {
+  constructor(
+    private readonly source: RangeFile,
+    private readonly offset: number,
+    private readonly count: number,
+    private readonly data?: Uint8Array,
+  ) {
+    super([]);
+  }
+  override get size() {
+    return this.count;
+  }
+  override async arrayBuffer(): Promise<ArrayBuffer> {
+    await this.source.snapshotRead?.();
+    const bytes = new Uint8Array(this.count);
+    this.source.reads.push({ at: this.offset, length: bytes.length, buffer: bytes.buffer });
+    this.source.onRead?.();
+    if (this.source.readError) throw this.source.readError;
+    for (let index = 0; index < bytes.length; index++)
+      bytes[index] = this.data?.[this.offset + index] ?? pattern(this.offset + index);
+    return bytes.buffer;
   }
 }
 
@@ -91,8 +146,14 @@ class RangeDirectory implements FileSystemDirectoryHandle {
     if (node instanceof RangeDirectory) return node;
     throw new DOMException(name, "NotFoundError");
   }
-  async getFileHandle(name: string): Promise<RangeFile> {
-    const node = this.nodes.get(name);
+  async getFileHandle(name: string, options?: FileSystemGetFileOptions): Promise<RangeFile> {
+    let node = this.nodes.get(name);
+    if (!node && options?.create) {
+      node = new RangeFile(name, 0);
+      node.mutable = true;
+      node.data = new Uint8Array();
+      this.nodes.set(name, node);
+    }
     if (!(node instanceof RangeFile)) throw new DOMException(name, "NotFoundError");
     await node.lookup?.();
     return node;

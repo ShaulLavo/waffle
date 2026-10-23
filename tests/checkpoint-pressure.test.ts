@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, spyOn, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
@@ -21,6 +22,8 @@ class HeldStorage implements StorageBackend {
   }
   index?: PersistedIndex;
   readonly payloads = new Map<string, Uint8Array>();
+  readRange = fixturePayloadHooks(this.payloads).readRange;
+  retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
   readonly batches: PersistenceBatch[] = [];
   readonly syncs: (readonly string[] | undefined)[] = [];
   readonly persistEntered = Promise.withResolvers<void>();

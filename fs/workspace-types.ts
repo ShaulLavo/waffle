@@ -94,7 +94,84 @@ export type WorkspaceChangePage =
   | { readonly kind: "changes"; readonly batches: readonly ChangeBatch[]; readonly next: Watermark }
   | HistoryGap
   | WorkspaceTerminal;
+export type FileTarget = FileId | string;
+export interface ByteRange {
+  readonly offset: number;
+  readonly length: number;
+}
+export interface VersionStat {
+  readonly id: FileId;
+  readonly version: FileVersion;
+  readonly cut: NamespaceCut;
+  readonly kind: "file" | "directory";
+  readonly size: number;
+  readonly mtime: number;
+  readonly mode: number;
+}
+export interface ReadValue {
+  readonly stat: VersionStat;
+  readonly range: ByteRange;
+  readonly bytes: Uint8Array<ArrayBuffer>;
+}
+export type ReadResource =
+  | "operations"
+  | "leases"
+  | "result-bytes"
+  | "pin-bytes"
+  | "retained-storage"
+  | "metadata";
+export type ReadFailure =
+  | { readonly kind: "not-found" }
+  | { readonly kind: "not-file" }
+  | { readonly kind: "denied" }
+  | { readonly kind: "lease-closed" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "stopped" }
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "version-gone"; readonly requested: FileVersion }
+  | {
+      readonly kind: "generation-gone";
+      readonly requested: NamespaceCut;
+      readonly current: NamespaceCut;
+    }
+  | { readonly kind: "restart"; readonly current: NamespaceCut }
+  | { readonly kind: "pressure"; readonly resource: ReadResource }
+  | { readonly kind: "invalid"; readonly field: "target" | "range" | "version" | "cut" }
+  | { readonly kind: "io"; readonly message: string }
+  | { readonly kind: "corrupt"; readonly message: string };
+export type ReadOutcome<T> = { readonly kind: "ok"; readonly value: T } | ReadFailure;
+export interface VersionLease {
+  readonly stat: VersionStat;
+  read(range?: ByteRange, signal?: AbortSignal): Promise<ReadOutcome<ReadValue>>;
+  close(): Promise<void>;
+}
+export const WORKSPACE_READ_LIMITS = Object.freeze({
+  leases: 16,
+  operations: 4,
+  result: 1024 * 1024,
+  resultBytes: 16 * 1024 * 1024,
+  pinBytes: 256 * 1024 * 1024,
+  storageBytes: 512 * 1024 * 1024,
+  metadata: 2 * 1024 * 1024,
+  chunk: 65536,
+});
 export interface WorkspaceVfs {
+  read(
+    target: FileTarget,
+    range?: ByteRange,
+    atVersion?: FileVersion,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<ReadValue>>;
+  stat(
+    target: FileTarget,
+    at?: NamespaceCut,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<VersionStat>>;
+  pin(
+    target: FileTarget,
+    atVersion?: FileVersion,
+    signal?: AbortSignal,
+  ): Promise<ReadOutcome<VersionLease>>;
   snapshot(options?: SnapshotOptions, signal?: AbortSignal): SnapshotCursor;
   /** Pull after this owner's completed snapshot or previous returned watermark. No notification dependency. */
   changes(after: Watermark, signal?: AbortSignal): Promise<WorkspaceChangePage>;

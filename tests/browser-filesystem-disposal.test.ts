@@ -373,3 +373,37 @@ for (const options of [
     expect(fs.dispose()).toBe(stopping);
   });
 }
+
+for (const mode of ["memory", "fast"] as const) {
+  test(`public ${mode} reader disposal waits for service ACK and section exit`, async () => {
+    const { fs, worker, hold } = fixture({ mode, workspace: true });
+    worker.ready();
+    const release = hold();
+    const original = fs.dispose();
+    expect(fs.dispose()).toBe(original);
+    expect(worker.requests).toBe(1);
+    expectRetained(fs, worker);
+    worker.acknowledge();
+    await checkpoint();
+    expectRetained(fs, worker);
+    release();
+    await original;
+    expect(worker.terminations).toBe(1);
+  });
+  for (const reason of [undefined, null, false, 0, new Error("public post failed")]) {
+    test(`public ${mode} failed disposal preserves ${String(reason)} and original owner`, async () => {
+      const { fs, worker } = fixture({ mode, workspace: true });
+      worker.ready();
+      worker.postFailure = { reason };
+      const original = fs.dispose();
+      const result = await observe(original).result;
+      expect(result.kind).toBe("rejected");
+      if (result.kind === "rejected") expect(Object.is(result.reason, reason)).toBe(true);
+      expect(fs.dispose()).toBe(original);
+      expectRetained(fs, worker);
+      worker.acknowledge();
+      await checkpoint();
+      expectRetained(fs, worker);
+    });
+  }
+}
