@@ -339,6 +339,7 @@ interface Failure {
 type PullOutcome<T> =
   | { readonly kind: "fulfilled"; readonly result: IteratorResult<T>; readonly then: undefined }
   | { readonly kind: "rejected"; readonly reason: unknown; readonly then: undefined };
+/* oxlint-disable unicorn/no-thenable -- Own undefined then fields prevent inherited hooks and result re-assimilation. */
 function observePull<T>(iterator: AsyncIterator<T>): Promise<PullOutcome<T>> {
   try {
     return Promise.resolve(iterator.next()).then(
@@ -406,6 +407,7 @@ class ArchiveInput<T> {
     );
   }
 }
+/* oxlint-enable unicorn/no-thenable */
 class StreamReader {
   private readonly input: ArchiveInput<Uint8Array>;
   private bytes: Uint8Array = new Uint8Array(0);

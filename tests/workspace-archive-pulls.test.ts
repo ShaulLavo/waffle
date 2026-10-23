@@ -36,8 +36,7 @@ async function* values<T>(items: readonly T[]): AsyncGenerator<T> {
   yield* items;
 }
 async function consume(source: AsyncIterable<unknown>): Promise<void> {
-  for await (const _item of source) {
-  }
+  for await (const item of source) void item;
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -112,7 +111,7 @@ async function fixture(): Promise<Uint8Array> {
   }
   return bytes;
 }
-function encoded(payload = values([new Uint8Array([7])])) {
+function encoded(payload: AsyncIterable<Uint8Array> = values([new Uint8Array([7])])) {
   return encodeWorkspaceArchive(
     manifest,
     values<ArchiveSourceEntry>([{ metadata: root }, { metadata: file, bytes: payload }]),
@@ -137,6 +136,7 @@ async function copyProbe(kind: "ordinary" | "buffer" | "subclass"): Promise<void
   const normalSlice = transport.slice.bind(transport);
   let retained: Uint8Array | undefined;
   Uint8Array.prototype.set = function (source, offset) {
+    // oxlint-disable-next-line typescript/no-this-alias -- Record the actual allocation receiving the transport copy.
     if (source === transport) retained = this;
     normalSet.call(this, source, offset);
   };
@@ -160,6 +160,7 @@ async function copyProbe(kind: "ordinary" | "buffer" | "subclass"): Promise<void
 
 function fulfilledOnce<T>(value: T) {
   let reads = 0;
+  /* oxlint-disable unicorn/no-thenable -- This accessor detects re-assimilation of an already fulfilled result. */
   const result = {
     done: false as const,
     value,
@@ -169,6 +170,7 @@ function fulfilledOnce<T>(value: T) {
       return undefined;
     },
   };
+  /* oxlint-enable unicorn/no-thenable */
   const ready = Promise.resolve(result);
   let used = false;
   const source: AsyncIterable<T> = {
