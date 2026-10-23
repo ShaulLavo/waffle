@@ -112,7 +112,7 @@ export class MemoryBackend implements FilesystemBackend {
       this.workspaceId = startupRoot.workspaceId;
       this.shared = startupRoot.shared;
       this.startupRoot = startupRoot.startupRoot;
-      this.sharedAttached = true;
+      this.sharedAttached = startupRoot.sharedAttached;
       return;
     }
     this.shared = new SharedFilesystemState(
