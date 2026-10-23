@@ -421,7 +421,6 @@ test("direct metadata pressure fallback returns service errno without throwing",
   });
 });
 
-
 test("held checkpoint parks a namespace writer until capacity returns", async () => {
   await fixture(async (context) => {
     const { backend, client, track } = context;
@@ -439,20 +438,23 @@ test("held checkpoint parks a namespace writer until capacity returns", async ()
 });
 
 test("clean detached descriptor reload preserves the captured length", async () => {
-  await fixture(async ({ backend, client, handle }) => {
-    expect(client.tryWrite(handle, [data(8, 66)], 0)).toBe(8);
-    await client.asyncCall("remove", ["/file"]);
-    await backend.checkpoint(true);
-    await client.asyncCall("mkdirp", ["/many"]);
-    for (let index = 0; index < 1100; index++) {
-      await client.asyncCall("writeFile", [`/many/f${index}`], data(1));
-      if (index % 200 === 199) await backend.checkpoint(true);
-    }
-    await backend.checkpoint(true);
-    await client.asyncCall("writeFile", ["/many/trigger"], data(1));
-    expect(backend.shared.isResident(handle)).toBe(false);
-    expect(await client.asyncCall("read", [handle, 8, 0])).toEqual(data(8, 66));
-  }, { checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 } });
+  await fixture(
+    async ({ backend, client, handle }) => {
+      expect(client.tryWrite(handle, [data(8, 66)], 0)).toBe(8);
+      await client.asyncCall("remove", ["/file"]);
+      await backend.checkpoint(true);
+      await client.asyncCall("mkdirp", ["/many"]);
+      for (let index = 0; index < 1100; index++) {
+        await client.asyncCall("writeFile", [`/many/f${index}`], data(1));
+        if (index % 200 === 199) await backend.checkpoint(true);
+      }
+      await backend.checkpoint(true);
+      await client.asyncCall("writeFile", ["/many/trigger"], data(1));
+      expect(backend.shared.isResident(handle)).toBe(false);
+      expect(await client.asyncCall("read", [handle, 8, 0])).toEqual(data(8, 66));
+    },
+    { checkpointLimits: { maxBytes: 1024 * 1024, maxMetadataBytes: 8 * 1024 * 1024 } },
+  );
 });
 
 test("cold namespace is not pending checkpoint debt", async () => {
@@ -495,7 +497,6 @@ test("cold namespace is not pending checkpoint debt", async () => {
   }
 });
 
-
 test("directory metadata reserves the complete dirty child list before mutation", async () => {
   const storage = new ControlledStorage();
   const seed = await PersistentBackend.open(storage, { intervalMs: 0, dirtyLimits: false });
@@ -514,13 +515,17 @@ test("directory metadata reserves the complete dirty child list before mutation"
     const directory = backend.fs.lookup("/d")!;
     const handle = backend.fs.handleForNode(directory);
     await backend.prepare("stat", [handle]);
+    backend.execute("stat", [handle], data(0));
     const before = backend.shared.stat(handle);
-    expect(() => backend.execute("setMode", [handle, 0o700], data(0))).toThrow("dirty capacity");
+    expect(before?.mode).toBe(0o700);
+    expect(() => backend.execute("setMode", [handle, 0o600], data(0))).toThrow("dirty capacity");
     expect(backend.shared.stat(handle)).toEqual(before);
     expect(() => backend.execute("setMtime", [handle, 1234], data(0))).toThrow("dirty capacity");
     expect(backend.shared.stat(handle)).toEqual(before);
     await backend.flush();
-    expect(storage.index!.nodes.find((node) => node.ino === directory.ino)!.mtime).toBe(before!.mtime);
+    expect(storage.index!.nodes.find((node) => node.ino === directory.ino)!.mtime).toBe(
+      before!.mtime,
+    );
   } finally {
     await Promise.allSettled([backend.close()]);
     backend.dispose();
