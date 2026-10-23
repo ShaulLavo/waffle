@@ -1,4 +1,8 @@
-import { createPersistentResidentOwner, selectPersistentWorkspace, type PersistentResidentOwner } from "../../browser/persistent-resident-owner";
+import {
+  createPersistentResidentOwner,
+  selectPersistentWorkspace,
+  type PersistentResidentOwner,
+} from "../../browser/persistent-resident-owner";
 import { FilesystemClient } from "../../fs/client";
 import { IndexedDBStorage } from "../../fs/indexeddb";
 import { publicationObserver } from "../../fs/publication-internal";
@@ -37,7 +41,14 @@ const originalPost = BroadcastChannel.prototype.postMessage;
 BroadcastChannel.prototype.postMessage = function (value: unknown) {
   const data = record(value);
   const grant = data.value;
-  if (holdingReply && data.kind === "reply" && grant && typeof grant === "object" && "key" in grant && "session" in grant) {
+  if (
+    holdingReply &&
+    data.kind === "reply" &&
+    grant &&
+    typeof grant === "object" &&
+    "key" in grant &&
+    "session" in grant
+  ) {
     holdingReply = false;
     reply = () => Reflect.apply(originalPost, this, [value]);
     events.push("grant-reply-held");
@@ -50,12 +61,34 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
     const data = record(value);
     const selected = selectPersistentWorkspace({ mode: "fast", name: text(data.name) });
     const base = {
-      runtimeLifetime: crypto.randomUUID(), attempt: crypto.randomUUID(), selected,
-      publication: { observe: true, limits: { sessions: 16, operations: 32, inputBytes: 64, argumentBytes: 512, effectBytes: 4096, effects: 16, resultBytes: 256, logRecords: 16, logBytes: 65536, pins: 2, pinBytes: 256 } },
+      runtimeLifetime: crypto.randomUUID(),
+      attempt: crypto.randomUUID(),
+      selected,
+      publication: {
+        observe: true,
+        limits: {
+          sessions: 16,
+          operations: 32,
+          inputBytes: 64,
+          argumentBytes: 512,
+          effectBytes: 4096,
+          effects: 16,
+          resultBytes: 256,
+          logRecords: 16,
+          logBytes: 65536,
+          pins: 2,
+          pinBytes: 256,
+        },
+      },
     };
     const original = data.original === undefined ? undefined : record(data.original);
     const request = original
-      ? { ...base, kind: "reopen-v1" as const, accept: "new-history-loss-and-unknown" as const, original: { instance: text(original.instance), history: text(original.history) } }
+      ? {
+          ...base,
+          kind: "reopen-v1" as const,
+          accept: "new-history-loss-and-unknown" as const,
+          original: { instance: text(original.instance), history: text(original.history) },
+        }
       : { ...base, kind: "initial-open" as const };
     owner = createPersistentResidentOwner(request, new AbortController().signal);
     return owner.ready;
@@ -68,15 +101,27 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
     return { memoized, stopped: true };
   }
   if (operation === "probe") return { checkpointEntered, events: events.slice() };
-  if (operation === "holdReply") { holdingReply = true; return null; }
+  if (operation === "holdReply") {
+    holdingReply = true;
+    return null;
+  }
   if (operation === "releaseReply") {
     if (!reply) throw new Error("no held reply");
-    reply(); reply = undefined; events.push("grant-reply-released"); return null;
+    reply();
+    reply = undefined;
+    events.push("grant-reply-released");
+    return null;
   }
   if (operation === "holdCheckpoint") {
-    checkpoint = Promise.withResolvers<void>(); checkpointEntered = false; return null;
+    checkpoint = Promise.withResolvers<void>();
+    checkpointEntered = false;
+    return null;
   }
-  if (operation === "releaseCheckpoint") { checkpoint?.resolve(); checkpoint = undefined; return null; }
+  if (operation === "releaseCheckpoint") {
+    checkpoint?.resolve();
+    checkpoint = undefined;
+    return null;
+  }
   if (!observer) throw new Error("factory root not observed");
   if (operation === "cut") return observer.cut();
   if (operation === "changes") return observer.changes(publicationCut(value), 65536);
@@ -87,9 +132,15 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
   throw new Error(`unknown owner operation ${operation}`);
 }
 self.onmessage = ({ data }: MessageEvent<unknown>) => {
-  const message = record(data), id = text(message.id);
+  const message = record(data),
+    id = text(message.id);
   void execute(text(message.operation), message.body).then(
     (value) => self.postMessage({ id, value }),
-    (error: unknown) => self.postMessage({ id, failure: String(error), errno: Reflect.get(Object(error), "errno") ?? null }),
+    (error: unknown) =>
+      self.postMessage({
+        id,
+        failure: String(error),
+        errno: Reflect.get(Object(error), "errno") ?? null,
+      }),
   );
 };
