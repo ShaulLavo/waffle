@@ -994,7 +994,146 @@ async function publicationFast(name: string): Promise<void> {
     await storage.close();
   }
 }
+async function genesisReopen(name: string, open: () => Promise<CommittedStorage>): Promise<void> {
+  const first = await open(),
+    initial = await first.recoverCommitted();
+  await StagedCommitDriver.open(first);
+  await first.close();
+  const second = await open(),
+    recovered = await second.recoverCommitted(),
+    driver = await StagedCommitDriver.open(second);
+  assert(
+    recovered.envelope.head.sequence === 0n &&
+      recovered.envelope.head.workspace === initial.envelope.head.workspace &&
+      recovered.epoch > initial.epoch &&
+      recovered.index === undefined,
+    "genesis-only committed database reopens without inventing a tree",
+  );
+  await driver.drain();
+  await second.close();
+  const third = await open();
+  assert((await third.recoverCommitted()).envelope.head.sequence === 0n, "idle driver reopens");
+  await third.close();
+  await change(name, "metadata", 0, { unexpected: "snapshot at genesis" });
+  await formatFailure(open());
+}
+async function observerCapacity(
+  _name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open(),
+    driver = await StagedCommitDriver.open(storage),
+    gate = Promise.withResolvers<void>();
+  let prepared = 0;
+  const replies = Array.from({ length: 65 }, () =>
+    driver.submit({
+      key: operationKey(1n, 1n),
+      request,
+      charge: { inputBytes: 1, payloadBytes: 4, metadataBytes: 4096, publicationBytes: 64 },
+      signal: new AbortController().signal,
+      async prepare() {
+        prepared++;
+        await gate.promise;
+        return stage(1);
+      },
+    }),
+  );
+  try {
+    gate.resolve();
+    const outcomes = await Promise.all(replies);
+    await driver.drain();
+    const recovered = await storage.recoverCommitted();
+    assert(
+      outcomes[0]?.kind === "committed" &&
+        outcomes[64]?.kind === "indeterminate" &&
+        outcomes.every((outcome) => outcome.kind !== "not-admitted") &&
+        prepared === 1 &&
+        recovered.envelope.head.sequence === 1n &&
+        lookupReceipt(recovered.envelope, operationKey(1n, 1n), request).kind === "retained",
+      "overflowing an admitted key returns keyed uncertainty, never not-admitted",
+    );
+  } finally {
+    gate.resolve();
+    await driver.drain();
+  }
+}
+async function observerCancellation(
+  _name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open(),
+    driver = await StagedCommitDriver.open(storage, { clients: 1 }),
+    gate = Promise.withResolvers<void>(),
+    controller = new AbortController();
+  const submission = {
+    key: operationKey(1n, 1n),
+    request,
+    charge: { inputBytes: 1, payloadBytes: 4, metadataBytes: 4096, publicationBytes: 64 },
+    async prepare() {
+      await gate.promise;
+      return stage(1);
+    },
+  };
+  const first = driver.submit(submission),
+    cancelled = driver.submit({ ...submission, signal: controller.signal });
+  try {
+    controller.abort(null);
+    const aborted = await cancelled;
+    assert(aborted.kind === "indeterminate" && aborted.cause === null, "abort cause stays exact");
+    const replacement = driver.submit({ ...submission, signal: new AbortController().signal });
+    gate.resolve();
+    const outcomes = await Promise.all([first, replacement]);
+    assert(
+      outcomes.every((outcome) => outcome.kind === "committed"),
+      "cancelled observer frees its slot before native work settles",
+    );
+  } finally {
+    gate.resolve();
+    await driver.drain();
+  }
+}
+async function observerReentry(
+  _name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open(),
+    driver = await StagedCommitDriver.open(storage, { clients: 1 });
+  let second: Promise<import("../fs/safe-staging.js").StagingOutcome> | undefined,
+    secondPrepared = 0;
+  const next = {
+    key: operationKey(1n, 2n),
+    request,
+    charge: { inputBytes: 1, payloadBytes: 4, metadataBytes: 4096, publicationBytes: 64 },
+    signal: new AbortController().signal,
+    async prepare() {
+      secondPrepared++;
+      return stage(2);
+    },
+  };
+  const first = await driver.submit({
+    ...next,
+    key: operationKey(1n, 1n),
+    async prepare() {
+      return stage(1, () => queueMicrotask(() => { second = driver.submit(next); }));
+    },
+  });
+  const reply = await second;
+  await driver.drain();
+  assert(
+    first.kind === "committed" &&
+      reply?.kind === "not-admitted" &&
+      secondPrepared === 0 &&
+      (await storage.recoverCommitted()).envelope.head.sequence === 1n,
+    "observer capacity refuses callback reentry before producer admission",
+  );
+  assert((await driver.submit(next)).kind === "committed", "fresh observer slot allows retry");
+  assert(equal(secondPrepared, 1), "refused callback did not stage an extra operation");
+}
 const cases = {
+  genesisReopen,
+  observerCapacity,
+  observerCancellation,
+  observerReentry,
   publicationRoundtrip,
   publicationAtomicity,
   publicationCommitBeforeReply,
