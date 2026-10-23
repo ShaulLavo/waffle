@@ -136,7 +136,7 @@ function equal(actual: number, expected: number): boolean {
 function terminalGate(kind: "complete" | "abort") {
   const descriptor = Object.getOwnPropertyDescriptor(IDBTransaction.prototype, `on${kind}`)!;
   const seen = Promise.withResolvers<void>();
-  let delivery: (() => void) | undefined, abortTransaction: (() => void) | undefined;
+  let delivery: (() => void) | undefined;
   Object.defineProperty(IDBTransaction.prototype, `on${kind}`, {
     ...descriptor,
     set(callback: IDBTransaction["oncomplete"]) {
@@ -144,7 +144,6 @@ function terminalGate(kind: "complete" | "abort") {
         descriptor.set!.call(this, callback);
         return;
       }
-      abortTransaction = () => this.abort();
       descriptor.set!.call(this, (event: Event) => {
         delivery = invokeTerminal(callback, this, event);
         seen.resolve();
@@ -155,9 +154,6 @@ function terminalGate(kind: "complete" | "abort") {
     seen: seen.promise,
     release() {
       delivery?.();
-    },
-    abort() {
-      abortTransaction?.();
     },
     restore() {
       Object.defineProperty(IDBTransaction.prototype, `on${kind}`, descriptor);
@@ -432,6 +428,49 @@ async function commitBeforeReply(
     "replay never executes a second append",
   );
 }
+async function postCommitInstallFailure(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open();
+  await commit(storage, 1);
+  const prepared = await group(storage, 2),
+    install = { exact: "adapter install" },
+    observed = { exact: "ownership observer" };
+  let notified = 0;
+  Object.defineProperty(storage, "installCommit", {
+    configurable: true,
+    value() {
+      throw install;
+    },
+  });
+  Object.defineProperty(storage, "onOwnershipLost", {
+    configurable: true,
+    value() {
+      notified++;
+      throw observed;
+    },
+  });
+  const outcome = await storage.beginCommit(prepared).terminal;
+  assert(
+    outcome.kind === "committed" && outcome.receipt.commit === 2n && equal(notified, 1),
+    "adapter install and ownership observer errors cannot relabel native commit",
+  );
+  let stopped = false;
+  try {
+    await storage.recoverCommitted();
+  } catch (error) {
+    stopped = String(error).includes("another tab");
+  }
+  assert(stopped, "failed adapter memory reconciliation stops authority");
+  await storage.close();
+  const reopened = await open();
+  assert(
+    (await reopened.recoverCommitted()).envelope.head.sequence === 2n &&
+      (await readRaw(name, "metadata", "active")) === 2,
+    "native commit survives adapter memory failure and reopen",
+  );
+}
 async function preNativeCancellation(
   name: string,
   open: () => Promise<CommittedStorage>,
@@ -676,6 +715,7 @@ const cases = {
   nativeAbortRequest,
   commitBeforeReply,
   preNativeCancellation,
+  postCommitInstallFailure,
   requiredHead,
   headFence,
   retainedRoots,

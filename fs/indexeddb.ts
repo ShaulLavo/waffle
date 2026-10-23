@@ -992,7 +992,9 @@ export class IndexedDBStorage implements StorageBackend {
       },
       (error: unknown) => {
         this.committedPending = false;
-        if (control.durable) this.loseOwnership();
+        try {
+          if (control.durable) this.loseOwnership();
+        } catch {}
         control.finish(error);
       },
     );
