@@ -431,15 +431,14 @@ class StreamReader {
       this.bytes = new Uint8Array(0);
       return;
     }
-    if (
-      !(next.value instanceof Uint8Array) ||
-      next.value.length > WORKSPACE_ARCHIVE_LIMITS.transportBytes
-    )
+    if (!(next.value instanceof Uint8Array)) fail("LIMIT", "Invalid transport chunk");
+    const length = next.value.length;
+    if (length > WORKSPACE_ARCHIVE_LIMITS.transportBytes)
       fail("LIMIT", "Transport chunk too large");
-    this.emptyPulls = next.value.length ? 0 : this.emptyPulls + 1;
+    this.emptyPulls = length ? 0 : this.emptyPulls + 1;
     if (this.emptyPulls > WORKSPACE_ARCHIVE_LIMITS.emptyChunks)
       fail("LIMIT", "Too many empty transport chunks");
-    this.bytes = new Uint8Array(next.value.length);
+    this.bytes = new Uint8Array(length);
     this.bytes.set(next.value);
     this.offset = 0;
   }

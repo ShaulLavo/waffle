@@ -211,8 +211,9 @@ async function rejectionProbe(
   kind: "transport" | "entries" | "payload",
   reason: unknown,
   cleanup: boolean,
+  cleanupOverride?: { reason: unknown },
 ) {
-  const cleanupError = new Error(`${kind} return`);
+  const cleanupError = cleanupOverride ? cleanupOverride.reason : new Error(`${kind} return`);
   const end = cleanup ? { reason: cleanupError } : undefined;
   if (kind === "transport") {
     const sink = new Sink();
@@ -315,19 +316,24 @@ async function joinProbe(returnFails: boolean) {
   };
   const sink = new Sink();
   const importing = failure(importWorkspaceArchive(source, sink, { signal: controller.signal }));
-  await started.promise;
-  controller.abort(false);
-  await returnStarted.promise;
-  expect(sink.calls).toEqual([]);
-  returned.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  expect(sink.calls).toEqual([]);
-  pending.resolve({ done: true, value: undefined });
-  expectLeaves(await importing, returnFails ? [false, cleanup] : [false]);
-  expect(calls).toEqual(["return-start", "return-end"]);
-  expect(sink.calls).toEqual(["abort"]);
-  expect(sink.selected).toBe("old");
+  try {
+    await started.promise;
+    controller.abort(false);
+    await returnStarted.promise;
+    expect(sink.calls).toEqual([]);
+    returned.resolve();
+    await setImmediate();
+    expect(sink.calls).toEqual([]);
+    pending.resolve({ done: true, value: undefined });
+    expectLeaves(await importing, returnFails ? [false, cleanup] : [false]);
+    expect(calls).toEqual(["return-start", "return-end"]);
+    expect(sink.calls).toEqual(["abort"]);
+    expect(sink.selected).toBe("old");
+  } finally {
+    returned.resolve();
+    pending.resolve({ done: true, value: undefined });
+    await importing;
+  }
 }
 
 if (process.argv.includes("--archive-abort-child")) {
@@ -344,6 +350,8 @@ if (process.argv.includes("--archive-abort-child")) {
         rejectionProbe(kind, reason, false));
       test(`primary and return retained: ${kind}, ${String(reason)}`, () =>
         rejectionProbe(kind, reason, true));
+      test(`cleanup falsy failure retained: ${kind}, ${String(reason)}`, () =>
+        rejectionProbe(kind, new Error("primary"), true, { reason }));
     }
   }
   test("synchronous abort inside next owns every rejection", async () => {
@@ -407,6 +415,70 @@ if (process.argv.includes("--archive-abort-child")) {
     expectLeaves(sink.reason, [primary, close]);
     expect(sink.calls).not.toContain("publish");
     expect(sink.selected).toBe("old");
+  });
+  test("abort during listener installation is observed and the listener is removed", async () => {
+    const controller = new AbortController();
+    const pending = deferred<IteratorResult<Uint8Array>>();
+    const signal = controller.signal;
+    const add = signal.addEventListener.bind(signal);
+    const remove = signal.removeEventListener.bind(signal);
+    let added = 0,
+      removed = 0,
+      returned = 0;
+    signal.addEventListener = (type, callback, options) => {
+      controller.abort("listener-install");
+      add(type, callback, options);
+      added++;
+    };
+    signal.removeEventListener = (type, callback, options) => {
+      remove(type, callback, options);
+      removed++;
+    };
+    const source: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => pending.promise,
+          async return() {
+            returned++;
+            pending.resolve({ done: true, value: undefined });
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+    const sink = new Sink();
+    try {
+      expect(await failure(importWorkspaceArchive(source, sink, { signal }))).toBe(
+        "listener-install",
+      );
+      expect(added).toBe(1);
+      expect(removed).toBe(1);
+      expect(returned).toBe(1);
+      expect(sink.calls).toEqual(["abort"]);
+      expect(sink.selected).toBe("old");
+    } finally {
+      signal.addEventListener = add;
+      signal.removeEventListener = remove;
+      pending.resolve({ done: true, value: undefined });
+    }
+  });
+  test("payload validation failure retains return failure", async () => {
+    const cleanup = new Error("invalid payload return");
+    const bytes: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => Promise.resolve({ done: false, value: new Uint8Array() }),
+          return: () => Promise.reject(cleanup),
+        };
+      },
+    };
+    const error = await failure(consume(encoded(bytes)));
+    expect(error).toBeInstanceOf(AggregateError);
+    const errors = leaves(error);
+    expect(errors.length).toBe(2);
+    expect(errors[0]).toBeInstanceOf(Error);
+    if (errors[0] instanceof Error) expect(errors[0].message).toBe("Empty source chunk");
+    expect(errors[1]).toBe(cleanup);
   });
   test("normal early return exposes cleanup-only failure", async () => {
     const cleanup = new Error("early return");
