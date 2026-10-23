@@ -34,6 +34,7 @@ type Fixture = ReturnType<typeof fixture>;
 interface Hooks {
   page?(page: SnapshotPage, scan: number, pull: number): Promise<SnapshotPage>;
   beforePin?(): Promise<void>;
+  pinStat?(stat: VersionStat): VersionStat;
   read?(value: ReadOutcome<ReadValue>, range?: ByteRange): Promise<ReadOutcome<ReadValue>>;
   cursorClose?(): Promise<void>;
   leaseClose?(): Promise<void>;
@@ -64,7 +65,7 @@ function observe(workspace: WorkspaceVfs, hooks: Hooks = {}) {
       if (result.kind !== "ok") return result;
       const original = result.value;
       const lease: VersionLease = {
-        stat: original.stat,
+        stat: hooks.pinStat ? hooks.pinStat(original.stat) : original.stat,
         async read(range, readSignal) {
           counts.reads++;
           counts.largestRange = Math.max(counts.largestRange, range?.length ?? Infinity);
@@ -762,6 +763,195 @@ for (const delivery of ["lease", "rejection"] as const) {
       gate.resolve();
       await work;
       await acquired?.close();
+      await value.close();
+    }
+  });
+}
+
+function changedStat(stat: VersionStat, field: string): VersionStat {
+  if (field === "id" || field === "version")
+    return {
+      ...stat,
+      ...parseFileIdentity({
+        id: (stat.id - (field === "id" ? 1n : 0n)).toString(16),
+        version: (stat.version + (field === "version" ? 1n : 0n)).toString(16),
+      }),
+    };
+  if (field === "cut") return { ...stat, cut: { ...stat.cut, workspace: crypto.randomUUID() } };
+  if (field === "kind") return { ...stat, kind: "directory" };
+  if (field === "size") return { ...stat, size: stat.size + 1 };
+  if (field === "mtime") return { ...stat, mtime: stat.mtime + 1 };
+  if (field === "mode") return { ...stat, mode: stat.mode ^ 1 };
+  throw new Error(`Unknown stat field ${field}`);
+}
+
+for (const size of [0, 3]) {
+  for (const field of ["id", "version", "kind", "size", "mtime", "mode", "cut"]) {
+    test(`acquired lease ${field} mismatch refuses before reads for ${size} bytes`, async () => {
+      const value = fixture(["/file"], size);
+      const observed = observe(value.workspace, { pinStat: (stat) => changedStat(stat, field) });
+      try {
+        expect(refusal(await rejected(observed.workspace)).kind).toBe(field === "cut" ? "resnapshot" : "contract");
+        expect(observed.counts.pins).toBe(1);
+        expect(observed.counts.reads).toBe(0);
+        expect(observed.counts.closed).toBe(1);
+        released(value);
+      } finally {
+        await value.close();
+      }
+    });
+  }
+}
+
+for (const field of ["kind", "size", "mtime", "mode"]) {
+  test(`read stat ${field} mismatch cannot complete an archive`, async () => {
+    const value = fixture();
+    const observed = observe(value.workspace, {
+      async read(result) {
+        if (result.kind !== "ok") return result;
+        return { kind: "ok", value: { ...result.value, stat: changedStat(result.value.stat, field) } };
+      },
+    });
+    try {
+      expect(refusal(await rejected(observed.workspace)).kind).toBe("contract");
+      expect(observed.counts.reads).toBe(1);
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const delivery of ["page", "read"] as const) {
+  test(`fulfilled ${delivery} observes then once and preserves delivered accessors`, async () => {
+    const value = fixture();
+    let thenReads = 0;
+    let kindReads = 0;
+    const sentinel = new Error("second observation");
+    function delivered<T extends object & { kind: string }>(original: T): T {
+      if (thenReads) return original;
+      return Object.defineProperties({ ...original }, {
+        then: { get() { if (++thenReads > 1) throw sentinel; return undefined; } },
+        kind: { get() { kindReads++; return original.kind; } },
+      });
+    }
+    const workspace: WorkspaceVfs = {
+      ...value.workspace,
+      snapshot(options, signal) {
+        const cursor = value.workspace.snapshot(options, signal);
+        return {
+          next: () => cursor.next().then((page) => delivery === "page" ? delivered(page) : page),
+          close: () => cursor.close(),
+        };
+      },
+      async pin(target, version, signal) {
+        const result = await value.workspace.pin(target, version, signal);
+        if (result.kind !== "ok") return result;
+        const lease = result.value;
+        return { kind: "ok", value: {
+          stat: lease.stat,
+          read: (range, readSignal) => lease.read(range, readSignal).then((read) => delivery === "read" ? delivered(read) : read),
+          close: () => lease.close(),
+        } };
+      },
+    };
+    try {
+      expect((await consume(workspace)).at(-1)?.kind).toBe("complete");
+      expect(thenReads).toBe(1);
+      expect(kindReads).toBeGreaterThan(0);
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const reason of [undefined, null, false, 0, ""]) {
+  test(`provider then getter rejection retains exact falsy ${String(reason)}`, async () => {
+    const value = fixture();
+    let reads = 0;
+    const workspace: WorkspaceVfs = {
+      ...value.workspace,
+      snapshot(options, signal) {
+        const cursor = value.workspace.snapshot(options, signal);
+        return {
+          next: () => cursor.next().then((page) => Object.defineProperty(page, "then", { get() { reads++; throw reason; } })),
+          close: () => cursor.close(),
+        };
+      },
+    };
+    try {
+      expect(await rejected(workspace)).toBe(reason);
+      expect(reads).toBe(1);
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const path of ["/a\\b", "/a\ud800b", "/a\udfffb"]) {
+  test(`valid workspace path ${JSON.stringify(path)} is an explicit archive format limitation`, async () => {
+    const value = fixture([path]);
+    try {
+      expect((await value.workspace.stat(path)).kind).toBe("ok");
+      expect(refusal(await rejected(value.workspace))).toEqual({ kind: "format-path", path });
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+for (const backing of ["shared", "resizable"] as const) {
+  test(`broken ${backing} range backing is refused without retaining the real lease`, async () => {
+    const value = fixture();
+    const observed = observe(value.workspace, {
+      async read(result) {
+        if (result.kind !== "ok") return result;
+        const length = result.value.bytes.length;
+        const buffer = backing === "shared" ? new SharedArrayBuffer(length) : new ArrayBuffer(length, { maxByteLength: length * 2 });
+        return { kind: "ok", value: Object.defineProperty({ ...result.value }, "bytes", { value: new Uint8Array(buffer) }) };
+      },
+    });
+    try {
+      expect(refusal(await rejected(observed.workspace)).kind).toBe("contract");
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+test("directory traversal denial maps to the same explicit denial as file reads", async () => {
+  const value = fixture(["/directory/file"]);
+  try {
+    const root = await value.client.asyncCall("preopen", ["/"]);
+    const handle = (await value.client.asyncCall("resolve", [root, "directory"])).node;
+    value.client.retain(handle);
+    value.backend.shared.mutate(undefined, undefined, () => value.backend.shared.setMode(handle, 0));
+    expect(refusal(await rejected(value.workspace))).toEqual({ kind: "denied" });
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+for (const kind of ["count", "metadata"] as const) {
+  test(`bounded successor windows preserve every path across ${kind} limits`, async () => {
+    const prefix = kind === "metadata" ? "p".repeat(3500) : "p";
+    const count = kind === "metadata" ? 24 : 384;
+    const paths = Array.from({ length: count }, (_, index) => `/${prefix}${String(index).padStart(4, "0")}`);
+    const value = fixture(paths.toReversed(), 0);
+    const observed = observe(value.workspace);
+    try {
+      const events = await consume(observed.workspace);
+      expect(events.flatMap((event) => event.kind === "entry" ? [event.entry.path] : [])).toEqual(["/"].concat(paths));
+      expect(events.at(-1)?.kind).toBe("complete");
+      expect(observed.counts.scans).toBeLessThan(count / 2);
+      expect(observed.counts.scans).toBeGreaterThan(2);
+      released(value);
+    } finally {
       await value.close();
     }
   });
