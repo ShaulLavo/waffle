@@ -1,6 +1,12 @@
 import { resolve } from "node:path";
 import type { Browser, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import {
+  proofEqual as equal,
+  proofReport,
+  reportJson,
+  type ProofStep,
+} from "./persistent-authority-report";
 import type { PublicationCut } from "../fs/publication";
 import { validatePersistedIndex } from "../fs/storage";
 import { CHUNK_SIZE, chunkChecksum } from "../fs/indexeddb-chunks";
@@ -30,19 +36,11 @@ const schedule = [
   "saved bytes and namespace through new peers",
   "reopened owner stop and database deletion",
 ];
-type Step =
-  | { name: string; kind: "unrun" }
-  | { name: string; kind: "completed"; value: unknown }
-  | { name: string; kind: "failed"; failure: string };
-const steps: Step[] = schedule.map((name) => ({ name, kind: "unrun" }));
+const steps: ProofStep[] = schedule.map((name) => ({ name, kind: "unrun" }));
 const evidence: Record<string, unknown> = {
   negativeControl: negative,
   base: "c69fece24599a1ce97422583d081be394b29b341",
 };
-function equal(actual: unknown, expected: unknown): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected))
-    throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-}
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("missing record");
@@ -503,13 +501,8 @@ try {
     await lifecycle.close();
     evidence.cleanup = "browser, server and owned scratch retired";
   } finally {
-    const counts = {
-      completed: steps.filter((step) => step.kind === "completed").length,
-      failed: steps.filter((step) => step.kind === "failed").length,
-      unrun: steps.filter((step) => step.kind === "unrun").length,
-    };
-    const report = { ...evidence, counts, steps };
-    console.log(JSON.stringify(report));
-    if (reportPath) await Bun.write(reportPath, JSON.stringify(report, null, 2) + "\n");
+    const report = proofReport(evidence, steps);
+    console.log(reportJson(report));
+    if (reportPath) await Bun.write(reportPath, reportJson(report, 2) + "\n");
   }
 }

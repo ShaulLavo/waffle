@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
+import { proofEqual as equal, reportJson, type ProofStep } from "./persistent-authority-report";
 import { record, text } from "../fs/publication-attachment";
 import { publicationCut, type PublicationCut } from "../fs/publication";
 
@@ -22,15 +23,7 @@ const names = [
   "transport deadline is not death or no-effect",
   "original owner resumes and reconciles timed-out work",
 ];
-type Step =
-  | { name: string; kind: "unrun" }
-  | { name: string; kind: "completed"; value: unknown }
-  | { name: string; kind: "failed"; failure: string };
-const steps: Step[] = names.map((name) => ({ name, kind: "unrun" }));
-function equal(actual: unknown, expected: unknown): void {
-  if (JSON.stringify(actual) !== JSON.stringify(expected))
-    throw new Error(`Expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-}
+const steps: ProofStep[] = names.map((name) => ({ name, kind: "unrun" }));
 async function bounded<T>(promise: Promise<T>, label: string, ms = 12000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -562,7 +555,7 @@ try {
     evidence.outerCleanup = "browser, server, profile and scratch retired";
   } finally {
     const report = { ...evidence, steps };
-    console.log(JSON.stringify(report));
-    if (reportPath) await Bun.write(reportPath, JSON.stringify(report, null, 2) + "\n");
+    console.log(reportJson(report));
+    if (reportPath) await Bun.write(reportPath, reportJson(report, 2) + "\n");
   }
 }
