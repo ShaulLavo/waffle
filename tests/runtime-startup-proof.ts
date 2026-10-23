@@ -9,6 +9,17 @@ export function assertRuntimeStartupTrace(
     throw new Error(`unexpected startup sequence: ${JSON.stringify(seen)}`);
   if (!seen.every(([, timestamp]) => Number.isFinite(timestamp) && timestamp >= timeOrigin))
     throw new Error("comparable epoch clocks");
-  if (!seen.every(([, timestamp], index) => index === 0 || timestamp >= seen[index - 1]![1]))
-    throw new Error("milestone clocks follow operation order");
+  const previous = new Map<"runtime" | "filesystem-worker", number>();
+  for (const [stage, timestamp] of seen) {
+    const realm =
+      stage === "filesystem-worker-created" || stage === "filesystem-connect-requested"
+        ? "runtime"
+        : "filesystem-worker";
+    const last = previous.get(realm);
+    if (last !== undefined && timestamp < last)
+      throw new Error(
+        `milestone clocks follow operation order within ${realm}: ${JSON.stringify(seen)}`,
+      );
+    previous.set(realm, timestamp);
+  }
 }
