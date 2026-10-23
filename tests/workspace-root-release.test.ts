@@ -76,24 +76,36 @@ else
       env: { ...process.env, [CHILD]: "1", BUN_JSC_useConcurrentJIT: "0" },
       stdout: "pipe",
       stderr: "pipe",
+      // Bun kills a hung child well before the test deadline, which closes both pipes.
+      timeout: 30_000,
+      killSignal: "SIGKILL",
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(run.stdout).text(),
-      new Response(run.stderr).text(),
-      run.exited,
-    ]);
-    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-    expect(
-      stdout
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line)),
-    ).toEqual(
-      modes.map((mode) => ({
-        mode,
-        rootCollected: true,
-        terminal: mode === "complete" ? "complete" : "cancelled",
-        repeated: mode === "complete" ? "complete" : "cancelled",
-      })),
-    );
+    try {
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(run.stdout).text(),
+        new Response(run.stderr).text(),
+        run.exited,
+      ]);
+      expect({ code, signal: run.signalCode, stderr }).toEqual({
+        code: 0,
+        signal: null,
+        stderr: "",
+      });
+      expect(
+        stdout
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line)),
+      ).toEqual(
+        modes.map((mode) => ({
+          mode,
+          rootCollected: true,
+          terminal: mode === "complete" ? "complete" : "cancelled",
+          repeated: mode === "complete" ? "complete" : "cancelled",
+        })),
+      );
+    } finally {
+      run.kill("SIGKILL");
+      await run.exited;
+    }
   }, 60_000);
