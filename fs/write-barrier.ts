@@ -48,6 +48,9 @@ class AdmissionBusy extends FilesystemError {
 export class WriteAdmission {
   private readonly cells: Int32Array;
   private readonly states: BigInt64Array;
+  // Cache the representation, never the shared ownership check.
+  private localSerial = 0;
+  private localState = 0n;
   constructor(readonly buffer: SharedArrayBuffer) {
     this.cells = new Int32Array(buffer, WRITE_BARRIER_OFFSET, WRITE_BARRIER_WORDS);
     this.states = new BigInt64Array(buffer, WRITE_BARRIER_OFFSET, WRITE_BARRIER_WORDS / 2);
@@ -129,7 +132,10 @@ export class WriteAdmission {
         Atomics.store(this.cells, slot + REMOTE, 0);
         Atomics.store(this.cells, slot + INPUT, bytes);
         Atomics.store(this.cells, slot + INPUT_METADATA, metadata);
-        Atomics.store(this.states, (slot + ID) / 2, (BigIntConstructor(serial) << 2n) | LOCAL_REF);
+        const state = (BigIntConstructor(serial) << 2n) | LOCAL_REF;
+        Atomics.store(this.states, (slot + ID) / 2, state);
+        this.localSerial = serial;
+        this.localState = state;
         return { slot, serial, owner };
       },
       interrupted,
@@ -176,9 +182,9 @@ export class WriteAdmission {
     throw new AdmissionBusy();
   }
   private matches(ticket: WriteTicket): boolean {
-    return (
-      Atomics.load(this.states, (ticket.slot + ID) / 2) >> 2n === BigIntConstructor(ticket.serial)
-    );
+    const state = Atomics.load(this.states, (ticket.slot + ID) / 2);
+    if (ticket.serial === this.localSerial && state === this.localState) return true;
+    return state >> 2n === BigIntConstructor(ticket.serial);
   }
   verify(ticket: WriteTicket, owner = ticket.owner, finishing = false): void {
     const { slot, serial } = ticket;
@@ -243,6 +249,17 @@ export class WriteAdmission {
     if (remote !== (prepared ? -request : request)) throw new FilesystemError(11);
   }
   finish(ticket: WriteTicket, request = 0, failed = false): void {
+    if (
+      !request &&
+      !failed &&
+      ticket.serial === this.localSerial &&
+      Atomics.compareExchange(this.states, (ticket.slot + ID) / 2, this.localState, 0n) ===
+        this.localState
+    ) {
+      Atomics.store(this.cells, FREE, (ticket.slot - HEADER) / WORDS);
+      this.notify();
+      return;
+    }
     if (request && Atomics.load(this.cells, ticket.slot + REMOTE) !== request) return;
     this.releaseReference(
       ticket.slot,
