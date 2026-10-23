@@ -103,6 +103,10 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     await second.storage.close();
     const third = await open();
     const secondReopen = await checkReopen(third.backend, expected, ids);
+    invariant(
+      firstReopen.freshId !== secondReopen.freshId,
+      "an abandoned allocation from the first reopen is never reused",
+    );
     return {
       id: cell.id,
       ok: true,

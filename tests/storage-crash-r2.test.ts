@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { FaultScheduler } from "./storage-crash-r2-scheduler.js";
+import { crashMatrixBundle } from "../tooling/storage-crash-r2.js";
 import { opfsCrashMatrix } from "./storage-crash-r2-opfs.js";
 
 const event = { adapter: "indexeddb", operation: "put-success", target: "data/chunk:1" } as const;
@@ -27,4 +28,8 @@ test("bounded OPFS publication, flush and rotation schedules preserve one comple
   const results = await opfsCrashMatrix();
   expect(results).toHaveLength(9);
   expect(results.filter((result) => !result.ok)).toEqual([]);
+});
+
+test("native crash proof bundles the actual browser adapter and scheduler", async () => {
+  expect((await crashMatrixBundle()).size).toBeGreaterThan(0);
 });
