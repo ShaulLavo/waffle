@@ -1,3 +1,4 @@
+import { failWorkspaceCleanupPost } from "./publication-cleanup-failure";
 import { createFilesystemDescriptorCodec } from "../../proc/filesystem-codec";
 import {
   bootstrap,
@@ -99,9 +100,11 @@ async function start(request: {
   handle?: number;
   token?: unknown;
   failSetup?: boolean;
+  cleanupFailure?: boolean;
 }): Promise<void> {
   mode = text(request.mode);
   const connection = request.connection;
+  if (request.cleanupFailure) failWorkspaceCleanupPost(connection.port);
   const req: RuntimeWorkerRequest = {
     filesystem: connection,
     args: [],
@@ -301,6 +304,7 @@ type GuestMessage =
         handle?: number;
         token?: unknown;
         failSetup?: boolean;
+        cleanupFailure?: boolean;
       };
     }
   | {

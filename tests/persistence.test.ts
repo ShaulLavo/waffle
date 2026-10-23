@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { DescriptorTable } from "../core/descriptors.js";
 import { ProcessABI } from "../proc/abi.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
@@ -21,6 +22,12 @@ afterEach(() => {
 const encode = (text: string) => new TextEncoder().encode(text);
 const decode = (data: Uint8Array) => new TextDecoder().decode(data);
 class Store {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index: any;
   payloads = new Map<string, Uint8Array>();
   reads = 0;

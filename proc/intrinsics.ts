@@ -40,6 +40,12 @@ export const arrayFrom = Array.from;
 export const reflectGet = Reflect.get;
 export const reflectApply = Reflect.apply;
 const apply = reflectApply;
+export const BigIntConstructor = BigInt;
+const bigintToStringMethod = BigInt.prototype.toString;
+export function bigintToString(value: bigint, radix = 10): string {
+  return apply(bigintToStringMethod, value, [radix]);
+}
+
 export const ProxyConstructor = Proxy;
 const descriptor = Object.getOwnPropertyDescriptor;
 const prototype = objectGetPrototypeOf(Int32Array.prototype);

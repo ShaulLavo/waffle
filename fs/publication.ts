@@ -1,5 +1,7 @@
+import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
   arrayAppend,
+  bigintToString,
   Uint8ArrayConstructor,
   DataViewConstructor,
   dataViewGetUint32,
@@ -68,10 +70,13 @@ export type MutationResult =
   | { readonly kind: "append"; readonly written: number; readonly offset: number }
   | { readonly kind: "error"; readonly errno: number }
   | { readonly kind: "create-error"; readonly errno: number };
-export type PublicationEffect =
+/** Every reference carries the resulting group revision, including removed namespace edges.
+ * The private key and numeric content version retain their separate history-local roles. */
+export interface PublicationFile extends FileKey, FileIdentity {}
+export type PublicationEffect<F extends FileKey = PublicationFile> =
   | {
       readonly kind: "bytes";
-      readonly file: FileKey;
+      readonly file: F;
       readonly offset: number;
       readonly bytes: Uint8Array;
       readonly size: number;
@@ -79,26 +84,26 @@ export type PublicationEffect =
     }
   | {
       readonly kind: "resize";
-      readonly file: FileKey;
+      readonly file: F;
       readonly size: number;
       readonly version: number;
     }
   | {
       readonly kind: "metadata";
-      readonly file: FileKey;
+      readonly file: F;
       readonly mode: number;
       readonly mtime: number;
     }
   | {
       readonly kind: "entry";
-      readonly parent: FileKey;
+      readonly parent: F;
       readonly name: string;
-      readonly before: FileKey | null;
-      readonly after: FileKey | null;
+      readonly before: F | null;
+      readonly after: F | null;
     }
   | {
       readonly kind: "inode";
-      readonly file: FileKey;
+      readonly file: F;
       readonly nodeKind: "file" | "directory";
       readonly mode: number;
       readonly mtime: number;
@@ -220,6 +225,11 @@ function bounded(value: number): number {
 }
 function validateLimits(limits: PublicationLimits): PublicationLimits {
   for (const value of Object.values(limits)) bounded(value);
+  if (
+    limits.operationsPerSession !== undefined &&
+    limits.operationsPerSession * limits.sessions > limits.operations
+  )
+    throw new RangeError("publication pool cannot reserve every session quota");
   if (limits.effectBytes > Math.floor(limits.logBytes / limits.logRecords))
     throw new RangeError("publication log record cannot hold the effect bound");
   const allocation =
@@ -596,16 +606,24 @@ export class PublicationDomain {
     return { kind: "unknown" };
   }
   private available(session: PublicationSession): number {
-    let oldest = -1;
+    let oldest = -1,
+      empty = -1,
+      own = 0;
     let sequence = MAX_COUNTER + 1;
     for (let slot = 0; slot < this.limits.operations; slot++) {
       const base = slot * OP_WORDS;
-      if (!this.operations[base + Op.State]) return slot;
+      if (!this.operations[base + Op.State]) {
+        empty = empty < 0 ? slot : empty;
+        continue;
+      }
       if (this.operations[base + Op.Session] !== session.serial) continue;
+      own++;
       if (this.operations[base + Op.Sequence]! >= sequence) continue;
       sequence = this.operations[base + Op.Sequence]!;
       oldest = slot;
     }
+    if (empty >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations))
+      return empty;
     if (
       oldest < 0 ||
       (this.operations[oldest * OP_WORDS + Op.State]! & STATUS_MASK) !== Status.Committed
@@ -843,21 +861,28 @@ export class PublicationDomain {
         : { kind: "pending" };
     });
   }
-  changes(after: PublicationCut, limitBytes: number): ChangePage {
+  availability(): { current: PublicationCut; oldestAvailable: PublicationCut } {
     const current = this.cut();
-    bounded(limitBytes);
     const count = this.control[Control.LogCount]!;
     const first =
       (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
-    const oldest = count
+    const generation = count
       ? number(this.log[first * LOG_WORDS + 1]!, this.log[first * LOG_WORDS + 2]!)
       : current.generation + 1;
+    return { current, oldestAvailable: { history: current.history, generation } };
+  }
+  changes(after: PublicationCut, limitBytes: number): ChangePage {
+    bounded(limitBytes);
+    const { current, oldestAvailable } = this.availability();
     if (
       after.history !== current.history ||
-      after.generation < oldest - 1 ||
+      after.generation < oldestAvailable.generation - 1 ||
       after.generation > current.generation
     )
       return { kind: "gap", current };
+    const count = this.control[Control.LogCount]!;
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
     return this.readChanges(after, limitBytes, first, count);
   }
   private readChanges(
@@ -987,6 +1012,23 @@ export class PublicationDomain {
   }
 }
 
+export function mapPublicationFiles<F extends FileKey, G extends FileKey>(
+  effect: PublicationEffect<F>,
+  map: (file: F) => G,
+): PublicationEffect<G> {
+  if (effect.kind === "entry")
+    return {
+      ...effect,
+      parent: map(effect.parent),
+      before: effect.before && map(effect.before),
+      after: effect.after && map(effect.after),
+    };
+  return { ...effect, file: map(effect.file) };
+}
+function storedPublicationFile(file: PublicationFile) {
+  return { ...file, id: bigintToString(file.id, 16), version: bigintToString(file.version, 16) };
+}
+
 // Effects use one bounded JSON header and raw byte tails. Encoding finishes before the first
 // visible effect. The log stores owned copies; decoded byte ranges never alias shared storage.
 export function encodeEffects(
@@ -998,7 +1040,7 @@ export function encodeEffects(
   let length = 0;
   const metadata: unknown[] = [];
   for (let index = 0; index < changes.length; index++) {
-    const change = changes[index]!;
+    const change = mapPublicationFiles(changes[index]!, storedPublicationFile);
     if (change.kind !== "bytes") {
       arrayAppend(metadata, change);
       continue;
@@ -1101,6 +1143,14 @@ function fileKey(value: unknown): FileKey {
     throw new FilesystemError(29);
   return { birthHistory: value.birthHistory, ino: value.ino };
 }
+function publicationFile(value: unknown): PublicationFile {
+  const key = fileKey(value);
+  try {
+    return { ...key, ...parseFileIdentity(value) };
+  } catch {
+    throw new FilesystemError(29, "invalid publication file identity");
+  }
+}
 function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
   if (
@@ -1113,13 +1163,13 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   )
     return {
       kind: "entry",
-      parent: fileKey(value.parent),
+      parent: publicationFile(value.parent),
       name: value.name,
-      before: value.before === null ? null : fileKey(value.before),
-      after: value.after === null ? null : fileKey(value.after),
+      before: value.before === null ? null : publicationFile(value.before),
+      after: value.after === null ? null : publicationFile(value.after),
     };
   if (!("file" in value)) throw new FilesystemError(29);
-  const file = fileKey(value.file);
+  const file = publicationFile(value.file);
   if (
     (value.kind === "metadata" || value.kind === "inode") &&
     "mode" in value &&
@@ -1142,7 +1192,7 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
 }
 function decodeContentEffect(
   value: object & { readonly kind: unknown },
-  file: FileKey,
+  file: PublicationFile,
   tail: Uint8Array,
 ): PublicationEffect {
   if (

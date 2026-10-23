@@ -1,4 +1,12 @@
 import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
+import {
+  IdentityAllocator,
+  readIdentityWords,
+  writeIdentityWords,
+  type FileIdentity,
+  type FileId,
+  type FileVersion,
+} from "./file-identity.js";
 import { typedArraySet } from "../proc/intrinsics.js";
 import {
   PublicationDomain,
@@ -20,7 +28,7 @@ import {
 export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
 const MAGIC = 0x42574653;
-const HEADER_WORDS = 16 + DIRTY_HEADER_WORDS;
+const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
 const MAX_FILES = 4096;
 const SEGMENT_PAGES = 256;
 const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
@@ -30,9 +38,11 @@ const MAX_FILE_PAGES = TOTAL_PAGES;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-export const SLOT_WORDS = 15;
-const DIRTY_SIZE = 13;
-const DIRTY_MARK = 14;
+export const SLOT_WORDS = 23;
+const FILE_ID = 13;
+const FILE_VERSION = 17;
+const DIRTY_SIZE = 21;
+const DIRTY_MARK = 22;
 const PAGE_OWNER_OFFSET = HEADER_WORDS;
 const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
 const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
@@ -98,9 +108,15 @@ export function fixedWriteSources(chunks: readonly Uint8Array[]): readonly Uint8
   return fixed ?? chunks;
 }
 
+interface PlannedIdentityRevision {
+  readonly identity: FileIdentity;
+  readonly allocation: IdentityAllocator;
+}
 /** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
 export class SharedFilesystemState {
   readonly dirtyAdmission: DirtyAdmission;
+  readonly identities: IdentityAllocator;
+  identityGroup = false;
   readonly cells: Int32Array;
   readonly owners: Int32Array;
   readonly slots: Int32Array;
@@ -113,6 +129,7 @@ export class SharedFilesystemState {
   private readonly pageViews: (Uint8Array | undefined)[] = [];
   private serviceMutation = false;
   private globalOwner: number | undefined;
+  private globalDepth = 0;
   private fileOwnsGlobal = new Set<number>();
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
@@ -128,6 +145,7 @@ export class SharedFilesystemState {
     this.dirtyAdmission = new DirtyAdmission(buffer);
     if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
     this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
+    this.identities = new IdentityAllocator(new Int32Array(buffer, 16 * 4, 9));
     if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
       Atomics.store(this.cells, USED_PAGES, 0);
       Atomics.store(this.cells, 4, normalizeSharedMaxBytes(maxBytes) / SEGMENT_BYTES);
@@ -264,7 +282,8 @@ export class SharedFilesystemState {
     access: "data" | "release" = "data",
   ): void {
     const global =
-      (this.dirtyAdmission.enabled || !!this.publication) && this.globalOwner === undefined;
+      (this.dirtyAdmission.enabled || !!this.publication || this.identities.active) &&
+      this.globalOwner === undefined;
     if (global) this.globalLock(revoked, owner, false, access);
     else this.assertLockAccess(access);
     this.section?.enter();
@@ -295,6 +314,11 @@ export class SharedFilesystemState {
     access: "data" | "activation" | "release" = "data",
     revocation: "global" | "file" = "global",
   ): void {
+    if (this.globalOwner === owner) {
+      this.assertLockAccess(access);
+      this.globalDepth++;
+      return;
+    }
     if (this.serviceMutation && owner === SERVICE_OWNER) {
       this.assertLockAccess(access);
       return;
@@ -316,6 +340,10 @@ export class SharedFilesystemState {
     }
   }
   private globalUnlock(owner = this.lockOwner): void {
+    if (this.globalDepth > 0) {
+      this.globalDepth--;
+      return;
+    }
     if (this.serviceMutation) return;
     this.globalOwner = undefined;
     Atomics.compareExchange(this.cells, GLOBAL_LOCK, owner, 0);
@@ -511,7 +539,13 @@ export class SharedFilesystemState {
       throw error;
     }
   }
-  register(handle: FileHandle, stat: FileStat, data?: Uint8Array, resident = true): void {
+  register(
+    handle: FileHandle,
+    stat: FileStat,
+    data?: Uint8Array,
+    resident = true,
+    identity?: FileIdentity,
+  ): void {
     this.globalLock();
     try {
       const slot = this.findSlot(handle, true);
@@ -549,6 +583,7 @@ export class SharedFilesystemState {
         this.slots[this.at(slot, REVISION)] = revision >>> 0;
         this.slots[this.at(slot, REVISION_STATE)] =
           Math.floor(revision / 0x100000000) * 2 + (loaded ? RESIDENT : 0);
+        if (identity) this.installIdentity(slot, identity);
         Atomics.store(this.slots, this.at(slot, HANDLE), handle + 1);
       } catch (error) {
         if (pinned) this.dirtyAdmission.pin(-1, this.residentBytes());
@@ -559,6 +594,56 @@ export class SharedFilesystemState {
     } finally {
       this.globalUnlock();
     }
+  }
+  identity(handle: FileHandle): FileIdentity | undefined {
+    this.globalLock(undefined, this.lockOwner, true);
+    try {
+      const slot = this.findSlot(handle);
+      if (!slot) return undefined;
+      const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));
+      if (id === 0n) return undefined;
+      return {
+        id: id as FileId,
+        version: readIdentityWords(this.slots, this.at(slot, FILE_VERSION)) as FileVersion,
+      };
+    } finally {
+      this.globalUnlock();
+    }
+  }
+  updateIdentity(handle: FileHandle, identity: FileIdentity): void {
+    const slot = this.findSlot(handle);
+    if (slot) this.installIdentity(slot, identity);
+  }
+  private installIdentity(slot: number, identity: FileIdentity): void {
+    writeIdentityWords(this.slots, this.at(slot, FILE_ID), identity.id);
+    writeIdentityWords(this.slots, this.at(slot, FILE_VERSION), identity.version);
+  }
+  private prepareIdentityVersion(
+    slot: number,
+    changed: boolean,
+  ): PlannedIdentityRevision | undefined {
+    if (!changed || this.identityGroup || !this.identities.active) return undefined;
+    const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));
+    if (id === 0n) throw new FilesystemError(29, "missing shared file identity");
+    const allocation = this.identities.stage();
+    return { allocation, identity: { id: id as FileId, version: allocation.versions(1)[0]! } };
+  }
+  private commitIdentityVersion(slot: number, revision: PlannedIdentityRevision | undefined): void {
+    if (!revision) return;
+    this.identities.copyFrom(revision.allocation);
+    this.installIdentity(slot, revision.identity);
+  }
+  private publicationFile(slot: number, revision: PlannedIdentityRevision | undefined) {
+    const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));
+    if (id === 0n) throw new FilesystemError(29, "missing shared file identity");
+    return {
+      birthHistory: this.publication!.buffers.history,
+      ino: this.slots[this.at(slot, INO)]!,
+      id: id as FileId,
+      version:
+        revision?.identity.version ??
+        (readIdentityWords(this.slots, this.at(slot, FILE_VERSION)) as FileVersion),
+    };
   }
   /** Install persisted bytes without changing the file's metadata or dirty revision. */
   hydrate(handle: FileHandle, data: Uint8Array): void {
@@ -768,9 +853,13 @@ export class SharedFilesystemState {
     this.lock(this.at(slot, FILE_LOCK));
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
+      const changed = this.slots[this.at(slot, MODE)] !== mode;
+      const version = this.prepareIdentityVersion(slot, changed);
+      if (!changed) return;
       this.dirty(slot);
       this.slots[this.at(slot, MODE)] = mode;
       this.changed(slot);
+      this.commitIdentityVersion(slot, version);
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
     }
@@ -837,13 +926,13 @@ export class SharedFilesystemState {
   ): T {
     if (!this.publication) return read();
     if ((this.serviceMutation && owner === SERVICE_OWNER) || this.currentOwner === owner) {
-      this.publication.assertLive();
-      this.publication.assertAccess();
+      this.publication?.assertLive();
+      this.publication?.assertAccess();
       return read();
     }
     this.globalLock(revoked, owner, nonblocking);
     try {
-      this.publication.assertCurrent();
+      this.publication?.assertCurrent();
       return read();
     } finally {
       this.globalUnlock(owner);
@@ -1035,6 +1124,7 @@ export class SharedFilesystemState {
             this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
         this.checkDirty(slot, Math.max(size, end));
         const mtime = Date.now();
+        const identity = this.prepareIdentityVersion(slot, true);
         const prepared = this.prepareDirectPublication(
           slot,
           chunks,
@@ -1043,6 +1133,7 @@ export class SharedFilesystemState {
           end,
           size,
           mtime,
+          identity,
           admission,
         );
         this.dirty(slot, Math.max(size, end));
@@ -1054,6 +1145,7 @@ export class SharedFilesystemState {
           size,
           mtime,
           prepared?.publication,
+          identity,
         );
         return end;
       } finally {
@@ -1072,6 +1164,7 @@ export class SharedFilesystemState {
     size: number,
     mtime: number,
     publication?: PreparedPublication,
+    identity?: PlannedIdentityRevision,
   ): void {
     const base = slot * SLOT_WORDS;
     try {
@@ -1080,6 +1173,7 @@ export class SharedFilesystemState {
       this.slots[base + MTIME_LOW] = mtime >>> 0;
       this.slots[base + MTIME_HIGH] = Math.floor(mtime / 0x100000000) >>> 0;
       this.changed(slot);
+      this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);
     } catch (error) {
       // Once a byte may have changed, failure is unknown, never a no-effect retry.
@@ -1095,6 +1189,7 @@ export class SharedFilesystemState {
     end: number,
     oldSize: number,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission?: PublicationAdmission,
   ): { publication: PreparedPublication; bytes: Uint8Array } | undefined {
     const domain = this.publication;
@@ -1115,10 +1210,7 @@ export class SharedFilesystemState {
         : { kind: "write", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1, offset: at },
       bytes,
     );
-    const file = {
-      birthHistory: domain.buffers.history,
-      ino: this.slots[slot * SLOT_WORDS + INO]!,
-    };
+    const file = this.publicationFile(slot, identity);
     const publication = domain.prepare(
       admission,
       append
@@ -1215,6 +1307,7 @@ export class SharedFilesystemState {
         end > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
       )
         return undefined;
+      const identity = this.prepareIdentityVersion(slot, true);
       this.dirty(slot, Math.max(this.slots[this.at(slot, FILE_SIZE)]!, end));
       let at = offset;
       for (const chunk of chunks) {
@@ -1225,6 +1318,7 @@ export class SharedFilesystemState {
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), end);
       this.setTimestamp(slot, Date.now());
       this.changed(slot);
+      this.commitIdentityVersion(slot, identity);
       return total;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
@@ -1264,6 +1358,7 @@ export class SharedFilesystemState {
         offset + total > Atomics.load(this.slots, this.at(slot, CAPACITY)) * PAGE
       )
         return offset + total;
+      const identity = this.prepareIdentityVersion(slot, true);
       this.dirty(slot, offset + total);
       let at = offset;
       for (const chunk of chunks) {
@@ -1273,6 +1368,7 @@ export class SharedFilesystemState {
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), at);
       this.setTimestamp(slot, Date.now());
       this.changed(slot);
+      this.commitIdentityVersion(slot, identity);
       return { written: total, offset: at };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
@@ -1326,9 +1422,13 @@ export class SharedFilesystemState {
         throw new RangeError("file needs growth");
       const next = truncate ? size : Math.max(old, size);
       const mtime = truncate ? Date.now() : this.getMtime(slot);
+      const identity = this.prepareIdentityVersion(
+        slot,
+        next !== old || mtime !== this.getMtime(slot),
+      );
       if (truncate || next !== old) this.checkDirty(slot, next);
       const publication = admission
-        ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
+        ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
         : undefined;
       if (truncate || next !== old) this.dirty(slot, next);
       if (resident && truncate && size < old) {
@@ -1344,6 +1444,7 @@ export class SharedFilesystemState {
       this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
       if (truncate) this.setTimestamp(slot, mtime);
       if (truncate || next !== old) this.changed(slot);
+      this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);
       return 0;
     } finally {
@@ -1357,11 +1458,12 @@ export class SharedFilesystemState {
     truncate: boolean,
     next: number,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
     const domain = this.publication!;
     domain.verifyAdmission(admission, { kind: "resize", handle, size, truncate }, new Uint8Array());
-    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const file = this.publicationFile(slot, identity);
     const changes: import("./publication.js").PublicationEffect[] = [];
     if (next !== this.slots[this.at(slot, FILE_SIZE)])
       changes.push({
@@ -1378,11 +1480,12 @@ export class SharedFilesystemState {
     slot: number,
     handle: FileHandle,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
     const domain = this.publication!;
     domain.verifyAdmission(admission, { kind: "setMtime", handle, mtime }, new Uint8Array());
-    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const file = this.publicationFile(slot, identity);
     const changes: import("./publication.js").PublicationEffect[] =
       mtime === this.getMtime(slot)
         ? []
@@ -1423,10 +1526,14 @@ export class SharedFilesystemState {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
       this.checkDirty(slot, this.slots[this.at(slot, FILE_SIZE)]!);
-      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
+      const identity = this.prepareIdentityVersion(slot, mtime !== this.getMtime(slot));
+      const publication = admission
+        ? this.prepareMtime(slot, handle, mtime, identity, admission)
+        : undefined;
       this.dirty(slot);
       this.setTimestamp(slot, mtime);
       this.changed(slot);
+      this.commitIdentityVersion(slot, identity);
       if (publication) this.publication!.commit(publication);
       return 0;
     } finally {

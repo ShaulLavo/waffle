@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, createFilesystemConnection } from "../fs";
 import { MemoryBackend } from "../fs/backend";
@@ -19,6 +20,12 @@ afterEach(() => {
 });
 
 class BlockedStore implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   readonly started = deferred();
   readonly release = deferred();
   readonly persistStarted = deferred();

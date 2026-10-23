@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { MemoryBackend } from "../fs/backend";
@@ -5,6 +6,12 @@ import { FilesystemClient, FilesystemService, createFilesystemConnection } from 
 import type { PersistenceBatch, PersistedIndex, StorageBackend } from "../fs/storage";
 
 class Store implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index?: PersistedIndex;
   payloads = new Map<string, Uint8Array>();
   syncs: (readonly string[] | undefined)[] = [];

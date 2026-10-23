@@ -39,7 +39,7 @@ export class DirtyAdmission {
   private readonly values: Float64Array;
   private readonly signals: Int32Array;
   constructor(buffer: SharedArrayBuffer) {
-    this.values = new Float64Array(buffer, 16 * 4, 20);
+    this.values = new Float64Array(buffer, 32 * 4, 20);
     this.signals = new Int32Array(buffer, 9 * 4, 2);
   }
   get enabled(): boolean {

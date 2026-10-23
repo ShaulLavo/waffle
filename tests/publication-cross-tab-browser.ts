@@ -1,5 +1,6 @@
 import { SharedFilesystem } from "../browser/shared-fs";
 import { decodeRecord } from "../fs/storage";
+import { inspectNativeWorkspace } from "./persistent-native-inspection";
 import { FilesystemClient } from "../fs/client";
 import {
   acquirePublicationGuard,
@@ -548,6 +549,7 @@ async function workspaceGuestControl(
     return terminal;
   }
   if (operation === "workspaceGuestReady") return guest.worker.until("ready");
+  if (operation === "workspaceGuestPendingSettled") return guest.worker.until("pendingSettled");
   if (operation === "workspaceGuestSignalStop") return guest.worker.request("stop");
   if (operation === "workspaceGuestRevoke") {
     revokeFilesystem(guest.connection);
@@ -608,7 +610,12 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
     guests.set(text(body.key), { worker, connection });
     await worker.request(
       "start",
-      { mode: text(body.mode), connection, failSetup: body.failSetup },
+      {
+        mode: text(body.mode),
+        connection,
+        failSetup: body.failSetup,
+        cleanupFailure: body.cleanupFailure,
+      },
       [connection.port],
     );
     return worker.until(body.failSetup === true ? "finished" : "ready");
@@ -650,26 +657,44 @@ async function workspaceControl(operation: string, value: unknown): Promise<unkn
 }
 
 async function inspectFactoryWorkspace(name: string): Promise<unknown> {
-  const metadata = record(await inspectPersistentWorkspace(name));
   const database = await nativeRequest(indexedDB.open(name, 1));
   try {
-    const transaction = database.transaction("data", "readonly");
+    const transaction = database.transaction(["metadata", "journal", "data"], "readonly");
     const completed = new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error);
     });
-    const store = transaction.objectStore("data");
-    const [keys, values]: [IDBValidKey[], unknown[]] = await Promise.all([
-      nativeRequest(store.getAllKeys()),
-      nativeRequest(store.getAll()),
-    ]);
-    await completed;
-    const payloads = values.map((value, index) => {
-      if (!(value instanceof Uint8Array))
-        throw new Error("unexpected native payload representation");
-      return { key: keys[index], bytes: Array.from(value) };
-    });
-    return { ...metadata, payloads };
+    const metadata = transaction.objectStore("metadata");
+    const journals = transaction.objectStore("journal");
+    const data = transaction.objectStore("data");
+    const [format, epoch, active, first, second, journalKeys, journalValues, keys, values] =
+      await Promise.all([
+        nativeRequest(metadata.get("format")),
+        nativeRequest(metadata.get("epoch")),
+        nativeRequest(metadata.get("active")),
+        nativeRequest(metadata.get(0)),
+        nativeRequest(metadata.get(1)),
+        nativeRequest(journals.getAllKeys()),
+        nativeRequest(journals.getAll()),
+        nativeRequest(data.getAllKeys()),
+        nativeRequest(data.getAll()),
+        completed,
+      ]);
+    return {
+      inspection: "readonly-native-no-owner-claim",
+      name,
+      schemaVersion: database.version,
+      ...(await inspectNativeWorkspace({
+        format,
+        epoch,
+        active,
+        snapshots: [first, second],
+        journalKeys,
+        journals: journalValues,
+        keys,
+        values,
+      })),
+    };
   } finally {
     database.close();
   }
@@ -806,7 +831,6 @@ async function persistentControl(operation: string, value: unknown): Promise<unk
   }
   throw new Error(`unknown persistent page operation ${operation}`);
 }
-/** @browserEntry Invoked by the registered browser runner through its bundled URL. */
 export async function control(operation: string, value?: unknown): Promise<unknown> {
   if (operation !== "persistentBaseline" && operation.startsWith("persistent"))
     return persistentControl(operation, value);

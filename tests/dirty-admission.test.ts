@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import { FilesystemClient } from "../fs/client";
@@ -17,6 +18,12 @@ const data = (length: number, value = 65) => new Uint8Array(length).fill(value);
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
 
 class ControlledStorage implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index?: PersistedIndex;
   readonly bytes = new Map<string, Uint8Array>();
   readonly batches: PersistenceBatch[] = [];

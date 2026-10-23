@@ -1,3 +1,9 @@
+import {
+  nextReservation,
+  storeReservation,
+  type IdentityReservation,
+  type StoredReservation,
+} from "./file-identity.js";
 import { OPFS_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -33,6 +39,12 @@ export interface OpfsStorageOptions {
   createConcurrency?: number;
   /** Default 64. Cache + in-flight creates + metadata must stay well below Safari's 253. */
   handleCacheSize?: number;
+}
+/** A bounded read of an existing immutable payload key, not a pathname or stable file ID. */
+export interface OpfsRangeOptions {
+  offset: number;
+  length: number;
+  signal?: AbortSignal;
 }
 interface SyncAccess {
   getSize(): number;
@@ -132,6 +144,7 @@ export class OpfsStorage implements StorageBackend {
   private peakHandles = 0;
   private garbage = new Set<string>();
   private needsOrphanSweep = true;
+  private identityMarkers: { name: string; value: StoredReservation }[] = [];
 
   private constructor(
     private data: Directory,
@@ -274,6 +287,56 @@ export class OpfsStorage implements StorageBackend {
       return this.snapshots[0] && structuredClone(this.snapshots[0].index);
     });
   }
+  reserveIdentity(workspace?: string): Promise<IdentityReservation> {
+    return this.enqueue(async () => {
+      await this.initialize();
+      this.identityMarkers.sort((a, b) => {
+        const left = BigInt(`0x${a.value.era}`),
+          right = BigInt(`0x${b.value.era}`);
+        return left === right ? 0 : left > right ? -1 : 1;
+      });
+      const latest = this.identityMarkers[0];
+      const reservation = nextReservation(latest?.value, workspace);
+      if (latest) await this.normalizeIdentityMarkers(latest.name);
+      const value = storeReservation(reservation);
+      const name = `identity-${value.workspace}-${value.era}`;
+      // An ambiguous create/open/flush remains a consumed reservation on the next scan.
+      this.identityMarkers.unshift({ name, value });
+      await this.write(
+        await this.metadata.getFileHandle(name, { create: true }),
+        new Uint8Array(),
+        true,
+      );
+      await this.normalizeIdentityMarkers(name);
+      return reservation;
+    });
+  }
+  private async normalizeIdentityMarkers(latest: string): Promise<void> {
+    // Re-flush the observed highwater before removing any lower witness. A crash at any
+    // deletion leaves this witness; a failure prevents another marker from being created.
+    await this.write(await this.metadata.getFileHandle(latest), new Uint8Array(), true);
+    for (const marker of this.identityMarkers) {
+      if (marker.name === latest) continue;
+      await this.metadata.removeEntry(marker.name);
+    }
+    this.identityMarkers = this.identityMarkers.filter((marker) => marker.name === latest);
+  }
+  private readIdentityMarker(name: string, kind: string): boolean {
+    if (!name.startsWith("identity-")) return false;
+    const match = /^identity-([0-9a-f-]{36})-([1-9a-f][0-9a-f]{0,15})$/.exec(name);
+    if (!match || kind !== "file") throw new Error("Invalid OPFS identity reservation marker");
+    const value: StoredReservation = {
+      format: "waffle-identity-reservation-v1",
+      workspace: match[1]!,
+      era: match[2]!,
+    };
+    // Validation must also accept the final era, which cannot be renewed.
+    const validated = nextReservation({ ...value, era: "1" });
+    if (this.identityMarkers.some((marker) => marker.value.workspace !== validated.workspace))
+      throw new Error("Mixed OPFS identity reservation workspaces");
+    this.identityMarkers.push({ name, value });
+    return true;
+  }
   read(key: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
       await this.initialize();
@@ -293,6 +356,45 @@ export class OpfsStorage implements StorageBackend {
         throw translate(error, "read payload");
       }
     });
+  }
+  readRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
+    const { offset, length, signal } = options;
+    if (!validInteger(offset) || !validInteger(length) || !Number.isSafeInteger(offset + length))
+      return Promise.reject(new RangeError("Invalid OPFS payload range"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return this.enqueue(async () => {
+      signal?.throwIfAborted();
+      await this.initialize();
+      signal?.throwIfAborted();
+      const size = this.known.get(key);
+      if (size === undefined) throw new Error(`Missing filesystem payload: ${key}`);
+      try {
+        const access = await this.cached(key, signal);
+        signal?.throwIfAborted();
+        if (access.getSize() !== size) throw new Error(`Invalid filesystem payload size: ${key}`);
+        const bytes = new Uint8Array(Math.min(length, Math.max(0, size - offset)));
+        this.readPayloadRange(access, bytes, offset, signal);
+        return bytes;
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw translate(error, "read payload range");
+      }
+    });
+  }
+  private readPayloadRange(
+    access: SyncAccess,
+    bytes: Uint8Array,
+    offset: number,
+    signal?: AbortSignal,
+  ): void {
+    for (let filled = 0; filled < bytes.length;) {
+      signal?.throwIfAborted();
+      const count = access.read(bytes.subarray(filled), { at: offset + filled });
+      if (!Number.isSafeInteger(count) || count <= 0 || count > bytes.length - filled)
+        throw new Error("Short or invalid filesystem payload range read");
+      filled += count;
+    }
+    signal?.throwIfAborted();
   }
   persist(batch: PersistenceBatch): Promise<void> {
     let copy: PersistenceBatch;
@@ -376,17 +478,19 @@ export class OpfsStorage implements StorageBackend {
     this.owned.delete(access);
     return { kind: "closed" };
   }
-  private async access(handle: FileSystemFileHandle): Promise<SyncAccess> {
+  private async access(handle: FileSystemFileHandle, signal?: AbortSignal): Promise<SyncAccess> {
     if (typeof (handle as SyncFile).createSyncAccessHandle !== "function")
       throw new Error("OPFS storage requires sync access handles in a dedicated worker");
     for (let attempt = 0; ; attempt++) {
       this.assertHandleOwnership();
+      signal?.throwIfAborted();
       try {
         const access = await (handle as SyncFile).createSyncAccessHandle();
         this.owned.set(access, { kind: "open" });
         this.peakHandles = Math.max(this.peakHandles, this.owned.size);
         return access;
       } catch (error) {
+        signal?.throwIfAborted();
         const delay = BACKOFF_MS[attempt];
         if (!LOCKED.has((error as { name?: string })?.name ?? "") || delay === undefined)
           throw translate(error, "open sync handle");
@@ -401,7 +505,7 @@ export class OpfsStorage implements StorageBackend {
       this.handles.delete(key);
     }
   }
-  private async cached(key: string): Promise<SyncAccess> {
+  private async cached(key: string, signal?: AbortSignal): Promise<SyncAccess> {
     let access = this.handles.get(key);
     if (access) {
       this.handles.delete(key);
@@ -410,17 +514,21 @@ export class OpfsStorage implements StorageBackend {
     }
     // Evict before opening, including the transient handle in the cap.
     if (this.handles.size >= this.cacheSize) this.drop(this.handles.keys().next().value!);
-    access = await this.access(await this.data.getFileHandle(payloadName(key)));
+    const handle = await this.data.getFileHandle(payloadName(key));
+    signal?.throwIfAborted();
+    access = await this.access(handle, signal);
     this.handles.set(key, access);
     return access;
   }
   private async initialize(): Promise<void> {
     if (this.initialized) return;
+    this.identityMarkers = [];
     let existed = false,
       ordinarySnapshotExisted = false;
     const snapshots: Snapshot[] = [];
     let formatPresent = false;
     for await (const [name, handle] of this.metadata.entries()) {
+      if (this.readIdentityMarker(name, handle.kind)) continue;
       if (isFormatEntry(name, handle.kind)) {
         formatPresent = true;
         continue;
