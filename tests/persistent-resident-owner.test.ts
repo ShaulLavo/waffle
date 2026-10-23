@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { expect, test } from "bun:test";
@@ -26,6 +27,7 @@ async function fixture(kind: "read" | "flush") {
   let armed = false;
   const backend = await PersistentBackend.open(
     {
+      ...fixturePayloadHooks(new Map([["payload", new Uint8Array([1, 2, 3, 4])]])),
       async reserveIdentity() {
         return nextReservation(undefined);
       },

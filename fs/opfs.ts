@@ -14,6 +14,10 @@ import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js"
  * See LICENSES/Apache-2.0.txt and docs/bun-patches.md.
  */
 import {
+  PayloadRetentions,
+  PayloadCorruption,
+  type PayloadRetention,
+  type ReaderMetadataBudget,
   snapshotBatch,
   decodeSnapshot,
   encodeSnapshot,
@@ -131,6 +135,9 @@ async function parallel<T>(
  * payloads and then the naming snapshot. No payload is read while loading the index. */
 export class OpfsStorage implements StorageBackend {
   private tail: Promise<void> = Promise.resolve();
+  private readonly readers = new PayloadRetentions();
+  private readonly readerWork = new Set<Promise<unknown>>();
+  private readonly garbagePayloads = new Map<string, string>();
   private persistenceError: unknown;
   private initialized = false;
   private closed = false;
@@ -263,6 +270,8 @@ export class OpfsStorage implements StorageBackend {
   }
   resources(): Record<string, number> {
     return {
+      ...this.readers.resources(),
+      opfsReaderWork: this.readerWork.size,
       opfsHandles: this.owned.size,
       opfsPeakHandles: this.peakHandles,
       opfsCachedHandles: this.handles.size,
@@ -357,11 +366,52 @@ export class OpfsStorage implements StorageBackend {
       }
     });
   }
+  retainPayload(
+    key: string,
+    expectedSize: number,
+    metadata?: ReaderMetadataBudget,
+  ): PayloadRetention {
+    if (this.closed || this.known.get(key) !== expectedSize)
+      throw new Error("Missing retained filesystem payload");
+    this.assertHandleOwnership();
+    return this.readers.retain(key, expectedSize, metadata);
+  }
+  private retainedRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
+    if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
+    const work = this.readImmutableRange(key, options);
+    this.readerWork.add(work);
+    void work.then(
+      () => this.readerWork.delete(work),
+      () => this.readerWork.delete(work),
+    );
+    return work;
+  }
+  private async readImmutableRange(
+    key: string,
+    { offset, length, signal }: OpfsRangeOptions,
+  ): Promise<Uint8Array> {
+    this.assertHandleOwnership();
+    signal?.throwIfAborted();
+    const size = this.known.get(key);
+    if (size === undefined || !this.readers.has(key))
+      throw new Error("Missing retained filesystem payload");
+    // Immutable File snapshots need no exclusive sync handle or writer-queue turn.
+    const file = await (await this.data.getFileHandle(payloadName(key))).getFile();
+    signal?.throwIfAborted();
+    if (file.size !== size) throw new PayloadCorruption("Invalid retained filesystem payload size");
+    const count = Math.min(length, Math.max(0, size - offset));
+    const bytes = new Uint8Array(await file.slice(offset, offset + count).arrayBuffer());
+    signal?.throwIfAborted();
+    this.assertHandleOwnership();
+    if (bytes.length !== count) throw new Error("Short retained filesystem payload range");
+    return bytes;
+  }
   readRange(key: string, options: OpfsRangeOptions): Promise<Uint8Array> {
     const { offset, length, signal } = options;
     if (!validInteger(offset) || !validInteger(length) || !Number.isSafeInteger(offset + length))
       return Promise.reject(new RangeError("Invalid OPFS payload range"));
     if (signal?.aborted) return Promise.reject(signal.reason);
+    if (this.readers.has(key)) return this.retainedRange(key, options);
     return this.enqueue(async () => {
       signal?.throwIfAborted();
       await this.initialize();
@@ -446,7 +496,9 @@ export class OpfsStorage implements StorageBackend {
   close(): Promise<void> {
     if (!this.closing) {
       this.closed = true;
-      this.closing = this.tail.then(() => this.closeOwned());
+      this.closing = Promise.all(Array.from(this.readerWork).concat([this.tail])).then(() =>
+        this.closeOwned(),
+      );
     }
     return this.closing;
   }
@@ -583,6 +635,7 @@ export class OpfsStorage implements StorageBackend {
         new Uint8Array(),
         true,
       );
+    this.readers.recovery(new Set(this.snapshots.flatMap((snapshot) => keys(snapshot.index))));
     this.initialized = true;
   }
   private async assertEmptyData(): Promise<void> {
@@ -704,22 +757,27 @@ export class OpfsStorage implements StorageBackend {
       this.dirty.add(key);
       // Failed earlier collection may still name a key that this checkpoint has re-adopted.
       this.garbage.delete(payloadName(key));
+      this.garbagePayloads.delete(payloadName(key));
     }
     const required = new Set(keys(index).concat(batch.retainedData ?? []));
     for (const key of this.dirty) if (!required.has(key)) this.dirty.delete(key);
     const retained = new Set(
       this.snapshots.flatMap((snapshot) => keys(snapshot.index)).concat(batch.retainedData ?? []),
     );
-    // Only old, known payloads need per-commit collection. Orphan files from a killed worker
-    // are collected separately on a later checkpoint, never by scanning payloads on lazy open.
+    this.readers.recovery(retained);
+    this.retirePayloads(retained);
+    await this.collect();
+  }
+  private retirePayloads(retained: ReadonlySet<string>): void {
+    // Orphans from killed workers are swept on later checkpoints, not lazy open.
     for (const key of this.known.keys())
-      if (!retained.has(key)) {
+      if (!retained.has(key) && !this.readers.has(key)) {
         this.drop(key);
         this.known.delete(key);
         this.dirty.delete(key);
         this.garbage.add(payloadName(key));
+        this.garbagePayloads.set(payloadName(key), key);
       }
-    await this.collect();
   }
   private async write(
     handle: FileSystemFileHandle,
@@ -754,9 +812,15 @@ export class OpfsStorage implements StorageBackend {
       }
     }
     for (const name of this.garbage) {
+      const key = this.garbagePayloads.get(name);
+      if (key && this.readers.has(key)) continue;
       try {
         await this.data.removeEntry(name);
         this.garbage.delete(name);
+        if (key) {
+          this.readers.deleted(key);
+          this.garbagePayloads.delete(name);
+        }
       } catch {
         /* Retry at the next checkpoint. */
       }
