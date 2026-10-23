@@ -615,7 +615,9 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           );
         if (cleanupDebt.size) throwFailures();
         consumers.clear();
+        const failuresBeforeFilesystemClose = failures.length;
         await attempt(() => filesystem.dispose());
+        if (failures.length !== failuresBeforeFilesystemClose) throwFailures();
         adapters.clear();
         for (const name of programs.keys()) registry?.unregister(name);
         programs.clear();
