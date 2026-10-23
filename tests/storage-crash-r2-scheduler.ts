@@ -32,3 +32,25 @@ export class FaultScheduler {
     if (this.schedule && !this.fired) throw new Error(`Unreached schedule: ${this.schedule.id}`);
   }
 }
+
+export async function runFaultSchedules<
+  Cell extends { id: string; schedule: FaultSchedule | null },
+  Result,
+>(cells: readonly Cell[], run: (cell: Cell, scheduler: FaultScheduler) => Promise<Result>) {
+  const results = [];
+  for (const cell of cells) {
+    const scheduler = new FaultScheduler(cell.schedule);
+    try {
+      results.push(await run(cell, scheduler));
+    } catch (error) {
+      results.push({
+        id: cell.id,
+        ok: false,
+        schedule: cell.schedule,
+        events: scheduler.events,
+        error: error instanceof Error ? error.stack : String(error),
+      });
+    }
+  }
+  return results;
+}
