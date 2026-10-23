@@ -420,6 +420,13 @@ async function coldFixture(index: PersistedIndex) {
         reads++;
         throw new Error("namespace read a cold payload");
       },
+      async readRange() {
+        reads++;
+        throw new Error("namespace read a cold payload range");
+      },
+      retainPayload() {
+        throw new Error("namespace retained a cold payload");
+      },
       async persist() {
         persists++;
         throw new Error("namespace changed storage");
