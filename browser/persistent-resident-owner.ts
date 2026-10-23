@@ -264,6 +264,8 @@ class PersistentOwner implements PersistentResidentOwner {
     this.service.connect(connection.server);
     const handle: number = await root.asyncCall("preopen", ["/"]);
     this.checkLive();
+    await backend.flush();
+    this.checkLive();
     const descriptor = Object.freeze(
       residentDescriptor(
         await root.asyncCall("publicationWorkspace", [
@@ -286,8 +288,6 @@ class PersistentOwner implements PersistentResidentOwner {
         identity.history === this.request.original.history)
     )
       throw new FilesystemError(28, "reopen did not create a fresh history");
-    await backend.flush();
-    this.checkLive();
     await continuity.release();
     this.guards = { kind: "bootstrap", bootstrap };
     this.checkLive();
