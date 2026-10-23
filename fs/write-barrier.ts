@@ -18,8 +18,7 @@ const LOCK = 0,
   FAILURE = 5,
   SERIAL_HIGH = 6,
   FREE = 7,
-  WAITING = 8,
-  LOCK_WAITING = 9;
+  WAITING = 8;
 const HEADER = 10,
   WORDS = 8,
   RECORDS = 64,
@@ -59,7 +58,6 @@ export class WriteAdmission {
       if (!holder) break;
       if (!interrupted) throw new AdmissionBusy();
       if (interrupted()) throw new FilesystemError(11);
-      Atomics.store(this.cells, LOCK_WAITING, 1);
       Atomics.wait(this.cells, LOCK, holder, 50);
     }
     let changed = true;
@@ -70,13 +68,9 @@ export class WriteAdmission {
       throw error;
     } finally {
       Atomics.compareExchange(this.cells, LOCK, owner, 0);
-      this.wakeLock();
+      Atomics.notify(this.cells, LOCK);
       if (changed && Atomics.load(this.cells, WAITING)) this.notify();
     }
-  }
-  private wakeLock(): void {
-    if (Atomics.load(this.cells, LOCK_WAITING) && Atomics.exchange(this.cells, LOCK_WAITING, 0))
-      Atomics.notify(this.cells, LOCK);
   }
   private notify(): void {
     Atomics.add(this.cells, CHANGE, 1);
@@ -271,7 +265,7 @@ export class WriteAdmission {
   }
   reapLocal(owner: number): void {
     Atomics.compareExchange(this.cells, LOCK, owner, 0);
-    this.wakeLock();
+    Atomics.notify(this.cells, LOCK);
     for (let slot = HEADER; slot < this.cells.length; slot += WORDS) {
       const state = Atomics.load(this.states, (slot + ID) / 2);
       if (Atomics.load(this.cells, slot + OWNER) !== owner) continue;

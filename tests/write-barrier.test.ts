@@ -735,6 +735,13 @@ test("earlier blocking guest and service pressure retries finish before the owne
     let acquisition: ReturnType<FilesystemService["pauseFilesystemWrites"]> | undefined;
     let checkpoint: Promise<void> | undefined;
     let earlier: ReturnType<FilesystemClient["prepare"]> | undefined;
+    const pressured = Promise.withResolvers<void>();
+    const waitForDirtyCapacity = backend.waitForDirtyCapacity.bind(backend);
+    backend.waitForDirtyCapacity = (changed, cancelled) => {
+      const waiting = waitForDirtyCapacity(changed, cancelled);
+      if (backend.dirtyPressure().waiters === 2) pressured.resolve();
+      return waiting;
+    };
     storage.persistGate = hold();
     try {
       worker.postMessage(
@@ -750,8 +757,7 @@ test("earlier blocking guest and service pressure retries finish before the owne
       client.dispatch(earlier);
       Atomics.store(control, 0, 1);
       Atomics.notify(control, 0);
-      for (let attempt = 0; attempt < 100 && backend.dirtyPressure().waiters !== 2; attempt++)
-        await turn();
+      await pressured.promise;
       expect(backend.dirtyPressure().waiters).toBe(2);
       acquisition = service.pauseFilesystemWrites({ signal: abort.signal });
       await pending(acquisition);
