@@ -560,7 +560,10 @@ test("all public projections of one actual root share the lease budget", async (
   const value = await residentReadFixture(PAGE);
   const { connectFilesystemIdentity } = await import("../fs/protocol");
   const { createWorkspaceVfs } = await import("../fs/workspace");
-  const pair = connectFilesystemIdentity(value.client.connection);
+  const identity = createFilesystemIdentity(value.client.connection);
+  if (!identity.publication) throw new Error("missing public root buffers");
+  identity.publication.observer = value.client.connection.publication!.observer;
+  const pair = connectFilesystemIdentity(identity);
   let peer: FilesystemClient | undefined;
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
   try {
