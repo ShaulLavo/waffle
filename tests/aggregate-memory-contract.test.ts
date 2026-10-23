@@ -10,8 +10,15 @@ import {
 } from "../fs/memory-budget";
 import { nextReservation } from "../fs/file-identity";
 import { preparePayload } from "../fs/indexeddb-chunks";
-import { snapshotBatch, type PersistenceBatch, type StorageBackend } from "../fs/storage";
+import {
+  snapshotBatch,
+  type PayloadRetention,
+  type PersistenceBatch,
+  type StorageBackend,
+} from "../fs/storage";
 import { SharedFilesystemState } from "../fs/shared";
+import { createPublicationBuffers } from "../fs/publication";
+import { workspacePublication } from "../fs/workspace-protocol";
 
 const MiB = 1024 * 1024;
 
@@ -47,6 +54,12 @@ class HeldStorage implements StorageBackend {
   }
   async read(): Promise<Uint8Array> {
     throw new Error("unexpected whole-file read");
+  }
+  async readRange(): Promise<Uint8Array> {
+    throw new Error("unexpected cold range read");
+  }
+  retainPayload(): PayloadRetention {
+    throw new Error("unexpected cold payload retention");
   }
   async persist(batch: PersistenceBatch) {
     const copied = snapshotBatch(batch);
@@ -490,6 +503,48 @@ test("aggregate contract raw root factory charges backing once and stops new all
     expect(allocator.calls).toBe(1);
     expect(memoryBudget.snapshot().backingBytes - before.backingBytes).toBe(buffer.byteLength);
   } finally {
+    memoryBudget.close();
+  }
+});
+
+test("aggregate contract startup root keeps attached publication reader backing", async () => {
+  const allocator = new StartupAllocator();
+  const memoryBudget = budget(64 * MiB, allocator);
+  const storage = new HeldStorage();
+  const backend = await open(storage, memoryBudget);
+  const publication = createPublicationBuffers(workspacePublication.limits, true);
+  let retained: ReturnType<SharedFilesystemState["retainVersionPages"]> | undefined;
+  try {
+    const root = backend.shared.buffer;
+    const before = memoryBudget.snapshot();
+    backend.attachShared(root, undefined, [], publication);
+    expect(backend.shared.publication?.buffers).toBe(publication);
+    const attached = backend.shared;
+    backend.attachShared(structuredClone(root), undefined, [], publication);
+    expect(backend.shared).toBe(attached);
+    const sibling = noUnadmittedSharedBuffers(
+      () => new MemoryBackend(undefined, undefined, backend),
+    );
+    expect(sibling.shared.publication?.buffers).toBe(publication);
+    backend.execute("writeFile", ["/reader-root"], new Uint8Array([65, 66]));
+    const resolved = backend.fs.resolveAbsolute("/reader-root");
+    if (typeof resolved === "number" || resolved.node === undefined)
+      throw new Error("reader fixture file is missing");
+    retained = backend.shared.retainVersionPages(resolved.node, 0, 2);
+    expect(new Int32Array(publication.pageReaders!).some((count) => count > 0)).toBe(true);
+    expect(backend.shared.readerPinBytes()).toBe(65536);
+    backend.execute("write", [resolved.node, 0], new Uint8Array([90]));
+    expect(retained.read(0, 2)).toEqual(new Uint8Array([65, 66]));
+    expect(backend.shared.snapshot(resolved.node)?.data).toEqual(new Uint8Array([90, 66]));
+    retained.release();
+    expect(new Int32Array(publication.pageReaders!).every((count) => count === 0)).toBe(true);
+    expect(backend.shared.readerPinBytes()).toBe(0);
+    expect(memoryBudget.snapshot().allocated).toBe(before.allocated);
+    expect(backend.resources().startupRootBackingBytes).toBe(root.byteLength);
+    expect(allocator.calls).toBe(1);
+  } finally {
+    retained?.release();
+    await close(backend, storage);
     memoryBudget.close();
   }
 });
