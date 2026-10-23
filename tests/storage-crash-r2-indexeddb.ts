@@ -46,9 +46,9 @@ async function physicalKeys(databaseName: string) {
     return await nativeRequest(db.transaction("data").objectStore("data").getAllKeys());
   } finally { db.close(); }
 }
-interface Cell { id: string; checkpoints: number; schedule: FaultSchedule | null }
+interface Cell { id: string; checkpoints: number; schedule: FaultSchedule | null; kind: "flush" | "drop-memory" }
 function fault(id: string, destination: string, checkpoints: number, operation = "put-success"): Cell {
-  return { id, checkpoints, schedule: { id, occurrence: 1, at: { adapter: "indexeddb", operation, target: destination } } };
+  return { id, checkpoints, kind: "flush", schedule: { id, occurrence: 1, at: { adapter: "indexeddb", operation, target: destination } } };
 }
 const cells: Cell[] = [
   fault("journal-first-chunk", "data/chunk:0", 1),
@@ -62,9 +62,10 @@ const cells: Cell[] = [
   fault("rotation-base", "metadata/base", 4),
   fault("rotation-journal-delete", "journal/journal", 4, "delete-success"),
   fault("rotation-payload-delete", "data/manifest", 4, "delete-success"),
-  { id: "journal-control", checkpoints: 1, schedule: null },
-  { id: "base-control", checkpoints: 2, schedule: null },
-  { id: "rotation-control", checkpoints: 4, schedule: null },
+  { id: "journal-control", checkpoints: 1, schedule: null, kind: "flush" },
+  { id: "base-control", checkpoints: 2, schedule: null, kind: "flush" },
+  { id: "rotation-control", checkpoints: 4, schedule: null, kind: "flush" },
+  { id: "fast-memory-ack-without-flush", checkpoints: 1, schedule: null, kind: "drop-memory" },
 ];
 async function runCell(cell: Cell, scheduler: FaultScheduler) {
   const databaseName = `waffle-storage-crash-r2-${crypto.randomUUID()}`;
@@ -92,23 +93,24 @@ async function runCell(cell: Cell, scheduler: FaultScheduler) {
     const ids = before.metadata.concat(after.metadata).flatMap((entry) => entry.id ? [entry.id] : []);
     const restore = instrument(scheduler);
     let failure: unknown;
-    try { await first.backend.flush(); } catch (error) { failure = error; } finally { restore(); }
+    try { if (cell.kind === "flush") await first.backend.flush(); } catch (error) { failure = error; } finally { restore(); }
     scheduler.assertReached();
     invariant(cell.schedule ? failure !== undefined : failure === undefined, "only injected commit abort rejects flush");
     first.backend.dispose();
     await first.storage.close();
     const second = await open();
-    const expected = cell.schedule ? before : after;
+    const old = cell.schedule !== null || cell.kind === "drop-memory";
+    const expected = old ? before : after;
     await checkReopen(second.backend, expected, ids);
     const recoveredGeneration = (await second.storage.load())?.generation;
-    equal(recoveredGeneration, cell.schedule ? oldGeneration : (oldGeneration ?? 0) + 1, "recovered generation matches publication outcome");
-    if (cell.schedule) equal(await physicalKeys(databaseName), keysBefore, "abort leaves no partial manifest, chunks or reclaimed keys");
+    equal(recoveredGeneration, old ? oldGeneration : (oldGeneration ?? 0) + 1, "recovered generation matches publication outcome");
+    if (old) equal(await physicalKeys(databaseName), keysBefore, "abort leaves no partial manifest, chunks or reclaimed keys");
     second.backend.dispose();
     await second.storage.close();
     const third = await open();
     await checkReopen(third.backend, expected, ids);
     return { id: cell.id, ok: true, schedule: cell.schedule, events: scheduler.events, oldGeneration, recoveredGeneration,
-      outcome: cell.schedule ? "old-complete" : "new-complete", ack: "FAST memory ACK precedes tested explicit flush", model: "native IDB transaction abort after successful request; no browser kill or power loss", invariants: ["namespace", "mode", "bytes", "FileId", "revision", "no-reuse", "generation", "no-partial-chunks", "second-reopen"] };
+      outcome: old ? "old-complete" : "new-complete", ack: "FAST memory ACK precedes tested explicit flush", model: "native IDB transaction abort after successful request; no browser kill or power loss", invariants: ["namespace", "mode", "bytes", "FileId", "revision", "no-reuse", "generation", "no-partial-chunks", "second-reopen"] };
   } finally {
     for (const backend of backends) backend.dispose();
     await Promise.all(owners.map((storage) => storage.close()));
@@ -121,7 +123,7 @@ export async function indexedDBCrashMatrix() {
   for (const cell of cells) {
     const scheduler = new FaultScheduler(cell.schedule);
     try { results.push(await runCell(cell, scheduler)); }
-    catch (error) { results.push({ id: cell.id, ok: false, schedule: cell.schedule, events: scheduler.events, error: String(error) }); }
+    catch (error) { results.push({ id: cell.id, ok: false, schedule: cell.schedule, events: scheduler.events, error: error instanceof Error ? error.stack : String(error) }); }
   }
   return results;
 }

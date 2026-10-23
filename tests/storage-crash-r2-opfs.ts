@@ -79,7 +79,7 @@ export async function opfsCrashMatrix() {
   for (const cell of cells) {
     const scheduler = new FaultScheduler(cell.schedule);
     try { results.push(await runCell(cell, scheduler)); }
-    catch (error) { results.push({ id: cell.id, ok: false, schedule: cell.schedule, events: scheduler.events, error: String(error) }); }
+    catch (error) { results.push({ id: cell.id, ok: false, schedule: cell.schedule, events: scheduler.events, error: error instanceof Error ? error.stack : String(error) }); }
   }
   return results;
 }

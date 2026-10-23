@@ -16,7 +16,11 @@ export function seedChange(backend: PersistentBackend, generation: number): void
 export function replaceAndRename(backend: PersistentBackend): void {
   backend.execute("writeFile", ["/source"], payload(99));
   backend.execute("writeFile", ["/added"], new Uint8Array([17]));
-  backend.execute("rename", ["/source", "/target"], empty);
+  const root = backend.fs.handleForNode(backend.fs.root);
+  const source = backend.fs.resolve(root, "source");
+  const target = backend.fs.resolve(root, "target");
+  invariant(typeof source !== "number" && typeof target !== "number", "rename resolves both paths");
+  backend.execute("rename", [source, target], empty);
   const node = backend.fs.lookup("/target");
   invariant(node, "renamed file exists");
   backend.execute("setMode", [backend.fs.handleForNode(node), 0o640], empty);
@@ -46,7 +50,7 @@ export async function recoveredState(backend: PersistentBackend) {
     invariant(bytes instanceof Uint8Array, "recovered file bytes exist");
     files.push({ path: entry.path, bytes: Array.from(bytes) });
   }
-  return { metadata, files };
+  return { namespace: Array.from(backend.fs.root.children.keys()).sort(), metadata, files };
 }
 export async function opened(storage: StorageBackend) {
   return PersistentBackend.open(storage, { intervalMs: 0 });
