@@ -18,7 +18,9 @@ async function check(publication: boolean): Promise<void> {
       return undefined;
     },
     async read(key) {
-      return new Uint8Array(payloads.get(key));
+      const bytes = payloads.get(key);
+      if (!bytes) throw new Error("missing fixture payload");
+      return bytes.slice();
     },
     ...fixturePayloadHooks(payloads),
     async persist(batch: PersistenceBatch) {
