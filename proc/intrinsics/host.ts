@@ -1,4 +1,90 @@
-import { descriptor, reflectApply as apply } from "./core.ts";
+import {
+  descriptor,
+  reflectApply as apply,
+  objectGetPrototypeOf,
+  Int32ArrayConstructor,
+  BigInt64ArrayConstructor,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+  typedArrayLength,
+} from "./core.ts";
+export const atomicsOr = Atomics.or;
+export const atomicsWaitAsync = (
+  Atomics as unknown as {
+    waitAsync(
+      array: Int32Array,
+      index: number,
+      value: number,
+    ): { async: boolean; value: string | Promise<string> };
+  }
+).waitAsync;
+
+export const Uint8ArrayConstructor = Uint8Array;
+export const Uint32ArrayConstructor = Uint32Array;
+export const objectHasOwn = Object.hasOwn;
+export const objectCreate = Object.create;
+export const objectEntries = Object.entries;
+export const objectValues = Object.values;
+export const objectKeys = Object.keys;
+export const arrayFrom = Array.from;
+export const reflectGet = Reflect.get;
+export const ProxyConstructor = Proxy;
+
+const prototype = objectGetPrototypeOf(Int32ArrayConstructor.prototype);
+type TypedArray = Parameters<typeof typedArrayBuffer>[0];
+const byteLengthGetter = descriptor(prototype, "byteLength")!.get!;
+const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
+const setMethod = prototype.set;
+export function typedArrayByteLength(view: TypedArray): number {
+  return apply(byteLengthGetter, view, []);
+}
+export function typedArraySet(
+  view: TypedArray,
+  source: ArrayLike<number> | ArrayLike<bigint>,
+  offset = 0,
+): void {
+  apply(setMethod, view, [source, offset]);
+}
+const trunc = Math.trunc,
+  min = Math.min,
+  max = Math.max;
+/** Native subarray still consults the mutable .constructor/@@species chain.
+ * These private views instead use their captured intrinsic constructor directly.
+ * All callers supply integer bounds on one of these three internal view types. */
+export function typedArraySubarray<T extends Int32Array | Uint8Array | BigInt64Array>(
+  view: T,
+  begin = 0,
+  end = typedArrayLength(view),
+): T {
+  const length = typedArrayLength(view);
+  const clamp = (index: number) =>
+    index < 0 ? max(length + trunc(index), 0) : min(trunc(index) || 0, length);
+  const start = clamp(begin),
+    count = max(clamp(end) - start, 0);
+  const buffer = typedArrayBuffer(view),
+    offset = typedArrayByteOffset(view);
+  switch (apply(tagGetter, view, [])) {
+    case "BigInt64Array":
+      return new BigInt64ArrayConstructor(buffer, offset + start * 8, count) as T;
+    case "Int32Array":
+      return new Int32ArrayConstructor(buffer, offset + start * 4, count) as T;
+    case "Uint8Array":
+      return new Uint8ArrayConstructor(buffer, offset + start, count) as T;
+    default:
+      throw new TypeError("unsupported internal typed array");
+  }
+}
+
+const mapClearMethod = Map.prototype.clear;
+export function mapClear<K, V>(map: Map<K, V>): void {
+  apply(mapClearMethod, map, []);
+}
+export function isInt32Array(value: unknown): value is Int32Array {
+  return apply(tagGetter, value, []) === "Int32Array";
+}
+export function isBigInt64Array(value: unknown): value is BigInt64Array {
+  return apply(tagGetter, value, []) === "BigInt64Array";
+}
 
 export const BigIntConstructor = BigInt;
 const bigintToStringMethod = BigInt.prototype.toString;

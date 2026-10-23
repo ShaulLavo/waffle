@@ -9,41 +9,17 @@ export const atomicsAdd = Atomics.add;
 export const atomicsExchange = Atomics.exchange;
 export const atomicsNotify = Atomics.notify;
 export const atomicsWait = Atomics.wait;
-export const atomicsOr = Atomics.or;
-export const atomicsWaitAsync = (
-  Atomics as unknown as {
-    waitAsync(
-      array: Int32Array,
-      index: number,
-      value: number,
-    ): { async: boolean; value: string | Promise<string> };
-  }
-).waitAsync;
-
 export const BigInt64ArrayConstructor = BigInt64Array;
 export const Int32ArrayConstructor = Int32Array;
-export const Uint8ArrayConstructor = Uint8Array;
-export const Uint32ArrayConstructor = Uint32Array;
 export const objectFreeze = Object.freeze;
-export const objectHasOwn = Object.hasOwn;
-export const objectCreate = Object.create;
 export const objectGetPrototypeOf = Object.getPrototypeOf;
-export const objectEntries = Object.entries;
-export const objectValues = Object.values;
-export const objectKeys = Object.keys;
-export const arrayFrom = Array.from;
-export const reflectGet = Reflect.get;
 export const reflectApply = Reflect.apply;
 const apply = reflectApply;
-export const ProxyConstructor = Proxy;
 export const descriptor = Object.getOwnPropertyDescriptor;
 const prototype = objectGetPrototypeOf(Int32Array.prototype);
 const bufferGetter = descriptor(prototype, "buffer")!.get!;
 const offsetGetter = descriptor(prototype, "byteOffset")!.get!;
-const byteLengthGetter = descriptor(prototype, "byteLength")!.get!;
 const lengthGetter = descriptor(prototype, "length")!.get!;
-const tagGetter = descriptor(prototype, Symbol.toStringTag)!.get!;
-const setMethod = prototype.set;
 
 type TypedArray = Int32Array | Uint8Array | Uint32Array | BigInt64Array;
 export function typedArrayBuffer(view: TypedArray): ArrayBufferLike {
@@ -52,57 +28,16 @@ export function typedArrayBuffer(view: TypedArray): ArrayBufferLike {
 export function typedArrayByteOffset(view: TypedArray): number {
   return apply(offsetGetter, view, []);
 }
-export function typedArrayByteLength(view: TypedArray): number {
-  return apply(byteLengthGetter, view, []);
-}
 export function typedArrayLength(view: TypedArray): number {
   return apply(lengthGetter, view, []);
 }
-export function typedArraySet(
-  view: TypedArray,
-  source: ArrayLike<number> | ArrayLike<bigint>,
-  offset = 0,
-): void {
-  apply(setMethod, view, [source, offset]);
-}
-const trunc = Math.trunc,
-  min = Math.min,
-  max = Math.max;
-/** Native subarray still consults the mutable .constructor/@@species chain.
- * These private views instead use their captured intrinsic constructor directly.
- * All callers supply integer bounds on one of these three internal view types. */
-export function typedArraySubarray<T extends Int32Array | Uint8Array | BigInt64Array>(
-  view: T,
-  begin = 0,
-  end = typedArrayLength(view),
-): T {
-  const length = typedArrayLength(view);
-  const clamp = (index: number) =>
-    index < 0 ? max(length + trunc(index), 0) : min(trunc(index) || 0, length);
-  const start = clamp(begin),
-    count = max(clamp(end) - start, 0);
-  const buffer = typedArrayBuffer(view),
-    offset = typedArrayByteOffset(view);
-  switch (apply(tagGetter, view, [])) {
-    case "BigInt64Array":
-      return new BigInt64ArrayConstructor(buffer, offset + start * 8, count) as T;
-    case "Int32Array":
-      return new Int32ArrayConstructor(buffer, offset + start * 4, count) as T;
-    case "Uint8Array":
-      return new Uint8ArrayConstructor(buffer, offset + start, count) as T;
-    default:
-      throw new TypeError("unsupported internal typed array");
-  }
-}
-
 // Private collections must not pass their receiver or entries through guest methods.
 export const MapConstructor = Map;
 const mapGetMethod = Map.prototype.get,
   mapSetMethod = Map.prototype.set;
 const mapHasMethod = Map.prototype.has,
   mapDeleteMethod = Map.prototype.delete;
-const mapClearMethod = Map.prototype.clear,
-  mapForEachMethod = Map.prototype.forEach;
+const mapForEachMethod = Map.prototype.forEach;
 const mapSizeGetter = descriptor(Map.prototype, "size")!.get!;
 export function mapGet<K, V>(map: ReadonlyMap<K, V>, key: K): V | undefined {
   return apply(mapGetMethod, map, [key]);
@@ -115,9 +50,6 @@ export function mapHas<K, V>(map: ReadonlyMap<K, V>, key: K): boolean {
 }
 export function mapDelete<K, V>(map: Map<K, V>, key: K): boolean {
   return apply(mapDeleteMethod, map, [key]);
-}
-export function mapClear<K, V>(map: Map<K, V>): void {
-  apply(mapClearMethod, map, []);
 }
 export function mapSize(map: ReadonlyMap<unknown, unknown>): number {
   return apply(mapSizeGetter, map, []);
@@ -146,10 +78,4 @@ export function arrayAppend<T>(array: T[], value: T): void {
     configurable: true,
   };
   objectDefineProperty(array, array.length, descriptor);
-}
-export function isInt32Array(value: unknown): value is Int32Array {
-  return apply(tagGetter, value, []) === "Int32Array";
-}
-export function isBigInt64Array(value: unknown): value is BigInt64Array {
-  return apply(tagGetter, value, []) === "BigInt64Array";
 }
