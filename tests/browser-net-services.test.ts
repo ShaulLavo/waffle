@@ -362,6 +362,7 @@ test("closing a listener still refuses unaccepted helper-owned connections", asy
         JSON.stringify({
           conn: remote,
           peer: { address: "127.0.0.1", family: "IPv4", port: 40000 },
+          local: { address: "127.0.0.1", family: "IPv4", port: 3000 },
         }),
       ),
     );
