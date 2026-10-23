@@ -35,10 +35,9 @@ test("readonly preopen reaches a generic backend without mutation admission", as
 
 test("readonly backend preopen never creates a missing directory", () => {
   const backend = new MemoryBackend();
-  const before = backend.shared.namespaceEpoch;
   expect(() => backend.execute("preopen", ["/absent", true], new Uint8Array())).toThrow(
     expect.objectContaining({ errno: 44 }),
   );
   expect(backend.fs.lookup("/absent")).toBeUndefined();
-  expect(backend.shared.namespaceEpoch).toBe(before);
+  expect(backend.shared.writeAdmission.active).toBe(0);
 });
