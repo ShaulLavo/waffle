@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { withLateBigintHooks } from "./fixtures/bigint-hooks";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
 import {
   ResidentChannel,
@@ -564,6 +565,7 @@ function installClaimHooks(restorations: (() => void)[], observe: () => void): v
     [DataView.prototype, "setUint32"],
     [TextEncoder.prototype, "encode"],
     [TextDecoder.prototype, "decode"],
+    [BigInt.prototype, "toString"],
   ];
   for (const [prototype, name] of methods)
     restorations.push(installMethodHook(prototype, name, observe));
@@ -642,6 +644,32 @@ test("file-only authority rejects another retained file handle without issuing a
     await channel.call("close", { token: session.token });
     channel.close();
     await server.stop();
+    f.stop();
+  }
+});
+
+
+test("resident ACK settles with exact history after late bigint conversion hooks", async () => {
+  const f = await residentFixture();
+  try {
+    const cut = await f.observer.cut();
+    const grant = f.authority.prepare(f.session, { kind: "write", offset: 0, maxBytes: 1 });
+    const cell = new ResidentGrantCell(grant);
+    const input = new Uint8Array([9]);
+    const result = withLateBigintHooks(() => cell.tryWrite(f.handle, [input], 0));
+    expect(result.value).toBe(1);
+    const outcome = cell.snapshot();
+    expect(outcome.kind).toBe("committed");
+    expect(f.authority.settle(f.session, outcome).kind).toBe("committed");
+    expect(result.calls).toBe(0);
+    const page = await f.observer.changes(cut, limits.logBytes);
+    if (page.kind !== "changes") throw new Error("unexpected history gap");
+    expect(page.publications).toHaveLength(1);
+    for (const change of page.publications[0]!.changes) {
+      if (change.kind === "entry") throw new Error("unexpected namespace effect");
+      expect(change.file).toMatchObject(f.backend.identity(f.handle));
+    }
+  } finally {
     f.stop();
   }
 });

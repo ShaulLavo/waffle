@@ -14,6 +14,7 @@ import {
   type PublicationCut,
   type PublicationEffect,
 } from "../fs/publication";
+import { withLateBigintHooks } from "./fixtures/bigint-hooks";
 import { pack, unpack } from "../fs/protocol";
 import { Wasi } from "../core/wasi";
 import { shareFileResource } from "../core/open-file";
@@ -454,4 +455,44 @@ test("staged identity copies never expose private allocator views to late native
     else Reflect.deleteProperty(Int32Array.prototype, "set");
     current.stop();
   }
+});
+
+
+test("successful direct history captures real identities despite late bigint conversion hooks", async () => {
+  const current = await fixture();
+  try {
+    const handle = await current.file("stable");
+    const cut = await current.observer.cut();
+    const input = bytes("x");
+    const result = withLateBigintHooks(() => current.client.tryWrite(handle, [input], 0));
+    expect(result.value).toBe(1);
+    const actual = current.backend.identity(handle);
+    const captured = await latest(current, cut);
+    affected(captured.changes, actual);
+    expect(result.calls).toBe(0);
+    await current.client.asyncCall("writeFile", ["/stable"], bytes("later"));
+    const recovered = groups(await current.observer.changes(cut, limits.logBytes));
+    expect(recovered[0]).toEqual(captured);
+    affected(recovered[0]!.changes, actual);
+  } finally {
+    current.stop();
+  }
+});
+
+test("paired publication codec preserves full-width identities under late bigint hooks", () => {
+  const file = {
+    birthHistory: "fullwidth-hooks", ino: 1,
+    ...parseFileIdentity({ id: "fffffffffffffffffffffffffffffffe", version: "ffffffffffffffffffffffffffffffff" }),
+  };
+  const receipt = {
+    id: { session: 1, sequence: 1 }, cut: { history: file.birthHistory, generation: 1 },
+    result: { kind: "void" as const }, durability: { kind: "untracked" as const },
+  };
+  const changes: PublicationEffect[] = [
+    { kind: "metadata", file, mode: 0o600, mtime: 42 },
+    { kind: "entry", parent: file, name: "edge", before: file, after: null },
+  ];
+  const result = withLateBigintHooks(() => decodeEffects(encodeEffects(receipt, changes, limits.effectBytes)));
+  expect(result.value).toEqual({ receipt, changes });
+  expect(result.calls).toBe(0);
 });
