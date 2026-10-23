@@ -248,17 +248,23 @@ for (const writer of ["write", "append", "writeFile", "shrink", "extend", "fd_wr
   test(`held resident public chunk delivery preserves all pages across ${writer}`, async () => {
     const value = await residentReadFixture(PAGE * 3);
     const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-    const call = value.client.asyncCall;
+    const submit = value.client.submit;
     let held = false;
     let reading: ReturnType<typeof value.workspace.read> | undefined;
     try {
       const before = await value.workspace.stat("/file");
       if (before.kind !== "ok") throw new Error(before.kind);
-      value.client.asyncCall = async function (...args) {
-        const result: unknown = await call.apply(this, args);
-        if (args[0] !== "publicationReadChunk" || held) return result;
-        held = true; entered.resolve(); await gate.promise;
-        return result;
+      value.client.submit = function (...args) {
+        const completion = submit.apply(this, args);
+        if (args[0] !== "publicationReadChunk" || held) return completion;
+        held = true;
+        const result = completion.value.bind(completion);
+        completion.value = async () => {
+          const bytes: unknown = await result();
+          entered.resolve(); await gate.promise;
+          return bytes;
+        };
+        return completion;
       };
       reading = value.workspace.read("/file", { offset: 0, length: PAGE * 3 });
       await entered.promise;
@@ -274,7 +280,7 @@ for (const writer of ["write", "append", "writeFile", "shrink", "extend", "fd_wr
       }
       expect(value.service.resources().readerPinBytes).toBe(0);
       expect(value.service.resources().readerTickets).toBe(0);
-    } finally { gate.resolve(); value.client.asyncCall = call; await reading; await value.close(); }
+    } finally { gate.resolve(); value.client.submit = submit; await reading; await value.close(); }
   });
 }
 
@@ -319,4 +325,16 @@ test("public selection refuses an actually CLAIMED resident writer before author
     value.service.residentPublication?.dispose();
     await value.close();
   }
+});
+
+test("a missing current pathname stays not-found even with an explicitly leased old version", async () => {
+  const value = await residentReadFixture(PAGE);
+  try {
+    const opened = await value.workspace.pin("/file");
+    if (opened.kind !== "ok") throw new Error(opened.kind);
+    await value.client.asyncCall("move", ["/file", "/renamed"]);
+    expect(await value.workspace.read("/file", { offset: 0, length: 1 }, opened.value.stat.version)).toEqual({ kind: "not-found" });
+    expect((await value.workspace.read(opened.value.stat.id, { offset: 0, length: 1 }, opened.value.stat.version)).kind).toBe("ok");
+    await opened.value.close();
+  } finally { await value.close(); }
 });
