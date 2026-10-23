@@ -101,7 +101,12 @@ function installStorage(): void {
   };
 }
 
-if (typeof document === "undefined" && typeof self !== "undefined" && "postMessage" in self) {
+if (
+  typeof location !== "undefined" &&
+  typeof document === "undefined" &&
+  typeof self !== "undefined" &&
+  "postMessage" in self
+) {
   if (new URL(location.href).searchParams.get("role") === "consumer") {
     globalThis.onmessage = () => globalThis.postMessage({ alive: true });
     globalThis.postMessage({ ready: true });
