@@ -371,7 +371,10 @@ class ArchiveInput<T> {
   private readonly iterator: AsyncIterator<T>;
   private ended = false;
   private pending: Promise<PullOutcome<T>> | undefined;
-  constructor(source: AsyncIterable<T>, private readonly signal?: AbortSignal) {
+  constructor(
+    source: AsyncIterable<T>,
+    private readonly signal?: AbortSignal,
+  ) {
     checkSignal(signal);
     this.iterator = source[Symbol.asyncIterator]();
   }
@@ -397,7 +400,10 @@ class ArchiveInput<T> {
     }
     if (!cleanup) return;
     if (!failure) throw cleanup.error;
-    throw new AggregateError([failure.error, cleanup.error], "Archive operation and source cleanup failed");
+    throw new AggregateError(
+      [failure.error, cleanup.error],
+      "Archive operation and source cleanup failed",
+    );
   }
 }
 class StreamReader {
