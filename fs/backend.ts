@@ -1,5 +1,6 @@
 import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
+import type { MemoryBudget } from "./memory-budget.js";
 import {
   mapPublicationFiles,
   type FileKey,
@@ -104,7 +105,26 @@ export class MemoryBackend implements FilesystemBackend {
   constructor(
     fs = new MemFS(),
     reservation: IdentityReservation = { workspace: crypto.randomUUID(), era: 1n },
+    startupRoot?: MemoryBudget | MemoryBackend,
   ) {
+    if (startupRoot instanceof MemoryBackend) {
+      this.fs = startupRoot.fs;
+      this.workspaceId = startupRoot.workspaceId;
+      this.shared = startupRoot.shared;
+      this.startupRoot = startupRoot.startupRoot;
+      this.sharedAttached = startupRoot.sharedAttached;
+      return;
+    }
+    this.shared = new SharedFilesystemState(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      startupRoot,
+    );
+    if (this.shared.startupMemoryBudget) this.startupRoot = this.shared;
     this.fs = fs;
     this.workspaceId = reservation.workspace;
     this.shared.identities.configure(reservation);
@@ -118,7 +138,8 @@ export class MemoryBackend implements FilesystemBackend {
       if (node.kind === "dir") pending.push(...node.children.values());
     }
   }
-  shared = new SharedFilesystemState();
+  shared: SharedFilesystemState;
+  private readonly startupRoot?: SharedFilesystemState;
   private sharedAttached = false;
   private directoryTimes = new Map<FileHandle, number>();
   attachShared(
@@ -127,10 +148,11 @@ export class MemoryBackend implements FilesystemBackend {
     segments: readonly SharedArrayBuffer[] = [],
     publication?: PublicationBuffers,
   ): void {
-    if (this.sharedAttached) {
+    if (this.sharedAttached || this.startupRoot) {
       if (
-        !!this.shared.publication !== !!publication ||
-        (publication && this.shared.publication?.buffers.history !== publication.history)
+        this.sharedAttached &&
+        (!!this.shared.publication !== !!publication ||
+          (publication && this.shared.publication?.buffers.history !== publication.history))
       )
         throw new FilesystemError(58, "filesystem publication root mismatch");
       // SAB wrappers change identity when cloned through a port. Probe a reserved header word
@@ -141,8 +163,8 @@ export class MemoryBackend implements FilesystemBackend {
       Atomics.store(this.shared.cells, 6, probe);
       const same = Atomics.load(incoming, 6) === probe;
       Atomics.store(this.shared.cells, 6, previous);
-      if (same) return;
-      throw new Error("filesystem service cannot attach a second shared tree");
+      if (!same) throw new Error("filesystem service cannot attach a second shared tree");
+      if (this.sharedAttached) return;
     }
     const previous = this.shared;
     this.shared = new SharedFilesystemState(
@@ -847,6 +869,9 @@ export class MemoryBackend implements FilesystemBackend {
       .flatMap((buffer, index) => (buffer.byteLength ? [{ buffer, index: index + 1 }] : []));
   }
   resources(): Record<string, number> {
-    return this.shared.resources();
+    return {
+      ...this.shared.resources(),
+      startupRootBackingBytes: this.startupRoot?.buffer.byteLength ?? 0,
+    };
   }
 }

@@ -7,7 +7,7 @@ import {
   mapDelete,
   mapSize,
   mapForEach,
-} from "../proc/intrinsics.ts";
+} from "../proc/intrinsics/core.ts";
 import type { FileHandle } from "./filesystem.js";
 
 export interface Readiness {
@@ -39,6 +39,16 @@ export type Resource =
   | { kind: "file"; handle: FileHandle; offset: number; append: boolean; fdflags?: number }
   | { kind: "directory"; handle: FileHandle }
   | Stream;
+
+function describeResource(resource: Resource, release?: () => void): OpenDescription {
+  return new OpenDescription(
+    resource,
+    release ??
+      (resource.kind === "pipe" || resource.kind === "terminal"
+        ? () => resource.close?.()
+        : undefined),
+  );
+}
 
 /** POSIX open description: offset, flags and lifetime shared by all descriptor references. */
 export class OpenDescription {
@@ -140,16 +150,7 @@ export class DescriptorTable {
     release?: () => void,
     preopen?: string,
   ): number {
-    return this.add(
-      new OpenDescription(
-        resource,
-        release ??
-          (resource.kind === "pipe" || resource.kind === "terminal"
-            ? () => resource.close?.()
-            : undefined),
-      ),
-      { rightsBase, rightsInheriting, preopen },
-    );
+    return this.add(describeResource(resource, release), { rightsBase, rightsInheriting, preopen });
   }
   openAt(
     fd: number,
@@ -159,17 +160,11 @@ export class DescriptorTable {
     release?: () => void,
     preopen?: string,
   ): number {
-    return this.addAt(
-      fd,
-      new OpenDescription(
-        resource,
-        release ??
-          (resource.kind === "pipe" || resource.kind === "terminal"
-            ? () => resource.close?.()
-            : undefined),
-      ),
-      { rightsBase, rightsInheriting, preopen },
-    );
+    return this.addAt(fd, describeResource(resource, release), {
+      rightsBase,
+      rightsInheriting,
+      preopen,
+    });
   }
   dup(fd: number): number {
     const entry = mapGet(this.entries, fd);
