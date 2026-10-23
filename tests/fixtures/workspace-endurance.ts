@@ -74,7 +74,7 @@ export function assertWorkspaceQuiescent(
       throw new Error(`workspace ownership changed for ${key}: ${baseline[key]} -> ${actual[key]}`);
 }
 
-export function workspaceSeed(size: number): Uint8Array<ArrayBuffer> {
+function workspaceSeed(size: number): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(
     { length: size },
     (_, index) => ((index * 73) ^ (index >>> 8) ^ (index >>> 16)) & 255,
