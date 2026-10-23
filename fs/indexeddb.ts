@@ -660,7 +660,11 @@ export class IndexedDBStorage implements StorageBackend {
     });
   }
 
-  retainPayload(key: string, expectedSize: number, metadata?: ReaderMetadataBudget): PayloadRetention {
+  retainPayload(
+    key: string,
+    expectedSize: number,
+    metadata?: ReaderMetadataBudget,
+  ): PayloadRetention {
     this.assertOwner();
     if (this.closed || !this.state?.payloadKeys.has(key) || this.deletingPayloads.has(key))
       throw new Error("Missing retained filesystem payload");

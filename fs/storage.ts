@@ -218,12 +218,15 @@ export class PayloadCorruption extends Error {}
 
 /** Runtime references, never recovery metadata. Released reader-only keys stay charged until deletion. */
 export class PayloadRetentions {
-  private readonly entries = new Map<string, {
-    size: number;
-    refs: number;
-    metadata: number;
-    budget?: ReaderMetadataBudget;
-  }>();
+  private readonly entries = new Map<
+    string,
+    {
+      size: number;
+      refs: number;
+      metadata: number;
+      budget?: ReaderMetadataBudget;
+    }
+  >();
   private metadata = 0;
   private metadataPeak = 0;
   private roots: ReadonlySet<string> = new Set();
@@ -264,7 +267,10 @@ export class PayloadRetentions {
     if (metadata > 2 * 1024 * 1024 - this.metadata) throw new PayloadMetadataPressure();
     budget?.takeMetadata(metadata);
     const entry: { size: number; refs: number; metadata: number; budget?: ReaderMetadataBudget } = {
-      size, refs: 0, metadata, budget,
+      size,
+      refs: 0,
+      metadata,
+      budget,
     };
     this.entries.set(key, entry);
     this.bytes += size;

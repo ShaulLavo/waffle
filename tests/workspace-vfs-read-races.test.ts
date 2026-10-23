@@ -838,7 +838,6 @@ test("reader-only disk debt retains its actual metadata charge until native GC",
   }
 });
 
-
 test("retained key metadata pressure refuses before allocation and aliases share one charge", () => {
   const readers = new PayloadRetentions();
   const budget = new WorkspaceReadBudget();

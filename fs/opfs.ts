@@ -366,7 +366,11 @@ export class OpfsStorage implements StorageBackend {
       }
     });
   }
-  retainPayload(key: string, expectedSize: number, metadata?: ReaderMetadataBudget): PayloadRetention {
+  retainPayload(
+    key: string,
+    expectedSize: number,
+    metadata?: ReaderMetadataBudget,
+  ): PayloadRetention {
     if (this.closed || this.known.get(key) !== expectedSize)
       throw new Error("Missing retained filesystem payload");
     this.assertHandleOwnership();
