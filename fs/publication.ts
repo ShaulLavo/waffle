@@ -374,10 +374,11 @@ export function snapshotPublicationCheckpoint(value: unknown): CheckpointPublica
   });
   let generation = cut.generation - data.changes.length;
   const changes = data.changes.map((value: unknown) => {
-    if (!(value instanceof Uint8Array) || value.length > limits.effectBytes)
+    if (!(value instanceof Uint8ArrayConstructor) || typedArrayLength(value) > limits.effectBytes)
       throw new FilesystemError(29, "invalid checkpoint change bytes");
-    const bytes = value.slice(),
-      publication = decodeEffects(bytes);
+    const bytes = new Uint8ArrayConstructor(typedArrayLength(value));
+    typedArraySet(bytes, value);
+    const publication = decodeEffects(bytes);
     const receipt = checkpointReceipt(publication.receipt, cut, sessionSerial, limits.resultBytes);
     if (
       receipt.cut.generation !== ++generation ||
@@ -385,6 +386,13 @@ export function snapshotPublicationCheckpoint(value: unknown): CheckpointPublica
       publication.changes.length > limits.effects
     )
       throw new FilesystemError(29, "checkpoint changes are not a settled suffix");
+    for (const effect of publication.changes) {
+      if (effect.kind !== "bytes" && effect.kind !== "resize") continue;
+      checkpointInteger(effect.size);
+      checkpointInteger(effect.version, receipt.cut.generation);
+      if (effect.kind === "bytes")
+        checkpointInteger(effect.offset, effect.size - typedArrayLength(effect.bytes));
+    }
     return bytes;
   });
   const inos = new Set<number>();
