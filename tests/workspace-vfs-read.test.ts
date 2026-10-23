@@ -1,15 +1,13 @@
 import { expect, test } from "bun:test";
-import { FilesystemClient } from "../fs";
+import { FilesystemClient, MemoryBackend, PersistentBackend } from "../fs";
 import { PAGE, createFilesystemIdentity } from "../fs/protocol";
 import { workspacePublication } from "../fs/workspace-protocol";
 import { Wasi } from "../core/wasi";
 import { shareFileResource } from "../core/open-file";
 import { guestModule, guestFunction } from "./fixtures/publication-wasm";
-import { MemoryBackend, PersistentBackend } from "../fs";
 import { MemFS } from "../fs/memory";
 import { RangeFixture, pattern, payloadSize } from "./fixtures/opfs-range-storage";
-import { publicReadFixture } from "./fixtures/workspace-read";
-import { residentReadFixture } from "./fixtures/workspace-read";
+import { publicReadFixture, residentReadFixture } from "./fixtures/workspace-read";
 
 for (const kind of [
   "service-write",

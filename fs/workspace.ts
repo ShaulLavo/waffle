@@ -31,6 +31,7 @@ import {
   type VersionStat,
   type ReadValue,
   type ReadOutcome,
+  type ReadFailure,
   type VersionLease,
   WORKSPACE_READ_LIMITS,
 } from "./workspace-types.js";
@@ -54,6 +55,11 @@ function options(value: SnapshotOptions = {}): Required<SnapshotOptions> {
   )
     throw new FilesystemError(28, "invalid snapshot options");
   return { prefix, includeDirs };
+}
+function chunkRefusal(value: unknown): ReadFailure {
+  const refusal = readReply(value);
+  if (refusal.kind === "ok") throw new FilesystemError(29);
+  return refusal;
 }
 function same(a: Watermark, b: Watermark): boolean {
   return a.history === b.history && a.seq === b.seq;
@@ -258,11 +264,7 @@ class WorkspaceOwner implements WorkspaceVfs {
           lifetime,
           Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset),
         );
-        if (!(part instanceof Uint8Array)) {
-          const refusal = readReply(part);
-          if (refusal.kind === "ok") throw new FilesystemError(29);
-          return refusal;
-        }
+        if (!(part instanceof Uint8Array)) return chunkRefusal(part);
         if (part.length !== Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset))
           throw new FilesystemError(29);
         bytes.set(part, offset);

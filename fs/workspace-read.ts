@@ -413,6 +413,15 @@ export class WorkspaceReadAuthority {
     };
     if (operation === "publicationReadStat") return { kind: "ok", value: stat };
     if (node.kind !== "file") return { kind: "not-file" };
+    return this.capture(operation, id, node, stat, requested);
+  }
+  private capture(
+    operation: string,
+    id: number,
+    node: Extract<Node, { kind: "file" }>,
+    stat: VersionStat,
+    requested?: ByteRange,
+  ): ReadOutcome<unknown> {
     const range =
       operation === "publicationReadPin"
         ? { offset: 0, length: stat.size }

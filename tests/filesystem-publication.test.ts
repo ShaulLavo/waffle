@@ -1,5 +1,4 @@
-import { fixturePayloadHooks } from "./fixtures/publication-storage";
-import { coldPublicationRoot } from "./fixtures/publication-storage";
+import { fixturePayloadHooks, coldPublicationRoot } from "./fixtures/publication-storage";
 import { IdentityAllocator, nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import {

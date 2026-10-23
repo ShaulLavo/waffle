@@ -760,8 +760,11 @@ export class OpfsStorage implements StorageBackend {
       this.snapshots.flatMap((snapshot) => keys(snapshot.index)).concat(batch.retainedData ?? []),
     );
     this.readers.recovery(retained);
-    // Only old, known payloads need per-commit collection. Orphan files from a killed worker
-    // are collected separately on a later checkpoint, never by scanning payloads on lazy open.
+    this.retirePayloads(retained);
+    await this.collect();
+  }
+  private retirePayloads(retained: ReadonlySet<string>): void {
+    // Orphans from killed workers are swept on later checkpoints, not lazy open.
     for (const key of this.known.keys())
       if (!retained.has(key) && !this.readers.has(key)) {
         this.drop(key);
@@ -770,7 +773,6 @@ export class OpfsStorage implements StorageBackend {
         this.garbage.add(payloadName(key));
         this.garbagePayloads.set(payloadName(key), key);
       }
-    await this.collect();
   }
   private async write(
     handle: FileSystemFileHandle,
