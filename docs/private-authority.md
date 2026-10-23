@@ -19,7 +19,9 @@ A callback that closes over a private endpoint is authority too.
 ## Implementation rules
 
 - Capture native constructors, functions and prototype getters in
-  `proc/intrinsics.ts`, before executing guest code. Call the captured helper,
+  `proc/intrinsics/core.ts` and `proc/intrinsics/host.ts`, before executing guest code.
+  `proc/intrinsics.ts` reexports the same captures. Core-only consumers import the
+  core group without initializing unrelated host capabilities. Call the captured helper,
   rather than looking up the global or receiver method again.
 - Invoke captured prototype methods/getters through captured `Reflect.apply` or
   an equivalent captured uncurried helper. `captured.call(...)`, `.apply(...)`
@@ -56,7 +58,9 @@ for the owning filesystem/WASI lane. It uses local lexical type
 inference: annotations, type aliases, collection arguments, initializers,
 constructor aliases, runtime fields and callback captures. It distinguishes
 private collection elements from the collection's own API. Imported captured
-constructors remain recognized when renamed locally.
+constructors remain recognized when renamed locally. Only those three exact
+module paths are recognized as manually reviewed capture implementations. A
+similarly named module receives no capture or implementation trust.
 
 Enforcement is intentionally an explicit process boundary, not a claim that all
 filesystem and WASI code is hardened. `enforcedModules` covers the guest-facing

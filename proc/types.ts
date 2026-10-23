@@ -1,3 +1,5 @@
+import { ProcessError, ProcessErrno } from "./errors.ts";
+export { ProcessError, ProcessErrno } from "./errors.ts";
 import { objectFreeze } from "./intrinsics.ts";
 import type { StartFailure } from "./start-errno.ts";
 import type { ControlCells } from "./control.js";
@@ -113,23 +115,6 @@ export interface ChildExitEvent {
   readonly job: number;
   readonly result: ProcessExit;
 }
-export class ProcessError extends Error {
-  readonly errno: number;
-  constructor(errno: number, message: string) {
-    super(message);
-    this.errno = errno;
-    this.name = "ProcessError";
-  }
-}
-export const ProcessErrno = objectFreeze({
-  AGAIN: 6,
-  BADF: 8,
-  CANCELED: 11,
-  CHILD: 12,
-  INVAL: 28,
-  NOTSUP: 58,
-  SRCH: 71,
-});
 export function checkedSignal(signal: number): ProcessSignal {
   if (!Number.isInteger(signal) || signal < 1 || signal > 64 || signal === 32 || signal === 33) {
     throw new ProcessError(ProcessErrno.INVAL, `invalid signal ${signal}`);
