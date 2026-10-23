@@ -543,7 +543,10 @@ export class MemoryBackend implements FilesystemBackend {
       if (link.delta > 0) this.shared.relink(this.fs.handleForNode(link.node));
     }
     for (const handle of action.registered) this.shared.setMtime(handle, action.plan.mtime);
-    for (const parent of action.plan.parents) this.sync(this.fs.handleForNode(parent));
+    for (const parent of action.plan.parents) {
+      const handle = this.fs.handleForNode(parent);
+      if (this.shared.stat(handle)) this.sync(handle);
+    }
     for (const entry of action.removed) {
       if (this.isLinked(entry.node)) continue;
       this.shared.unlink(entry.handle);

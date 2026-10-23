@@ -1032,6 +1032,7 @@ export class SharedFilesystemState {
           for (let page = Math.floor(at / PAGE); page < Math.ceil(end / PAGE); page++)
             this.segmentFor(this.pages[this.pageAt(slot, page)]! - 1);
         const mtime = Date.now();
+        const identity = this.prepareIdentityVersion(slot, true);
         const prepared = this.prepareDirectPublication(
           slot,
           chunks,
@@ -1050,6 +1051,7 @@ export class SharedFilesystemState {
           size,
           mtime,
           prepared?.publication,
+          identity,
         );
         return end;
       } finally {
@@ -1068,9 +1070,9 @@ export class SharedFilesystemState {
     size: number,
     mtime: number,
     publication?: PreparedPublication,
+    identity?: FileVersion,
   ): void {
     const base = slot * SLOT_WORDS;
-    const identity = this.prepareIdentityVersion(slot, true);
     try {
       this.copyChunks(slot, chunks, at);
       if (end > size) this.slots[base + FILE_SIZE] = end;
@@ -1322,13 +1324,13 @@ export class SharedFilesystemState {
         throw new RangeError("file needs growth");
       const next = truncate ? size : Math.max(old, size);
       const mtime = truncate ? Date.now() : this.getMtime(slot);
-      const publication = admission
-        ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
-        : undefined;
       const identity = this.prepareIdentityVersion(
         slot,
         next !== old || mtime !== this.getMtime(slot),
       );
+      const publication = admission
+        ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
+        : undefined;
       if (resident && truncate && size < old) {
         let position = size;
         while (position < old) {
@@ -1420,8 +1422,8 @@ export class SharedFilesystemState {
     try {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
-      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
       const identity = this.prepareIdentityVersion(slot, mtime !== this.getMtime(slot));
+      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
       this.setTimestamp(slot, mtime);
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);

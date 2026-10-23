@@ -339,10 +339,17 @@ test("serial exhaustion rejects namespace and direct changes before effect or pu
     );
     expect(() => backend.execute("writeFile", ["/new"], bytes("x"))).toThrow("exhausted");
     expect(backend.fs.lookup("/new")).toBeUndefined();
-    expect(client.tryWrite(current.handle, [bytes("z")], 0)).toBe(-33);
+    for (let attempt = 0; attempt <= limits.operations; attempt++) {
+      expect(client.tryWrite(current.handle, [bytes("z")], 0)).toBe(-33);
+      expect(client.resize(current.handle, 5, false)).toBe(33);
+      expect(client.setMtime(current.handle, 17)).toBe(33);
+    }
     expect(backend.identity(current.handle)).toEqual(before);
     expect(client.shared.snapshot(current.handle)!.data).toEqual(original);
     expect(await observer.cut()).toEqual(cut);
+    backend.shared.identities.configure({ workspace: backend.workspaceId, era: 2n });
+    expect(client.tryWrite(current.handle, [bytes("r")], 0)).toBe(1);
+    expect((await observer.cut()).generation).toBe(cut.generation + 1);
   } finally {
     current.stop();
   }
