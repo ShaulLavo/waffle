@@ -8,18 +8,19 @@ import {
   PersistentBackend,
 } from "../../fs";
 import { MemFS } from "../../fs/memory";
+import { workspacePublication } from "../../fs/workspace-protocol";
 import type { SharedPageVersion } from "../../fs/shared-version-pages";
 
-export async function residentReadFixture(size: number, maxBytes?: number) {
+export async function residentReadFixture(size: number, maxBytes?: number, inputBytes?: number) {
   const seed = new MemFS();
   seed.writeFile("/file", new Uint8Array(size).fill(65));
   const backend = new MemoryBackend(seed);
-  const pair =
-    maxBytes === undefined
-      ? createFilesystemConnection(undefined, { workspace: true })
-      : connectFilesystemIdentity(
-          createFilesystemIdentity(undefined, maxBytes, { workspace: true }),
-        );
+  const configuration = inputBytes === undefined
+    ? workspacePublication
+    : { ...workspacePublication, limits: { ...workspacePublication.limits, inputBytes } };
+  const pair = connectFilesystemIdentity(
+    createFilesystemIdentity(undefined, maxBytes, configuration),
+  );
   const service = new FilesystemService(backend);
   const retained: SharedPageVersion[] = [];
   let client: FilesystemClient | undefined;

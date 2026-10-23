@@ -232,13 +232,7 @@ function hasPayloads(nodes: readonly PersistedNode[], keys: ReadonlySet<string>)
 }
 function recoveryManifest(value: unknown, key: string): ChunkManifest | undefined {
   try {
-    try {
-      return parseManifest(value, key);
-    } catch (error) {
-      throw new PayloadCorruption(
-        error instanceof Error ? error.message : "Invalid payload manifest",
-      );
-    }
+    return parseManifest(value, key);
   } catch {
     return undefined;
   }

@@ -101,7 +101,7 @@ test("unique seed buffers share alias charges and independently exhaust pin capa
 });
 
 test("publication refusal rolls back growth and COW reservations before any effect", async () => {
-  const value = await residentReadFixture(PAGE * 2);
+  const value = await residentReadFixture(PAGE * 2, undefined, PAGE * 4);
   const domain = value.backend.shared.publication!;
   const original = domain.prepare;
   const refused = new Error("held publication capacity");
@@ -127,13 +127,12 @@ test("publication refusal rolls back growth and COW reservations before any effe
 });
 
 test("public selection excludes real pending resident grants and old leases survive committed import", async () => {
-  const value = await residentReadFixture(PAGE * 3);
-  let descriptor: ResidentDescriptor | undefined;
+  const value = await residentReadFixture(PAGE * 3, undefined, PAGE * 4);
   try {
-    descriptor = await value.client.asyncCall("publicationResident", [value.client.connection.publication!.observer, value.handle, `public-read-${crypto.randomUUID()}`]);
+    const descriptor: ResidentDescriptor = await value.client.asyncCall("publicationResident", [value.client.connection.publication!.observer, value.handle, `public-read-${crypto.randomUUID()}`]);
     const authority = value.service.residentPublication!;
     authority.activate();
-    const session = authority.open(descriptor!);
+    const session = authority.open(descriptor);
     const opened = await value.workspace.pin("/file");
     if (opened.kind !== "ok") throw new Error(opened.kind);
     const cell = new ResidentGrantCell(authority.prepare(session, { kind: "write", offset: PAGE * 2, maxBytes: 1 }));
