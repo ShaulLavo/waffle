@@ -27,7 +27,16 @@ export interface Inventory {
   bases: number[];
   orphanPayloads: string[];
 }
-type SyncAccess = FileSystemSyncAccessHandle;
+interface SyncAccess {
+  write(buffer: Uint8Array, options?: { at?: number }): number;
+  flush(): void;
+  close(): void;
+}
+type SyncFile = FileSystemFileHandle & { createSyncAccessHandle(): Promise<SyncAccess> };
+function hasSyncAccess(file: FileSystemFileHandle): file is SyncFile {
+  return "createSyncAccessHandle" in file && typeof file.createSyncAccessHandle === "function";
+}
+type Completion = ReturnType<typeof Promise.withResolvers<void>>;
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
@@ -181,7 +190,7 @@ export class QuotaProbe {
   private restorers: (() => void)[] = [];
   private owners = new Set<StorageBackend>();
   private held:
-    | { release: PromiseWithResolvers<void>; started: PromiseWithResolvers<void> }
+    | { release: Completion; started: Completion }
     | undefined;
   pause() {
     const held = { release: Promise.withResolvers<void>(), started: Promise.withResolvers<void>() };
@@ -284,8 +293,8 @@ export class QuotaProbe {
     const observeHandle = this.observeHandle.bind(this);
     const fault = () => this.fault;
     const prototype = FileSystemFileHandle.prototype;
+    assert(hasSyncAccess(prototype), "native OPFS sync handles require dedicated worker");
     const open = prototype.createSyncAccessHandle;
-    assert(typeof open === "function", "native OPFS sync handles require dedicated worker");
     prototype.createSyncAccessHandle = async function () {
       return observeHandle(this.name, await open.call(this));
     };
