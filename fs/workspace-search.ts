@@ -165,7 +165,7 @@ function validQuery(value: SearchQuery): boolean {
   );
 }
 function limitsFrom(overrides: Partial<SearchLimits>): SearchLimits {
-  const limits = { ...WORKSPACE_SEARCH_LIMITS };
+  const limits: Record<keyof SearchLimits, number> = { ...WORKSPACE_SEARCH_LIMITS };
   for (const key of limitKeys) {
     const value = key in overrides ? overrides[key] : WORKSPACE_SEARCH_LIMITS[key];
     if (
@@ -251,6 +251,7 @@ class Search implements WorkspaceSearch {
     if (this.active) return new Refused(pressure("query"));
     this.active = "opening";
     try {
+      if (signal?.aborted) return new Refused({ kind: "cancelled" });
       const pattern = compile(query, this.limits);
       if (this.stopped) return new Refused({ kind: "stopped" });
       if (!("query" in pattern)) return new Refused(pattern);
