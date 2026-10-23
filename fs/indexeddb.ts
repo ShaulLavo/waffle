@@ -15,6 +15,7 @@ import {
   type ChunkManifest,
   type IndexedDBRange,
 } from "./indexeddb-chunks.js";
+import { snapshotPublicationCheckpoint } from "./publication.js";
 import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -25,12 +26,12 @@ import {
   type ReaderMetadataBudget,
   decodeRecord,
   snapshotBatch,
-  decodeSnapshot,
   encodeRecord,
-  encodeSnapshot,
   validatePersistedIndex,
   validatePersistedNode,
   validInteger,
+  type ChecksummedRecord,
+  type CheckpointPublication,
   type PersistenceBatch,
   type PersistedIndex,
   type PersistedNode,
@@ -195,8 +196,10 @@ interface Journal {
   root: number;
   upserts: PersistedNode[];
   removes: number[];
+  publication?: CheckpointPublication;
 }
 interface TreeState {
+  publication?: CheckpointPublication;
   generation: number;
   root: number;
   nodes: Map<number, PersistedNode>;
@@ -247,6 +250,56 @@ function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references
       parents.set(ino, node.ino);
     }
   return { references, parents };
+}
+function decodeChangeBytes(value: unknown, bound: number): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length > bound ||
+    !value.every((byte: unknown) => validInteger(byte) && byte <= 255)
+  )
+    metadataError();
+  return Uint8Array.from(value);
+}
+async function encodeSelection(selection: Journal | PersistedIndex): Promise<ChecksummedRecord> {
+  const publication = selection.publication;
+  return encodeRecord({
+    ...selection,
+    publication: publication && {
+      ...publication,
+      changes: publication.changes.map((change) => Array.from(change)),
+    },
+  });
+}
+function decodePublication(value: unknown): CheckpointPublication {
+  if (!value || typeof value !== "object" || !("changes" in value)) metadataError();
+  const checkpoint = snapshotPublicationCheckpoint({ ...value, changes: [] });
+  if (!Array.isArray(value.changes) || value.changes.length > checkpoint.limits.logRecords)
+    metadataError();
+  return snapshotPublicationCheckpoint({
+    ...checkpoint,
+    changes: value.changes.map((change: unknown) =>
+      decodeChangeBytes(change, checkpoint.limits.effectBytes),
+    ),
+  });
+}
+async function decodeSelection(value: unknown): Promise<unknown> {
+  const selection = await decodeRecord(value);
+  if (!selection || typeof selection !== "object" || !("publication" in selection))
+    return selection;
+  try {
+    return { ...selection, publication: decodePublication(selection.publication) };
+  } catch {
+    return undefined;
+  }
+}
+async function decodeIndex(value: unknown): Promise<PersistedIndex | undefined> {
+  const index = await decodeSelection(value);
+  try {
+    validatePersistedIndex(index);
+    return index;
+  } catch {
+    return undefined;
+  }
 }
 function validateJournal(value: unknown): value is Journal {
   try {
@@ -354,8 +407,7 @@ function stageChanges(
 function applyChanges(
   state: TreeState,
   staged: StagedChanges,
-  generation: number,
-  root: number,
+  selection: Pick<PersistenceBatch, "generation" | "root" | "publication">,
 ): void {
   for (const ino of staged.removes) state.nodes.delete(ino);
   for (const [ino, node] of staged.upserts) state.nodes.set(ino, node);
@@ -367,8 +419,9 @@ function applyChanges(
     if (parent === undefined) state.parents.delete(ino);
     else state.parents.set(ino, parent);
   }
-  state.generation = generation;
-  state.root = root;
+  state.generation = selection.generation;
+  state.root = selection.root;
+  state.publication = selection.publication;
 }
 
 /** Recover newest-first, copying the full tree only for a candidate with a complete chain. */
@@ -399,17 +452,18 @@ export function recoverIndex(
     const tree: TreeState = {
       generation: base.generation,
       root: base.root,
+      publication: base.publication,
       nodes,
       ...referenceIndex(nodes.values()),
     };
     chain.reverse();
     try {
-      for (const entry of chain)
-        applyChanges(tree, stageChanges(tree, entry), entry.generation, entry.root);
+      for (const entry of chain) applyChanges(tree, stageChanges(tree, entry), entry);
       const index: PersistedIndex = {
         version: 1,
         generation: tree.generation,
         root: tree.root,
+        ...(tree.publication ? { publication: tree.publication } : {}),
         nodes: Array.from(nodes.values()),
       };
       validatePersistedIndex(index);
@@ -839,6 +893,7 @@ export class IndexedDBStorage implements StorageBackend {
       version: 1,
       generation: state.generation,
       root: state.root,
+      ...(state.publication ? { publication: state.publication } : {}),
       nodes: Array.from(state.nodes.values()),
     };
   }
@@ -890,7 +945,7 @@ export class IndexedDBStorage implements StorageBackend {
     const physical =
       format === INDEXEDDB_FORMAT ? await this.validateChunks(dataKeys, signal) : undefined;
     const available = physical ? new Set(physical.keys()) : payloadKeys;
-    const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
+    const decoded = await Promise.all([decodeIndex(first), decodeIndex(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
     for (const slot of [0, 1] as const)
       if (
@@ -902,7 +957,7 @@ export class IndexedDBStorage implements StorageBackend {
     const journals = new Map<number, Journal>();
     await Promise.all(
       journalValues.map(async (value, i) => {
-        const entry = await decodeRecord(value);
+        const entry = await decodeSelection(value);
         if (
           validateJournal(entry) &&
           entry.generation === journalKeys[i] &&
@@ -933,6 +988,7 @@ export class IndexedDBStorage implements StorageBackend {
       this.state = {
         generation: newest.generation,
         root: newest.root,
+        publication: newest.publication,
         nodes,
         ...referenceIndex(nodes.values()),
         bases,
@@ -1095,8 +1151,9 @@ export class IndexedDBStorage implements StorageBackend {
       root: batch.root,
       upserts: batch.upserts,
       removes: batch.removes,
+      publication: batch.publication,
     };
-    const encodedJournal = entry && (await encodeRecord(entry));
+    const encodedJournal = entry && (await encodeSelection(entry));
     let snapshot: PersistedIndex | undefined;
     const bases: State["bases"] = old ? [old.bases[0], old.bases[1]] : [undefined, undefined];
     let slot: 0 | 1 = 0;
@@ -1108,13 +1165,14 @@ export class IndexedDBStorage implements StorageBackend {
         version: 1,
         generation: batch.generation,
         root: batch.root,
+        ...(batch.publication ? { publication: batch.publication } : {}),
         nodes: Array.from(nodes.values()),
       };
       validatePersistedIndex(snapshot);
       slot = !bases[0] ? 0 : !bases[1] ? 1 : bases[0].generation <= bases[1].generation ? 0 : 1;
       bases[slot] = snapshot;
     }
-    const encodedSnapshot = snapshot && (await encodeSnapshot(snapshot));
+    const encodedSnapshot = snapshot && (await encodeSelection(snapshot));
     const expected = new Map<string, number>();
     for (const node of staged.upserts.values())
       if (node.data !== undefined) {
@@ -1245,7 +1303,7 @@ export class IndexedDBStorage implements StorageBackend {
     };
     for (const key of discarded) if (typeof key === "number") state.journals.delete(key);
     state.journalKeys = state.journalKeys.filter((key) => !discarded.has(key));
-    applyChanges(state, staged, batch.generation, batch.root);
+    applyChanges(state, staged, batch);
     state.bases = bases;
     if (entry) {
       state.journals.set(entry.generation, entry);
