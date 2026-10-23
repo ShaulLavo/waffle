@@ -1,4 +1,5 @@
 import type { ReadBacking } from "./workspace-read.js";
+import type { MemoryBudget } from "./memory-budget.js";
 import { DirtyCapacityError, type DirtyLimits } from "./dirty-admission.js";
 import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
@@ -72,8 +73,9 @@ export class PersistentBackend extends MemoryBackend {
     intervalMs = 50,
     checkpointLimits?: Partial<CheckpointLimits>,
     private readonly dirtyLimits: Partial<DirtyLimits> | false = {},
+    startupRoot?: MemoryBudget,
   ) {
-    super(fs, reservation);
+    super(fs, reservation, startupRoot);
     this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
@@ -112,6 +114,7 @@ export class PersistentBackend extends MemoryBackend {
       intervalMs?: number;
       checkpointLimits?: Partial<CheckpointLimits>;
       dirtyLimits?: Partial<DirtyLimits> | false;
+      startupRoot?: MemoryBudget;
     } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
@@ -127,6 +130,7 @@ export class PersistentBackend extends MemoryBackend {
         options.intervalMs,
         options.checkpointLimits,
         options.dirtyLimits,
+        options.startupRoot,
       );
     const nodes = new Map<number, Node>();
     for (const entry of index.nodes)
@@ -171,6 +175,7 @@ export class PersistentBackend extends MemoryBackend {
       0,
       options.checkpointLimits,
       options.dirtyLimits,
+      options.startupRoot,
     );
     try {
       if (!index.nodes[0]?.identity) {

@@ -1,3 +1,4 @@
+import type { MemoryBudget } from "../fs/memory-budget.js";
 import { MemoryBackend, PersistentBackend, IndexedDBStorage, OpfsStorage } from "../fs/index.js";
 import type { StorageBackend } from "../fs/storage.js";
 import type { RuntimeStartupObserver } from "../fs/startup.js";
@@ -8,6 +9,7 @@ export interface FilesystemBackendOptions {
   readonly whenBusy?: "wait" | "takeover";
   readonly name?: string;
   readonly implementation?: "indexeddb" | "opfs-memory" | "memory";
+  readonly startupRoot?: MemoryBudget;
 }
 export interface FilesystemBackendLifecycle {
   readonly retainOpeningDebt?: (debt: Promise<void>) => void;
@@ -24,7 +26,8 @@ export async function openFilesystemBackend(
 ): Promise<MemoryBackend | PersistentBackend> {
   const { descriptor, whenBusy } = resolveVfs(options, options.implementation);
   requireVfsCapabilities(descriptor.implementation);
-  if (descriptor.implementation === "memory") return new MemoryBackend();
+  if (descriptor.implementation === "memory")
+    return new MemoryBackend(undefined, undefined, options.startupRoot);
   let backend: PersistentBackend | undefined = undefined;
   let ownershipLost = false;
   const storage =
@@ -40,7 +43,7 @@ export async function openFilesystemBackend(
           },
         });
   lifecycle.retainStorage(storage);
-  backend = await PersistentBackend.open(storage);
+  backend = await PersistentBackend.open(storage, { startupRoot: options.startupRoot });
   if (ownershipLost) {
     backend.dispose();
     throw new Error("Filesystem ownership was lost during recovery");
