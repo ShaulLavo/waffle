@@ -57,7 +57,47 @@ test("a clean app can install Waffle from a local Git commit and import every No
     const specifiers = Object.entries(metadata.exports)
       .filter(([, target]) => target.node !== undefined)
       .map(([key]) => (key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`));
-    const script = `for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);`;
+    const script = `
+      import assert from 'node:assert/strict';
+      for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);
+      const { createRuntime } = await import('waffle');
+      assert.equal(typeof createRuntime, 'function');
+      const api = await import('waffle/fs');
+      const pair = api.createFilesystemConnection(undefined, { workspace: true });
+      const service = new api.FilesystemService(new api.MemoryBackend());
+      service.connect(pair.server);
+      const client = new api.FilesystemClient(pair.client);
+      const workspace = api.createWorkspaceVfs(client);
+      try {
+        await client.asyncCall('writeFile', ['/installed'], new Uint8Array([1]));
+        const cursor = workspace.snapshot({ prefix: '/installed', includeDirs: false });
+        let cut;
+        let identity;
+        for (;;) {
+          const page = await cursor.next();
+          if (page.kind === 'complete') { cut = page.cut; break; }
+          assert.equal(page.kind, 'entries');
+          for (const entry of page.entries) {
+            assert.equal(entry.path, '/installed');
+            assert.equal(typeof entry.id, 'bigint');
+            assert.equal(typeof entry.version, 'bigint');
+            identity = entry.id;
+          }
+        }
+        await cursor.close();
+        assert.equal(typeof cut.generation, 'bigint');
+        assert.equal(typeof cut.watermark.seq, 'bigint');
+        await client.asyncCall('writeFile', ['/installed'], new Uint8Array([2]));
+        const page = await workspace.changes(cut.watermark);
+        assert.equal(page.kind, 'changes');
+        assert.equal(page.batches.length, 1);
+        assert(page.batches[0].changes.some(change => change.kind === 'write' && change.id === identity && change.paths[0] === '/installed'));
+      } finally {
+        await workspace.close();
+        client.dispose();
+        service.dispose();
+      }
+    `;
     expect(() =>
       execFileSync("node", ["--input-type=module", "--eval", script], {
         cwd: app,

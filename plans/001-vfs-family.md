@@ -88,6 +88,12 @@ Status: **Approved** · Owner direction: 2026-10-18. Evidence decision: 2026-10-
 | **DERIVED [C §§2.5–2.6]** | Live search, `validateIndex({ generation, watermark })`                                                | Bound producer/consumer queues, support cancellation, generation/watermark and stale-result retraction. Gap forces termination/resync. Validation returns valid/stale/gap with persisted format/schema identity.                                                                        |
 | **DERIVED [C §2, O]**     | Shared byte views and flush                                                                            | Pin/lease zero-copy views; copy when retained beyond lease. Future flush may return generation/watermark without inventing public transact. Preserve current `flush(path)` until the matching implementation/caller changes together.                                                   |
 
+Public namespace snapshot/change implementation is documented in
+[WorkspaceVfs snapshot and changes](../docs/workspace-vfs.md). It exposes the
+completed-cut handoff and bounded historical projection through the installed
+package and root runtime. This delivery does not complete the remaining §4 APIs
+or certify the full-plan workloads and durability guarantees.
+
 ## 5. Coherent multiple writers and coordinator lifecycle
 
 - **DERIVED [O, C §3.4, B §ordering]** — Several tabs/workers may write the same workspace with correct ordering/coherent reads. One commit coordinator is allowed; physical overlapping writes are not required. Coordinator topology is an experiment decision, not a product guarantee or mandatory unsafe-handle mode.

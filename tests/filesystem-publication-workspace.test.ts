@@ -8,6 +8,7 @@ import {
   FilesystemService,
   MemoryBackend,
   createFilesystemConnection,
+  createWorkspaceVfs,
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
 import {
@@ -1121,3 +1122,32 @@ for (const operation of ["stat", "missing-operation"]) {
     }
   });
 }
+
+test("public snapshot/change projection includes resident namespace authority writes", async () => {
+  const f = await fixture();
+  const workspace = createWorkspaceVfs(f.root);
+  try {
+    const cursor = workspace.snapshot();
+    let page = await cursor.next();
+    while (page.kind === "entries") page = await cursor.next();
+    if (page.kind !== "complete") throw new Error(`unexpected snapshot ${page.kind}`);
+    const id = await f.channel.call("workspaceNext", { token: f.session.token });
+    const result = await call(f, "writeFile", ["/dir/resident"], new Uint8Array([17]), id);
+    await f.root.asyncCall("move", ["/dir/resident", "/dir/later"]);
+    const changes = await workspace.changes(page.cut.watermark);
+    if (changes.kind !== "changes") throw new Error(`unexpected changes ${changes.kind}`);
+    expect(changes.batches).toHaveLength(2);
+    expect(changes.batches[0]?.transaction.sequence).toBe(
+      record(record(result.receipt).id).sequence,
+    );
+    expect(changes.batches[0]?.changes).toContainEqual(
+      expect.objectContaining({ kind: "write", paths: ["/dir/resident"], size: 1 }),
+    );
+    expect(changes.batches[1]?.changes).toContainEqual(
+      expect.objectContaining({ kind: "entry", beforePath: "/dir/resident", afterPath: null }),
+    );
+  } finally {
+    await workspace.close();
+    await f.stop();
+  }
+});

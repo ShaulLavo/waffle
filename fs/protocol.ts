@@ -1,3 +1,4 @@
+import { workspacePublication, type WorkspaceConfiguration } from "./workspace-protocol.js";
 import {
   BigIntConstructor,
   bigintToString,
@@ -95,7 +96,7 @@ export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
 export function createFilesystemIdentity(
   parent?: FilesystemIdentity,
   maxBytes = DEFAULT_SHARED_MAX_BYTES,
-  publication?: PublicationConfiguration,
+  publication?: PublicationConfiguration | WorkspaceConfiguration,
 ): FilesystemIdentity {
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
   const shared = parent?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
@@ -118,12 +119,13 @@ export function createFilesystemIdentity(
   if (parent?.publication)
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
-    const buffers = createPublicationBuffers(publication.limits);
+    const configuration = "workspace" in publication ? workspacePublication : publication;
+    const buffers = createPublicationBuffers(configuration.limits);
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,
       session,
-      ...(publication.observe ? { observer: crypto.randomUUID() } : {}),
+      ...(configuration.observe ? { observer: crypto.randomUUID() } : {}),
     };
   }
   return {
@@ -178,7 +180,7 @@ export function connectFilesystemIdentity(identity: FilesystemIdentity) {
 }
 export function createFilesystemConnection(
   parent?: FilesystemIdentity,
-  publication?: PublicationConfiguration,
+  publication?: PublicationConfiguration | WorkspaceConfiguration,
 ) {
   return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
 }
