@@ -1,3 +1,33 @@
+import {
+  RIGHTS_ALL,
+  RIGHT_FD_DATASYNC,
+  RIGHT_FD_READ,
+  RIGHT_FD_SEEK,
+  RIGHT_FD_FDSTAT_SET_FLAGS,
+  RIGHT_FD_SYNC,
+  RIGHT_FD_TELL,
+  RIGHT_FD_WRITE,
+  RIGHT_FD_ADVISE,
+  RIGHT_FD_ALLOCATE,
+  RIGHT_PATH_CREATE_DIRECTORY,
+  RIGHT_PATH_CREATE_FILE,
+  RIGHT_PATH_LINK_SOURCE,
+  RIGHT_PATH_LINK_TARGET,
+  RIGHT_PATH_OPEN,
+  RIGHT_FD_READDIR,
+  RIGHT_PATH_READLINK,
+  RIGHT_PATH_RENAME_SOURCE,
+  RIGHT_PATH_RENAME_TARGET,
+  RIGHT_PATH_FILESTAT_GET,
+  RIGHT_PATH_FILESTAT_SET_SIZE,
+  RIGHT_PATH_FILESTAT_SET_TIMES,
+  RIGHT_FD_FILESTAT_GET,
+  RIGHT_FD_FILESTAT_SET_SIZE,
+  RIGHT_FD_FILESTAT_SET_TIMES,
+  RIGHT_PATH_REMOVE_DIRECTORY,
+  RIGHT_PATH_UNLINK_FILE,
+  RIGHT_POLL_FD_READWRITE,
+} from "./rights.js";
 import { resolveDescriptorPath, reopenDescriptor, openInode } from "./fd-reopen.js";
 import { ExecutionUnwind } from "./unwind.js";
 import { type ControlCells, controlLoad, controlWait } from "../proc/control.js";
@@ -41,34 +71,6 @@ const O_EXCL = 4;
 const O_TRUNC = 8;
 const FDFLAG_APPEND = 1;
 
-const RIGHTS_ALL = (1n << 29n) - 1n;
-const RIGHT_FD_DATASYNC = 1n << 0n;
-const RIGHT_FD_READ = 1n << 1n;
-const RIGHT_FD_SEEK = 1n << 2n;
-const RIGHT_FD_FDSTAT_SET_FLAGS = 1n << 3n;
-const RIGHT_FD_SYNC = 1n << 4n;
-const RIGHT_FD_TELL = 1n << 5n;
-const RIGHT_FD_WRITE = 1n << 6n;
-const RIGHT_FD_ADVISE = 1n << 7n;
-const RIGHT_FD_ALLOCATE = 1n << 8n;
-const RIGHT_PATH_CREATE_DIRECTORY = 1n << 9n;
-const RIGHT_PATH_CREATE_FILE = 1n << 10n;
-const RIGHT_PATH_LINK_SOURCE = 1n << 11n;
-const RIGHT_PATH_LINK_TARGET = 1n << 12n;
-const RIGHT_PATH_OPEN = 1n << 13n;
-const RIGHT_FD_READDIR = 1n << 14n;
-const RIGHT_PATH_READLINK = 1n << 15n;
-const RIGHT_PATH_RENAME_SOURCE = 1n << 16n;
-const RIGHT_PATH_RENAME_TARGET = 1n << 17n;
-const RIGHT_PATH_FILESTAT_GET = 1n << 18n;
-const RIGHT_PATH_FILESTAT_SET_SIZE = 1n << 19n;
-const RIGHT_PATH_FILESTAT_SET_TIMES = 1n << 20n;
-const RIGHT_FD_FILESTAT_GET = 1n << 21n;
-const RIGHT_FD_FILESTAT_SET_SIZE = 1n << 22n;
-const RIGHT_FD_FILESTAT_SET_TIMES = 1n << 23n;
-const RIGHT_PATH_REMOVE_DIRECTORY = 1n << 25n;
-const RIGHT_PATH_UNLINK_FILE = 1n << 26n;
-const RIGHT_POLL_FD_READWRITE = 1n << 27n;
 // wasi-libc's isatty(): character device without seek/tell rights.
 const RIGHTS_TTY = RIGHTS_ALL & ~(RIGHT_FD_SEEK | RIGHT_FD_TELL);
 

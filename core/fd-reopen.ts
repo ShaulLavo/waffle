@@ -1,11 +1,12 @@
+import {
+  RIGHT_FD_READ as READ,
+  RIGHT_FD_WRITE as WRITE,
+  RIGHT_PATH_OPEN as PATH_OPEN,
+  RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
+} from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
 import type { FileSystem, FileStat } from "./filesystem.js";
 import { normalize } from "./path.js";
-
-const READ = 1n << 1n;
-const WRITE = 1n << 6n;
-const PATH_OPEN = 1n << 13n;
-const PATH_RESIZE = 1n << 19n;
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
 export function reopenDescriptor(
