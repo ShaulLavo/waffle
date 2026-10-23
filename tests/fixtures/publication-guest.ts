@@ -1,3 +1,4 @@
+import { nextReservation } from "../../fs/file-identity";
 import {
   FilesystemClient,
   FilesystemService,
@@ -175,6 +176,9 @@ async function installService(request: ServiceSetup): Promise<void> {
     });
     backend = await PersistentBackend.open(
       {
+        async reserveIdentity() {
+          return nextReservation(undefined);
+        },
         async load() {
           return {
             version: 1,

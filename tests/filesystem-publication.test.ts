@@ -1,3 +1,4 @@
+import { nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -836,6 +837,9 @@ async function coldPublicationFixture() {
     hydrations = 0;
   const backend = await PersistentBackend.open(
     {
+      async reserveIdentity() {
+        return nextReservation(undefined);
+      },
       async load() {
         return {
           version: 1,

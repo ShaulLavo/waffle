@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, spyOn, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
 import type { PersistedIndex, PersistenceBatch, StorageBackend } from "../fs/storage";
@@ -16,6 +17,12 @@ class Gate {
 
 // StorageBackend stand-in only. PersistentBackend and its MemoryBackend operations are real.
 class ControlledStorage implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index?: PersistedIndex;
   readonly payloads = new Map<string, Uint8Array>();
   readonly events: string[] = [];

@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type IdentityReservation } from "./file-identity.js";
 import {
   CHUNK_SIZE,
   chunkChecksum,
@@ -613,6 +614,37 @@ export class IndexedDBStorage implements StorageBackend {
     });
   }
 
+  reserveIdentity(workspace?: string): Promise<IdentityReservation> {
+    return this.enqueue(() => this.reserveCurrentIdentity(workspace));
+  }
+  private async reserveCurrentIdentity(workspace?: string): Promise<IdentityReservation> {
+    await this.initialize();
+    const observed: { value?: IdentityReservation; failure?: unknown } = {};
+    await this.fencedWrite((_data, metadata) => {
+      this.readIdentityReservation(metadata, workspace, observed);
+    }).catch((error) => {
+      throw observed.failure ?? error;
+    });
+    if (!observed.value) throw new Error("Missing filesystem identity reservation");
+    return observed.value;
+  }
+  private readIdentityReservation(
+    metadata: IDBObjectStore,
+    workspace: string | undefined,
+    observed: { value?: IdentityReservation; failure?: unknown },
+  ): void {
+    const previous = metadata.get("identity");
+    previous.onsuccess = () => {
+      try {
+        observed.value = nextReservation(previous.result, workspace);
+        metadata.put(storeReservation(observed.value), "identity");
+      } catch (error) {
+        observed.failure = error;
+        metadata.transaction.abort();
+      }
+    };
+  }
+
   read(key: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
       await this.initialize();
@@ -771,7 +803,13 @@ export class IndexedDBStorage implements StorageBackend {
       );
     if (
       metadataKeys.some(
-        (key) => key !== 0 && key !== 1 && key !== "epoch" && key !== "active" && key !== "format",
+        (key) =>
+          key !== 0 &&
+          key !== 1 &&
+          key !== "epoch" &&
+          key !== "active" &&
+          key !== "format" &&
+          key !== "identity",
       )
     )
       throw new VfsError(
@@ -812,7 +850,7 @@ export class IndexedDBStorage implements StorageBackend {
     const newest = recoverIndex(bases, journals, available);
     if (
       !newest &&
-      (metadataKeys.length - Number(formatPresent) > 1 ||
+      (metadataKeys.filter((key) => key !== "format" && key !== "identity").length > 1 ||
         journalKeys.length > 0 ||
         dataKeys.length > 0)
     ) {

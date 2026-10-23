@@ -1,3 +1,9 @@
+import {
+  nextReservation,
+  storeReservation,
+  type IdentityReservation,
+  type StoredReservation,
+} from "./file-identity.js";
 import { OPFS_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -138,6 +144,7 @@ export class OpfsStorage implements StorageBackend {
   private peakHandles = 0;
   private garbage = new Set<string>();
   private needsOrphanSweep = true;
+  private identityMarkers: { name: string; value: StoredReservation }[] = [];
 
   private constructor(
     private data: Directory,
@@ -279,6 +286,56 @@ export class OpfsStorage implements StorageBackend {
       await this.initialize();
       return this.snapshots[0] && structuredClone(this.snapshots[0].index);
     });
+  }
+  reserveIdentity(workspace?: string): Promise<IdentityReservation> {
+    return this.enqueue(async () => {
+      await this.initialize();
+      this.identityMarkers.sort((a, b) => {
+        const left = BigInt(`0x${a.value.era}`),
+          right = BigInt(`0x${b.value.era}`);
+        return left === right ? 0 : left > right ? -1 : 1;
+      });
+      const latest = this.identityMarkers[0];
+      const reservation = nextReservation(latest?.value, workspace);
+      if (latest) await this.normalizeIdentityMarkers(latest.name);
+      const value = storeReservation(reservation);
+      const name = `identity-${value.workspace}-${value.era}`;
+      // An ambiguous create/open/flush remains a consumed reservation on the next scan.
+      this.identityMarkers.unshift({ name, value });
+      await this.write(
+        await this.metadata.getFileHandle(name, { create: true }),
+        new Uint8Array(),
+        true,
+      );
+      await this.normalizeIdentityMarkers(name);
+      return reservation;
+    });
+  }
+  private async normalizeIdentityMarkers(latest: string): Promise<void> {
+    // Re-flush the observed highwater before removing any lower witness. A crash at any
+    // deletion leaves this witness; a failure prevents another marker from being created.
+    await this.write(await this.metadata.getFileHandle(latest), new Uint8Array(), true);
+    for (const marker of this.identityMarkers) {
+      if (marker.name === latest) continue;
+      await this.metadata.removeEntry(marker.name);
+    }
+    this.identityMarkers = this.identityMarkers.filter((marker) => marker.name === latest);
+  }
+  private readIdentityMarker(name: string, kind: string): boolean {
+    if (!name.startsWith("identity-")) return false;
+    const match = /^identity-([0-9a-f-]{36})-([1-9a-f][0-9a-f]{0,15})$/.exec(name);
+    if (!match || kind !== "file") throw new Error("Invalid OPFS identity reservation marker");
+    const value: StoredReservation = {
+      format: "waffle-identity-reservation-v1",
+      workspace: match[1]!,
+      era: match[2]!,
+    };
+    // Validation must also accept the final era, which cannot be renewed.
+    const validated = nextReservation({ ...value, era: "1" });
+    if (this.identityMarkers.some((marker) => marker.value.workspace !== validated.workspace))
+      throw new Error("Mixed OPFS identity reservation workspaces");
+    this.identityMarkers.push({ name, value });
+    return true;
   }
   read(key: string): Promise<Uint8Array> {
     return this.enqueue(async () => {
@@ -465,11 +522,13 @@ export class OpfsStorage implements StorageBackend {
   }
   private async initialize(): Promise<void> {
     if (this.initialized) return;
+    this.identityMarkers = [];
     let existed = false,
       ordinarySnapshotExisted = false;
     const snapshots: Snapshot[] = [];
     let formatPresent = false;
     for await (const [name, handle] of this.metadata.entries()) {
+      if (this.readIdentityMarker(name, handle.kind)) continue;
       if (isFormatEntry(name, handle.kind)) {
         formatPresent = true;
         continue;

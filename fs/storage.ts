@@ -1,6 +1,12 @@
+import {
+  parseStoredIdentity,
+  type StoredIdentity,
+  type IdentityReservation,
+} from "./file-identity.js";
 import { permissionsFor } from "../core/filesystem.js";
 /** Durable inode metadata. Payload keys are immutable, including across snapshots. */
 export interface PersistedNode {
+  identity?: StoredIdentity;
   ino: number;
   kind: "file" | "dir";
   mtime: number;
@@ -44,6 +50,7 @@ export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
 }
 
 export interface StorageBackend {
+  reserveIdentity(workspace?: string): Promise<IdentityReservation>;
   load(): Promise<PersistedIndex | undefined>;
   read(key: string): Promise<Uint8Array>;
   persist(batch: PersistenceBatch): Promise<void>;
@@ -76,6 +83,7 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
   if (!validInteger(node.ino) || !validInteger(node.size) || !Number.isFinite(node.mtime))
     invalid();
   validateMode(node);
+  if (node.identity !== undefined) parseStoredIdentity(node.identity);
   if (node.kind === "file") {
     if (
       node.children !== undefined ||
@@ -121,6 +129,14 @@ export function validatePersistedIndex(value: unknown): asserts value is Persist
     nodes.set(node.ino, node);
   }
   if (nodes.get(index.root)?.kind !== "dir") invalid();
+  const identity = nodes.get(index.root)?.identity;
+  const ids = new Set<string>();
+  for (const node of nodes.values()) {
+    if (!!node.identity !== !!identity) invalid();
+    if (!node.identity) continue;
+    if (node.identity.workspace !== identity?.workspace || ids.has(node.identity.id)) invalid();
+    ids.add(node.identity.id);
+  }
   const seen = new Set<number>();
   const pending = [index.root];
   while (pending.length) {
