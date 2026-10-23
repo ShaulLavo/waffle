@@ -1,3 +1,5 @@
+import type { MemoryBudget } from "./memory-budget.js";
+import { allocateStartupRoot } from "./root-memory-budget.js";
 import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
 import {
   ReaderPagePressure,
@@ -120,6 +122,7 @@ interface PlannedIdentityRevision {
 }
 /** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
 export class SharedFilesystemState {
+  readonly buffer: SharedArrayBuffer;
   readonly dirtyAdmission: DirtyAdmission;
   readonly identities: IdentityAllocator;
   identityGroup = false;
@@ -142,32 +145,47 @@ export class SharedFilesystemState {
   private readonly pageReaders?: Int32Array;
   onContention?: () => void;
   constructor(
-    readonly buffer: SharedArrayBuffer = SharedFilesystemState.createBuffer(),
+    buffer?: SharedArrayBuffer,
     maxBytes = DEFAULT_SHARED_MAX_BYTES,
     readonly lockOwner = SERVICE_OWNER,
     segments: readonly SharedArrayBuffer[] = [],
     private readonly section?: FilesystemSection,
     publication?: PublicationBuffers,
+    readonly startupMemoryBudget?: MemoryBudget,
   ) {
-    this.dirtyAdmission = new DirtyAdmission(buffer);
-    if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
-    if (publication?.pageReaders) this.pageReaders = new Int32Array(publication.pageReaders);
-    this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
-    this.identities = new IdentityAllocator(new Int32Array(buffer, 16 * 4, 9));
-    if (Atomics.compareExchange(this.cells, 0, 0, MAGIC) === 0) {
-      Atomics.store(this.cells, USED_PAGES, 0);
-      Atomics.store(this.cells, 4, normalizeSharedMaxBytes(maxBytes) / SEGMENT_BYTES);
-    } else
-      while (Atomics.load(this.cells, 0) !== MAGIC) {
+    if (buffer && startupMemoryBudget)
+      throw new TypeError("an imported root cannot use startup allocation admission");
+    const allocation = startupMemoryBudget
+      ? allocateStartupRoot(startupMemoryBudget, BUFFER_SIZE)
+      : undefined;
+    this.buffer = buffer ?? allocation?.buffer ?? SharedFilesystemState.createBuffer();
+    buffer = this.buffer;
+    try {
+      this.dirtyAdmission = new DirtyAdmission(buffer);
+      if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
+      if (publication?.pageReaders) this.pageReaders = new Int32Array(publication.pageReaders);
+      this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
+      this.identities = new IdentityAllocator(new Int32Array(buffer, 16 * 4, 9));
+      const initialized = Atomics.compareExchange(this.cells, 0, 0, MAGIC);
+      if (initialized === 0) {
+        Atomics.store(this.cells, USED_PAGES, 0);
+        Atomics.store(this.cells, 4, normalizeSharedMaxBytes(maxBytes) / SEGMENT_BYTES);
+      }
+      while (initialized !== 0 && Atomics.load(this.cells, 0) !== MAGIC) {
         /* another connection initializes */
       }
-    this.owners = new Int32Array(buffer, PAGE_OWNER_OFFSET * 4, TOTAL_PAGES);
-    this.slots = new Int32Array(buffer, SLOT_OFFSET * 4, MAX_FILES * SLOT_WORDS);
-    this.pageTables = new Int32Array(buffer, PAGE_TABLE_OFFSET * 4, MAX_FILES * MAX_SEGMENTS);
-    this.tableOwners = new Int32Array(buffer, TABLE_OWNER_OFFSET * 4, TABLE_BLOCKS);
-    this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
-    this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
-    this.segments = [buffer].concat(segments);
+      this.owners = new Int32Array(buffer, PAGE_OWNER_OFFSET * 4, TOTAL_PAGES);
+      this.slots = new Int32Array(buffer, SLOT_OFFSET * 4, MAX_FILES * SLOT_WORDS);
+      this.pageTables = new Int32Array(buffer, PAGE_TABLE_OFFSET * 4, MAX_FILES * MAX_SEGMENTS);
+      this.tableOwners = new Int32Array(buffer, TABLE_OWNER_OFFSET * 4, TABLE_BLOCKS);
+      this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
+      this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
+      this.segments = [buffer].concat(segments);
+      allocation?.publish();
+    } catch (error) {
+      allocation?.cancel();
+      throw error;
+    }
   }
   retainVersionPages(handle: FileHandle, offset: number, length: number): SharedPageVersion {
     this.globalLock();
@@ -337,9 +355,18 @@ export class SharedFilesystemState {
     this.slots[this.at(slot, CAPACITY)] = needed;
     this.trimPageTables(slot, needed);
   }
-  static createBuffer(): SharedArrayBuffer {
-    return new SharedArrayBuffer(BUFFER_SIZE);
+  static createBuffer(memoryBudget?: MemoryBudget): SharedArrayBuffer {
+    if (!memoryBudget) return new SharedArrayBuffer(BUFFER_SIZE);
+    const allocation = allocateStartupRoot(memoryBudget, BUFFER_SIZE);
+    try {
+      allocation.publish();
+      return allocation.buffer;
+    } catch (error) {
+      allocation.cancel();
+      throw error;
+    }
   }
+
   addSegment(buffer: SharedArrayBuffer, index = this.segments.length): void {
     if (
       buffer.byteLength < SEGMENT_BYTES ||
