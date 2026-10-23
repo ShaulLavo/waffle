@@ -208,6 +208,50 @@ async function addressCases(server: Guest, client: Guest): Promise<void> {
   );
 }
 
+async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {
+  for (const [bind, target] of [["::1", "127.0.0.1"], ["127.0.0.1", "[::1]"]]) {
+    const listener = number(await server.call({ op: "listen", host: bind, port: 32158 }));
+    check(listener > 0, "HTTP family-refusal listener failed");
+    const fetched = number(await client.call({ op: "fetch", url: `http://${target}:32158/` }));
+    const head = await until(() => client.call({ op: "head", handle: fetched }), (value) => value !== -2);
+    check(head === -1, "Incompatible virtual HTTP did not fail");
+    check(String(await client.call({ op: "error", handle: fetched })).includes("ECONNREFUSED"),
+      "Virtual HTTP refused without its terminal connection error");
+    check((await server.call({ op: "accept", handle: listener })) === -2,
+      "Incompatible virtual HTTP allocated an accepted socket");
+    await client.call({ op: "close", handle: fetched });
+    await server.call({ op: "close", handle: listener });
+  }
+  const listener = number(await server.call({ op: "listen", host: "::", port: 32158 }));
+  check(listener > 0, "HTTP dual-stack listener failed");
+  for (const target of ["127.0.0.1", "[::1]"]) {
+    const fetched = number(await client.call({ op: "fetch", url: `http://${target}:32158/family` }));
+    const accepted = number(await until(
+      () => server.call({ op: "accept", handle: listener }),
+      (value) => typeof value === "number" && value > 0,
+    ));
+    const local = { address: target === "127.0.0.1" ? "::ffff:127.0.0.1" : "::1", family: "IPv6", port: 32158 };
+    check((await server.call({ op: "addr", handle: accepted })) === JSON.stringify(local),
+      "Virtual HTTP lost its accepted local destination family");
+    const peer = JSON.parse(String(await server.call({ op: "peer", handle: accepted })));
+    check(peer.address === local.address && peer.family === local.family && peer.port > 0,
+      "Virtual HTTP lost its accepted peer destination family");
+    check(text(await read(server, accepted)).startsWith("GET /family HTTP/1.1\r\n"),
+      "Virtual HTTP request did not reach the accepted endpoint");
+    const response = bytes("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    check((await server.call({ op: "write", handle: accepted, bytes: response })) === response.length,
+      "Virtual HTTP response write failed");
+    await server.call({ op: "shutdown", handle: accepted });
+    const head = await until(() => client.call({ op: "head", handle: fetched }), (value) => value !== -2);
+    check(JSON.parse(text(head)).status === 200, "Virtual HTTP response head failed");
+    check(text(await read(client, fetched)) === "ok", "Virtual HTTP response body failed");
+    check((await read(client, fetched)) === 0, "Virtual HTTP response did not terminate");
+    await client.call({ op: "close", handle: fetched });
+    await server.call({ op: "close", handle: accepted });
+  }
+  await server.call({ op: "close", handle: listener });
+}
+
 /** Executed in a real browser by network-browser-runner.ts. */
 export async function networkBrowserCases(): Promise<string[]> {
   const runtime = createRuntime({
@@ -238,6 +282,7 @@ export async function networkBrowserCases(): Promise<string[]> {
   try {
     await Promise.all(guests.map((item) => item.ready));
     await addressCases(server, client);
+    await fetchAddressCases(server, client);
     const p = await pair(server, client, 32130);
     check(
       (await client.call({ op: "addr", handle: p.conn })) ===
@@ -352,7 +397,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
-      "IPv6 wildcard, loopback and mapped accepted addresses across real workers",
+      "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",
       "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",
       "throwing listening hook rolls back publication before a healthy worker retry",
       "real worker duplex, peer identity and half-close",

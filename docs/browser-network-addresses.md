@@ -23,7 +23,10 @@ hosts keep their existing per-host pipes and use the same address rules.
 
 Host-side preview connections choose the listener's virtual loopback family.
 These addresses describe the preview bridge, never the physical HTTP visitor's
-IP address. The preview router selects listeners by virtual port.
+IP address. The preview router selects listeners by virtual port. Guest HTTP fetches instead
+retain their URL destination family, including mapped IPv4 accepted endpoints. An
+incompatible destination returns a terminal `ECONNREFUSED` fetch error without
+allocating a connection or falling through to the external fetch transport.
 
 The internal `tcp-connect` request carries the destination host. Connection ring
 records carry both `local` and `peer` addresses. Hosts and helpers must use the

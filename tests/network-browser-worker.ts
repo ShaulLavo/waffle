@@ -11,7 +11,7 @@ export type NetworkCommand =
   | { op: "accept"; handle: number }
   | { op: "read"; handle: number; cap: number }
   | { op: "write"; handle: number; bytes: Uint8Array }
-  | { op: "shutdown" | "close" | "addr" | "peer"; handle: number }
+  | { op: "shutdown" | "close" | "addr" | "peer" | "error"; handle: number }
   | { op: "serve"; listener: number }
   | { op: "dispose" };
 export type NetworkWorkerMessage =
@@ -98,6 +98,8 @@ function execute(host: NetHost, command: NetworkCommand): unknown {
       return host.localAddr(command.handle);
     case "peer":
       return host.peerAddr(command.handle);
+    case "error":
+      return host.error(command.handle);
     case "serve":
       return serve(host, command.listener);
     case "dispose":

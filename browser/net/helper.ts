@@ -26,7 +26,7 @@ import {
   type TcpRequest,
 } from "./protocol.js";
 import { RingWriter } from "./ring.js";
-import { loopbackAddress, tcpAddress } from "./address.js";
+import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
 import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
 export { NetNamespace } from "./namespace.js";
 
@@ -176,6 +176,7 @@ export class NetHelper {
     port: number,
     req: PreviewRequest,
     sink: PreviewSink,
+    host?: string,
   ): PreviewConnection | null {
     const captured = {
       method: req.method,
@@ -214,7 +215,7 @@ export class NetHelper {
       },
       end: () => parser.end(),
       error: (message) => finish.error(message),
-    });
+    }, host);
     if (!connection) return null;
     connection.write(request);
     return connection;
@@ -257,7 +258,7 @@ export class NetHelper {
   }
 
   /** Connects a host-side byte stream to the guest without HTTP response framing. */
-  connect(port: number, sink: ConnectionSink): PreviewConnection | null {
+  connect(port: number, sink: ConnectionSink, host?: string): PreviewConnection | null {
     const captured: ConnectionSink = {
       data: sink.data.bind(sink),
       end: sink.end.bind(sink),
@@ -266,11 +267,15 @@ export class NetHelper {
     const listener = this.listenerFor(port);
     if (!this.live()) return null;
     if (listener === undefined || this.sharedListeners.has(listener))
-      return this.connectNamespace(port, captured);
+      return this.connectNamespace(port, captured, host);
     sink = captured;
     const bind = this.namespace.address(port);
     if (!bind) return null;
-    const local = { ...loopbackAddress(bind), port };
+    const target = host === undefined ? loopbackAddress(bind) : tcpAddress(host);
+    if (!target) return null;
+    const address = acceptedAddress(bind, target);
+    if (!address) return null;
+    const local = { ...address, port };
     const conn = this.nextConn++;
     this.connections.set(conn, sink);
     this.pending.get(listener)?.add(conn);
@@ -293,7 +298,7 @@ export class NetHelper {
     };
   }
 
-  private connectNamespace(port: number, sink: ConnectionSink): PreviewConnection | null {
+  private connectNamespace(port: number, sink: ConnectionSink, host?: string): PreviewConnection | null {
     let socket: LoopbackSocket | undefined = undefined;
     const connected = this.namespace.connect(port, {
       data: (bytes) => {
@@ -309,7 +314,7 @@ export class NetHelper {
           );
       },
       end: () => sink.end(),
-    });
+    }, host);
     if (typeof connected === "number") return null;
     const id = this.nextConn++;
     socket = connected.socket;
@@ -563,7 +568,12 @@ export class NetHelper {
         error: (message) =>
           finish(Kind.Error, json({ name: "TypeError", message } satisfies NetError)),
       },
+      url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname,
     );
+    if (!connection) {
+      void finish(Kind.Error, json({ name: "TypeError", message: `connect ECONNREFUSED ${url.host}` } satisfies NetError));
+      return;
+    }
     // A cancelled fetch owns the other end of this virtual connection, not just its job entry.
     job.controller.signal.addEventListener("abort", () => connection?.close(), { once: true });
   }

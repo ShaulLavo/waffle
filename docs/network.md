@@ -42,11 +42,13 @@ Do not mix standalone and shared hosts inside one runtime's shared network.
 ## Socket contract
 
 - Loopback aliases share one port space. Non-loopback TCP remains unsupported.
-  Virtual addresses use IPv4 loopback, including when callers use an IPv6 alias.
+  Listeners retain their bind family. IPv6-any listeners accept both families and
+  report mapped IPv4 endpoints. See [Browser TCP addresses](browser-network-addresses.md).
 - Bind and connect report conflicts and refused connections synchronously.
   Port zero allocates an unused port from 49152 through 65535.
 - Accepted handles belong to the listener's helper. Their peer address matches
-  the connecting handle's local address. Numeric handles may coincide across hosts.
+  the connecting handle's local address, mapped for an IPv4 connection accepted by
+  an IPv6-any listener. Numeric handles may coincide across hosts.
 - Each TCP receive direction holds at most 1 MiB of unread data. Writes may be
   partial or return `AGAIN`. Reading releases capacity and wakes the writer's ring.
 - Shared HTTP fetches retain socket credit while parsed body bytes wait for the
