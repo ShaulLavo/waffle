@@ -105,6 +105,10 @@ export function fixedWriteSources(chunks: readonly Uint8Array[]): readonly Uint8
   return fixed ?? chunks;
 }
 
+interface PlannedIdentityRevision {
+  readonly identity: FileIdentity;
+  readonly allocation: IdentityAllocator;
+}
 /** Shared metadata and a service-grown pool of prepublished growable SAB data segments. */
 export class SharedFilesystemState {
   readonly identities: IdentityAllocator;
@@ -546,14 +550,32 @@ export class SharedFilesystemState {
     writeIdentityWords(this.slots, this.at(slot, FILE_ID), identity.id);
     writeIdentityWords(this.slots, this.at(slot, FILE_VERSION), identity.version);
   }
-  private prepareIdentityVersion(slot: number, changed: boolean): FileVersion | undefined {
+  private prepareIdentityVersion(
+    slot: number,
+    changed: boolean,
+  ): PlannedIdentityRevision | undefined {
     if (!changed || this.identityGroup || !this.identities.active) return undefined;
-    if (readIdentityWords(this.slots, this.at(slot, FILE_ID)) === 0n)
-      throw new FilesystemError(29, "missing shared file identity");
-    return this.identities.versions(1)[0];
+    const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));
+    if (id === 0n) throw new FilesystemError(29, "missing shared file identity");
+    const allocation = this.identities.stage();
+    return { allocation, identity: { id: id as FileId, version: allocation.versions(1)[0]! } };
   }
-  private commitIdentityVersion(slot: number, version: FileVersion | undefined): void {
-    if (version !== undefined) writeIdentityWords(this.slots, this.at(slot, FILE_VERSION), version);
+  private commitIdentityVersion(slot: number, revision: PlannedIdentityRevision | undefined): void {
+    if (!revision) return;
+    this.identities.copyFrom(revision.allocation);
+    this.installIdentity(slot, revision.identity);
+  }
+  private publicationFile(slot: number, revision: PlannedIdentityRevision | undefined) {
+    const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));
+    if (id === 0n) throw new FilesystemError(29, "missing shared file identity");
+    return {
+      birthHistory: this.publication!.buffers.history,
+      ino: this.slots[this.at(slot, INO)]!,
+      id: id as FileId,
+      version:
+        revision?.identity.version ??
+        (readIdentityWords(this.slots, this.at(slot, FILE_VERSION)) as FileVersion),
+    };
   }
   /** Install persisted bytes without changing the file's metadata or dirty revision. */
   hydrate(handle: FileHandle, data: Uint8Array): void {
@@ -1041,6 +1063,7 @@ export class SharedFilesystemState {
           end,
           size,
           mtime,
+          identity,
           admission,
         );
         this.commitDirectBytes(
@@ -1070,7 +1093,7 @@ export class SharedFilesystemState {
     size: number,
     mtime: number,
     publication?: PreparedPublication,
-    identity?: FileVersion,
+    identity?: PlannedIdentityRevision,
   ): void {
     const base = slot * SLOT_WORDS;
     try {
@@ -1095,6 +1118,7 @@ export class SharedFilesystemState {
     end: number,
     oldSize: number,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission?: PublicationAdmission,
   ): { publication: PreparedPublication; bytes: Uint8Array } | undefined {
     const domain = this.publication;
@@ -1115,10 +1139,7 @@ export class SharedFilesystemState {
         : { kind: "write", handle: this.slots[slot * SLOT_WORDS + HANDLE]! - 1, offset: at },
       bytes,
     );
-    const file = {
-      birthHistory: domain.buffers.history,
-      ino: this.slots[slot * SLOT_WORDS + INO]!,
-    };
+    const file = this.publicationFile(slot, identity);
     const publication = domain.prepare(
       admission,
       append
@@ -1329,7 +1350,7 @@ export class SharedFilesystemState {
         next !== old || mtime !== this.getMtime(slot),
       );
       const publication = admission
-        ? this.prepareResize(slot, handle, size, truncate, next, mtime, admission)
+        ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
         : undefined;
       if (resident && truncate && size < old) {
         let position = size;
@@ -1358,11 +1379,12 @@ export class SharedFilesystemState {
     truncate: boolean,
     next: number,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
     const domain = this.publication!;
     domain.verifyAdmission(admission, { kind: "resize", handle, size, truncate }, new Uint8Array());
-    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const file = this.publicationFile(slot, identity);
     const changes: import("./publication.js").PublicationEffect[] = [];
     if (next !== this.slots[this.at(slot, FILE_SIZE)])
       changes.push({
@@ -1379,11 +1401,12 @@ export class SharedFilesystemState {
     slot: number,
     handle: FileHandle,
     mtime: number,
+    identity: PlannedIdentityRevision | undefined,
     admission: PublicationAdmission,
   ): PreparedPublication {
     const domain = this.publication!;
     domain.verifyAdmission(admission, { kind: "setMtime", handle, mtime }, new Uint8Array());
-    const file = { birthHistory: domain.buffers.history, ino: this.slots[this.at(slot, INO)]! };
+    const file = this.publicationFile(slot, identity);
     const changes: import("./publication.js").PublicationEffect[] =
       mtime === this.getMtime(slot)
         ? []
@@ -1423,7 +1446,9 @@ export class SharedFilesystemState {
       if (this.slots[this.at(slot, HANDLE)] !== handle + 1) throw new FilesystemError(8);
       this.checkAccess(slot, 2);
       const identity = this.prepareIdentityVersion(slot, mtime !== this.getMtime(slot));
-      const publication = admission ? this.prepareMtime(slot, handle, mtime, admission) : undefined;
+      const publication = admission
+        ? this.prepareMtime(slot, handle, mtime, identity, admission)
+        : undefined;
       this.setTimestamp(slot, mtime);
       this.changed(slot);
       this.commitIdentityVersion(slot, identity);

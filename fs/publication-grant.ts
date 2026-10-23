@@ -19,7 +19,7 @@ import {
   decodeEffects,
   encodeEffects,
   type ChangePage,
-  type FileKey,
+  type PublicationFile,
   type MutationId,
   type MutationIntent,
   type PublicationAdmission,
@@ -49,7 +49,7 @@ interface GrantBase {
   readonly key: string;
   readonly handle: number;
   readonly session: ResidentSession;
-  readonly file: FileKey;
+  readonly file: PublicationFile;
   readonly stat: FileStat;
   readonly cut: PublicationCut;
   readonly offset: number;
@@ -446,7 +446,11 @@ export class ResidentGrantAuthority {
       handle,
       key: crypto.randomUUID(),
       session: owner.value,
-      file: { birthHistory: this.domain.buffers.history, ino: stat.ino },
+      file: {
+        birthHistory: this.domain.buffers.history,
+        ino: stat.ino,
+        ...this.backend.identity(handle),
+      },
       stat,
       cut: this.domain.cut(),
       offset,
@@ -485,6 +489,12 @@ export class ResidentGrantAuthority {
     try {
       const grant: Extract<ResidentGrant, { kind: "write" | "append" }> = {
         ...base,
+        file: {
+          ...base.file,
+          version: base.maxBytes
+            ? this.backend.shared.identities.stage().versions(1)[0]!
+            : base.file.version,
+        },
         kind,
         id,
         version: this.domain.nextContentVersion(base.file.ino),
@@ -583,20 +593,27 @@ export class ResidentGrantAuthority {
       throw new FilesystemError(29);
     }
     this.domain.finishResidentInput(admission, bytes);
-    const prepared = this.domain.prepare(admission, expected.receipt.result, expected.changes);
+    const staged = this.backend.planPublication(
+      grant.kind === "append"
+        ? { kind: "append", handle: grant.handle }
+        : { kind: "write", handle: grant.handle, offset: grant.offset },
+      bytes,
+    );
     const plan: LocalMutationPlan = {
-      action: typedArrayLength(bytes)
-        ? {
-            kind: "write",
-            handle: grant.handle,
-            offset: grant.offset,
-            data: bytes,
-            mtime,
-          }
-        : { kind: "none" },
-      result: expected.receipt.result,
-      changes: expected.changes,
+      ...staged,
+      action: staged.action.kind === "write" ? { ...staged.action, mtime } : staged.action,
+      changes: staged.changes.map((effect) =>
+        effect.kind === "metadata" ? { ...effect, mtime } : effect,
+      ),
     };
+    if (
+      !sameBytes(
+        canonical({ receipt: expected.receipt, changes: plan.changes }, grant.effectBytes),
+        canonical(expected, grant.effectBytes),
+      )
+    )
+      throw new FilesystemError(29, "resident identity changed before import");
+    const prepared = this.domain.prepare(admission, plan.result, plan.changes);
     try {
       this.backend.applyPublication(plan);
       return { kind: "committed", receipt: this.domain.commit(prepared) };

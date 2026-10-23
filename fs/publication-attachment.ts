@@ -1,3 +1,4 @@
+import { parseFileIdentity } from "./file-identity.js";
 import {
   Int32ArrayConstructor,
   SharedArrayBufferConstructor,
@@ -106,7 +107,14 @@ export function residentGrant(value: unknown): ResidentGrant {
     handle: integer(data.handle),
     key: text(data.key),
     session: residentSession(data.session),
-    file: { birthHistory: text(file.birthHistory), ino: integer(file.ino) },
+    file: {
+      birthHistory: text(file.birthHistory),
+      ino: integer(file.ino),
+      ...parseFileIdentity({
+        id: typeof file.id === "bigint" ? file.id.toString(16) : undefined,
+        version: typeof file.version === "bigint" ? file.version.toString(16) : undefined,
+      }),
+    },
     stat: {
       kind: "file" as const,
       ino: integer(stat.ino),
