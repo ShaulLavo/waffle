@@ -8,6 +8,7 @@ import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { getVfsDescriptor, VfsError } from "../fs/vfs.js";
 import {
   StagedCommitDriver,
+  StagingCapacity,
   STAGED_FORMAT,
   decodeCommit,
   encodeCommit,
