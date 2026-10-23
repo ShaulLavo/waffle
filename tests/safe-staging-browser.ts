@@ -433,6 +433,13 @@ async function requiredHead(name: string, open: () => Promise<CommittedStorage>)
   await storage.close();
   const before = await readRaw(name, "metadata", "commit");
   await change(name, "metadata", 1, { json: "corrupt", checksum: "bad" });
+  const exact = await open();
+  assert(
+    (await exact.recoverCommitted()).index?.generation === 2,
+    "journal can reconstruct exact required head",
+  );
+  await exact.close();
+  await change(name, "journal", 2, { json: "corrupt", checksum: "bad" });
   await formatFailure(open());
   const after = await readRaw(name, "metadata", "commit");
   assert(
@@ -580,6 +587,7 @@ async function splitReceiptMutant(name: string): Promise<void> {
   }
   assert(caught, "real split-transaction mutant must fail the atomic receipt assertion");
   await change(name, "metadata", 1, { json: "corrupt", checksum: "bad" });
+  await change(name, "journal", 2, { json: "corrupt", checksum: "bad" });
   const recovered = await IndexedDBStorage.open(name);
   try {
     assert(
@@ -627,6 +635,7 @@ export async function safeStagingNative(): Promise<string[]> {
   for (const [name, run] of Object.entries(cases)) {
     await fixture(run);
     passed.push(name);
+    console.log(`staged control passed: ${name}`);
   }
   return passed;
 }

@@ -14,6 +14,7 @@ export async function runSafeStagingNative(engine: string): Promise<void> {
     );
     const browser = await lifecycle.launch(engine as keyof typeof engines);
     const page = await browser.newPage();
+    page.on("console", (message) => console.log(message.text()));
     await page.goto(origin);
     const passed = await page.evaluate(async () => {
       const path = "/test.js";

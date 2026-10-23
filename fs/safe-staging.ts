@@ -21,9 +21,9 @@ export const STAGING_LIMITS = {
   clients: 64,
   receipts: 1024,
 };
-export type CommitSequence = bigint & { readonly __brand: "CommitSequence" };
-export type ClientToken = bigint & { readonly __brand: "ClientToken" };
-export type RequestSequence = bigint & { readonly __brand: "RequestSequence" };
+type CommitSequence = bigint & { readonly __brand: "CommitSequence" };
+type ClientToken = bigint & { readonly __brand: "ClientToken" };
+type RequestSequence = bigint & { readonly __brand: "RequestSequence" };
 export interface OperationKey {
   readonly client: ClientToken;
   readonly sequence: RequestSequence;
@@ -32,7 +32,7 @@ export interface RequestFingerprint {
   readonly digest: string;
   readonly length: number;
 }
-export interface StoredCommitHead {
+interface StoredCommitHead {
   readonly protocol: typeof PROTOCOL;
   readonly workspace: string;
   readonly epoch: number;
@@ -40,11 +40,11 @@ export interface StoredCommitHead {
   readonly generation: number;
   readonly root: number;
 }
-export interface DurablePayloadRoot {
+interface DurablePayloadRoot {
   readonly key: string;
   readonly size: number;
 }
-export type StableResult =
+type StableResult =
   | { readonly kind: "value"; readonly value: number | boolean | null }
   | { readonly kind: "append"; readonly written: number; readonly offset: number }
   | { readonly kind: "file"; readonly identity: StoredIdentity }
@@ -286,7 +286,7 @@ export async function decodeCommit(encoded: unknown): Promise<CommitEnvelope> {
   if (wire(envelope) !== encoded.json) invalidCommit();
   return envelope;
 }
-export function sameHead(left: StoredCommitHead, right: StoredCommitHead): boolean {
+function sameHead(left: StoredCommitHead, right: StoredCommitHead): boolean {
   return wire(left) === wire(right);
 }
 export function sameRecord(value: unknown, expected: ChecksummedRecord): boolean {
@@ -425,7 +425,7 @@ function evictReceipts(
     count--;
   }
 }
-export function validateAdmission(
+function validateAdmission(
   envelope: CommitEnvelope,
   key: OperationKey,
   request: RequestFingerprint,
@@ -509,7 +509,7 @@ export class NativeCommitControl implements NativeCommit {
   }
 }
 
-export interface StageCharge {
+interface StageCharge {
   readonly inputBytes: number;
   readonly payloadBytes: number;
   readonly metadataBytes: number;
