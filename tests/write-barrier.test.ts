@@ -184,9 +184,11 @@ for (const published of [false, true]) {
             ["removePath", [{ node: handle, name: "shared" }, false]],
           ];
           for (const [operation, args] of calls) {
-            await expect(client.asyncCall(operation, args, source)).rejects.toMatchObject({
-              errno: 6,
-            });
+            const outcome = await client.asyncCall(operation, args, source).then(
+              (value) => ({ value }),
+              (error: unknown) => ({ error }),
+            );
+            expect(outcome).toMatchObject({ error: { errno: 6 } });
             expect(() => backend.execute(operation, args, source)).toThrow();
           }
           source.fill(90);
