@@ -433,7 +433,7 @@ export class SharedFilesystem {
     }
     return this.disposal;
   }
-  /** Revoke synchronously. Ready ordinary storage retains its original owner until the
+  /** Revoke synchronously. Ready joined storage retains its original owner until the
    * service ACK and root section fence. Startup cancellation still awaits its abort ACK. */
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;

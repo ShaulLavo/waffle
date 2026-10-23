@@ -111,14 +111,14 @@ test("publication refusal rolls back growth and COW reservations before any effe
     const before = value.backend.shared.resources().usedBytes;
     const stat = value.backend.shared.stat(value.handle), identity = value.backend.identity(value.handle), cut = domain.cut();
     domain.prepare = () => { throw refused; };
-    const failure = await value.client.asyncCall("write", [value.handle, PAGE * 3], new Uint8Array([90])).then(() => undefined, (error: unknown) => error);
+    const failure = await value.client.asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3 + 1).fill(90)).then(() => undefined, (error: unknown) => error);
     expect(failure).toMatchObject({ message: refused.message });
     expect(value.backend.shared.resources().usedBytes).toBe(before);
     expect(value.backend.shared.stat(value.handle)).toEqual(stat);
     expect(value.backend.identity(value.handle)).toEqual(identity);
     expect(domain.cut()).toEqual(cut);
     domain.prepare = original;
-    await value.client.asyncCall("write", [value.handle, PAGE * 3], new Uint8Array([90]));
+    await value.client.asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3 + 1).fill(90));
     const old = await lease.value.read({ offset: PAGE, length: 1 });
     expect(old.kind).toBe("ok");
     if (old.kind === "ok") expect(old.value.bytes[0]).toBe(65);

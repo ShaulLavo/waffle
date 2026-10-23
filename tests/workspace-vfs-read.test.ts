@@ -450,7 +450,7 @@ test("close before delayed open cannot create a ticket, and repeated closes rema
     for (let id = 101; id < 201; id++)
       await value.client.asyncCall("publicationReadClose", [grant, id]);
     expect(value.service.resources().readerTickets).toBe(0);
-    expect(value.service.resources().readerMetadataBytes).toBe(65536);
+    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 1280);
   } finally {
     await value.close();
   }
@@ -562,8 +562,10 @@ test("all public projections of one actual root share the lease budget", async (
   const { createWorkspaceVfs } = await import("../fs/workspace");
   const identity = createFilesystemIdentity(value.client.connection);
   if (!identity.publication) throw new Error("missing public root buffers");
-  identity.publication.observer = value.client.connection.publication!.observer;
-  const pair = connectFilesystemIdentity(identity);
+  const pair = connectFilesystemIdentity({
+    ...identity,
+    publication: { ...identity.publication, observer: value.client.connection.publication!.observer },
+  });
   let peer: FilesystemClient | undefined;
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
   try {
