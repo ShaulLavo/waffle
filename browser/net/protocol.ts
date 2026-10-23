@@ -61,11 +61,12 @@ export interface PeerAddr {
 export interface NewConn {
   conn: number;
   peer: PeerAddr;
+  local: PeerAddr;
 }
 
 export type TcpCommand =
   | { type: "tcp-listen"; id: number; port: number; host: string }
-  | { type: "tcp-connect"; id: number; port: number }
+  | { type: "tcp-connect"; id: number; port: number; host: string }
   | { type: "tcp-write"; id: number; data: Uint8Array };
 
 export type TcpRequest = TcpCommand & { reply: SharedArrayBuffer };

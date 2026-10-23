@@ -4,14 +4,14 @@ import { AGAIN, type NetRequest } from "../browser/net/protocol.js";
 
 declare const self: DedicatedWorkerGlobalScope;
 export type NetworkCommand =
-  | { op: "listen"; port: number }
+  | { op: "listen"; port: number; host?: string }
   | { op: "fetch"; url: string }
   | { op: "head" | "poll"; handle: number }
-  | { op: "connect"; port: number }
+  | { op: "connect"; port: number; host?: string }
   | { op: "accept"; handle: number }
   | { op: "read"; handle: number; cap: number }
   | { op: "write"; handle: number; bytes: Uint8Array }
-  | { op: "shutdown" | "close" | "addr" | "peer"; handle: number }
+  | { op: "shutdown" | "close" | "addr" | "peer" | "error"; handle: number }
   | { op: "serve"; listener: number }
   | { op: "dispose" };
 export type NetworkWorkerMessage =
@@ -81,9 +81,9 @@ function execute(host: NetHost, command: NetworkCommand): unknown {
     case "poll":
       return host.poll(0);
     case "listen":
-      return host.listen("localhost", command.port);
+      return host.listen(command.host ?? "localhost", command.port);
     case "connect":
-      return host.connect("localhost", command.port);
+      return host.connect(command.host ?? "localhost", command.port);
     case "accept":
       return host.accept(command.handle);
     case "read":
@@ -98,6 +98,8 @@ function execute(host: NetHost, command: NetworkCommand): unknown {
       return host.localAddr(command.handle);
     case "peer":
       return host.peerAddr(command.handle);
+    case "error":
+      return host.error(command.handle);
     case "serve":
       return serve(host, command.listener);
     case "dispose":
