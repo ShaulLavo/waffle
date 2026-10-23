@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       libc: ${{ steps.paths.outputs.libc }}
+      browser: ${{ steps.paths.outputs.browser }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -29,6 +30,22 @@ jobs:
         with:
           base: ${{ github.ref }}
           filters: |
+            browser:
+              - ".github/**"
+              - "core/**"
+              - "fs/**"
+              - "proc/**"
+              - "interrupt/**"
+              - "browser/**"
+              - "runtime.ts"
+              - "index.ts"
+              - "package.json"
+              - "bun.lock"
+              - "scripts/test-browser.ts"
+              - "scripts/browser-command.ts"
+              - "scripts/browser-supervisor.ts"
+              - "scripts/owned-command.ts"
+              - "tests/**"
             libc:
               - '.github/**'
               - 'patches/**'
@@ -116,6 +133,8 @@ jobs:
           WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
           WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
   browser:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
