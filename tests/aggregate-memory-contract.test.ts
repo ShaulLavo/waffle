@@ -312,6 +312,56 @@ test("aggregate contract reuses an existing factory root without a temporary bac
   }
 });
 
+test.each(["before", "after"])(
+  "aggregate contract alias created %s publication attachment preserves root identity",
+  async (order) => {
+    const allocator = new StartupAllocator();
+    const memoryBudget = budget(64 * MiB, allocator);
+    const storage = new HeldStorage();
+    const backend = await open(storage, memoryBudget);
+    const publication = createPublicationBuffers(workspacePublication.limits, true);
+    const foreignPublication = createPublicationBuffers(workspacePublication.limits, true);
+    const foreignRoot = SharedFilesystemState.createBuffer();
+    try {
+      const before = memoryBudget.snapshot();
+      const root = backend.shared.buffer;
+      const earlyAlias =
+        order === "before"
+          ? noUnadmittedSharedBuffers(() => new MemoryBackend(undefined, undefined, backend))
+          : undefined;
+      backend.attachShared(root, undefined, [], publication);
+      const alias =
+        earlyAlias ??
+        noUnadmittedSharedBuffers(() => new MemoryBackend(undefined, undefined, backend));
+      expect(alias.fs).toBe(backend.fs);
+      expect(alias.workspaceId).toBe(backend.workspaceId);
+      expect(alias.shared.buffer).toBe(root);
+      expect(() => alias.attachShared(root, undefined, [], publication)).not.toThrow();
+      const attached = alias.shared;
+      expect(attached.publication?.buffers).toBe(publication);
+      alias.attachShared(structuredClone(root), undefined, [], publication);
+      expect(alias.shared).toBe(attached);
+      expect(() => alias.attachShared(foreignRoot, undefined, [], publication)).toThrow(
+        "filesystem service cannot attach a second shared tree",
+      );
+      expect(() => alias.attachShared(root, undefined, [], foreignPublication)).toThrow(
+        "filesystem publication root mismatch",
+      );
+      expect(() => alias.attachShared(root)).toThrow("filesystem publication root mismatch");
+      expect(alias.shared).toBe(attached);
+      expect(alias.shared.publication?.buffers).toBe(publication);
+      expect(memoryBudget.snapshot().allocated).toBe(before.allocated);
+      expect(memoryBudget.snapshot().backingBytes).toBe(before.backingBytes);
+      expect(memoryBudget.snapshot().obligations).toBe(0);
+      expect(alias.resources().startupRootBackingBytes).toBe(root.byteLength);
+      expect(allocator.calls).toBe(1);
+    } finally {
+      await close(backend, storage);
+      memoryBudget.close();
+    }
+  },
+);
+
 test("aggregate contract keeps one admitted root through repeated attach and rejects foreign roots", async () => {
   const allocator = new StartupAllocator();
   const memoryBudget = budget(64 * MiB, allocator);
