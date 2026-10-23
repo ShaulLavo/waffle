@@ -288,12 +288,16 @@ class WorkspaceOwner implements WorkspaceVfs {
   }
   closeRead(id?: number): Promise<void> {
     const close = async () => {
-      if (isRevoked(this.client.connection)) {
-        this.client.sweep();
-        await new ReaderLifetime(this.client.connection.publication!).join();
-        return;
+      try {
+        if (!isRevoked(this.client.connection)) {
+          await this.request("publicationReadClose", [id]);
+          return;
+        }
+      } catch (error) {
+        if (!isRevoked(this.client.connection)) throw error;
       }
-      await this.request("publicationReadClose", [id]);
+      this.client.sweep();
+      await new ReaderLifetime(this.client.connection.publication!).join();
     };
     const closing = this.readControl.then(close, close);
     this.readControl = closing.catch(() => {});
