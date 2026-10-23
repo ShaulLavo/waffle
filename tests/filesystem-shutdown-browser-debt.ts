@@ -40,7 +40,8 @@ function captureWorker(owners: OriginalWorker[], worker: Worker): void {
 }
 function consumer(owners: OriginalWorker[], index: number): OriginalWorker {
   const owner = owners.find(
-    (item) => new URL(item.url).searchParams.get("index") === String(index),
+    (item) =>
+      new URL(item.url, "http://fixture.invalid").searchParams.get("index") === String(index),
   );
   assert(owner, "Missing independently observed original consumer");
   return owner;
@@ -97,7 +98,9 @@ async function proveDebt(
     return;
   }
   assert(state.result.kind === "rejected", "Original failed disposal did not reject");
-  const original = owners.find((item) => new URL(item.url).searchParams.get("role") === "storage");
+  const original = owners.find(
+    (item) => new URL(item.url, "http://fixture.invalid").searchParams.get("role") === "storage",
+  );
   assert(
     original && !original.closeObserved,
     "Failed disposal terminated original filesystem Worker",

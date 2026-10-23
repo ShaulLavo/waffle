@@ -69,6 +69,9 @@ function installStorage(): void {
       globalThis.postMessage(message);
     },
   };
+  function observeFailure(failure: unknown): void {
+    reasonMatched = Object.is(failure, reason);
+  }
   installFilesystemWorker(scope, async (data) => {
     storage = await OpfsStorage.open(data.name);
     const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
@@ -78,9 +81,7 @@ function installStorage(): void {
       const original = originalClose();
       if (!closing) closing = original;
       sameStoragePromise = closing === original;
-      void original.catch((failure: unknown) => {
-        reasonMatched = Object.is(failure, reason);
-      });
+      void original.catch(observeFailure);
       return original;
     };
     return backend;
