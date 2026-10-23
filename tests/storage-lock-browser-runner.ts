@@ -81,7 +81,7 @@ function observePage(page: Page): void {
     });
   };
   pageTraces.set(page, record);
-  const path = (url: string) => new URL(url).pathname;
+  const path = (url: string) => URL.parse(url)?.pathname ?? (url || "<pending-url>");
   record("created", path(page.url()));
   page.on("request", (request) => record("request", `${request.method()} ${path(request.url())}`));
   page.on("response", (response) =>
@@ -100,10 +100,11 @@ function observePage(page: Page): void {
   page.on("console", (message) => {
     if (message.text().startsWith("STORAGE_LOCK_HANDLE ")) record("handle", message.text());
   });
+  let workers = 0;
   page.on("worker", (worker) => {
-    const workerPath = path(worker.url());
-    record("worker-created", workerPath);
-    worker.on("close", () => record("worker-closed", workerPath));
+    const id = ++workers;
+    record("worker-created", `${id} ${path(worker.url())}`);
+    worker.on("close", () => record("worker-closed", `${id} ${path(worker.url())}`));
   });
   page.on("close", () => record("closed", path(page.url())));
   page.on("crash", () => {
