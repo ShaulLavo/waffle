@@ -22,7 +22,11 @@ async function failedReleaseFixture(
   storage.retainPayload = (...args) => {
     const token = retain(...args);
     releases.push(() => token.release());
-    return { release: () => { throw reason; } };
+    return {
+      release: () => {
+        throw reason;
+      },
+    };
   };
   const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
   const value = publicReadFixture(backend);

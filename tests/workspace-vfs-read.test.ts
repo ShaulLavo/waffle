@@ -7,7 +7,11 @@ import { shareFileResource } from "../core/open-file";
 import { guestModule, guestFunction } from "./fixtures/publication-wasm";
 import { MemFS } from "../fs/memory";
 import { RangeFixture, pattern, payloadSize } from "./fixtures/opfs-range-storage";
-import { publicReadFixture, heldNativeReadFixture, residentReadFixture } from "./fixtures/workspace-read";
+import {
+  publicReadFixture,
+  heldNativeReadFixture,
+  residentReadFixture,
+} from "./fixtures/workspace-read";
 
 for (const kind of [
   "service-write",
