@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, expectTypeOf, test } from "bun:test";
 import {
   createFilesystemConnection,
   createWorkspaceVfs,
@@ -13,6 +13,7 @@ import {
   type ChangeBatch,
   type Watermark,
   type WorkspaceChange,
+  type WorkspaceConfiguration,
 } from "../fs";
 import { MemFS } from "../fs/memory";
 import { nextReservation } from "../fs/file-identity";
@@ -22,11 +23,24 @@ import { Wasi } from "../core/wasi";
 import { shareFileResource } from "../core/open-file";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm";
 
+import type {
+  FileId,
+  FileVersion,
+  Generation,
+  ChangeSeq,
+  SnapshotPage,
+  WorkspaceChangePage,
+  WorkspacePressure,
+  WorkspaceTerminal,
+  HistoryGap,
+} from "../index";
+
+const publicConfiguration: WorkspaceConfiguration = { workspace: true };
 const bytes = (value: string) => new TextEncoder().encode(value);
 async function fixture(backend = new MemoryBackend(), limits?: PublicationLimits) {
   const pair = limits
     ? createFilesystemConnection(undefined, { limits, observe: true })
-    : createFilesystemConnection(undefined, { workspace: true });
+    : createFilesystemConnection(undefined, publicConfiguration);
   const service = new FilesystemService(backend);
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
@@ -720,3 +734,12 @@ function assertBatches(batches: readonly ChangeBatch[], after: Watermark): Water
   }
   return after;
 }
+
+test("public identity and position brands cannot be interchanged", () => {
+  expectTypeOf<FileId>().not.toEqualTypeOf<FileVersion>();
+  expectTypeOf<FileVersion>().not.toEqualTypeOf<Generation>();
+  expectTypeOf<Generation>().not.toEqualTypeOf<ChangeSeq>();
+  expectTypeOf<SnapshotPage>().extract<{ kind: "pressure" }>().toEqualTypeOf<WorkspacePressure>();
+  expectTypeOf<WorkspaceTerminal>().toMatchTypeOf<SnapshotPage>();
+  expectTypeOf<WorkspaceChangePage>().extract<{ kind: "gap" }>().toEqualTypeOf<HistoryGap>();
+});

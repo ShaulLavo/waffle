@@ -180,6 +180,7 @@ function deleteDatabase(name: string): Promise<void> {
     request.onblocked = () => reject(new Error("Public workspace fixture retained IndexedDB"));
   });
 }
+/** @browserEntry Executed by the public workspace browser runner through its bundled URL. */
 export async function runWorkspaceBrowser(): Promise<string[]> {
   await run("memory");
   await run("fast");
