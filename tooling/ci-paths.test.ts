@@ -84,6 +84,58 @@ test("browser selects runners, shared controls and guest fixtures", () => {
     expect(selected("browser", path), path).toBe(true);
 });
 
+function stepsFor(name: string): Array<Record<string, unknown>> {
+  const steps = record(jobs[name]).steps;
+  if (!Array.isArray(steps)) throw new Error(`expected ${name} steps`);
+  return steps.map(record);
+}
+
+test("package installs share one Bun package-manager cache contract", () => {
+  const expectedCacheUses = {
+    package: "actions/cache@v4",
+    browser: "actions/cache/restore@v4",
+    site: "actions/cache/restore@v4",
+  };
+  let sharedKey: string | undefined;
+  for (const name of ["package", "browser", "site"] as const) {
+    const steps = stepsFor(name);
+    const cacheSteps = steps.filter((step) => {
+      if (step.uses !== expectedCacheUses[name]) return false;
+      return record(step.with).path === "~/.bun/install/cache";
+    });
+    expect(cacheSteps).toHaveLength(1);
+
+    const cache = cacheSteps.at(0);
+    if (!cache) throw new Error(`expected ${name} Bun cache`);
+    const cachePath = String(record(cache.with).path);
+    const cacheKey = String(record(cache.with).key);
+    expect(cache.uses).toBe(expectedCacheUses[name]);
+    expect(cachePath).toBe("~/.bun/install/cache");
+    expect(cachePath).not.toContain("node_modules");
+    expect(cacheKey).toContain("${{ runner.os }}");
+    expect(cacheKey).toContain("${{ runner.arch }}");
+    expect(cacheKey).toContain("${{ env.BUN_VERSION }}");
+    expect(cacheKey).toContain("${{ hashFiles('bun.lock', 'site/bun.lock') }}");
+    expect(cacheKey).toBe(
+      "${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}",
+    );
+    if (sharedKey === undefined) sharedKey = cacheKey;
+    expect(cacheKey).toBe(sharedKey);
+
+    const cacheIndex = steps.indexOf(cache);
+    const installIndexes = steps.flatMap((step, index) =>
+      typeof step.run === "string" && step.run.startsWith("bun install") ? [index] : [],
+    );
+    expect(installIndexes.length).toBeGreaterThan(0);
+    expect(cacheIndex).toBeLessThan(Math.min(...installIndexes));
+    for (const index of installIndexes) {
+      const step = steps[index];
+      if (!step) throw new Error(`expected install step ${index}`);
+      expect(step.if).toBeUndefined();
+    }
+  }
+});
+
 test("package and site gates remain unconditional", () => {
   for (const name of ["package", "site"]) {
     const job = record(jobs[name]);
