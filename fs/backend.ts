@@ -92,7 +92,7 @@ export class MemoryBackend implements FilesystemBackend {
     const node = this.fs.nodeForHandle(handle);
     return this.shared.identity(handle) ?? this.ensureIdentity(node);
   }
-  protected ensureIdentity(node: Node): FileIdentity {
+  ensureIdentity(node: Node): FileIdentity {
     return (node.identity ??= this.shared.identities.create());
   }
   readonly workspaceId: string;

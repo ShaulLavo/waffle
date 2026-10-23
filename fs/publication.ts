@@ -225,6 +225,11 @@ function bounded(value: number): number {
 }
 function validateLimits(limits: PublicationLimits): PublicationLimits {
   for (const value of Object.values(limits)) bounded(value);
+  if (
+    limits.operationsPerSession !== undefined &&
+    limits.operationsPerSession * limits.sessions > limits.operations
+  )
+    throw new RangeError("publication pool cannot reserve every session quota");
   if (limits.effectBytes > Math.floor(limits.logBytes / limits.logRecords))
     throw new RangeError("publication log record cannot hold the effect bound");
   const allocation =
@@ -601,16 +606,24 @@ export class PublicationDomain {
     return { kind: "unknown" };
   }
   private available(session: PublicationSession): number {
-    let oldest = -1;
+    let oldest = -1,
+      empty = -1,
+      own = 0;
     let sequence = MAX_COUNTER + 1;
     for (let slot = 0; slot < this.limits.operations; slot++) {
       const base = slot * OP_WORDS;
-      if (!this.operations[base + Op.State]) return slot;
+      if (!this.operations[base + Op.State]) {
+        empty = empty < 0 ? slot : empty;
+        continue;
+      }
       if (this.operations[base + Op.Session] !== session.serial) continue;
+      own++;
       if (this.operations[base + Op.Sequence]! >= sequence) continue;
       sequence = this.operations[base + Op.Sequence]!;
       oldest = slot;
     }
+    if (empty >= 0 && own < (this.limits.operationsPerSession ?? this.limits.operations))
+      return empty;
     if (
       oldest < 0 ||
       (this.operations[oldest * OP_WORDS + Op.State]! & STATUS_MASK) !== Status.Committed
@@ -848,21 +861,28 @@ export class PublicationDomain {
         : { kind: "pending" };
     });
   }
-  changes(after: PublicationCut, limitBytes: number): ChangePage {
+  availability(): { current: PublicationCut; oldestAvailable: PublicationCut } {
     const current = this.cut();
-    bounded(limitBytes);
     const count = this.control[Control.LogCount]!;
     const first =
       (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
-    const oldest = count
+    const generation = count
       ? number(this.log[first * LOG_WORDS + 1]!, this.log[first * LOG_WORDS + 2]!)
       : current.generation + 1;
+    return { current, oldestAvailable: { history: current.history, generation } };
+  }
+  changes(after: PublicationCut, limitBytes: number): ChangePage {
+    bounded(limitBytes);
+    const { current, oldestAvailable } = this.availability();
     if (
       after.history !== current.history ||
-      after.generation < oldest - 1 ||
+      after.generation < oldestAvailable.generation - 1 ||
       after.generation > current.generation
     )
       return { kind: "gap", current };
+    const count = this.control[Control.LogCount]!;
+    const first =
+      (this.control[Control.LogNext]! + this.limits.logRecords - count) % this.limits.logRecords;
     return this.readChanges(after, limitBytes, first, count);
   }
   private readChanges(
