@@ -21,14 +21,21 @@ export function proofEqual(actual: unknown, expected: unknown): void {
     throw new Error(`Expected ${reportJson(expected)}, got ${reportJson(actual)}`);
 }
 
-export function proofFileAdvance(actual: unknown, previous: unknown): void {
+function publicationFile(value: unknown) {
   if (
-    actual === null || typeof actual !== "object" || !("version" in actual) ||
-    previous === null || typeof previous !== "object" || !("version" in previous) ||
-    typeof actual.version !== "bigint" || typeof previous.version !== "bigint"
-  ) throw new Error("Missing bigint file revision");
-  proofEqual(actual, { ...previous, version: actual.version });
-  if (actual.version <= previous.version)
+    value === null || typeof value !== "object" ||
+    !("birthHistory" in value) || typeof value.birthHistory !== "string" ||
+    !("ino" in value) || typeof value.ino !== "number" || !Number.isSafeInteger(value.ino) ||
+    !("id" in value) || typeof value.id !== "bigint" || value.id <= 0n ||
+    !("version" in value) || typeof value.version !== "bigint" || value.version < value.id
+  ) throw new Error("Missing file identity or bigint revision");
+  return value;
+}
+
+export function proofFileAdvance(actual: unknown, previous: unknown): void {
+  const current = publicationFile(actual), before = publicationFile(previous);
+  proofEqual(current, { ...before, version: current.version });
+  if (current.version <= before.version)
     throw new Error(`File revision did not advance: ${reportJson({ previous, actual })}`);
 }
 

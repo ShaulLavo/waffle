@@ -197,5 +197,10 @@ test("publication groups preserve file identity while advancing bigint revisions
   expect(() => proofFileAdvance({ ...identity, ino: 99 }, freezeIdentity)).toThrow();
   expect(() => proofFileAdvance({ ...identity, birthHistory: "other" }, freezeIdentity)).toThrow();
   expect(() => proofFileAdvance({ ...identity, version: String(identity.version) }, freezeIdentity)).toThrow();
-  expect(() => proofFileAdvance({}, freezeIdentity)).toThrow("Missing bigint");
+  expect(() => proofFileAdvance({}, freezeIdentity)).toThrow("Missing file");
+});
+
+test("revision advancement cannot replace a missing stable identity", () => {
+  expect(() => proofFileAdvance({ version: 9n }, { version: 8n })).toThrow("Missing file");
+  expect(() => proofFileAdvance({ ...identity, id: "1" }, freezeIdentity)).toThrow("Missing file");
 });
