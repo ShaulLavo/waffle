@@ -68,7 +68,10 @@ function readChunk(cells: Int32Array, chunk: Uint8Array, previous: number) {
   }
   return { count, eof: false };
 }
-function fixture(policyOverride?: (buffer: SharedArrayBuffer) => TerminalPolicy) {
+function fixture(
+  policyOverride?: (buffer: SharedArrayBuffer) => TerminalPolicy,
+  checks: { authority?: () => void; endpoint?: () => void } = {},
+) {
   const root = createWorkerProcessTransport({ capacity: 64 });
   const buffer = new SharedArrayBuffer(132 * 4),
     cells = new Int32Array(buffer);
@@ -77,11 +80,16 @@ function fixture(policyOverride?: (buffer: SharedArrayBuffer) => TerminalPolicy)
   const attachment = attachTerminal({
     context: display.inherit(),
     process: root,
-    checkActive() {},
+    checkActive: checks.endpoint ?? (() => {}),
     policy,
   });
   const authority = must(
-    claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }),
+    claimTerminalAuthority({
+      identity: display.identity,
+      process: root,
+      checkActive: checks.authority ?? (() => {}),
+      policy,
+    }),
   );
   const editor = must(authority.createGroup({ initialMode: "raw" }));
   const editorMember = must(authority.admitExisting({ group: editor, pid: root.pid }));
@@ -1061,4 +1069,382 @@ test("page close never steals the gate from an actually terminated worker", asyn
     f.cleanup();
     other.cleanup();
   }
+});
+
+
+function controlWords(display: ReturnType<typeof createTerminalSession>): Int32Array {
+  const identity = display.identity as unknown as { buffer: SharedArrayBuffer };
+  return new Int32Array(identity.buffer);
+}
+function expectClosedWithoutPublication(
+  display: ReturnType<typeof createTerminalSession>,
+  before: Int32Array,
+) {
+  expect(display.snapshot()).toEqual({ kind: "error", code: "CLOSED" });
+  const after = controlWords(display).slice();
+  expect(after[0]).toBe(1);
+  after[0] = before[0]!;
+  after[15] = before[15]!;
+  expect(after).toEqual(before);
+}
+function transitionFixture() {
+  let revoked = false;
+  let action: TerminalPolicy["transition"] | undefined;
+  const checkActive = () => {
+    if (revoked) throw new Error("R29 admission revoked");
+  };
+  const f = fixture(
+    (buffer) => {
+      const policy = tinyPolicy(buffer);
+      return {
+        ...policy,
+        transition: (turn, change) =>
+          action ? action(turn, change) : policy.transition(turn, change),
+      };
+    },
+    { authority: checkActive, endpoint: checkActive },
+  );
+  return {
+    ...f,
+    revoke() {
+      revoked = true;
+    },
+    fault(next: TerminalPolicy["transition"]) {
+      action = next;
+    },
+  };
+}
+type TransitionCase =
+  | "mode"
+  | "remove"
+  | "release-null"
+  | "restore"
+  | "transfer"
+  | "acquire"
+  | "admit"
+  | "bind";
+function transitionOperation(f: ReturnType<typeof transitionFixture>, operation: TransitionCase) {
+  const group = must(f.authority.createGroup({ initialMode: "cooked" }));
+  const child = f.spawn();
+  const controls = terminalControls(f.attachment.resolve(0))!;
+  const expected = must(controls.snapshot()).selection;
+  const planned = must(f.authority.planMember({ group: f.editor, parent: f.editorMember.member }));
+  switch (operation) {
+    case "mode":
+      return () => controls.setMode({ expected, mode: "cooked" });
+    case "remove":
+      return () => f.authority.removeMember(f.editorMember.member);
+    case "release-null":
+      return () => f.authority.release({ lease: f.editorLease, restore: null });
+    case "restore":
+      return () => f.authority.release({ lease: f.editorLease, restore: group });
+    case "transfer":
+      return () => f.authority.transfer({ from: f.editorLease, to: group });
+    case "acquire":
+      must(f.authority.release({ lease: f.editorLease, restore: null }));
+      return () => f.authority.acquire({ group, expected: null });
+    case "admit":
+      return () => f.authority.admitExisting({ group: f.editor, pid: child.pid });
+    case "bind":
+      return () => f.authority.bindMember({ planned: planned.member, pid: child.pid });
+  }
+}
+const transitionCases: readonly TransitionCase[] = [
+  "mode", "remove", "release-null", "restore", "transfer", "acquire", "admit", "bind",
+];
+for (const operation of transitionCases)
+  test(`R29 post-policy ${operation} admission throws close before any control publication`, () => {
+    const f = transitionFixture();
+    const run = transitionOperation(f, operation);
+    const before = controlWords(f.display).slice();
+    f.fault(() => {
+      f.cells[130]!++;
+      f.revoke();
+      return { kind: "ok", value: undefined };
+    });
+    try {
+      expect(run).toThrow("R29 admission revoked");
+      expect(f.cells[130]).toBe(1);
+      expectClosedWithoutPublication(f.display, before);
+    } finally {
+      f.cleanup();
+    }
+  });
+
+test("R29 post-policy endpoint disposal fails closed without publishing mode", () => {
+  const f = transitionFixture();
+  const run = transitionOperation(f, "mode");
+  const before = controlWords(f.display).slice();
+  f.fault(() => {
+    f.cells[130]!++;
+    f.attachment.dispose();
+    return { kind: "ok", value: undefined };
+  });
+  try {
+    expect(run()).toEqual({ kind: "error", code: "CANCELED" });
+    expect(f.cells[130]).toBe(1);
+    expectClosedWithoutPublication(f.display, before);
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const operation of transitionCases)
+  test(`R29 ${operation} gate contention has zero control and policy mutation`, () => {
+    const f = transitionFixture();
+    const run = transitionOperation(f, operation);
+    const words = controlWords(f.display);
+    const gate = new BigInt64Array(words.buffer, 64, 1);
+    Atomics.store(gate, 0, 999n);
+    const before = words.slice();
+    f.fault(() => {
+      throw new Error("policy must not run under contention");
+    });
+    try {
+      expect(run()).toEqual({ kind: "error", code: "AGAIN" });
+      expect(words).toEqual(before);
+      expect(f.cells[130]).toBe(0);
+    } finally {
+      Atomics.store(gate, 0, 0n);
+      f.cleanup();
+    }
+  });
+
+test("R29 throwing transition discriminant is guarded after policy mutation", () => {
+  const f = transitionFixture();
+  const run = transitionOperation(f, "mode");
+  const before = controlWords(f.display).slice();
+  f.fault(() => {
+    f.cells[130]!++;
+    return {
+      get kind(): "ok" {
+        throw new Error("R29 result accessor");
+      },
+      value: undefined,
+    };
+  });
+  try {
+    expect(run).toThrow("R29 result accessor");
+    expect(f.cells[130]).toBe(1);
+    expectClosedWithoutPublication(f.display, before);
+    expect(new BigInt64Array(controlWords(f.display).buffer, 64, 1)[0]).toBe(0n);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("R29 initial geometry object and dimensions are each captured once", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  let objects = 0, columns = 0, rows = 0;
+  const display = createTerminalSession({
+    controller: root,
+    get geometry() {
+      objects++;
+      return {
+        get columns() { return ++columns === 1 ? 120 : 0; },
+        get rows() { return ++rows === 1 ? 24 : 0; },
+      };
+    },
+  });
+  try {
+    expect(must(display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
+    expect([objects, columns, rows]).toEqual([1, 1, 1]);
+  } finally {
+    display.close("disposed");
+  }
+});
+
+test("R29 resize captures changing dimensions once before gate entry", () => {
+  const f = fixture();
+  let columns = 0, rows = 0;
+  try {
+    const result = f.display.resize({
+      get columns() { return ++columns === 1 ? 103 : 0; },
+      get rows() { return ++rows === 1 ? 31 : 0; },
+    });
+    expect(result).toEqual({ kind: "ok", value: { columns: 103, rows: 31, revision: 2 } });
+    expect(must(f.display.snapshot()).geometry).toEqual({ columns: 103, rows: 31, revision: 2 });
+    expect([columns, rows]).toEqual([1, 1]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+for (const dimension of ["columns", "rows"] as const)
+  test(`R29 throwing ${dimension} getter leaves resize control block unchanged`, () => {
+    const f = fixture();
+    const before = controlWords(f.display).slice();
+    const geometry = { columns: 103, rows: 31 };
+    Object.defineProperty(geometry, dimension, { get() { throw new Error("R29 geometry accessor"); } });
+    try {
+      expect(() => f.display.resize(geometry)).toThrow("R29 geometry accessor");
+      expect(controlWords(f.display)).toEqual(before);
+      expect(must(f.display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
+    } finally {
+      f.cleanup();
+    }
+  });
+
+test("R29 creation captures geometry before consulting root liveness", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  const exitedGeometry = {
+    get columns() {
+      claimOutcome(workerProcessState(root).signals.outcome, { kind: "exited", code: 0 });
+      return 120;
+    },
+    rows: 24,
+  };
+  expect(() => createTerminalSession({ controller: root, geometry: exitedGeometry })).toThrow(
+    "terminal root is not live",
+  );
+});
+
+test("R29 resize getter reentry observes precommit geometry with a free gate", () => {
+  const f = fixture();
+  const observed: TerminalResult<unknown>[] = [];
+  const before = controlWords(f.display).slice();
+  const geometry = {
+    get columns() {
+      observed.push(f.display.snapshot());
+      expect(controlWords(f.display)).toEqual(before);
+      return 103;
+    },
+    rows: 31,
+  };
+  try {
+    must(f.display.resize(geometry));
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toEqual({ kind: "ok", value: {
+      mode: "raw", modeRevision: 2,
+      geometry: { columns: 120, rows: 24, revision: 1 }, selection: 1,
+    } });
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("R29 invalid resize preserves every control word", () => {
+  const f = fixture();
+  const before = controlWords(f.display).slice();
+  try {
+    expect(f.display.resize({ columns: 0, rows: 31 })).toEqual({ kind: "error", code: "INVALID" });
+    expect(controlWords(f.display)).toEqual(before);
+  } finally { f.cleanup(); }
+});
+
+test("R29 throwing group options preserve full block and all remaining capacity", () => {
+  const f = fixture();
+  const before = controlWords(f.display).slice();
+  const options = { get initialMode(): "raw" { throw new Error("R29 mode accessor"); } };
+  try {
+    expect(() => f.authority.createGroup(options)).toThrow("R29 mode accessor");
+    expect(controlWords(f.display)).toEqual(before);
+    for (let i = 1; i < TERMINAL_SESSION_LIMITS.groups; i++)
+      must(f.authority.createGroup({ initialMode: "raw" }));
+    expect(f.authority.createGroup({ initialMode: "raw" })).toEqual({ kind: "error", code: "CAPACITY" });
+  } finally { f.cleanup(); }
+});
+
+test("R29 group option reads finish before reservation and reconfirm admission", () => {
+  const f = transitionFixture();
+  const before = controlWords(f.display).slice();
+  let reads = 0;
+  const options = {
+    get initialMode(): "raw" {
+      reads++;
+      expect(controlWords(f.display)).toEqual(before);
+      f.revoke();
+      return "raw";
+    },
+  };
+  try {
+    expect(() => f.authority.createGroup(options)).toThrow("R29 admission revoked");
+    expect(reads).toBe(1);
+    expect(controlWords(f.display)).toEqual(before);
+  } finally { f.cleanup(); }
+});
+
+
+for (const dimension of ["columns", "rows"] as const)
+  test(`R29 throwing initial ${dimension} getter leaves root transport unchanged`, () => {
+    const root = createWorkerProcessTransport({ capacity: 4 });
+    const before = new Uint8Array(root.directory).slice();
+    const geometry = { columns: 120, rows: 24 };
+    Object.defineProperty(geometry, dimension, { get() { throw new Error("R29 initial geometry"); } });
+    expect(() => createTerminalSession({ controller: root, geometry })).toThrow("R29 initial geometry");
+    expect(new Uint8Array(root.directory)).toEqual(before);
+    const display = createTerminalSession({ controller: root, geometry: { columns: 120, rows: 24 } });
+    expect(must(display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
+    display.close("disposed");
+  });
+
+test("R29 creation geometry getter can reenter before outer control publication", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  let reads = 0;
+  const display = createTerminalSession({
+    controller: root,
+    geometry: {
+      get columns() {
+        reads++;
+        const nested = createTerminalSession({ controller: root, geometry: { columns: 103, rows: 31 } });
+        expect(must(nested.snapshot()).geometry).toEqual({ columns: 103, rows: 31, revision: 1 });
+        nested.close("disposed");
+        return 120;
+      },
+      rows: 24,
+    },
+  });
+  try {
+    expect(reads).toBe(1);
+    expect(must(display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
+  } finally { display.close("disposed"); }
+});
+
+test("R29 authority claim options throw before claiming the shared block", () => {
+  const root = createWorkerProcessTransport({ capacity: 4 });
+  const display = createTerminalSession({ controller: root, geometry: { columns: 120, rows: 24 } });
+  const policy = tinyPolicy(new SharedArrayBuffer(132 * 4));
+  const before = controlWords(display).slice();
+  const options = {
+    identity: display.identity,
+    process: root,
+    checkActive() {},
+    get policy(): TerminalPolicy { throw new Error("R29 claim policy accessor"); },
+  };
+  try {
+    expect(() => claimTerminalAuthority(options)).toThrow("R29 claim policy accessor");
+    expect(controlWords(display)).toEqual(before);
+    expect(claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }).kind).toBe("ok");
+  } finally { display.close("disposed"); }
+});
+
+test("R29 mode options are captured once before policy and no getter follows mutation", () => {
+  const f = transitionFixture();
+  const controls = terminalControls(f.attachment.resolve(0))!;
+  const expected = must(controls.snapshot()).selection;
+  let reads = 0;
+  const options = {
+    expected,
+    get mode(): "cooked" {
+      reads++;
+      if (f.cells[130] !== 0) throw new Error("mode read after policy mutation");
+      return "cooked";
+    },
+  };
+  f.fault(() => { f.cells[130]!++; return { kind: "ok", value: undefined }; });
+  try {
+    expect(controls.setMode(options)).toEqual({ kind: "ok", value: undefined });
+    expect(reads).toBe(1);
+    expect(f.cells[130]).toBe(1);
+    expect(must(f.display.snapshot()).mode).toBe("cooked");
+  } finally { f.cleanup(); }
+});
+
+test("R29 invalid group mode consumes no shared capacity", () => {
+  const f = fixture();
+  const before = controlWords(f.display).slice();
+  try {
+    expect(Reflect.apply(f.authority.createGroup, f.authority, [{ initialMode: "invalid" }])).toEqual({ kind: "error", code: "INVALID" });
+    expect(controlWords(f.display)).toEqual(before);
+  } finally { f.cleanup(); }
 });
