@@ -2,6 +2,7 @@ import {
   createPersistentResidentOwner,
   selectPersistentWorkspace,
   type PersistentResidentOwner,
+  type PersistentOwnerRequest,
 } from "../../browser/persistent-resident-owner";
 import { FilesystemClient } from "../../fs/client";
 import { IndexedDBStorage } from "../../fs/indexeddb";
@@ -15,6 +16,7 @@ let holdingReply = false;
 let reply: (() => void) | undefined;
 let checkpoint: ReturnType<typeof Promise.withResolvers<void>> | undefined;
 let checkpointEntered = false;
+let stopMemoized = false;
 const events: string[] = [];
 const originalCall = FilesystemClient.prototype.asyncCall;
 FilesystemClient.prototype.asyncCall = function (...args: Parameters<typeof originalCall>) {
@@ -82,25 +84,25 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
       },
     };
     const original = data.original === undefined ? undefined : record(data.original);
-    const request = original
+    const request: PersistentOwnerRequest = original
       ? {
           ...base,
-          kind: "reopen-v1" as const,
-          accept: "new-history-loss-and-unknown" as const,
+          kind: "reopen-v1",
+          accept: "new-history-loss-and-unknown",
           original: { instance: text(original.instance), history: text(original.history) },
         }
-      : { ...base, kind: "initial-open" as const };
+      : { ...base, kind: "initial-open" };
     owner = createPersistentResidentOwner(request, new AbortController().signal);
     return owner.ready;
   }
   if (operation === "stop") {
     if (!owner) throw new Error("owner absent");
     const stopped = owner.stop();
-    const memoized = stopped === owner.stop();
+    stopMemoized = stopped === owner.stop();
     await stopped;
-    return { memoized, stopped: true };
+    return { memoized: stopMemoized, stopped: true };
   }
-  if (operation === "probe") return { checkpointEntered, events: events.slice() };
+  if (operation === "probe") return { checkpointEntered, stopMemoized, events: events.slice() };
   if (operation === "holdReply") {
     holdingReply = true;
     return null;
@@ -115,11 +117,6 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
   if (operation === "holdCheckpoint") {
     checkpoint = Promise.withResolvers<void>();
     checkpointEntered = false;
-    return null;
-  }
-  if (operation === "releaseCheckpoint") {
-    checkpoint?.resolve();
-    checkpoint = undefined;
     return null;
   }
   if (!observer) throw new Error("factory root not observed");

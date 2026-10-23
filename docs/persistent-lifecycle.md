@@ -35,8 +35,10 @@ The fixed schedule checks these boundaries:
   before calling native `IndexedDBStorage.persist`. Saved records still contain
   `[10,20,30]`. This deliberately selects a permitted unsaved tail without changing
   the ACK path or substituting a storage provider.
-- A flush and another borrower's queued preparation overlap owner stop. Native storage
-  close and guard release must not run while ownership remains unresolved.
+- A flush and another borrower's queued preparation overlap owner stop. The original
+  owner stop rejects with errno 6 and remains memoized. The admitted flush caller
+  rejects with errno 11 while the actual checkpoint remains held. Original borrower
+  cleanup stays pending. Native storage close does not run, and guards remain held.
 - `Worker.terminate()` and Playwright's native worker `close` event establish actual
   worker death. Owner locks disappear, but borrower continuity guards still prevent
   replacement. Timeout and transport silence establish no death.

@@ -104,6 +104,12 @@ function begin(body: unknown): null {
   if (data.kind === "host") return track(key, () => host(data.body));
   throw new Error("unknown tracked work");
 }
+function settlementAttempt(channel: ResidentChannel, token: string, outcome: unknown) {
+  return channel.call("settle", { token, outcome }).then(
+    (value) => ({ kind: "fulfilled", value }),
+    (error: unknown) => ({ kind: "rejected", errno: Reflect.get(Object(error), "errno") }),
+  );
+}
 async function staleOutcome(body: unknown): Promise<unknown> {
   const data = record(body),
     descriptor = residentDescriptor(data.descriptor);
@@ -120,11 +126,7 @@ async function staleOutcome(body: unknown): Promise<unknown> {
     const outcome = { ...old, bytes: Uint8Array.from(old.bytes) };
     const failures = [];
     for (const token of [text(data.token), fresh.token]) {
-      const result = await channel.call("settle", { token, outcome }).then(
-        (value) => ({ kind: "fulfilled", value }),
-        (error: unknown) => ({ kind: "rejected", errno: Reflect.get(Object(error), "errno") }),
-      );
-      failures.push(result);
+      failures.push(await settlementAttempt(channel, token, outcome));
     }
     await channel.finish("close", { token: fresh.token });
     return failures;
@@ -195,6 +197,16 @@ function observe(value: unknown): void {
     });
   };
 }
+async function deleteWorkspace(value: unknown): Promise<unknown> {
+  wire?.close();
+  const request = indexedDB.deleteDatabase(text(value));
+  await new Promise<void>((resolve, reject) => {
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("native deletion blocked"));
+  });
+  return { deleted: true };
+}
 /** @browserEntry Native lifecycle controls with an explicit worker owner. */
 export async function control(operation: string, body?: unknown): Promise<unknown> {
   if (operation === "start") return start(body);
@@ -229,15 +241,6 @@ export async function control(operation: string, body?: unknown): Promise<unknow
   if (operation === "messages") return messages;
   if (operation === "nativeRecords") return existingControl("persistentInspect", body);
   if (operation === "locks") return navigator.locks.query();
-  if (operation === "delete") {
-    wire?.close();
-    const request = indexedDB.deleteDatabase(text(body));
-    await new Promise<void>((resolve, reject) => {
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error("native deletion blocked"));
-    });
-    return { deleted: true };
-  }
+  if (operation === "delete") return deleteWorkspace(body);
   throw new Error(`unknown page operation ${operation}`);
 }

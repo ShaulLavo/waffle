@@ -114,7 +114,6 @@ interface State {
   authority?: Worker;
   name: string;
   workspace: string;
-  original?: Record<string, unknown>;
   tail?: Record<string, unknown>;
   oldCut?: unknown;
 }
@@ -143,6 +142,10 @@ async function nativeSaved(page: Page, name: string, bytes: number[]): Promise<u
   equal(saved.active, index.generation);
   return saved;
 }
+function preparationCount(messages: unknown): number {
+  if (!Array.isArray(messages)) throw new Error("wire observer absent");
+  return messages.filter((message) => object(message).operation === "prepare").length;
+}
 async function lifecycle(state: State, steps: Step[], negative: boolean): Promise<void> {
   const [a, initialB, initialC, d] = state.pages;
   if (!a || !initialB || !initialC || !d) throw new Error("four independent pages required");
@@ -153,7 +156,6 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     queuedHandle = 0;
   await runStep(steps, 1, async () => {
     ready = object(await call(a, "start", { name: state.name }));
-    state.original = ready;
     state.workspace = String(object(ready.descriptor).workspace);
     await call(d, "wire", ready.descriptor);
     for (const page of [b, c]) await call(page, "attach", ready.descriptor);
@@ -265,27 +267,25 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     };
   });
   await runStep(steps, 7, async () => {
-    const before = await call(d, "messages");
-    if (!Array.isArray(before)) throw new Error("wire observer absent");
-    const sent = before.filter((message) => object(message).operation === "prepare").length;
+    const sent = preparationCount(await call(d, "messages"));
     await call(c, "begin", { kind: "prepare", key: "queued-prepare", handle: queuedHandle });
-    await until(async () => {
-      const messages = await call(d, "messages");
-      return (
-        Array.isArray(messages) &&
-        messages.filter((message) => object(message).operation === "prepare").length === sent + 1
-      );
-    }, "queued prepare request sent");
+    await until(
+      async () => preparationCount(await call(d, "messages")) === sent + 1,
+      "queued prepare request sent",
+    );
     await call(c, "begin", { kind: "stopPeer", key: "queued-stop" });
     await call(a, "begin", { kind: "ownerStop", key: "held-owner-stop" });
     await until(
-      async () =>
-        (await status(a, "held-owner-stop")).kind !== "pending" ||
-        (await status(b, "held-flush")).kind !== "pending",
-      "stop cancels admitted caller or refuses live sessions",
+      async () => (await status(a, "held-owner-stop")).kind !== "pending",
+      "stop refuses live sessions",
     );
+    equal((await status(a, "held-owner-stop")).kind, "rejected");
+    equal((await status(a, "held-owner-stop")).errno, 6);
+    equal((await status(b, "held-flush")).kind, "rejected");
+    equal((await status(b, "held-flush")).errno, 11);
     equal((await status(c, "queued-stop")).kind, "pending");
     const probe = object(await owner(a, "probe"));
+    equal(probe.stopMemoized, true);
     equal(probe.checkpointEntered, true);
     if (JSON.stringify(probe).includes("native-database-close-called"))
       throw new Error("owner closed native storage with held work");
@@ -299,6 +299,7 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
       ownerStop: await status(a, "held-owner-stop"),
       flush: await status(b, "held-flush"),
       borrowerStop: await status(c, "queued-stop"),
+      queuedPreparation: await status(c, "queued-prepare"),
       probe,
     };
   });
@@ -397,6 +398,27 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     return { saved, deleted: await call(d, "delete", state.name) };
   });
 }
+async function initialPages(state: State, origin: string): Promise<unknown> {
+  for (let index = 0; index < 4; index++) await open(state, origin);
+  return { independentPages: state.pages.length };
+}
+async function contain(state: State | undefined, origin: unknown): Promise<unknown> {
+  if (!state) return null;
+  const audit = await state.context.newPage();
+  await audit.goto(String(origin));
+  await Promise.all(state.pages.map((page) => page.close()));
+  await until(
+    async () => Array.from(state.workers.values()).every(Boolean),
+    "native containment worker close events",
+  );
+  const auditResult = await call(audit, "locks");
+  equal(auditResult, { held: [], pending: [] });
+  return {
+    locks: auditResult,
+    deleted: await call(audit, "delete", state.name),
+    protocolCleanupAfterLoss: "not claimed",
+  };
+}
 async function run(): Promise<void> {
   const runner = new BrowserRunnerLifecycle(165000);
   const schedule = [
@@ -449,32 +471,14 @@ async function run(): Promise<void> {
     };
     evidence.database = state.name;
     const active = state;
-    await runStep(steps, 0, async () => {
-      for (let index = 0; index < 4; index++) await open(active, origin);
-      return { independentPages: active.pages.length };
-    });
+    await runStep(steps, 0, () => initialPages(active, origin));
     await lifecycle(active, steps, evidence.negativeControl === true);
   } catch (error) {
     evidence.failure = error instanceof Error ? error.stack : String(error);
     process.exitCode = 1;
   } finally {
     try {
-      if (state) {
-        const audit = await state.context.newPage();
-        await audit.goto(String(evidence.origin));
-        await Promise.all(state.pages.map((page) => page.close()));
-        await until(
-          async () => Array.from(state!.workers.values()).every(Boolean),
-          "native containment worker close events",
-        );
-        const auditResult = await call(audit, "locks");
-        equal(auditResult, { held: [], pending: [] });
-        evidence.containment = {
-          locks: auditResult,
-          deleted: await call(audit, "delete", state.name),
-          protocolCleanupAfterLoss: "not claimed",
-        };
-      }
+      evidence.containment = await contain(state, evidence.origin);
     } catch (error) {
       evidence.containmentFailure = String(error);
       process.exitCode = 1;
