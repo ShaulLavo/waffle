@@ -1,4 +1,3 @@
-import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
 import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
@@ -16,6 +15,7 @@ import {
   type PersistedNode,
   type PersistenceBatch,
   type StorageBackend,
+  type ReaderMetadataBudget,
 } from "./storage.js";
 
 interface CheckpointRequest {
