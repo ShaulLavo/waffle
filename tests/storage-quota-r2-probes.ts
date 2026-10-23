@@ -229,23 +229,25 @@ export class QuotaProbe {
     return removeLatest(this.name, this.kind);
   }
   private instrumentIDB(): void {
-    const probe = this;
+    const counts = this.counts;
+    const failPut = this.failPut.bind(this);
+    const observeTransaction = this.observeTransaction.bind(this);
     const originalPut = IDBObjectStore.prototype.put;
     const originalDelete = IDBObjectStore.prototype.delete;
     const originalTransaction = IDBDatabase.prototype.transaction;
     IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
-      probe.counts.puts++;
+      counts.puts++;
       const result = originalPut.call(this, value, key);
-      probe.failPut(this.name, key);
+      failPut(this.name, key);
       return result;
     };
     IDBObjectStore.prototype.delete = function (key) {
-      probe.counts.deletes++;
+      counts.deletes++;
       return originalDelete.call(this, key);
     };
     IDBDatabase.prototype.transaction = function (...args: Parameters<IDBDatabase["transaction"]>) {
       const tx = originalTransaction.apply(this, args);
-      if (args[1] === "readwrite") probe.observeTransaction(tx, args[2]);
+      if (args[1] === "readwrite") observeTransaction(tx, args[2]);
       return tx;
     };
     this.restorers.push(() => {
@@ -278,20 +280,22 @@ export class QuotaProbe {
     throw new Error("injected commit failure after real active put");
   }
   private instrumentOPFS(): void {
-    const probe = this;
+    const counts = this.counts;
+    const observeHandle = this.observeHandle.bind(this);
+    const fault = () => this.fault;
     const prototype = FileSystemFileHandle.prototype;
     const open = prototype.createSyncAccessHandle;
     assert(typeof open === "function", "native OPFS sync handles require dedicated worker");
     prototype.createSyncAccessHandle = async function () {
-      return probe.observeHandle(this.name, await open.call(this));
+      return observeHandle(this.name, await open.call(this));
     };
     const remove = FileSystemDirectoryHandle.prototype.removeEntry;
     FileSystemDirectoryHandle.prototype.removeEntry = async function (name, options) {
-      if (probe.fault === "cleanup" && (this.name === "data" || name.startsWith("snapshot-"))) {
-        probe.counts.faultHits++;
+      if (fault() === "cleanup" && (this.name === "data" || name.startsWith("snapshot-"))) {
+        counts.faultHits++;
         throw new DOMException("injected cleanup denial", "NoModificationAllowedError");
       }
-      probe.counts.deletes++;
+      counts.deletes++;
       await remove.call(this, name, options);
     };
     this.restorers.push(() => {

@@ -1,3 +1,4 @@
+import { CHUNK_SIZE } from "../fs/indexeddb-chunks.js";
 import { PersistentBackend } from "../fs/persistent.js";
 import type {
   PersistedIndex,
@@ -172,6 +173,19 @@ class Scenario {
     assert(
       inventory.payloadBytes <= payloadLimit * payloadSize,
       `unbounded physical payload bytes ${inventory.payloadBytes}`,
+    );
+    assert(
+      inventory.payloadBytes === inventory.payloads.length * payloadSize,
+      "physical payload byte inventory differs from immutable records",
+    );
+    if (this.probe.kind === "indexeddb")
+      assert(
+        inventory.chunkRecords === inventory.payloads.length * Math.ceil(payloadSize / CHUNK_SIZE),
+        "manifest/chunk record inventory differs",
+      );
+    assert(
+      this.probe.counts.peakHandles <= 6,
+      "native sync handles exceeded cache plus create/metadata budgets",
     );
     assert(
       inventory.journalRecords < compactEvery * 2,
@@ -431,7 +445,6 @@ class Scenario {
     }
   }
 }
-/** @browserEntry */
 export function runQuotaCase(backend: AdapterKind, cell: QuotaCase): Promise<QuotaReceipt> {
   return new Scenario(backend, cell).run();
 }

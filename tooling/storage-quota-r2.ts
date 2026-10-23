@@ -61,11 +61,18 @@ function pageRequest(cell: Cell): Promise<QuotaReceipt> {
     worker.postMessage(cell);
   });
 }
-async function runCell(context: BrowserContext, origin: string, cell: Cell): Promise<QuotaReceipt> {
+async function runCell(
+  context: BrowserContext,
+  origin: string,
+  engine: string,
+  cell: Cell,
+): Promise<QuotaReceipt> {
   const page = await context.newPage();
   page.setDefaultTimeout(100_000);
   page.on("console", (message) =>
-    console.log(JSON.stringify({ kind: "quota-progress", ...cell, observation: message.text() })),
+    console.log(
+      JSON.stringify({ kind: "quota-progress", engine, ...cell, observation: message.text() }),
+    ),
   );
   try {
     await page.goto(origin);
@@ -118,7 +125,7 @@ async function collectCell(
   failures: string[],
 ): Promise<void> {
   try {
-    const result = await runCell(context, origin, cell);
+    const result = await runCell(context, origin, engine, cell);
     console.log(JSON.stringify({ engine, ...result }));
     if (result.failures.length || !result.cleanup)
       failures.push(`${engine} ${cell.backend} ${cell.cell}: ${result.failures.join("; ")}`);
