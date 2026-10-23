@@ -451,7 +451,7 @@ test("close before delayed open cannot create a ticket, and repeated closes rema
     for (let id = 101; id < 201; id++)
       await value.client.asyncCall("publicationReadClose", [grant, id]);
     expect(value.service.resources().readerTickets).toBe(0);
-    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 1280);
+    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 64 * 8 + 1280);
   } finally {
     await value.close();
   }
