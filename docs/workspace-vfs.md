@@ -99,8 +99,8 @@ table without receiving the observer grant.
 
 Result reservations include protocol buffers, service chunks, and the final
 caller array. These deterministic charges are not exact JS heap measurements or
-a combined runtime/index/cache budget. `resources()` reports current and peak
-reader charges. Retired shared pages remain in physical `usedBytes` until their
+a combined runtime/index/cache budget. Backend `resources()` diagnostics report
+current and peak reader charges. `WorkspaceVfs` does not expose these diagnostics. Retired shared pages remain in physical `usedBytes` until their
 last reference closes. Released reader-only disk payloads remain charged as
 `readerStorageDebt` until actual native GC deletion. Closing a lease cannot erase
 that deferred debt.

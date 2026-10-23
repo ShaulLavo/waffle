@@ -686,17 +686,31 @@ for (const writer of ["append", "writeFile-append"] as const) {
       if (opened.kind !== "ok") throw new Error(opened.kind);
       const before = await value.workspace.stat("/file");
       const physical = value.backend.shared.resources().usedBytes;
-      const write = () => writer === "append"
-        ? value.client.asyncCall("append", [value.handle], new Uint8Array([90]))
-        : value.client.asyncCall("writeFile", ["/file", true], new Uint8Array([90]));
-      expect(await write().then(() => undefined, (error: unknown) => error)).toMatchObject({ errno: 6 });
+      const write = () =>
+        writer === "append"
+          ? value.client.asyncCall("append", [value.handle], new Uint8Array([90]))
+          : value.client.asyncCall("writeFile", ["/file", true], new Uint8Array([90]));
+      expect(
+        await write().then(
+          () => undefined,
+          (error: unknown) => error,
+        ),
+      ).toMatchObject({ errno: 6 });
       expect(await value.workspace.stat("/file")).toEqual(before);
       expect(value.backend.shared.resources().usedBytes).toBe(physical);
-      expect(await opened.value.read({ offset: size - 2, length: 2 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([65, 65]) } });
+      expect(await opened.value.read({ offset: size - 2, length: 2 })).toMatchObject({
+        kind: "ok",
+        value: { bytes: new Uint8Array([65, 65]) },
+      });
       await opened.value.close();
       await write();
-      expect(await value.workspace.read("/file", { offset: size, length: 1 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([90]) } });
-    } finally { await value.close(); }
+      expect(await value.workspace.read("/file", { offset: size, length: 1 })).toMatchObject({
+        kind: "ok",
+        value: { bytes: new Uint8Array([90]) },
+      });
+    } finally {
+      await value.close();
+    }
   });
 }
 
@@ -713,9 +727,14 @@ test("shrink and regrow zero the current tail without changing a retained old ta
       expect(current.value.bytes.subarray(0, 3)).toEqual(new Uint8Array([65, 65, 65]));
       expect(current.value.bytes.subarray(3).every((byte) => byte === 0)).toBe(true);
     }
-    expect(await held.value.read({ offset: PAGE * 3 - 8, length: 8 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array(8).fill(65) } });
+    expect(await held.value.read({ offset: PAGE * 3 - 8, length: 8 })).toMatchObject({
+      kind: "ok",
+      value: { bytes: new Uint8Array(8).fill(65) },
+    });
     await held.value.close();
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
 
 test("a metadata mutation preserves leased stat and read permission without copying pages", async () => {
@@ -724,12 +743,22 @@ test("a metadata mutation preserves leased stat and read permission without copy
     const held = await value.workspace.pin("/file");
     if (held.kind !== "ok") throw new Error(held.kind);
     const before = value.backend.shared.resources().usedBytes;
-    await value.client.asyncCall("setMode", [value.handle, 0]);
     await value.client.asyncCall("setMtime", [value.handle, 123]);
-    expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({ kind: "denied" });
-    expect(await value.workspace.stat(held.value.stat.id, held.value.stat.cut)).toEqual({ kind: "ok", value: held.value.stat });
-    expect(await held.value.read({ offset: PAGE * 2, length: 1 })).toMatchObject({ kind: "ok", value: { bytes: new Uint8Array([65]) } });
+    await value.client.asyncCall("setMode", [value.handle, 0]);
+    expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({
+      kind: "denied",
+    });
+    expect(await value.workspace.stat(held.value.stat.id, held.value.stat.cut)).toEqual({
+      kind: "ok",
+      value: held.value.stat,
+    });
+    expect(await held.value.read({ offset: PAGE * 2, length: 1 })).toMatchObject({
+      kind: "ok",
+      value: { bytes: new Uint8Array([65]) },
+    });
     expect(value.backend.shared.resources().usedBytes).toBe(before);
     await held.value.close();
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
