@@ -11,7 +11,7 @@ export type DebtCase =
   | "runtime-close-undefined"
   | "runtime-stop-error"
   | "runtime-late-stop";
-export type DebtPage = ShutdownDebtPage;
+type DebtPage = ShutdownDebtPage;
 declare global {
   interface Window {
     shutdownDebt: DebtPage;
