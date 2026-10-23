@@ -21,10 +21,12 @@ import {
   type NetRequest,
   type NewConn,
   ERROR,
+  UNSUPPORTED,
   type PeerAddr,
   type TcpRequest,
 } from "./protocol.js";
 import { RingWriter } from "./ring.js";
+import { loopbackAddress, tcpAddress } from "./address.js";
 import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
 export { NetNamespace } from "./namespace.js";
 
@@ -266,12 +268,16 @@ export class NetHelper {
     if (listener === undefined || this.sharedListeners.has(listener))
       return this.connectNamespace(port, captured);
     sink = captured;
+    const bind = this.namespace.address(port);
+    if (!bind) return null;
+    const local = { ...loopbackAddress(bind), port };
     const conn = this.nextConn++;
     this.connections.set(conn, sink);
     this.pending.get(listener)?.add(conn);
     const announce: NewConn = {
       conn,
-      peer: { address: "127.0.0.1", port: 40000 + (conn % 20000), family: "IPv4" },
+      peer: { ...local, port: 40000 + (conn % 20000) },
+      local,
     };
     let sending = this.ring.write(listener, Kind.Conn, json(announce));
     return {
@@ -357,10 +363,13 @@ export class NetHelper {
   private listen(id: number, port: number, host: string, shared = false): number {
     const listening = this.hooks.listening;
     if (!this.live()) return ERROR;
+    const address = tcpAddress(host);
+    if (!address) return UNSUPPORTED;
     const bound = this.namespace.listen(port, {
       owner: this,
       handle: id,
-      accept: (peer, socket) => this.acceptSocket(id, peer, socket),
+      local: { ...address, port },
+      accept: (peer, local, socket) => this.acceptSocket(id, peer, local, socket),
     });
     if (bound < 0) return bound;
     this.listeners.set(id, bound);
@@ -392,11 +401,11 @@ export class NetHelper {
     };
   }
 
-  private acceptSocket(listener: number, peer: PeerAddr, socket: LoopbackSocket): void {
+  private acceptSocket(listener: number, peer: PeerAddr, local: PeerAddr, socket: LoopbackSocket): void {
     const conn = this.nextConn++;
     this.sockets.set(conn, socket);
     this.pending.get(listener)?.add(conn);
-    void this.ring.write(listener, Kind.Conn, json({ conn, peer } satisfies NewConn));
+    void this.ring.write(listener, Kind.Conn, json({ conn, peer, local } satisfies NewConn));
     socket.receive(this.socketSink(conn));
   }
 
@@ -423,7 +432,7 @@ export class NetHelper {
       return [req.data.length, 0];
     }
     if (!this.live()) return [ERROR, 0];
-    const connected = this.namespace.connect(req.port, this.socketSink(req.id));
+    const connected = this.namespace.connect(req.port, this.socketSink(req.id), req.host);
     if (typeof connected === "number") return [connected, 0];
     this.sockets.set(req.id, connected.socket);
     return [0, connected.port];
@@ -635,7 +644,7 @@ function snapshotRequest(req: NetRequest): NetRequest {
     case "tcp-listen":
       return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-connect":
-      return { type, id, reply: req.reply, port: req.port };
+      return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-write":
       return { type, id, reply: req.reply, data: req.data };
     case "listen":

@@ -16,6 +16,7 @@ import {
 } from "./protocol.js";
 import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./namespace.js";
 import { RingReader } from "./ring.js";
+import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
 
 interface Stream {
   chunks: Uint8Array[];
@@ -30,14 +31,14 @@ interface FetchHandle extends Stream {
 
 interface ListenerHandle {
   kind: "listener";
-  port: number;
+  local: PeerAddr;
   pending: number[];
   error: NetError | null;
 }
 
 interface ConnHandle extends Stream {
   kind: "conn";
-  port: number;
+  local: PeerAddr;
   peer: PeerAddr;
   /** For a connection between two of the guest's own handles (connect to its own listener): the other end. */
   pipe: number | null;
@@ -48,8 +49,6 @@ type Handle = FetchHandle | ListenerHandle | ConnHandle;
 
 /** Largest write accepted per call; the helper buffers it. */
 const MAX_WRITE = 1 << 20;
-/** Hostnames `connect` treats as this process. */
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "::"]);
 /** `listen(…, 0)` hands out ports from here up. */
 const EPHEMERAL_BASE = 49152;
 
@@ -260,12 +259,7 @@ export class NetHost {
   localAddr(handle: number): string | number {
     const h = this.handles.get(handle);
     if (!h || h.kind === "fetch") return BADF;
-    const family = h.kind === "conn" ? h.peer.family : "IPv4";
-    return JSON.stringify({
-      address: family === "IPv4" ? "127.0.0.1" : "::1",
-      family,
-      port: h.port,
-    });
+    return JSON.stringify(h.local);
   }
 
   close(handle: number): number {
@@ -288,9 +282,14 @@ export class NetHost {
   listen(hostname: string, port: number): number {
     if (this.disposed) return BADF;
     const host = hostname || "0.0.0.0";
-    if (this.options.shared) return this.listenShared(host, port);
+    const address = tcpAddress(host);
+    if (!address) {
+      this.lastError = { name: "Error", message: `listen ${host}: only virtual loopback binds are available in the browser`, code: "ENOTSUP" };
+      return UNSUPPORTED;
+    }
+    if (this.options.shared) return this.listenShared(host, port, address);
     const inUse = new Set<number>();
-    for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.port);
+    for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.local.port);
     if (port === 0) {
       port = EPHEMERAL_BASE;
       while (inUse.has(port)) port++;
@@ -305,7 +304,7 @@ export class NetHost {
       });
     }
     const id = this.nextHandle++;
-    this.handles.set(id, { kind: "listener", port, pending: [], error: null });
+    this.handles.set(id, { kind: "listener", local: { ...address, port }, pending: [], error: null });
     this.send({ type: "listen", id, port, host });
     return id;
   }
@@ -316,18 +315,8 @@ export class NetHost {
    */
   connect(host: string, port: number): number {
     if (this.disposed) return BADF;
-    if (this.options.shared && LOOPBACK.has(host)) return this.connectShared(port);
-    const listener = Array.from(this.handles.entries()).find(
-      ([, h]) => h.kind === "listener" && h.port === port,
-    );
-    if (LOOPBACK.has(host) && (!listener || listener[1].kind !== "listener")) {
-      return this.fail({
-        name: "Error",
-        message: `connect ECONNREFUSED ${host}:${port}`,
-        code: "ECONNREFUSED",
-      });
-    }
-    if (!LOOPBACK.has(host)) {
+    const address = tcpAddress(host);
+    if (!address) {
       this.lastError = {
         name: "Error",
         message: `connect ${host}:${port}: TCP connections are not available in the browser`,
@@ -335,23 +324,37 @@ export class NetHost {
       };
       return UNSUPPORTED;
     }
-    if (!listener || listener[1].kind !== "listener") return BADF;
+    const target = loopbackAddress(address);
+    if (this.options.shared) return this.connectShared(target, port);
+    const listener = Array.from(this.handles.entries()).find(
+      ([, h]) => h.kind === "listener" && h.local.port === port && acceptedAddress(h.local, target),
+    );
+    if (!listener) {
+      return this.fail({
+        name: "Error",
+        message: `connect ECONNREFUSED ${host}:${port}`,
+        code: "ECONNREFUSED",
+      });
+    }
+    if (listener[1].kind !== "listener") return BADF;
     const state = listener[1];
+    const accepted = acceptedAddress(state.local, target);
+    if (!accepted) return BADF;
     const client = this.nextHandle++;
     const server = this.nextHandle++;
     const clientPort = EPHEMERAL_BASE + 10000 + (client % 5000);
     const stream = (): Stream => ({ chunks: [], ended: false, error: null });
     this.handles.set(client, {
       kind: "conn",
-      port: clientPort,
-      peer: { address: "127.0.0.1", port, family: "IPv4" },
+      local: { ...target, port: clientPort },
+      peer: { ...target, port },
       pipe: server,
       ...stream(),
     });
     this.unaccepted.set(server, {
       kind: "conn",
-      port,
-      peer: { address: "127.0.0.1", port: clientPort, family: "IPv4" },
+      local: { ...accepted, port },
+      peer: { ...accepted, port: clientPort },
       pipe: client,
       ...stream(),
     });
@@ -376,6 +379,7 @@ export class NetHost {
       [TCP_REFUSED]: "ECONNREFUSED",
       [TCP_PIPE]: "EPIPE",
       [TCP_INVALID]: "EINVAL",
+      [UNSUPPORTED]: "ENOTSUP",
     };
     const code = codes[status] ?? "ECANCELED";
     return { name: "Error", message: `loopback TCP: ${code}`, code };
@@ -389,22 +393,22 @@ export class NetHost {
     return [Atomics.load(cells, 1), Atomics.load(cells, 2)];
   }
 
-  private listenShared(host: string, port: number): number {
+  private listenShared(host: string, port: number, address: Omit<PeerAddr, "port">): number {
     const id = this.nextHandle++;
     const [status, bound] = this.call({ type: "tcp-listen", id, host, port });
     if (status < 0) return this.fail(this.tcpError(status));
-    this.handles.set(id, { kind: "listener", port: bound, pending: [], error: null });
+    this.handles.set(id, { kind: "listener", local: { ...address, port: bound }, pending: [], error: null });
     return id;
   }
 
-  private connectShared(port: number): number {
+  private connectShared(target: Omit<PeerAddr, "port">, port: number): number {
     const id = this.nextHandle++;
-    const [status, local] = this.call({ type: "tcp-connect", id, port });
+    const [status, local] = this.call({ type: "tcp-connect", id, host: target.address, port });
     if (status < 0) return this.fail(this.tcpError(status));
     this.handles.set(id, {
       kind: "conn",
-      port: local,
-      peer: { address: "127.0.0.1", family: "IPv4", port },
+      local: { ...target, port: local },
+      peer: { ...target, port },
       pipe: null,
       chunks: [],
       ended: false,
@@ -421,7 +425,7 @@ export class NetHost {
   localPort(handle: number): number {
     const h = this.handles.get(handle);
     if (!h || h.kind === "fetch") return BADF;
-    return h.port;
+    return h.local.port;
   }
 
   accept(listener: number): number {
@@ -522,7 +526,7 @@ export class NetHost {
   }
 
   private onConn(listener: number, payload: Uint8Array): void {
-    const { conn, peer } = JSON.parse(decoder.decode(payload)) as NewConn;
+    const { conn, peer, local } = JSON.parse(decoder.decode(payload)) as NewConn;
     const h = this.handles.get(listener);
     if (h?.kind !== "listener") {
       // The listener closed before the connection arrived: refuse it.
@@ -531,7 +535,7 @@ export class NetHost {
     }
     this.unaccepted.set(conn, {
       kind: "conn",
-      port: h.port,
+      local,
       peer,
       pipe: null,
       chunks: [],

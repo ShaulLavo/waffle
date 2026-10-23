@@ -1,4 +1,5 @@
-import { AGAIN, ERROR, type PeerAddr } from "./protocol.js";
+import { AGAIN, ERROR, UNSUPPORTED, type PeerAddr } from "./protocol.js";
+import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
 
 export const TCP_IN_USE = -10;
 export const TCP_REFUSED = -11;
@@ -16,7 +17,8 @@ export interface SocketSink {
 type Listener = {
   owner: object;
   handle: number;
-  accept(peer: PeerAddr, socket: LoopbackSocket): void;
+  local: PeerAddr;
+  accept(peer: PeerAddr, local: PeerAddr, socket: LoopbackSocket): void;
 };
 
 /** Both endpoints live with the helpers. Only owned byte copies cross worker boundaries. */
@@ -103,7 +105,7 @@ export class NetNamespace {
     if (port === 0) port = this.availablePort();
     if (port === ERROR) return ERROR;
     if (this.listeners.has(port) || this.clientPorts.has(port)) return TCP_IN_USE;
-    this.listeners.set(port, listener);
+    this.listeners.set(port, { ...listener, local: { ...listener.local, port } });
     return port;
   }
 
@@ -123,15 +125,23 @@ export class NetNamespace {
     return this.listeners.has(port);
   }
 
-  connect(port: number, sink: SocketSink): { socket: LoopbackSocket; port: number } | number {
+  address(port: number): PeerAddr | undefined {
+    return this.listeners.get(port)?.local;
+  }
+
+  connect(port: number, sink: SocketSink, host?: string): { socket: LoopbackSocket; port: number } | number {
     const listener = this.listeners.get(port);
     if (!listener) return TCP_REFUSED;
+    const target = host === undefined ? loopbackAddress(listener.local) : tcpAddress(host);
+    if (!target) return UNSUPPORTED;
+    const address = acceptedAddress(listener.local, target);
+    if (!address) return TCP_REFUSED;
     const localPort = this.availablePort(this.nextClientPort);
     if (localPort === ERROR) return ERROR;
     this.nextClientPort = localPort === 65535 ? FIRST_PORT : localPort + 1;
     this.clientPorts.add(localPort);
     const [client, server] = LoopbackSocket.pair(sink, () => this.clientPorts.delete(localPort));
-    listener.accept({ address: "127.0.0.1", family: "IPv4", port: localPort }, server);
+    listener.accept({ ...address, port: localPort }, { ...address, port }, server);
     return { socket: client, port: localPort };
   }
 
