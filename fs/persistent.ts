@@ -404,8 +404,11 @@ export class PersistentBackend extends MemoryBackend {
           ? action.size
           : Math.max(this.shared.info(action.handle)!.size, action.size),
       );
-    if (action.kind === "setMode" || action.kind === "setMtime")
+    if (action.kind === "setMode" || action.kind === "setMtime") {
+      const node = this.fs.nodeForHandle(action.handle);
+      if (node.kind === "dir" && !this.dirty.has(node)) units += this.nodeMetadataBytes(node) * 4;
       files.set(action.handle, this.shared.stat(action.handle)!.size);
+    }
     this.shared.prepareDirtyMutation(files, units);
   }
   override execute(
