@@ -1,10 +1,6 @@
 import { resolve } from "node:path";
 import type { BrowserContext } from "playwright";
-import {
-  BrowserRunnerLifecycle,
-  browserBundle,
-  engines,
-} from "../tests/browser-runner-lifecycle.js";
+import { BrowserRunnerLifecycle, browserBundle } from "../tests/browser-runner-lifecycle.js";
 import {
   quotaCases,
   type QuotaCase,
@@ -91,23 +87,28 @@ export async function runQuotaMatrix(selected: string[]): Promise<void> {
       ),
       "/worker.js": `(${workerMain.toString()})();`,
     });
-    for (const engine of selected) {
-      if (!(engine in engines)) throw new Error(`Unknown browser ${engine}`);
-      const name = engine as keyof typeof engines;
-      const profile = await lifecycle.directory(lifecycle.scratch, `${name}-quota-`);
-      const context = await lifecycle.persistent(name, profile);
-      try {
-        for (const cell of quotaMatrix())
-          await collectCell(context, origin, engine, cell, failures);
-      } finally {
-        await lifecycle.closeContext(context);
-        await lifecycle.removeDirectory(profile);
-      }
-    }
+    for (const engine of selected) await runEngine(lifecycle, origin, engine, failures);
   } finally {
     await lifecycle.close();
   }
   if (failures.length) throw new AggregateError(failures, `${failures.length} quota cells failed`);
+}
+async function runEngine(
+  lifecycle: BrowserRunnerLifecycle,
+  origin: string,
+  engine: string,
+  failures: string[],
+): Promise<void> {
+  if (engine !== "chromium" && engine !== "firefox" && engine !== "webkit")
+    throw new Error(`Unknown browser ${engine}`);
+  const profile = await lifecycle.directory(lifecycle.scratch, `${engine}-quota-`);
+  const context = await lifecycle.persistent(engine, profile);
+  try {
+    for (const cell of quotaMatrix()) await collectCell(context, origin, engine, cell, failures);
+  } finally {
+    await lifecycle.closeContext(context);
+    await lifecycle.removeDirectory(profile);
+  }
 }
 async function collectCell(
   context: BrowserContext,
