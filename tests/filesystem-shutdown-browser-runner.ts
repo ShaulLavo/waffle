@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { runNativeDebt } from "./filesystem-shutdown-browser-debt.js";
 import type { Browser, BrowserContext, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
 import {
@@ -475,6 +476,10 @@ function specifications(
   );
 }
 async function run(): Promise<void> {
+  if (process.argv.includes("--native-debt")) {
+    await runNativeDebt(lifecycle, process.argv.slice(2));
+    return;
+  }
   const selected = shutdownSelection(process.argv.slice(2));
   await lifecycle.init();
   const page = await browserBundle(

@@ -1,6 +1,6 @@
 {
   "name": "waffle",
-  "version": "0.0.78",
+  "version": "0.0.79",
   "private": true,
   "type": "module",
   "exports": {
@@ -387,6 +387,13 @@
       "browser": "./browser/preview1-worker.ts",
       "default": "./browser/preview1-worker.ts"
     },
+    "./browser/process-context": {
+      "types": "./browser/process-context.ts",
+      "node": "./dist/browser/process-context.js",
+      "bun": "./browser/process-context.ts",
+      "browser": "./browser/process-context.ts",
+      "default": "./browser/process-context.ts"
+    },
     "./browser/process-broker": {
       "types": "./browser/process-broker.ts",
       "node": "./dist/browser/process-broker.js",
@@ -442,6 +449,7 @@
     "build": "bun build.ts",
     "prepare": "bun prepare.ts",
     "test": "bun test ./tests",
+    "test:ci": "bun test ./tooling/ci-paths.test.ts",
     "test:libc": "bun scripts/test-wasi-libc.ts",
     "test:browser": "bun scripts/test-browser.ts",
     "check": "tsc -p .",
