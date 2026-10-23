@@ -18,6 +18,7 @@ import {
   type CompleteStage,
   type DurableReceipt,
   type NativeOutcome,
+  type StagingOutcome,
 } from "../fs/safe-staging.js";
 import {
   decodeRecord,
@@ -1046,6 +1047,9 @@ async function observerCapacity(
     assert(
       outcomes[0]?.kind === "committed" &&
         outcomes[64]?.kind === "indeterminate" &&
+        outcomes[64].key.client === 1n &&
+        outcomes[64].key.sequence === 1n &&
+        outcomes[64].cause instanceof StagingCapacity &&
         outcomes.every((outcome) => outcome.kind !== "not-admitted") &&
         prepared === 1 &&
         recovered.envelope.head.sequence === 1n &&
@@ -1080,6 +1084,11 @@ async function observerCancellation(
     controller.abort(null);
     const aborted = await cancelled;
     assert(aborted.kind === "indeterminate" && aborted.cause === null, "abort cause stays exact");
+    const preAborted = await driver.submit({ ...submission, signal: controller.signal });
+    assert(
+      preAborted.kind === "indeterminate" && preAborted.cause === null,
+      "already-cancelled join cannot deny admission of its running key",
+    );
     const replacement = driver.submit({ ...submission, signal: new AbortController().signal });
     gate.resolve();
     const outcomes = await Promise.all([first, replacement]);
@@ -1098,7 +1107,8 @@ async function observerReentry(
 ): Promise<void> {
   const storage = await open(),
     driver = await StagedCommitDriver.open(storage, { clients: 1 });
-  let second: Promise<import("../fs/safe-staging.js").StagingOutcome> | undefined,
+  let second: Promise<StagingOutcome> | undefined,
+    joined: Promise<StagingOutcome> | undefined,
     secondPrepared = 0;
   const next = {
     key: operationKey(1n, 2n),
@@ -1114,9 +1124,16 @@ async function observerReentry(
     ...next,
     key: operationKey(1n, 1n),
     async prepare() {
-      return stage(1, () => queueMicrotask(() => { second = driver.submit(next); }));
+      joined = driver.submit({ ...next, key: operationKey(1n, 1n) });
+      return stage(1, () =>
+        queueMicrotask(() => {
+          second = driver.submit(next);
+        }),
+      );
     },
   });
+  const join = await joined;
+  assert(join?.kind === "indeterminate", "first observer reserves before producer callback");
   const reply = await second;
   await driver.drain();
   assert(

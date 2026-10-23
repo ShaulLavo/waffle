@@ -12,7 +12,6 @@ import {
   type CompleteStage,
   type CommittedStorage,
 } from "../fs/safe-staging.js";
-import { runSafeStagingNative } from "./safe-staging-native.js";
 
 const request = { digest: "a".repeat(64), length: 1 };
 const recovery = () => ({ envelope: initialEnvelope(1), epoch: 1, index: undefined });
@@ -94,8 +93,3 @@ test("admission bounds run before producer allocation", async () => {
   expect(prepared).toBe(0);
   expect(driver.resources().debtBytes).toBe(0);
 });
-if (process.env.SAFE_STAGING_ENGINE) {
-  test("native staged adapter causal controls", async () => {
-    await runSafeStagingNative(process.env.SAFE_STAGING_ENGINE!, process.env.SAFE_STAGING_CONTROL);
-  }, 180_000);
-}

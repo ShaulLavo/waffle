@@ -42,13 +42,18 @@ outcome. It never rolls back durable data.
 Observer cancellation can return indeterminate while native work continues.
 `drain()` still joins that work. Native and stage debt remain charged until the
 terminal event, reconciliation, publication attempt, and stage release finish.
-Cancellation before native submission prevents the commit.
+Cancellation before native submission prevents the commit. A cancelled observer
+releases its wait slot immediately without releasing stage or native debt. New
+signalled requests reserve a wait slot before producer admission. A matching
+in-flight key that cannot get a slot returns keyed indeterminate, not not-admitted.
 
 Recovery validates the checksummed canonical envelope and its required generation
 and root. A valid journal may reconstruct that exact head after snapshot damage.
 Recovery rejects an older tree paired with a newer receipt, missing required
 metadata, and missing retained payloads. It preserves the database on failure.
-Normal FAST recovery can still select its older valid tree.
+Normal FAST recovery can still select its older valid tree. A valid genesis-only
+committed database can reopen without a namespace snapshot. Unexpected snapshot
+metadata at genesis still fails closed.
 
 ## Bounds and retained outcomes
 
@@ -73,13 +78,16 @@ result is no longer available. Client slots are not recycled in this unit.
 ## Verification
 
 Run `bun test tests/safe-staging.test.ts` for codec and pre-admission controls.
-Set `SAFE_STAGING_ENGINE` to `chromium`, `firefox`, or `webkit` to run the same
-file with native IndexedDB controls. Use the repository's canonical execution
-queue and shared browser cache. The runner owns its server, browser, and scratch.
+Run `bun tests/safe-staging-browser-runner.ts chromium firefox webkit` for native
+IndexedDB controls. The browser CI matrix invokes this runner once per engine,
+separately from unit tests. `SAFE_STAGING_CONTROL` selects one named control for
+a changed-path check. Use the repository's canonical execution queue and shared
+browser cache. The runner owns its server, browser, and scratch.
 
 Native controls cover atomic abort after payload writes, exact nullish causes,
 abort-request debt, commit-before-reply recovery, observer cancellation, duplicate
-joins, expected-head and epoch fences, receipt retention, retirement, format
+joins, observer capacity and callback reentry, genesis-only reopen, expected-head
+and epoch fences, receipt retention, retirement, format
 isolation, and corrupt-required-head rejection. The split-transaction negative
 control uses real FAST persistence without a receipt and must fail the atomic
 receipt assertion.

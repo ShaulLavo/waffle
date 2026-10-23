@@ -537,12 +537,16 @@ type DriverState =
       work: Promise<StagingOutcome>;
     }
   | { kind: "stopped"; cause: unknown };
+interface StagingObserver {
+  readonly work: Promise<StagingOutcome>;
+  settle(outcome: StagingOutcome): void;
+}
 export class StagedCommitDriver {
   private state: DriverState;
   private debtBytes = 0;
   private peakBytes = 0;
   private nativeDebt = 0;
-  private observers = 0;
+  private readonly observers = new Set<StagingObserver>();
   private constructor(
     private readonly storage: CommittedStorage,
     recovery: CommittedRecovery,
@@ -577,16 +581,18 @@ export class StagedCommitDriver {
       charge: { ...input.charge },
       prepare: input.prepare.bind(input),
     };
+    if (this.state.kind === "busy") return this.joinBusy(submission, this.state);
     if (submission.signal?.aborted)
       return Promise.resolve({ kind: "not-admitted", cause: submission.signal.reason });
     if (this.state.kind === "stopped")
       return Promise.resolve({ kind: "not-admitted", cause: this.state.cause });
-    if (this.state.kind === "busy") return this.joinBusy(submission, this.state);
     const recovery = this.state.recovery;
     const known = lookupReceipt(recovery.envelope, submission.key, submission.request);
     if (known.kind === "retained")
       return Promise.resolve({ kind: "committed", receipt: structuredClone(known.receipt) });
     if (known.kind !== "absent") return Promise.resolve({ kind: known.kind });
+    if (submission.signal && this.observers.size >= this.limits.clients)
+      return Promise.resolve({ kind: "not-admitted", cause: new StagingCapacity() });
     try {
       this.admit(submission, recovery);
     } catch (cause) {
@@ -600,11 +606,15 @@ export class StagedCommitDriver {
       request: submission.request,
       work: done.promise,
     };
-    void this.execute(submission, recovery).then(done.resolve, (cause: unknown) => {
-      this.state = { kind: "stopped", cause };
-      done.resolve({ kind: "indeterminate", key: submission.key, cause });
-    });
-    return this.observe(done.promise, submission);
+    const observed = this.observe(done.promise, submission);
+    void this.execute(submission, recovery).then(
+      (outcome) => this.complete(done, outcome),
+      (cause: unknown) => {
+        this.state = { kind: "stopped", cause };
+        this.complete(done, { kind: "indeterminate", key: submission.key, cause });
+      },
+    );
+    return observed;
   }
   async drain(): Promise<void> {
     if (this.state.kind === "busy") await this.state.work;
@@ -615,7 +625,10 @@ export class StagedCommitDriver {
     busy: Extract<DriverState, { kind: "busy" }>,
   ): Promise<StagingOutcome> {
     if (submission.key.client !== busy.key.client || submission.key.sequence !== busy.key.sequence)
-      return Promise.resolve({ kind: "not-admitted", cause: new StagingCapacity() });
+      return Promise.resolve({
+        kind: "not-admitted",
+        cause: submission.signal?.aborted ? submission.signal.reason : new StagingCapacity(),
+      });
     if (
       submission.request.digest !== busy.request.digest ||
       submission.request.length !== busy.request.length
@@ -706,21 +719,35 @@ export class StagedCommitDriver {
       }
     }
   }
+  private complete(work: PromiseWithResolvers<StagingOutcome>, outcome: StagingOutcome): void {
+    work.resolve(outcome);
+    for (const observer of this.observers)
+      if (observer.work === work.promise) observer.settle(outcome);
+  }
   private observe(work: Promise<StagingOutcome>, submission: Submission): Promise<StagingOutcome> {
     const signal = submission.signal;
     if (!signal) return work;
-    if (this.observers >= this.limits.clients)
-      return Promise.resolve({ kind: "not-admitted", cause: new StagingCapacity() });
-    this.observers++;
-    return new Promise((resolve) => {
-      const abort = () =>
-        resolve({ kind: "indeterminate", key: submission.key, cause: signal.reason });
-      signal.addEventListener("abort", abort, { once: true });
-      void work.then((outcome) => {
-        this.observers--;
-        signal.removeEventListener("abort", abort);
-        resolve(outcome);
+    if (signal.aborted)
+      return Promise.resolve({ kind: "indeterminate", key: submission.key, cause: signal.reason });
+    if (this.observers.size >= this.limits.clients)
+      return Promise.resolve({
+        kind: "indeterminate",
+        key: submission.key,
+        cause: new StagingCapacity(),
       });
+    return new Promise((resolve) => {
+      const observer: StagingObserver = {
+        work,
+        settle: (outcome) => {
+          if (!this.observers.delete(observer)) return;
+          signal.removeEventListener("abort", abort);
+          resolve(outcome);
+        },
+      };
+      const abort = () =>
+        observer.settle({ kind: "indeterminate", key: submission.key, cause: signal.reason });
+      this.observers.add(observer);
+      signal.addEventListener("abort", abort, { once: true });
       if (signal.aborted) abort();
     });
   }

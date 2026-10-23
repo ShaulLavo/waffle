@@ -1168,7 +1168,10 @@ export class IndexedDBStorage implements StorageBackend {
       await this.recoverRequiredHead(storedCommit, active, newest, physical, journalKeys, dataKeys);
     if (
       !newest &&
-      (metadataKeys.filter((key) => key !== "format" && key !== "identity").length > 1 ||
+      (metadataKeys.filter(
+        (key) =>
+          key !== "format" && key !== "identity" && (!this.committedMode || key !== "commit"),
+      ).length > 1 ||
         journalKeys.length > 0 ||
         dataKeys.length > 0)
     ) {
