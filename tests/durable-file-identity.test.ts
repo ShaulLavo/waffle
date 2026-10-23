@@ -185,6 +185,48 @@ test("actual service and direct commits update one general revision, metadata in
   }
 });
 
+test("empty host overwrite preserves identity and cut unless metadata or size changes", async () => {
+  const current = await fixture(new MemoryBackend());
+  const { backend, client } = current;
+  const observer = publicationObserver(client);
+  const originalNow = Date.now;
+  let now = 1_700_000_000_000;
+  Date.now = () => now;
+  try {
+    await client.asyncCall("writeFile", ["/empty"], new Uint8Array());
+    const file = handle(backend, "/empty");
+    const before = backend.identity(file),
+      stat = backend.shared.stat(file),
+      cut = await observer.cut(),
+      available = backend.shared.identities.available;
+    await client.asyncCall("writeFile", ["/empty"], new Uint8Array());
+    expect(await client.asyncCall("readFile", ["/empty"])).toEqual(new Uint8Array());
+    expect(backend.shared.stat(file)).toEqual(stat);
+    expect(backend.identity(file)).toEqual(before);
+    expect(await observer.cut()).toEqual(cut);
+    expect(backend.shared.identities.available).toBe(available);
+    now++;
+    await client.asyncCall("writeFile", ["/empty"], new Uint8Array());
+    const metadata = backend.identity(file);
+    expect(metadata.id).toBe(before.id);
+    expect(metadata.version).not.toBe(before.version);
+    expect(backend.shared.stat(file)?.mtime).toBe(now);
+    expect((await observer.cut()).generation).toBe(cut.generation + 1);
+    await client.asyncCall("writeFile", ["/empty"], bytes("x"));
+    const content = backend.identity(file);
+    expect(content.version).not.toBe(metadata.version);
+    expect((await observer.cut()).generation).toBe(cut.generation + 2);
+    await client.asyncCall("writeFile", ["/empty"], new Uint8Array());
+    expect(backend.identity(file).id).toBe(before.id);
+    expect(backend.identity(file).version).not.toBe(content.version);
+    expect(backend.shared.stat(file)?.size).toBe(0);
+    expect((await observer.cut()).generation).toBe(cut.generation + 3);
+  } finally {
+    Date.now = originalNow;
+    current.stop();
+  }
+});
+
 test("startup waits for its independent durable reservation and preserves old root on failure", async () => {
   const store = new IdentityStore();
   const gate = Promise.withResolvers<void>();

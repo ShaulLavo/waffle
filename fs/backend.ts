@@ -207,25 +207,28 @@ export class MemoryBackend implements FilesystemBackend {
     try {
       const intent = mutationIntent(operation, args);
       if (!intent) return this.executeOperation(operation, args, data);
-      return this.shared.mutate(undefined, undefined, () => {
-        const plan = this.planPublication(intent, data);
-        try {
-          this.applyPublication(plan);
-        } catch (error) {
-          this.discardPublication(plan);
-          throw error;
-        }
-        return mutationValue(plan.result);
-      });
+      return this.shared.mutate(undefined, undefined, () => this.executePublication(intent, data));
     } finally {
-      if (namespaceOperations.has(operation))
-        for (const handle of this.directoryTimes.keys()) {
-          try {
-            this.sync(handle);
-          } catch {
-            this.directoryTimes.delete(handle);
-          }
-        }
+      if (namespaceOperations.has(operation)) this.syncDirectoryTimes();
+    }
+  }
+  private executePublication(intent: MutationIntent, data: Uint8Array): unknown {
+    const plan = this.planPublication(intent, data);
+    try {
+      this.applyPublication(plan);
+    } catch (error) {
+      this.discardPublication(plan);
+      throw error;
+    }
+    return mutationValue(plan.result);
+  }
+  private syncDirectoryTimes(): void {
+    for (const handle of this.directoryTimes.keys()) {
+      try {
+        this.sync(handle);
+      } catch {
+        this.directoryTimes.delete(handle);
+      }
     }
   }
   private checkMissingParent(path: string): void {
@@ -518,7 +521,9 @@ export class MemoryBackend implements FilesystemBackend {
       if (!intent.append && size !== info.size)
         changes.push({ kind: "resize", file, size, version });
       if (data.length) changes.push({ kind: "bytes", file, offset, bytes: data, size, version });
-      changes.push({ kind: "metadata", file, mode: prepared.node.mode, mtime });
+      if (info.mode !== prepared.node.mode || info.mtime !== mtime)
+        changes.push({ kind: "metadata", file, mode: prepared.node.mode, mtime });
+      if (!changes.length) return { action: { kind: "none" }, result: { kind: "void" }, changes };
       return {
         action: {
           kind: "writeFile",
