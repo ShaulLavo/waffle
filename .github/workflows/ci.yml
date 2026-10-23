@@ -146,8 +146,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - name: Cache Bun package downloads
-        uses: actions/cache@v4
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
@@ -179,8 +179,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
-      - name: Cache Bun package downloads
-        uses: actions/cache@v4
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}

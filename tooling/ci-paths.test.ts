@@ -91,10 +91,16 @@ function stepsFor(name: string): Array<Record<string, unknown>> {
 }
 
 test("package installs share one Bun package-manager cache contract", () => {
-  for (const name of ["package", "browser", "site"]) {
+  const expectedCacheUses = {
+    package: "actions/cache@v4",
+    browser: "actions/cache/restore@v4",
+    site: "actions/cache/restore@v4",
+  };
+  let sharedKey: string | undefined;
+  for (const name of ["package", "browser", "site"] as const) {
     const steps = stepsFor(name);
     const cacheSteps = steps.filter((step) => {
-      if (step.uses !== "actions/cache@v4") return false;
+      if (step.uses !== expectedCacheUses[name]) return false;
       return record(step.with).path === "~/.bun/install/cache";
     });
     expect(cacheSteps).toHaveLength(1);
@@ -103,12 +109,15 @@ test("package installs share one Bun package-manager cache contract", () => {
     if (!cache) throw new Error(`expected ${name} Bun cache`);
     const cachePath = String(record(cache.with).path);
     const cacheKey = String(record(cache.with).key);
+    expect(cache.uses).toBe(expectedCacheUses[name]);
     expect(cachePath).toBe("~/.bun/install/cache");
     expect(cachePath).not.toContain("node_modules");
     expect(cacheKey).toContain("${{ runner.os }}");
     expect(cacheKey).toContain("${{ runner.arch }}");
     expect(cacheKey).toContain("${{ env.BUN_VERSION }}");
     expect(cacheKey).toContain("${{ hashFiles('bun.lock', 'site/bun.lock') }}");
+    if (sharedKey === undefined) sharedKey = cacheKey;
+    expect(cacheKey).toBe(sharedKey);
 
     const cacheIndex = steps.indexOf(cache);
     const installIndexes = steps.flatMap((step, index) =>
