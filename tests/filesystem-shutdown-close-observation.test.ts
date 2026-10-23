@@ -419,7 +419,6 @@ test("close getter failure remains a missing call and retains its original reaso
   }
 });
 
-
 test("remaining Firefox selection contains exactly the eight never-run raw-close cells", () => {
   const selected = shutdownSelection(["firefox", "--remaining-firefox"]);
   expect(selected.selected).toEqual(["firefox"]);
@@ -432,6 +431,7 @@ for (const args of [
   ["firefox", "webkit", "--remaining-firefox"],
   ["firefox", "--remaining-firefox", "--reason", "error"],
   ["firefox", "--remaining-firefox", "--remaining-firefox"],
-]) test(`remaining Firefox selector rejects ${args.join(" ")}`, () => {
-  expect(() => shutdownSelection(args)).toThrow();
-});
+])
+  test(`remaining Firefox selector rejects ${args.join(" ")}`, () => {
+    expect(() => shutdownSelection(args)).toThrow();
+  });

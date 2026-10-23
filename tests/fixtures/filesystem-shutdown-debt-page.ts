@@ -4,10 +4,19 @@ import { withVfsImplementation } from "../../fs/vfs-internal.js";
 import { observe, type Outcome } from "../filesystem-shutdown-browser.js";
 
 export const shutdownDebtPagePath = import.meta.filename;
-export type DebtCase = "filesystem-close-error" | "filesystem-close-undefined" |
-  "runtime-close-error" | "runtime-close-undefined" | "runtime-stop-error" | "runtime-late-stop";
+export type DebtCase =
+  | "filesystem-close-error"
+  | "filesystem-close-undefined"
+  | "runtime-close-error"
+  | "runtime-close-undefined"
+  | "runtime-stop-error"
+  | "runtime-late-stop";
 export type DebtPage = ReturnType<typeof installPage>;
-declare global { interface Window { shutdownDebt: DebtPage } }
+declare global {
+  interface Window {
+    shutdownDebt: DebtPage;
+  }
+}
 
 function installPage() {
   let mode: DebtCase;
@@ -26,17 +35,22 @@ function installPage() {
   let ackCount = 0;
   const terminationRoles: string[] = [];
   const nativeWorker = globalThis.Worker;
+  function captureStorage(worker: Worker): void {
+    storageWorker = worker;
+  }
   class RecordedWorker extends nativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
       if (new URL(url, location.href).searchParams.get("role") !== "storage") return;
-      storageWorker = this;
+      captureStorage(this);
       this.addEventListener("message", (event) => {
         if (event.data?.type === "filesystem-disposed") ackCount++;
       });
     }
     override terminate(): void {
-      terminationRoles.push(new URL(this === storageWorker ? "?role=storage" : "?role=consumer", location.href).search);
+      terminationRoles.push(
+        new URL(this === storageWorker ? "?role=storage" : "?role=consumer", location.href).search,
+      );
       super.terminate();
     }
   }
@@ -55,12 +69,18 @@ function installPage() {
   }
   async function addConsumer(index: number): Promise<void> {
     if (!runtime) throw new Error("Missing original Runtime");
-    const worker = new RecordedWorker(`/debt-worker.js?role=consumer&index=${index}`, { type: "module" });
+    const worker = new RecordedWorker(`/debt-worker.js?role=consumer&index=${index}`, {
+      type: "module",
+    });
     consumers.push(worker);
-    await new Promise<void>((resolve) => worker.addEventListener("message", () => resolve(), { once: true }));
+    await new Promise<void>((resolve) =>
+      worker.addEventListener("message", () => resolve(), { once: true }),
+    );
     const consumer = {
       filesystem: runtime.filesystem.createIdentity(),
-      revoke() { release?.(); },
+      revoke() {
+        release?.();
+      },
       stop() {
         stopCalls[index] = (stopCalls[index] ?? 0) + 1;
         if (index === 0) stopEntered.resolve();
@@ -85,7 +105,9 @@ function installPage() {
     try {
       if (next.startsWith("filesystem")) filesystem = new SharedFilesystem(options);
       else runtime = createRuntime({ filesystem: options });
-    } finally { globalThis.Worker = nativeWorker; }
+    } finally {
+      globalThis.Worker = nativeWorker;
+    }
     const capability = filesystem ?? runtime?.filesystem;
     if (!capability) throw new Error("Missing original filesystem");
     await capability.writeFile("/marker", "native-close-debt");
@@ -97,7 +119,9 @@ function installPage() {
     const owner = filesystem ?? runtime;
     if (!owner) throw new Error("Missing original disposal owner");
     disposal = owner.dispose();
-    void observe(disposal).then((settled) => { result = settled; });
+    void observe(disposal).then((settled) => {
+      result = settled;
+    });
   }
   function state() {
     const owner = filesystem ?? runtime;
@@ -118,16 +142,33 @@ function installPage() {
     state,
     probe,
     stopped: () => stopEntered.promise,
-    join(index: number) { joins[index]!.resolve(); },
-    terminateConsumer(index: number) { consumers[index]!.terminate(); },
-    late() { release?.(); joins[0]!.resolve(); },
-    async lockAvailable() {
-      return navigator.locks.request(`bun-wasm:filesystem:${name}`, { ifAvailable: true }, (lock) => lock !== null);
+    join(index: number) {
+      joins[index]!.resolve();
     },
-    terminate() { for (const worker of consumers) worker.terminate(); storageWorker?.terminate(); },
+    terminateConsumer(index: number) {
+      consumers[index]!.terminate();
+    },
+    late() {
+      release?.();
+      joins[0]!.resolve();
+    },
+    async lockAvailable() {
+      return navigator.locks.request(
+        `bun-wasm:filesystem:${name}`,
+        { ifAvailable: true },
+        (lock) => lock !== null,
+      );
+    },
+    terminate() {
+      for (const worker of consumers) worker.terminate();
+      storageWorker?.terminate();
+    },
     async deleteStorage() {
       const root = await navigator.storage.getDirectory();
-      await root.removeEntry(`bun-wasm-${btoa(JSON.stringify(name)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`, { recursive: true });
+      await root.removeEntry(
+        `bun-wasm-${btoa(JSON.stringify(name)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`,
+        { recursive: true },
+      );
     },
   };
 }

@@ -22,8 +22,10 @@ function installStorage(): void {
   let sameStoragePromise = false;
   let reasonMatched = false;
   let lateCallbacks = 0;
-  const reason: unknown = new URL(location.href).searchParams.get("reason") === "undefined"
-    ? undefined : new Error("labelled injection before original native close");
+  const reason: unknown =
+    new URL(location.href).searchParams.get("reason") === "undefined"
+      ? undefined
+      : new Error("labelled injection before original native close");
   const prototype = FileSystemFileHandle.prototype;
   const factory: unknown = Reflect.get(prototype, "createSyncAccessHandle");
   if (typeof factory !== "function") throw new Error("Native sync access is unavailable");
@@ -58,9 +60,14 @@ function installStorage(): void {
       resources: storage?.resources(),
     };
   }
-  const scope: { onmessage: ((event: MessageEvent<unknown>) => void) | null; postMessage(message: unknown): void } = {
+  const scope: {
+    onmessage: ((event: MessageEvent<unknown>) => void) | null;
+    postMessage(message: unknown): void;
+  } = {
     onmessage: null,
-    postMessage(message: unknown) { globalThis.postMessage(message); },
+    postMessage(message: unknown) {
+      globalThis.postMessage(message);
+    },
   };
   installFilesystemWorker(scope, async (data) => {
     storage = await OpfsStorage.open(data.name);
@@ -71,7 +78,9 @@ function installStorage(): void {
       const original = originalClose();
       if (!closing) closing = original;
       sameStoragePromise = closing === original;
-      void original.catch((failure: unknown) => { reasonMatched = Object.is(failure, reason); });
+      void original.catch((failure: unknown) => {
+        reasonMatched = Object.is(failure, reason);
+      });
       return original;
     };
     return backend;
