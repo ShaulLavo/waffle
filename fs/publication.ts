@@ -333,12 +333,6 @@ function checkpointLimits(value: unknown): PublicationLimits {
     pinBytes: checkpointInteger(limits.pinBytes),
   });
 }
-function sameLimits(left: PublicationLimits, right: PublicationLimits): boolean {
-  return (
-    Object.entries(left).every(([key, value]) => Reflect.get(right, key) === value) &&
-    Object.keys(left).length === Object.keys(right).length
-  );
-}
 function checkpointReceipt(
   value: unknown,
   cut: PublicationCut,
