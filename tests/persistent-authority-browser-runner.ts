@@ -55,7 +55,7 @@ async function step(name: string, action: () => Promise<unknown>): Promise<void>
       timer = setTimeout(() => reject(new Error(`step deadline: ${name}`)), 15_000);
     });
     const value = await Promise.race([action(), budget]);
-    steps[index] = { name, kind: "completed", value: value ?? null };
+    steps[index] = { name, kind: "completed", value };
     console.log(`PASS ${name}`);
   } catch (error) {
     steps[index] = { name, kind: "failed", failure: String(error) };
@@ -496,6 +496,9 @@ try {
   const browser = await lifecycle.launch("chromium");
   evidence.browser = { name: "chromium", version: browser.version() };
   await scenario(browser, origin);
+} catch (error) {
+  evidence.failure = error;
+  throw error;
 } finally {
   try {
     await lifecycle.close();

@@ -1,7 +1,12 @@
 import { resolve } from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page, Worker } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
-import { proofEqual as equal, reportJson, type ProofStep } from "./persistent-authority-report";
+import {
+  proofEqual as equal,
+  proofReport,
+  reportJson,
+  type ProofStep,
+} from "./persistent-authority-report";
 import { record, text } from "../fs/publication-attachment";
 import { publicationCut, type PublicationCut } from "../fs/publication";
 
@@ -41,7 +46,7 @@ async function step(index: number, action: () => Promise<unknown>): Promise<void
   const name = names[index]!;
   try {
     const value = await bounded(action(), name);
-    steps[index] = { name, kind: "completed", value: value ?? null };
+    steps[index] = { name, kind: "completed", value };
     console.log(`PASS ${name}`);
   } catch (error) {
     steps[index] = { name, kind: "failed", failure: String(error) };
@@ -549,12 +554,15 @@ try {
   const browser = await lifecycle.launch("chromium");
   evidence.browser = browser.version();
   await scenario(browser, origin);
+} catch (error) {
+  evidence.failure = error;
+  throw error;
 } finally {
   try {
     await lifecycle.close();
     evidence.outerCleanup = "browser, server, profile and scratch retired";
   } finally {
-    const report = { ...evidence, steps };
+    const report = proofReport(evidence, steps);
     console.log(reportJson(report));
     if (reportPath) await Bun.write(reportPath, reportJson(report, 2) + "\n");
   }

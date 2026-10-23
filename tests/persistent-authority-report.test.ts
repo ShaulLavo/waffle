@@ -61,7 +61,15 @@ test.each(unequal)("comparison distinguishes %p from %p", (actual, expected) => 
 });
 
 test("reporting retains undefined and falsy values without changing comparison semantics", () => {
-  const values = { absent: undefined, nil: null, no: false, zero: 0, empty: "", negative: -0, nan: NaN };
+  const values = {
+    absent: undefined,
+    nil: null,
+    no: false,
+    zero: 0,
+    empty: "",
+    negative: -0,
+    nan: NaN,
+  };
   expect(JSON.parse(reportJson(values))).toEqual({
     absent: { valueType: "undefined" },
     nil: null,
@@ -77,7 +85,11 @@ test("reporting retains undefined and falsy values without changing comparison s
 
 for (const { completed, unrun, failedName } of [
   { completed: 9, unrun: 7, failedName: "WASI rename and complete ordered effects" },
-  { completed: 4, unrun: 3, failedName: "original owner resumes with one unchanged ordered history" },
+  {
+    completed: 4,
+    unrun: 3,
+    failedName: "original owner resumes with one unchanged ordered history",
+  },
 ]) {
   test(`failed native ledger retains ${completed}/1/${unrun} and the original error`, () => {
     const prototype = Object.getOwnPropertyDescriptor(BigInt.prototype, "toJSON");
@@ -95,12 +107,19 @@ for (const { completed, unrun, failedName } of [
       [{ name: failedName, kind: "failed", failure: String(failure) }],
       unrunSteps,
     );
-    const report = proofReport({ failure, changes: [{ file: identity }], cleanup: "retired" }, steps);
+    const report = proofReport(
+      { failure, changes: [{ file: identity }], cleanup: "retired" },
+      steps,
+    );
     const compact = JSON.parse(reportJson(report));
     expect(compact).toEqual(JSON.parse(reportJson(report, 2)));
     expect(compact.counts).toEqual({ completed, failed: 1, unrun });
     expect(compact.steps).toHaveLength(completed + 1 + unrun);
-    expect(compact.steps[completed]).toEqual({ name: failedName, kind: "failed", failure: String(failure) });
+    expect(compact.steps[completed]).toEqual({
+      name: failedName,
+      kind: "failed",
+      failure: String(failure),
+    });
     expect(compact.steps.slice(completed + 1)).toEqual(unrunSteps);
     expect(compact.changes[0].file).toEqual({
       birthHistory: identity.birthHistory,
@@ -108,7 +127,12 @@ for (const { completed, unrun, failedName } of [
       id: { valueType: "bigint", value: "18446744073709551620" },
       version: { valueType: "bigint", value: "18446744073709551624" },
     });
-    expect(compact.failure).toMatchObject({ valueType: "error", name: failure.name, message: failure.message, stack: failure.stack });
+    expect(compact.failure).toMatchObject({
+      valueType: "error",
+      name: failure.name,
+      message: failure.message,
+      stack: failure.stack,
+    });
     expect(report.steps).toBe(steps);
     expect(identity.id).toBe(18446744073709551620n);
     expect(Object.getOwnPropertyDescriptor(BigInt.prototype, "toJSON")).toEqual(prototype);
@@ -124,7 +148,12 @@ for (const { runner, variable, total } of [
     try {
       const path = resolve(root, "report.json");
       const child = Bun.spawn([process.execPath, resolve(import.meta.dir, runner)], {
-        env: { ...process.env, STORAGE_SCRATCH_ROOT: root, [`${variable}_PORT`]: "1", [`${variable}_REPORT`]: path },
+        env: {
+          ...process.env,
+          STORAGE_SCRATCH_ROOT: root,
+          [`${variable}_PORT`]: "1",
+          [`${variable}_REPORT`]: path,
+        },
         stdout: "pipe",
         stderr: "pipe",
       });
