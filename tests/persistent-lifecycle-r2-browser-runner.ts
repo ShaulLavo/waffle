@@ -68,9 +68,11 @@ async function until(check: () => Promise<boolean>, name: string): Promise<void>
 async function status(page: Page, key: string): Promise<Record<string, unknown>> {
   return object(object(await call(page, "status"))[key]);
 }
+const roots = new WeakMap<Page, unknown>();
 async function read(page: Page, expected: number[]): Promise<number> {
-  const root = await host(page, "preopen", ["/"]);
-  const file = object(await host(page, "resolve", [root, "/saved"]));
+  if (!roots.has(page)) roots.set(page, await host(page, "preopen", ["/"]));
+  const root = roots.get(page);
+  const file = object(await host(page, "resolve", [root, "saved"]));
   equal(await host(page, "read", [file.node, 64, 0]), expected);
   equal(object(await host(page, "stat", [file.node])).size, expected.length);
   if (typeof file.node !== "number") throw new Error("missing file handle");
@@ -147,7 +149,8 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
   let b: Page = initialB,
     c: Page = initialC;
   let ready: Record<string, unknown> = {},
-    handle = 0;
+    handle = 0,
+    queuedHandle = 0;
   await runStep(steps, 1, async () => {
     ready = object(await call(a, "start", { name: state.name }));
     state.original = ready;
@@ -231,6 +234,7 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     equal(await owner(a, "cut"), state.oldCut);
     await read(c, [10, 20, 30]);
     await call(b, "attach", ready.descriptor);
+    roots.delete(b);
     handle = await read(b, [10, 20, 30]);
     const lateGrantUnavailable = await call(b, "tryAppend", handle);
     equal(lateGrantUnavailable, -6);
@@ -243,7 +247,7 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     const receipt = object(await owner(a, "receipt", state.tail.id));
     equal(receipt.kind, "committed");
     equal(object(receipt.receipt).durability, { kind: "untracked" });
-    await read(c, [10, 20, 30, 90]);
+    queuedHandle = await read(c, [10, 20, 30, 90]);
     await call(b, "begin", {
       kind: "host",
       key: "held-flush",
@@ -264,7 +268,7 @@ async function lifecycle(state: State, steps: Step[], negative: boolean): Promis
     const before = await call(d, "messages");
     if (!Array.isArray(before)) throw new Error("wire observer absent");
     const sent = before.filter((message) => object(message).operation === "prepare").length;
-    await call(c, "begin", { kind: "prepare", key: "queued-prepare", handle });
+    await call(c, "begin", { kind: "prepare", key: "queued-prepare", handle: queuedHandle });
     await until(async () => {
       const messages = await call(d, "messages");
       return (

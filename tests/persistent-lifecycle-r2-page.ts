@@ -137,7 +137,7 @@ async function acknowledgedTail(): Promise<unknown> {
   const peer = attached(),
     resident = peer.residentPublicationClient();
   const root: number = await peer.asyncCall("preopen", ["/"]);
-  const file: { node: number } = await peer.asyncCall("resolve", [root, "/saved"]);
+  const file: { node: number } = await peer.asyncCall("resolve", [root, "saved"]);
   await resident.prepare({ kind: "append", maxBytes: 1 }, file.node);
   const ack = peer.tryAppend(file.node, [new Uint8Array([90])]);
   const original = BroadcastChannel.prototype.postMessage;
