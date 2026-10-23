@@ -1,3 +1,5 @@
+import type { ReaderMetadataBudget } from "./storage.js";
+import type { ReadBacking } from "./workspace-read.js";
 import {
   mapPublicationFiles,
   type FileKey,
@@ -79,6 +81,7 @@ type LocalMutationAction =
       readonly mtime: number;
     };
 interface MutationPlan {
+  readonly backing?: { rollback(): void; commit(): void };
   readonly action: LocalMutationAction;
   readonly result: MutationResult;
   readonly changes: readonly PublicationEffect<FileKey>[];
@@ -152,6 +155,29 @@ export class MemoryBackend implements FilesystemBackend {
     );
     this.shared.identities.copyFrom(previous.identities);
     this.sharedAttached = true;
+  }
+  readMetadata(node: Node) {
+    const handle = this.fs.handleForNode(node);
+    return { ...this.fs.stat(handle), ...this.shared.stat(handle), ...this.identity(handle) };
+  }
+  selectReadBacking(
+    node: Extract<Node, { kind: "file" }>,
+    offset: number,
+    length: number,
+    full = false,
+    _metadata?: ReaderMetadataBudget,
+  ): ReadBacking {
+    const handle = this.fs.handleForNode(node);
+    if (!length) return { kind: "empty" };
+    if (this.shared.hasFile(handle)) {
+      return { kind: "resident", pages: this.shared.retainVersionPages(handle, offset, length) };
+    }
+    return {
+      kind: "seed",
+      bytes: full ? node.data : new Uint8Array(node.data.subarray(offset, offset + length)),
+      offset: full ? 0 : offset,
+      length,
+    };
   }
   protected sync(handle: FileHandle): void {
     const node = this.fs.nodeForHandle(handle);
@@ -335,11 +361,30 @@ export class MemoryBackend implements FilesystemBackend {
         allocation,
         identities,
         changes: plan.changes.map((effect) => mapPublicationFiles(effect, reference)),
+        backing: this.preparePublicationBacking(plan.action),
       };
     } catch (error) {
       this.discardPublication(plan);
       throw error;
     }
+  }
+  private preparePublicationBacking(action: LocalMutationAction) {
+    if (action.kind !== "write" && action.kind !== "resize" && action.kind !== "writeFile") return;
+    const old = this.shared.stat(action.handle)!.size;
+    if (action.kind === "resize") {
+      const length = action.truncate && action.size < old ? old - action.size : 0;
+      return this.shared.prepareVersionWrite(action.handle, action.size, length, action.size);
+    }
+    const length =
+      action.kind === "writeFile" && !action.append
+        ? Math.max(old, action.data.length)
+        : action.data.length;
+    return this.shared.prepareVersionWrite(
+      action.handle,
+      action.offset,
+      length,
+      action.offset + action.data.length,
+    );
   }
   private planIdentities(
     plan: MutationPlan,
@@ -531,7 +576,8 @@ export class MemoryBackend implements FilesystemBackend {
       throw error;
     }
   }
-  discardPublication(plan: Pick<MutationPlan, "action">): void {
+  discardPublication(plan: Pick<MutationPlan, "action" | "backing">): void {
+    plan.backing?.rollback();
     const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
     if (action.kind !== "namespace") return;
     for (const handle of action.registered) this.shared.unlink(handle);
@@ -562,7 +608,6 @@ export class MemoryBackend implements FilesystemBackend {
         offset = intent.append ? info.size : 0;
       const size = offset + data.length;
       if (!Number.isSafeInteger(size)) throw new FilesystemError(28);
-      this.shared.growLocked(handle, size);
       const file = this.publicationKey(info.ino),
         version = this.shared.publication?.nextContentVersion(info.ino) ?? 0;
       const mtime = prepared.plan.mtime,
@@ -634,7 +679,6 @@ export class MemoryBackend implements FilesystemBackend {
         : { kind: "number", value: data.length };
     if (!data.length) return { action: { kind: "none" }, result, changes: [] };
     this.shared.checkDirtyGrowth(intent.handle, Math.max(info.size, end));
-    this.shared.growLocked(intent.handle, end);
     const file = this.publicationKey(info.ino),
       mtime = Date.now();
     return {
@@ -655,7 +699,6 @@ export class MemoryBackend implements FilesystemBackend {
   }
   private planPublicationResize(intent: Extract<MutationIntent, { kind: "resize" }>): MutationPlan {
     const info = this.publicationFile(intent.handle);
-    this.shared.growLocked(intent.handle, intent.size);
     const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
     const file = this.publicationKey(info.ino),
       mtime = intent.truncate ? Date.now() : info.mtime;
@@ -737,6 +780,7 @@ export class MemoryBackend implements FilesystemBackend {
   applyPublication(plan: LocalMutationPlan): void {
     this.shared.identityGroup = true;
     try {
+      plan.backing?.commit();
       this.shared.identities.copyFrom(plan.allocation);
       this.applyMutation(plan);
       for (const { node, handle, identity } of plan.identities) {
