@@ -28,6 +28,9 @@ export interface Inventory {
   orphanPayloads: string[];
 }
 interface SyncAccess {
+  getSize(): number;
+  read(buffer: Uint8Array, options?: { at?: number }): number;
+  truncate(size: number): void;
   write(buffer: Uint8Array, options?: { at?: number }): number;
   flush(): void;
   close(): void;
