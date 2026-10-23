@@ -15,6 +15,7 @@ import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js"
  */
 import {
   PayloadRetentions,
+  PayloadCorruption,
   type PayloadRetention,
   snapshotBatch,
   decodeSnapshot,
@@ -392,7 +393,7 @@ export class OpfsStorage implements StorageBackend {
     // Immutable File snapshots need no exclusive sync handle or writer-queue turn.
     const file = await (await this.data.getFileHandle(payloadName(key))).getFile();
     signal?.throwIfAborted();
-    if (file.size !== size) throw new Error("Invalid retained filesystem payload size");
+    if (file.size !== size) throw new PayloadCorruption("Invalid retained filesystem payload size");
     const count = Math.min(length, Math.max(0, size - offset));
     const bytes = new Uint8Array(await file.slice(offset, offset + count).arrayBuffer());
     signal?.throwIfAborted();
@@ -750,6 +751,7 @@ export class OpfsStorage implements StorageBackend {
       this.dirty.add(key);
       // Failed earlier collection may still name a key that this checkpoint has re-adopted.
       this.garbage.delete(payloadName(key));
+      this.garbagePayloads.delete(payloadName(key));
     }
     const required = new Set(keys(index).concat(batch.retainedData ?? []));
     for (const key of this.dirty) if (!required.has(key)) this.dirty.delete(key);

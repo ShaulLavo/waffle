@@ -1053,7 +1053,7 @@ export class FilesystemService {
     session.retirement = undefined;
     return true;
   }
-  resources(): Record<string, number> {
+  resources() {
     const backend = this.backend.resources?.() ?? {};
     let workspaceCursors = 0;
     let retained = 0,
@@ -1070,23 +1070,26 @@ export class FilesystemService {
     }
     const ownerStateBytes =
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
-    return {
-      ...backend,
-      workspaceCursors,
-      ...Array.from(this.sessions).reduce<Record<string, number>>((all, session) => {
-        for (const [key, value] of Object.entries(session.reader?.resources() ?? {}))
-          all[key] = (all[key] ?? 0) + value;
-        return all;
-      }, {}),
-      ownerStateBytes,
-      clients: this.sessions.size,
-      retained,
-      transient,
-      responses,
-      capabilityBytes,
-      metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
-      bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
-    };
+    const readers = Array.from(this.sessions).reduce<Record<string, number>>((all, session) => {
+      for (const [key, value] of Object.entries(session.reader?.resources() ?? {}))
+        all[key] = (all[key] ?? 0) + value;
+      return all;
+    }, {});
+    return Object.assign(
+      {
+        ...backend,
+        workspaceCursors,
+        ownerStateBytes,
+        clients: this.sessions.size,
+        retained,
+        transient,
+        responses,
+        capabilityBytes,
+        metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
+        bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
+      },
+      readers,
+    );
   }
   drainForOwner(): Promise<void> {
     if (this.ownerDraining) return this.ownerDraining;

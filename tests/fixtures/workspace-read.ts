@@ -28,6 +28,7 @@ export async function residentReadFixture(size: number, maxBytes?: number) {
     for (const version of retained) version.release();
     await workspace?.close();
     client?.dispose();
+    await service.drainForOwner();
     service.dispose();
     pair.client.port.close();
     pair.server.port.close();

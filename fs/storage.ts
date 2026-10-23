@@ -205,6 +205,7 @@ export interface PayloadRetention {
   release(): void;
 }
 export class PayloadRetentionPressure extends Error {}
+export class PayloadCorruption extends Error {}
 
 /** Runtime references, never recovery metadata. Released reader-only keys stay charged until deletion. */
 export class PayloadRetentions {

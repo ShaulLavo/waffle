@@ -20,6 +20,7 @@ import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
 import {
   PayloadRetentions,
+  PayloadCorruption,
   type PayloadRetention,
   decodeRecord,
   snapshotBatch,
@@ -231,7 +232,13 @@ function hasPayloads(nodes: readonly PersistedNode[], keys: ReadonlySet<string>)
 }
 function recoveryManifest(value: unknown, key: string): ChunkManifest | undefined {
   try {
-    return parseManifest(value, key);
+    try {
+      return parseManifest(value, key);
+    } catch (error) {
+      throw new PayloadCorruption(
+        error instanceof Error ? error.message : "Invalid payload manifest",
+      );
+    }
   } catch {
     return undefined;
   }
@@ -683,9 +690,11 @@ export class IndexedDBStorage implements StorageBackend {
   }
   private retainedRange(key: string, range: IndexedDBRange): Promise<Uint8Array> {
     if (this.closed) return Promise.reject(new Error("Filesystem storage is closed"));
-    const work = this.manifest(key, range.signal).then((manifest) =>
-      this.readChunks(key, manifest, range),
-    );
+    const work = this.manifest(key, range.signal).then((manifest) => {
+      if (manifest.size !== this.readers.size(key))
+        throw new PayloadCorruption("Retained payload size mismatch");
+      return this.readChunks(key, manifest, range);
+    });
     this.readerWork.add(work);
     void work.then(
       () => this.readerWork.delete(work),
@@ -743,7 +752,13 @@ export class IndexedDBStorage implements StorageBackend {
   private async manifest(key: string, signal?: AbortSignal): Promise<ChunkManifest> {
     const value = await this.readRecord(key, signal);
     if (value === undefined) throw new Error(`Missing filesystem payload: ${key}`);
-    return parseManifest(value, key);
+    try {
+      return parseManifest(value, key);
+    } catch (error) {
+      throw new PayloadCorruption(
+        error instanceof Error ? error.message : "Invalid payload manifest",
+      );
+    }
   }
 
   private async readChunks(
@@ -757,12 +772,10 @@ export class IndexedDBStorage implements StorageBackend {
     if (!length) return result;
     const end = range.offset + length;
     for (let index = Math.floor(range.offset / CHUNK_SIZE); index * CHUNK_SIZE < end; index++) {
-      const chunk = parseChunk(
-        await this.readRecord([key, index], range.signal),
-        chunkLength(manifest, index),
-        key,
-      );
-      if ((await chunkChecksum(chunk.bytes)) !== chunk.checksum) chunkError(key);
+      const record = await this.readRecord([key, index], range.signal);
+      const chunk = this.validChunk(record, chunkLength(manifest, index), key);
+      if ((await chunkChecksum(chunk.bytes)) !== chunk.checksum)
+        throw new PayloadCorruption(`Invalid filesystem payload chunks: ${key}`);
       range.signal?.throwIfAborted();
       this.assertOwner();
       const start = Math.max(range.offset, index * CHUNK_SIZE);
@@ -774,6 +787,14 @@ export class IndexedDBStorage implements StorageBackend {
     }
     range.signal?.throwIfAborted();
     return result;
+  }
+
+  private validChunk(record: unknown, length: number, key: string) {
+    try {
+      return parseChunk(record, length, key);
+    } catch (error) {
+      throw new PayloadCorruption(error instanceof Error ? error.message : "Invalid payload chunk");
+    }
   }
 
   persist(batch: PersistenceBatch): Promise<void> {
@@ -1126,7 +1147,6 @@ export class IndexedDBStorage implements StorageBackend {
       };
       tx.oncomplete = () => {
         this.transactions.delete(tx);
-        for (const key of deletedReaders) this.deletingPayloads.delete(key);
         resolve();
       };
       tx.onabort = () => {
@@ -1231,6 +1251,7 @@ export class IndexedDBStorage implements StorageBackend {
       );
       for (const key of deletedReaders) {
         state.payloadKeys.delete(key);
+        this.deletingPayloads.delete(key);
         this.readers.deleted(key);
       }
       this.readers.recovery(retained);

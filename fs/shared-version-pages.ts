@@ -1,5 +1,7 @@
 import { FilesystemError, PAGE } from "./protocol.js";
 
+export class ReaderPagePressure extends Error {}
+
 export interface RetainedSharedPage {
   readonly physical: number;
   readonly bytes: Uint8Array;

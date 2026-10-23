@@ -1,7 +1,12 @@
 import { MemoryBackend } from "./backend.js";
 import type { Node, DirNode } from "./memory.js";
-import type { SharedPageVersion } from "./shared-version-pages.js";
-import { PayloadRetentionPressure, type StorageBackend, type PayloadRetention } from "./storage.js";
+import { ReaderPagePressure, type SharedPageVersion } from "./shared-version-pages.js";
+import {
+  PayloadRetentionPressure,
+  PayloadCorruption,
+  type StorageBackend,
+  type PayloadRetention,
+} from "./storage.js";
 import { FilesystemError, PAGE } from "./protocol.js";
 import {
   namespaceCut,
@@ -84,6 +89,8 @@ function serial(value: unknown): number {
 function failure(error: unknown, signal?: AbortSignal): ReadFailure {
   if (signal?.aborted) return { kind: "cancelled" };
   if (error instanceof ReadRefusal) return error.failure;
+  if (error instanceof ReaderPagePressure) return { kind: "pressure", resource: "pin-bytes" };
+  if (error instanceof PayloadCorruption) return { kind: "corrupt", message: error.message };
   if (error instanceof PayloadRetentionPressure)
     return { kind: "pressure", resource: "retained-storage" };
   if (error instanceof FilesystemError) {
@@ -151,6 +158,16 @@ export class WorkspaceReadAuthority {
   }
   invoke(operation: string, args: unknown[], request: number): Promise<unknown> {
     if (operation === "publicationReadClose") return this.close(args[1]);
+    if (
+      ![
+        "publicationReadOpen",
+        "publicationReadStat",
+        "publicationReadPin",
+        "publicationReadLeaseOpen",
+        "publicationReadChunk",
+      ].includes(operation)
+    )
+      return Promise.resolve({ kind: "invalid", field: "target" });
     if (this.stopping) return Promise.resolve({ kind: "stopped" });
     if (this.operations.size >= LIMIT.operations)
       return Promise.resolve({ kind: "pressure", resource: "operations" });
@@ -194,32 +211,34 @@ export class WorkspaceReadAuthority {
       requested = readRange(args[3]),
       version = readVersion(args[4]),
       at = readCut(args[5]);
-    return this.resolve(target, signal, (node) => {
-      signal.throwIfAborted();
-      if (this.stopping || this.closed.has(id) || id <= this.floor)
-        return { kind: this.stopping ? "stopped" : "cancelled" };
-      return this.select(operation, id, target, node, requested, version, at);
-    });
+    const scanBytes =
+      256 + WORKSPACE_LIMITS.depth * 64 + (typeof target === "string" ? target.length * 2 : 0);
+    this.takeMetadata(scanBytes);
+    try {
+      return await this.resolve(target, signal, (node) => {
+        signal.throwIfAborted();
+        if (this.stopping || this.closed.has(id))
+          return { kind: this.stopping ? "stopped" : "cancelled" };
+        return this.select(operation, id, target, node, requested, version, at);
+      });
+    } finally {
+      this.metadata -= scanBytes;
+    }
   }
   private async resolve<T>(
     target: FileTarget,
     signal: AbortSignal,
     select: (node: Node | undefined) => T,
   ): Promise<T> {
-    if (typeof target === "string")
-      return this.lock(() => {
-        const value = this.backend.fs.resolveAbsolute(target);
-        if (typeof value === "number") throw new FilesystemError(value);
-        return select(
-          value.node === undefined ? undefined : this.backend.fs.nodeForHandle(value.node),
-        );
-      });
+    if (typeof target === "string") return this.lock(() => select(this.path(target)));
     const initial = this.lock(() => this.current());
     const frames: ScanFrame[] = [
       { node: this.backend.fs.root, iterator: this.backend.fs.root.children.values() },
     ];
     const found = this.lock(() => {
       const node = this.detached(target);
+      if (!node && !(this.backend.readMetadata(this.backend.fs.root).mode! & 0o100))
+        throw new FilesystemError(2);
       return node ? { value: select(node) } : undefined;
     });
     if (found) return found.value;
@@ -236,12 +255,34 @@ export class WorkspaceReadAuthority {
     }
     return this.lock(() => select(undefined));
   }
+  private path(path: string): Node | undefined {
+    const parents: DirNode[] = [];
+    let node: Node = this.backend.fs.root;
+    for (const part of path.split("/")) {
+      if (!part) continue;
+      if (node.kind !== "dir") throw new FilesystemError(54);
+      if (!(this.backend.readMetadata(node).mode! & 0o100)) throw new FilesystemError(2);
+      if (part === ".") continue;
+      if (part === "..") {
+        node = parents.pop() ?? this.backend.fs.root;
+        continue;
+      }
+      if (parents.length >= WORKSPACE_LIMITS.depth) pressure("metadata");
+      parents.push(node);
+      const child = node.children.get(part);
+      if (!child) return undefined;
+      node = child;
+    }
+    if (path.endsWith("/") && node.kind !== "dir") throw new FilesystemError(54);
+    return node;
+  }
   private detached(target: FileTarget): Node | undefined {
     if (this.backend.ensureIdentity(this.backend.fs.root).id === target)
       return this.backend.fs.root;
     for (const handle of this.backend.shared.registeredHandles()) {
-      if (this.backend.shared.identity(handle)?.id === target)
-        return this.backend.fs.nodeForHandle(handle);
+      if (this.backend.shared.identity(handle)?.id !== target) continue;
+      const node = this.backend.fs.nodeForHandle(handle);
+      if (!this.backend.fs.hasNode(node)) return node;
     }
     return undefined;
   }
@@ -255,7 +296,7 @@ export class WorkspaceReadAuthority {
       }
       const node = item.value;
       if (this.backend.ensureIdentity(node).id === target) return node;
-      if (node.kind !== "dir" || !(node.mode & 0o100)) continue;
+      if (node.kind !== "dir" || !(this.backend.readMetadata(node).mode! & 0o100)) continue;
       if (frames.length >= WORKSPACE_LIMITS.depth) pressure("metadata");
       frames.push({ node, iterator: node.children.values() });
     }
@@ -340,7 +381,16 @@ export class WorkspaceReadAuthority {
       this.metadata -= charge;
       throw error;
     }
-    const selected: Selected = { stat, backing, refs: 0, metadata: charge };
+    const keyBytes = backing.kind === "cold" ? backing.key.length * 2 : 0;
+    try {
+      this.takeMetadata(keyBytes);
+    } catch (error) {
+      if (backing.kind === "cold") backing.retention.release();
+      if (backing.kind === "resident") backing.pages.release();
+      this.metadata -= charge;
+      throw error;
+    }
+    const selected: Selected = { stat, backing, refs: 0, metadata: charge + keyBytes };
     try {
       this.retainSeed(backing);
       if (this.backend.shared.readerPinBytes() + this.seedBytes > LIMIT.pinBytes)

@@ -72,6 +72,13 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     check(workspace, "Public workspace capability missing");
     check(!("client" in workspace), "Projection leaked its root client");
     await fs.writeFile("/file", "abc");
+    const direct = await workspace.read("/file", { offset: 1, length: 2 });
+    check(
+      direct.kind === "ok" && direct.value.bytes.join() === "98,99",
+      "Public read before snapshot failed",
+    );
+    const pinned = await workspace.pin("/file");
+    check(pinned.kind === "ok", "Public lease missing");
     for (let index = 0; index < 130; index++) await fs.writeFile(`/src/f${index}`, "x");
     const connection = fs.fork();
     check(connection.publication?.observer === undefined, "Fork inherited root observer");
@@ -104,6 +111,31 @@ async function run(mode: "memory" | "fast"): Promise<void> {
     await workerCall(guest, { connection: borrowed, mode: "wasi" }, [borrowed.port]);
     await workerCall(guest, { operation: "write", byte: 88 });
     check(peer.tryWrite(resolved.node, [new Uint8Array([89])], 1) === 1, "Direct write failed");
+    const old = await pinned.value.read({ offset: 0, length: 3 });
+    check(
+      old.kind === "ok" && old.value.bytes.join() === "97,98,99",
+      "Guest changed pinned version",
+    );
+    const current = await workspace.read(pinned.value.stat.id, { offset: 0, length: 3 });
+    check(
+      current.kind === "ok" && current.value.bytes.join() === "88,89,99",
+      "Public read missed writer ACK",
+    );
+    check(
+      (await workspace.stat(pinned.value.stat.id, pinned.value.stat.cut)).kind === "ok",
+      "Lease stat lost its cut",
+    );
+    await pinned.value.close();
+    check(
+      (
+        await workspace.read(
+          pinned.value.stat.id,
+          { offset: 0, length: 1 },
+          pinned.value.stat.version,
+        )
+      ).kind === "version-gone",
+      "Unretained version survived",
+    );
     const changes = await workspace.changes(initial.cut.watermark);
     check(
       changes.kind === "changes" && changes.batches.length === 2,
@@ -155,6 +187,13 @@ async function reopen(name: string, saved: Awaited<ReturnType<typeof complete>>)
     const bytes = await runtime.filesystem.readFile("/file");
     check(bytes?.[0] === 88 && bytes[1] === 89, "Public mode lost flushed data on reopen");
     check(runtime.filesystem.workspace, "Reopened projection missing");
+    const stat = await runtime.filesystem.workspace.stat("/file", saved.cut);
+    check(stat.kind === "generation-gone", "Reopen reused old generation");
+    const publicRead = await runtime.filesystem.workspace.read("/file", { offset: 0, length: 3 });
+    check(
+      publicRead.kind === "ok" && publicRead.value.bytes.join() === "88,89,99",
+      "Cold public reopen read failed",
+    );
     const recovered = await complete(runtime.filesystem.workspace);
     check(recovered.file?.id === saved.file?.id, "Reopen changed recovered FileId");
     check(recovered.file?.version === saved.file?.version, "Reopen changed recovered FileVersion");
@@ -184,6 +223,15 @@ function deleteDatabase(name: string): Promise<void> {
 export async function runWorkspaceBrowser(): Promise<string[]> {
   await run("memory");
   await run("fast");
+  const workerURL = `/read-worker.js?owner=${crypto.randomUUID()}`;
+  const worker = new Worker(workerURL, { type: "module" });
+  try {
+    const result = await workerCall(worker, {});
+    console.log(JSON.stringify(result));
+  } finally {
+    worker.terminate();
+    await death(workerURL);
+  }
   return [
     "public runtime worker memory",
     "public persistent worker flush/reopen",

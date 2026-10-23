@@ -383,7 +383,9 @@ test("tiny unregistered seed range never registers or retains the complete 128Mi
     expect(value.backend.shared.resources().usedBytes).toBe(before);
     expect(value.backend.shared.registeredHandles()).toHaveLength(0);
     expect(value.service.resources().readerSeedBytes).toBe(0);
-    expect(value.service.resources().readerMetadataPeak).toBeLessThan(70000);
+    expect(value.service.resources().readerMetadataPeak).toBeLessThan(
+      65536 + 256 + 128 * 64 + 2 * 64 + 256 + 256 + 4096,
+    );
     expect(await value.workspace.read("/file")).toEqual({
       kind: "pressure",
       resource: "result-bytes",
@@ -392,7 +394,6 @@ test("tiny unregistered seed range never registers or retains the complete 128Mi
     await value.close();
   }
 });
-
 
 test("root close joins all sixteen public leases without exhausting control completions", async () => {
   const value = await residentReadFixture(PAGE);
@@ -422,7 +423,9 @@ test("public path traversal consults actual shared parent permission before dot 
     const root = await value.client.asyncCall("preopen", ["/"]);
     const directory = (await value.client.asyncCall("resolve", [root, "locked"])).node;
     value.client.retain(directory);
-    value.backend.shared.mutate(undefined, undefined, () => value.backend.shared.setMode(directory, 0o600));
+    value.backend.shared.mutate(undefined, undefined, () =>
+      value.backend.shared.setMode(directory, 0o600),
+    );
     expect(await value.workspace.read("/locked/file")).toEqual({ kind: "denied" });
     expect(await value.workspace.read("/locked/../locked/file")).toEqual({ kind: "denied" });
     expect(await value.workspace.read("/missing/../locked/file")).toEqual({ kind: "not-found" });
@@ -436,8 +439,16 @@ test("close before delayed open cannot create a ticket, and repeated closes rema
   const grant = value.client.connection.publication!.observer;
   try {
     await value.client.asyncCall("publicationReadClose", [grant, 100]);
-    expect(await value.client.asyncCall("publicationReadOpen", [grant, 100, "/file", {offset: 0, length: 1}])).toEqual({kind: "cancelled"});
-    for (let id = 101; id < 201; id++) await value.client.asyncCall("publicationReadClose", [grant, id]);
+    expect(
+      await value.client.asyncCall("publicationReadOpen", [
+        grant,
+        100,
+        "/file",
+        { offset: 0, length: 1 },
+      ]),
+    ).toEqual({ kind: "cancelled" });
+    for (let id = 101; id < 201; id++)
+      await value.client.asyncCall("publicationReadClose", [grant, id]);
     expect(value.service.resources().readerTickets).toBe(0);
     expect(value.service.resources().readerMetadataBytes).toBe(65536);
   } finally {
@@ -449,31 +460,52 @@ for (const writer of ["write", "append", "writeFile", "resize", "remove", "move"
   test(`held native public range does not block actual ${writer}`, async () => {
     const physical = new RangeFixture();
     let value: ReturnType<typeof publicReadFixture> | undefined;
-    const gate = physical.gate(), entered = Promise.withResolvers<void>();
+    const gate = physical.gate(),
+      entered = Promise.withResolvers<void>();
     let reading: Promise<unknown> | undefined;
     try {
       await physical.seed([PAGE * 3]);
       const storage = await physical.open();
       value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-      physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
-      reading = value.workspace.read("/file", {offset: PAGE - 3, length: 4096});
+      physical.file().snapshotRead = async () => {
+        entered.resolve();
+        await gate.promise;
+      };
+      reading = value.workspace.read("/file", { offset: PAGE - 3, length: 4096 });
       await entered.promise;
       const root = await value.client.asyncCall("preopen", ["/"]);
       const handle = (await value.client.asyncCall("resolve", [root, "file"])).node;
       value.client.retain(handle);
-      const writing = writer === "writeFile" ? value.client.asyncCall("writeFile", ["/file"], new Uint8Array([90]))
-        : writer === "remove" ? value.client.asyncCall("remove", ["/file"])
-        : writer === "move" ? value.client.asyncCall("move", ["/file", "/renamed"])
-        : writer === "resize" ? value.client.asyncCall("resize", [handle, 1, true])
-        : value.client.asyncCall(writer, writer === "write" ? [handle, 0] : [handle], new Uint8Array([90]));
+      const writing =
+        writer === "writeFile"
+          ? value.client.asyncCall("writeFile", ["/file"], new Uint8Array([90]))
+          : writer === "remove"
+            ? value.client.asyncCall("remove", ["/file"])
+            : writer === "move"
+              ? value.client.asyncCall("move", ["/file", "/renamed"])
+              : writer === "resize"
+                ? value.client.asyncCall("resize", [handle, 1, true])
+                : value.client.asyncCall(
+                    writer,
+                    writer === "write" ? [handle, 0] : [handle],
+                    new Uint8Array([90]),
+                  );
       let timeout: ReturnType<typeof setTimeout> | undefined;
-      const outcome = await Promise.race([writing.then(() => "written"), new Promise<string>((resolve) => { timeout = setTimeout(() => resolve("blocked"), 2000); })]);
+      const outcome = await Promise.race([
+        writing.then(() => "written"),
+        new Promise<string>((resolve) => {
+          timeout = setTimeout(() => resolve("blocked"), 2000);
+        }),
+      ]);
       clearTimeout(timeout);
       expect(outcome).toBe("written");
       expect(storage.resources().opfsReaderWork).toBe(1);
       gate.resolve();
       const read = await reading;
-      expect(read).toMatchObject({kind: "ok", value: {range: {offset: PAGE - 3, length: 4096}}});
+      expect(read).toMatchObject({
+        kind: "ok",
+        value: { range: { offset: PAGE - 3, length: 4096 } },
+      });
       await writing;
     } finally {
       gate.resolve();
@@ -487,25 +519,31 @@ for (const writer of ["write", "append", "writeFile", "resize", "remove", "move"
 test("aborted native public range keeps actual debt until the original I/O settles", async () => {
   const physical = new RangeFixture();
   let value: ReturnType<typeof publicReadFixture> | undefined;
-  const gate = physical.gate(), entered = Promise.withResolvers<void>();
+  const gate = physical.gate(),
+    entered = Promise.withResolvers<void>();
   let reading: Promise<unknown> | undefined;
   try {
     await physical.seed([PAGE * 3]);
     const storage = await physical.open();
     value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-    physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    physical.file().snapshotRead = async () => {
+      entered.resolve();
+      await gate.promise;
+    };
     const abort = new AbortController();
-    reading = value.workspace.read("/file", {offset: 0, length: 4096}, undefined, abort.signal);
+    reading = value.workspace.read("/file", { offset: 0, length: 4096 }, undefined, abort.signal);
     await entered.promise;
     abort.abort();
     let closed = false;
-    const closing = value.workspace.close().then(() => { closed = true; });
+    const closing = value.workspace.close().then(() => {
+      closed = true;
+    });
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(closed).toBe(false);
     expect(storage.resources().opfsReaderWork).toBe(1);
     expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
     gate.resolve();
-    expect(await reading).toEqual({kind: "stopped"});
+    expect(await reading).toEqual({ kind: "stopped" });
     await closing;
     expect(storage.resources().opfsReaderWork).toBe(0);
     expect(storage.resources().readerStorageBytes).toBe(0);
@@ -515,5 +553,141 @@ test("aborted native public range keeps actual debt until the original I/O settl
     await reading;
     await value?.close();
     await physical.cleanup();
+  }
+});
+
+test("all public projections of one actual root share the lease budget", async () => {
+  const value = await residentReadFixture(PAGE);
+  const { connectFilesystemIdentity } = await import("../fs/protocol");
+  const { createWorkspaceVfs } = await import("../fs/workspace");
+  const pair = connectFilesystemIdentity(value.client.connection);
+  let peer: FilesystemClient | undefined;
+  let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
+  try {
+    value.service.connect(pair.server);
+    peer = new FilesystemClient(pair.client);
+    workspace = createWorkspaceVfs(peer);
+    for (let index = 0; index < 16; index++) {
+      const held = await value.workspace.pin("/file");
+      expect(held.kind).toBe("ok");
+    }
+    expect(await workspace.pin("/file")).toEqual({ kind: "pressure", resource: "leases" });
+    expect(value.service.resources().readerPinBytes).toBe(PAGE);
+  } finally {
+    await workspace?.close();
+    peer?.dispose();
+    pair.client.port.close();
+    pair.server.port.close();
+    await value.close();
+  }
+});
+
+test("a held native range admits four operations and refuses a flood before client submission", async () => {
+  const physical = new RangeFixture();
+  const gate = physical.gate();
+  const entered = Promise.withResolvers<void>();
+  let count = 0;
+  let value: ReturnType<typeof publicReadFixture> | undefined;
+  const reads: Promise<unknown>[] = [];
+  try {
+    await physical.seed([PAGE * 3]);
+    const storage = await physical.open();
+    value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
+    physical.file().snapshotRead = async () => {
+      if (++count === 4) entered.resolve();
+      await gate.promise;
+    };
+    for (let index = 0; index < 4; index++)
+      reads.push(value.workspace.read("/file", { offset: index, length: 1 }));
+    await entered.promise;
+    const refused = await Promise.all(
+      Array.from({ length: 40 }, () => value!.workspace.read("/file", { offset: 0, length: 1 })),
+    );
+    expect(
+      refused.every((result) => result.kind === "pressure" && result.resource === "operations"),
+    ).toBe(true);
+    expect(storage.resources().opfsReaderWork).toBe(4);
+    expect(value.client.completions.size).toBe(4);
+    gate.resolve();
+    expect(
+      (await Promise.all(reads)).every(
+        (result) =>
+          !!result && typeof result === "object" && "kind" in result && result.kind === "ok",
+      ),
+    ).toBe(true);
+    expect(value.service.resources().readerResultBytes).toBe(0);
+    expect(value.service.resources().readerOperations).toBe(0);
+    expect(value.client.completions.size).toBe(0);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled(reads);
+    await value?.close();
+    await physical.cleanup();
+  }
+});
+
+test("a complete 128MiB resident lease preserves never-read distant bytes through final slot reuse", async () => {
+  const value = await residentReadFixture(payloadSize);
+  try {
+    const opened = await value.workspace.pin("/file");
+    if (opened.kind !== "ok") throw new Error(opened.kind);
+    const lease = opened.value;
+    expect(value.service.resources().readerPinBytes).toBe(payloadSize);
+    expect(
+      value.client.tryWrite(value.handle, [new Uint8Array([90])], payloadSize - PAGE + 3),
+    ).toBe(1);
+    await value.client.asyncCall("resize", [value.handle, 1, true]);
+    await value.client.asyncCall("move", ["/file", "/moved"]);
+    await value.client.asyncCall("writeFile", ["/replacement"], new Uint8Array([91]));
+    await value.client.asyncCall("move", ["/replacement", "/moved"]);
+    value.client.release(value.handle);
+    await value.client.asyncCall("remove", ["/moved"]);
+    await value.client.asyncCall("writeFile", ["/reused"], new Uint8Array(PAGE).fill(92));
+    for (const offset of [PAGE + 7, payloadSize - PAGE + 3]) {
+      const read = await lease.read({ offset, length: 11 });
+      expect(read.kind).toBe("ok");
+      if (read.kind === "ok") expect(read.value.bytes).toEqual(new Uint8Array(11).fill(65));
+    }
+    expect(await value.workspace.stat(lease.stat.id, lease.stat.cut)).toEqual({
+      kind: "ok",
+      value: lease.stat,
+    });
+    await lease.close();
+    expect(
+      await value.workspace.read(lease.stat.id, { offset: 0, length: 1 }, lease.stat.version),
+    ).toEqual({ kind: "version-gone", requested: lease.stat.version });
+    expect(value.service.resources().readerPinBytes).toBe(0);
+  } finally {
+    await value.close();
+  }
+});
+
+test("reversed open arrival is not cancelled by unrelated newer closes", async () => {
+  const value = await residentReadFixture(PAGE);
+  const grant = value.client.connection.publication!.observer;
+  try {
+    for (let id = 2; id <= 100; id++)
+      await value.client.asyncCall("publicationReadClose", [grant, id]);
+    const opened = await value.client.asyncCall("publicationReadOpen", [
+      grant,
+      1,
+      "/file",
+      { offset: 0, length: 1 },
+    ]);
+    expect(opened).toMatchObject({ kind: "ok", value: { serial: 1 } });
+    expect(await value.client.asyncCall("publicationReadChunk", [grant, 1, 0])).toEqual(
+      new Uint8Array([65]),
+    );
+    await value.client.asyncCall("publicationReadClose", [grant, 1]);
+    expect(
+      await value.client.asyncCall("publicationReadOpen", [
+        grant,
+        1,
+        "/file",
+        { offset: 0, length: 1 },
+      ]),
+    ).toEqual({ kind: "cancelled" });
+  } finally {
+    await value.close();
   }
 });

@@ -1,4 +1,8 @@
-import { SharedPageVersion, type RetainedSharedPage } from "./shared-version-pages.js";
+import {
+  ReaderPagePressure,
+  SharedPageVersion,
+  type RetainedSharedPage,
+} from "./shared-version-pages.js";
 import {
   IdentityAllocator,
   readIdentityWords,
@@ -188,7 +192,7 @@ export class SharedFilesystemState {
         if (!this.pageReaders[this.pages[this.pageAt(slot, logical)]! - 1]) additional += PAGE;
       }
       if (additional > 256 * 1024 * 1024 - this.readerPinBytes())
-        throw new FilesystemError(6, "reader page capacity exhausted");
+        throw new ReaderPagePressure("reader page capacity exhausted");
       const pages: RetainedSharedPage[] = [];
       for (
         let logical = Math.floor(offset / PAGE);

@@ -70,6 +70,12 @@ test("a clean app can install Waffle from a local Git commit and import every No
       const workspace = api.createWorkspaceVfs(client);
       try {
         await client.asyncCall('writeFile', ['/installed'], new Uint8Array([1]));
+        const first = await workspace.read('/installed');
+        assert.equal(first.kind, 'ok');
+        assert.equal(first.value.bytes[0], 1);
+        const pinned = await workspace.pin(first.value.stat.id);
+        assert.equal(pinned.kind, 'ok');
+        assert.equal((await workspace.stat('/installed', first.value.stat.cut)).kind, 'ok');
         const cursor = workspace.snapshot({ prefix: '/installed', includeDirs: false });
         let cut;
         let identity;
@@ -91,6 +97,12 @@ test("a clean app can install Waffle from a local Git commit and import every No
         const page = await workspace.changes(cut.watermark);
         assert.equal(page.kind, 'changes');
         assert.equal(page.batches.length, 1);
+        const old = await pinned.value.read({offset: 0, length: 1});
+        assert.equal(old.kind, 'ok');
+        assert.equal(old.value.bytes[0], 1);
+        assert.equal((await workspace.read(identity)).value.bytes[0], 2);
+        await pinned.value.close();
+        assert.equal((await workspace.read(identity, {offset: 0, length: 1}, first.value.stat.version)).kind, 'version-gone');
         assert(page.batches[0].changes.some(change => change.kind === 'write' && change.id === identity && change.paths[0] === '/installed'));
       } finally {
         await workspace.close();

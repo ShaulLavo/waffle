@@ -85,6 +85,8 @@ class WorkspaceOwner implements WorkspaceVfs {
   private closing: Promise<void> | undefined;
   private readonly lifetime = new AbortController();
   private readonly leases = new Set<RemoteVersionLease>();
+  private activeReads = 0;
+  private readControl: Promise<void> = Promise.resolve();
   constructor(readonly client: FilesystemClient) {}
   get stopped(): boolean {
     return this.closed || isRevoked(this.client.connection);
@@ -131,6 +133,11 @@ class WorkspaceOwner implements WorkspaceVfs {
       completion.release();
     }
   }
+  private admitRead(): boolean {
+    if (this.activeReads >= WORKSPACE_READ_LIMITS.operations) return false;
+    this.activeReads++;
+    return true;
+  }
   private readSignal(signal?: AbortSignal): AbortSignal {
     return signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
   }
@@ -152,6 +159,7 @@ class WorkspaceOwner implements WorkspaceVfs {
   ): Promise<ReadOutcome<VersionStat>> {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
+    if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
     try {
       const result = readReply(
         await this.request(
@@ -163,6 +171,8 @@ class WorkspaceOwner implements WorkspaceVfs {
       return result.kind === "ok" ? { kind: "ok", value: versionStat(result.value) } : result;
     } catch (error) {
       return this.readFailure(error, signal);
+    } finally {
+      this.activeReads--;
     }
   }
   async pin(
@@ -172,6 +182,7 @@ class WorkspaceOwner implements WorkspaceVfs {
   ): Promise<ReadOutcome<VersionLease>> {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
+    if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
     const id = this.nextSerial();
     let adopted = false;
     try {
@@ -194,7 +205,11 @@ class WorkspaceOwner implements WorkspaceVfs {
     } catch (error) {
       return this.readFailure(error, signal);
     } finally {
-      if (!adopted) await this.closeRead(id);
+      try {
+        if (!adopted) await this.closeRead(id);
+      } finally {
+        this.activeReads--;
+      }
     }
   }
   read(
@@ -219,6 +234,7 @@ class WorkspaceOwner implements WorkspaceVfs {
   ): Promise<ReadOutcome<ReadValue>> {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
+    if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
     const id = this.nextSerial(),
       lifetime = this.readSignal(signal);
     try {
@@ -254,16 +270,21 @@ class WorkspaceOwner implements WorkspaceVfs {
     } catch (error) {
       return this.readFailure(error, signal);
     } finally {
-      await this.closeRead(id);
+      try {
+        await this.closeRead(id);
+      } finally {
+        this.activeReads--;
+      }
     }
   }
-  async closeRead(id?: number): Promise<void> {
-    if (isRevoked(this.client.connection)) return;
-    try {
+  closeRead(id?: number): Promise<void> {
+    const close = async () => {
+      if (isRevoked(this.client.connection)) return;
       await this.request("publicationReadClose", [id]);
-    } catch (error) {
-      if (!this.stopped) throw error;
-    }
+    };
+    const closing = this.readControl.then(close, close);
+    this.readControl = closing.catch(() => {});
+    return closing;
   }
   forgetLease(lease: RemoteVersionLease): void {
     this.leases.delete(lease);
