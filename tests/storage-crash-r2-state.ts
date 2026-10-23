@@ -118,7 +118,7 @@ export async function closeCells(
   owners: readonly Pick<StorageBackend, "close">[],
   remove: () => Promise<unknown> = async () => undefined,
 ): Promise<void> {
-  const disposed = await Promise.allSettled(
+  const disposed: PromiseSettledResult<unknown>[] = await Promise.allSettled(
     backends.map((backend) => Promise.resolve().then(() => backend.dispose())),
   );
   const closed = await Promise.allSettled(
