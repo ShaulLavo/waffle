@@ -771,6 +771,13 @@ export class MemoryBackend implements FilesystemBackend {
         this.applyNamespace(action);
         return;
       case "writeFile":
+        this.shared.prepareVersionWrite(
+          action.handle,
+          action.append ? action.offset : 0,
+          action.append
+            ? action.data.length
+            : Math.max(this.shared.info(action.handle)!.size, action.data.length),
+        );
         this.applyNamespace(action.namespace);
         if (!action.append) this.shared.resize(action.handle, 0, true);
         if (action.data.length) this.shared.write(action.handle, [action.data], action.offset);

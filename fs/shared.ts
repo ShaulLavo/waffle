@@ -51,6 +51,7 @@ const BUFFER_SIZE = DATA_OFFSET + SEGMENT_BYTES;
 const GLOBAL_LOCK = 1;
 const SERVICE_OWNER = 0x7fffffff;
 const USED_PAGES = 2;
+const RETIRED_PAGE = -1;
 // Allocator-protected floor for reincarnated handles, even when a collision moves their slot.
 // Header words 5 and 6 belong to connection owner allocation and attachment probing.
 const FREED_REVISION_LOW = 7;
@@ -199,9 +200,63 @@ export class SharedFilesystemState {
   private releaseVersionPages(pages: readonly RetainedSharedPage[]): void {
     this.globalLock(undefined, this.lockOwner, false, "release");
     try {
-      for (const { physical } of pages) Atomics.sub(this.pageReaders!, physical, 1);
+      for (const { physical } of pages) {
+        const previous = Atomics.sub(this.pageReaders!, physical, 1);
+        if (previous === 1 && this.owners[physical] === RETIRED_PAGE)
+          this.detachVersionPage(physical);
+      }
     } finally {
       this.globalUnlock();
+    }
+  }
+  private detachVersionPage(physical: number): void {
+    if (this.pageReaders?.[physical]) {
+      this.owners[physical] = RETIRED_PAGE;
+      return;
+    }
+    this.segmentFor(physical).fill(0);
+    this.owners[physical] = 0;
+    Atomics.sub(this.cells, USED_PAGES, 1);
+  }
+  private reserveVersionPage(slot: number): number {
+    for (let physical = 0; physical < Atomics.load(this.cells, 4) * SEGMENT_PAGES; physical++) {
+      if (this.owners[physical]) continue;
+      this.ensureSegment(Math.floor(physical / SEGMENT_PAGES));
+      this.owners[physical] = slot;
+      return physical;
+    }
+    throw new FilesystemError(6, "retained page copy capacity exhausted");
+  }
+  private prepareVersionPages(slot: number, offset: number, end: number): void {
+    if (!this.pageReaders || offset === end) return;
+    const replacements: { entry: number; previous: number; physical: number }[] = [];
+    try {
+      for (let logical = Math.floor(offset / PAGE); logical < Math.ceil(end / PAGE); logical++) {
+        const entry = this.pageAt(slot, logical);
+        const previous = this.pages[entry]! - 1;
+        if (!this.pageReaders[previous]) continue;
+        const physical = this.reserveVersionPage(slot);
+        replacements.push({ entry, previous, physical });
+        this.segmentFor(physical).set(this.segmentFor(previous));
+      }
+    } catch (error) {
+      for (const replacement of replacements) this.owners[replacement.physical] = 0;
+      throw error;
+    }
+    for (const { entry, previous, physical } of replacements) {
+      this.pages[entry] = physical + 1;
+      this.owners[previous] = RETIRED_PAGE;
+    }
+    Atomics.add(this.cells, USED_PAGES, replacements.length);
+  }
+  /** The caller owns the operation-wide publication lock, before applying any namespace edit. */
+  prepareVersionWrite(handle: FileHandle, offset: number, length: number): void {
+    const slot = this.slot(handle);
+    this.lock(this.at(slot, FILE_LOCK));
+    try {
+      this.prepareVersionPages(slot, offset, offset + length);
+    } finally {
+      this.unlock(this.at(slot, FILE_LOCK));
     }
   }
   static createBuffer(): SharedArrayBuffer {
@@ -1114,6 +1169,7 @@ export class SharedFilesystemState {
           identity,
           admission,
         );
+        this.prepareVersionPages(slot, at, end);
         this.commitDirectBytes(
           slot,
           prepared ? [prepared.bytes] : chunks,
@@ -1285,6 +1341,7 @@ export class SharedFilesystemState {
       )
         return undefined;
       const identity = this.prepareIdentityVersion(slot, true);
+      this.prepareVersionPages(slot, offset, offset + total);
       let at = offset;
       for (const chunk of chunks) {
         this.copyInto(slot, chunk, at);
@@ -1335,6 +1392,7 @@ export class SharedFilesystemState {
       )
         return offset + total;
       const identity = this.prepareIdentityVersion(slot, true);
+      this.prepareVersionPages(slot, offset, offset + total);
       let at = offset;
       for (const chunk of chunks) {
         this.copyInto(slot, chunk, at);
@@ -1401,6 +1459,7 @@ export class SharedFilesystemState {
         ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
         : undefined;
       if (resident && truncate && size < old) {
+        this.prepareVersionPages(slot, size, old);
         let position = size;
         while (position < old) {
           const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
@@ -1470,12 +1529,10 @@ export class SharedFilesystemState {
       const capacity = Atomics.load(this.slots, this.at(slot, CAPACITY));
       for (let logical = needed; logical < capacity; logical++) {
         const physical = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
-        this.segmentFor(physical).fill(0);
+        this.detachVersionPage(physical);
         Atomics.store(this.pages, this.pageAt(slot, logical), 0);
-        Atomics.store(this.owners, physical, 0);
       }
       Atomics.store(this.slots, this.at(slot, CAPACITY), needed);
-      Atomics.sub(this.cells, USED_PAGES, capacity - needed);
       this.trimPageTables(slot, needed);
     } finally {
       this.unlock(this.at(slot, FILE_LOCK));
@@ -1568,13 +1625,9 @@ export class SharedFilesystemState {
     const count = Atomics.load(this.slots, this.at(slot, CAPACITY));
     for (let logical = 0; logical < count; logical++) {
       const physical = Atomics.load(this.pages, this.pageAt(slot, logical)) - 1;
-      if (physical >= 0) {
-        this.segmentFor(physical).fill(0);
-        Atomics.store(this.owners, physical, 0);
-      }
+      if (physical >= 0) this.detachVersionPage(physical);
       Atomics.store(this.pages, this.pageAt(slot, logical), 0);
     }
-    Atomics.sub(this.cells, USED_PAGES, count);
     this.trimPageTables(slot, 0);
     Atomics.store(this.slots, this.at(slot, CAPACITY), 0);
   }
