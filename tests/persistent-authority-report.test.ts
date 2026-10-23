@@ -32,9 +32,9 @@ function failedComparison(): Error {
 }
 
 test("equal native bigint identities do not need JSON coercion", () => {
-  expect(identity.id).toBe(18446744073709551620n);
-  expect(identity.version).toBe(18446744073709551624n);
-  expect(freezeIdentity.version).toBe(18446744073709551622n);
+  expect<bigint>(identity.id).toBe(18446744073709551620n);
+  expect<bigint>(identity.version).toBe(18446744073709551624n);
+  expect<bigint>(freezeIdentity.version).toBe(18446744073709551622n);
   proofEqual({ file: identity }, { file: { ...identity } });
   proofEqual([freezeIdentity], [{ ...freezeIdentity }]);
 });
@@ -149,7 +149,7 @@ for (const { completed, unrun, failedName } of [
       stack: failure.stack,
     });
     expect(report.steps).toBe(steps);
-    expect(identity.id).toBe(18446744073709551620n);
+    expect<bigint>(identity.id).toBe(18446744073709551620n);
     expect(Object.getOwnPropertyDescriptor(BigInt.prototype, "toJSON")).toEqual(prototype);
   });
 }
@@ -205,6 +205,9 @@ test("publication groups preserve file identity while advancing bigint revisions
     proofFileAdvance({ ...identity, version: String(identity.version) }, freezeIdentity),
   ).toThrow();
   expect(() => proofFileAdvance({}, freezeIdentity)).toThrow("Missing file");
+  expect(() =>
+    proofFileAdvance({ ...identity, extra: "changed" }, { ...freezeIdentity, extra: "previous" }),
+  ).toThrow();
 });
 
 test("revision advancement cannot replace a missing stable identity", () => {

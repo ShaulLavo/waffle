@@ -38,13 +38,13 @@ function publicationFile(value: unknown) {
     value.version < value.id
   )
     throw new Error("Missing file identity or bigint revision");
-  return value;
+  return { file: value, version: value.version };
 }
 
 export function proofFileAdvance(actual: unknown, previous: unknown): void {
   const current = publicationFile(actual),
     before = publicationFile(previous);
-  proofEqual(current, { ...before, version: current.version });
+  proofEqual(current.file, { ...before.file, version: current.version });
   if (current.version <= before.version)
     throw new Error(`File revision did not advance: ${reportJson({ previous, actual })}`);
 }
