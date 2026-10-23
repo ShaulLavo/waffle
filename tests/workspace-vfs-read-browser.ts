@@ -178,7 +178,7 @@ async function adapter(kind: "indexeddb" | "opfs") {
       );
       check(
         counters.buffers.every((bytes) => bytes <= PAGE),
-        "range allocated a whole payload buffer",
+        `range allocated a whole payload buffer: ${JSON.stringify(counters)}`,
       );
       check(
         counters.buffers.reduce((sum, bytes) => sum + bytes, 0) < 2 * 1024 * 1024,
