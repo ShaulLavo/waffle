@@ -27,6 +27,7 @@ export interface FilesystemBackend {
   sharedSegments?(): SharedSegment[];
   /** Lazy storage reads finish before the service acquires its mutation lock. */
   prepare?(operation: string, args: any[], data: Uint8Array): void | Promise<void>;
+  waitForDirtyCapacity?(changed: number, cancelled: () => boolean): Promise<void>;
   /** File identity/path limits explicit durability to that file; omitted flushes the workspace. */
   flush?(target?: FileHandle | string): Promise<void>;
   /** Release startup resources when cancellation races backend creation. */
@@ -247,6 +248,7 @@ export class MemoryBackend implements FilesystemBackend {
   private executePublication(intent: MutationIntent, data: Uint8Array): unknown {
     const plan = this.planPublication(intent, data);
     try {
+      this.prepareMutation(plan);
       this.applyPublication(plan);
     } catch (error) {
       this.discardPublication(plan);
@@ -676,6 +678,7 @@ export class MemoryBackend implements FilesystemBackend {
         ? { kind: "append", written: data.length, offset: end }
         : { kind: "number", value: data.length };
     if (!data.length) return { action: { kind: "none" }, result, changes: [] };
+    this.shared.checkDirtyGrowth(intent.handle, Math.max(info.size, end));
     const file = this.publicationKey(info.ino),
       mtime = Date.now();
     return {
@@ -768,6 +771,10 @@ export class MemoryBackend implements FilesystemBackend {
       result: { kind: "number", value: 0 },
       changes,
     };
+  }
+  protected admitMutation(_plan: LocalMutationPlan): void {}
+  prepareMutation(plan: LocalMutationPlan): void {
+    this.admitMutation(plan);
   }
   /** Only this synchronous typed switch applies a publication-aware service mutation. */
   applyPublication(plan: LocalMutationPlan): void {

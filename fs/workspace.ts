@@ -173,11 +173,15 @@ class WorkspaceOwner implements WorkspaceVfs {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
     if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
+    let id: number | undefined;
     try {
+      const selectedTarget = readTarget(target),
+        selectedCut = readCut(at);
+      id = this.nextReadSerial();
       const result = readReply(
         await this.request(
           "publicationReadStat",
-          [this.nextReadSerial(), readTarget(target), undefined, undefined, readCut(at)],
+          [id, selectedTarget, undefined, undefined, selectedCut],
           this.readSignal(signal),
         ),
       );
@@ -185,7 +189,11 @@ class WorkspaceOwner implements WorkspaceVfs {
     } catch (error) {
       return this.readFailure(error, signal);
     } finally {
-      this.activeReads--;
+      try {
+        if (id !== undefined) await this.closeRead(id);
+      } finally {
+        this.activeReads--;
+      }
     }
   }
   async pin(
