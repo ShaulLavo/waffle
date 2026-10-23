@@ -23,7 +23,10 @@ for (const record of records) {
     const nested = {
       record,
       array: [record, 42n, new Uint8Array([0, 128, 255])],
-      map: new Map<unknown, unknown>([[record, record], [42n, record]]),
+      map: new Map<unknown, unknown>([
+        [record, record],
+        [42n, record],
+      ]),
     };
     expect(unpack(pack(nested))).toEqual(nested);
   });
@@ -50,8 +53,21 @@ test("transport bigint conversions bypass late hooks without losing full-width v
 });
 
 const invalidBytes = [
-  "null", "true", "false", '"7"', '""', "{}", "[]", "-1", "256", "1.5", "1e309",
-  '{"$undefined":true}', '{"$bigint":"7"}', '{"$bytes":[7]}', '{"$map":[]}',
+  "null",
+  "true",
+  "false",
+  '"7"',
+  '""',
+  "{}",
+  "[]",
+  "-1",
+  "256",
+  "1.5",
+  "1e309",
+  '{"$undefined":true}',
+  '{"$bigint":"7"}',
+  '{"$bytes":[7]}',
+  '{"$map":[]}',
 ];
 for (const invalid of invalidBytes) {
   for (const position of [0, 1, 2]) {
@@ -69,3 +85,8 @@ for (const payload of ["null", "{}", '"7"', "true", "[7,,9]", "[,8,9]", "[7,8,]"
     expect(() => unpack(bytes(`{"nested":{"$bytes":${payload}}}`))).toThrow();
   });
 }
+
+
+test("nested bytes reject an undefined payload before tag revival can erase it", () => {
+  expect(() => unpack(bytes('{"nested":{"$bytes":{"$undefined":true}}}'))).toThrow();
+});

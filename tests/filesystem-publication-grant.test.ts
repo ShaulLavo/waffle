@@ -648,7 +648,6 @@ test("file-only authority rejects another retained file handle without issuing a
   }
 });
 
-
 test("resident ACK settles with exact history after late bigint conversion hooks", async () => {
   const f = await residentFixture();
   try {

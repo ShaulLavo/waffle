@@ -457,7 +457,6 @@ test("staged identity copies never expose private allocator views to late native
   }
 });
 
-
 test("successful direct history captures real identities despite late bigint conversion hooks", async () => {
   const current = await fixture();
   try {
@@ -481,18 +480,26 @@ test("successful direct history captures real identities despite late bigint con
 
 test("paired publication codec preserves full-width identities under late bigint hooks", () => {
   const file = {
-    birthHistory: "fullwidth-hooks", ino: 1,
-    ...parseFileIdentity({ id: "fffffffffffffffffffffffffffffffe", version: "ffffffffffffffffffffffffffffffff" }),
+    birthHistory: "fullwidth-hooks",
+    ino: 1,
+    ...parseFileIdentity({
+      id: "fffffffffffffffffffffffffffffffe",
+      version: "ffffffffffffffffffffffffffffffff",
+    }),
   };
   const receipt = {
-    id: { session: 1, sequence: 1 }, cut: { history: file.birthHistory, generation: 1 },
-    result: { kind: "void" as const }, durability: { kind: "untracked" as const },
+    id: { session: 1, sequence: 1 },
+    cut: { history: file.birthHistory, generation: 1 },
+    result: { kind: "void" as const },
+    durability: { kind: "untracked" as const },
   };
   const changes: PublicationEffect[] = [
     { kind: "metadata", file, mode: 0o600, mtime: 42 },
     { kind: "entry", parent: file, name: "edge", before: file, after: null },
   ];
-  const result = withLateBigintHooks(() => decodeEffects(encodeEffects(receipt, changes, limits.effectBytes)));
+  const result = withLateBigintHooks(() =>
+    decodeEffects(encodeEffects(receipt, changes, limits.effectBytes)),
+  );
   expect(result.value).toEqual({ receipt, changes });
   expect(result.calls).toBe(0);
 });
