@@ -137,6 +137,9 @@ jobs:
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
+      - run: bun tests/publication-browser-runner.ts --workspace chromium
+        env:
+          STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
   site:
     runs-on: ubuntu-latest
     defaults:

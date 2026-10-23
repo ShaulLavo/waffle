@@ -739,7 +739,7 @@ test("public identity and position brands cannot be interchanged", () => {
   expectTypeOf<FileId>().not.toEqualTypeOf<FileVersion>();
   expectTypeOf<FileVersion>().not.toEqualTypeOf<Generation>();
   expectTypeOf<Generation>().not.toEqualTypeOf<ChangeSeq>();
-  expectTypeOf<SnapshotPage>().extract<{ kind: "pressure" }>().toEqualTypeOf<WorkspacePressure>();
+  expectTypeOf<Extract<SnapshotPage, { kind: "pressure" }>>().toEqualTypeOf<WorkspacePressure>();
   expectTypeOf<WorkspaceTerminal>().toMatchTypeOf<SnapshotPage>();
-  expectTypeOf<WorkspaceChangePage>().extract<{ kind: "gap" }>().toEqualTypeOf<HistoryGap>();
+  expectTypeOf<Extract<WorkspaceChangePage, { kind: "gap" }>>().toEqualTypeOf<HistoryGap>();
 });
