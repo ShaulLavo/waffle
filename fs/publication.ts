@@ -1,6 +1,7 @@
 import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
   arrayAppend,
+  bigintToString,
   Uint8ArrayConstructor,
   DataViewConstructor,
   dataViewGetUint32,
@@ -1005,7 +1006,7 @@ export function mapPublicationFiles<F extends FileKey, G extends FileKey>(
   return { ...effect, file: map(effect.file) };
 }
 function storedPublicationFile(file: PublicationFile) {
-  return { ...file, id: file.id.toString(16), version: file.version.toString(16) };
+  return { ...file, id: bigintToString(file.id, 16), version: bigintToString(file.version, 16) };
 }
 
 // Effects use one bounded JSON header and raw byte tails. Encoding finishes before the first

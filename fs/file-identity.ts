@@ -1,5 +1,11 @@
 import { FilesystemError } from "../core/filesystem.js";
-import { Int32ArrayConstructor, typedArrayLength, typedArraySet } from "../proc/intrinsics.js";
+import {
+  BigIntConstructor,
+  bigintToString,
+  Int32ArrayConstructor,
+  typedArrayLength,
+  typedArraySet,
+} from "../proc/intrinsics.js";
 
 export type FileId = bigint & { readonly __brand: "FileId" };
 export type FileVersion = bigint & { readonly __brand: "FileVersion" };
@@ -30,7 +36,7 @@ function invalid(): never {
 }
 function token(value: unknown, max: bigint): bigint {
   if (typeof value !== "string" || !/^[1-9a-f][0-9a-f]{0,31}$/.test(value)) invalid();
-  const parsed = BigInt(`0x${value}`);
+  const parsed = BigIntConstructor(`0x${value}`);
   if (parsed > max) invalid();
   return parsed;
 }
@@ -76,8 +82,8 @@ export function storeIdentity(value: FileIdentity, workspace: string): StoredIde
   return {
     format: "waffle-file-identity-v1",
     workspace,
-    id: value.id.toString(16),
-    version: value.version.toString(16),
+    id: bigintToString(value.id, 16),
+    version: bigintToString(value.version, 16),
   };
 }
 export function nextReservation(value: unknown, expected?: string): IdentityReservation {
@@ -103,13 +109,13 @@ export function storeReservation(value: IdentityReservation): StoredReservation 
   return {
     format: "waffle-identity-reservation-v1",
     workspace: value.workspace,
-    era: value.era.toString(16),
+    era: bigintToString(value.era, 16),
   };
 }
 export function readIdentityWords(words: Int32Array, at: number): bigint {
   let value = 0n;
   for (let index = 3; index >= 0; index--)
-    value = (value << 32n) | BigInt(words[at + index]! >>> 0);
+    value = (value << 32n) | BigIntConstructor(words[at + index]! >>> 0);
   return value;
 }
 export function writeIdentityWords(words: Int32Array, at: number, value: bigint): void {
@@ -148,15 +154,15 @@ export class IdentityAllocator {
   }
   reserve(count: number): bigint[] {
     if (!Number.isSafeInteger(count) || count < 0) invalid();
-    if (!this.active || BigInt(count) > this.available)
+    if (!this.active || BigIntConstructor(count) > this.available)
       throw new FilesystemError(33, "filesystem identity serial exhausted");
     const era = readIdentityWords(this.words, 1);
     const serial = readIdentityWords(this.words, 5);
     const values = Array.from(
       { length: count },
-      (_, index) => (era << 64n) | (serial + BigInt(index) + 1n),
+      (_, index) => (era << 64n) | (serial + BigIntConstructor(index) + 1n),
     );
-    writeIdentityWords(this.words, 5, serial + BigInt(count));
+    writeIdentityWords(this.words, 5, serial + BigIntConstructor(count));
     return values;
   }
   create(): FileIdentity {

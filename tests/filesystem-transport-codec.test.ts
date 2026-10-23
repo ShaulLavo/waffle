@@ -86,7 +86,11 @@ for (const payload of ["null", "{}", '"7"', "true", "[7,,9]", "[,8,9]", "[7,8,]"
   });
 }
 
-
 test("nested bytes reject an undefined payload before tag revival can erase it", () => {
   expect(() => unpack(bytes('{"nested":{"$bytes":{"$undefined":true}}}'))).toThrow();
+});
+
+test("array transport keeps JSON index semantics despite tag-named extra properties", () => {
+  const value = Object.assign([1, 2], { $bigint: "42", $bytes: [3] });
+  expect(unpack(pack(value))).toEqual([1, 2]);
 });
