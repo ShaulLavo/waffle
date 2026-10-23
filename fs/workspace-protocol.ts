@@ -1,6 +1,6 @@
 import { BigIntConstructor } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
-import type { PublicationConfiguration } from "./publication-internal.js";
+import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { decodeEffects, publicationCut, type PublicationCut } from "./publication.js";
 import { MAX_IDENTITY_PART, type FileId, type FileVersion } from "./file-identity.js";
 import {
@@ -308,4 +308,40 @@ export function readOpenReply(value: unknown) {
   if (!serial || extent.offset + extent.length > Math.max(stat.size, extent.offset))
     throw new FilesystemError(29);
   return { serial, stat, range: extent };
+}
+
+
+/** A slot cannot be reused before the service joins its serial-qualified reader owner. */
+export class ReaderLifetime {
+  private readonly cells: Int32Array;
+  private readonly index: number;
+  constructor(private readonly connection: PublicationConnection) {
+    if (!connection.buffers.readerLifetimes) throw new FilesystemError(58);
+    this.cells = new Int32Array(connection.buffers.readerLifetimes);
+    this.index = connection.session.slot * 2;
+  }
+  begin(): void {
+    if (this.cells[this.index] !== this.connection.session.serial && this.cells[this.index + 1] === 1)
+      throw new FilesystemError(6);
+    Atomics.store(this.cells, this.index, this.connection.session.serial);
+    Atomics.store(this.cells, this.index + 1, 1);
+  }
+  finish(failed: boolean): void {
+    Atomics.store(this.cells, this.index + 1, failed ? 3 : 2);
+    Atomics.notify(this.cells, this.index + 1);
+  }
+  get drained(): boolean {
+    return this.cells[this.index] === this.connection.session.serial && this.cells[this.index + 1] === 2;
+  }
+  async join(): Promise<void> {
+    const atomics = Atomics as typeof Atomics & {
+      waitAsync(array: Int32Array, index: number, value: number): { async: boolean; value: string | Promise<string> };
+    };
+    while (Atomics.load(this.cells, this.index) === this.connection.session.serial) {
+      const state = Atomics.load(this.cells, this.index + 1);
+      if (state === 3) throw new FilesystemError(29, "Reader cleanup failed");
+      if (state !== 1) return;
+      await atomics.waitAsync(this.cells, this.index + 1, state).value;
+    }
+  }
 }

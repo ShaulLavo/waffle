@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
-import { PAGE } from "../fs/protocol";
+import { PAGE, revokeFilesystem } from "../fs/protocol";
 import { RangeFixture } from "./fixtures/opfs-range-storage";
 import { publicReadFixture } from "./fixtures/workspace-read";
 
@@ -169,3 +169,39 @@ for (const reason of [undefined, null, false, 0, new Error("held reader release 
     }
   });
 }
+
+
+test("revoked public lease close joins the actual native borrow before acknowledging release", async () => {
+  const physical = new RangeFixture();
+  const gate = physical.gate(), entered = Promise.withResolvers<void>();
+  let value: ReturnType<typeof publicReadFixture> | undefined;
+  let reading: Promise<unknown> | undefined, closing: Promise<unknown> | undefined;
+  try {
+    await physical.seed([PAGE * 3]);
+    const storage = await physical.open();
+    value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    reading = held.value.read({ offset: PAGE, length: 4096 });
+    await entered.promise;
+    revokeFilesystem(value.client.connection);
+    let settled = false;
+    closing = held.value.close().then(() => { settled = true; });
+    await turn();
+    expect(settled).toBe(false);
+    expect(storage.resources().opfsReaderWork).toBe(1);
+    expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
+    gate.resolve();
+    await closing;
+    expect(await reading).toEqual({ kind: "stopped" });
+    expect(storage.resources().opfsReaderWork).toBe(0);
+    expect(storage.resources().readerStorageBytes).toBe(0);
+    expect(value.service.resources().readerLeases).toBe(0);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled([reading, closing]);
+    await value?.close();
+    await physical.cleanup();
+  }
+});

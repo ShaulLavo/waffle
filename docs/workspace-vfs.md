@@ -94,7 +94,8 @@ A whole-file read over 1 MiB returns `pressure/result-bytes` before payload I/O.
 Read a large file in ranges through its lease instead. Budgets are shared by all
 public projections of the same root. Duplicate leases share physical backing
 charges but each owns metadata and a lease slot. Public roots allocate a fixed
-64 KiB shared page-reference table; private roots do not. Guest forks share that
+64 KiB shared page-reference table and 512 bytes of serial-qualified reader
+lifetime state; private roots allocate neither. Guest forks share that
 table without receiving the observer grant.
 
 Result reservations include protocol buffers, service chunks, and the final
@@ -107,7 +108,8 @@ that deferred debt.
 
 Cancellation and root shutdown stop admission first. Native work, completion
 replies, and backing references remain owned until their actual settlement.
-Late delivery cannot recreate a closed lease. Failed cleanup rejects and retains
+Close after revocation waits for the service
+to acknowledge the original reader drain. Late delivery cannot recreate a closed lease. Failed cleanup rejects and retains
 its original owner rather than pretending the resource is gone. Signals and
 wall-clock time are not proof that native storage work has stopped.
 

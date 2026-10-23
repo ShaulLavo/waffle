@@ -11,6 +11,7 @@ import { FilesystemError, PAGE } from "./protocol.js";
 import {
   namespaceCut,
   ReadRefusal,
+  ReaderLifetime,
   readCut,
   readRange,
   readTarget,
@@ -137,8 +138,12 @@ export class WorkspaceReadBudget {
   leases = 0;
   outputs = 0;
   outputPeak = 0;
-  metadata = 65536;
-  metadataPeak = 65536;
+  metadata: number;
+  metadataPeak: number;
+  constructor(lifetimeBytes = 0) {
+    this.metadata = 65536 + lifetimeBytes;
+    this.metadataPeak = this.metadata;
+  }
   readonly seeds = new Map<ArrayBufferLike, number>();
   seedBytes = 0;
   takeMetadata(bytes: number): void {
@@ -175,8 +180,10 @@ export class WorkspaceReadAuthority {
   constructor(
     private readonly backend: MemoryBackend,
     private readonly budget: WorkspaceReadBudget,
+    readonly lifetime: ReaderLifetime,
   ) {
     this.budget.takeMetadata(1280);
+    this.lifetime.begin();
   }
   private isClosed(id: number): boolean {
     return this.closed.some(([first, last]) => id >= first && id <= last);
@@ -619,9 +626,16 @@ export class WorkspaceReadAuthority {
         .map(([id, ticket]) => this.closeTicket(id, ticket)),
     );
     const operations = Array.from(this.operations.values(), (operation) => operation.work);
-    return (this.closing = joinReaders(operations.concat(closing)).then(() => {
-      this.budget.metadata -= 1280;
-    }));
+    return (this.closing = joinReaders(operations.concat(closing)).then(
+      () => {
+        this.budget.metadata -= 1280;
+        this.lifetime.finish(false);
+      },
+      (error: unknown) => {
+        this.lifetime.finish(true);
+        throw error;
+      },
+    ));
   }
 }
 

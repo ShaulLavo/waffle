@@ -1,3 +1,4 @@
+import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
 import { NamespaceAuthority } from "./workspace-namespace.js";
 import { ResidentGrantAuthority } from "./publication-grant.js";
@@ -676,7 +677,10 @@ export class FilesystemService {
       throw new FilesystemError(2);
     session.reader ??= new WorkspaceReadAuthority(
       this.backend,
-      (this.readBudget ??= new WorkspaceReadBudget()),
+      (this.readBudget ??= new WorkspaceReadBudget(
+        session.connection.publication.buffers.readerLifetimes?.byteLength,
+      )),
+      new ReaderLifetime(session.connection.publication),
     );
     const continuation: PreparedRequest = { handles: [] };
     const original = this.trackWork(session, session.reader.invoke(operation, args, id));
@@ -976,8 +980,10 @@ export class FilesystemService {
     }
   }
   private stopSessionReader(session: Session): void {
-    if (session.reader && !session.readerClosing)
+    if (session.reader && !session.readerClosing) {
       session.readerClosing = this.trackWork(session, session.reader.stop());
+      void session.readerClosing.then(() => this.sweep(), () => {});
+    }
   }
   private releaseSessionPins(session: Session): void {
     session.namespace?.close();
@@ -1042,6 +1048,7 @@ export class FilesystemService {
       this.backend.shared.publication.releaseStopped();
   }
   private retirePublication(session: Session): boolean {
+    if (session.reader && !session.reader.lifetime.drained) return false;
     if (!(this.backend instanceof MemoryBackend)) return true;
     const domain = this.backend.shared.publication,
       connection = session.connection.publication;

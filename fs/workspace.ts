@@ -6,6 +6,7 @@ import {
   watermark,
   workspaceChanges,
   ReadRefusal,
+  ReaderLifetime,
   readTarget,
   readRange,
   readVersion,
@@ -287,7 +288,11 @@ class WorkspaceOwner implements WorkspaceVfs {
   }
   closeRead(id?: number): Promise<void> {
     const close = async () => {
-      if (isRevoked(this.client.connection)) return;
+      if (isRevoked(this.client.connection)) {
+        this.client.sweep();
+        await new ReaderLifetime(this.client.connection.publication!).join();
+        return;
+      }
       await this.request("publicationReadClose", [id]);
     };
     const closing = this.readControl.then(close, close);

@@ -74,7 +74,7 @@ test("cold full-lease metadata refuses before lease slots and charges one physic
     const peak = value.service.resources().readerMetadataPeak;
     await Promise.all(leases.map((lease) => lease.close()));
     expect(value.service.resources().readerLeases).toBe(0);
-    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 1280);
+    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 64 * 8 + 1280);
     expect(value.storage.resources().readerStorageBytes).toBe(0);
     expect(peak).toBeLessThanOrEqual(2 * 1024 * 1024);
   } finally {

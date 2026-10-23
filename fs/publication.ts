@@ -252,7 +252,12 @@ export function createPublicationBuffers(
   limits = validateLimits(limits);
   return {
     history: crypto.randomUUID(),
-    ...(observe ? { pageReaders: new SharedArrayBuffer(16_384 * 4) } : {}),
+    ...(observe
+      ? {
+          pageReaders: new SharedArrayBuffer(16_384 * 4),
+          readerLifetimes: new SharedArrayBuffer(limits.sessions * 8),
+        }
+      : {}),
     limits,
     control: new SharedArrayBuffer(CONTROL_WORDS * 4),
     sessions: new SharedArrayBuffer(limits.sessions * SESSION_WORDS * 4),
