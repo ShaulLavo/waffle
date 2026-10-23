@@ -429,3 +429,29 @@ test("publication identity and service codecs preserve full-width revisions and 
   expect(() => unpack(bytes('{"$bigint":"01"}'))).toThrow();
   expect(() => unpack(bytes('{"$bytes":[256]}'))).toThrow();
 });
+
+test("staged identity copies never expose private allocator views to late native-copy hooks", async () => {
+  const current = await fixture();
+  const original = Object.getOwnPropertyDescriptor(Int32Array.prototype, "set");
+  const nativeSet = Int32Array.prototype.set;
+  let observed = 0;
+  try {
+    const handle = await current.file("stable");
+    const cut = await current.observer.cut();
+    const input = bytes("x");
+    Int32Array.prototype.set = function (source: ArrayLike<number>, offset?: number): void {
+      observed++;
+      Reflect.apply(nativeSet, this, [source, offset]);
+    };
+    const written = current.client.tryWrite(handle, [input], 0);
+    if (original) Object.defineProperty(Int32Array.prototype, "set", original);
+    else Reflect.deleteProperty(Int32Array.prototype, "set");
+    expect(written).toBe(1);
+    expect(observed).toBe(0);
+    affected((await latest(current, cut)).changes, current.backend.identity(handle));
+  } finally {
+    if (original) Object.defineProperty(Int32Array.prototype, "set", original);
+    else Reflect.deleteProperty(Int32Array.prototype, "set");
+    current.stop();
+  }
+});

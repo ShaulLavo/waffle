@@ -1,4 +1,5 @@
 import { FilesystemError } from "../core/filesystem.js";
+import { Int32ArrayConstructor, typedArrayLength, typedArraySet } from "../proc/intrinsics.js";
 
 export type FileId = bigint & { readonly __brand: "FileId" };
 export type FileVersion = bigint & { readonly __brand: "FileVersion" };
@@ -138,12 +139,12 @@ export class IdentityAllocator {
     this.words[0] = 1;
   }
   stage(): IdentityAllocator {
-    const staged = new IdentityAllocator(new Int32Array(this.words.length));
+    const staged = new IdentityAllocator(new Int32ArrayConstructor(typedArrayLength(this.words)));
     staged.copyFrom(this);
     return staged;
   }
   copyFrom(source: IdentityAllocator): void {
-    this.words.set(source.words);
+    typedArraySet(this.words, source.words);
   }
   reserve(count: number): bigint[] {
     if (!Number.isSafeInteger(count) || count < 0) invalid();
