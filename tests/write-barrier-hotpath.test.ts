@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { SharedFilesystemState } from "../fs/shared";
-import { WriteAdmission, WRITE_BARRIER_OFFSET } from "../fs/write-barrier";
+import { SharedFilesystemState, MissingSegmentError } from "../fs/shared";
+import { WriteAdmission, WRITE_BARRIER_OFFSET, type WriteTicket } from "../fs/write-barrier";
 import { withLateBigintHooks } from "./fixtures/bigint-hooks";
+import { retainedClientFixture } from "./fixtures/retained-client";
+import { DirtyCapacityError } from "../fs/dirty-admission";
 
 function ledger() {
   const buffer = SharedFilesystemState.createBuffer();
@@ -128,11 +130,6 @@ test("a failed local execution still poisons its held cut", async () => {
   await expect(gate.drain(lease)).rejects.toThrow("earlier mutation failed");
   gate.open(lease);
 });
-
-import { retainedClientFixture } from "./fixtures/retained-client";
-import { MissingSegmentError } from "../fs/shared";
-import { DirtyCapacityError } from "../fs/dirty-admission";
-import type { WriteTicket } from "../fs/write-barrier";
 
 test("ordinary direct writes verify once at execution, including nested ownership", () => {
   const { client, cleanup } = retainedClientFixture();
