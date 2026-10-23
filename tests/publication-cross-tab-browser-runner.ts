@@ -435,9 +435,18 @@ async function lateReservationCleanup(page: Page): Promise<void> {
     "PASS observed actual parent cleanup joins later pre-bind child cancellation before closed-once exit ACK",
   );
 }
+async function continuityGuards(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const locks = await navigator.locks.query();
+    return (locks.held ?? []).filter((lock) =>
+      lock.name?.startsWith("waffle:publication:continuity:"),
+    ).length;
+  });
+}
 async function unknownCleanup(page: Page): Promise<void> {
   await control(page, "workspaceGuest", { key: "lost", mode: "proc" });
   const before = record(await workspaceChannels(page));
+  const guards = await continuityGuards(page);
   await channelBarrier(page, "workspace");
   await workspaceGuest(page, "lost", "beginPending");
   await heldChannel(page);
@@ -455,15 +464,31 @@ async function unknownCleanup(page: Page): Promise<void> {
   equal(held.pending, 1);
   equal(held.held, 1);
   equal(held.closedPending, 0);
-  console.log("WORKSPACE_UNKNOWN_CLEANUP=" + JSON.stringify({ before, held }));
-  await control(page, "workspaceStop");
-  await control(page, "authorityDeath");
+  equal(await continuityGuards(page), guards);
   equal(await control(page, "exclusive"), false);
-  await control(page, "workspaceGuestDeath", { key: "lost" });
-  equal(await control(page, "exclusive"), true);
   await channelBarrier(page, "release");
+  equal(
+    record(await control(page, "workspaceGuestTerminal", { key: "lost", event: "exit" })).type,
+    "exit",
+  );
+  equal(await control(page, "workspaceGuestStatus", { key: "lost" }), {
+    exit: true,
+    finished: true,
+    cleanupError: false,
+  });
+  const reconciled = record(await workspaceChannels(page));
+  equal(reconciled.closed, Number(before.closed) + 1);
+  equal(reconciled.pending, 0);
+  equal(reconciled.held, 0);
+  equal(reconciled.closedPending, 0);
+  equal(await continuityGuards(page), guards - 1);
+  await control(page, "workspaceStop");
+  await control(page, "workspaceAuthorityStop");
+  equal(await control(page, "exclusive"), true);
+  console.log("WORKSPACE_UNKNOWN_CLEANUP=" + JSON.stringify({ before, held, reconciled, guards }));
+  await control(page, "workspaceGuestDeath", { key: "lost" });
   console.log(
-    "PASS unknown workspace reply remains pending after the caller deadline without cleanup-error, exit ACK or channel close; native worker death alone releases retained continuity",
+    "PASS unknown workspace reply keeps original stop and guard pending past the caller deadline; delivery of its original matching reply reconciles exit and channel close before guest death",
   );
 }
 async function failedCleanup(page: Page): Promise<void> {
