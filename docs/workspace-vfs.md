@@ -79,16 +79,16 @@ grant returns `unavailable`; staging bytes are never selected.
 
 `WORKSPACE_READ_LIMITS` is exported with these root-wide bounds:
 
-| Resource | Bound |
-| --- | ---: |
-| Explicit leases | 16 |
-| Active read, stat, or pin operations | 4 |
-| Returned bytes per read | 1 MiB |
-| In-flight result and transport reservation | 16 MiB |
-| Unique retained resident pages and seed buffers | 256 MiB |
+| Resource                                                       |   Bound |
+| -------------------------------------------------------------- | ------: |
+| Explicit leases                                                |      16 |
+| Active read, stat, or pin operations                           |       4 |
+| Returned bytes per read                                        |   1 MiB |
+| In-flight result and transport reservation                     |  16 MiB |
+| Unique retained resident pages and seed buffers                | 256 MiB |
 | Retained disk payloads, including deferred reader-only GC debt | 512 MiB |
-| Charged reader metadata | 2 MiB |
-| Output chunk | 64 KiB |
+| Charged reader metadata                                        |   2 MiB |
+| Output chunk                                                   |  64 KiB |
 
 A whole-file read over 1 MiB returns `pressure/result-bytes` before payload I/O.
 Read a large file in ranges through its lease instead. Budgets are shared by all

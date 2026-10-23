@@ -161,8 +161,10 @@ async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<v
     await pinned.value.close();
     check(storage.resources().indexeddbReaderWork === 0, "stale native read debt survived close");
     check(storage.resources().readerStorageBytes === 0, "stale lease retention survived close");
-    check((await replacement.load())?.nodes.find((node) => node.ino === 2)?.size === 1,
-      "takeover recovered reader-only metadata");
+    check(
+      (await replacement.load())?.nodes.find((node) => node.ino === 2)?.size === 1,
+      "takeover recovered reader-only metadata",
+    );
   } finally {
     held.restore();
     await reading;
@@ -253,7 +255,11 @@ async function adapter(kind: "indexeddb" | "opfs") {
     await lease.close();
     const resources = cold.resources();
     check(resources.readerStorageDebt === SIZE, "reader close hid deferred physical debt");
-    check(resources.readerStorageMetadataBytes > 0, "reader close hid deferred key metadata");
+    check(
+      typeof resources.readerStorageMetadataBytes === "number" &&
+        resources.readerStorageMetadataBytes > 0,
+      "reader close hid deferred key metadata",
+    );
     await live.client.asyncCall("writeFile", ["/file"], new Uint8Array([10]));
     const held = holdCheckpoint(kind);
     let pending: Promise<unknown> | undefined;
@@ -279,7 +285,8 @@ async function adapter(kind: "indexeddb" | "opfs") {
       await live.backend.flush();
     }
     check(
-      cold.resources().readerStorageDebt === 0 && cold.resources().readerStorageBytes === 0 &&
+      cold.resources().readerStorageDebt === 0 &&
+        cold.resources().readerStorageBytes === 0 &&
         cold.resources().readerStorageMetadataBytes === 0,
       "native deletion did not retire reader debt",
     );

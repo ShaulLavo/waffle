@@ -275,7 +275,6 @@ other native schedules, OPFS or other-engine qualification. They do not replace 
 complete registered browser matrix or independent review, and do not accept Runtime
 recovery, SAFE mode, public/default APIs or consumer installation.
 
-
 ## Public version readers
 
 The optional root WorkspaceVfs uses the authoritative namespace and publication
