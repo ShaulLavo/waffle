@@ -1,11 +1,13 @@
 import {
+  mapPublicationFiles,
+  type FileKey,
   mutationIntent,
   mutationValue,
   type MutationIntent,
   type MutationResult,
   type PublicationEffect,
 } from "./publication.js";
-import { type FileIdentity, type IdentityReservation } from "./file-identity.js";
+import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "./file-identity.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 import { normalize, type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
@@ -75,10 +77,14 @@ type LocalMutationAction =
       readonly offset: number;
       readonly mtime: number;
     };
-export interface LocalMutationPlan {
-  readonly identities?: readonly { node: Node; handle: FileHandle; identity: FileIdentity }[];
+interface MutationPlan {
   readonly action: LocalMutationAction;
   readonly result: MutationResult;
+  readonly changes: readonly PublicationEffect<FileKey>[];
+}
+export interface LocalMutationPlan extends Omit<MutationPlan, "changes"> {
+  readonly allocation: IdentityAllocator;
+  readonly identities: readonly { node: Node; handle: FileHandle; identity: FileIdentity }[];
   readonly changes: readonly PublicationEffect[];
 }
 export class MemoryBackend implements FilesystemBackend {
@@ -312,16 +318,30 @@ export class MemoryBackend implements FilesystemBackend {
   /** Preflight runs under the existing global lock after all storage waits. It does not
    * change namespace, logical size or revision. Unsupported plans fail before any effect. */
   planPublication(intent: MutationIntent, data: Uint8Array): LocalMutationPlan {
-    const plan = this.planMutation(intent, data);
+    const allocation = this.shared.identities.stage();
+    const plan = this.planMutation(intent, data, allocation);
     try {
-      return { ...plan, identities: this.planIdentities(plan) };
+      const identities = this.planIdentities(plan, allocation);
+      const byInode = new Map(identities.map(({ node, identity }) => [node.ino, identity]));
+      const reference = (key: FileKey) => {
+        const identity = byInode.get(key.ino);
+        if (!identity) throw new FilesystemError(29, "missing planned identity");
+        return { ...key, ...identity };
+      };
+      return {
+        ...plan,
+        allocation,
+        identities,
+        changes: plan.changes.map((effect) => mapPublicationFiles(effect, reference)),
+      };
     } catch (error) {
       this.discardPublication(plan);
       throw error;
     }
   }
   private planIdentities(
-    plan: LocalMutationPlan,
+    plan: MutationPlan,
+    allocation: IdentityAllocator,
   ): { node: Node; handle: FileHandle; identity: FileIdentity }[] {
     if (!plan.changes.length) return [];
     const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
@@ -331,12 +351,17 @@ export class MemoryBackend implements FilesystemBackend {
     const existing = Array.from(nodes).filter(
       (node) => action.kind !== "namespace" || !action.plan.created.includes(node),
     );
-    const versions = this.shared.identities.versions(existing.length);
-    return existing.map((node, index) => ({
-      node,
-      handle: this.fs.handleForNode(node),
-      identity: { id: this.identity(this.fs.handleForNode(node)).id, version: versions[index]! },
-    }));
+    const versions = allocation.versions(existing.length);
+    const updated = new Map(existing.map((node, index) => [node, versions[index]!]));
+    return Array.from(nodes, (node) => {
+      const handle = this.fs.handleForNode(node),
+        identity = this.identity(handle);
+      return {
+        node,
+        handle,
+        identity: { id: identity.id, version: updated.get(node) ?? identity.version },
+      };
+    });
   }
   private namespaceIdentityNodes(plan: NamespacePlan, nodes: Set<Node>): void {
     for (const node of plan.parents) nodes.add(node);
@@ -349,7 +374,11 @@ export class MemoryBackend implements FilesystemBackend {
   private get effectBound(): number {
     return this.shared.publication?.limits.effects ?? Number.MAX_SAFE_INTEGER;
   }
-  private planMutation(intent: MutationIntent, data: Uint8Array): LocalMutationPlan {
+  private planMutation(
+    intent: MutationIntent,
+    data: Uint8Array,
+    allocation: IdentityAllocator,
+  ): MutationPlan {
     const domain = this.shared.publication;
     domain?.assertLive();
     switch (intent.kind) {
@@ -369,6 +398,7 @@ export class MemoryBackend implements FilesystemBackend {
         return this.planNamespace(
           prepared.plan,
           intent.kind === "preopen" ? { kind: "number", value: handle } : { kind: "void" },
+          allocation,
           intent.kind === "preopen" ? intent.path : undefined,
         );
       }
@@ -385,6 +415,7 @@ export class MemoryBackend implements FilesystemBackend {
           typeof prepared.result === "number"
             ? { kind: "number", value: prepared.result }
             : { kind: "create-error", errno: prepared.result.error },
+          allocation,
         );
       }
       case "link":
@@ -395,16 +426,28 @@ export class MemoryBackend implements FilesystemBackend {
           intent.kind === "link"
             ? this.fs.planLink(intent.from, intent.to, this.effectBound)
             : this.fs.planRename(intent.from, intent.to, this.effectBound);
-        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "number", value: prepared.result },
+          allocation,
+        );
       }
       case "removePath": {
         this.path(intent.path);
         const prepared = this.fs.planRemovePath(intent.path, intent.directory, this.effectBound);
-        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "number", value: prepared.result },
+          allocation,
+        );
       }
       case "remove": {
         const prepared = this.fs.planRemove(intent.path, this.effectBound);
-        return this.planNamespace(prepared.plan, { kind: "boolean", value: prepared.result });
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "boolean", value: prepared.result },
+          allocation,
+        );
       }
       case "move": {
         const root = this.fs.preopen("/");
@@ -420,10 +463,14 @@ export class MemoryBackend implements FilesystemBackend {
             changes: [],
           };
         const prepared = this.fs.planRename(from, to, this.effectBound);
-        return this.planNamespace(prepared.plan, { kind: "number", value: prepared.result });
+        return this.planNamespace(
+          prepared.plan,
+          { kind: "number", value: prepared.result },
+          allocation,
+        );
       }
       case "writeFile":
-        return this.planPublicationHostWrite(intent, data);
+        return this.planPublicationHostWrite(intent, data, allocation);
       default: {
         const exhaustive: never = intent;
         return exhaustive;
@@ -433,9 +480,10 @@ export class MemoryBackend implements FilesystemBackend {
   private planNamespace(
     plan: NamespacePlan,
     result: MutationResult,
+    allocation: IdentityAllocator,
     preopen?: string,
-  ): LocalMutationPlan {
-    const changes: PublicationEffect[] = [];
+  ): MutationPlan {
+    const changes: PublicationEffect<FileKey>[] = [];
     for (const node of plan.created)
       changes.push({
         kind: "inode",
@@ -462,7 +510,7 @@ export class MemoryBackend implements FilesystemBackend {
     const registered: FileHandle[] = [];
     try {
       for (const node of plan.created) {
-        this.ensureIdentity(node);
+        node.identity ??= allocation.create();
         const handle = this.fs.handleForNode(node);
         registered.push(handle);
         this.sync(handle);
@@ -481,7 +529,7 @@ export class MemoryBackend implements FilesystemBackend {
       throw error;
     }
   }
-  discardPublication(plan: LocalMutationPlan): void {
+  discardPublication(plan: Pick<MutationPlan, "action">): void {
     const action = plan.action.kind === "writeFile" ? plan.action.namespace : plan.action;
     if (action.kind !== "namespace") return;
     for (const handle of action.registered) this.shared.unlink(handle);
@@ -490,7 +538,8 @@ export class MemoryBackend implements FilesystemBackend {
   private planPublicationHostWrite(
     intent: Extract<MutationIntent, { kind: "writeFile" }>,
     data: Uint8Array,
-  ): LocalMutationPlan {
+    allocation: IdentityAllocator,
+  ): MutationPlan {
     if (intent.append && intent.exclusive) throw new FilesystemError(28);
     const resolved = this.fs.resolveAbsolute(intent.path);
     if (typeof resolved === "number" && resolved !== 44) throw new FilesystemError(resolved);
@@ -503,7 +552,7 @@ export class MemoryBackend implements FilesystemBackend {
       intent.exclusive,
       this.effectBound,
     );
-    const namespace = this.planNamespace(prepared.plan, { kind: "void" });
+    const namespace = this.planNamespace(prepared.plan, { kind: "void" }, allocation);
     if (namespace.action.kind !== "namespace") throw new FilesystemError(29);
     try {
       const handle = this.fs.handleForNode(prepared.node);
@@ -572,7 +621,7 @@ export class MemoryBackend implements FilesystemBackend {
   private planPublicationWrite(
     intent: Extract<MutationIntent, { kind: "write" | "append" }>,
     data: Uint8Array,
-  ): LocalMutationPlan {
+  ): MutationPlan {
     const info = this.publicationFile(intent.handle);
     const offset = intent.kind === "append" ? info.size : intent.offset;
     const end = offset + data.length;
@@ -601,15 +650,13 @@ export class MemoryBackend implements FilesystemBackend {
       ],
     };
   }
-  private planPublicationResize(
-    intent: Extract<MutationIntent, { kind: "resize" }>,
-  ): LocalMutationPlan {
+  private planPublicationResize(intent: Extract<MutationIntent, { kind: "resize" }>): MutationPlan {
     const info = this.publicationFile(intent.handle);
     this.shared.growLocked(intent.handle, intent.size);
     const size = intent.truncate ? intent.size : Math.max(info.size, intent.size);
     const file = this.publicationKey(info.ino),
       mtime = intent.truncate ? Date.now() : info.mtime;
-    const changes: PublicationEffect[] = [];
+    const changes: PublicationEffect<FileKey>[] = [];
     if (size !== info.size)
       changes.push({
         kind: "resize",
@@ -631,9 +678,7 @@ export class MemoryBackend implements FilesystemBackend {
       changes,
     };
   }
-  private planPublicationMode(
-    intent: Extract<MutationIntent, { kind: "setMode" }>,
-  ): LocalMutationPlan {
+  private planPublicationMode(intent: Extract<MutationIntent, { kind: "setMode" }>): MutationPlan {
     this.check(intent.handle);
     const supported = this.fs.permissions(intent.handle).modeSupported;
     if (intent.mode > 0xffffffff)
@@ -641,7 +686,7 @@ export class MemoryBackend implements FilesystemBackend {
     if (intent.mode & ~supported)
       return { action: { kind: "none" }, result: { kind: "number", value: 58 }, changes: [] };
     const stat = this.shared.stat(intent.handle)!;
-    const changes: PublicationEffect[] =
+    const changes: PublicationEffect<FileKey>[] =
       stat.mode === intent.mode
         ? []
         : [
@@ -660,11 +705,11 @@ export class MemoryBackend implements FilesystemBackend {
   }
   private planPublicationMtime(
     intent: Extract<MutationIntent, { kind: "setMtime" }>,
-  ): LocalMutationPlan {
+  ): MutationPlan {
     this.check(intent.handle);
     if (!(this.fs.permissions(intent.handle).access & 2)) throw new FilesystemError(2);
     const stat = this.shared.stat(intent.handle)!;
-    const changes: PublicationEffect[] =
+    const changes: PublicationEffect<FileKey>[] =
       stat.mtime === intent.mtime
         ? []
         : [
@@ -685,8 +730,9 @@ export class MemoryBackend implements FilesystemBackend {
   applyPublication(plan: LocalMutationPlan): void {
     this.shared.identityGroup = true;
     try {
+      this.shared.identities.copyFrom(plan.allocation);
       this.applyMutation(plan);
-      for (const { node, handle, identity } of plan.identities ?? []) {
+      for (const { node, handle, identity } of plan.identities) {
         node.identity = identity;
         this.identityChanged(node);
         this.shared.updateIdentity(handle, identity);

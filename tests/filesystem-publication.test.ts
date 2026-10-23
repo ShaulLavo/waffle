@@ -1,5 +1,5 @@
 import { coldPublicationRoot } from "./fixtures/publication-storage";
-import { nextReservation } from "../fs/file-identity";
+import { IdentityAllocator, nextReservation } from "../fs/file-identity";
 import { expect, test } from "bun:test";
 import {
   FilesystemClient,
@@ -170,7 +170,9 @@ const limits: PublicationLimits = {
 function domainFixture() {
   const domain = new PublicationDomain(createPublicationBuffers(limits));
   const session = domain.openSession();
-  const file = { birthHistory: domain.buffers.history, ino: 7 };
+  const allocator = new IdentityAllocator(new Int32Array(9));
+  allocator.configure({ workspace: crypto.randomUUID(), era: 1n });
+  const file = { birthHistory: domain.buffers.history, ino: 7, ...allocator.create() };
   return { domain, session, file };
 }
 
@@ -300,10 +302,13 @@ function directPublicationFixture() {
     undefined,
     domain.buffers,
   );
+  shared.identities.configure({ workspace: crypto.randomUUID(), era: 1n }, 1n);
   shared.register(
     3,
     { kind: "file", ino: file.ino, mode: 0o600, mtime: 1, size: 3 },
     new Uint8Array([1, 2, 3]),
+    true,
+    { id: file.id, version: file.version },
   );
   const epoch = new Int32Array(new SharedArrayBuffer(4));
   const slot = shared.fileSlot(3);
@@ -965,7 +970,15 @@ test("resident direct metadata joins the publication order and chmod revokes an 
     expect(page.publications).toHaveLength(2);
     expect(page.publications[0].changes[0]).toMatchObject({ kind: "resize", size: 6 });
     expect(page.publications[1].changes).toEqual([
-      { kind: "metadata", file: page.publications[0].changes[0].file, mode: 0o600, mtime: 77 },
+      {
+        kind: "metadata",
+        file: {
+          ...page.publications[0].changes[0].file,
+          ...fixture.backend.identity(fixture.handle),
+        },
+        mode: 0o600,
+        mtime: 77,
+      },
     ]);
     const inode = fixture.sibling.shared.stat(fixture.handle)?.ino;
     expect(await fixture.root.asyncCall("setMode", [fixture.handle, 0o400])).toBe(0);

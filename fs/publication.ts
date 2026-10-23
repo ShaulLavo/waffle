@@ -1,3 +1,4 @@
+import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
   arrayAppend,
   Uint8ArrayConstructor,
@@ -68,10 +69,13 @@ export type MutationResult =
   | { readonly kind: "append"; readonly written: number; readonly offset: number }
   | { readonly kind: "error"; readonly errno: number }
   | { readonly kind: "create-error"; readonly errno: number };
-export type PublicationEffect =
+/** Every reference carries the resulting group revision, including removed namespace edges.
+ * The private key and numeric content version retain their separate history-local roles. */
+export interface PublicationFile extends FileKey, FileIdentity {}
+export type PublicationEffect<F extends FileKey = PublicationFile> =
   | {
       readonly kind: "bytes";
-      readonly file: FileKey;
+      readonly file: F;
       readonly offset: number;
       readonly bytes: Uint8Array;
       readonly size: number;
@@ -79,26 +83,26 @@ export type PublicationEffect =
     }
   | {
       readonly kind: "resize";
-      readonly file: FileKey;
+      readonly file: F;
       readonly size: number;
       readonly version: number;
     }
   | {
       readonly kind: "metadata";
-      readonly file: FileKey;
+      readonly file: F;
       readonly mode: number;
       readonly mtime: number;
     }
   | {
       readonly kind: "entry";
-      readonly parent: FileKey;
+      readonly parent: F;
       readonly name: string;
-      readonly before: FileKey | null;
-      readonly after: FileKey | null;
+      readonly before: F | null;
+      readonly after: F | null;
     }
   | {
       readonly kind: "inode";
-      readonly file: FileKey;
+      readonly file: F;
       readonly nodeKind: "file" | "directory";
       readonly mode: number;
       readonly mtime: number;
@@ -987,6 +991,23 @@ export class PublicationDomain {
   }
 }
 
+export function mapPublicationFiles<F extends FileKey, G extends FileKey>(
+  effect: PublicationEffect<F>,
+  map: (file: F) => G,
+): PublicationEffect<G> {
+  if (effect.kind === "entry")
+    return {
+      ...effect,
+      parent: map(effect.parent),
+      before: effect.before && map(effect.before),
+      after: effect.after && map(effect.after),
+    };
+  return { ...effect, file: map(effect.file) };
+}
+function storedPublicationFile(file: PublicationFile) {
+  return { ...file, id: file.id.toString(16), version: file.version.toString(16) };
+}
+
 // Effects use one bounded JSON header and raw byte tails. Encoding finishes before the first
 // visible effect. The log stores owned copies; decoded byte ranges never alias shared storage.
 export function encodeEffects(
@@ -998,7 +1019,7 @@ export function encodeEffects(
   let length = 0;
   const metadata: unknown[] = [];
   for (let index = 0; index < changes.length; index++) {
-    const change = changes[index]!;
+    const change = mapPublicationFiles(changes[index]!, storedPublicationFile);
     if (change.kind !== "bytes") {
       arrayAppend(metadata, change);
       continue;
@@ -1101,6 +1122,14 @@ function fileKey(value: unknown): FileKey {
     throw new FilesystemError(29);
   return { birthHistory: value.birthHistory, ino: value.ino };
 }
+function publicationFile(value: unknown): PublicationFile {
+  const key = fileKey(value);
+  try {
+    return { ...key, ...parseFileIdentity(value) };
+  } catch {
+    throw new FilesystemError(29, "invalid publication file identity");
+  }
+}
 function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   if (!value || typeof value !== "object" || !("kind" in value)) throw new FilesystemError(29);
   if (
@@ -1113,13 +1142,13 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   )
     return {
       kind: "entry",
-      parent: fileKey(value.parent),
+      parent: publicationFile(value.parent),
       name: value.name,
-      before: value.before === null ? null : fileKey(value.before),
-      after: value.after === null ? null : fileKey(value.after),
+      before: value.before === null ? null : publicationFile(value.before),
+      after: value.after === null ? null : publicationFile(value.after),
     };
   if (!("file" in value)) throw new FilesystemError(29);
-  const file = fileKey(value.file);
+  const file = publicationFile(value.file);
   if (
     (value.kind === "metadata" || value.kind === "inode") &&
     "mode" in value &&
@@ -1142,7 +1171,7 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
 }
 function decodeContentEffect(
   value: object & { readonly kind: unknown },
-  file: FileKey,
+  file: PublicationFile,
   tail: Uint8Array,
 ): PublicationEffect {
   if (

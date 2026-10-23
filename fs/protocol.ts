@@ -268,9 +268,13 @@ export function pack(value: unknown): Uint8Array {
     JSON.stringify(value, (_key, item) =>
       item === undefined
         ? { $undefined: true }
-        : item instanceof Map
-          ? { $map: Array.from(item) }
-          : item,
+        : typeof item === "bigint"
+          ? { $bigint: item.toString() }
+          : item instanceof Uint8Array
+            ? { $bytes: Array.from(item) }
+            : item instanceof Map
+              ? { $map: Array.from(item) }
+              : item,
     ),
   );
 }
@@ -283,8 +287,32 @@ export function unpack(bytes: Uint8Array): any {
         ? new Uint8Array(bytes)
         : bytes,
     ),
-    (_key, item) => (item?.$undefined ? undefined : item?.$map ? new Map(item.$map) : item),
+    (_key, item) => {
+      if (item?.$undefined) return undefined;
+      if (item?.$map) return new Map(item.$map);
+      return transportValue(item);
+    },
   );
+}
+function transportValue(item: unknown): unknown {
+  if (!item || typeof item !== "object") return item;
+  if ("$bigint" in item) {
+    if (typeof item.$bigint !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(item.$bigint))
+      throw new FilesystemError(28, "invalid bigint transport value");
+    return BigInt(item.$bigint);
+  }
+  if ("$bytes" in item) {
+    if (
+      !Array.isArray(item.$bytes) ||
+      item.$bytes.some(
+        (byte: unknown) =>
+          typeof byte !== "number" || !Number.isInteger(byte) || byte < 0 || byte > 255,
+      )
+    )
+      throw new FilesystemError(28, "invalid byte transport value");
+    return Uint8Array.from(item.$bytes);
+  }
+  return item;
 }
 export type RequestMessage =
   | { id: number; buffer: SharedArrayBuffer }

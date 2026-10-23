@@ -42,6 +42,14 @@ function fileToken(value: unknown): bigint {
   if (parsed >> 64n === 0n || (parsed & MAX_IDENTITY_PART) === 0n) invalid();
   return parsed;
 }
+export function parseFileIdentity(value: unknown): FileIdentity {
+  if (typeof value !== "object" || value === null || !("id" in value) || !("version" in value))
+    invalid();
+  const id = fileToken(value.id),
+    version = fileToken(value.version);
+  if (version < id) invalid();
+  return { id: id as FileId, version: version as FileVersion };
+}
 export function parseStoredIdentity(value: unknown): StoredIdentity {
   if (
     typeof value !== "object" ||
@@ -52,7 +60,7 @@ export function parseStoredIdentity(value: unknown): StoredIdentity {
     invalid();
   if (!("workspace" in value) || !("id" in value) || !("version" in value)) invalid();
   workspace(value.workspace);
-  if (fileToken(value.version) < fileToken(value.id)) invalid();
+  parseFileIdentity(value);
   return {
     format: value.format,
     workspace: workspace(value.workspace),
@@ -61,7 +69,7 @@ export function parseStoredIdentity(value: unknown): StoredIdentity {
   };
 }
 export function restoreIdentity(value: StoredIdentity): FileIdentity {
-  return { id: fileToken(value.id) as FileId, version: fileToken(value.version) as FileVersion };
+  return parseFileIdentity(value);
 }
 export function storeIdentity(value: FileIdentity, workspace: string): StoredIdentity {
   return {
@@ -128,6 +136,11 @@ export class IdentityAllocator {
     writeIdentityWords(this.words, 1, reservation.era);
     writeIdentityWords(this.words, 5, serial);
     this.words[0] = 1;
+  }
+  stage(): IdentityAllocator {
+    const staged = new IdentityAllocator(new Int32Array(this.words.length));
+    staged.copyFrom(this);
+    return staged;
   }
   copyFrom(source: IdentityAllocator): void {
     this.words.set(source.words);
