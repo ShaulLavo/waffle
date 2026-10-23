@@ -866,3 +866,20 @@ test("limit normalization never reads unrelated caller fields", async () => {
   expect((await caughtUp(cursor)).stamp.query).toEqual(query);
   await cursor.close();
 });
+
+test("already aborted admission does not read caller query getters", async () => {
+  await using value = await fixture();
+  const controller = new AbortController();
+  controller.abort();
+  const input: SearchQuery = {
+    kind: "text",
+    prefix: "/",
+    get text() {
+      throw new Error("cancelled admission must not compile");
+    },
+  };
+  const cursor = value.search().search(input, controller.signal);
+  expect(await cursor.next()).toEqual({ kind: "cancelled" });
+  await cursor.close();
+  expect(value.boundary.snapshots).toBe(0);
+});
