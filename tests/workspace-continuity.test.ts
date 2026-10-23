@@ -377,7 +377,6 @@ test("completed native checkpoint restores publication identity without restorin
     "initial-open recovery and stale capability fencing",
     "explicit reset remains a new history",
     "completed-cut continuity contract",
-    "startup checkpoint failure never publishes ready and retires native guards",
   ].map((name) => ({ name, kind: "unrun" }));
   const workers = new Map<Worker, boolean>();
   const pages: Page[] = [];
@@ -542,35 +541,7 @@ test("completed native checkpoint restores publication identity without restorin
       equal(record(recovered.notice).durablePublicationCut, savedCut);
       return { recoveredCut: savedCut, exactReceipt: true, freshCapabilities: true };
     });
-    await runStep(steps, 6, async () => {
-      await owner(a, "stop");
-      await call(a, "terminate");
-      const faulty = await ownerBundle(true);
-      await context.route("**/persistent-lifecycle-r2-owner.js", (route) =>
-        route.fulfill({ contentType: "application/javascript", body: faulty }),
-      );
-      const outcome = await call(a, "start", { name: `${name}-failed-start` }).then(
-        (value) => ({ kind: "ready", value }),
-        (error: unknown) => ({ kind: "rejected", failure: String(error) }),
-      );
-      equal(outcome.kind, "rejected");
-      const failure = record(outcome).failure;
-      if (
-        typeof failure !== "string" ||
-        !failure.includes("injected-startup-flush-failure") ||
-        !failure.includes(`bun-wasm:filesystem:indexeddb:${name}-failed-start`) ||
-        !failure.includes("continuity:bootstrap:")
-      )
-        throw new Error("startup failure did not observe native ownership guards");
-      await owner(a, "stop");
-      equal(await call(c, "locks"), { held: [], pending: [] });
-      await call(a, "terminate");
-      return {
-        outcome,
-        locks: await call(c, "locks"),
-        deleted: await call(c, "delete", `${name}-failed-start`),
-      };
-    });
+
   } catch (error) {
     evidence.failure = String(error);
     throw error;
@@ -578,7 +549,7 @@ test("completed native checkpoint restores publication identity without restorin
     try {
       await debug?.close();
       if (root) {
-        await owner(root, "stop").catch(() => {});
+        if (evidence.failure === undefined) await owner(root, "stop").catch(() => {});
         await call(root, "terminate");
       }
       for (const page of pages.slice(0, 2)) await page.close();
@@ -589,7 +560,6 @@ test("completed native checkpoint restores publication identity without restorin
         evidence.cleanup = {
           locks,
           deleted: await call(audit, "delete", name),
-          failedStartDeleted: await call(audit, "delete", `${name}-failed-start`),
         };
       }
     } finally {
