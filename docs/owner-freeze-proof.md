@@ -1,11 +1,12 @@
 # Native persistent owner freeze proof
 
-This tests-only Chromium scenario distinguishes a paused persistent authority from
-worker death. It demonstrates short-freeze continuity and a transport-timeout cleanup
-prerequisite. It does not certify production freeze recovery or automatic failover.
+This bounded Chromium scenario distinguishes a paused persistent authority from
+worker death. It checks short-freeze continuity and definitive original cleanup
+after transport timeouts. It does not certify production freeze recovery or automatic failover.
 
-The production source starts at `e0ef92157dcc8ac658be30a372dffa0534c63fa6`.
-Only the dedicated runner, page control, namespaced fixtures, and this document change.
+The timeout cleanup repair starts at accepted main
+`c80dcab9636486121e80463c81b8474b83408836`.
+The original tests-only proof exposed permanent cleanup debt at its earlier pin.
 The earlier [persistent authority proof](persistent-authority-proof.md) remains a
 separate drained-stop and reopen test.
 
@@ -67,30 +68,27 @@ committed outcome, nor generalize this schedule's cancellation ordering into a
 no-effect guarantee for other races. There is no replay or automatic retry.
 A subsequent current read and flush still work in the original history.
 
-## The demonstrated production prerequisite
+## Original cleanup after terminal evidence
 
-After the deadline, native execution resumes but normal cleanup does not fully
-recover. The guest finishes with `cleanup-error`, not a clean exit. Page C's peer
-stop reports errno 6. The original persistent owner stop reports that resident
-clients must finish their original cleanup.
+The original tests-only proof observed `cleanup-error`, a failed peer stop, and an
+owner stop refused by live resident sessions. A timed-out request had been deleted,
+while a permanent `unconfirmed` bit made late replies unable to repair the bridge.
 
-The causal path is bounded and visible in current source:
+The repaired channel retains the exact timed-out identities within its existing
+sixteen-call bound. Caller deadlines still return errno 6 and send cancellation.
+Late replies reconcile the original requests without repeating mutations. Bridge
+cleanup waits for these replies. Resident session close joins actual service work
+before releasing continuity. A late prepared grant is cancelled and settled, never
+made available for a later syscall. Pending claims do not become terminal merely
+because a transport reply arrives.
 
-- `ResidentChannel.call` in `fs/publication-attachment.ts` removes a timed-out call,
-  sends cancellation, and permanently sets `unconfirmed`.
-- `WorkspaceBridge.stopOwned` calls `assertSettled`. A consumed late reply cannot
-  clear the earlier uncertainty, so this bridge cannot finish its original stop.
-- Guest bootstrap reports that failed bridge join as `cleanup-error`.
-- `ResidentAuthorityServer.drainPersistentTransport` in
-  `browser/publication-authority.ts` refuses owner cleanup while sessions remain.
-
-A production follow-up must reconcile timed-out request identity, cancellation,
-terminal outcomes, and the original bridge cleanup debt without authorizing takeover
-from elapsed time. Its proposed production write set starts with
-`fs/publication-attachment.ts`, `fs/publication-workspace.ts`, and
-`browser/publication-authority.ts`, with matching focused tests. Durable receipt
-continuity may require a separately reviewed design. This proof changes none of
-those files and does not select transaction-fenced FAST publication.
+After the fixed native schedule resumes, the runner now requires the original guest
+to report exit code 0 with no `cleanup-error`, every original peer stop to succeed,
+and the original persistent owner stop to succeed. These checks run before native
+page closure can contain unresolved protocol resources. Missing replies keep
+cleanup pending and preserve guards. Definitive cleanup failures remain memoized.
+The caller-visible timeout remains unknown at its deadline, even though subsequent
+terminal evidence permits cleanup. Durable receipt continuity is unchanged.
 
 ## Run and inspect
 
@@ -109,8 +107,7 @@ bun /work/platform-production/heavy/current/run.js --class browser owner-freeze 
 Each of eight schedule steps has a 12-second bound. The runner has a 150-second
 outer deadline. The ledger retains completed, failed, and unrun steps, caller
 outcomes, native debugger observations, publication effects, and teardown results.
-A passing observation schedule is not a claim that the documented cleanup gap is
-fixed. Raw failed schedules must be retained rather than replaced by a retry.
+A passing schedule includes definitive cleanup assertions for this exact case. Raw failed schedules must be retained rather than replaced by a retry.
 
 `--negative-control` deliberately omits `Debugger.pause`. It must fail the native
 pause assertion after the first two steps. The other five steps remain unrun.
@@ -122,8 +119,8 @@ and records unresolved joins honestly. It then closes the original pages and
 requires native worker close events. A fresh audit-only page checks that all owned
 locks are gone and deletes the test database. This extra page runs only after the
 four-page scenario ends. Browser lifecycle cleanup and the outer supervisor retire
-the browser, profile, server, and scratch even after failure. Native containment
-retires the unresolved protocol resources. It does not repair their failed joins.
+the browser, profile, server, and scratch even after failure. After a failed schedule, native containment can retire unresolved protocol resources.
+It cannot make a failed join satisfy the positive cleanup assertions.
 
 ## Limits
 

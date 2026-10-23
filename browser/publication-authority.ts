@@ -185,18 +185,21 @@ export class ResidentAuthorityServer {
     value: unknown,
     signal: AbortSignal,
   ): Promise<unknown> {
-    if (this.stopped || signal.aborted) throw new FilesystemError(11);
-    if (operation === "open") {
-      if (this.sessions.has(client)) throw new FilesystemError(6);
-      const session = this.authority.open(residentDescriptor(value));
-      this.sessions.set(client, session);
-      return session;
-    }
+    if (this.stopped) throw new FilesystemError(11);
     if (operation === "closeConnection") {
       const session = this.sessions.get(client);
       if (session) await this.closeSession(session);
       this.sessions.delete(client);
       return null;
+    }
+    if (operation === "close" || operation === "settle")
+      return this.finish(client, operation, record(value));
+    if (signal.aborted) throw new FilesystemError(11);
+    if (operation === "open") {
+      if (this.sessions.has(client)) throw new FilesystemError(6);
+      const session = this.authority.open(residentDescriptor(value));
+      this.sessions.set(client, session);
+      return session;
     }
     const body = record(value);
     if (operation.startsWith("workspace")) {
@@ -215,7 +218,7 @@ export class ResidentAuthorityServer {
     if (operation === "prepare") {
       const request = residentRequest(body.request);
       await this.settleOutstanding();
-      if (this.stopped) throw new FilesystemError(11);
+      if (this.stopped || signal.aborted) throw new FilesystemError(11);
       const handle = body.handle === undefined ? session.descriptor.handle : integer(body.handle);
       if (
         session.descriptor.kind === "file"
@@ -227,6 +230,14 @@ export class ResidentAuthorityServer {
       this.outstanding = { client, token: session.token, grant: grant.key };
       return grant;
     }
+    throw new FilesystemError(58);
+  }
+  private async finish(
+    client: string,
+    operation: "close" | "settle",
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    const session = this.session(client, body.token);
     if (operation === "settle") {
       const outcome = residentOutcome(body.outcome);
       const result = this.authority.settle(session, outcome);
@@ -238,12 +249,9 @@ export class ResidentAuthorityServer {
         this.outstanding = undefined;
       return encodeResidentSettlement(result);
     }
-    if (operation === "close") {
-      await this.closeSession(session);
-      this.sessions.delete(client);
-      return null;
-    }
-    throw new FilesystemError(58);
+    await this.closeSession(session);
+    this.sessions.delete(client);
+    return null;
   }
   private async request(data: Record<string, unknown>, signal: AbortSignal): Promise<void> {
     let client: string, id: string;

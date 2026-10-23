@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  failWorkspaceCleanupPost,
+  workspaceCleanupPostFailure,
+} from "./fixtures/publication-cleanup-failure";
+import {
   FilesystemClient,
   FilesystemService,
   MemoryBackend,
@@ -11,6 +15,9 @@ import {
   ResidentGrantClient,
   createResidentConnection,
   residentDescriptor,
+  record,
+  residentGrant,
+  encodeResidentOutcome,
   residentSession,
   sameWorkspaceBacking,
   stopWorkspaceBridge,
@@ -35,6 +42,7 @@ import {
   revokeFilesystem,
   releaseFilesystemReservation,
 } from "../fs/protocol";
+import { ResidentGrantCell } from "../fs/publication-grant";
 import type { PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -77,13 +85,14 @@ async function fixture(backend = new MemoryBackend()) {
   const session = residentSession(await channel.call("open", descriptor));
   return {
     channel,
+    server,
     session,
     root,
     backend,
     directory,
     file: file.node,
     async stop() {
-      await channel.call("close", { token: session.token });
+      await channel.call("closeConnection", null);
       channel.close();
       await server.stop();
       root.dispose();
@@ -107,7 +116,11 @@ async function call(
   return Object.fromEntries(Object.entries(value));
 }
 async function rejectsErrno(action: Promise<unknown>, errno: number): Promise<void> {
-  await expect(action).rejects.toMatchObject({ errno });
+  const failure: unknown = await action.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(failure).toMatchObject({ errno });
 }
 test("private connection queries the sole workspace namespace", async () => {
   const f = await fixture();
@@ -389,28 +402,14 @@ test("synchronous cleanup posting failure is memoized without skipping local dis
     handle: 1,
   };
   const client = new FilesystemClient(pair.client);
-  const post = pair.client.port.postMessage.bind(pair.client.port);
-  let attempted = 0;
-  Object.defineProperty(pair.client.port, "postMessage", {
-    value(value: unknown, transfer: Transferable[]) {
-      if (value && typeof value === "object" && "stopWorkspace" in value) {
-        attempted++;
-        throw new Error("intentional cleanup post failure");
-      }
-      post(value, transfer);
-    },
-  });
+  const attempted = failWorkspaceCleanupPost(pair.client.port);
   try {
     expect(() => client.dispose()).not.toThrow();
     expect(isRevoked(pair.client)).toBe(true);
-    await expect(client.stopResidentPublication()).rejects.toThrow(
-      "intentional cleanup post failure",
-    );
+    await expect(client.stopResidentPublication()).rejects.toThrow(workspaceCleanupPostFailure);
     client.dispose();
-    await expect(client.stopResidentPublication()).rejects.toThrow(
-      "intentional cleanup post failure",
-    );
-    expect(attempted).toBe(1);
+    await expect(client.stopResidentPublication()).rejects.toThrow(workspaceCleanupPostFailure);
+    expect(attempted()).toBe(1);
   } finally {
     pair.client.port.close();
     pair.server.port.close();
@@ -728,6 +727,397 @@ for (const [name, invalid] of invalidCleanupConnections) {
     } finally {
       observer.restore();
       await f.close();
+    }
+  });
+}
+
+function transportClock() {
+  const deadlines = new Map<Parameters<typeof clearTimeout>[0], () => void>();
+  const native = globalThis.setTimeout;
+  const nativeClear = globalThis.clearTimeout;
+  globalThis.clearTimeout = new Proxy(nativeClear, {
+    apply(target, receiver, args: Parameters<typeof clearTimeout>) {
+      if (args[0] !== undefined) deadlines.delete(args[0]);
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  globalThis.setTimeout = new Proxy(native, {
+    apply(target, receiver, args: Parameters<typeof setTimeout>) {
+      const timer = Reflect.apply(target, receiver, args);
+      if (args[1] === 3000) deadlines.set(timer, () => args[0]());
+      return timer;
+    },
+  });
+  return {
+    expire() {
+      const due = Array.from(deadlines);
+      deadlines.clear();
+      for (const [timer, fire] of due) {
+        clearTimeout(timer);
+        fire();
+      }
+    },
+    restore() {
+      globalThis.setTimeout = native;
+      globalThis.clearTimeout = nativeClear;
+      for (const timer of deadlines.keys()) clearTimeout(timer);
+    },
+  };
+}
+
+function holdTransportReplies(client?: string) {
+  const held: { channel: BroadcastChannel; message: unknown }[] = [];
+  const native = BroadcastChannel.prototype.postMessage;
+  BroadcastChannel.prototype.postMessage = function (this: BroadcastChannel, message: unknown) {
+    if (
+      message &&
+      typeof message === "object" &&
+      "client" in message &&
+      (client === undefined || message.client === client) &&
+      "kind" in message &&
+      message.kind === "reply"
+    ) {
+      held.push({ channel: this, message: structuredClone(message) });
+      return;
+    }
+    native.call(this, message);
+  };
+  return {
+    held,
+    release() {
+      BroadcastChannel.prototype.postMessage = native;
+      for (const item of held) native.call(item.channel, item.message);
+    },
+  };
+}
+
+async function remainsPending(promise: Promise<unknown>) {
+  let settled = false;
+  void promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  await Bun.sleep(10);
+  expect(settled).toBe(false);
+}
+
+for (const operation of ["writeFile", "missing-operation"]) {
+  test(`late ${operation === "writeFile" ? "success" : "error"} reconciles only its exact transport identity`, async () => {
+    const f = await fixture();
+    const held = holdTransportReplies(f.channel.id);
+    const clock = transportClock();
+    const observer = new BroadcastChannel(`waffle:resident:${f.session.descriptor.workspace}`);
+    try {
+      const before = f.backend.shared.publication!.cut();
+      const pending = call(f, operation, ["/dir/late"], new Uint8Array([9]));
+      const failed = rejectsErrno(pending, 6);
+      while (!held.held.length) await Bun.sleep(0);
+      clock.expire();
+      await failed;
+      expect(() => f.channel.assertSettled()).toThrow();
+      observer.postMessage({ kind: "reply", client: "foreign", id: "foreign", value: null });
+      observer.postMessage({ kind: "reply", client: f.channel.id, id: "foreign", value: null });
+      await Bun.sleep(10);
+      observer.postMessage({
+        kind: "reply",
+        client: f.channel.id,
+        id: record(held.held[0]!.message).id,
+        errno: "invalid",
+      });
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).toThrow();
+      held.release();
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+      expect(f.backend.shared.publication!.cut().generation).toBe(
+        before.generation + (operation === "writeFile" ? 1 : 0),
+      );
+      observer.postMessage(held.held[0]!.message);
+      await Bun.sleep(10);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+    } finally {
+      held.release();
+      clock.restore();
+      observer.close();
+      await f.stop();
+    }
+  });
+}
+
+test("unresolved timeout identities keep the original sixteen-call admission bound", async () => {
+  const channel = new ResidentChannel(`absent-${crypto.randomUUID()}`);
+  const clock = transportClock();
+  try {
+    const failed = Array.from({ length: 16 }, () => rejectsErrno(channel.call("workspace", {}), 6));
+    clock.expire();
+    await Promise.all(failed);
+    const refused = channel.call("workspace", {});
+    const failure = refused.catch((error: unknown) => error);
+    let rejected = false;
+    void refused.catch(() => {
+      rejected = true;
+    });
+    await Bun.sleep(10);
+    expect(rejected).toBe(true);
+    expect(await failure).toMatchObject({ errno: 6 });
+  } finally {
+    clock.restore();
+    channel.close();
+  }
+});
+
+test("original bridge stop joins unknown cancellation and actual service preparation", async () => {
+  const backend = new PausedBackend();
+  const f = await fixture(backend);
+  const connection = createResidentConnection(f.session.descriptor);
+  const client = new FilesystemClient({ ...connection, residentPublication: undefined });
+  const clock = transportClock();
+  let stopping: Promise<void> | undefined;
+  let held: ReturnType<typeof holdTransportReplies> | undefined;
+  try {
+    await client.asyncCall("workspaceBind", [f.session]);
+    await client.asyncCall("preopen", ["/"]);
+    const id = await f.channel.call("workspaceNext", { token: f.session.token });
+    held = holdTransportReplies();
+    backend.pause = true;
+    const writing = client.asyncCall(
+      "workspaceMutation",
+      [id, "writeFile", ["/dir/timeout"]],
+      new Uint8Array([9]),
+    );
+    const failed = rejectsErrno(writing, 6);
+    await backend.started.promise;
+    clock.expire();
+    await failed;
+    while (!held.held.length) await Bun.sleep(0);
+    stopping = stopWorkspaceBridge(connection);
+    void stopping.catch(() => {});
+    await remainsPending(stopping);
+    const repeated = stopWorkspaceBridge(connection);
+    await remainsPending(repeated);
+    clock.expire();
+    await remainsPending(stopping);
+    held.release();
+    await Promise.all([stopping, repeated]);
+    expect(await f.channel.call("workspaceReceipt", { token: f.session.token, id })).toEqual({
+      kind: "retired",
+    });
+    const close = f.channel.call("close", { token: f.session.token });
+    await remainsPending(close);
+    backend.released.resolve();
+    await close;
+    expect(backend.fs.lookup("/dir/timeout")).toBeUndefined();
+  } finally {
+    backend.released.resolve();
+    held?.release();
+    clock.restore();
+    await stopping?.catch(() => {});
+    client.dispose();
+    await f.stop();
+  }
+});
+
+test("original resident stop consumes a late close reply once without releasing its guard early", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  const held = holdTransportReplies(channel.id);
+  const clock = transportClock();
+  let stopped: Promise<void> | undefined;
+  try {
+    stopped = client.stop();
+    expect(client.stop()).toBe(stopped);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await remainsPending(stopped);
+    expect(released).toBe(0);
+    held.release();
+    await stopped;
+    expect(released).toBe(1);
+    expect(client.stop()).toBe(stopped);
+    await stopped;
+    expect(released).toBe(1);
+  } finally {
+    held.release();
+    clock.restore();
+    await stopped?.catch(() => {});
+    channel.close();
+    await f.stop();
+  }
+});
+
+test("a claimed grant is not retired by a timeout reply or an original close attempt", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  let cell: ResidentGrantCell | undefined;
+  let held: ReturnType<typeof holdTransportReplies> | undefined;
+  const clock = transportClock();
+  try {
+    await call(f, "preopen", ["/"]);
+    await call(f, "resolve", [f.directory, "dir/a"]);
+    await f.channel.call("workspaceAdopt", {
+      token: session.token,
+      source: f.session.token,
+      handles: [f.file],
+    });
+    const grant = residentGrant(
+      await channel.call("prepare", {
+        token: session.token,
+        handle: f.file,
+        request: { kind: "read", offset: 0, maxBytes: 1 },
+      }),
+    );
+    cell = new ResidentGrantCell(grant);
+    Atomics.store(cell.state, 0, 1);
+    channel.status = () => cell?.snapshot();
+    held = holdTransportReplies(channel.id);
+    const settling = channel.call("settle", {
+      token: session.token,
+      outcome: encodeResidentOutcome(cell.snapshot()),
+    });
+    const failure = rejectsErrno(settling, 6);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await failure;
+    expect(() => channel.assertSettled()).toThrow();
+    held.release();
+    await channel.joinSettled();
+    const stopped = client.stop();
+    await rejectsErrno(stopped, 6);
+    expect(client.stop()).toBe(stopped);
+    expect(released).toBe(0);
+    expect(cell.snapshot()).toEqual({ kind: "claimed", grant: grant.key });
+    Atomics.store(cell.state, 0, 0);
+    cell.cancel();
+    await channel.finish("settle", {
+      token: session.token,
+      outcome: encodeResidentOutcome(cell.snapshot()),
+    });
+    await channel.finish("close", { token: session.token });
+    await rejectsErrno(stopped, 6);
+    expect(released).toBe(0);
+  } finally {
+    held?.release();
+    clock.restore();
+    channel.close();
+    await f.stop();
+  }
+});
+
+test("late prepared grant is cancelled and settled by the original stop without a write", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const session = residentSession(await channel.call("open", f.session.descriptor));
+  let released = 0;
+  const client = new ResidentGrantClient(session, channel, {
+    async release() {
+      released++;
+    },
+  });
+  await call(f, "preopen", ["/"]);
+  await call(f, "resolve", [f.directory, "dir/a"]);
+  await f.channel.call("workspaceAdopt", {
+    token: session.token,
+    source: f.session.token,
+    handles: [f.file],
+  });
+  const held = holdTransportReplies(channel.id);
+  const clock = transportClock();
+  let stopped: Promise<void> | undefined;
+  try {
+    const before = f.backend.shared.publication!.cut();
+    const preparing = client.prepare({ kind: "append", maxBytes: 1 }, f.file);
+    const failed = rejectsErrno(preparing, 6);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await failed;
+    expect(client.tryAppend(f.file, [new Uint8Array([9])])).toBe(-6);
+    stopped = client.stop();
+    void stopped.catch(() => {});
+    await remainsPending(stopped);
+    expect(released).toBe(0);
+    held.release();
+    await stopped;
+    expect(released).toBe(1);
+    expect(f.backend.shared.publication!.cut()).toEqual(before);
+    expect(client.stop()).toBe(stopped);
+  } finally {
+    held.release();
+    clock.restore();
+    await stopped?.catch(() => {});
+    // A failed implementation leaves the actual issued grant for fixture teardown.
+    const late = held.held[0];
+    if (late && released === 0) {
+      const grant = residentGrant(record(late.message).value);
+      const cell = new ResidentGrantCell(grant);
+      cell.cancel();
+      await channel.finish("settle", {
+        token: session.token,
+        outcome: encodeResidentOutcome(cell.snapshot()),
+      });
+      await channel.finish("close", { token: session.token });
+    }
+    channel.close();
+    await f.stop();
+  }
+});
+
+for (const operation of ["stat", "missing-operation"]) {
+  test(`workspace cleanup joins a timed-out ${operation} terminal reply without inventing cleanup failure`, async () => {
+    const f = await fixture();
+    const connection = createResidentConnection(f.session.descriptor);
+    const client = new FilesystemClient({ ...connection, residentPublication: undefined });
+    const clock = transportClock();
+    let held: ReturnType<typeof holdTransportReplies> | undefined;
+    let stopping: Promise<void> | undefined;
+    const terminal: string[] = [];
+    try {
+      await client.asyncCall("workspaceBind", [f.session]);
+      await client.asyncCall("preopen", ["/"]);
+      held = holdTransportReplies();
+      const pending = client.asyncCall(operation, [f.file]);
+      const failed = rejectsErrno(pending, 6);
+      while (!held.held.length) await Bun.sleep(0);
+      clock.expire();
+      await failed;
+      stopping = stopWorkspaceBridge(connection);
+      void stopping.then(
+        () => terminal.push("stopped"),
+        () => terminal.push("cleanup-error"),
+      );
+      clock.expire();
+      await remainsPending(stopping);
+      expect(terminal).toEqual([]);
+      const repeated = stopWorkspaceBridge(connection);
+      await remainsPending(repeated);
+      expect(terminal).toEqual([]);
+      held.release();
+      await Promise.all([stopping, repeated]);
+      expect(terminal).toEqual(["stopped"]);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+    } finally {
+      held?.release();
+      clock.restore();
+      await stopping?.catch(() => {});
+      client.dispose();
+      await f.stop();
     }
   });
 }
