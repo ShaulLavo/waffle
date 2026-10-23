@@ -4,7 +4,7 @@ import type { FilesystemConnection } from "../../fs/protocol";
 type Message = {
   connection: FilesystemConnection;
   control: SharedArrayBuffer;
-  mode: "spawn" | "namespace" | "loop";
+  mode: "spawn" | "namespace" | "loop" | "global-lock";
 };
 
 function errnoOf(error: unknown): unknown {
@@ -59,6 +59,12 @@ self.onmessage = ({ data }: MessageEvent<Message>) => {
   const client = new FilesystemClient(data.connection);
   const control = new Int32Array(data.control);
   try {
+    if (data.mode === "global-lock")
+      client.shared.mutate(undefined, undefined, () => {
+        self.postMessage({ ready: true });
+        const outcome = Atomics.wait(control, 0, 0, 2000);
+        Atomics.store(control, 1, outcome === "timed-out" ? 2 : 1);
+      });
     if (data.mode === "spawn") spawn(client);
     if (data.mode === "namespace") namespace(client, control);
     if (data.mode === "loop") loop(client, control);
