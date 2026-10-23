@@ -660,6 +660,11 @@ export class FilesystemService {
       ? this.backend.shared.withWrite(ticket, execute)
       : execute();
   }
+  private mutationSection(operation: string, args: readonly unknown[]): boolean {
+    if (operation === "preopen" && args[1] === true) return false;
+    const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
+    return mutations.has(operation) && !local;
+  }
   private async request(
     session: Session,
     id: number,
@@ -704,9 +709,7 @@ export class FilesystemService {
       }
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
-      const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
-      mutation =
-        mutations.has(operation) && !local && !(operation === "preopen" && args[1] === true);
+      mutation = this.mutationSection(operation, args);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);

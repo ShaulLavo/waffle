@@ -191,11 +191,13 @@ test("R3 a posted request dropped by session close leaks its ticket and acquisit
   }
 });
 
+function burstWrite(client: FilesystemClient, index: number): Promise<unknown> {
+  return client.asyncCall("writeFile", [`/f${index}`], bytes("x")).then(() => 0, errnoOf);
+}
+
 test("R4 more than 64 concurrent async mutations fail, and the burst starves other writers", async () => {
   await fixture(async ({ client, handle }) => {
-    const writes = Array.from({ length: 100 }, (_, index) =>
-      client.asyncCall("writeFile", [`/f${index}`], bytes("x")).then(() => 0, errnoOf),
-    );
+    const writes = Array.from({ length: 100 }, (_, index) => burstWrite(client, index));
     const starved = client.tryWrite(handle, [bytes("guest")], 0);
     const results = await Promise.all(writes);
     const failed = results.filter((result) => result !== 0);
