@@ -379,7 +379,9 @@ class WorkspaceOwner implements WorkspaceVfs {
         [this.closeCursor(), this.closeRead()],
       ),
     ).then((results) => {
-      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
       if (failures.length === 1) throw failures[0];
       if (failures.length) throw new AggregateError(failures, "Workspace close failed");
     });

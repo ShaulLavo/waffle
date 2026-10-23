@@ -564,7 +564,10 @@ test("all public projections of one actual root share the lease budget", async (
   if (!identity.publication) throw new Error("missing public root buffers");
   const pair = connectFilesystemIdentity({
     ...identity,
-    publication: { ...identity.publication, observer: value.client.connection.publication!.observer },
+    publication: {
+      ...identity.publication,
+      observer: value.client.connection.publication!.observer,
+    },
   });
   let peer: FilesystemClient | undefined;
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;

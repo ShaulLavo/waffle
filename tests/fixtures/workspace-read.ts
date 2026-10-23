@@ -15,9 +15,10 @@ export async function residentReadFixture(size: number, maxBytes?: number, input
   const seed = new MemFS();
   seed.writeFile("/file", new Uint8Array(size).fill(65));
   const backend = new MemoryBackend(seed);
-  const configuration = inputBytes === undefined
-    ? workspacePublication
-    : { ...workspacePublication, limits: { ...workspacePublication.limits, inputBytes } };
+  const configuration =
+    inputBytes === undefined
+      ? workspacePublication
+      : { ...workspacePublication, limits: { ...workspacePublication.limits, inputBytes } };
   const pair = connectFilesystemIdentity(
     createFilesystemIdentity(undefined, maxBytes, configuration),
   );

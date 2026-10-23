@@ -183,7 +183,9 @@ export class WorkspaceReadAuthority {
   }
   private rememberClosed(id: number): void {
     if (this.serialsExhausted) return;
-    let first = id, last = id, index = 0;
+    let first = id,
+      last = id,
+      index = 0;
     while (index < this.closed.length && this.closed[index]![1] < first - 1) index++;
     while (index < this.closed.length && this.closed[index]![0] <= last + 1) {
       const previous = this.closed.splice(index, 1)[0]!;
@@ -459,7 +461,8 @@ export class WorkspaceReadAuthority {
     }
     if (range.length > LIMIT.result) pressure("result-bytes");
     if (this.budget.tickets >= LIMIT.operations) pressure("operations");
-    if (this.outputCost(range.length) > LIMIT.resultBytes - this.budget.outputs) pressure("result-bytes");
+    if (this.outputCost(range.length) > LIMIT.resultBytes - this.budget.outputs)
+      pressure("result-bytes");
   }
   private outputCost(length: number): number {
     return 8 * length + 8 * PAGE + 4 * LIMIT.chunk + 8192;
@@ -601,7 +604,8 @@ export class WorkspaceReadAuthority {
     this.stopping = true;
     for (const operation of this.operations.values()) operation.controller.abort();
     const closing = Array.from(this.leases, ([id, lease]) => this.closeLease(id, lease)).concat(
-      Array.from(this.tickets).filter(([, ticket]) => ticket.lease === undefined)
+      Array.from(this.tickets)
+        .filter(([, ticket]) => ticket.lease === undefined)
         .map(([id, ticket]) => this.closeTicket(id, ticket)),
     );
     const operations = Array.from(this.operations.values(), (operation) => operation.work);

@@ -1077,9 +1077,8 @@ export class FilesystemService {
     }
     const ownerStateBytes =
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
-    const readers = this.backend instanceof MemoryBackend
-      ? this.readBudget?.resources(this.backend) ?? {}
-      : {};
+    const readers =
+      this.backend instanceof MemoryBackend ? (this.readBudget?.resources(this.backend) ?? {}) : {};
     return Object.assign(
       {
         ...backend,

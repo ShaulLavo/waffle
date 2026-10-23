@@ -124,14 +124,16 @@ function holdCheckpoint(kind: "indexeddb" | "opfs") {
   };
   const digest = crypto.subtle.digest;
   const get = FileSystemDirectoryHandle.prototype.getFileHandle;
-  if (kind === "indexeddb") crypto.subtle.digest = async function (...args) {
-    await hold();
-    return digest.apply(this, args);
-  };
-  else FileSystemDirectoryHandle.prototype.getFileHandle = async function (name, options) {
-    if (name.startsWith("snapshot-") && options?.create) await hold();
-    return get.call(this, name, options);
-  };
+  if (kind === "indexeddb")
+    crypto.subtle.digest = async function (...args) {
+      await hold();
+      return digest.apply(this, args);
+    };
+  else
+    FileSystemDirectoryHandle.prototype.getFileHandle = async function (name, options) {
+      if (name.startsWith("snapshot-") && options?.create) await hold();
+      return get.call(this, name, options);
+    };
   return {
     entered: entered.promise,
     release: () => release.resolve(),
@@ -231,7 +233,9 @@ async function adapter(kind: "indexeddb" | "opfs") {
         await pending;
         const distant = await cold.readRange("original", { offset: SIZE - 1, length: 1 });
         check(distant[0] === 65, "captured GC batch deleted newly retained key");
-      } finally { racing.release(); }
+      } finally {
+        racing.release();
+      }
     } finally {
       held.restore();
       await pending;
@@ -250,7 +254,11 @@ async function adapter(kind: "indexeddb" | "opfs") {
       () => true,
     );
     check(missing, "original payload survived actual GC");
-    check((await live.workspace.read(lease.stat.id, { offset: 0, length: 1 }, lease.stat.version)).kind === "version-gone", "unretained cold version was relabelled");
+    check(
+      (await live.workspace.read(lease.stat.id, { offset: 0, length: 1 }, lease.stat.version))
+        .kind === "version-gone",
+      "unretained cold version was relabelled",
+    );
     await live.close();
     view = undefined;
     const reopened = await open();

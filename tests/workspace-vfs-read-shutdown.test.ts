@@ -5,10 +5,11 @@ import { RangeFixture } from "./fixtures/opfs-range-storage";
 import { publicReadFixture } from "./fixtures/workspace-read";
 
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
-const outcome = <T>(work: Promise<T>) => work.then(
-  (value) => ({ kind: "ok" as const, value }),
-  (reason: unknown) => ({ kind: "failed" as const, reason }),
-);
+const outcome = <T>(work: Promise<T>) =>
+  work.then(
+    (value) => ({ kind: "ok" as const, value }),
+    (reason: unknown) => ({ kind: "failed" as const, reason }),
+  );
 
 test("public shutdown joins the original reader before the actual backend close", async () => {
   const physical = new RangeFixture();
@@ -24,14 +25,23 @@ test("public shutdown joins the original reader before the actual backend close"
     value = publicReadFixture(backend);
     let closes = 0;
     const close = backend.close.bind(backend);
-    backend.close = () => { closes++; return close(); };
-    physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    backend.close = () => {
+      closes++;
+      return close();
+    };
+    physical.file().snapshotRead = async () => {
+      entered.resolve();
+      await gate.promise;
+    };
     reading = value.workspace.read("/file", { offset: PAGE, length: 4096 });
     await entered.promise;
     const original = value.service.shutdown();
     expect(value.service.shutdown()).toBe(original);
     let settled = false;
-    closing = outcome(original).then((result) => { settled = true; return result; });
+    closing = outcome(original).then((result) => {
+      settled = true;
+      return result;
+    });
     await turn();
     expect(settled).toBe(false);
     expect(closes).toBe(0);
@@ -64,13 +74,20 @@ for (const reason of [undefined, null, false, 0, new Error("reader release faile
       storage.retainPayload = (...args) => {
         const token = retain(...args);
         releases.push(() => token.release());
-        return { release() { throw reason; } };
+        return {
+          release() {
+            throw reason;
+          },
+        };
       };
       const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
       value = publicReadFixture(backend);
       let closes = 0;
       const close = backend.close.bind(backend);
-      backend.close = () => { closes++; return close(); };
+      backend.close = () => {
+        closes++;
+        return close();
+      };
       expect((await value.workspace.pin("/file")).kind).toBe("ok");
       const original = value.service.shutdown();
       const result = await outcome(original);

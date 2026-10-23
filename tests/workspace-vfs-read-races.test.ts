@@ -20,8 +20,9 @@ async function coldFixture(size: number) {
   try {
     await physical.seed([size]);
     const storage = await physical.open();
-    value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-    return { ...value, closeProjection: value.close, storage, physical, close };
+    const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+    value = publicReadFixture(backend);
+    return { ...value, backend, closeProjection: value.close, storage, physical, close };
   } catch (error) {
     await close();
     throw error;
@@ -30,13 +31,20 @@ async function coldFixture(size: number) {
 
 test("result reservations refuse a second large read independently of operation slots", async () => {
   const value = await coldFixture(1024 * 1024);
-  const entered = Promise.withResolvers<void>(), gate = value.physical.gate();
+  const entered = Promise.withResolvers<void>(),
+    gate = value.physical.gate();
   let first: Promise<unknown> | undefined;
   try {
-    value.physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    value.physical.file().snapshotRead = async () => {
+      entered.resolve();
+      await gate.promise;
+    };
     first = value.workspace.read("/file");
     await entered.promise;
-    expect(await value.workspace.read("/file")).toEqual({ kind: "pressure", resource: "result-bytes" });
+    expect(await value.workspace.read("/file")).toEqual({
+      kind: "pressure",
+      resource: "result-bytes",
+    });
     expect(value.service.resources().readerOperations).toBe(1);
     expect(value.service.resources().readerResultBytes).toBe(8 * 1024 * 1024 + 12 * PAGE + 8192);
     gate.resolve();
@@ -69,28 +77,42 @@ test("cold full-lease metadata refuses before lease slots and charges one physic
     expect(value.service.resources().readerMetadataBytes).toBe(65536 + 1280);
     expect(value.storage.resources().readerStorageBytes).toBe(0);
     expect(peak).toBeLessThanOrEqual(2 * 1024 * 1024);
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
 
 test("retained storage refuses a complete key larger than its budget without native I/O", async () => {
   const value = await coldFixture(512 * 1024 * 1024 + 1);
   try {
-    expect(await value.workspace.pin("/file")).toEqual({ kind: "pressure", resource: "retained-storage" });
+    expect(await value.workspace.pin("/file")).toEqual({
+      kind: "pressure",
+      resource: "retained-storage",
+    });
     expect(value.storage.resources().readerStorageBytes).toBe(0);
     expect(value.service.resources().readerLeases).toBe(0);
     expect(value.physical.file().reads).toHaveLength(0);
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
 
 test("unique seed buffers share alias charges and independently exhaust pin capacity", async () => {
   const fs = new MemFS();
-  for (const path of ["/one", "/two", "/three"]) fs.writeFile(path, new Uint8Array(96 * 1024 * 1024));
+  for (const path of ["/one", "/two", "/three"])
+    fs.writeFile(path, new Uint8Array(96 * 1024 * 1024));
   const value = publicReadFixture(new MemoryBackend(fs));
   try {
-    const one = await value.workspace.pin("/one"), alias = await value.workspace.pin("/one"), two = await value.workspace.pin("/two");
-    if (one.kind !== "ok" || alias.kind !== "ok" || two.kind !== "ok") throw new Error("seed pins failed");
+    const one = await value.workspace.pin("/one"),
+      alias = await value.workspace.pin("/one"),
+      two = await value.workspace.pin("/two");
+    if (one.kind !== "ok" || alias.kind !== "ok" || two.kind !== "ok")
+      throw new Error("seed pins failed");
     expect(value.service.resources().readerPinBytes).toBe(192 * 1024 * 1024);
-    expect(await value.workspace.pin("/three")).toEqual({ kind: "pressure", resource: "pin-bytes" });
+    expect(await value.workspace.pin("/three")).toEqual({
+      kind: "pressure",
+      resource: "pin-bytes",
+    });
     await one.value.close();
     expect(value.service.resources().readerPinBytes).toBe(192 * 1024 * 1024);
     await alias.value.close();
@@ -100,7 +122,9 @@ test("unique seed buffers share alias charges and independently exhaust pin capa
     await two.value.close();
     expect(value.service.resources().readerPinBytes).toBe(0);
     expect(value.backend.shared.registeredHandles()).toHaveLength(0);
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
 
 test("publication refusal rolls back growth and COW reservations before any effect", async () => {
@@ -112,9 +136,18 @@ test("publication refusal rolls back growth and COW reservations before any effe
     const lease = await value.workspace.pin("/file");
     if (lease.kind !== "ok") throw new Error(lease.kind);
     const before = value.backend.shared.resources().usedBytes;
-    const stat = value.backend.shared.stat(value.handle), identity = value.backend.identity(value.handle), cut = domain.cut();
-    domain.prepare = () => { throw refused; };
-    const failure = await value.client.asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3 + 1).fill(90)).then(() => undefined, (error: unknown) => error);
+    const stat = value.backend.shared.stat(value.handle),
+      identity = value.backend.identity(value.handle),
+      cut = domain.cut();
+    domain.prepare = () => {
+      throw refused;
+    };
+    const failure = await value.client
+      .asyncCall("writeFile", ["/file"], new Uint8Array(PAGE * 3 + 1).fill(90))
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
     expect(failure).toMatchObject({ message: refused.message });
     expect(value.backend.shared.resources().usedBytes).toBe(before);
     expect(value.backend.shared.stat(value.handle)).toEqual(stat);
@@ -126,26 +159,38 @@ test("publication refusal rolls back growth and COW reservations before any effe
     expect(old.kind).toBe("ok");
     if (old.kind === "ok") expect(old.value.bytes[0]).toBe(65);
     await lease.value.close();
-  } finally { domain.prepare = original; await value.close(); }
+  } finally {
+    domain.prepare = original;
+    await value.close();
+  }
 });
 
 test("public selection excludes real pending resident grants and old leases survive committed import", async () => {
   const value = await residentReadFixture(PAGE * 3, undefined, PAGE * 4);
   try {
-    const descriptor: ResidentDescriptor = await value.client.asyncCall("publicationResident", [value.client.connection.publication!.observer, value.handle, `public-read-${crypto.randomUUID()}`]);
+    const descriptor: ResidentDescriptor = await value.client.asyncCall("publicationResident", [
+      value.client.connection.publication!.observer,
+      value.handle,
+      `public-read-${crypto.randomUUID()}`,
+    ]);
     const authority = value.service.residentPublication!;
     authority.activate();
     const session = authority.open(descriptor);
     const opened = await value.workspace.pin("/file");
     if (opened.kind !== "ok") throw new Error(opened.kind);
-    const cell = new ResidentGrantCell(authority.prepare(session, { kind: "write", offset: PAGE * 2, maxBytes: 1 }));
+    const cell = new ResidentGrantCell(
+      authority.prepare(session, { kind: "write", offset: PAGE * 2, maxBytes: 1 }),
+    );
     expect(cell.snapshot().kind).toBe("ready");
-    expect(await value.workspace.read("/file", { offset: PAGE * 2, length: 1 })).toEqual({ kind: "unavailable" });
+    expect(await value.workspace.read("/file", { offset: PAGE * 2, length: 1 })).toEqual({
+      kind: "unavailable",
+    });
     expect(cell.tryWrite(value.handle, [new Uint8Array([90])], PAGE * 2)).toBe(1);
     expect(cell.snapshot().kind).toBe("committed");
     expect(await value.workspace.stat("/file")).toEqual({ kind: "unavailable" });
     expect(authority.settle(session, cell.snapshot()).kind).toBe("committed");
-    const current = await value.workspace.read("/file", { offset: PAGE * 2, length: 1 }), old = await opened.value.read({ offset: PAGE * 2, length: 1 });
+    const current = await value.workspace.read("/file", { offset: PAGE * 2, length: 1 }),
+      old = await opened.value.read({ offset: PAGE * 2, length: 1 });
     expect(current.kind).toBe("ok");
     expect(old.kind).toBe("ok");
     if (current.kind === "ok" && old.kind === "ok") {
@@ -162,14 +207,42 @@ test("public selection excludes real pending resident grants and old leases surv
   }
 });
 
-type Writer = "fd_write" | "fd_pwrite" | "direct-write" | "direct-append" | "write" | "append" | "writeFile" | "shrink" | "extend" | "move" | "unlink-final" | "hardlink" | "replacement";
+type Writer =
+  | "fd_write"
+  | "fd_pwrite"
+  | "direct-write"
+  | "direct-append"
+  | "write"
+  | "append"
+  | "writeFile"
+  | "shrink"
+  | "extend"
+  | "move"
+  | "unlink-final"
+  | "hardlink"
+  | "replacement";
 type WriterRoot = Pick<ReturnType<typeof publicReadFixture>, "client" | "backend">;
 async function actualWriter(kind: Writer, value: WriterRoot, handle: number): Promise<void> {
-  if (kind === "write") { await value.client.asyncCall("write", [handle, PAGE], new Uint8Array([90])); return; }
-  if (kind === "append") { await value.client.asyncCall("append", [handle], new Uint8Array([90])); return; }
-  if (kind === "writeFile") { await value.client.asyncCall("writeFile", ["/file"], new Uint8Array([90])); return; }
-  if (kind === "shrink" || kind === "extend") { await value.client.asyncCall("resize", [handle, kind === "shrink" ? 1 : PAGE * 4, true]); return; }
-  if (kind === "move") { await value.client.asyncCall("move", ["/file", "/renamed"]); return; }
+  if (kind === "write") {
+    await value.client.asyncCall("write", [handle, PAGE], new Uint8Array([90]));
+    return;
+  }
+  if (kind === "append") {
+    await value.client.asyncCall("append", [handle], new Uint8Array([90]));
+    return;
+  }
+  if (kind === "writeFile") {
+    await value.client.asyncCall("writeFile", ["/file"], new Uint8Array([90]));
+    return;
+  }
+  if (kind === "shrink" || kind === "extend") {
+    await value.client.asyncCall("resize", [handle, kind === "shrink" ? 1 : PAGE * 4, true]);
+    return;
+  }
+  if (kind === "move") {
+    await value.client.asyncCall("move", ["/file", "/renamed"]);
+    return;
+  }
   if (kind === "hardlink") {
     const root = await value.client.asyncCall("preopen", ["/"]);
     const source: unknown = await value.client.asyncCall("resolve", [root, "file"]);
@@ -194,39 +267,81 @@ async function actualWriter(kind: Writer, value: WriterRoot, handle: number): Pr
     const directory = await peer.asyncCall("preopen", ["/"]);
     const node = (await peer.asyncCall("resolve", [directory, "file"])).node;
     peer.retain(node);
-    if (kind === "direct-write") { expect(peer.tryWrite(node, [new Uint8Array([90])], PAGE)).toBe(1); return; }
-    if (kind === "direct-append") { expect(peer.tryAppend(node, [new Uint8Array([90])])).toBe(1); return; }
+    if (kind === "direct-write") {
+      expect(peer.tryWrite(node, [new Uint8Array([90])], PAGE)).toBe(1);
+      return;
+    }
+    if (kind === "direct-append") {
+      expect(peer.tryAppend(node, [new Uint8Array([90])])).toBe(1);
+      return;
+    }
     await actualWasiWrite(kind, peer, node);
-  } finally { peer.dispose(); }
+  } finally {
+    peer.dispose();
+  }
 }
-async function actualWasiWrite(kind: "fd_write" | "fd_pwrite", client: FilesystemClient, handle: number): Promise<void> {
+async function actualWasiWrite(
+  kind: "fd_write" | "fd_pwrite",
+  client: FilesystemClient,
+  handle: number,
+): Promise<void> {
   const memory = new WebAssembly.Memory({ initial: 4 });
-  const wasi = new Wasi({ fs: client, args: [], env: {}, preopens: {}, namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() { throw new Error("writer must not wait"); } });
+  const wasi = new Wasi({
+    fs: client,
+    args: [],
+    env: {},
+    preopens: {},
+    namespaces: { env: { memory } },
+    stdout() {},
+    stderr() {},
+    sleep() {
+      throw new Error("writer must not wait");
+    },
+  });
   try {
     const resource = { kind: "file", handle, offset: PAGE, append: false } as const;
     shareFileResource(resource, client.connection);
-    const parameters = kind === "fd_write" ? (["i32", "i32", "i32", "i32"] as const) : (["i32", "i32", "i32", "i64", "i32"] as const);
+    const parameters =
+      kind === "fd_write"
+        ? (["i32", "i32", "i32", "i32"] as const)
+        : (["i32", "i32", "i32", "i64", "i32"] as const);
     const module = guestModule("wasi_snapshot_preview1", [{ name: kind, parameters }]);
     const instance = new WebAssembly.Instance(module, { ...wasi.imports(module), env: { memory } });
     wasi.start(instance);
     const fd = wasi.descriptors.open(resource, (1n << 6n) | (1n << 2n), 0n);
     const view = new DataView(memory.buffer);
-    view.setUint32(0, 32, true); view.setUint32(4, 1, true);
+    view.setUint32(0, 32, true);
+    view.setUint32(4, 1, true);
     new Uint8Array(memory.buffer)[32] = 90;
     const call = guestFunction(instance, kind);
     expect(kind === "fd_write" ? call(fd, 0, 1, 16) : call(fd, 0, 1, BigInt(PAGE), 16)).toBe(0);
-  } finally { wasi.descriptors.dispose(); }
+  } finally {
+    wasi.descriptors.dispose();
+  }
 }
 
-for (const writer of ["fd_write", "fd_pwrite", "direct-write", "direct-append", "extend", "hardlink", "replacement", "unlink-final"] satisfies Writer[]) {
+for (const writer of [
+  "fd_write",
+  "fd_pwrite",
+  "direct-write",
+  "direct-append",
+  "extend",
+  "hardlink",
+  "replacement",
+  "unlink-final",
+] satisfies Writer[]) {
   test(`held cold public I/O does not block ${writer} or relabel selected bytes`, async () => {
     const value = await coldFixture(PAGE * 3);
-    const entered = Promise.withResolvers<void>(), gate = value.physical.gate();
+    const entered = Promise.withResolvers<void>(),
+      gate = value.physical.gate();
     let reading: ReturnType<typeof value.workspace.read> | undefined;
     try {
       const stat = await value.workspace.stat("/file");
       if (stat.kind !== "ok") throw new Error(stat.kind);
-      value.physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+      value.physical.file().snapshotRead = async () => {
+        entered.resolve();
+        await gate.promise;
+      };
       reading = value.workspace.read("/file", { offset: PAGE - 3, length: 4096 });
       await entered.promise;
       const root = await value.client.asyncCall("preopen", ["/"]);
@@ -239,15 +354,36 @@ for (const writer of ["fd_write", "fd_pwrite", "direct-write", "direct-append", 
       expect(old.kind).toBe("ok");
       if (old.kind === "ok") {
         expect(old.value.stat).toEqual(stat.value);
-        expect(old.value.bytes).toEqual(Uint8Array.from({ length: 4096 }, (_, index) => pattern(PAGE - 3 + index)));
+        expect(old.value.bytes).toEqual(
+          Uint8Array.from({ length: 4096 }, (_, index) => pattern(PAGE - 3 + index)),
+        );
       }
-    } finally { gate.resolve(); await reading; await value.close(); }
+    } finally {
+      gate.resolve();
+      await reading;
+      await value.close();
+    }
   });
 }
-for (const writer of ["write", "append", "writeFile", "shrink", "extend", "fd_write", "fd_pwrite", "direct-write", "direct-append", "move", "unlink-final", "hardlink", "replacement"] satisfies Writer[]) {
+for (const writer of [
+  "write",
+  "append",
+  "writeFile",
+  "shrink",
+  "extend",
+  "fd_write",
+  "fd_pwrite",
+  "direct-write",
+  "direct-append",
+  "move",
+  "unlink-final",
+  "hardlink",
+  "replacement",
+] satisfies Writer[]) {
   test(`held resident public chunk delivery preserves all pages across ${writer}`, async () => {
     const value = await residentReadFixture(PAGE * 3);
-    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>(),
+      gate = Promise.withResolvers<void>();
     const submit = value.client.submit;
     let held = false;
     let reading: ReturnType<typeof value.workspace.read> | undefined;
@@ -261,7 +397,8 @@ for (const writer of ["write", "append", "writeFile", "shrink", "extend", "fd_wr
         const result = completion.value.bind(completion);
         completion.value = async () => {
           const bytes: unknown = await result();
-          entered.resolve(); await gate.promise;
+          entered.resolve();
+          await gate.promise;
           return bytes;
         };
         return completion;
@@ -280,17 +417,27 @@ for (const writer of ["write", "append", "writeFile", "shrink", "extend", "fd_wr
       }
       expect(value.service.resources().readerPinBytes).toBe(0);
       expect(value.service.resources().readerTickets).toBe(0);
-    } finally { gate.resolve(); value.client.submit = submit; await reading; await value.close(); }
+    } finally {
+      gate.resolve();
+      value.client.submit = submit;
+      await reading;
+      await value.close();
+    }
   });
 }
 
 test("public selection refuses an actually CLAIMED resident writer before authority import", async () => {
   const value = await residentReadFixture(PAGE, undefined, PAGE * 2);
   const gate = new Int32Array(new SharedArrayBuffer(4));
-  const claimed = Promise.withResolvers<void>(), done = Promise.withResolvers<void>();
+  const claimed = Promise.withResolvers<void>(),
+    done = Promise.withResolvers<void>();
   let worker: Worker | undefined;
   try {
-    const descriptor: ResidentDescriptor = await value.client.asyncCall("publicationResident", [value.client.connection.publication!.observer, value.handle, `public-claim-${crypto.randomUUID()}`]);
+    const descriptor: ResidentDescriptor = await value.client.asyncCall("publicationResident", [
+      value.client.connection.publication!.observer,
+      value.handle,
+      `public-claim-${crypto.randomUUID()}`,
+    ]);
     const authority = value.service.residentPublication!;
     authority.activate();
     const session = authority.open(descriptor);
@@ -303,14 +450,28 @@ test("public selection refuses an actually CLAIMED resident writer before author
       if (!data || typeof data !== "object" || !("kind" in data)) return;
       if (data.kind === "claimed") claimed.resolve();
       else if (data.kind === "done") done.resolve();
-      else { const error = new Error(JSON.stringify(data)); claimed.reject(error); done.reject(error); }
+      else {
+        const error = new Error(JSON.stringify(data));
+        claimed.reject(error);
+        done.reject(error);
+      }
     };
-    worker.onerror = (event) => { claimed.reject(event.error); done.reject(event.error); };
-    worker.postMessage({ grant, storage: { state: cell.state.buffer, payload: cell.payload.buffer }, gate: gate.buffer });
+    worker.onerror = (event) => {
+      claimed.reject(event.error);
+      done.reject(event.error);
+    };
+    worker.postMessage({
+      grant,
+      storage: { state: cell.state.buffer, payload: cell.payload.buffer },
+      gate: gate.buffer,
+    });
     await claimed.promise;
     expect(cell.snapshot().kind).toBe("claimed");
-    expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({ kind: "unavailable" });
-    Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
+    expect(await value.workspace.read("/file", { offset: 0, length: 1 })).toEqual({
+      kind: "unavailable",
+    });
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
     await done.promise;
     expect(cell.snapshot().kind).toBe("committed");
     expect(authority.settle(session, cell.snapshot()).kind).toBe("committed");
@@ -320,7 +481,8 @@ test("public selection refuses an actually CLAIMED resident writer before author
     await opened.value.close();
     authority.close(session);
   } finally {
-    Atomics.store(gate, 0, 1); Atomics.notify(gate, 0);
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
     worker?.terminate();
     value.service.residentPublication?.dispose();
     await value.close();
@@ -333,10 +495,22 @@ test("a missing current pathname stays not-found even with an explicitly leased 
     const opened = await value.workspace.pin("/file");
     if (opened.kind !== "ok") throw new Error(opened.kind);
     await value.client.asyncCall("move", ["/file", "/renamed"]);
-    expect(await value.workspace.read("/file", { offset: 0, length: 1 }, opened.value.stat.version)).toEqual({ kind: "not-found" });
-    expect((await value.workspace.read(opened.value.stat.id, { offset: 0, length: 1 }, opened.value.stat.version)).kind).toBe("ok");
+    expect(
+      await value.workspace.read("/file", { offset: 0, length: 1 }, opened.value.stat.version),
+    ).toEqual({ kind: "not-found" });
+    expect(
+      (
+        await value.workspace.read(
+          opened.value.stat.id,
+          { offset: 0, length: 1 },
+          opened.value.stat.version,
+        )
+      ).kind,
+    ).toBe("ok");
     await opened.value.close();
-  } finally { await value.close(); }
+  } finally {
+    await value.close();
+  }
 });
 
 test("generation stat distinguishes retained IDs, old paths, foreign cuts, future cuts and reopen history", async () => {
@@ -351,10 +525,27 @@ test("generation stat distinguishes retained IDs, old paths, foreign cuts, futur
       const other = await foreign.workspace.stat("/file");
       if (other.kind !== "ok") throw new Error(other.kind);
       expect((await value.workspace.stat(stat.id, other.value.cut)).kind).toBe("generation-gone");
-    } finally { await foreign.close(); }
-    const future = { ...stat.cut, generation: stat.cut.generation + 1n, watermark: { ...stat.cut.watermark, seq: stat.cut.watermark.seq + 1n } };
+    } finally {
+      await foreign.close();
+    }
+    const future = {
+      ...stat.cut,
+      generation: stat.cut.generation + 1n,
+      watermark: { ...stat.cut.watermark, seq: stat.cut.watermark.seq + 1n },
+    };
     const grant = value.client.connection.publication!.observer;
-    expect((await value.client.asyncCall("publicationReadStat", [grant, 100, stat.id, undefined, undefined, future])).kind).toBe("generation-gone");
+    expect(
+      (
+        await value.client.asyncCall("publicationReadStat", [
+          grant,
+          100,
+          stat.id,
+          undefined,
+          undefined,
+          future,
+        ])
+      ).kind,
+    ).toBe("generation-gone");
     await value.client.asyncCall("move", ["/file", "/renamed"]);
     expect(await value.workspace.stat(stat.id, stat.cut)).toEqual({ kind: "ok", value: stat });
     expect((await value.workspace.stat("/file", stat.cut)).kind).toBe("generation-gone");
@@ -373,24 +564,35 @@ test("generation stat distinguishes retained IDs, old paths, foreign cuts, futur
       expect(after.value.version).toBe(before.value.version);
       expect(after.value.cut.watermark.history).not.toBe(before.value.cut.watermark.history);
     }
-    expect((await reopened.workspace.stat(before.value.id, before.value.cut)).kind).toBe("generation-gone");
+    expect((await reopened.workspace.stat(before.value.id, before.value.cut)).kind).toBe(
+      "generation-gone",
+    );
     expect(await held.value.read({ offset: 0, length: 1 })).toEqual({ kind: "stopped" });
-  } finally { await reopened?.close(); await value.close(); }
+  } finally {
+    await reopened?.close();
+    await value.close();
+  }
 });
 
 test("closing a cold lease joins an active native borrow and preserves debt until it settles", async () => {
   const value = await coldFixture(PAGE * 3);
-  const entered = Promise.withResolvers<void>(), gate = value.physical.gate();
+  const entered = Promise.withResolvers<void>(),
+    gate = value.physical.gate();
   let reading: ReturnType<typeof value.workspace.read> | undefined;
   let closing: Promise<void> | undefined;
   try {
     const opened = await value.workspace.pin("/file");
     if (opened.kind !== "ok") throw new Error(opened.kind);
-    value.physical.file().snapshotRead = async () => { entered.resolve(); await gate.promise; };
+    value.physical.file().snapshotRead = async () => {
+      entered.resolve();
+      await gate.promise;
+    };
     reading = opened.value.read({ offset: 0, length: PAGE });
     await entered.promise;
     let settled = false;
-    closing = opened.value.close().then(() => { settled = true; });
+    closing = opened.value.close().then(() => {
+      settled = true;
+    });
     expect(opened.value.close()).not.toBeUndefined();
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
@@ -403,31 +605,44 @@ test("closing a cold lease joins an active native borrow and preserves debt unti
     expect(value.storage.resources().opfsReaderWork).toBe(0);
     expect(value.storage.resources().readerStorageBytes).toBe(0);
     expect(value.service.resources().readerLeases).toBe(0);
-  } finally { gate.resolve(); await reading; await closing; await value.close(); }
+  } finally {
+    gate.resolve();
+    await reading;
+    await closing;
+    await value.close();
+  }
 });
 
 for (const after of ["open", "chunk"] as const) {
   test(`abort after real ${after} completion before delivery cannot resurrect a reader`, async () => {
     const value = await residentReadFixture(PAGE * 3);
     const submit = value.client.submit;
-    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>(),
+      gate = Promise.withResolvers<void>();
     const controller = new AbortController();
     let held = false;
     let reading: ReturnType<typeof value.workspace.read> | undefined;
     try {
       value.client.submit = function (...args) {
         const completion = submit.apply(this, args);
-        if (held || args[0] !== (after === "open" ? "publicationReadOpen" : "publicationReadChunk")) return completion;
+        if (held || args[0] !== (after === "open" ? "publicationReadOpen" : "publicationReadChunk"))
+          return completion;
         held = true;
         const original = completion.value.bind(completion);
         completion.value = async () => {
           const result: unknown = await original();
-          entered.resolve(); await gate.promise;
+          entered.resolve();
+          await gate.promise;
           return result;
         };
         return completion;
       };
-      reading = value.workspace.read("/file", { offset: 0, length: PAGE * 3 }, undefined, controller.signal);
+      reading = value.workspace.read(
+        "/file",
+        { offset: 0, length: PAGE * 3 },
+        undefined,
+        controller.signal,
+      );
       await entered.promise;
       expect(value.service.resources().readerTickets).toBe(1);
       controller.abort();
@@ -437,7 +652,12 @@ for (const after of ["open", "chunk"] as const) {
       expect(value.service.resources().readerPinBytes).toBe(0);
       expect(value.service.resources().readerResultBytes).toBe(0);
       expect(value.service.resources().readerOperations).toBe(0);
-    } finally { gate.resolve(); value.client.submit = submit; await reading; await value.close(); }
+    } finally {
+      gate.resolve();
+      value.client.submit = submit;
+      await reading;
+      await value.close();
+    }
   });
 }
 
@@ -452,5 +672,7 @@ test("reopened normal recovery roots do not become reader-only debt on token rel
     token.release();
     expect(storage.resources().readerStorageDebt).toBe(0);
     expect(storage.resources().readerStorageBytes).toBe(0);
-  } finally { await physical.cleanup(); }
+  } finally {
+    await physical.cleanup();
+  }
 });
