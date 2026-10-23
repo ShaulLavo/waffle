@@ -211,8 +211,10 @@ test("fd fsync captures only its detached file; workspace fsync captures every d
     await backend.flush(handles[0]);
     expect(Array.from(store.batches.at(-1)!.data.values(), decode)).toEqual(["aaa"]);
     expect(store.syncs.at(-1)).toHaveLength(1);
+    const saved = store.syncs.at(-1)![0]!;
     await backend.flush();
-    expect(Array.from(store.batches.at(-1)!.data.values(), decode).sort()).toEqual(["aaa", "bbb"]);
+    expect(Array.from(store.batches.at(-1)!.data.values(), decode)).toEqual(["bbb"]);
+    expect(decode(await store.read(saved))).toBe("aaa");
     expect(store.syncs.at(-1)).toBeUndefined();
     expect(store.index!.nodes.some((node) => node.kind === "file")).toBe(false);
   } finally {
@@ -281,9 +283,14 @@ for (const relink of [false, true])
         backend.execute("write", [handle, 0], encode("now"));
         const root = backend.execute("preopen", ["/"], new Uint8Array()) as number;
         const destination = backend.fs.resolve(root, "back");
-        expect(
-          backend.execute("link", [{ node: handle, name: "" }, destination], new Uint8Array()),
-        ).toBe(0);
+        const source = {
+          parent: undefined,
+          name: "",
+          node: handle,
+          trailingSlash: false,
+          terminalDot: false,
+        };
+        expect(backend.execute("link", [source, destination], new Uint8Array())).toBe(0);
       } else {
         backend.release(handle);
         handle = undefined;

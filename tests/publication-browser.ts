@@ -584,8 +584,9 @@ async function closedSession(f: Fixture): Promise<void> {
   const session = old.connection.publication!.session;
   const id = old.shared.publication!.next(session);
   old.dispose();
-  // This real service round trip sweeps the closed owner before the new fork.
   const before = await f.observer.cut();
+  // The next request runs after the cut's trailing service sweep.
+  equal((await f.observer.diagnostics()).sessions, 1);
   const fresh = new FilesystemClient(f.fs.fork());
   try {
     equal(fresh.connection.publication!.session.serial === session.serial, false);
