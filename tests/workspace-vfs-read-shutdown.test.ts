@@ -11,6 +11,30 @@ const outcome = <T>(work: Promise<T>) =>
     (reason: unknown) => ({ kind: "failed" as const, reason }),
   );
 
+async function failedReleaseFixture(
+  physical: RangeFixture,
+  reason: unknown,
+  releases: (() => void)[],
+) {
+  await physical.seed([PAGE * 3]);
+  const storage = await physical.open();
+  const retain = storage.retainPayload.bind(storage);
+  storage.retainPayload = (...args) => {
+    const token = retain(...args);
+    releases.push(() => token.release());
+    return { release: () => { throw reason; } };
+  };
+  const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
+  const value = publicReadFixture(backend);
+  let closes = 0;
+  const close = backend.close.bind(backend);
+  backend.close = () => {
+    closes++;
+    return close();
+  };
+  return { storage, value, closes: () => closes };
+}
+
 test("public shutdown joins the original reader before the actual backend close", async () => {
   const physical = new RangeFixture();
   const gate = physical.gate();
@@ -68,32 +92,15 @@ for (const reason of [undefined, null, false, 0, new Error("reader release faile
     let value: ReturnType<typeof publicReadFixture> | undefined;
     const releases: (() => void)[] = [];
     try {
-      await physical.seed([PAGE * 3]);
-      const storage = await physical.open();
-      const retain = storage.retainPayload.bind(storage);
-      storage.retainPayload = (...args) => {
-        const token = retain(...args);
-        releases.push(() => token.release());
-        return {
-          release() {
-            throw reason;
-          },
-        };
-      };
-      const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
-      value = publicReadFixture(backend);
-      let closes = 0;
-      const close = backend.close.bind(backend);
-      backend.close = () => {
-        closes++;
-        return close();
-      };
+      const failed = await failedReleaseFixture(physical, reason, releases);
+      const storage = failed.storage;
+      value = failed.value;
       expect((await value.workspace.pin("/file")).kind).toBe("ok");
       const original = value.service.shutdown();
       const result = await outcome(original);
       expect(result.kind).toBe("failed");
       if (result.kind === "failed") expect(Object.is(result.reason, reason)).toBe(true);
-      expect(closes).toBe(0);
+      expect(failed.closes()).toBe(0);
       expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
       expect(value.service.resources().readerLeases).toBe(1);
       expect(value.service.shutdown()).toBe(original);
@@ -115,26 +122,9 @@ for (const reason of [undefined, null, false, 0, new Error("held reader release 
     let reading: Promise<unknown> | undefined, closing: Promise<unknown> | undefined;
     const releases: (() => void)[] = [];
     try {
-      await physical.seed([PAGE * 3]);
-      const storage = await physical.open();
-      const retain = storage.retainPayload.bind(storage);
-      storage.retainPayload = (...args) => {
-        const token = retain(...args);
-        releases.push(() => token.release());
-        return {
-          release() {
-            throw reason;
-          },
-        };
-      };
-      const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
-      value = publicReadFixture(backend);
-      let closes = 0;
-      const close = backend.close.bind(backend);
-      backend.close = () => {
-        closes++;
-        return close();
-      };
+      const failed = await failedReleaseFixture(physical, reason, releases);
+      const storage = failed.storage;
+      value = failed.value;
       physical.file().snapshotRead = async () => {
         entered.resolve();
         await gate.promise;
@@ -149,13 +139,13 @@ for (const reason of [undefined, null, false, 0, new Error("held reader release 
       });
       await turn();
       expect(settled).toBe(false);
-      expect(closes).toBe(0);
+      expect(failed.closes()).toBe(0);
       expect(storage.resources().opfsReaderWork).toBe(1);
       gate.resolve();
       const result = await outcome(original);
       expect(result.kind).toBe("failed");
       if (result.kind === "failed") expect(Object.is(result.reason, reason)).toBe(true);
-      expect(closes).toBe(0);
+      expect(failed.closes()).toBe(0);
       expect(storage.resources().readerStorageBytes).toBe(PAGE * 3);
       expect(value.service.resources().readerTickets).toBe(1);
       expect(value.service.shutdown()).toBe(original);

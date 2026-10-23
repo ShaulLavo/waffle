@@ -86,3 +86,18 @@ export function publicReadFixture(backend: MemoryBackend) {
     throw error;
   }
 }
+
+export async function heldNativeReadFixture(
+  physical: import("./opfs-range-storage").RangeFixture,
+  hold: Promise<void>,
+  entered: () => void,
+) {
+  await physical.seed([3 * 65536]);
+  const storage = await physical.open();
+  const value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
+  physical.file().snapshotRead = async () => {
+    entered();
+    await hold;
+  };
+  return { value, storage };
+}

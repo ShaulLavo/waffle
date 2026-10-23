@@ -7,7 +7,7 @@ import { shareFileResource } from "../core/open-file";
 import { guestModule, guestFunction } from "./fixtures/publication-wasm";
 import { MemFS } from "../fs/memory";
 import { RangeFixture, pattern, payloadSize } from "./fixtures/opfs-range-storage";
-import { publicReadFixture, residentReadFixture } from "./fixtures/workspace-read";
+import { publicReadFixture, heldNativeReadFixture, residentReadFixture } from "./fixtures/workspace-read";
 
 for (const kind of [
   "service-write",
@@ -467,13 +467,9 @@ for (const writer of ["write", "append", "writeFile", "resize", "remove", "move"
       entered = Promise.withResolvers<void>();
     let reading: Promise<unknown> | undefined;
     try {
-      await physical.seed([PAGE * 3]);
-      const storage = await physical.open();
-      value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-      physical.file().snapshotRead = async () => {
-        entered.resolve();
-        await gate.promise;
-      };
+      const held = await heldNativeReadFixture(physical, gate.promise, () => entered.resolve());
+      const storage = held.storage;
+      value = held.value;
       reading = value.workspace.read("/file", { offset: PAGE - 3, length: 4096 });
       await entered.promise;
       const root = await value.client.asyncCall("preopen", ["/"]);
@@ -526,13 +522,9 @@ test("aborted native public range keeps actual debt until the original I/O settl
     entered = Promise.withResolvers<void>();
   let reading: Promise<unknown> | undefined;
   try {
-    await physical.seed([PAGE * 3]);
-    const storage = await physical.open();
-    value = publicReadFixture(await PersistentBackend.open(storage, { intervalMs: 0 }));
-    physical.file().snapshotRead = async () => {
-      entered.resolve();
-      await gate.promise;
-    };
+    const held = await heldNativeReadFixture(physical, gate.promise, () => entered.resolve());
+    const storage = held.storage;
+    value = held.value;
     const abort = new AbortController();
     reading = value.workspace.read("/file", { offset: 0, length: 4096 }, undefined, abort.signal);
     await entered.promise;

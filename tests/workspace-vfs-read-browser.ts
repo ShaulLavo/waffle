@@ -51,7 +51,8 @@ async function projection(storage: StorageBackend) {
       }
     }
     if (failures.length === 1) throw failures[0];
-    if (failures.length) throw new AggregateError(failures, "Public browser fixture cleanup failed");
+    if (failures.length)
+      throw new AggregateError(failures, "Public browser fixture cleanup failed");
   };
   try {
     service.connect(pair.server);
@@ -193,7 +194,8 @@ async function retireTakenOverFixture(
   const cleanup = await Promise.allSettled([view.close(), storage.close(), replacement?.close()]);
   const closed = cleanup[0]!;
   check(
-    closed.status === "rejected" && closed.reason instanceof Error &&
+    closed.status === "rejected" &&
+      closed.reason instanceof Error &&
       closed.reason.message === lostMessage,
     "stale backend close did not preserve the original ownership loss",
   );
