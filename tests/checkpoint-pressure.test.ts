@@ -1,3 +1,4 @@
+import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { expect, spyOn, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
 import { PersistentBackend } from "../fs/persistent";
@@ -12,6 +13,12 @@ const encode = (text: string) => new TextEncoder().encode(text);
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 class HeldStorage implements StorageBackend {
+  private identityReservation?: StoredReservation;
+  async reserveIdentity(workspace?: string) {
+    const value = nextReservation(this.identityReservation, workspace);
+    this.identityReservation = storeReservation(value);
+    return value;
+  }
   index?: PersistedIndex;
   readonly payloads = new Map<string, Uint8Array>();
   readonly batches: PersistenceBatch[] = [];

@@ -1,3 +1,4 @@
+import { nextReservation } from "../fs/file-identity";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { afterEach, expect, test } from "bun:test";
 import {
@@ -152,6 +153,9 @@ async function persistentFixture(failure = false) {
   let reads = 0;
   const backend = await PersistentBackend.open(
     {
+      async reserveIdentity() {
+        return nextReservation(undefined);
+      },
       async load() {
         return {
           version: 1,

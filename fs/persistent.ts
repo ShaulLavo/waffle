@@ -1,3 +1,4 @@
+import { restoreIdentity, storeIdentity, type IdentityReservation } from "./file-identity.js";
 import {
   CheckpointPressure,
   type CheckpointLimits,
@@ -7,7 +8,13 @@ import { FilesystemError } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend } from "./backend.js";
 import { MemFS, adoptInodes, type Node, type DirNode, type FileNode } from "./memory.js";
-import type { PersistedIndex, PersistedNode, PersistenceBatch, StorageBackend } from "./storage.js";
+import {
+  validatePersistedIndex,
+  type PersistedIndex,
+  type PersistedNode,
+  type PersistenceBatch,
+  type StorageBackend,
+} from "./storage.js";
 
 interface CheckpointRequest {
   readonly durable: boolean;
@@ -46,14 +53,16 @@ export class PersistentBackend extends MemoryBackend {
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private nonce = crypto.randomUUID();
+  private renewing?: Promise<void>;
   private constructor(
     private storage: StorageBackend,
     fs: MemFS,
+    reservation: IdentityReservation,
     index?: PersistedIndex,
     intervalMs = 50,
     checkpointLimits?: Partial<CheckpointLimits>,
   ) {
-    super(fs);
+    super(fs, reservation);
     this.pressure = new CheckpointPressure(checkpointLimits);
     const visit = (node: Node) => {
       this.links.set(node.ino, (this.links.get(node.ino) ?? 0) + 1);
@@ -77,12 +86,12 @@ export class PersistentBackend extends MemoryBackend {
         this.dirty.add(node);
       }
     };
+    this.startTimer(intervalMs);
+  }
+  private startTimer(intervalMs: number): void {
     if (intervalMs > 0)
       this.timer = setInterval(() => {
-        if (!this.stopped && !this.pendingCheckpoints)
-          void this.checkpoint().catch(() => {
-            /* explicit flush reports/retries failures */
-          });
+        if (!this.stopped && !this.pendingCheckpoints) void this.checkpoint().catch(() => {});
       }, intervalMs);
   }
   static async open(
@@ -90,10 +99,14 @@ export class PersistentBackend extends MemoryBackend {
     options: { intervalMs?: number; checkpointLimits?: Partial<CheckpointLimits> } = {},
   ): Promise<PersistentBackend> {
     const index = await storage.load();
+    if (index) validatePersistedIndex(index);
+    const reservation = await storage.reserveIdentity(index?.nodes[0]?.identity?.workspace);
+    validateReservation(index, reservation);
     if (!index)
       return new PersistentBackend(
         storage,
         new MemFS(),
+        reservation,
         undefined,
         options.intervalMs,
         options.checkpointLimits,
@@ -106,6 +119,7 @@ export class PersistentBackend extends MemoryBackend {
           ? {
               kind: "dir",
               ino: entry.ino,
+              identity: entry.identity && restoreIdentity(entry.identity),
               mtime: entry.mtime,
               mode: entry.mode ?? 0o700,
               children: new Map(),
@@ -113,6 +127,7 @@ export class PersistentBackend extends MemoryBackend {
           : {
               kind: "file",
               ino: entry.ino,
+              identity: entry.identity && restoreIdentity(entry.identity),
               mtime: entry.mtime,
               mode: entry.mode ?? 0o600,
               size: entry.size,
@@ -131,13 +146,26 @@ export class PersistentBackend extends MemoryBackend {
     const root = nodes.get(index.root);
     if (root?.kind !== "dir") throw new Error("persisted filesystem has no root directory");
     adoptInodes(root);
-    return new PersistentBackend(
+    const backend = new PersistentBackend(
       storage,
       new MemFS(root),
+      reservation,
       index,
-      options.intervalMs,
+      0,
       options.checkpointLimits,
     );
+    try {
+      if (!index.nodes[0]?.identity) {
+        await storage.flush();
+        for (const node of nodes.values()) backend.dirty.add(node);
+        await backend.flush();
+      }
+      backend.startTimer(options.intervalMs ?? 50);
+      return backend;
+    } catch (error) {
+      backend.dispose();
+      throw error;
+    }
   }
   private changeLinks(node: Node, delta: 1 | -1): void {
     const previous = this.links.get(node.ino) ?? 0;
@@ -167,6 +195,9 @@ export class PersistentBackend extends MemoryBackend {
       if (node.kind === "dir")
         for (const child of node.children.values()) this.changeLinks(child, -1);
     }
+  }
+  protected identityChanged(node: Node): void {
+    if (this.isLinked(node)) this.dirty.add(node);
   }
   protected isLinked(node: Node): boolean {
     return this.nodes.has(node.ino);
@@ -210,7 +241,13 @@ export class PersistentBackend extends MemoryBackend {
     }
     const registered = this.shared.hasFile(handle);
     const loaded = node.size === undefined;
-    this.shared.register(handle, this.fs.stat(handle), node.data, loaded);
+    this.shared.register(
+      handle,
+      this.fs.stat(handle),
+      node.data,
+      loaded,
+      this.ensureIdentity(node),
+    );
     if (!registered && loaded) {
       // The page pool owns the only mutable payload. Retaining initial MemFS buffers doubles
       // workspace memory and, after direct writes, would retain an obsolete second copy.
@@ -242,6 +279,7 @@ export class PersistentBackend extends MemoryBackend {
         this.keys.get(node.ino) !== this.committedKeys.get(node.ino)
       )
         continue;
+      node.identity = this.shared.identity(handle) ?? node.identity;
       if (this.shared.evict(handle, revision)) {
         node.size = stat.size;
         node.mtime = stat.mtime;
@@ -303,7 +341,25 @@ export class PersistentBackend extends MemoryBackend {
     this.assertAdmitting();
     return super.execute(operation, args, data);
   }
+  renewIdentityReservation(): Promise<void> {
+    this.assertAdmitting();
+    if (this.renewing) return this.renewing;
+    const work = this.storage.reserveIdentity(this.workspaceId).then((reservation) => {
+      this.assertOpen();
+      this.shared.mutate(undefined, undefined, () => this.shared.identities.configure(reservation));
+    });
+    this.renewing = this.ownWork(work).finally(() => {
+      this.renewing = undefined;
+    });
+    return this.renewing;
+  }
   prepare(operation: string, args: any[]): void | Promise<void> {
+    this.assertAdmitting();
+    if (this.shared.identities.available < 8192n)
+      return this.renewIdentityReservation().then(() => this.prepareOperation(operation, args));
+    return this.prepareOperation(operation, args);
+  }
+  private prepareOperation(operation: string, args: any[]): void | Promise<void> {
     this.assertAdmitting();
     const target = ["read", "write", "append", "grow", "resize"].includes(operation)
       ? args[0]
@@ -470,6 +526,7 @@ export class PersistentBackend extends MemoryBackend {
     if (!stat) return;
     node.size = stat.size;
     node.mtime = stat.mtime;
+    node.identity = this.shared.identity(handle) ?? node.identity;
     const snapshot = this.shared.snapshot(handle);
     if (snapshot) {
       const key = `${this.nonce}:${node.ino}:${++this.sequence}`;
@@ -498,6 +555,7 @@ export class PersistentBackend extends MemoryBackend {
       node.kind === "dir"
         ? {
             ino: node.ino,
+            identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
             kind: "dir",
             mtime: node.mtime,
             mode: node.mode,
@@ -506,6 +564,7 @@ export class PersistentBackend extends MemoryBackend {
           }
         : {
             ino: node.ino,
+            identity: storeIdentity(this.ensureIdentity(node), this.workspaceId),
             kind: "file",
             mtime: node.mtime,
             mode: node.mode,
@@ -628,5 +687,17 @@ export class PersistentBackend extends MemoryBackend {
     );
     void this.finishClose(work).then(owner.resolve, owner.reject);
     return owner.promise;
+  }
+}
+
+function validateReservation(
+  index: PersistedIndex | undefined,
+  reservation: IdentityReservation,
+): void {
+  for (const node of index?.nodes ?? []) {
+    if (!node.identity) continue;
+    const identity = restoreIdentity(node.identity);
+    if (identity.id >> 64n >= reservation.era || identity.version >> 64n >= reservation.era)
+      throw new Error("Filesystem identity exceeds durable reservation highwater");
   }
 }
