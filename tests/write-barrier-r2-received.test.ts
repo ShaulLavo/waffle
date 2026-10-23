@@ -32,6 +32,7 @@ class DeferredExecution extends MemoryBackend {
     if (this.shape === "normalized") return Promise.resolve(this.pending.promise);
     if (this.shape === "cross-realm") return this.pending.promise;
     return {
+      // oxlint-disable-next-line unicorn/no-thenable -- Backend thenable settlement is the regression input.
       then: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => {
         this.observedThen = true;
         expect(this.shared.ownsServiceMutation).toBe(false);
