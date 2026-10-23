@@ -243,11 +243,11 @@ test("close is idempotent, stops iterators, removes abort listeners and borrows 
   let listeners = 0;
   const add = abort.signal.addEventListener.bind(abort.signal);
   const remove = abort.signal.removeEventListener.bind(abort.signal);
-  abort.signal.addEventListener = (...args) => {
+  abort.signal.addEventListener = (...args: Parameters<typeof add>) => {
     listeners++;
     add(...args);
   };
-  abort.signal.removeEventListener = (...args) => {
+  abort.signal.removeEventListener = (...args: Parameters<typeof remove>) => {
     listeners--;
     remove(...args);
   };
