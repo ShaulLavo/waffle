@@ -1577,3 +1577,53 @@ test("an unrelated failed mutation cannot reject a later valid executable admiss
   await expect(runtime.filesystem.drain()).rejects.toThrow();
   await runtime.filesystem.drain();
 });
+
+test("owner-only write lease keeps process activation lazy and the same filesystem usable", async () => {
+  globalThis.Worker = previousWorker;
+  const runtime = create({
+    filesystem: {
+      workerURL: new URL("./fixtures/filesystem-default-service.ts", import.meta.url).href,
+      mode: "memory",
+    },
+    processHost: processHost(),
+  });
+  await runtime.filesystem.writeFile("/shared", "before");
+  const barrier = await runtime.pauseFilesystemWrites();
+  expect(events).not.toContain("process:start");
+  expect("pauseFilesystemWrites" in runtime.filesystem).toBe(false);
+  expect(Object.getOwnPropertySymbols(runtime.filesystem)).toHaveLength(0);
+  try {
+    await barrier.flush();
+    await expect(runtime.filesystem.writeFile("/shared", "during")).rejects.toMatchObject({
+      errno: 6,
+    });
+    const release = barrier.release();
+    expect(barrier.release()).toBe(release);
+    await release;
+    await runtime.filesystem.writeFile("/shared", "resumed");
+    expect(new TextDecoder().decode(await runtime.filesystem.readFile("/shared"))).toBe("resumed");
+  } finally {
+    await barrier.release();
+  }
+  expect(events).not.toContain("process:start");
+});
+
+test("owner acquisition cancellation and disposal cannot leave or reopen a lease", async () => {
+  globalThis.Worker = previousWorker;
+  const runtime = create({
+    filesystem: {
+      workerURL: new URL("./fixtures/filesystem-default-service.ts", import.meta.url).href,
+      mode: "memory",
+    },
+  });
+  await runtime.filesystem.writeFile("/shared", "before");
+  const abort = new AbortController();
+  const acquiring = runtime.pauseFilesystemWrites({ signal: abort.signal });
+  abort.abort();
+  await expect(acquiring).rejects.toMatchObject({ errno: 11 });
+  await runtime.filesystem.writeFile("/shared", "after");
+  const barrier = await runtime.pauseFilesystemWrites();
+  await runtime.dispose();
+  await expect(barrier.release()).rejects.toThrow();
+  expect(() => runtime.pauseFilesystemWrites()).toThrow();
+});

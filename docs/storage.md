@@ -38,6 +38,58 @@ selects isolated storage for tests/workspaces. The worker is not a power-loss-sa
 filesystem beyond the browser's storage guarantees; closing a page without a completed flush
 may lose its uncommitted edits.
 
+## Reversible owner write barrier
+
+`runtime.pauseFilesystemWrites({ signal })` returns a `FilesystemWriteBarrier` lease.
+Only the runtime owner can acquire it. Borrowed filesystems, process services, and
+filesystem connections do not acquire or release leases.
+
+```ts
+const barrier = await runtime.pauseFilesystemWrites({ signal });
+try {
+  await barrier.flush();
+  // Inspect the stable cut or begin navigation synchronously here.
+} finally {
+  await barrier.release();
+}
+```
+
+Acquisition closes one shared root gate and drains earlier admitted mutations.
+An earlier mutation keeps its admission through page dispatch, cold loading,
+pressure retries, service execution, and resident write-grant settlement. Existing,
+independent, pending, and future guest identities inherit the same gate. The lease
+pauses filesystem writes, not processes. Reads, handle cleanup, and checkpoint
+progress remain available.
+
+Later mutations receive `FilesystemError` errno 6, `EAGAIN`, without effects.
+Nonblocking guest writes return `-6`. Waffle retains no payload or delayed write
+for those rejected calls. The caller must retry explicitly after release. This
+covers bytes, file sizes, modes, timestamps, and namespace changes. Ordinary
+`filesystem.flush(path)` remains nonexclusive and does not acquire a lease.
+
+`barrier.flush()` joins concurrent calls and flushes the whole filesystem while
+writes remain excluded. A rejected flush leaves the lease held. The owner can
+retry or release it, using the same runtime and guest identities. `release()` is
+idempotent, waits for an in-flight lease flush to settle, and reopens admission.
+An old lease cannot reopen a newer one. Disposal and ownership loss are terminal
+and cannot be reversed by release.
+
+The optional signal cancels acquisition only. Abort does not cancel earlier
+mutations and cannot reopen a delivered lease. Overlapping acquisition rejects
+with errno 6 instead of queueing another owner. A failed earlier mutation rejects
+acquisition and reopens the gate rather than returning a successful cut.
+
+Admission has 64 producer records per root, 512 MiB of reserved payload copies,
+and a 16 MiB transport-metadata reservation cap. Encoded mutation arguments are
+bounded to 8192 bytes and response capacity to 64 KiB. Transport reservations
+have their own bound and do not change dirty-growth byte or metadata limits.
+Pending transport counters are reported separately. String encoding and fallback
+copies reserve before allocation. A single 128 MiB ASCII `writeFile` fits the
+default limits. Capacity exhaustion rejects without a queued write. Completed
+low-level `FilesystemCompletion` objects remain caller-owned until `release()`.
+No persistence wait holds a guest mutation lock, and FAST acknowledgements do not
+become durable acknowledgements.
+
 ## Ordinary ready shutdown
 
 A ready ordinary persistent `SharedFilesystem` revokes new work immediately when

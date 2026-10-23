@@ -1,5 +1,6 @@
+import type { FilesystemWriteBarrier } from "../fs/write-barrier.js";
 import { localPublication, type PublicationConfiguration } from "../fs/publication-internal.js";
-import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
+import { type PublicationAdmission } from "../fs/publication.js";
 import {
   reportRuntimeStartup,
   isWorkerStartupMessage,
@@ -35,6 +36,8 @@ import {
 } from "../fs/vfs.js";
 export { getVfsDescriptor, VfsError } from "../fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "../fs/vfs.js";
+
+export const ownerWriteBarrier = Symbol("filesystem owner write barrier");
 
 export type SharedFilesystemStatus = "opening" | "waiting" | "ready" | "failed" | "disposed";
 export interface SharedFilesystemState {
@@ -100,7 +103,7 @@ export class SharedFilesystem {
   readonly workspace: WorkspaceVfs | undefined;
   private worker: Worker;
   private writes: Promise<unknown> = Promise.resolve();
-  private failure: unknown;
+  private failure: { readonly error: unknown } | undefined;
   private fatal: Error | undefined;
   private _state: SharedFilesystemState = Object.freeze({ status: "opening" });
   private startupComplete = false;
@@ -108,6 +111,12 @@ export class SharedFilesystem {
   private stopped = false;
   private clientStopped = false;
   private disposal?: Promise<void>;
+  private nextBarrierRequest = 1;
+  private barrierRequests = new Map<
+    number,
+    { resolve: () => void; reject: (error: unknown) => void }
+  >();
+  private acquiringBarrier = false;
   private finishDisposal?: (error?: Error) => void;
   ownershipLost = false;
   onOwnershipLost?: () => void;
@@ -183,6 +192,15 @@ export class SharedFilesystem {
     return this._state;
   }
   private receiveMessage(event: MessageEvent, onStartupStage?: RuntimeStartupObserver): void {
+    if (event.data?.type === "filesystem-write-barrier") {
+      const request = this.barrierRequests.get(event.data.id);
+      if (!request) return;
+      this.barrierRequests.delete(event.data.id);
+      if (typeof event.data.errno === "number")
+        request.reject(new FilesystemError(event.data.errno));
+      else request.resolve();
+      return;
+    }
     if (event.data?.type === "filesystem-disposed") {
       if (this.joinedReady() && "error" in event.data && typeof event.data.error !== "string")
         return;
@@ -250,6 +268,9 @@ export class SharedFilesystem {
   private stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    for (const request of this.barrierRequests.values())
+      request.reject(this.fatal ?? new FilesystemError(11));
+    this.barrierRequests.clear();
     try {
       this.stopClient();
     } finally {
@@ -313,33 +334,108 @@ export class SharedFilesystem {
       throw error;
     }
   }
-  private mutate(operation: string, args: unknown[], bytes?: Uint8Array): Promise<any> {
-    const admission = this.client.shared.publication
-      ? this.client[localPublication](operation, args, bytes ?? new Uint8Array())
-      : undefined;
-    const owned = admission?.kind === "admitted" ? admission.input : bytes;
-    const publication = admission?.kind === "admitted" ? admission.admission : undefined;
-    const result = this.writes
-      .then(() =>
-        admission?.kind === "duplicate"
-          ? mutationValue(admission.receipt.result)
-          : this.request(operation, args, owned, publication),
-      )
-      .finally(() => {
-        if (publication) this.client.cancelPublication(publication);
-      });
-    // Keep ordering after an error, while returning the failure to the caller that owns it.
-    this.writes = result.catch((error) => {
-      this.failure ??= error;
-    });
+  private mutate(operation: string, args: unknown[], input?: Uint8Array | string): Promise<any> {
+    let preparing: Promise<import("../fs/client.js").FilesystemCompletion>;
+    try {
+      this.assertLive();
+      const bytes = typeof input === "string" ? () => new TextEncoder().encode(input) : input;
+      const size =
+        typeof input === "string"
+          ? utf8Size(input) * (this.client.shared.publication ? 3 : 2)
+          : undefined;
+      preparing = this.client.prepareAsync(operation, args, bytes, size);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const earlier = this.writes;
+    const result = preparing.then(
+      (prepared) => this.executePrepared(prepared, earlier),
+      (error) => {
+        this.assertLive();
+        throw error;
+      },
+    );
+    this.writes = Promise.all([earlier, result.catch(() => {})]);
     return result;
+  }
+
+  private async executePrepared(
+    prepared: import("../fs/client.js").FilesystemCompletion,
+    earlier: Promise<unknown>,
+  ): Promise<unknown> {
+    try {
+      await earlier;
+      this.assertLive();
+      this.client.dispatch(prepared);
+      return await prepared.value();
+    } catch (error) {
+      this.assertLive();
+      this.failure ??= { error };
+      throw error;
+    } finally {
+      prepared.release();
+    }
+  }
+  private barrierRequest(operation: "acquire" | "flush" | "release", lease: number): Promise<void> {
+    if (this.stopped || this.disposal || this.fatal)
+      return Promise.reject(this.fatal ?? new FilesystemError(11));
+    if (this.barrierRequests.size >= 4 || this.nextBarrierRequest >= Number.MAX_SAFE_INTEGER)
+      return Promise.reject(new FilesystemError(6));
+    const id = this.nextBarrierRequest++;
+    return new Promise<void>((resolve, reject) => {
+      this.barrierRequests.set(id, { resolve, reject });
+      try {
+        this.worker.postMessage({ writeBarrier: { operation, id, lease } });
+      } catch (error) {
+        this.barrierRequests.delete(id);
+        reject(error);
+      }
+    });
+  }
+  async [ownerWriteBarrier](
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<FilesystemWriteBarrier> {
+    this.assertLive();
+    if (options.signal?.aborted) throw new FilesystemError(11);
+    if (this.acquiringBarrier) throw new FilesystemError(6);
+    this.acquiringBarrier = true;
+    const lease = this.nextBarrierRequest;
+    const earlier = this.writes;
+    const abort = () => this.worker.postMessage({ writeBarrier: { operation: "cancel", lease } });
+    options.signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await this.barrierRequest("acquire", lease);
+      await earlier;
+      if (options.signal?.aborted) {
+        await this.barrierRequest("release", lease);
+        throw new FilesystemError(11);
+      }
+    } finally {
+      this.acquiringBarrier = false;
+      options.signal?.removeEventListener("abort", abort);
+    }
+    let flushing: Promise<void> | undefined;
+    let releasing: Promise<void> | undefined;
+    return {
+      flush: () => {
+        if (releasing) return Promise.reject(new FilesystemError(11));
+        flushing ??= this.barrierRequest("flush", lease).finally(() => {
+          flushing = undefined;
+        });
+        return flushing;
+      },
+      release: () => {
+        releasing ??= this.barrierRequest("release", lease);
+        return releasing;
+      },
+    };
   }
   /** Wait for this page's queued mutations, without waiting for background persistence. */
   async drain(): Promise<void> {
     await this.writes;
     this.assertLive();
     if (this.failure !== undefined) {
-      const error = this.failure;
+      const { error } = this.failure;
       this.failure = undefined;
       throw error;
     }
@@ -372,11 +468,7 @@ export class SharedFilesystem {
   }
   writeFile(path: string, text: string | Uint8Array, mode: WriteFileMode = false): Promise<void> {
     const { append, exclusive } = resolveWriteFileMode(mode);
-    return this.mutate(
-      "writeFile",
-      [path, append, exclusive],
-      typeof text === "string" ? new TextEncoder().encode(text) : text,
-    );
+    return this.mutate("writeFile", [path, append, exclusive], text);
   }
   remove(path: string): Promise<boolean> {
     return this.mutate("remove", [path]);
@@ -461,4 +553,13 @@ export class SharedFilesystem {
     }
     return this.disposal;
   }
+}
+
+function utf8Size(text: string): number {
+  let size = 0;
+  for (const character of text) {
+    const code = character.charCodeAt(0);
+    size += character.length === 2 ? 4 : code < 128 ? 1 : code < 2048 ? 2 : 3;
+  }
+  return size;
 }

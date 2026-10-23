@@ -28,6 +28,7 @@ export type {
 export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";
 
+export type { FilesystemWriteBarrier } from "./fs/write-barrier.js";
 export type {
   WorkspaceVfs,
   ByteRange,

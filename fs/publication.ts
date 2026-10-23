@@ -1284,6 +1284,7 @@ export function mutationIntent(
     case "setMtime":
       return { kind: "setMtime", handle: integer(a), mtime: integer(b) };
     case "preopen":
+      return b === true ? undefined : { kind: "preopen", path: text(a) };
     case "mkdirp":
     case "remove":
       return { kind: operation, path: text(a) };

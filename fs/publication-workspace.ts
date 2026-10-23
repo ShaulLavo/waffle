@@ -36,6 +36,7 @@ interface WorkspaceCall {
 const requestBound = PAGE + 8192;
 
 const queryOperations = new Set([
+  "preopen",
   "stat",
   "permissions",
   "resolve",
@@ -100,7 +101,7 @@ export function workspaceRequest(
   if (!intent && !queryOperations.has(operation)) throw new FilesystemError(2);
   if (intent)
     return { operation, args, input: data.input, ...(data.id ? { id: identity(data.id) } : {}) };
-  if (operation === "lookup") text(args[0]);
+  if (operation === "lookup" || operation === "preopen") text(args[0]);
   else if (operation !== "flush") integer(args[0]);
   if (operation === "resolve") text(args[1]);
   if (operation === "read") {
@@ -183,23 +184,11 @@ export class WorkspacePeer {
     if (this.stopped || signal.aborted) throw new FilesystemError(11);
     const limits = this.client.shared.publication!.limits;
     const call = workspaceRequest(value, limits.inputBytes, limits.argumentBytes);
-    let admission;
-    if (mutationIntent(call.operation, call.args)) {
-      const admitted = this.client[localPublication](
-        call.operation,
-        call.args,
-        call.input,
-        call.id ?? this.next(),
-      );
-      if (admitted.kind === "duplicate")
-        return {
-          value: mutationValue(admitted.receipt.result),
-          receipt: admitted.receipt,
-          handles: this.holdResults(),
-        };
-      admission = admitted.admission;
-    }
-    const completion = this.client.submit(call.operation, call.args, call.input, PAGE, admission);
+    const prepared = mutationIntent(call.operation, call.args)
+      ? this.client.withMutation(() => this.prepare(call), call.input.length * 3)
+      : this.prepare(call);
+    if (prepared.kind === "duplicate") return prepared.value;
+    const { completion, admission } = prepared;
     const cancel = () => completion.cancel();
     this.pending.add(completion);
     signal.addEventListener("abort", cancel, { once: true });
@@ -221,6 +210,29 @@ export class WorkspacePeer {
       this.pending.delete(completion);
       completion.release();
     }
+  }
+  private prepare(call: WorkspaceCall) {
+    let admission;
+    if (mutationIntent(call.operation, call.args)) {
+      const admitted = this.client[localPublication](
+        call.operation,
+        call.args,
+        call.input,
+        call.id ?? this.next(),
+      );
+      if (admitted.kind === "duplicate")
+        return {
+          kind: "duplicate" as const,
+          value: {
+            value: mutationValue(admitted.receipt.result),
+            receipt: admitted.receipt,
+            handles: this.holdResults(),
+          },
+        };
+      admission = admitted.admission;
+    }
+    const completion = this.client.submit(call.operation, call.args, call.input, PAGE, admission);
+    return { kind: "pending" as const, completion, admission };
   }
   async stop(): Promise<void> {
     this.stopped = true;

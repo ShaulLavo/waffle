@@ -15,6 +15,7 @@ export const atomicsWaitAsync = (
       array: Int32Array,
       index: number,
       value: number,
+      timeout?: number,
     ): { async: boolean; value: string | Promise<string> };
   }
 ).waitAsync;

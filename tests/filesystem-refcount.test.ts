@@ -1,3 +1,4 @@
+import { writeArgumentSize } from "../fs/write-barrier.ts";
 import { SLOT_WORDS } from "../fs/shared.js";
 import { readFileSync } from "node:fs";
 import * as protocol from "../fs/protocol.ts";
@@ -42,6 +43,7 @@ function isolatedClient() {
   const bindings = {
     localPublication,
     mutationIntent,
+    writeArgumentSize,
     ...protocol,
     ...shared,
     ...native,

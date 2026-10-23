@@ -1,3 +1,4 @@
+import { writeArgumentSize, type WriteTicket } from "./write-barrier.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
@@ -102,11 +103,14 @@ export class FilesystemCompletion {
   private decoded: unknown;
   private loading?: Promise<unknown>;
   private consumed = false;
+  posted = false;
+  ticketRetired = false;
   constructor(
     readonly id: number,
     readonly buffer: SharedArrayBuffer,
     private client: FilesystemClient,
     readonly publication?: PublicationAdmission,
+    readonly writeTicket?: WriteTicket,
   ) {
     this.cells = new Int32ArrayConstructor(buffer, 0, HEADER / 4);
   }
@@ -124,6 +128,7 @@ export class FilesystemCompletion {
   cancel(): void {
     if (this.publication) this.client.cancelPublication(this.publication);
     if (atomicsExchange(this.cells, 6, 1)) return;
+    if (!this.posted) this.client.abandon(this);
     atomicsCompareExchange(this.cells, 0, State.Pending, State.Cancelled);
     atomicsNotify(this.cells, 0);
     wake(this.client.connection);
@@ -255,6 +260,8 @@ export class FilesystemClient implements FileSystem {
   readonly shared: SharedFilesystemState;
   private watchingRevocation = false;
   private resident: ResidentAttachment | undefined;
+  private activeWrite: WriteTicket | undefined;
+  private admissionInterrupted: (() => boolean) | undefined;
   private workspaceStop: Promise<void> | undefined;
   constructor(readonly connection: FilesystemConnection) {
     this.capabilities = new Int32ArrayConstructor(connection.capabilities, 0, CAPABILITY_LENGTH);
@@ -431,9 +438,79 @@ export class FilesystemClient implements FileSystem {
     operation: string,
     args: unknown[] = [],
     data: Uint8Array = new Uint8ArrayConstructor(),
+    capacity?: number,
+    publication?: PublicationAdmission,
+  ): FilesystemCompletion {
+    const completion = this.prepare(operation, args, data, capacity, publication);
+    this.dispatch(completion);
+    return completion;
+  }
+  /** Reserve before page-tail retention. The completion owns its executing reference until
+   * dispatch fails, pre-dispatch cancellation, or an actual service settlement. */
+  prepare(
+    operation: string,
+    args: unknown[] = [],
+    data: Uint8Array = new Uint8ArrayConstructor(),
     capacity = operation === "read" || operation === "take" || operation === "readdir"
       ? PAGE
       : 1024,
+    publication?: PublicationAdmission,
+  ): FilesystemCompletion {
+    if (!mutationIntent(operation, args) && !this.activeWrite)
+      return this.prepareAdmitted(operation, args, data, capacity, publication);
+    const argumentBytes = writeArgumentSize(args);
+    if (!Number.isSafeInteger(capacity) || capacity < 0 || capacity > PAGE)
+      throw new FilesystemError(6, "filesystem response capacity exhausted");
+    return this.withMutation(
+      () => this.prepareAdmitted(operation, args, data, capacity, publication),
+      data.length * (this.shared.publication ? 3 : 1),
+      HEADER + capacity + (argumentBytes + 512) * 4,
+    );
+  }
+  async prepareAsync(
+    operation: string,
+    args: unknown[] = [],
+    data: Uint8Array | (() => Uint8Array) = new Uint8ArrayConstructor(),
+    inputBytes = typeof data === "function" ? 0 : data.length * (this.shared.publication ? 3 : 1),
+    publication?: PublicationAdmission,
+  ): Promise<FilesystemCompletion> {
+    if (!mutationIntent(operation, args))
+      return this.prepare(
+        operation,
+        args,
+        typeof data === "function" ? data() : data,
+        undefined,
+        publication,
+      );
+    const metadata = HEADER + 1024 + (writeArgumentSize(args) + 512) * 4;
+    const ticket = await this.shared.writeAdmission.admitAsync(
+      this.connection.owner,
+      inputBytes,
+      metadata,
+      this.revoked,
+    );
+    try {
+      await this.shared.waitWriteInput(this.revoked);
+      this.activeWrite = ticket;
+      return this.shared.withWrite(ticket, () =>
+        this.prepareAdmitted(
+          operation,
+          args,
+          typeof data === "function" ? data() : data,
+          1024,
+          publication,
+        ),
+      );
+    } finally {
+      this.activeWrite = undefined;
+      this.shared.writeAdmission.finish(ticket);
+    }
+  }
+  private prepareAdmitted(
+    operation: string,
+    args: unknown[],
+    data: Uint8Array,
+    capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
     if (this.revoked()) throw new FilesystemError(11);
@@ -476,23 +553,88 @@ export class FilesystemClient implements FileSystem {
     capacity: number,
     publication?: PublicationAdmission,
   ): FilesystemCompletion {
-    const input = pack({ operation, args, publication });
+    this.section.enter();
+    try {
+      return this.allocateRequest(operation, args, data, capacity, publication);
+    } finally {
+      this.section.exit();
+    }
+  }
+  private allocateRequest(
+    operation: string,
+    args: unknown[],
+    data: Uint8Array,
+    capacity: number,
+    publication?: PublicationAdmission,
+  ): FilesystemCompletion {
+    const ticket = this.activeWrite;
+    const input = pack({ operation, args, publication, writeTicket: ticket });
     const buffer = new SharedArrayBufferConstructor(
       HEADER + Math.max(input.length + data.length, capacity),
     );
-    const completion = new FilesystemCompletion(this.nextRequest++, buffer, this, publication);
+    const completion = new FilesystemCompletion(
+      this.nextRequest++,
+      buffer,
+      this,
+      publication,
+      ticket,
+    );
     completion.cells[1] = input.length;
     completion.cells[2] = data.length;
     typedArraySet(new Uint8ArrayConstructor(buffer, HEADER), input);
     typedArraySet(new Uint8ArrayConstructor(buffer, HEADER + input.length), data);
     mapSet(this.completions, completion.id, completion);
+    if (ticket) this.shared.writeAdmission.send(ticket, completion.id);
+    return completion;
+  }
+  dispatch(completion: FilesystemCompletion): void {
+    if (completion.posted || completion.cells[6]) return;
     try {
-      this.connection.port.postMessage({ id: completion.id, buffer });
+      if (completion.writeTicket) this.shared.writeAdmission.verify(completion.writeTicket);
+      this.connection.port.postMessage({ id: completion.id, buffer: completion.buffer });
+      completion.posted = true;
     } catch (error) {
+      this.abandon(completion);
       mapDelete(this.completions, completion.id);
       throw error;
     }
-    return completion;
+  }
+  abandon(completion: FilesystemCompletion): void {
+    if (!completion.writeTicket || completion.ticketRetired) return;
+    completion.ticketRetired = true;
+    this.shared.writeAdmission.finish(completion.writeTicket, completion.id);
+  }
+  withMutation<T>(run: () => T, inputBytes = 0, metadataBytes = 0, blocking = false): T {
+    const interrupted = this.admissionInterrupted ?? (blocking ? this.revoked : undefined);
+    if (this.activeWrite) {
+      if (inputBytes || metadataBytes) {
+        this.shared.writeAdmission.reserveInput(this.activeWrite, inputBytes, interrupted);
+        this.shared.writeAdmission.reserveMetadata(this.activeWrite, metadataBytes, interrupted);
+        this.shared.checkWriteInput(!interrupted);
+      }
+      return run();
+    }
+    const ticket = this.shared.writeAdmission.admit(
+      this.connection.owner,
+      inputBytes,
+      interrupted,
+      metadataBytes,
+    );
+    try {
+      this.shared.checkWriteInput(!interrupted);
+      this.activeWrite = ticket;
+      this.admissionInterrupted = interrupted;
+      return this.shared.withWrite(ticket, run);
+    } finally {
+      this.activeWrite = undefined;
+      this.admissionInterrupted = undefined;
+      this.shared.writeAdmission.finish(ticket);
+    }
+  }
+  private reserveWriteInput(bytes: number): void {
+    if (!this.activeWrite) throw new FilesystemError(11);
+    this.shared.writeAdmission.reserveInput(this.activeWrite, bytes, this.admissionInterrupted);
+    this.shared.checkWriteInput(!this.admissionInterrupted);
   }
   cancelPublication(admission: PublicationAdmission): void {
     const connection = this.connection.publication;
@@ -503,12 +645,22 @@ export class FilesystemClient implements FileSystem {
     return completion && { kind: 3, id, ready: completion.ready };
   }
   call(operation: string, args: unknown[] = [], data?: Uint8Array): any {
-    const completion = this.submit(operation, args, data);
-    try {
-      return completion.wait();
-    } finally {
-      completion.release();
+    if (operation === "preopen" && args[1] !== true) {
+      try {
+        return this.call(operation, [args[0], true]);
+      } catch (error) {
+        if (!(error instanceof FilesystemError) || error.errno !== 44) throw error;
+      }
     }
+    const run = () => {
+      const completion = this.submit(operation, args, data);
+      try {
+        return completion.wait();
+      } finally {
+        completion.release();
+      }
+    };
+    return mutationIntent(operation, args) ? this.withMutation(run, 0, 0, true) : run();
   }
   async asyncCall(
     operation: string,
@@ -516,8 +668,16 @@ export class FilesystemClient implements FileSystem {
     data?: Uint8Array,
     publication?: PublicationAdmission,
   ): Promise<any> {
-    const completion = this.submit(operation, args, data, undefined, publication);
+    if (operation === "preopen" && args[1] !== true) {
+      try {
+        return await this.asyncCall(operation, [args[0], true]);
+      } catch (error) {
+        if (!(error instanceof FilesystemError) || error.errno !== 44) throw error;
+      }
+    }
+    const completion = await this.prepareAsync(operation, args, data, undefined, publication);
     try {
+      this.dispatch(completion);
       return await completion.value();
     } finally {
       completion.release();
@@ -737,6 +897,18 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryWriteImpl(handle, chunks, offset);
+    try {
+      return this.withMutation(
+        () => this.tryWriteImpl(handle, chunks, offset),
+        this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+      );
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private tryWriteImpl(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     if (this.resident)
       return this.residentIO(() => this.resident?.client?.tryWrite(handle, chunks, offset) ?? -6);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, true);
@@ -766,6 +938,21 @@ export class FilesystemClient implements FileSystem {
     }
   }
   tryAppend(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+  ): { written: number; offset: number } | number {
+    if (this.connection.residentPublication?.kind === "file")
+      return this.tryAppendImpl(handle, chunks);
+    try {
+      return this.withMutation(
+        () => this.tryAppendImpl(handle, chunks),
+        this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+      );
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private tryAppendImpl(
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
@@ -1128,6 +1315,7 @@ export class FilesystemClient implements FileSystem {
       let length = 0;
       for (const chunk of chunks) length += typedArrayLength(chunk);
       if (length > PAGE) throw new FilesystemError(6);
+      this.reserveWriteInput(length * (this.shared.publication ? 3 : 2));
       const bytes = new Uint8ArrayConstructor(length);
       let at = 0;
       for (const chunk of chunks) {
@@ -1199,6 +1387,37 @@ export class FilesystemClient implements FileSystem {
   }
   write(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
     if (this.connection.residentPublication?.kind === "file")
+      return this.writeImpl(handle, chunks, offset);
+    try {
+      if (!this.resident && !this.shared.publication)
+        return this.ordinaryWrite(handle, chunks, offset);
+      return this.withMutation(
+        () => this.writeImpl(handle, chunks, offset),
+        this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+        0,
+        true,
+      );
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private ordinaryWrite(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.activeWrite) return this.writeImpl(handle, chunks, offset);
+    const interrupted = this.admissionInterrupted ?? this.revoked;
+    const ticket = this.shared.writeAdmission.admit(this.connection.owner, 0, interrupted);
+    try {
+      this.shared.checkWriteInput();
+      this.activeWrite = ticket;
+      this.admissionInterrupted = interrupted;
+      return this.writeImpl(handle, chunks, offset);
+    } finally {
+      this.activeWrite = undefined;
+      this.admissionInterrupted = undefined;
+      this.shared.writeAdmission.finish(ticket);
+    }
+  }
+  private writeImpl(handle: FileHandle, chunks: readonly Uint8Array[], offset: number): number {
+    if (this.connection.residentPublication?.kind === "file")
       return this.tryWrite(handle, chunks, offset);
     if (this.resident) return this.workspaceWrite(handle, chunks, offset, false);
     if (this.shared.publication) return this.publishedWrite(handle, chunks, offset, false);
@@ -1208,28 +1427,7 @@ export class FilesystemClient implements FileSystem {
     if (slot) {
       let total = 0;
       for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
-      try {
-        if (!total) {
-          if (this.revoked()) throw new FilesystemError(11);
-          return 0;
-        }
-        return this.blockingDirectWrite(slot, handle, chunks, offset, total);
-      } catch (error) {
-        if (error instanceof MissingSegmentError) {
-          try {
-            const data = new Uint8ArrayConstructor(total);
-            let at = 0;
-            for (const chunk of chunks) {
-              data.set(chunk, at);
-              at += chunk.length;
-            }
-            return this.call("write", [handle, offset], data);
-          } catch (failure) {
-            return -errno(failure);
-          }
-        }
-        return -this.directFailure(handle, error);
-      }
+      return this.directWriteOrFallback(slot, handle, chunks, offset, total);
     }
     let total = 0;
     try {
@@ -1240,6 +1438,46 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       return total || -errno(error);
     }
+  }
+  private directWriteOrFallback(
+    slot: number,
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    total: number,
+  ): number {
+    try {
+      if (!total) {
+        if (this.activeWrite)
+          this.shared.writeAdmission.verify(this.activeWrite, this.connection.owner);
+        if (this.revoked()) throw new FilesystemError(11);
+        return 0;
+      }
+      return this.blockingDirectWrite(slot, handle, chunks, offset, total);
+    } catch (error) {
+      if (!(error instanceof MissingSegmentError)) return -this.directFailure(handle, error);
+      try {
+        return this.copiedWrite(handle, chunks, offset, total);
+      } catch (failure) {
+        return -errno(failure);
+      }
+    }
+  }
+  private copiedWrite(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+    total: number,
+  ): number {
+    return this.withMutation(() => {
+      const data = new Uint8ArrayConstructor(total);
+      let at = 0;
+      for (const chunk of chunks) {
+        data.set(chunk, at);
+        at += chunk.length;
+      }
+      return this.call("write", [handle, offset], data);
+    }, total * 2);
   }
   private blockingDirectWrite(
     slot: number,
@@ -1263,6 +1501,9 @@ export class FilesystemClient implements FileSystem {
           this.epoch,
           this.revoked,
           this.connection.owner,
+          false,
+          undefined,
+          this.activeWrite,
         );
       } catch (error) {
         if (!(error instanceof DirtyCapacityError) || error.permanent) throw error;
@@ -1277,6 +1518,23 @@ export class FilesystemClient implements FileSystem {
     handle: FileHandle,
     chunks: readonly Uint8Array[],
   ): { written: number; offset: number } | number {
+    if (this.connection.residentPublication?.kind === "file")
+      return this.appendImpl(handle, chunks);
+    try {
+      return this.withMutation(
+        () => this.appendImpl(handle, chunks),
+        this.shared.publication ? chunks.reduce((size, chunk) => size + chunk.length, 0) * 3 : 0,
+        0,
+        true,
+      );
+    } catch (error) {
+      return -errno(error);
+    }
+  }
+  private appendImpl(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+  ): { written: number; offset: number } | number {
     if (this.connection.residentPublication?.kind === "file") return this.tryAppend(handle, chunks);
     if (this.resident) return this.workspaceWrite(handle, chunks, 0, true);
     if (this.shared.publication) return this.publishedAppend(handle, chunks, false);
@@ -1284,6 +1542,7 @@ export class FilesystemClient implements FileSystem {
     let total = 0;
     for (let i = 0; i < chunks.length; i++) total += chunks[i]!.length;
     const fallback = () => {
+      this.reserveWriteInput(total * 2);
       const data = new Uint8ArrayConstructor(total);
       let at = 0;
       for (const chunk of chunks) {
@@ -1297,14 +1556,12 @@ export class FilesystemClient implements FileSystem {
       if (!slot) return fallback();
       return this.blockingDirectAppend(slot, handle, chunks, total);
     } catch (error) {
-      if (error instanceof MissingSegmentError) {
-        try {
-          return fallback();
-        } catch (failure) {
-          return -errno(failure);
-        }
+      if (!(error instanceof MissingSegmentError)) return -this.directFailure(handle, error);
+      try {
+        return fallback();
+      } catch (failure) {
+        return -errno(failure);
       }
-      return -this.directFailure(handle, error);
     }
   }
   private blockingDirectAppend(
@@ -1420,6 +1677,15 @@ export class FilesystemClient implements FileSystem {
     }
   }
   resize(handle: FileHandle, size: number, truncate: boolean): number {
+    if (this.connection.residentPublication?.kind === "file")
+      return this.resizeImpl(handle, size, truncate);
+    try {
+      return this.withMutation(() => this.resizeImpl(handle, size, truncate), 0, 0, true);
+    } catch (error) {
+      return errno(error);
+    }
+  }
+  private resizeImpl(handle: FileHandle, size: number, truncate: boolean): number {
     if (this.shared.publication)
       return this.publishedMetadata({ kind: "resize", handle, size, truncate });
     if (
@@ -1456,6 +1722,15 @@ export class FilesystemClient implements FileSystem {
     return this.callMetadata("resize", [handle, size, truncate]);
   }
   setMtime(handle: FileHandle, mtime: number): number {
+    if (this.connection.residentPublication?.kind === "file")
+      return this.setMtimeImpl(handle, mtime);
+    try {
+      return this.withMutation(() => this.setMtimeImpl(handle, mtime), 0, 0, true);
+    } catch (error) {
+      return errno(error);
+    }
+  }
+  private setMtimeImpl(handle: FileHandle, mtime: number): number {
     if (this.shared.publication) return this.publishedMetadata({ kind: "setMtime", handle, mtime });
     if (
       !this.shared.publication &&

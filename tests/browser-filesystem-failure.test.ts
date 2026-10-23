@@ -25,6 +25,7 @@ function fixture() {
       },
     },
     writes: Promise.resolve(),
+    barrierRequests: new Map(),
     _state: { status: "opening" },
   }) as unknown as { fail(error: Error): void; dispose(): void };
   cleanups.push(() => {

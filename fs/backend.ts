@@ -166,6 +166,8 @@ export class MemoryBackend implements FilesystemBackend {
       if (!same) throw new Error("filesystem service cannot attach a second shared tree");
       if (this.sharedAttached) return;
     }
+    if (this.shared.writeAdmission.closed || this.shared.writeAdmission.active)
+      throw new FilesystemError(6, "filesystem root has admitted writes");
     const previous = this.shared;
     this.shared = new SharedFilesystemState(
       buffer,
@@ -259,6 +261,11 @@ export class MemoryBackend implements FilesystemBackend {
     return { handle, node };
   }
   execute(operation: string, args: any[], data: Uint8Array): unknown {
+    if (mutationIntent(operation, args))
+      return this.shared.admitWrite(() => this.executeMutation(operation, args, data));
+    return this.executeMutation(operation, args, data);
+  }
+  private executeMutation(operation: string, args: any[], data: Uint8Array): unknown {
     try {
       const intent = mutationIntent(operation, args);
       if (!intent) return this.executeOperation(operation, args, data);
@@ -303,6 +310,13 @@ export class MemoryBackend implements FilesystemBackend {
   private executeOperation(operation: string, args: any[], _data: Uint8Array): unknown {
     const [a, b, c] = args;
     switch (operation) {
+      case "preopen": {
+        const path = this.fs.resolveAbsolute(a);
+        if (typeof path === "number") throw new FilesystemError(path);
+        if (path.node === undefined) throw new FilesystemError(44);
+        if (this.fs.nodeForHandle(path.node).kind !== "dir") throw new FilesystemError(54);
+        return path.node;
+      }
       case "flush":
         return;
       case "sync":

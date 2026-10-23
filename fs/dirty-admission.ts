@@ -39,7 +39,11 @@ const BASE_UNITS = 1024;
 export class DirtyAdmission {
   private readonly values: Float64Array;
   private readonly signals: Int32Array;
-  constructor(buffer: SharedArrayBuffer) {
+  constructor(
+    buffer: SharedArrayBuffer,
+    private readonly inputBytes = () => 0,
+    private readonly inputMetadata = () => 0,
+  ) {
     this.values = new Float64Array(buffer, 32 * 4, 20);
     this.signals = new Int32Array(buffer, 9 * 4, 2);
   }
@@ -73,6 +77,13 @@ export class DirtyAdmission {
       this.values[PINS]! +
       this.values[DIRTY_METADATA]!
     );
+  }
+  checkInput(resident: number): void {
+    if (!this.enabled) return;
+    if (resident + this.values[DIRTY_BYTES]! + this.values[COPIES]! > this.values[MAX_BYTES]!)
+      this.reject();
+    if (this.metadata() * 2 + this.values[COPY_METADATA]! > this.values[MAX_METADATA]!)
+      this.reject();
   }
   private check(resident: number, bytes: number, metadata: number): void {
     if (!this.enabled) return;
@@ -204,6 +215,8 @@ export class DirtyAdmission {
       pendingOperations: this.values[OPERATIONS]!,
       waiters: Atomics.load(this.signals, 1),
       rejected: this.values[REJECTED]!,
+      pendingInputBytes: this.inputBytes(),
+      pendingInputMetadataUnits: this.inputMetadata(),
       accountedBytes: residentBytes + this.values[DIRTY_BYTES]! + this.values[COPIES]!,
       accountedMetadataUnits: this.metadata() + this.values[COPY_METADATA]!,
       limits: {

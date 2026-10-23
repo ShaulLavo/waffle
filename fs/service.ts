@@ -1,5 +1,11 @@
 import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
+import {
+  WriteAdmission,
+  readWriteTicket,
+  type WriteTicket,
+  type FilesystemWriteBarrier,
+} from "./write-barrier.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { NamespaceAuthority } from "./workspace-namespace.js";
 import { ResidentGrantAuthority } from "./publication-grant.js";
@@ -96,6 +102,45 @@ export class FilesystemService {
   private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
   constructor(private backend: FilesystemBackend) {}
+  async pauseFilesystemWrites(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<FilesystemWriteBarrier> {
+    if (this.ownerStopping || options.signal?.aborted) throw new FilesystemError(11);
+    if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+    const gate = this.backend.shared.writeAdmission;
+    const lease = await gate.closeAsync(options.signal);
+    try {
+      await gate.drain(lease, options.signal);
+    } catch (error) {
+      gate.open(lease);
+      throw error;
+    }
+    let flushing: Promise<void> | undefined;
+    let releasing: Promise<void> | undefined;
+    return {
+      flush: () => {
+        if (releasing) return Promise.reject(new FilesystemError(11));
+        if (flushing) return flushing;
+        flushing = Promise.resolve()
+          .then(() => {
+            gate.assertLease(lease);
+            return this.backend.flush?.();
+          })
+          .finally(() => {
+            flushing = undefined;
+          });
+        return flushing;
+      },
+      release: () => {
+        releasing ??= Promise.resolve(flushing)
+          .catch(() => {})
+          .then(() => {
+            gate.open(lease);
+          });
+        return releasing;
+      },
+    };
+  }
   connect(connection: FilesystemConnection): void {
     if (this.ownerStopping) {
       this.refuseConnection(connection);
@@ -186,6 +231,23 @@ export class FilesystemService {
           if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
         });
       else {
+        const cells = new Int32Array(data.buffer, 0, HEADER / 4);
+        if (Atomics.compareExchange(cells, 7, 0, 1)) return;
+        try {
+          this.requestTicket(
+            session,
+            data.id,
+            unpack(new Uint8Array(data.buffer, HEADER, cells[1]!)),
+            false,
+          );
+        } catch (error) {
+          cells[3] = errno(error);
+          Atomics.store(cells, 0, State.Failed);
+          Atomics.notify(cells, 0);
+          wake(connection);
+          connection.port.postMessage({ completed: data.id });
+          return;
+        }
         session.pending.set(data.id, data.buffer);
         this.enqueue(session, data.id, data.buffer);
       }
@@ -299,6 +361,8 @@ export class FilesystemService {
   }
   private cancelRequest(session: Session, id: number, buffer: SharedArrayBuffer): void {
     const cells = new Int32Array(buffer, 0, HEADER / 4);
+    if (Atomics.compareExchange(cells, 7, 0, 2)) return;
+    this.retireRequest(session, id, buffer);
     Atomics.store(cells, 6, 1);
     Atomics.store(cells, 3, 11);
     Atomics.store(cells, 0, State.Cancelled);
@@ -306,6 +370,15 @@ export class FilesystemService {
     wake(session.connection);
     session.pending.delete(id);
     session.connection.port.postMessage({ completed: id });
+  }
+  private retireRequest(session: Session, id: number, buffer: SharedArrayBuffer): void {
+    const cells = new Int32Array(buffer, 0, HEADER / 4);
+    const input = unpack(new Uint8Array(buffer, HEADER, cells[1]!));
+    if (!input.writeTicket) return;
+    const ticket = readWriteTicket(input.writeTicket);
+    const gate = new WriteAdmission(session.connection.shared);
+    gate.verify(ticket, session.connection.owner, true);
+    gate.finish(ticket, id);
   }
   private pin(session: Session, handle: number | undefined, preopen = false): void {
     if (handle === undefined) return;
@@ -532,6 +605,66 @@ export class FilesystemService {
   private assertBackendAccess(): void {
     if (this.backend instanceof MemoryBackend) this.backend.shared.publication?.assertAccess();
   }
+  private finishRequestTicket(
+    session: Session,
+    id: number,
+    cells: Int32Array,
+    ticket: WriteTicket | undefined,
+    state: State,
+  ): void {
+    if (Atomics.exchange(cells, 7, 2) !== 1 || !ticket) return;
+    new WriteAdmission(session.connection.shared).finish(
+      ticket,
+      -id,
+      state === State.Failed && cells[3] === 29,
+    );
+  }
+  private requestTicket(
+    session: Session,
+    id: number,
+    input: { operation: string; args: unknown[]; writeTicket?: unknown },
+    prepared: boolean,
+  ): WriteTicket | undefined {
+    if (!input.writeTicket) {
+      if (mutationIntent(input.operation, input.args))
+        throw new FilesystemError(28, "write ticket required");
+      return;
+    }
+    const ticket = readWriteTicket(input.writeTicket);
+    new WriteAdmission(session.connection.shared).receive(
+      ticket,
+      session.connection.owner,
+      id,
+      prepared,
+    );
+    return ticket;
+  }
+  private executeAdmitted(
+    session: Session,
+    id: number,
+    operation: string,
+    args: unknown[],
+    payload: Uint8Array,
+    admission: PublicationAdmission | undefined,
+    ticket: WriteTicket | undefined,
+  ): unknown {
+    const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
+    const execute = () =>
+      local &&
+      operation !== "flush" &&
+      operation !== "sync" &&
+      !(operation === "preopen" && args[1] === true)
+        ? this.executePublication(session, id, operation, args, payload, admission)
+        : this.execute(session, id, operation, args, payload);
+    return ticket && this.backend instanceof MemoryBackend
+      ? this.backend.shared.withWrite(ticket, execute)
+      : execute();
+  }
+  private mutationSection(operation: string, args: readonly unknown[]): boolean {
+    if (operation === "preopen" && args[1] === true) return false;
+    const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
+    return mutations.has(operation) && !local;
+  }
   private async request(
     session: Session,
     id: number,
@@ -545,14 +678,16 @@ export class FilesystemService {
     let preparing = false;
     let admission: PublicationAdmission | undefined;
     let dirtyRetry: number | undefined;
+    let ticket: WriteTicket | undefined;
     const epoch = new Int32Array(session.connection.epoch);
     try {
-      if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
-        throw new FilesystemError(11);
       const inputLength = cells[1]!;
       const dataLength = cells[2]!;
       const input = unpack(bytes.subarray(0, inputLength));
       const { operation, args } = input;
+      ticket = this.requestTicket(session, id, input, true);
+      if (isRevoked(session.connection) || !this.sessions.has(session) || Atomics.load(cells, 6))
+        throw new FilesystemError(11);
       if (session.connection.publication && input.publication)
         admission = publicationAdmission(input.publication);
       this.checkRequest(session, operation, args);
@@ -574,18 +709,22 @@ export class FilesystemService {
       }
       // From here to completion the serial execute queue owns the request again.
       this.releasePrepared(session, prepared);
-      const local = this.backend instanceof MemoryBackend && this.backend.shared.publication;
-      mutation = mutations.has(operation) && !local;
+      mutation = this.mutationSection(operation, args);
       if (mutation) {
         if (this.backend instanceof MemoryBackend) this.backend.shared.beginServiceMutation(epoch);
         else Atomics.add(epoch, 0, 1);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
-      const value = prepared?.read
+      const executed = prepared?.read
         ? this.finishResult(session, id, operation, prepared.read.value)
-        : local && operation !== "flush" && operation !== "sync"
-          ? this.executePublication(session, id, operation, args, payload, admission)
-          : await this.execute(session, id, operation, args, payload);
+        : this.executeAdmitted(session, id, operation, args, payload, admission, ticket);
+      // End the synchronous publication section before awaiting even a backend promise.
+      if (mutation) {
+        if (this.backend instanceof MemoryBackend) this.backend.shared.endServiceMutation(epoch);
+        else Atomics.add(epoch, 0, 1);
+        mutation = false;
+      }
+      const value = executed instanceof Promise ? await executed : executed;
       const segments = this.backend.takeSharedSegments?.() ?? [];
       for (const segment of segments)
         for (const peer of this.sessions)
@@ -618,6 +757,7 @@ export class FilesystemService {
         else Atomics.add(epoch, 0, 1);
       }
       if (!preparing) {
+        this.finishRequestTicket(session, id, cells, ticket, state);
         this.cancelPublication(session, admission);
         this.releasePrepared(session, prepared);
         cells[5] = Atomics.load(epoch, 0);
@@ -1090,6 +1230,7 @@ export class FilesystemService {
         this.backend.shared.publication?.releasePin(id);
     session.publicationPins?.clear();
     session.connection.port.close();
+    new WriteAdmission(session.connection.shared).discardUnreceived(session.connection.owner);
     session.closed = true;
     if (!session.handles.size) {
       const publication = session.connection.publication;
@@ -1161,6 +1302,7 @@ export class FilesystemService {
   drainForOwner(): Promise<void> {
     if (this.ownerDraining) return this.ownerDraining;
     this.ownerStopping = true;
+    if (this.backend instanceof MemoryBackend) this.backend.shared.writeAdmission.stop();
     // Keep actual records before revocation can sweep them out of the service set.
     const sessions = Array.from(
       new Set(Array.from(this.sessions).concat(Array.from(this.preparingSessions))),
@@ -1192,6 +1334,7 @@ export class FilesystemService {
   }
   dispose(): void {
     if (this.shutdownOwner) return;
+    if (this.backend instanceof MemoryBackend) this.backend.shared.writeAdmission.stop();
     this.residentPublication?.dispose();
     for (const session of this.sessions) this.close(session);
   }
@@ -1215,6 +1358,7 @@ export class FilesystemService {
     this.shutdownOwner = owner;
     this.ownerStopping = true;
     for (const session of sessions) this.stopSessionReader(session);
+    if (this.backend instanceof MemoryBackend) this.backend.shared.writeAdmission.stop();
     const fences = sessions.map((session) => this.shutdownFence(session));
     void this.drainShutdown(owner, fences).then(resolve, reject);
     return done;
@@ -1336,6 +1480,80 @@ function diagnosticField(error: unknown, key: string): string | undefined {
     return;
   }
 }
+function ownerBarrierControls(
+  post: (message: unknown) => void,
+  owner: () => Promise<FilesystemService> | undefined,
+): (value: unknown) => void {
+  type Active = {
+    readonly kind: "active";
+    readonly lease: number;
+    readonly abort: AbortController;
+    readonly done: Promise<FilesystemWriteBarrier>;
+  };
+  type Released = {
+    readonly kind: "released";
+    readonly lease: number;
+    readonly done: Promise<void>;
+  };
+  let current: Active | Released | undefined;
+  const release = (state: Active | Released): Promise<void> => {
+    if (state.kind === "released") return state.done;
+    const done = state.done.then(
+      (lease) => lease.release(),
+      () => {},
+    );
+    current = { kind: "released", lease: state.lease, done };
+    return done;
+  };
+  const acquire = async (lease: number): Promise<void> => {
+    if (current?.kind === "active") throw new FilesystemError(10);
+    const abort = new AbortController();
+    const service = owner();
+    if (!service) throw new FilesystemError(6);
+    const done = service.then((service) => service.pauseFilesystemWrites({ signal: abort.signal }));
+    const state: Active = { kind: "active", lease, abort, done };
+    current = state;
+    try {
+      await done;
+    } catch (error) {
+      if (current === state) current = undefined;
+      throw error;
+    }
+    if (!abort.signal.aborted) return;
+    await release(state);
+    throw new FilesystemError(11);
+  };
+  const execute = async (operation: string, lease: number) => {
+    if (operation === "acquire") return acquire(lease);
+    if (!current || current.lease !== lease) throw new FilesystemError(11);
+    if (operation === "release") return release(current);
+    if (operation === "flush" && current.kind === "active") return (await current.done).flush();
+    throw new FilesystemError(28);
+  };
+  return (value) => {
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("operation" in value) ||
+      !("lease" in value) ||
+      typeof value.operation !== "string" ||
+      typeof value.lease !== "number"
+    )
+      return;
+    if (value.operation === "cancel") {
+      if (current?.kind !== "active" || current.lease !== value.lease) return;
+      current.abort.abort();
+      void release(current).catch(() => {});
+      return;
+    }
+    if (!("id" in value) || typeof value.id !== "number") return;
+    const id = value.id;
+    void execute(value.operation, value.lease).then(
+      () => post({ type: "filesystem-write-barrier", id }),
+      (error) => post({ type: "filesystem-write-barrier", id, errno: errno(error) }),
+    );
+  };
+}
 /** Installs the service in a browser/Bun worker without importing any app code. */
 export function installFilesystemWorker(
   scope: {
@@ -1355,7 +1573,15 @@ export function installFilesystemWorker(
   let onStartupStage: RuntimeStartupObserver | undefined;
   const startupAbort = new AbortController();
   let disposing = false;
+  const barrierControl = ownerBarrierControls(
+    (message) => scope.postMessage(message),
+    () => service,
+  );
   scope.onmessage = ({ data }) => {
+    if (data?.writeBarrier) {
+      barrierControl(data.writeBarrier);
+      return;
+    }
     if (data?.dispose === true) {
       if (disposing) return;
       disposing = true;
