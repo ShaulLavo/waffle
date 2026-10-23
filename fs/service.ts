@@ -1,4 +1,4 @@
-import { WorkspaceReadAuthority } from "./workspace-read.js";
+import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
 import { NamespaceAuthority } from "./workspace-namespace.js";
 import { ResidentGrantAuthority } from "./publication-grant.js";
 import {
@@ -82,6 +82,7 @@ interface PreparedRequest {
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
   private sessions = new Set<Session>();
+  private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
   private sweeping = false;
   private ownerStopping = false;
@@ -673,7 +674,10 @@ export class FilesystemService {
       args[0] !== session.connection.publication.observer
     )
       throw new FilesystemError(2);
-    session.reader ??= new WorkspaceReadAuthority(this.backend);
+    session.reader ??= new WorkspaceReadAuthority(
+      this.backend,
+      (this.readBudget ??= new WorkspaceReadBudget()),
+    );
     const continuation: PreparedRequest = { handles: [] };
     const original = this.trackWork(session, session.reader.invoke(operation, args, id));
     const joined = original.then(
@@ -971,10 +975,13 @@ export class FilesystemService {
       throw error;
     }
   }
-  private releaseSessionPins(session: Session): void {
-    session.namespace?.close();
+  private stopSessionReader(session: Session): void {
     if (session.reader && !session.readerClosing)
       session.readerClosing = this.trackWork(session, session.reader.stop());
+  }
+  private releaseSessionPins(session: Session): void {
+    session.namespace?.close();
+    this.stopSessionReader(session);
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
@@ -1070,11 +1077,9 @@ export class FilesystemService {
     }
     const ownerStateBytes =
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
-    const readers = Array.from(this.sessions).reduce<Record<string, number>>((all, session) => {
-      for (const [key, value] of Object.entries(session.reader?.resources() ?? {}))
-        all[key] = (all[key] ?? 0) + value;
-      return all;
-    }, {});
+    const readers = this.backend instanceof MemoryBackend
+      ? this.readBudget?.resources(this.backend) ?? {}
+      : {};
     return Object.assign(
       {
         ...backend,
@@ -1147,6 +1152,7 @@ export class FilesystemService {
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
+    for (const session of sessions) this.stopSessionReader(session);
     const fences = sessions.map((session) => this.shutdownFence(session));
     void this.drainShutdown(owner, fences).then(resolve, reject);
     return done;
@@ -1162,7 +1168,9 @@ export class FilesystemService {
     if (
       this.residentPublication ||
       owner.sessions.some(
-        (session) => session.connection.publication || session.connection.residentPublication,
+        (session) =>
+          session.connection.residentPublication ||
+          (session.connection.publication && !session.connection.publication.buffers.pageReaders),
       )
     )
       failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));

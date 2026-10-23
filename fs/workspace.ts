@@ -79,6 +79,7 @@ export function createWorkspaceVfs(client: FilesystemClient): WorkspaceVfs {
 class WorkspaceOwner implements WorkspaceVfs {
   private cursors = new Set<RemoteSnapshot>();
   private serial = 0;
+  private readSerial = 0;
   private closed = false;
   private pulling = false;
   private accepted: Accepted | undefined;
@@ -133,6 +134,11 @@ class WorkspaceOwner implements WorkspaceVfs {
       completion.release();
     }
   }
+  private nextReadSerial(): number {
+    const id = ++this.readSerial;
+    if (!Number.isSafeInteger(id)) throw new FilesystemError(33);
+    return id;
+  }
   private admitRead(): boolean {
     if (this.activeReads >= WORKSPACE_READ_LIMITS.operations) return false;
     this.activeReads++;
@@ -164,7 +170,7 @@ class WorkspaceOwner implements WorkspaceVfs {
       const result = readReply(
         await this.request(
           "publicationReadStat",
-          [this.nextSerial(), readTarget(target), undefined, undefined, readCut(at)],
+          [this.nextReadSerial(), readTarget(target), undefined, undefined, readCut(at)],
           this.readSignal(signal),
         ),
       );
@@ -183,7 +189,7 @@ class WorkspaceOwner implements WorkspaceVfs {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
     if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
-    const id = this.nextSerial();
+    const id = this.nextReadSerial();
     let adopted = false;
     try {
       const result = readReply(
@@ -235,7 +241,7 @@ class WorkspaceOwner implements WorkspaceVfs {
     if (this.stopped) return { kind: "stopped" };
     if (signal?.aborted) return { kind: "cancelled" };
     if (!this.admitRead()) return { kind: "pressure", resource: "operations" };
-    const id = this.nextSerial(),
+    const id = this.nextReadSerial(),
       lifetime = this.readSignal(signal);
     try {
       const parameters: unknown[] = [id];
@@ -367,12 +373,16 @@ class WorkspaceOwner implements WorkspaceVfs {
     this.accepted = undefined;
     this.lifetime.abort();
     const closing = Array.from(this.cursors, (cursor) => cursor.stop());
-    this.closing = Promise.all(
+    this.closing = Promise.allSettled(
       closing.concat(
         Array.from(this.leases, (lease) => lease.close()),
         [this.closeCursor(), this.closeRead()],
       ),
-    ).then(() => undefined);
+    ).then((results) => {
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "Workspace close failed");
+    });
     return this.closing;
   }
 }

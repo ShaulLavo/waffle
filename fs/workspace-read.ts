@@ -131,6 +131,35 @@ async function readBacking(
     }
   }
 }
+export class WorkspaceReadBudget {
+  operations = 0;
+  tickets = 0;
+  leases = 0;
+  outputs = 0;
+  outputPeak = 0;
+  metadata = 65536;
+  metadataPeak = 65536;
+  readonly seeds = new Map<ArrayBufferLike, number>();
+  seedBytes = 0;
+  takeMetadata(bytes: number): void {
+    if (bytes > LIMIT.metadata - this.metadata) pressure("metadata");
+    this.metadata += bytes;
+    this.metadataPeak = Math.max(this.metadataPeak, this.metadata);
+  }
+  resources(backend: MemoryBackend): Record<string, number> {
+    return {
+      readerOperations: this.operations,
+      readerTickets: this.tickets,
+      readerLeases: this.leases,
+      readerResultBytes: this.outputs,
+      readerResultPeak: this.outputPeak,
+      readerMetadataBytes: this.metadata,
+      readerMetadataPeak: this.metadataPeak,
+      readerSeedBytes: this.seedBytes,
+      readerPinBytes: this.seedBytes + backend.shared.readerPinBytes(),
+    };
+  }
+}
 /** Holds actual backend references. It cannot create namespace entries or publish a version. */
 export class WorkspaceReadAuthority {
   private readonly tickets = new Map<number, Ticket>();
@@ -139,17 +168,35 @@ export class WorkspaceReadAuthority {
     number,
     { controller: AbortController; serial: number; work?: Promise<unknown> }
   >();
-  private readonly closed = new Set<number>();
-  private floor = 0;
+  private readonly closed: [number, number][] = [];
+  private serialsExhausted = false;
   private stopping = false;
   private closing?: Promise<void>;
-  private outputs = 0;
-  private outputPeak = 0;
-  private metadata = 65536;
-  private metadataPeak = 65536;
-  private readonly seeds = new Map<ArrayBufferLike, number>();
-  private seedBytes = 0;
-  constructor(private readonly backend: MemoryBackend) {}
+  constructor(
+    private readonly backend: MemoryBackend,
+    private readonly budget: WorkspaceReadBudget,
+  ) {
+    this.budget.takeMetadata(1280);
+  }
+  private isClosed(id: number): boolean {
+    return this.closed.some(([first, last]) => id >= first && id <= last);
+  }
+  private rememberClosed(id: number): void {
+    if (this.serialsExhausted) return;
+    let first = id, last = id, index = 0;
+    while (index < this.closed.length && this.closed[index]![1] < first - 1) index++;
+    while (index < this.closed.length && this.closed[index]![0] <= last + 1) {
+      const previous = this.closed.splice(index, 1)[0]!;
+      first = Math.min(first, previous[0]);
+      last = Math.max(last, previous[1]);
+    }
+    if (this.closed.length === 64) {
+      this.serialsExhausted = true;
+      this.closed.length = 0;
+      return;
+    }
+    this.closed.splice(index, 0, [first, last]);
+  }
   private current(): NamespaceCut {
     return namespaceCut(this.backend.workspaceId, this.backend.shared.publication!.cut());
   }
@@ -169,7 +216,7 @@ export class WorkspaceReadAuthority {
     )
       return Promise.resolve({ kind: "invalid", field: "target" });
     if (this.stopping) return Promise.resolve({ kind: "stopped" });
-    if (this.operations.size >= LIMIT.operations)
+    if (this.budget.operations >= LIMIT.operations)
       return Promise.resolve({ kind: "pressure", resource: "operations" });
     const controller = new AbortController(),
       id = serial(args[1]);
@@ -178,6 +225,7 @@ export class WorkspaceReadAuthority {
       serial: id,
     };
     this.operations.set(request, active);
+    this.budget.operations++;
     const work = this.run(operation, args, controller.signal)
       .then(
         async (value) => {
@@ -189,6 +237,7 @@ export class WorkspaceReadAuthority {
       )
       .finally(() => {
         this.operations.delete(request);
+        this.budget.operations--;
       });
     active.work = work;
     return work;
@@ -197,13 +246,14 @@ export class WorkspaceReadAuthority {
     const active = this.operations.get(request);
     if (active) {
       active.controller.abort();
-      void this.close(active.serial);
+      void this.close(active.serial).catch(() => {});
     }
   }
   private async run(operation: string, args: unknown[], signal: AbortSignal): Promise<unknown> {
     const id = serial(args[1]);
     if (operation === "publicationReadChunk") return this.chunk(id, args[2], signal);
-    if (this.closed.has(id) || id <= this.floor) return { kind: "cancelled" };
+    if (this.serialsExhausted) return { kind: "unavailable" };
+    if (this.isClosed(id)) return { kind: "cancelled" };
     if (this.tickets.has(id) || this.leases.has(id)) throw new FilesystemError(28);
     if (operation === "publicationReadLeaseOpen")
       return this.openLease(id, serial(args[2]), readRange(args[3]));
@@ -217,12 +267,13 @@ export class WorkspaceReadAuthority {
     try {
       return await this.resolve(target, signal, (node) => {
         signal.throwIfAborted();
-        if (this.stopping || this.closed.has(id))
+        if (this.stopping || this.isClosed(id))
           return { kind: this.stopping ? "stopped" : "cancelled" };
         return this.select(operation, id, target, node, requested, version, at);
       });
     } finally {
-      this.metadata -= scanBytes;
+      this.budget.metadata -= scanBytes;
+      if (operation === "publicationReadStat") this.rememberClosed(id);
     }
   }
   private async resolve<T>(
@@ -378,7 +429,7 @@ export class WorkspaceReadAuthority {
         operation === "publicationReadPin",
       );
     } catch (error) {
-      this.metadata -= charge;
+      this.budget.metadata -= charge;
       throw error;
     }
     const keyBytes = backing.kind === "cold" ? backing.key.length * 2 : 0;
@@ -387,13 +438,13 @@ export class WorkspaceReadAuthority {
     } catch (error) {
       if (backing.kind === "cold") backing.retention.release();
       if (backing.kind === "resident") backing.pages.release();
-      this.metadata -= charge;
+      this.budget.metadata -= charge;
       throw error;
     }
     const selected: Selected = { stat, backing, refs: 0, metadata: charge + keyBytes };
     try {
       this.retainSeed(backing);
-      if (this.backend.shared.readerPinBytes() + this.seedBytes > LIMIT.pinBytes)
+      if (this.backend.shared.readerPinBytes() + this.budget.seedBytes > LIMIT.pinBytes)
         pressure("pin-bytes");
       return this.fromSelected(operation, id, selected, requested);
     } catch (error) {
@@ -403,28 +454,26 @@ export class WorkspaceReadAuthority {
   }
   private admit(operation: string, range: ByteRange): void {
     if (operation === "publicationReadPin") {
-      if (this.leases.size >= LIMIT.leases) pressure("leases");
+      if (this.budget.leases >= LIMIT.leases) pressure("leases");
       return;
     }
     if (range.length > LIMIT.result) pressure("result-bytes");
-    if (this.tickets.size >= LIMIT.operations) pressure("operations");
-    if (this.outputCost(range.length) > LIMIT.resultBytes - this.outputs) pressure("result-bytes");
+    if (this.budget.tickets >= LIMIT.operations) pressure("operations");
+    if (this.outputCost(range.length) > LIMIT.resultBytes - this.budget.outputs) pressure("result-bytes");
   }
   private outputCost(length: number): number {
     return 8 * length + 8 * PAGE + 4 * LIMIT.chunk + 8192;
   }
   private takeMetadata(bytes: number): void {
-    if (bytes > LIMIT.metadata - this.metadata) pressure("metadata");
-    this.metadata += bytes;
-    this.metadataPeak = Math.max(this.metadataPeak, this.metadata);
+    this.budget.takeMetadata(bytes);
   }
   private retainSeed(backing: ReadBacking): void {
     if (backing.kind !== "seed") return;
     const buffer = backing.bytes.buffer,
-      refs = this.seeds.get(buffer) ?? 0;
-    if (!refs && buffer.byteLength > LIMIT.pinBytes - this.seedBytes) pressure("pin-bytes");
-    this.seeds.set(buffer, refs + 1);
-    if (!refs) this.seedBytes += buffer.byteLength;
+      refs = this.budget.seeds.get(buffer) ?? 0;
+    if (!refs && buffer.byteLength > LIMIT.pinBytes - this.budget.seedBytes) pressure("pin-bytes");
+    this.budget.seeds.set(buffer, refs + 1);
+    if (!refs) this.budget.seedBytes += buffer.byteLength;
   }
   private fromSelected(
     operation: string,
@@ -439,6 +488,7 @@ export class WorkspaceReadAuthority {
     selected.refs++;
     if (operation === "publicationReadPin") {
       this.leases.set(id, { selected });
+      this.budget.leases++;
       return {
         kind: "ok",
         value: {
@@ -449,8 +499,9 @@ export class WorkspaceReadAuthority {
       };
     }
     const output = this.outputCost(range.length);
-    this.outputs += output;
-    this.outputPeak = Math.max(this.outputPeak, this.outputs);
+    this.budget.outputs += output;
+    this.budget.outputPeak = Math.max(this.budget.outputPeak, this.budget.outputs);
+    this.budget.tickets++;
     this.tickets.set(id, {
       selected,
       range,
@@ -494,16 +545,16 @@ export class WorkspaceReadAuthority {
     if (backing.kind === "resident") backing.pages.release();
     if (backing.kind === "cold") backing.retention.release();
     if (backing.kind === "seed") this.releaseSeed(backing);
-    this.metadata -= selected.metadata;
+    this.budget.metadata -= selected.metadata;
   }
   private releaseSeed(backing: Extract<ReadBacking, { kind: "seed" }>): void {
     const buffer = backing.bytes.buffer,
-      refs = this.seeds.get(buffer);
+      refs = this.budget.seeds.get(buffer);
     if (refs === undefined) return;
-    if (refs > 1) this.seeds.set(buffer, refs - 1);
+    if (refs > 1) this.budget.seeds.set(buffer, refs - 1);
     else {
-      this.seeds.delete(buffer);
-      this.seedBytes -= buffer.byteLength;
+      this.budget.seeds.delete(buffer);
+      this.budget.seedBytes -= buffer.byteLength;
     }
   }
   private closeTicket(id: number, ticket: Ticket): Promise<void> {
@@ -514,8 +565,9 @@ export class WorkspaceReadAuthority {
       .then(() => {
         this.releaseSelected(ticket.selected);
         this.tickets.delete(id);
-        this.outputs -= ticket.output;
-        this.metadata -= 256;
+        this.budget.tickets--;
+        this.budget.outputs -= ticket.output;
+        this.budget.metadata -= 256;
       });
     return ticket.closing;
   }
@@ -524,22 +576,18 @@ export class WorkspaceReadAuthority {
     const borrows = Array.from(this.tickets)
       .filter(([, ticket]) => ticket.lease === id)
       .map(([id, ticket]) => this.closeTicket(id, ticket));
-    lease.closing = Promise.all(borrows).then(() => {
+    lease.closing = joinReaders(borrows).then(() => {
       this.releaseSelected(lease.selected);
       this.leases.delete(id);
-      this.metadata -= 256;
+      this.budget.leases--;
+      this.budget.metadata -= 256;
     });
     return lease.closing;
   }
   close(value?: unknown): Promise<void> {
     if (value === undefined) return this.stop();
     const id = serial(value);
-    this.closed.add(id);
-    if (this.closed.size > 64) {
-      const first = this.closed.values().next().value!;
-      this.closed.delete(first);
-      this.floor = Math.max(this.floor, first);
-    }
+    this.rememberClosed(id);
     const ticket = this.tickets.get(id),
       lease = this.leases.get(id);
     if (ticket) return this.closeTicket(id, ticket);
@@ -552,23 +600,21 @@ export class WorkspaceReadAuthority {
     if (this.closing) return this.closing;
     this.stopping = true;
     for (const operation of this.operations.values()) operation.controller.abort();
-    const closing = Array.from(this.tickets, ([id, ticket]) => this.closeTicket(id, ticket)).concat(
-      Array.from(this.leases, ([id, lease]) => this.closeLease(id, lease)),
+    const closing = Array.from(this.leases, ([id, lease]) => this.closeLease(id, lease)).concat(
+      Array.from(this.tickets).filter(([, ticket]) => ticket.lease === undefined)
+        .map(([id, ticket]) => this.closeTicket(id, ticket)),
     );
     const operations = Array.from(this.operations.values(), (operation) => operation.work);
-    return (this.closing = Promise.all(operations.concat(closing)).then(() => undefined));
+    return (this.closing = joinReaders(operations.concat(closing)).then(() => {
+      this.budget.metadata -= 1280;
+    }));
   }
-  resources(): Record<string, number> {
-    return {
-      readerOperations: this.operations.size,
-      readerTickets: this.tickets.size,
-      readerLeases: this.leases.size,
-      readerResultBytes: this.outputs,
-      readerResultPeak: this.outputPeak,
-      readerMetadataBytes: this.metadata,
-      readerMetadataPeak: this.metadataPeak,
-      readerSeedBytes: this.seedBytes,
-      readerPinBytes: this.seedBytes + this.backend.shared.readerPinBytes(),
-    };
-  }
+}
+
+async function joinReaders(work: readonly (Promise<unknown> | undefined)[]): Promise<void> {
+  const failures = (await Promise.allSettled(work)).flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length === 1) throw failures[0];
+  if (failures.length) throw new AggregateError(failures, "Reader cleanup failed");
 }

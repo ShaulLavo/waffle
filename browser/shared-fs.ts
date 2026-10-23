@@ -184,14 +184,14 @@ export class SharedFilesystem {
   }
   private receiveMessage(event: MessageEvent, onStartupStage?: RuntimeStartupObserver): void {
     if (event.data?.type === "filesystem-disposed") {
-      if (this.ordinaryReady() && "error" in event.data && typeof event.data.error !== "string")
+      if (this.joinedReady() && "error" in event.data && typeof event.data.error !== "string")
         return;
       this.finishDisposal?.(
         typeof event.data.error === "string" ? new Error(event.data.error) : undefined,
       );
       return;
     }
-    if (this.stopped || (this.disposal && !this.ordinaryReady())) return;
+    if (this.stopped || (this.disposal && !this.joinedReady())) return;
     if (event.data?.type === "filesystem-ownership-lost") {
       this.ownershipLost = true;
       this.fail(new Error(`${WORKSPACE_TAKEN_OVER} ${UNSAVED_CHANGES_LOST}`));
@@ -229,12 +229,12 @@ export class SharedFilesystem {
   }
   private fail(error: Error): void {
     if (this.stopped) return;
-    if (this.disposal && this.ordinaryReady()) {
+    if (this.disposal && this.joinedReady()) {
       this.finishDisposal?.(error);
       return;
     }
     this.fatal ??= error;
-    if (this.ordinaryReady()) {
+    if (this.joinedReady()) {
       this.disposeReady(this.fatal);
       this.setState("failed", this.fatal);
       return;
@@ -264,7 +264,7 @@ export class SharedFilesystem {
   }
   private assertLive(): void {
     if (this.fatal) throw this.fatal;
-    if (this.disposal && this.ordinaryReady()) throw new FilesystemError(11);
+    if (this.disposal && this.joinedReady()) throw new FilesystemError(11);
   }
   createIdentity(): FilesystemIdentity {
     this.assertLive();
@@ -385,12 +385,11 @@ export class SharedFilesystem {
     const error = await this.mutate("move", [from, to]);
     if (error) throw new Error(`rename failed: errno ${error}`);
   }
-  private ordinaryReady(): boolean {
+  private joinedReady(): boolean {
     return (
       this.startupComplete &&
-      this.vfs.persistent &&
-      !this.client.connection.publication &&
-      !this.client.connection.residentPublication
+      !this.client.connection.residentPublication &&
+      (this.workspace !== undefined || (this.vfs.persistent && !this.client.connection.publication))
     );
   }
   private disposeReady(failure?: Error): Promise<void> {
@@ -438,7 +437,7 @@ export class SharedFilesystem {
    * service ACK and root section fence. Startup cancellation still awaits its abort ACK. */
   dispose(): Promise<void> {
     if (this.disposal) return this.disposal;
-    if (this.ordinaryReady() && !this.stopped) return this.disposeReady(this.fatal);
+    if (this.joinedReady() && !this.stopped) return this.disposeReady(this.fatal);
     let finish!: (error?: Error) => void;
     this.disposal = new Promise<void>((resolve, reject) => {
       finish = (error) => {

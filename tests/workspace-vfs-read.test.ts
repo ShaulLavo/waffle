@@ -384,7 +384,7 @@ test("tiny unregistered seed range never registers or retains the complete 128Mi
     expect(value.backend.shared.registeredHandles()).toHaveLength(0);
     expect(value.service.resources().readerSeedBytes).toBe(0);
     expect(value.service.resources().readerMetadataPeak).toBeLessThan(
-      65536 + 256 + 128 * 64 + 2 * 64 + 256 + 256 + 4096,
+      65536 + 1280 + 256 + 128 * 64 + 2 * 64 + 256 + 256 + 4096,
     );
     expect(await value.workspace.read("/file")).toEqual({
       kind: "pressure",
