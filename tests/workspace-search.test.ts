@@ -17,10 +17,6 @@ import {
   type Watermark,
   type WorkspaceChangePage,
   type WorkspaceVfs,
-} from "../fs";
-import { getVfsDescriptor } from "../fs/vfs";
-import { workspacePublication } from "../fs/workspace-protocol";
-import {
   createWorkspaceSearch,
   WORKSPACE_SEARCH_LIMITS,
   type IndexStamp,
@@ -32,7 +28,9 @@ import {
   type SearchPage,
   type SearchQuery,
   type WorkspaceSearch,
-} from "../fs/workspace-search";
+} from "../fs";
+import { getVfsDescriptor } from "../fs/vfs";
+import { workspacePublication } from "../fs/workspace-protocol";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 const query: SearchQuery = { kind: "text", prefix: "/", text: "TODO" };
@@ -855,7 +853,6 @@ test("only charged query fields survive admission and checkpoint creation", asyn
   expect(Reflect.get(stamp.query, "unrelated")).toBeUndefined();
   await cursor.close();
 });
-
 
 test("limit normalization never reads unrelated caller fields", async () => {
   await using value = await fixture();

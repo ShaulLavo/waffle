@@ -2,11 +2,11 @@
 
 `createWorkspaceSearch` adds pull-driven live search to an existing public
 `WorkspaceVfs`. It does not open another filesystem or close the borrowed one.
-This first unit is available by direct source import. Package exports are a
-separate integration step.
+The factory, limits, and named search types are exported from `waffle/fs`
+for source consumers and prepared Node consumers.
 
 ```ts
-import { createWorkspaceSearch } from "./fs/workspace-search.js";
+import { createWorkspaceSearch } from "waffle/fs";
 
 const search = createWorkspaceSearch(runtime.filesystem);
 const cursor = search.search({ kind: "text", prefix: "/src", text: "TODO" }, signal);
@@ -86,6 +86,8 @@ before search reports a newer cut. Cancellation discards late read results.
 
 The factory is memoized by workspace object. Its first construction fixes the
 limits. Later calls reuse that helper and reject conflicting explicit limits.
+Only declared query and limit fields are read or retained. Extra caller fields
+do not enter checkpoints or the search-local accounting state.
 One search cursor or validator
 owns the feed at a time. Another receives `pressure/query`. Work starts only
 on `next()` and does not prefetch, poll, or hold a lease while the caller is
@@ -97,6 +99,9 @@ reader's existing budgets. Search's byte bound is not a whole-runtime heap bound
 and join the in-flight pull, snapshot, and lease before releasing admission.
 They never call `workspace.close()`. Cleanup rejection retains the failed
 join and query slot. It cannot become a checkpoint or successful close.
+Admission is reserved before query getters or signal hooks run. Signal hook
+failures do not bypass the resource join. Even a falsy thrown value remains
+the rejection reason for every repeated close.
 
 `WORKSPACE_SEARCH_LIMITS` sets these maxima. The factory's optional second
 argument can lower them, never raise them.

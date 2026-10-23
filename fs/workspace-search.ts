@@ -323,7 +323,9 @@ class Cursor implements SearchCursor {
       this.signal?.addEventListener("abort", this.abort, { once: true });
       if (this.signal?.aborted) this.abort();
     } catch (error) {
-      void this.stop({ kind: "cleanup-failed", message: message(error) }, { error }).catch(() => {});
+      void this.stop({ kind: "cleanup-failed", message: message(error) }, { error }).catch(
+        () => {},
+      );
     }
   }
   next(): Promise<SearchPage> {
