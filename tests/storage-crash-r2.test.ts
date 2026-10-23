@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FaultScheduler } from "./storage-crash-r2-scheduler.js";
+import { FaultScheduler, runFaultSchedules } from "./storage-crash-r2-scheduler.js";
 import { crashMatrixBundle } from "../tooling/storage-crash-r2.js";
 import { opfsCrashMatrix } from "./storage-crash-r2-opfs.js";
 
@@ -32,4 +32,25 @@ test("bounded OPFS publication, flush and rotation schedules preserve one comple
 
 test("native crash proof bundles the actual browser adapter and scheduler", async () => {
   expect((await crashMatrixBundle()).size).toBeGreaterThan(0);
+});
+
+test("a failed schedule keeps its causal trace and does not stop the next control", async () => {
+  const schedule = { id: "injected-failure", at: event, occurrence: 1 };
+  const cells = [
+    { id: schedule.id, schedule },
+    { id: "control", schedule: null },
+  ];
+  const results = await runFaultSchedules(cells, async (cell, scheduler) => {
+    if (scheduler.visit(event)) throw scheduler.reason;
+    scheduler.assertReached();
+    return { id: cell.id, ok: true };
+  });
+  expect(results).toHaveLength(2);
+  expect(results[0]).toMatchObject({
+    id: schedule.id,
+    ok: false,
+    error: expect.stringContaining("Injected storage fault: injected-failure"),
+    events: [{ ...event, ordinal: 1, injected: true }],
+  });
+  expect(results[1]).toEqual({ id: "control", ok: true });
 });
