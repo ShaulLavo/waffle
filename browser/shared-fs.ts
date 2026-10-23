@@ -343,19 +343,21 @@ export class SharedFilesystem {
       preparing = this.client.prepareAsync(operation, args, bytes, size);
     } catch (error) { return Promise.reject(error); }
     void preparing.catch(() => {});
-    const result = this.writes.then(async () => {
-      let prepared: Awaited<typeof preparing> | undefined;
+    const earlier = this.writes;
+    const result = preparing.then((prepared) => earlier.then(async () => {
       try {
-        prepared = await preparing;
         this.assertLive();
         this.client.dispatch(prepared);
         return await prepared.value();
       } catch (error) {
         this.assertLive();
         throw error;
-      } finally { prepared?.release(); }
+      } finally { prepared.release(); }
+    }), (error) => {
+      this.assertLive();
+      throw error;
     });
-    this.writes = result.catch((error) => { this.failure ??= { error }; });
+    this.writes = Promise.all([earlier, result.catch((error) => { this.failure ??= { error }; })]);
     return result;
   }
   private barrierRequest(operation: "acquire" | "flush" | "release", lease: number): Promise<void> {

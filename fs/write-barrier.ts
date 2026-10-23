@@ -195,8 +195,8 @@ export class WriteAdmission {
       if (state >> 2n !== serial || !(state & reference)) return;
       const remaining = state & REFERENCES & ~reference;
       const next = remaining ? (serial << 2n) | remaining : 0n;
-      if (Atomics.compareExchange(this.states, index, state, next) !== state) continue;
       if (failed && this.closed) Atomics.store(this.cells, FAILURE, 1);
+      if (Atomics.compareExchange(this.states, index, state, next) !== state) continue;
       if (!remaining) Atomics.store(this.cells, FREE, (slot - HEADER) / WORDS);
       this.notify();
       return;
