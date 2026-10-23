@@ -157,6 +157,33 @@ async function read(guest: Guest, handle: number): Promise<unknown> {
   );
 }
 
+async function addressCases(server: Guest, client: Guest): Promise<void> {
+  const listener = number(await server.call({ op: "listen", host: "::", port: 32157 }));
+  check(listener > 0, "IPv6 listener failed");
+  const address = { address: "::", family: "IPv6", port: 32157 };
+  check((await server.call({ op: "addr", handle: listener })) === JSON.stringify(address), "IPv6 wildcard bind metadata lost");
+  for (const host of ["::1", "127.0.0.1"]) {
+    const conn = number(await client.call({ op: "connect", host, port: 32157 }));
+    check(conn > 0, "Dual-stack virtual connect failed");
+    const accepted = number(await until(() => server.call({ op: "accept", handle: listener }), (value) => typeof value === "number" && value > 0));
+    const local = { address: host === "::1" ? "::1" : "::ffff:127.0.0.1", family: "IPv6", port: 32157 };
+    check((await server.call({ op: "addr", handle: accepted })) === JSON.stringify(local), "Accepted local address differs");
+    const clientLocal = JSON.parse(String(await client.call({ op: "addr", handle: conn })));
+    const peer = { ...local, port: clientLocal.port };
+    check((await server.call({ op: "peer", handle: accepted })) === JSON.stringify(peer), "Accepted peer family or address differs");
+    await client.call({ op: "write", handle: conn, bytes: bytes("ipv6") });
+    check(text(await read(server, accepted)) === "ipv6", "IPv6 metadata path lost data");
+    await client.call({ op: "close", handle: conn });
+    await server.call({ op: "close", handle: accepted });
+  }
+  await server.call({ op: "close", handle: listener });
+  const loopback = number(await server.call({ op: "listen", host: "::1", port: 32157 }));
+  check(loopback > 0, "IPv6 loopback listener failed");
+  check((await client.call({ op: "connect", host: "127.0.0.1", port: 32157 })) === -1, "IPv4 reached IPv6 loopback-only bind");
+  await server.call({ op: "close", handle: loopback });
+  check((await server.call({ op: "listen", host: "192.0.2.1", port: 32157 })) === -4, "Browser claimed an external bind");
+}
+
 /** Executed in a real browser by network-browser-runner.ts. */
 export async function networkBrowserCases(): Promise<string[]> {
   const runtime = createRuntime({
@@ -186,6 +213,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     isolated = make(isolatedNetwork);
   try {
     await Promise.all(guests.map((item) => item.ready));
+    await addressCases(server, client);
     const p = await pair(server, client, 32130);
     check(
       (await client.call({ op: "addr", handle: p.conn })) ===
@@ -300,6 +328,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
+      "IPv6 wildcard, loopback and mapped accepted addresses across real workers",
       "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",
       "throwing listening hook rolls back publication before a healthy worker retry",
       "real worker duplex, peer identity and half-close",
