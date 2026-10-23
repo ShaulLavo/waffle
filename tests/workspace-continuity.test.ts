@@ -541,7 +541,6 @@ test("completed native checkpoint restores publication identity without restorin
       equal(record(recovered.notice).durablePublicationCut, savedCut);
       return { recoveredCut: savedCut, exactReceipt: true, freshCapabilities: true };
     });
-
   } catch (error) {
     evidence.failure = String(error);
     throw error;
