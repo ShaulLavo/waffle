@@ -27,14 +27,7 @@ export interface Inventory {
   bases: number[];
   orphanPayloads: string[];
 }
-type SyncAccess = {
-  write(buffer: Uint8Array, options?: { at?: number }): number;
-  close(): void;
-  flush(): void;
-};
-type SyncPrototype = FileSystemFileHandle & {
-  createSyncAccessHandle(): Promise<SyncAccess>;
-};
+type SyncAccess = FileSystemSyncAccessHandle;
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
@@ -87,7 +80,9 @@ async function idbInventory(name: string): Promise<Inventory> {
     ]);
     const bases = (await Promise.all(metadata.map(decodeSnapshot))).filter((base) => !!base);
     const decodedJournals = await Promise.all(journals.map(decodeRecord));
-    const retained = new Set(bases.flatMap(referenceKeys).concat(decodedJournals.flatMap(referenceKeys)));
+    const retained = new Set(
+      bases.flatMap(referenceKeys).concat(decodedJournals.flatMap(referenceKeys)),
+    );
     const payloads = keys.filter((key): key is string => typeof key === "string");
     let payloadBytes = 0;
     for (const value of values) {
@@ -119,7 +114,9 @@ async function opfsInventory(name: string): Promise<Inventory> {
   const metadata = await files(await root.getDirectoryHandle("metadata"));
   const data = await files(await root.getDirectoryHandle("data"));
   const snapshots = metadata.filter((file) => file.name.startsWith("snapshot-"));
-  const bases = await Promise.all(snapshots.map(async (file) => decodeSnapshot(JSON.parse(await (await file.getFile()).text()))));
+  const bases = await Promise.all(
+    snapshots.map(async (file) => decodeSnapshot(JSON.parse(await (await file.getFile()).text()))),
+  );
   const valid = bases.filter((base) => !!base);
   valid.sort((a, b) => b.generation - a.generation);
   const retained = new Set(valid.slice(0, 2).flatMap(referenceKeys));
@@ -140,7 +137,10 @@ async function removeLatest(name: string, kind: AdapterKind): Promise<void> {
   if (kind === "indexeddb") {
     await database(name, async (db) => {
       const read = db.transaction("metadata").objectStore("metadata");
-      const records = await Promise.all([request<unknown>(read.get(0)), request<unknown>(read.get(1))]);
+      const records = await Promise.all([
+        request<unknown>(read.get(0)),
+        request<unknown>(read.get(1)),
+      ]);
       const bases = await Promise.all(records.map(decodeSnapshot));
       const slot = (bases[0]?.generation ?? -1) > (bases[1]?.generation ?? -1) ? 0 : 1;
       const tx = db.transaction(["metadata", "journal"], "readwrite", { durability: "strict" });
@@ -153,28 +153,68 @@ async function removeLatest(name: string, kind: AdapterKind): Promise<void> {
   }
   const metadata = await (await directory(name)).getDirectoryHandle("metadata");
   const snapshots = (await files(metadata)).filter((file) => file.name.startsWith("snapshot-"));
-  const ordered = await Promise.all(snapshots.map(async (file) => ({ file, index: await decodeSnapshot(JSON.parse(await (await file.getFile()).text())) })));
+  const ordered = await Promise.all(
+    snapshots.map(async (file) => ({
+      file,
+      index: await decodeSnapshot(JSON.parse(await (await file.getFile()).text())),
+    })),
+  );
   ordered.sort((a, b) => (b.index?.generation ?? -1) - (a.index?.generation ?? -1));
   assert(ordered[0], "missing OPFS snapshot to remove");
   await metadata.removeEntry(ordered[0].file.name);
 }
 export class QuotaProbe {
   readonly counts: NativeCounts = {
-    handles: 0, peakHandles: 0, opened: 0, closed: 0, writeBytes: 0,
-    puts: 0, deletes: 0, aborted: 0, transactions: 0, peakTransactions: 0, faultHits: 0,
+    handles: 0,
+    peakHandles: 0,
+    opened: 0,
+    closed: 0,
+    writeBytes: 0,
+    puts: 0,
+    deletes: 0,
+    aborted: 0,
+    transactions: 0,
+    peakTransactions: 0,
+    faultHits: 0,
   };
   fault: Fault | undefined;
   private restorers: (() => void)[] = [];
   private owners = new Set<StorageBackend>();
-  constructor(readonly kind: AdapterKind, readonly name: string, readonly compactEvery = 4) {}
+  private held:
+    | { release: PromiseWithResolvers<void>; started: PromiseWithResolvers<void> }
+    | undefined;
+  pause() {
+    const held = { release: Promise.withResolvers<void>(), started: Promise.withResolvers<void>() };
+    this.held = held;
+    return {
+      started: held.started.promise,
+      release: () => {
+        this.held = undefined;
+        held.release.resolve();
+      },
+    };
+  }
+  constructor(
+    readonly kind: AdapterKind,
+    readonly name: string,
+    readonly compactEvery = 4,
+  ) {}
   install(): void {
     if (this.kind === "indexeddb") this.instrumentIDB();
     else this.instrumentOPFS();
   }
   async open(): Promise<StorageBackend> {
-    const storage = this.kind === "indexeddb"
-      ? await IndexedDBStorage.open(this.name, { compactEvery: this.compactEvery })
-      : await OpfsStorage.open(this.name, { createConcurrency: 1, handleCacheSize: 4 });
+    const storage =
+      this.kind === "indexeddb"
+        ? await IndexedDBStorage.open(this.name, { compactEvery: this.compactEvery })
+        : await OpfsStorage.open(this.name, { createConcurrency: 1, handleCacheSize: 4 });
+    const persist = storage.persist.bind(storage);
+    storage.persist = async (batch) => {
+      const held = this.held;
+      held?.started.resolve();
+      await held?.release.promise;
+      await persist(batch);
+    };
     this.owners.add(storage);
     return storage;
   }
@@ -219,7 +259,14 @@ export class QuotaProbe {
     this.counts.transactions++;
     this.counts.peakTransactions = Math.max(this.counts.peakTransactions, this.counts.transactions);
     tx.addEventListener("complete", () => this.counts.transactions--, { once: true });
-    tx.addEventListener("abort", () => { this.counts.transactions--; this.counts.aborted++; }, { once: true });
+    tx.addEventListener(
+      "abort",
+      () => {
+        this.counts.transactions--;
+        this.counts.aborted++;
+      },
+      { once: true },
+    );
   }
   private failPut(store: string, key?: IDBValidKey): void {
     if (this.fault === "payload-quota" && store === "data" && Array.isArray(key)) {
@@ -232,7 +279,7 @@ export class QuotaProbe {
   }
   private instrumentOPFS(): void {
     const probe = this;
-    const prototype = FileSystemFileHandle.prototype as SyncPrototype;
+    const prototype = FileSystemFileHandle.prototype;
     const open = prototype.createSyncAccessHandle;
     assert(typeof open === "function", "native OPFS sync handles require dedicated worker");
     prototype.createSyncAccessHandle = async function () {
@@ -259,21 +306,29 @@ export class QuotaProbe {
     let closed = false;
     return new Proxy(access, {
       get: (target, key) => {
-        if (key === "write") return (bytes: Uint8Array, options?: { at?: number }) => this.write(target, name, bytes, options);
+        if (key === "write")
+          return (bytes: Uint8Array, options?: { at?: number }) =>
+            this.write(target, name, bytes, options);
         if (key === "flush") return () => this.flush(target, name);
-        if (key === "close") return () => {
-          target.close();
-          assert(!closed, "native sync handle closed twice");
-          closed = true;
-          this.counts.handles--;
-          this.counts.closed++;
-        };
+        if (key === "close")
+          return () => {
+            target.close();
+            assert(!closed, "native sync handle closed twice");
+            closed = true;
+            this.counts.handles--;
+            this.counts.closed++;
+          };
         const value: unknown = Reflect.get(target, key, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
   }
-  private write(access: SyncAccess, name: string, bytes: Uint8Array, options?: { at?: number }): number {
+  private write(
+    access: SyncAccess,
+    name: string,
+    bytes: Uint8Array,
+    options?: { at?: number },
+  ): number {
     const partial = this.fault === "payload-quota" && name.startsWith("p-");
     const count = access.write(partial ? bytes.subarray(0, 1) : bytes, options);
     this.counts.writeBytes += count;
@@ -282,7 +337,11 @@ export class QuotaProbe {
     throw new DOMException("injected quota after partial real payload write", "QuotaExceededError");
   }
   private flush(access: SyncAccess, name: string): void {
-    if (this.fault !== "commit" || !name.startsWith("snapshot-") || name === "snapshot-initial.json") {
+    if (
+      this.fault !== "commit" ||
+      !name.startsWith("snapshot-") ||
+      name === "snapshot-initial.json"
+    ) {
       access.flush();
       return;
     }
@@ -291,14 +350,22 @@ export class QuotaProbe {
   }
   async destroy(): Promise<void> {
     this.fault = undefined;
+    this.held?.release.resolve();
+    this.held = undefined;
     try {
       for (const storage of this.owners) await this.close(storage);
       assert(this.counts.handles === 0, "native handles remain after storage close");
-      assert(this.counts.transactions === 0, "native write transactions remain after storage close");
+      assert(
+        this.counts.transactions === 0,
+        "native write transactions remain after storage close",
+      );
     } finally {
       for (const restore of this.restorers.toReversed()) restore();
     }
     if (this.kind === "indexeddb") await request(indexedDB.deleteDatabase(this.name));
-    else await (await navigator.storage.getDirectory()).removeEntry(`bun-wasm-${encoded(this.name)}`, { recursive: true });
+    else
+      await (
+        await navigator.storage.getDirectory()
+      ).removeEntry(`bun-wasm-${encoded(this.name)}`, { recursive: true });
   }
 }
