@@ -1,3 +1,4 @@
+import { withLateBigintHooks } from "./fixtures/bigint-hooks";
 import { expect, test } from "bun:test";
 import { SharedFilesystemState } from "../fs/shared";
 import { WriteAdmission, WRITE_BARRIER_OFFSET } from "../fs/write-barrier";
@@ -33,4 +34,18 @@ test("a stale ticket cannot release a reused slot across the low serial rollover
   gate.verify(current);
   gate.finish(current);
   expect(gate.active).toBe(0);
+});
+
+test("stamped write admission does not invoke late bigint conversion hooks", () => {
+  const gate = new WriteAdmission(SharedFilesystemState.createBuffer());
+  const result = withLateBigintHooks(() => {
+    const ticket = gate.admit(7);
+    gate.verify(ticket);
+    gate.send(ticket, 1);
+    gate.receive(ticket, 7, 1, false);
+    gate.finish(ticket, -1);
+    gate.finish(ticket);
+  });
+  expect(gate.active).toBe(0);
+  expect(result.calls).toBe(0);
 });
