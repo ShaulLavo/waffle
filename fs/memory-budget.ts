@@ -133,6 +133,7 @@ const REFERENCE_UNITS = 128;
 const LEASE_UNITS = 512;
 const WAITER_UNITS = 256;
 const MAX_RECORDS = 65_536;
+const nativeRemoveEventListener = EventTarget.prototype.removeEventListener;
 const NativeArrayBuffer = ArrayBuffer;
 const NativeSharedArrayBuffer = SharedArrayBuffer;
 const arrayLength = Object.getOwnPropertyDescriptor(NativeArrayBuffer.prototype, "byteLength")?.get;
@@ -268,6 +269,8 @@ function controlCharge(
 }
 
 type Waiter = {
+  phase: "registering" | "waiting" | "settled";
+  readonly changed: bigint;
   readonly signal: AbortSignal;
   readonly abort: () => void;
   readonly resolve: () => void;
@@ -451,7 +454,7 @@ export class MemoryBudget {
     references: number,
     leases = 0,
   ): Pool {
-    if (!this.#isOpen(location)) throw new MemoryBudgetError("closed");
+    if (this.#stopped || !this.#isOpen(location)) throw new MemoryBudgetError("closed");
     const pool = this.#pool(location.pool);
     const table = pool.leases;
     if (bytes > table.get(location.slot, LeaseWord.Bytes)) throw new MemoryBudgetError("capacity");
@@ -682,24 +685,53 @@ export class MemoryBudget {
     const slot = this.#waiters.findIndex((waiter) => waiter === null);
     if (slot === -1) return Promise.reject(new MemoryBudgetError("records"));
     const pending = Promise.withResolvers<void>();
-    const abort = () => this.#settle(slot, signal.reason);
-    this.#waiters[slot] = { signal, abort, resolve: pending.resolve, reject: pending.reject };
-    signal.addEventListener("abort", abort, { once: true });
+    const waiter: Waiter = {
+      phase: "registering",
+      changed,
+      signal,
+      abort: () => this.#settle(slot, waiter, signal.reason),
+      resolve: pending.resolve,
+      reject: pending.reject,
+    };
+    this.#waiters[slot] = waiter;
+    try {
+      signal.addEventListener("abort", waiter.abort, { once: true });
+    } catch (error) {
+      this.#settle(slot, waiter);
+      // A registration hook may already have rejected this unreturned promise.
+      void pending.promise.catch(() => {});
+      throw error;
+    } finally {
+      if (waiter.phase === "settled") this.#cleanup(waiter);
+      else waiter.phase = "waiting";
+    }
+    if (signal.aborted) this.#settle(slot, waiter, signal.reason);
     return pending.promise;
   }
-  #settle(slot: number, ...failure: [] | [unknown]): void {
-    const waiter = this.#waiters[slot];
-    if (!waiter) return;
+  #cleanup(waiter: Waiter): void {
+    try {
+      waiter.signal.removeEventListener("abort", waiter.abort);
+    } catch {
+      // External cleanup cannot own the result of a ledger transition.
+    }
+    nativeRemoveEventListener.call(waiter.signal, "abort", waiter.abort);
+  }
+  #settle(slot: number, waiter: Waiter | null | undefined, ...failure: [] | [unknown]): void {
+    if (!waiter || this.#waiters[slot] !== waiter) return;
     this.#waiters[slot] = null;
-    waiter.signal.removeEventListener("abort", waiter.abort);
+    const phase = waiter.phase;
+    waiter.phase = "settled";
     if (failure.length) waiter.reject(failure[0]);
     else waiter.resolve();
+    if (phase === "waiting") this.#cleanup(waiter);
   }
   #notify(): void {
-    this.#changed++;
+    const changed = ++this.#changed;
     for (let slot = 0; slot < this.#waiters.length; slot++) {
-      if (this.#stopped) this.#settle(slot, new MemoryBudgetError("closed"));
-      else this.#settle(slot);
+      const waiter = this.#waiters[slot];
+      if (!waiter || waiter.changed >= changed) continue;
+      if (this.#stopped) this.#settle(slot, waiter, new MemoryBudgetError("closed"));
+      else this.#settle(slot, waiter);
     }
   }
   close(): void {
@@ -709,7 +741,7 @@ export class MemoryBudget {
     this.#closePool("producer");
     this.#closePool("progress");
     for (let slot = 0; slot < this.#waiters.length; slot++)
-      this.#settle(slot, new MemoryBudgetError("closed"));
+      this.#settle(slot, this.#waiters[slot], new MemoryBudgetError("closed"));
   }
   #closePool(kind: PoolKind): void {
     const table = this.#pool(kind).leases;
