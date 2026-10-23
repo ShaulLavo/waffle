@@ -74,3 +74,19 @@ test("error and filesystem reexports preserve constructor and function identity"
 function unrelatedCapture(): never {
   throw new Error("unrelated host capability initialized by core");
 }
+
+for (const source of ["promoted", "imported"]) {
+  test(`repeated ${source} filesystem exports avoid the mutable buffer getter`, async () => {
+    const child = Bun.spawn(
+      [process.execPath, resolve(root, "tests/fixtures/intrinsics.ts"), source],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    try {
+      const output = await new Response(child.stderr).text();
+      expect(await child.exited, output).toBe(0);
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  });
+}
