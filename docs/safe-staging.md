@@ -94,8 +94,10 @@ receipt assertion.
 
 The producer, strict writer routing, open-file offsets, shared publication
 reservations, and public mode selection remain separate integration work. This
-candidate is stacked on frozen PR74 plus accepted security72. PR74's independent
-review repair is not included or certified by this unit.
+candidate integrates the reviewed staged-storage changes with accepted main.
+Accepted range-reader, startup, and traversal behavior is unchanged. The three
+independent staged-storage review repairs remain included; landing acceptance
+belongs to the final source audit and required checks.
 
 ## Selected publication checkpoints
 
