@@ -810,3 +810,28 @@ for (const fault of ["missing", "size", "short", "native"] as const) {
     }
   });
 }
+
+test("reader-only disk debt retains its actual metadata charge until native GC", async () => {
+  const value = await coldFixture(PAGE * 3);
+  try {
+    const held = await value.workspace.pin("/file");
+    if (held.kind !== "ok") throw new Error(held.kind);
+    for (let generation = 0; generation < 8; generation++) {
+      await value.client.asyncCall("writeFile", ["/file"], new Uint8Array([generation]));
+      await value.backend.flush();
+    }
+    await held.value.close();
+    expect(value.storage.resources().readerStorageDebt).toBe(PAGE * 3);
+    expect(value.service.resources().readerMetadataBytes).toBeGreaterThan(65536 + 64 * 8 + 1280);
+    expect(value.storage.resources().readerStorageMetadataBytes).toBeGreaterThan(0);
+    for (let generation = 8; generation < 12; generation++) {
+      await value.client.asyncCall("writeFile", ["/file"], new Uint8Array([generation]));
+      await value.backend.flush();
+    }
+    expect(value.storage.resources().readerStorageDebt).toBe(0);
+    expect(value.storage.resources().readerStorageMetadataBytes).toBe(0);
+    expect(value.service.resources().readerMetadataBytes).toBe(65536 + 64 * 8 + 1280);
+  } finally {
+    await value.close();
+  }
+});
