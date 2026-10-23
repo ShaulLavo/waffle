@@ -73,7 +73,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
-      - run: bun test ./tests ./tooling/ci-paths.test.ts
+      - run: bun run test && bun run test:ci
       - run: bun run size
       - run: test -z "$(git ls-files dist)"
   libc:
