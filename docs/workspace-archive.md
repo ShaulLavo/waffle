@@ -141,11 +141,22 @@ produce the specified traversal order without an unbounded global sort.
 
 Parser cleanup calls the transport iterator's `return` on error or early consumer
 return. Encoder cleanup closes both the entry and active file-byte iterators.
-Pending parser pulls race the abort signal, then join `return` before failure is
-returned. Sources must release their pending work in `return` or observe the same
+Each started pull gets fulfillment and rejection handlers before cancellation is
+checked again. Fulfilled iterator results travel inside owned non-thenable
+envelopes, so observation never re-reads a result's `then` accessor. Pending pulls
+race the abort signal, then join both the pull and `return` before failure is
+returned, even when `return` rejects. A losing pull rejection remains observed
+and joined but does not replace the cancellation reason. Sources must release their pending work in `return` or observe the same
 signal themselves. An async generator blocked in a non-cancellable await can
 otherwise prevent its queued `return` from finishing. There is no unsafe detached
 cleanup or arbitrary timeout that declares such work gone.
+
+Primary failures and cleanup failures keep their exact values, including
+`undefined`, `null`, `false`, `0`, and `""`. If both fail, an `AggregateError` holds
+the primary failure first and the cleanup failure second. Nested iterator and sink
+cleanup can produce nested aggregates. A cleanup-only failure on normal early
+return is still a rejection. The import driver finishes parser cleanup before
+calling `abort` or `complete`.
 
 Sinks receive the signal for their own pending work. The driver joins a staged
 write before aborting it. A sink that never settles cannot be forcibly cleaned by
@@ -159,10 +170,15 @@ filesystem handle is implied by an archive event.
 
 ## Verification
 
-`bun test ./tests/workspace-archive.test.ts` checks independent SHA-256 frame
+`bun test ./tests/workspace-archive*.test.ts` checks independent SHA-256 frame
 fixtures, one-byte transport splits, generated multi-chunk bytes with a slow sink,
 metadata preservation, malformed paths and frames, integrity failures, truncation,
 quota rejection, producer failure, cancellation, and old-root selection.
+Iterator regressions also check Buffer-backed ownership, fulfilled result
+accessors, exact falsy errors, combined cleanup failures, and cancellation during
+`next`. An isolated subprocess observes host rejection notifications for the last
+case. Controlled promises prove that both pending pulls and returns settle before
+termination, without using a timeout as cleanup evidence.
 
 These tests prove framing and the sink call contract. They do not certify a
 browser storage adapter, a real import/export API, identity adoption, SAFE, crash

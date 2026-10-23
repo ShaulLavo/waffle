@@ -281,13 +281,24 @@ async function* encodeFile(
   signal?: AbortSignal,
 ): AsyncGenerator<Uint8Array> {
   let size = 0;
-  for await (const bytes of iterate(source, signal)) {
-    checkSignal(signal);
-    if (!(bytes instanceof Uint8Array) || bytes.length > WORKSPACE_ARCHIVE_LIMITS.chunkBytes)
-      fail("LIMIT", "Source chunk too large");
-    if (bytes.length === 0) fail("INVALID", "Empty source chunk");
-    size = add(size, bytes.length, expectedSize);
-    yield await frames.frame(DATA, bytes);
+  const input = new ArchiveInput(source, signal);
+  let failure: Failure | undefined;
+  try {
+    for (;;) {
+      const { result } = await input.next();
+      if (result.done) break;
+      const bytes = result.value;
+      if (!(bytes instanceof Uint8Array) || bytes.length > WORKSPACE_ARCHIVE_LIMITS.chunkBytes)
+        fail("LIMIT", "Source chunk too large");
+      if (bytes.length === 0) fail("INVALID", "Empty source chunk");
+      size = add(size, bytes.length, expectedSize);
+      yield await frames.frame(DATA, bytes);
+    }
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    await input.close(failure);
   }
   checkSignal(signal);
   if (size !== expectedSize) fail("INVALID", "Source file length mismatch");
@@ -303,55 +314,94 @@ export async function* encodeWorkspaceArchive(
   checkSignal(options.signal);
   yield MAGIC.slice();
   yield await frames.frame(HEADER, json(checked));
-  for await (const entry of iterate(entries, options.signal)) {
-    checkSignal(options.signal);
-    yield* encodeEntry(entry, checked, frames, state, options.signal);
+  const input = new ArchiveInput(entries, options.signal);
+  let failure: Failure | undefined;
+  try {
+    for (;;) {
+      const { result } = await input.next();
+      if (result.done) break;
+      yield* encodeEntry(result.value, checked, frames, state, options.signal);
+    }
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    await input.close(failure);
   }
   checkSignal(options.signal);
   if (state.entries === 0) fail("INVALID", "Missing root");
   yield await frames.frame(END, summaryBytes(state.summary()));
 }
 
-async function pull<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+interface Failure {
+  readonly error: unknown;
+}
+type PullOutcome<T> =
+  | { readonly kind: "fulfilled"; readonly result: IteratorResult<T>; readonly then: undefined }
+  | { readonly kind: "rejected"; readonly reason: unknown; readonly then: undefined };
+function observePull<T>(iterator: AsyncIterator<T>): Promise<PullOutcome<T>> {
+  try {
+    return Promise.resolve(iterator.next()).then(
+      (result) => ({ kind: "fulfilled", result, then: undefined }),
+      (reason: unknown) => ({ kind: "rejected", reason, then: undefined }),
+    );
+  } catch (reason) {
+    return Promise.resolve({ kind: "rejected", reason, then: undefined });
+  }
+}
+async function waitForPull<T>(
+  observed: Promise<PullOutcome<T>>,
+  signal?: AbortSignal,
+): Promise<PullOutcome<T>> {
   checkSignal(signal);
-  if (!signal) return promise;
+  if (!signal) return observed;
   let onAbort = () => {};
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason);
+  const aborted = new Promise<PullOutcome<T>>((resolve) => {
+    onAbort = () => resolve({ kind: "rejected", reason: signal.reason, then: undefined });
     signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
   try {
-    return await Promise.race([promise, aborted]);
+    return await Promise.race([observed, aborted]);
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
 }
-async function* iterate<T>(source: AsyncIterable<T>, signal?: AbortSignal): AsyncGenerator<T> {
-  checkSignal(signal);
-  const iterator = source[Symbol.asyncIterator]();
-  let ended = false;
-  try {
-    let next = await nextItem(iterator, signal);
-    while (!next.done) {
-      yield next.value;
-      next = await nextItem(iterator, signal);
+class ArchiveInput<T> {
+  private readonly iterator: AsyncIterator<T>;
+  private ended = false;
+  private pending: Promise<PullOutcome<T>> | undefined;
+  constructor(source: AsyncIterable<T>, private readonly signal?: AbortSignal) {
+    checkSignal(signal);
+    this.iterator = source[Symbol.asyncIterator]();
+  }
+  async next(): Promise<{ result: IteratorResult<T>; then: undefined }> {
+    checkSignal(this.signal);
+    this.pending = observePull(this.iterator);
+    const outcome = await waitForPull(this.pending, this.signal);
+    checkSignal(this.signal);
+    if (outcome.kind === "rejected") throw outcome.reason;
+    this.pending = undefined;
+    this.ended = !!outcome.result.done;
+    return { result: outcome.result, then: undefined };
+  }
+  async close(failure?: Failure): Promise<void> {
+    let cleanup: Failure | undefined;
+    try {
+      if (!this.ended) await this.iterator.return?.();
+    } catch (error) {
+      cleanup = { error };
+    } finally {
+      await this.pending;
+      this.pending = undefined;
     }
-    ended = true;
-  } finally {
-    if (!ended) await iterator.return?.();
+    if (!cleanup) return;
+    if (!failure) throw cleanup.error;
+    throw new AggregateError([failure.error, cleanup.error], "Archive operation and source cleanup failed");
   }
 }
-async function nextItem<T>(
-  iterator: AsyncIterator<T>,
-  signal?: AbortSignal,
-): Promise<IteratorResult<T>> {
-  checkSignal(signal);
-  const next = await pull(iterator.next(), signal);
-  checkSignal(signal);
-  return next;
-}
 class StreamReader {
-  private readonly iterator: AsyncIterator<Uint8Array>;
+  private readonly input: ArchiveInput<Uint8Array>;
   private bytes: Uint8Array = new Uint8Array(0);
   private offset = 0;
   private ended = false;
@@ -360,7 +410,7 @@ class StreamReader {
     source: AsyncIterable<Uint8Array>,
     private readonly signal?: AbortSignal,
   ) {
-    this.iterator = source[Symbol.asyncIterator]();
+    this.input = new ArchiveInput(source, signal);
   }
   private async available(): Promise<boolean> {
     while (this.offset === this.bytes.length && !this.ended) await this.refill();
@@ -368,7 +418,7 @@ class StreamReader {
   }
   private async refill(): Promise<void> {
     checkSignal(this.signal);
-    const next = await pull(this.iterator.next(), this.signal);
+    const { result: next } = await this.input.next();
     checkSignal(this.signal);
     if (next.done) {
       this.ended = true;
@@ -383,7 +433,8 @@ class StreamReader {
     this.emptyPulls = next.value.length ? 0 : this.emptyPulls + 1;
     if (this.emptyPulls > WORKSPACE_ARCHIVE_LIMITS.emptyChunks)
       fail("LIMIT", "Too many empty transport chunks");
-    this.bytes = next.value.slice();
+    this.bytes = new Uint8Array(next.value.length);
+    this.bytes.set(next.value);
     this.offset = 0;
   }
   async read(length: number): Promise<Uint8Array> {
@@ -401,9 +452,9 @@ class StreamReader {
   async eof(): Promise<void> {
     if (await this.available()) fail("INVALID", "Trailing archive bytes");
   }
-  async close(): Promise<void> {
+  async close(failure?: Failure): Promise<void> {
     this.bytes = new Uint8Array(0);
-    if (!this.ended) await this.iterator.return?.();
+    await this.input.close(failure);
   }
 }
 function frameLimit(type: number): number {
@@ -470,6 +521,7 @@ export async function* parseWorkspaceArchive(
   checkSignal(options.signal);
   const reader = new StreamReader(source, options.signal),
     frames = new FrameReader(reader, options.signal);
+  let failure: Failure | undefined;
   try {
     const magic = await reader.read(MAGIC.length);
     if (!magic.every((byte, index) => byte === MAGIC[index]))
@@ -479,8 +531,11 @@ export async function* parseWorkspaceArchive(
     const manifest = manifestFor(parseJson(first.payload));
     yield { kind: "manifest", manifest };
     yield* parseEntries(reader, frames, manifest, state, options.signal);
+  } catch (error) {
+    failure = { error };
+    throw error;
   } finally {
-    await reader.close();
+    await reader.close(failure);
   }
 }
 async function* parseEntries(
@@ -534,11 +589,7 @@ export async function importWorkspaceArchive(
   options: ArchiveOptions = {},
 ): Promise<ArchiveSummary> {
   try {
-    let summary: ArchiveSummary | undefined;
-    for await (const event of parseWorkspaceArchive(source, options)) {
-      await stage(event, sink, options.signal);
-      if (event.kind === "complete") summary = event.summary;
-    }
+    const summary = await stageArchive(source, sink, options);
     checkSignal(options.signal);
     if (!summary) fail("TRUNCATED", "Missing archive end");
     await sink.complete(summary, options.signal);
@@ -546,6 +597,29 @@ export async function importWorkspaceArchive(
   } catch (error) {
     await abortStaging(sink, error);
     throw error;
+  }
+}
+async function stageArchive(
+  source: AsyncIterable<Uint8Array>,
+  sink: ArchiveStagingSink,
+  options: ArchiveOptions,
+): Promise<ArchiveSummary | undefined> {
+  const input = new ArchiveInput(parseWorkspaceArchive(source, options));
+  let failure: Failure | undefined;
+  let summary: ArchiveSummary | undefined;
+  try {
+    for (;;) {
+      const { result } = await input.next();
+      if (result.done) break;
+      await stage(result.value, sink, options.signal);
+      if (result.value.kind === "complete") summary = result.value.summary;
+    }
+    return summary;
+  } catch (error) {
+    failure = { error };
+    throw error;
+  } finally {
+    await input.close(failure);
   }
 }
 async function abortStaging(sink: ArchiveStagingSink, error: unknown): Promise<void> {
