@@ -165,14 +165,17 @@ function validQuery(value: SearchQuery): boolean {
   );
 }
 function limitsFrom(overrides: Partial<SearchLimits>): SearchLimits {
-  const limits = { ...WORKSPACE_SEARCH_LIMITS, ...overrides };
+  const limits = { ...WORKSPACE_SEARCH_LIMITS };
   for (const key of limitKeys) {
+    const value = key in overrides ? overrides[key] : WORKSPACE_SEARCH_LIMITS[key];
     if (
-      !Number.isSafeInteger(limits[key]) ||
-      limits[key] < 0 ||
-      limits[key] > WORKSPACE_SEARCH_LIMITS[key]
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0 ||
+      value > WORKSPACE_SEARCH_LIMITS[key]
     )
       throw new Error(`Invalid search limit: ${key}`);
+    limits[key] = value;
   }
   if (!limits.chunkBytes || !limits.pageHits)
     throw new Error("Search requires positive chunk and page limits");
@@ -189,6 +192,11 @@ function prefixTable(pattern: Uint8Array): Uint32Array {
   return table;
 }
 function compile(query: SearchQuery, limits: SearchLimits): Pattern | SearchTerminal {
+  try {
+    query = { kind: query.kind, prefix: query.prefix, text: query.text };
+  } catch {
+    return invalidQuery;
+  }
   if (!validQuery(query)) return invalidQuery;
   if (limits.outputBytes < 256) return pressure("results");
   if (query.text.length > limits.queryBytes) return pressure("query");
@@ -196,7 +204,7 @@ function compile(query: SearchQuery, limits: SearchLimits): Pattern | SearchTerm
   if (bytes.byteLength > limits.queryBytes) return pressure("query");
   const charge = 256 + 2 * (query.text.length + query.prefix.length) + 5 * bytes.byteLength;
   if (charge > limits.totalBytes) return pressure("index");
-  return { query: Object.freeze({ ...query }), bytes, table: prefixTable(bytes), charge };
+  return { query: Object.freeze(query), bytes, table: prefixTable(bytes), charge };
 }
 class Refused implements SearchCursor {
   constructor(private readonly page: SearchTerminal) {}
@@ -227,7 +235,7 @@ export function createWorkspaceSearch(
   return search;
 }
 class Search implements WorkspaceSearch {
-  private active?: Cursor;
+  private active?: Cursor | "opening";
   private stopped = false;
   private closing?: Promise<void>;
   constructor(
@@ -240,13 +248,19 @@ class Search implements WorkspaceSearch {
   }
   private open(query: SearchQuery, validation: boolean, signal?: AbortSignal): SearchCursor {
     if (this.stopped) return new Refused({ kind: "stopped" });
-    if (signal?.aborted) return new Refused({ kind: "cancelled" });
     if (this.active) return new Refused(pressure("query"));
-    const pattern = compile(query, this.limits);
-    if (!("query" in pattern)) return new Refused(pattern);
-    const cursor = new Cursor(this, pattern, validation, signal);
-    this.active = cursor;
-    return cursor;
+    this.active = "opening";
+    try {
+      const pattern = compile(query, this.limits);
+      if (this.stopped) return new Refused({ kind: "stopped" });
+      if (!("query" in pattern)) return new Refused(pattern);
+      const cursor = new Cursor(this, pattern, validation, signal);
+      this.active = cursor;
+      cursor.initialize();
+      return cursor;
+    } finally {
+      if (this.active === "opening") this.active = undefined;
+    }
   }
   release(cursor: Cursor): void {
     if (this.active === cursor) this.active = undefined;
@@ -281,13 +295,15 @@ class Search implements WorkspaceSearch {
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.stopped = true;
-    this.closing = this.active?.stop({ kind: "stopped" }) ?? Promise.resolve();
+    this.closing =
+      this.active instanceof Cursor ? this.active.stop({ kind: "stopped" }) : Promise.resolve();
     return this.closing;
   }
 }
 class Cursor implements SearchCursor {
   private state: State = { kind: "snapshot", names: { entries: [], bytes: 0 } };
   private readonly lifetime = new AbortController();
+  private failure?: { readonly error: unknown };
   private work?: Promise<SearchPage>;
   private closing?: Promise<void>;
   private snapshot?: SnapshotCursor;
@@ -300,8 +316,15 @@ class Cursor implements SearchCursor {
     private readonly pattern: Pattern,
     private readonly validation: boolean,
     private readonly signal?: AbortSignal,
-  ) {
-    signal?.addEventListener("abort", this.abort, { once: true });
+  ) {}
+  initialize(): void {
+    try {
+      if (this.signal?.aborted) return this.abort();
+      this.signal?.addEventListener("abort", this.abort, { once: true });
+      if (this.signal?.aborted) this.abort();
+    } catch (error) {
+      void this.stop({ kind: "cleanup-failed", message: message(error) }, { error }).catch(() => {});
+    }
   }
   next(): Promise<SearchPage> {
     if (this.state.kind === "terminal") return this.terminalPage();
@@ -332,13 +355,12 @@ class Cursor implements SearchCursor {
     void this.stop(page).catch(() => {});
     return page;
   }
-  stop(page: SearchTerminal): Promise<void> {
+  stop(page: SearchTerminal, failure?: { readonly error: unknown }): Promise<void> {
+    this.failure ??= failure;
     if (this.closing) return this.closing;
     this.state = { kind: "terminal", page };
-    this.signal?.removeEventListener("abort", this.abort);
-    this.lifetime.abort();
     const work = this.work;
-    this.closing = this.cleanup(work);
+    this.closing = Promise.resolve().then(() => this.cleanup(work));
     void this.closing.catch((error) => {
       this.state = { kind: "terminal", page: { kind: "cleanup-failed", message: message(error) } };
     });
@@ -348,9 +370,28 @@ class Cursor implements SearchCursor {
     return this.stop({ kind: "cancelled" });
   }
   private async cleanup(work?: Promise<SearchPage>): Promise<void> {
+    try {
+      this.signal?.removeEventListener("abort", this.abort);
+    } catch (error) {
+      this.failure ??= { error };
+    }
+    try {
+      this.lifetime.abort();
+    } catch (error) {
+      this.failure ??= { error };
+    }
     await work?.catch(() => {});
-    await this.closeSnapshot();
-    await this.closeLease();
+    try {
+      await this.closeSnapshot();
+    } catch (error) {
+      this.failure ??= { error };
+    }
+    try {
+      await this.closeLease();
+    } catch (error) {
+      this.failure ??= { error };
+    }
+    if (this.failure) throw this.failure.error;
     this.owner.release(this);
   }
   private async closeSnapshot(): Promise<void> {
