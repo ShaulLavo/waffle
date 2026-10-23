@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { failWorkspaceCleanupPost, workspaceCleanupPostFailure } from "./fixtures/publication-cleanup-failure";
 import {
   FilesystemClient,
   FilesystemService,
@@ -398,28 +399,18 @@ test("synchronous cleanup posting failure is memoized without skipping local dis
     handle: 1,
   };
   const client = new FilesystemClient(pair.client);
-  const post = pair.client.port.postMessage.bind(pair.client.port);
-  let attempted = 0;
-  Object.defineProperty(pair.client.port, "postMessage", {
-    value(value: unknown, transfer: Transferable[]) {
-      if (value && typeof value === "object" && "stopWorkspace" in value) {
-        attempted++;
-        throw new Error("intentional cleanup post failure");
-      }
-      post(value, transfer);
-    },
-  });
+  const attempted = failWorkspaceCleanupPost(pair.client.port);
   try {
     expect(() => client.dispose()).not.toThrow();
     expect(isRevoked(pair.client)).toBe(true);
     await expect(client.stopResidentPublication()).rejects.toThrow(
-      "intentional cleanup post failure",
+      workspaceCleanupPostFailure,
     );
     client.dispose();
     await expect(client.stopResidentPublication()).rejects.toThrow(
-      "intentional cleanup post failure",
+      workspaceCleanupPostFailure,
     );
-    expect(attempted).toBe(1);
+    expect(attempted()).toBe(1);
   } finally {
     pair.client.port.close();
     pair.server.port.close();
@@ -1088,3 +1079,43 @@ test("late prepared grant is cancelled and settled by the original stop without 
     await f.stop();
   }
 });
+
+for (const operation of ["stat", "missing-operation"]) {
+  test(`workspace cleanup joins a timed-out ${operation} terminal reply without inventing cleanup failure`, async () => {
+    const f = await fixture();
+    const connection = createResidentConnection(f.session.descriptor);
+    const client = new FilesystemClient({ ...connection, residentPublication: undefined });
+    const clock = transportClock();
+    let held: ReturnType<typeof holdTransportReplies> | undefined;
+    let stopping: Promise<void> | undefined;
+    const terminal: string[] = [];
+    try {
+      await client.asyncCall("workspaceBind", [f.session]);
+      await client.asyncCall("preopen", ["/"]);
+      held = holdTransportReplies();
+      const pending = client.asyncCall(operation, [f.file]);
+      const failed = rejectsErrno(pending, 6);
+      while (!held.held.length) await Bun.sleep(0);
+      clock.expire();
+      await failed;
+      stopping = stopWorkspaceBridge(connection);
+      void stopping.then(() => terminal.push("stopped"), () => terminal.push("cleanup-error"));
+      clock.expire();
+      await remainsPending(stopping);
+      expect(terminal).toEqual([]);
+      const repeated = stopWorkspaceBridge(connection);
+      await remainsPending(repeated);
+      expect(terminal).toEqual([]);
+      held.release();
+      await Promise.all([stopping, repeated]);
+      expect(terminal).toEqual(["stopped"]);
+      expect(() => f.channel.assertSettled()).not.toThrow();
+    } finally {
+      held?.release();
+      clock.restore();
+      await stopping?.catch(() => {});
+      client.dispose();
+      await f.stop();
+    }
+  });
+}
