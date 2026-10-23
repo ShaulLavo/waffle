@@ -163,3 +163,67 @@ test("checkpoint accepts lagging content versions, zero resize and full safe int
     ),
   ).toBeDefined();
 });
+
+function withEncodedRange(
+  checkpoint: CheckpointPublication,
+  at: string,
+  length: string,
+): CheckpointPublication {
+  const original = checkpoint.changes[0]!;
+  const headerLength = new DataView(
+    original.buffer,
+    original.byteOffset,
+    original.byteLength,
+  ).getUint32(0, true);
+  const header = new TextDecoder().decode(original.subarray(4, 4 + headerLength));
+  const range = /"bytes":\{"at":\d+,"length":\d+\}/g;
+  expect(header.match(range)).toHaveLength(1);
+  const encoded = new TextEncoder().encode(
+    header.replace(range, `"bytes":{"at":${at},"length":${length}}`),
+  );
+  const tail = original.subarray(4 + headerLength);
+  const bytes = new Uint8Array(4 + encoded.length + tail.length);
+  new DataView(bytes.buffer).setUint32(0, encoded.length, true);
+  bytes.set(encoded, 4);
+  bytes.set(tail, 4 + encoded.length);
+  const changes: Uint8Array[] = [bytes];
+  return { ...checkpoint, changes: changes.concat(checkpoint.changes.slice(1)) };
+}
+
+test.each([
+  { at: "0", length: "0.5" },
+  { at: "0.5", length: "1" },
+  { at: "1e400", length: "0" },
+  { at: "-1e400", length: "0" },
+  { at: "0", length: "1e400" },
+  { at: "0", length: "-1e400" },
+  { at: "9007199254740992", length: "0" },
+  { at: "0", length: "9007199254740992" },
+  { at: "-1", length: "1" },
+  { at: "0", length: "-1" },
+  { at: "4", length: "0" },
+  { at: "1", length: "3" },
+])("encoded content ranges reject invalid byte indexes %j", async ({ at, length }) => {
+  const checkpoint = withEncodedRange(await checkpointFixture(), at, length);
+  expect(() => decodeEffects(checkpoint.changes[0]!)).toThrow(
+    expect.objectContaining({ errno: 29 }),
+  );
+  expect(() => snapshotPublicationCheckpoint(checkpoint)).toThrow(
+    expect.objectContaining({ errno: 29 }),
+  );
+});
+
+test.each([
+  { at: "0", length: "0", bytes: [] },
+  { at: "3", length: "0", bytes: [] },
+  { at: "0", length: "3", bytes: [1, 2, 3] },
+  { at: "1", length: "2", bytes: [2, 3] },
+])("encoded content ranges preserve valid tail bounds %j", async ({ at, length, bytes }) => {
+  const checkpoint = withEncodedRange(await checkpointFixture(), at, length);
+  const snapshot = snapshotPublicationCheckpoint(checkpoint);
+  const effect = decodeEffects(snapshot.changes[0]!).changes.find(
+    (effect) => effect.kind === "bytes",
+  );
+  if (effect?.kind !== "bytes") throw new Error("fixture has no content write");
+  expect(effect.bytes).toEqual(Uint8Array.from(bytes));
+});

@@ -1340,6 +1340,8 @@ function decodeContentEffect(
     typeof range.at !== "number" ||
     !("length" in range) ||
     typeof range.length !== "number" ||
+    !Number.isSafeInteger(range.at) ||
+    !Number.isSafeInteger(range.length) ||
     range.at < 0 ||
     range.length < 0 ||
     range.at + range.length > typedArrayLength(tail)
