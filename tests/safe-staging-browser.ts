@@ -1,3 +1,9 @@
+import { IdentityAllocator } from "../fs/file-identity.js";
+import {
+  PublicationDomain,
+  createPublicationBuffers,
+  snapshotPublicationCheckpoint,
+} from "../fs/publication.js";
 import { IndexedDBStorage } from "../fs/indexeddb.js";
 import { getVfsDescriptor, VfsError } from "../fs/vfs.js";
 import {
@@ -13,7 +19,12 @@ import {
   type DurableReceipt,
   type NativeOutcome,
 } from "../fs/safe-staging.js";
-import { encodeRecord, type PersistenceBatch } from "../fs/storage.js";
+import {
+  decodeRecord,
+  encodeRecord,
+  type CheckpointPublication,
+  type PersistenceBatch,
+} from "../fs/storage.js";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -709,7 +720,286 @@ async function corruptEnvelope(name: string, open: () => Promise<CommittedStorag
   await change(name, "metadata", "commit", await encodeRecord(envelope));
   await formatFailure(open());
 }
+function publicationFixture(): CheckpointPublication {
+  const buffers = createPublicationBuffers({
+    sessions: 4,
+    operations: 8,
+    inputBytes: 64,
+    argumentBytes: 512,
+    effectBytes: 2048,
+    effects: 16,
+    resultBytes: 128,
+    logRecords: 2,
+    logBytes: 4096,
+    pins: 2,
+    pinBytes: 128,
+  });
+  const domain = new PublicationDomain(buffers),
+    session = domain.openSession(),
+    allocator = new IdentityAllocator(new Int32Array(9));
+  allocator.configure({ workspace: crypto.randomUUID(), era: 1n });
+  const file = { birthHistory: buffers.history, ino: 7, ...allocator.create() };
+  const admitted = domain.admit(
+    session,
+    domain.next(session),
+    { kind: "write", handle: 7, offset: 0 },
+    new Uint8Array([0, 255, 23, 128]),
+  );
+  assert(admitted.kind === "admitted", "checkpoint fixture admits a real publication");
+  const prepared = domain.prepare(admitted.admission, { kind: "number", value: 4 }, [
+    { kind: "bytes", file, offset: 0, bytes: admitted.input, size: 4, version: 1 },
+  ]);
+  const receipt = domain.commit(prepared);
+  return snapshotPublicationCheckpoint({
+    kind: "settled-publication-v1",
+    cut: domain.cut(),
+    sessionSerial: session.serial + 16,
+    limits: buffers.limits,
+    receipts: [receipt],
+    changes: [prepared.effects],
+    contentVersions: [{ ino: file.ino, version: domain.contentVersion(file.ino) }],
+  });
+}
+function assertPublication(
+  actual: CheckpointPublication | undefined,
+  expected: CheckpointPublication,
+): void {
+  assert(
+    actual?.changes.every((change) => change instanceof Uint8Array),
+    "typed recovered bytes",
+  );
+  assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    "exact selected publication checkpoint",
+  );
+}
+function publicationStage(generation: number, publication?: CheckpointPublication): CompleteStage {
+  const selected = stage(generation);
+  return {
+    ...selected,
+    cut: publication?.cut ?? selected.cut,
+    batch: { generation, root: 1, upserts: [], removes: [], data: new Map(), publication },
+  };
+}
+async function selectedRecord(
+  name: string,
+  store: string,
+  key: IDBValidKey,
+): Promise<Record<string, unknown>> {
+  const value = await decodeRecord(await readRaw(name, store, key));
+  assert(value && typeof value === "object", "checksummed selected record exists");
+  return Object.fromEntries(Object.entries(value));
+}
+async function publicationRoundtrip(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  let storage = await open();
+  const publication = publicationFixture(),
+    expected = structuredClone(publication),
+    selected = { ...stage(1), cut: publication.cut, batch: { ...batch(1), publication } };
+  const native = storage.beginCommit(await group(storage, 1, selected));
+  publication.changes[0]!.fill(9);
+  assert((await native.terminal).kind === "committed", "publication-bearing group commits");
+  const initial = await storage.recoverCommitted();
+  assertPublication(initial.index?.publication, expected);
+  initial.index!.publication!.changes[0]!.fill(0);
+  assertPublication((await storage.recoverCommitted()).index?.publication, expected);
+  await storage.close();
+  storage = await open();
+  assertPublication((await storage.recoverCommitted()).index?.publication, expected);
+  const next = snapshotPublicationCheckpoint({
+    ...expected,
+    sessionSerial: expected.sessionSerial + 1,
+    receipts: expected.receipts.concat([
+      {
+        id: { session: expected.sessionSerial + 1, sequence: 1 },
+        cut: expected.cut,
+        result: { kind: "append", written: 0, offset: 4 },
+        durability: { kind: "untracked" },
+      },
+    ]),
+  });
+  await commit(storage, 2, publicationStage(2, next));
+  await storage.close();
+  const journal = await selectedRecord(name, "journal", 2);
+  assert(
+    JSON.stringify(journal.publication) ===
+      JSON.stringify({
+        ...next,
+        changes: next.changes.map((change) => Array.from(change)),
+      }),
+    "journal stores byte arrays beside its selected generation",
+  );
+  await change(name, "metadata", 1, { json: "damaged snapshot", checksum: "bad" });
+  storage = await open();
+  assertPublication((await storage.recoverCommitted()).index?.publication, next);
+  await commit(storage, 3, publicationStage(3, next));
+  await storage.close();
+  storage = await open();
+  assertPublication((await storage.recoverCommitted()).index?.publication, next);
+  await commit(storage, 4, publicationStage(4));
+  assert(
+    (await storage.recoverCommitted()).index?.publication === undefined,
+    "untracked clears memory",
+  );
+  await storage.close();
+  await change(name, "metadata", 0, { json: "damaged snapshot", checksum: "bad" });
+  storage = await open();
+  assert(
+    (await storage.recoverCommitted()).index?.publication === undefined,
+    "untracked journal clears history",
+  );
+  await commit(storage, 5, publicationStage(5));
+  await storage.close();
+  storage = await open();
+  assert(
+    (await storage.recoverCommitted()).index?.publication === undefined,
+    "untracked snapshot clears history",
+  );
+  await raw(name, async (db) => {
+    const keys = await idbRequest(db.transaction("metadata").objectStore("metadata").getAllKeys());
+    const allowed = new Set<IDBValidKey>([0, 1, "epoch", "format", "commit", "active"]);
+    assert(
+      keys.every((key) => allowed.has(key)),
+      "no independent publication metadata store",
+    );
+  });
+}
+async function publicationAtomicity(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open(),
+    previous = publicationFixture();
+  await commit(storage, 1, { ...stage(1), batch: { ...batch(1), publication: previous } });
+  const prepared = await group(storage, 2, {
+    ...stage(2),
+    batch: { ...batch(2), publication: publicationFixture() },
+  });
+  const cause = { message: "abort after publication journal put" },
+    injected = failureOnReceipt(cause);
+  try {
+    const outcome = await storage.beginCommit(prepared).terminal;
+    assert(outcome.kind === "aborted" && outcome.cause === cause, "exact native publication abort");
+    assert(injected.payloadPuts > 0, "abort follows actual payload writes");
+  } finally {
+    injected.restore();
+  }
+  assertPublication((await storage.recoverCommitted()).index?.publication, previous);
+  assert((await readRaw(name, "journal", 2)) === undefined, "publication journal rolls back");
+  assert((await readRaw(name, "data", "a:2")) === undefined, "publication data rolls back");
+  const recovery = await storage.recoverCommitted();
+  await change(name, "metadata", "epoch", recovery.epoch + 1);
+  const fenced = await storage.beginCommit(prepared).terminal;
+  assert(
+    fenced.kind === "aborted" && String(fenced.cause).includes("another tab"),
+    "epoch fences record",
+  );
+  await storage.close();
+  const reopened = await open();
+  assertPublication((await reopened.recoverCommitted()).index?.publication, previous);
+}
+async function publicationCommitBeforeReply(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open();
+  await commit(storage, 1);
+  const publication = publicationFixture(),
+    prepared = await group(storage, 2, publicationStage(2, publication)),
+    gate = terminalGate("complete");
+  let replied = false;
+  const native = storage.beginCommit(prepared);
+  void native.terminal.then(() => (replied = true));
+  try {
+    await gate.seen;
+    assert(!replied, "publication reply waits for native delivery");
+    const journal = await selectedRecord(name, "journal", 2);
+    assert(journal.publication !== undefined, "native commit already selected publication");
+    assert(
+      (await decodeCommit(await readRaw(name, "metadata", "commit"))).head.generation === 2,
+      "receipt head commits with publication",
+    );
+  } finally {
+    gate.restore();
+    gate.release();
+  }
+  assert((await native.terminal).kind === "committed", "native terminal still commits");
+  await storage.close();
+  const recovered = await open();
+  assertPublication((await recovered.recoverCommitted()).index?.publication, publication);
+}
+async function publicationCorruption(
+  name: string,
+  open: () => Promise<CommittedStorage>,
+): Promise<void> {
+  const storage = await open();
+  await commit(storage, 1);
+  await commit(storage, 2, publicationStage(2, publicationFixture()));
+  await storage.close();
+  const original = await selectedRecord(name, "journal", 2),
+    head = await readRaw(name, "metadata", "commit");
+  await change(name, "metadata", 1, { json: "damaged snapshot", checksum: "bad" });
+  const mutations = [
+    { changes: [[256]] },
+    { contentVersions: [{ ino: 0, version: 0 }] },
+    { sessionSerial: 0 },
+  ];
+  for (const mutation of mutations) {
+    assert(
+      original.publication && typeof original.publication === "object",
+      "stored publication exists",
+    );
+    const corrupt = { ...original, publication: { ...original.publication, ...mutation } };
+    await change(name, "journal", 2, await encodeRecord(corrupt));
+    await formatFailure(open());
+    assert(
+      JSON.stringify(await readRaw(name, "metadata", "commit")) === JSON.stringify(head),
+      "corrupt required checkpoint preserves receipt",
+    );
+    assert((await readRaw(name, "data", "a:1")) !== undefined, "corruption preserves prior data");
+  }
+  await change(name, "journal", 2, await encodeRecord(original));
+  const repaired = await open();
+  assert(
+    (await repaired.recoverCommitted()).index?.publication !== undefined,
+    "valid journal restores exact head",
+  );
+}
+async function publicationFast(name: string): Promise<void> {
+  let storage = await IndexedDBStorage.open(name, { compactEvery: 2 });
+  const publication = publicationFixture(),
+    expected = structuredClone(publication);
+  try {
+    const pending = storage.persist({ ...batch(1), publication });
+    publication.changes[0]!.fill(0);
+    await pending;
+    assertPublication((await storage.load())?.publication, expected);
+    const loaded = await storage.load();
+    loaded!.publication!.changes[0]!.fill(9);
+    assertPublication((await storage.load())?.publication, expected);
+    await storage.persist(publicationStage(2, expected).batch);
+    await storage.close();
+    storage = await IndexedDBStorage.open(name, { compactEvery: 2 });
+    assertPublication((await storage.load())?.publication, expected);
+    await storage.persist(publicationStage(3).batch);
+    await storage.close();
+    storage = await IndexedDBStorage.open(name, { compactEvery: 2 });
+    assert(
+      (await storage.load())?.publication === undefined,
+      "FAST untracked selection clears publication",
+    );
+  } finally {
+    await storage.close();
+  }
+}
 const cases = {
+  publicationRoundtrip,
+  publicationAtomicity,
+  publicationCommitBeforeReply,
+  publicationCorruption,
+  publicationFast,
   abortAtomic,
   nullAbortCauses,
   nativeAbortRequest,

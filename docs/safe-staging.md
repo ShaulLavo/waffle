@@ -88,3 +88,24 @@ The producer, strict writer routing, open-file offsets, shared publication
 reservations, and public mode selection remain separate integration work. This
 candidate is stacked on frozen PR74 plus accepted security72. PR74's independent
 review repair is not included or certified by this unit.
+
+## Selected publication checkpoints
+
+The IndexedDB adapter carries the private `settled-publication-v1` record in the
+same selected snapshot or journal as its namespace and payload references. It
+encodes change bytes as number arrays in checksummed JSON. Recovery restores
+`Uint8Array` bytes and calls the shared `snapshotPublicationCheckpoint` validator
+and copier. Content-version pairs and the reserved session-serial frontier retain
+their exact validated values. The adapter does not allocate publication sessions.
+
+Metadata-only batches can select a new record. A selected batch without one
+clears the previous record, including during journal replay and compaction.
+There is no standalone latest-record key or separate publication receipt store.
+The existing strict transaction and epoch check cover the record. Private staged
+recovery still requires the exact committed generation before exposing receipts.
+
+The dedicated native controls also check byte ownership, metadata-only journal
+replay, compacted snapshots, untracked clearing, rollback, epoch rejection,
+commit-before-reply selection, and checksummed corrupt-record rejection. The
+continuity owner supplies the schema and the startup capture/restore policy.
+This adapter change does not implement resident recovery or an import producer.
