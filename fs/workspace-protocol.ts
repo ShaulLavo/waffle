@@ -248,7 +248,7 @@ export function versionStat(value: unknown): import("./workspace-types.js").Vers
     mode: integer(data.mode),
   });
 }
-export function readFailure(value: unknown): import("./workspace-types.js").ReadFailure {
+function readFailure(value: unknown): import("./workspace-types.js").ReadFailure {
   const data = record(value);
   switch (data.kind) {
     case "not-found":

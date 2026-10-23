@@ -34,13 +34,24 @@ async function projection(storage: StorageBackend) {
   let client: FilesystemClient | undefined;
   let workspace: ReturnType<typeof createWorkspaceVfs> | undefined;
   const close = async () => {
-    await workspace?.close();
-    client?.dispose();
-    await service.drainForOwner();
-    service.dispose();
-    await backend.close();
-    pair.client.port.close();
-    pair.server.port.close();
+    const failures: unknown[] = [];
+    for (const action of [
+      () => workspace?.close(),
+      () => client?.dispose(),
+      () => service.drainForOwner(),
+      () => service.dispose(),
+      () => backend.close(),
+      () => pair.client.port.close(),
+      () => pair.server.port.close(),
+    ]) {
+      try {
+        await action();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, "Public browser fixture cleanup failed");
   };
   try {
     service.connect(pair.server);
@@ -149,6 +160,7 @@ async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<v
   let replacement: IndexedDBStorage | undefined;
   let reading: ReturnType<typeof view.workspace.read> | undefined;
   const held = holdCheckpoint("indexeddb");
+  let lostMessage: string | undefined;
   try {
     const pinned = await view.workspace.pin("/file");
     check(pinned.kind === "ok", "ownership-loss lease missing");
@@ -158,6 +170,7 @@ async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<v
     held.release();
     const result = await reading;
     check(result.kind === "io", `stale native reader returned ${result.kind}`);
+    lostMessage = result.message;
     await pinned.value.close();
     check(storage.resources().indexeddbReaderWork === 0, "stale native read debt survived close");
     check(storage.resources().readerStorageBytes === 0, "stale lease retention survived close");
@@ -168,8 +181,14 @@ async function ownershipLoss(name: string, storage: IndexedDBStorage): Promise<v
   } finally {
     held.restore();
     await reading;
-    await view.close();
-    await replacement?.close();
+    const cleanup = await Promise.allSettled([view.close(), storage.close(), replacement?.close()]);
+    const closed = cleanup[0]!;
+    check(
+      closed.status === "rejected" && closed.reason instanceof Error &&
+        closed.reason.message === lostMessage,
+      "stale backend close did not preserve the original ownership loss",
+    );
+    for (const result of cleanup.slice(1)) if (result.status === "rejected") throw result.reason;
   }
 }
 async function adapter(kind: "indexeddb" | "opfs") {
