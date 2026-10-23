@@ -27,8 +27,10 @@ are rejected, not translated. Backend names are not accepted modes.
 | Memory | Isolated volatile tree; flush is ordering only.                                                                                                                                                                  | Yes, for tests and explicitly nonpersistent uses.                                                    |
 
 The approved engine work also requires bounded pending data with backpressure,
-coherent multi-tab writers, partial large-file access and a combined memory budget.
-**Those requirements are not implemented by the current checkpoint engines.** Their
+coherent multi-tab writers, above-RAM workloads, and a combined memory budget.
+Those full-engine requirements remain open. Opt-in
+[WorkspaceVfs](workspace-vfs.md) supports bounded current and leased-version ranges
+without whole-file hydration. The checkpoint engine
 descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
 `multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine;
 see [the approved execution plan](../plans/001-vfs-family.md).

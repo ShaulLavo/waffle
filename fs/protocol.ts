@@ -120,7 +120,7 @@ export function createFilesystemIdentity(
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
     const configuration = "workspace" in publication ? workspacePublication : publication;
-    const buffers = createPublicationBuffers(configuration.limits);
+    const buffers = createPublicationBuffers(configuration.limits, configuration.observe);
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,

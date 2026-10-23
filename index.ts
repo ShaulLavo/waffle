@@ -27,6 +27,14 @@ export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } 
 
 export type {
   WorkspaceVfs,
+  ByteRange,
+  FileTarget,
+  VersionStat,
+  ReadValue,
+  ReadOutcome,
+  ReadFailure,
+  ReadResource,
+  VersionLease,
   SnapshotOptions,
   SnapshotCursor,
   SnapshotPage,

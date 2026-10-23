@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation, storeReservation, type StoredReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { FilesystemClient, FilesystemService, createFilesystemConnection } from "../fs";
@@ -20,6 +21,14 @@ afterEach(() => {
 });
 
 class BlockedStore implements StorageBackend {
+  private readonly rangeHooks = fixturePayloadHooks(
+    new Map([
+      ["cold", encode("cold")],
+      ["replacement", encode("new")],
+    ]),
+  );
+  readRange = this.rangeHooks.readRange;
+  retainPayload = this.rangeHooks.retainPayload;
   private identityReservation?: StoredReservation;
   async reserveIdentity(workspace?: string) {
     const value = nextReservation(this.identityReservation, workspace);

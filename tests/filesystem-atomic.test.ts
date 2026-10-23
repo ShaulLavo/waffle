@@ -1,3 +1,4 @@
+import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { afterEach, expect, test } from "bun:test";
 import { MemFS } from "../fs/memory";
@@ -168,6 +169,7 @@ test("persistent exclusive creation does not hydrate an existing cold file", asy
   let flushed: readonly string[] | undefined;
   const backend = await PersistentBackend.open(
     {
+      ...fixturePayloadHooks(new Map([["cold-payload", encode("cold")]])),
       async reserveIdentity() {
         return nextReservation(undefined);
       },

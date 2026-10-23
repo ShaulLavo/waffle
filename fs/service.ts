@@ -1,3 +1,5 @@
+import { ReaderLifetime } from "./workspace-protocol.js";
+import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { NamespaceAuthority } from "./workspace-namespace.js";
 import { ResidentGrantAuthority } from "./publication-grant.js";
@@ -67,6 +69,8 @@ interface Session {
   retirement?: ReturnType<typeof setTimeout>;
   publicationPins?: Set<number>;
   namespace?: NamespaceAuthority;
+  reader?: WorkspaceReadAuthority;
+  readerClosing?: Promise<void>;
 }
 interface ShutdownOwner {
   readonly done: Promise<void>;
@@ -75,10 +79,12 @@ interface ShutdownOwner {
 interface PreparedRequest {
   handles: number[];
   failure?: { error: unknown };
+  read?: { value: unknown };
 }
 /** One serial owner of the tree. No request ever waits for a guest acknowledgment. */
 export class FilesystemService {
   private sessions = new Set<Session>();
+  private readBudget?: WorkspaceReadBudget;
   private queue = Promise.resolve();
   private sweeping = false;
   private ownerStopping = false;
@@ -172,8 +178,10 @@ export class FilesystemService {
         this.enqueueMaintenance(session, () => {
           for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
         });
-      } else if ("discard" in data) session.responses.delete(data.discard);
-      else if ("trim" in data)
+      } else if ("discard" in data) {
+        session.responses.delete(data.discard);
+        session.reader?.cancel(data.discard);
+      } else if ("trim" in data)
         this.enqueueMaintenance(session, () => {
           if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
         });
@@ -573,8 +581,9 @@ export class FilesystemService {
         else Atomics.add(epoch, 0, 1);
       }
       const payload = bytes.subarray(inputLength, inputLength + dataLength);
-      const value =
-        local && operation !== "flush" && operation !== "sync"
+      const value = prepared?.read
+        ? this.finishResult(session, id, operation, prepared.read.value)
+        : local && operation !== "flush" && operation !== "sync"
           ? this.executePublication(session, id, operation, args, payload, admission)
           : await this.execute(session, id, operation, args, payload);
       const segments = this.backend.takeSharedSegments?.() ?? [];
@@ -671,7 +680,9 @@ export class FilesystemService {
     payload: Uint8Array,
     prepared?: PreparedRequest,
   ): PreparedRequest | undefined {
-    if (operation === "flush" || operation === "sync") return;
+    if (operation === "flush" || operation === "sync" || prepared?.read) return;
+    if (operation.startsWith("publicationRead"))
+      return this.prepareRead(session, id, buffer, operation, args);
     if (operation === "dirtyWait" && prepared) return;
     const preparation =
       operation === "dirtyWait"
@@ -690,6 +701,47 @@ export class FilesystemService {
     const continuation = prepared ?? { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
     this.joinPreparation(session, id, buffer, continuation, preparation);
+    return continuation;
+  }
+  private prepareRead(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    operation: string,
+    args: unknown[],
+  ): PreparedRequest {
+    if (
+      !(this.backend instanceof MemoryBackend) ||
+      !session.connection.publication?.observer ||
+      args[0] !== session.connection.publication.observer
+    )
+      throw new FilesystemError(2);
+    session.reader ??= new WorkspaceReadAuthority(
+      this.backend,
+      (this.readBudget ??= new WorkspaceReadBudget(
+        session.connection.publication.buffers.readerLifetimes?.byteLength,
+      )),
+      new ReaderLifetime(session.connection.publication),
+    );
+    const continuation: PreparedRequest = { handles: [] };
+    const original = this.trackWork(session, session.reader.invoke(operation, args, id));
+    const joined = original.then(
+      (value) => {
+        continuation.read = { value };
+        this.enqueue(session, id, buffer, continuation);
+      },
+      (error: unknown) => {
+        continuation.failure = { error };
+        this.enqueue(session, id, buffer, continuation);
+      },
+    );
+    this.trackWork(session, joined);
+    session.preparations.add(joined);
+    this.preparingSessions.add(session);
+    void joined.then(
+      () => this.releasePreparation(session, joined),
+      () => this.releasePreparation(session, joined),
+    );
     return continuation;
   }
   private releasePreparation(session: Session, joined: Promise<void>): void {
@@ -969,8 +1021,18 @@ export class FilesystemService {
       throw error;
     }
   }
+  private stopSessionReader(session: Session): void {
+    if (session.reader && !session.readerClosing) {
+      session.readerClosing = this.trackWork(session, session.reader.stop());
+      void session.readerClosing.then(
+        () => this.sweep(),
+        () => {},
+      );
+    }
+  }
   private releaseSessionPins(session: Session): void {
     session.namespace?.close();
+    this.stopSessionReader(session);
     revokeFilesystem(session.connection);
     const ownRevocation = Atomics.load(new Int32Array(session.connection.revocations[0]!), 0);
     // Revocation precedes the admission-count observation. Looking only at held locks misses
@@ -1031,6 +1093,7 @@ export class FilesystemService {
       this.backend.shared.publication.releaseStopped();
   }
   private retirePublication(session: Session): boolean {
+    if (session.reader && !session.reader.lifetime.drained) return false;
     if (!(this.backend instanceof MemoryBackend)) return true;
     const domain = this.backend.shared.publication,
       connection = session.connection.publication;
@@ -1066,18 +1129,23 @@ export class FilesystemService {
     }
     const ownerStateBytes =
       this.sessions.values().next().value?.connection.ownerStates.byteLength ?? 0;
-    return {
-      ...backend,
-      workspaceCursors,
-      ownerStateBytes,
-      clients: this.sessions.size,
-      retained,
-      transient,
-      responses,
-      capabilityBytes,
-      metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
-      bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
-    };
+    const readers =
+      this.backend instanceof MemoryBackend ? (this.readBudget?.resources(this.backend) ?? {}) : {};
+    return Object.assign(
+      {
+        ...backend,
+        workspaceCursors,
+        ownerStateBytes,
+        clients: this.sessions.size,
+        retained,
+        transient,
+        responses,
+        capabilityBytes,
+        metadataBytes: (backend.metadataBytes ?? 0) + capabilityBytes + ownerStateBytes,
+        bytes: (backend.bytes ?? 0) + capabilityBytes + ownerStateBytes,
+      },
+      readers,
+    );
   }
   drainForOwner(): Promise<void> {
     if (this.ownerDraining) return this.ownerDraining;
@@ -1096,6 +1164,9 @@ export class FilesystemService {
   }
   private async drainOwnerWork(sessions: Session[], quiescence: Promise<void>[]): Promise<void> {
     await Promise.all(quiescence);
+    await Promise.all(
+      sessions.flatMap((session) => (session.reader ? [session.reader.stop()] : [])),
+    );
     await this.queue;
     await Promise.all(sessions.flatMap((session) => Array.from(session.preparations)));
     await this.queue;
@@ -1132,6 +1203,7 @@ export class FilesystemService {
     const owner = { done, sessions };
     this.shutdownOwner = owner;
     this.ownerStopping = true;
+    for (const session of sessions) this.stopSessionReader(session);
     const fences = sessions.map((session) => this.shutdownFence(session));
     void this.drainShutdown(owner, fences).then(resolve, reject);
     return done;
@@ -1147,7 +1219,9 @@ export class FilesystemService {
     if (
       this.residentPublication ||
       owner.sessions.some(
-        (session) => session.connection.publication || session.connection.residentPublication,
+        (session) =>
+          session.connection.residentPublication ||
+          (session.connection.publication && !session.connection.publication.buffers.pageReaders),
       )
     )
       failures.push(new FilesystemError(6, "ordinary shutdown cannot finalize publication owners"));
