@@ -148,7 +148,7 @@ test("publication refusal rolls back growth and COW reservations before any effe
         () => undefined,
         (error: unknown) => error,
       );
-    expect(failure).toMatchObject({ message: refused.message });
+    expect(failure).toMatchObject({ errno: 29 });
     expect(value.backend.shared.resources().usedBytes).toBe(before);
     expect(value.backend.shared.stat(value.handle)).toEqual(stat);
     expect(value.backend.identity(value.handle)).toEqual(identity);
@@ -272,7 +272,7 @@ async function actualWriter(kind: Writer, value: WriterRoot, handle: number): Pr
       return;
     }
     if (kind === "direct-append") {
-      expect(peer.tryAppend(node, [new Uint8Array([90])])).toBe(1);
+      expect(peer.tryAppend(node, [new Uint8Array([90])])).toMatchObject({ written: 1 });
       return;
     }
     await actualWasiWrite(kind, peer, node);
@@ -331,7 +331,7 @@ for (const writer of [
   "unlink-final",
 ] satisfies Writer[]) {
   test(`held cold public I/O does not block ${writer} or relabel selected bytes`, async () => {
-    const value = await coldFixture(PAGE * 3);
+    const value = await coldFixture(PAGE * 3 - 1);
     const entered = Promise.withResolvers<void>(),
       gate = value.physical.gate();
     let reading: ReturnType<typeof value.workspace.read> | undefined;
@@ -381,7 +381,7 @@ for (const writer of [
   "replacement",
 ] satisfies Writer[]) {
   test(`held resident public chunk delivery preserves all pages across ${writer}`, async () => {
-    const value = await residentReadFixture(PAGE * 3);
+    const value = await residentReadFixture(PAGE * 3 - 1);
     const entered = Promise.withResolvers<void>(),
       gate = Promise.withResolvers<void>();
     const submit = value.client.submit;
@@ -413,7 +413,7 @@ for (const writer of [
       expect(old.kind).toBe("ok");
       if (old.kind === "ok") {
         expect(old.value.stat).toEqual(before.value);
-        expect(old.value.bytes).toEqual(new Uint8Array(PAGE * 3).fill(65));
+        expect(old.value.bytes).toEqual(new Uint8Array(PAGE * 3 - 1).fill(65));
       }
       expect(value.service.resources().readerPinBytes).toBe(0);
       expect(value.service.resources().readerTickets).toBe(0);

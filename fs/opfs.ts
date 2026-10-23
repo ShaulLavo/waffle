@@ -630,6 +630,7 @@ export class OpfsStorage implements StorageBackend {
         new Uint8Array(),
         true,
       );
+    this.readers.recovery(new Set(this.snapshots.flatMap((snapshot) => keys(snapshot.index))));
     this.initialized = true;
   }
   private async assertEmptyData(): Promise<void> {

@@ -940,7 +940,15 @@ export class IndexedDBStorage implements StorageBackend {
       };
     }
     if (format !== INDEXEDDB_FORMAT) await this.migrateLegacy(dataKeys, signal);
+    if (this.state) this.recordRecovery(this.state);
     this.initialized = true;
+  }
+
+  private recordRecovery(state: State): void {
+    const retained = new Set<string>(state.references.keys());
+    for (const base of state.bases) if (base) payloads(base.nodes, retained);
+    for (const journal of state.journals.values()) payloads(journal.upserts, retained);
+    this.readers.recovery(retained);
   }
 
   private matchSizes(
@@ -1252,5 +1260,6 @@ export class IndexedDBStorage implements StorageBackend {
     }
     state.sinceCompaction = compact ? 0 : state.sinceCompaction + 1;
     this.state = state;
+    this.recordRecovery(state);
   }
 }

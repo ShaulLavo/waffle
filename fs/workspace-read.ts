@@ -395,6 +395,7 @@ export class WorkspaceReadAuthority {
         return { kind: "ok", value: retained.stat };
       return { kind: "generation-gone", requested: at, current };
     }
+    if (typeof target === "string" && !node) return { kind: "not-found" };
     if (version !== undefined && (!metadata || metadata.version !== version)) {
       if (retained) return this.fromSelected(operation, id, retained, requested);
       return { kind: "version-gone", requested: version };

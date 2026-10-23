@@ -256,7 +256,7 @@ class WorkspaceOwner implements WorkspaceVfs {
           "publicationReadChunk",
           [id, offset],
           lifetime,
-          WORKSPACE_READ_LIMITS.chunk,
+          Math.min(WORKSPACE_READ_LIMITS.chunk, bytes.length - offset),
         );
         if (!(part instanceof Uint8Array)) {
           const refusal = readReply(part);
