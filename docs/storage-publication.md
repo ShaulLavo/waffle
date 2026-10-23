@@ -274,3 +274,30 @@ old descriptors, input/reply mutation or reentrant calls, persistent CLAIMED ref
 other native schedules, OPFS or other-engine qualification. They do not replace the
 complete registered browser matrix or independent review, and do not accept Runtime
 recovery, SAFE mode, public/default APIs or consumer installation.
+
+
+## Public version readers
+
+The optional root WorkspaceVfs uses the authoritative namespace and publication
+section for selection. It does not use the private copied pin API. Full resident
+leases retain physical page references. All supported service, direct, WASI, and
+resident-authority writes reserve every required COW page before changing bytes
+or metadata. Pressure rolls back growth and COW reservations before publication.
+Retired pages cannot be reused until their last reader releases them.
+
+Cold selection synchronously retains the exact immutable payload key and expected
+size. OPFS reads bounded immutable File slices without the writer's sync-handle
+queue. IndexedDB reads only the manifest and intersecting checksum-validated
+chunks. Adapter GC consults current retention at deletion scheduling, including
+a token acquired after checkpoint preparation started. Normal recovery roots do
+not become reader-only debt. Released obsolete keys remain charged until native
+deletion succeeds.
+
+Read preparation is detached from the service mutation queue. The read ticket
+owns its selected backing, actual native work, and bounded binary chunk output.
+Root reader shutdown joins that original work before existing backend teardown.
+A failed joined filesystem disposal must retain the runtime's stable page guard;
+that terminal runtime ownership is separate from this reader implementation.
+Private resident authority owners keep their existing disposal rejection and
+checkpoint behavior. FAST memory ACK, explicit flush, and untracked durability
+are unchanged. See [WorkspaceVfs](workspace-vfs.md) for API and budget details.
