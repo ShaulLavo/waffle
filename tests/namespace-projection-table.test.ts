@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
+import { resourceUsage } from "node:process";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import {
   NamespaceProjectionTable,
   NamespaceProjectionPressure,
 } from "../fs/namespace-projection-table.js";
 import type { PublicationEffect } from "../fs/publication.js";
-import { NamespaceIndex } from "../fs/workspace-index.js";
+import { ChangeBudget, NamespaceIndex } from "../fs/workspace-index.js";
 import type { NamespaceRecord } from "../fs/workspace-protocol.js";
 import { SIZES } from "../tooling/vfs-workloads.js";
 
@@ -111,7 +112,7 @@ function pressure(action: () => void, component: string) {
     expect(error).toBeInstanceOf(NamespaceProjectionPressure);
     if (!(error instanceof NamespaceProjectionPressure)) throw error;
     expect(error.resource).toBe("index");
-    expect(error.component).toBe(component);
+    expect(error.component === component).toBe(true);
     expect(error.required).toBeGreaterThan(error.available);
     return;
   }
@@ -135,9 +136,13 @@ test("reports the actual fixed backing allocation, not cheaper per-entry charges
     },
   });
   try {
-    seedW1(table);
-    expect(observed).toBe(0);
-    expect(table.allocation()).toMatchObject({ nodes: 55033, edges: 55032, nameBytes: 330160 });
+    const measured = new NamespaceProjectionTable();
+    expect(observed).toBe(storage.backingBytes);
+    const retained = Object.values(measured);
+    expect(retained.some((value) => value instanceof Map || Array.isArray(value))).toBe(false);
+    seedW1(measured);
+    expect(observed).toBe(storage.backingBytes);
+    expect(measured.allocation()).toMatchObject({ nodes: 55033, edges: 55032, nameBytes: 330160 });
   } finally {
     globalThis.ArrayBuffer = allocate;
   }
@@ -364,7 +369,7 @@ test("matches the accepted projection for deterministic ordered mutation groups"
     else names.set(name, after);
     const target = 2 + (next() % 20);
     effects.push({ kind: "metadata", file: file(target), mode: 0o600, mtime: step });
-    expect(table.project(effects, budget())).toEqual(oracle.project(effects, budget()));
+    expect(table.project(effects, budget())).toEqual(oracle.project(effects, new ChangeBudget()));
   }
 });
 
@@ -381,14 +386,35 @@ test("bounded scratch compaction is independent of live-name physical order", ()
   expect(table.allocation().compactionPasses).toBeGreaterThan(1);
 });
 
+function shuffleIdentity(serial: number): number {
+  let value = serial - 1;
+  do {
+    let left = value >>> 8,
+      right = value & 255;
+    for (let round = 0; round < 4; round++) {
+      const mixed = Math.imul(right ^ (0x57ac12 + round), 1664525) + 1013904223;
+      const next = left ^ ((mixed >>> 24) & 255);
+      left = right;
+      right = next;
+    }
+    value = (left << 8) | right;
+  } while (value >= 55033);
+  return value + 1;
+}
+
 test("W1 forward, reversed and mixed identity builds and compaction stay bounded", () => {
   const timings: { order: string; ms: number }[] = [];
+  let sampledHeapPeak = process.memoryUsage().heapUsed;
   const orders = [
+    { name: "forward-1", id: (value: number) => value },
+    { name: "forward-2", id: (value: number) => value },
+    { name: "forward-3", id: (value: number) => value },
+    { name: "forward-4", id: (value: number) => value },
     { name: "forward", id: (value: number) => value },
     { name: "reverse", id: (value: number) => 55034 - value },
     {
       name: "permuted",
-      id: (value: number) => (Math.imul(value ^ 0x57ac12, 2654435761) >>> 0) + 1,
+      id: shuffleIdentity,
     },
   ];
   for (const order of orders) {
@@ -396,6 +422,7 @@ test("W1 forward, reversed and mixed identity builds and compaction stay bounded
       table = new NamespaceProjectionTable();
     expect(seedW1(table, order.id)).toBe(55033);
     timings.push({ order: order.name, ms: performance.now() - start });
+    sampledHeapPeak = Math.max(sampledHeapPeak, process.memoryUsage().heapUsed);
     expect(paths(table, order.id(55033))).toEqual(["/d04999/f49999"]);
     expect(table.allocation()).toMatchObject({ nodes: 55033, edges: 55032, nameBytes: 330160 });
   }
@@ -414,6 +441,7 @@ test("W1 forward, reversed and mixed identity builds and compaction stay bounded
     const name = `x${step.toString().padStart(5, "0")}`.padEnd(4080, "x");
     table.project([entry(2, name, null, 60000)], budget());
     expect(paths(table, 60000)).toEqual([`/d00000/${name}`]);
+    sampledHeapPeak = Math.max(sampledHeapPeak, process.memoryUsage().heapUsed);
     table.project([entry(2, name, 60000, null)], budget());
   }
   expect(table.allocation().compactions).toBeGreaterThan(1);
@@ -426,6 +454,8 @@ test("W1 forward, reversed and mixed identity builds and compaction stay bounded
       compactionMs: performance.now() - compactStart,
       allocation: table.allocation(),
       memory: process.memoryUsage(),
+      sampledHeapPeak,
+      processMaxRssKiB: resourceUsage().maxRSS,
       runtime: Bun.version,
     }),
   );
@@ -439,3 +469,47 @@ test("an inline rename needs no overflow slot and a no-op replacement needs no n
   table.project([entry(1, "new", 2, 2)], budget());
   expect(paths(table, 2)).toEqual(["/new"]);
 });
+
+test("accepts the existing maximum path-unit filename without replacement encoding", () => {
+  const table = small({ nameBytes: 16384 });
+  const name = "\ud800".repeat(4095);
+  table.add(record(2, 1, name));
+  expect(paths(table, 2)).toEqual([`/${name}`]);
+  expect(table.allocation().nameBytes).toBe(12285);
+});
+
+test("a removed-and-reinserted name reserves compaction scratch before any removal", () => {
+  const table = small({ nameBytes: 9, scratchSlots: 0 });
+  table.add(record(2, 1, "one"));
+  table.add(record(3, 1, "two"));
+  table.project([entry(1, "two", 3, null)], budget());
+  table.add(record(4, 1, "new"));
+  const before = table.allocation();
+  pressure(
+    () => table.project([entry(1, "one", 2, null), entry(1, "one", null, 2)], budget()),
+    "scratch",
+  );
+  expect(table.allocation()).toEqual(before);
+  expect(paths(table, 2)).toEqual(["/one"]);
+});
+
+test.each(["nodes", "edges", "extraLinks"])(
+  "rejects whole groups at the %s boundary",
+  (component) => {
+    const table = small({
+      nodes: component === "nodes" ? 3 : 16,
+      edges: component === "edges" ? 2 : 16,
+      extraLinks: component === "extraLinks" ? 1 : 4,
+    });
+    table.add(record(2, 1, "old"));
+    const target = component === "extraLinks" ? 2 : 3;
+    const last = component === "extraLinks" ? 2 : 4;
+    const before = table.allocation();
+    pressure(
+      () => table.project([entry(1, "one", null, target), entry(1, "two", null, last)], budget()),
+      component,
+    );
+    expect(table.allocation()).toEqual(before);
+    expect(paths(table, 2)).toEqual(["/old"]);
+  },
+);
