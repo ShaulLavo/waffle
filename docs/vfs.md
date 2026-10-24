@@ -26,9 +26,8 @@ are rejected, not translated. Backend names are not accepted modes.
 | SAFE   | Every successful mutation is durably recoverable before success, including namespace effects. A complete strict IndexedDB transaction or durable redo record is sufficient; final-page checkpointing may follow. | No. `mode: "safe"` throws typed `UNSUPPORTED_VFS`, with no fallback.                                 |
 | Memory | Isolated volatile tree; flush is ordering only.                                                                                                                                                                  | Yes, for tests and explicitly nonpersistent uses.                                                    |
 
-The approved engine work also requires bounded pending data with backpressure,
-coherent multi-tab writers, above-RAM workloads, and a combined memory budget.
-Those full-engine requirements remain open. Opt-in
+The checkpoint engine does not yet provide bounded pending data with backpressure,
+coherent multi-tab writers, above-RAM workloads, or a combined memory budget. Opt-in
 [WorkspaceVfs](workspace-vfs.md) supports bounded current and leased-version ranges
 without whole-file hydration. The checkpoint engine
 descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and

@@ -63,4 +63,4 @@ Waffle's code and docs do not mention Wasm threads or other post-Preview 1 inter
 
 - Persistent storage has no coherent multi-writer engine. A frozen or hidden owner can hold the lock indefinitely.
 - FAST and the memory-pressure limits are accounting units, not heap measurements.
-- The internal OPFS backend and the archive, export and staged-commit code are not wired into `createRuntime()`. [Internals](README.md#internals) lists them.
+- The internal OPFS backend and the archive, export and staged-commit code are not wired into `createRuntime()`.

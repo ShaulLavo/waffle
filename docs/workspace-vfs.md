@@ -234,8 +234,7 @@ and history. Consumers own previously returned pages and their memory.
 ## Scope
 
 This API implements namespace snapshots, changes, bounded reads, generation stat,
-and explicit full-file version leases. [Live search](workspace-search.md) and an
-[archive export adapter](workspace-export.md) build on it. SAFE durability and a
+and explicit full-file version leases. [Live search](workspace-search.md) builds on it. SAFE durability and a
 whole-runtime memory limit are not implemented.
 
 Cold-key retention metadata stays charged to the root's 2 MiB reader metadata

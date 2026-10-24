@@ -54,13 +54,13 @@ The sync-access retry fragment in `fs/opfs.ts` is adapted from SLICC-kernel `src
 
 ## Extraction provenance
 
-The history-preserving filter-repo commit map is kept outside the published tree with the cutover evidence. The extracted repository retains the rewritten commit history, including predecessor paths for the WASI shim, filesystem scaffold and memory views.
+The repository was extracted with its rewritten commit history, including predecessor paths for the WASI shim, filesystem scaffold and memory views.
 
 ## Typed process startup failures
 
 The original adapters in `proc/{types,outcome,wait-status,supervisor,abi,worker-client,worker-broker}.ts`
 and `browser/{process-broker,worker}.ts` port the generic part of
-[bun-wasm PR #65](https://github.com/ShaulLavo/bun-wasm/pull/65), reviewed at
+[bun-wasm pull request 65](https://github.com/ShaulLavo/bun-wasm/pull/65) at
 `bed7084763154adc8bd33ee6d06eb48873eab559`, to the extracted runtime. Waffle retains
 its diagnostic hooks, quiescence fences and lazy adapters. The port adds a typed
 startup outcome and shell-facing wait translation without copying Bun or Node code.
@@ -169,7 +169,7 @@ See [opfs-close.md](opfs-close.md) for the source checks and the remaining nativ
 ## Ordinary filesystem shutdown
 
 `browser/shared-fs.ts` and `fs/{service,persistent}.ts` are original Waffle adapters.
-This integration retains Waffle's approved page disposal from revision
+This integration retains Waffle's page disposal from revision
 `e7d4e35d0ef512bd36387a80d87246d8b0231ea9` and service/backend close from
 `6a979e034b3419f5545a54ec6952f07bb898fff4`, against main revision
 `93698f1009130a2bc7142872e4f02ced06f58272`. No Bun, browser-engine or other

@@ -9,8 +9,7 @@ See [vfs.md](vfs.md) for immutable descriptors, limitations and format identitie
 The current IndexedDB implementation defaults to `"takeover"`; `"wait"` queues instead.
 Takeover uses lock stealing and epoch fencing. The internal OPFS checkpoint implementation
 supports only wait: stealing a Web Lock cannot displace another worker's exclusive
-sync-access handles. These are existing exclusive-owner implementations, not the planned
-coherent multi-writer engine.
+sync-access handles. Both are exclusive-owner implementations, not a coherent multi-writer engine.
 
 A wait-policy instance queues one exclusive Web Lock request, with no stealing or repeated
 attempts. `runtime.filesystem.state.status` is `"opening"`, `"waiting"`, `"ready"`, `"failed"`

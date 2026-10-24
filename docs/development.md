@@ -63,7 +63,7 @@ The libc suite builds guest binaries with a pinned wasi-sdk and runs them under 
 | `runtime.ts` | `createRuntime()` and the capability projections that guests receive.                      |
 | `tests/`     | Unit tests, browser runners and fixtures.                                                  |
 | `tooling/`   | Size gate, quality probes, benchmark and storage tooling.                                  |
-| `site/`      | The landing page. It has its own `package.json` and [runbook](site.md).                    |
+| `site/`      | The landing page. It has its own `package.json` and [README](../site/README.md).           |
 | `docs/`      | These docs. [The index](README.md) maps them by kind.                                      |
 | `.internal/` | Working notes. Not user documentation.                                                     |
 

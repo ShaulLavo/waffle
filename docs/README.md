@@ -36,22 +36,15 @@ Dry and exact. Each page mirrors the code it describes.
 
 ## Internals
 
-For people who change Waffle. These pages describe contracts of code that is internal or not yet wired into `createRuntime()`.
+For people who change Waffle. These pages describe code that is internal to the package.
 
 - [Development](development.md): setup, checks, repository layout.
 - [Quality gates](quality.md): lint, format, type, unused-code and duplicate checks.
 - [Source provenance](bun-patches.md): copied and adapted code, with upstream revisions.
 - [Private process authority](private-authority.md): why authority never passes through guest-mutable builtins.
-- [Checkpoint pressure](checkpoint-pressure.md): bounded checkpoint capture.
-- [Dirty-growth admission](dirty-admission.md): the shared ledger for unsaved growth.
-- [Startup root memory admission](aggregate-memory.md): the startup allocation hook.
 - [IndexedDB immutable chunks](indexeddb-chunks.md): on-disk chunk format and range reads.
 - [OPFS payload ranges](opfs-ranges.md): range reads on the internal OPFS backend.
 - [OPFS close ownership](opfs-close.md): failed-close handling on the internal OPFS backend.
-- [Staged storage candidate](safe-staging.md): durable groups against IndexedDB, not wired.
-- [Local publication contract](storage-publication.md): internal publication history.
-- [Workspace archive codec](workspace-archive.md) and [archive export](workspace-export.md): tested candidates, not public API.
-- [Landing site](site.md): build, check and deploy runbook for `site/`.
 
 ## Decisions
 
