@@ -3,6 +3,7 @@ import { MemoryBackend } from "../fs/backend";
 import { PersistentBackend } from "../fs/persistent";
 import { IndexedDBStorage } from "../fs/indexeddb";
 import { FilesystemService } from "../fs/service";
+import { ResidentConstruction } from "../fs/root-construction";
 import type { FilesystemConnection } from "../fs/protocol";
 import { ResidentGrantAuthority } from "../fs/publication-grant";
 import type { PersistenceBatch } from "../fs/storage";
@@ -41,17 +42,38 @@ function request(name: string) {
   };
 }
 
+async function completedCheckpoint(name: string) {
+  const seed = publicationAdapter.fixture();
+  const memory = residentMemory();
+  const construction = new ResidentConstruction(
+    memory,
+    { limits: seed.limits, observe: true },
+    () => {},
+  );
+  const storage = await IndexedDBStorage.open(name, { whenBusy: "wait" });
+  let backend: PersistentBackend | undefined;
+  try {
+    backend = await PersistentBackend.open(storage, { intervalMs: 0, startupRoot: memory });
+    const pair = construction.attach(backend, seed);
+    await pair.root.asyncCall("preopen", ["/"]);
+    await backend.flush();
+    const selected = await storage.load();
+    assert(
+      selected?.publication && selected.nodes.every((node) => node.identity),
+      "real identity-bearing completed checkpoint selected",
+    );
+    return selected.publication;
+  } finally {
+    backend?.dispose();
+    construction.dispose();
+    await storage.close();
+  }
+}
+
 /** @browserEntry Invoked through the explicit composition runner bundle. */
 export async function selectedRootComposition() {
   const name = `root-continuity-${crypto.randomUUID()}`;
-  const saved = publicationAdapter.fixture();
-  const storage = await IndexedDBStorage.open(name, { whenBusy: "wait" });
-  try {
-    await storage.persist(publicationAdapter.batch(1, saved));
-    await storage.flush();
-  } finally {
-    await storage.close();
-  }
+  const saved = await completedCheckpoint(name);
   const memory = residentMemory();
   const connect = FilesystemService.prototype.connect;
   const attach = MemoryBackend.prototype.attachShared;
