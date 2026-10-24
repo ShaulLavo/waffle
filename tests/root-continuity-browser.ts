@@ -138,6 +138,12 @@ export async function selectedRootComposition() {
     assert(activations === 1, "activated once");
     assert(memory.snapshot().obligations === 0, "fixed reservation closed");
     const published = memory.snapshot();
+    const settled = domain.checkpoint();
+    equal(
+      settled.receipts.length,
+      saved.receipts.length + 1,
+      "startup preopen records one fresh receipt",
+    );
     await owner.stop();
     equal(memory.snapshot(), published, "escaped ledger retained after stop");
     const reopened = await IndexedDBStorage.open(name, { whenBusy: "wait" });
@@ -148,7 +154,7 @@ export async function selectedRootComposition() {
         publication.buffers.sessionLimit,
         "selected native frontier retained",
       );
-      equal(selected?.publication?.receipts, saved.receipts, "selected native receipts retained");
+      equal(selected?.publication?.receipts, settled.receipts, "selected native receipts retained");
     } finally {
       await reopened.close();
     }
@@ -158,6 +164,7 @@ export async function selectedRootComposition() {
       frontier: publication.buffers.sessionLimit,
       activations,
       durabilityMs,
+      receiptCounts: { recovered: saved.receipts.length, settled: settled.receipts.length },
       ledger: published,
     };
   } finally {
