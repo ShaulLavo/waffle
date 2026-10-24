@@ -12,7 +12,7 @@ test("the browser matrix runs the native staged adapter once in each engine", as
   expect(units).not.toContain("SAFE_STAGING_ENGINE");
 });
 
-test("the native matrix discovers the checkpoint decoder control without a second launcher", async () => {
+test("the native matrix discovers checkpoint decoding once", async () => {
   const browser = await Bun.file(new URL("safe-staging-browser.ts", import.meta.url)).text();
   expect(browser).toContain(
     'import { checkpointDecodeControl } from "./indexeddb-checkpoint-decode-browser.js";',
@@ -26,7 +26,9 @@ test("the native matrix discovers the checkpoint decoder control without a secon
   );
   expect(cases.match(/^  checkpointDecodeBounds,$/gm)).toHaveLength(1);
   expect(browser.split("checkpointDecodeControl.run()").length - 1).toBe(1);
-  const units = await Bun.file(new URL("indexeddb-checkpoint-decode.test.ts", import.meta.url)).text();
+  const units = await Bun.file(
+    new URL("indexeddb-checkpoint-decode.test.ts", import.meta.url),
+  ).text();
   expect(units).not.toContain("BrowserRunnerLifecycle");
   expect(units).not.toContain("--native");
 });
