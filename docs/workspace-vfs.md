@@ -208,7 +208,7 @@ writes after the last saved checkpoint. This API does not provide SAFE semantics
 | Visited edges per pull  |                                    512 |
 | Traversal depth         |                                    128 |
 | Absolute path           |                      4096 UTF-16 units |
-| Derived index           | 32768 edges and 2 MiB charged metadata |
+| Derived index           | 65536 edges and 2 MiB charged metadata |
 | Projected change page   |                   1 MiB charged output |
 | Concurrent change pulls |                                      1 |
 

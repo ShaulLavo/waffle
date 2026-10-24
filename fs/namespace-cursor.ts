@@ -1,3 +1,4 @@
+import { utf8ByteLength } from "./utf8-size.js";
 import { FilesystemError } from "../core/filesystem.js";
 import { nodeMetadata, walkTree, type DirNode, type Node } from "./memory.js";
 import type { NamespacePage, NamespaceRecord } from "./workspace-protocol.js";
@@ -195,7 +196,7 @@ export class NamespaceCursor {
         192 +
         2 * (path.length + position.name.length) +
         (position.node.kind === "symlink"
-          ? 2 * position.node.target.length + new TextEncoder().encode(position.node.target).length
+          ? 2 * position.node.target.length + utf8ByteLength(position.node.target)
           : 0);
       if (charge > this.bounds.pageBytes) throw new CursorPressure("page");
       if (bytes + charge > this.bounds.pageBytes) {

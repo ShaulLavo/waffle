@@ -3,7 +3,12 @@ import { FilesystemError } from "../core/filesystem.js";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import { newDir, newFile, newSymlink, nodeSize } from "../fs/memory.js";
 import { NamespaceCursor, type NamespaceSource } from "../fs/namespace-cursor.js";
-import { namespaceCut, namespacePage, nodeMetadata } from "../fs/workspace-protocol.js";
+import {
+  namespaceCut,
+  namespacePage,
+  nodeMetadata,
+  type NamespacePage,
+} from "../fs/workspace-protocol.js";
 import { WORKSPACE_LIMITS } from "../fs/workspace-types.js";
 
 const encoder = new TextEncoder();
@@ -34,7 +39,7 @@ function fixture(target: string) {
   return { root, link, source, reads, cut };
 }
 
-const pressure = { kind: "pressure", resource: "page" };
+const pressure = { kind: "pressure", resource: "page" } satisfies NamespacePage;
 const released = { frames: 0, pending: 0, pathUnits: 0 };
 const scenarios = [
   { scenario: "node-size", expected: { size: 96 } },
@@ -74,7 +79,7 @@ const targets = [
   "\udc00\ud800",
   "\ud800\ud800\udc00\udc00",
   "./missing//../a\\b",
-  "\u0001\t\n\r\"\\",
+  '\u0001\t\n\r"\\',
 ];
 
 test.each(targets)("node sizes match TextEncoder for raw target %j", (target) => {
@@ -191,7 +196,9 @@ test("default page boundary admits exact charge and refuses one byte over", () =
 test("byte-full pages defer the link once without lost or duplicate metadata", () => {
   const target = "😀\ud800\n";
   const value = fixture(target);
-  const cursor = new NamespaceCursor(value.source, {}, undefined, { pageBytes: pageCharge(target) });
+  const cursor = new NamespaceCursor(value.source, {}, undefined, {
+    pageBytes: pageCharge(target),
+  });
   try {
     const first = cursor.next();
     if (first.kind !== "entries") throw new Error(`unexpected ${first.kind}`);
