@@ -19,6 +19,8 @@ export default {
     ".": {
       entry: [
         "tests/**/*.test.ts",
+        "tests/installer-symlinks-metadata-types.ts",
+        "tests/fixtures/symlink-sizing-probe.ts",
         "scripts/browser-supervisor.ts",
         "tests/{storage,storage-lock,process-recycling,network,publication,publication-cross-tab}-browser-runner.ts",
         "tests/interrupt-browser.ts",

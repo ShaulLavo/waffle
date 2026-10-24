@@ -302,7 +302,6 @@ function assertInjectedAbort(
     "flush rejection is the selected native abort cause or adapter fallback",
   );
 }
-/** @browserEntry */
 export async function indexedDBCrashMatrix() {
   return runFaultSchedules(cells, runCell);
 }

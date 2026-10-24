@@ -8,6 +8,7 @@ type RawTarget<T> = [Extract<T, { kind: "symlink" }>] extends [never]
     ? true
     : false;
 type NoChildren<T> = "children" extends keyof T ? false : true;
+/** @compileFixture Checked by tsc through tsconfig.tooling.json. */
 export type MetadataShape = [
   Assert<RawTarget<Entry>>,
   Assert<RawTarget<EntryMetadata>>,
@@ -17,12 +18,15 @@ export type MetadataShape = [
   Assert<NoChildren<Extract<EntryMetadata, { kind: "dir" }>>>,
 ];
 
+/** @compileFixture Checked by tsc through tsconfig.tooling.json. */
 export function target(entry: Entry | EntryMetadata | ResolvedEntry): string | undefined {
   return entry.kind === "symlink" ? entry.target : undefined;
 }
+/** @compileFixture Checked by tsc through tsconfig.tooling.json. */
 export function children(entry: Entry): Map<string, EntryMetadata> | undefined {
   return entry.kind === "dir" ? entry.children : undefined;
 }
+/** @compileFixture Checked by tsc through tsconfig.tooling.json. */
 export function executableLookup(metadata: ResolvedEntry | undefined): ExecutableLookup {
   return () => metadata;
 }
