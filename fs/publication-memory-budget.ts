@@ -1,11 +1,5 @@
-import {
-  type MemoryBudget,
-  MemoryBudgetError,
-  type MemoryAdmission,
-  type MemoryLease,
-  type MemoryPlan,
-  type MemoryReference,
-} from "./memory-budget.js";
+import type { MemoryBudget, MemoryLease, MemoryPlan, MemoryReference } from "./memory-budget.js";
+import { admittedLease } from "./memory-admission.js";
 import type { PublicationBuffers } from "./publication-internal.js";
 
 const NativeSharedBuffer = SharedArrayBuffer;
@@ -14,24 +8,6 @@ type Phase =
   | { readonly kind: "unpublished" }
   | { readonly kind: "published"; readonly buffers: PublicationBuffers }
   | { readonly kind: "cancelled" };
-
-function admittedLease(admission: MemoryAdmission): MemoryLease {
-  switch (admission.kind) {
-    case "granted":
-      return admission.lease;
-    case "pressure":
-    case "impossible":
-      throw new MemoryBudgetError("capacity");
-    case "exhausted":
-      throw new MemoryBudgetError("serial");
-    case "stopped":
-      throw new MemoryBudgetError("closed");
-    default: {
-      const exhaustive: never = admission;
-      return exhaustive;
-    }
-  }
-}
 
 class PublicationAllocationGroup {
   private phase: Phase = { kind: "unpublished" };
