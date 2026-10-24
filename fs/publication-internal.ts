@@ -10,6 +10,8 @@ import type {
 
 /** Internal experiment switch. It is deliberately absent from package exports. */
 export const localPublication = Symbol("waffle.local-publication");
+/** Internal workspace projection funding. The caller retains and closes the budget. */
+export const localMemory = Symbol("waffle.local-memory");
 
 export interface PublicationLimits {
   readonly sessions: number;
