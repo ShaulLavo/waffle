@@ -913,7 +913,10 @@ test("owner drain accepts only the original close after its first refusal", asyn
   const f = await fixture();
   const clock = transportClock();
   try {
-    await rejectsErrno(f.server.drainForOwner(), 6);
+    const refused = f.server.drainForOwner();
+    await rejectsErrno(refused, 6);
+    expect(f.server.drainForOwner()).toBe(refused);
+    await rejectsErrno(refused, 6);
 
     const closing = f.channel.finish("closeConnection", null);
     let settled = false;
@@ -928,7 +931,10 @@ test("owner drain accepts only the original close after its first refusal", asyn
     await Bun.sleep(10);
     expect(settled).toBe(true);
     await closing;
-    await f.server.drainForOwner();
+    const draining = f.server.drainForOwner();
+    expect(draining).not.toBe(refused);
+    expect(f.server.drainForOwner()).toBe(draining);
+    await draining;
   } finally {
     clock.expire();
     clock.restore();
