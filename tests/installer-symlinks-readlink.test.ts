@@ -40,8 +40,16 @@ function link(fs: MemFS, path: string, target: string) {
 }
 function snapshotNode(node: Node): unknown {
   if (node.kind === "dir")
-    return { ino: node.ino, mtime: node.mtime, children: Array.from(node.children, ([name, child]) => [name, snapshotNode(child)]) };
-  return { ino: node.ino, mtime: node.mtime, value: node.kind === "symlink" ? node.target : Array.from(node.data) };
+    return {
+      ino: node.ino,
+      mtime: node.mtime,
+      children: Array.from(node.children, ([name, child]) => [name, snapshotNode(child)]),
+    };
+  return {
+    ino: node.ino,
+    mtime: node.mtime,
+    value: node.kind === "symlink" ? node.target : Array.from(node.data),
+  };
 }
 function fixture(target = "../raw//é/雪/🙂") {
   const fs = new ObservedFS();
@@ -51,9 +59,17 @@ function fixture(target = "../raw//é/雪/🙂") {
   const memory = new WebAssembly.Memory({ initial: 4 });
   const diagnostics: string[] = [];
   const wasi = new Wasi({
-    args: [], env: {}, fs, preopens: { "/": "/" }, namespaces: { env: { memory } },
-    stdout() {}, stderr() {}, sleep() {},
-    diagnostic(bytes) { diagnostics.push(new TextDecoder().decode(bytes)); },
+    args: [],
+    env: {},
+    fs,
+    preopens: { "/": "/" },
+    namespaces: { env: { memory } },
+    stdout() {},
+    stderr() {},
+    sleep() {},
+    diagnostic(bytes) {
+      diagnostics.push(new TextDecoder().decode(bytes));
+    },
   });
   stops.push(() => wasi.descriptors.dispose());
   const module = guestModule("wasi_snapshot_preview1", [
@@ -82,11 +98,23 @@ test.each(["input tail", "input past end", "output tail", "used tail", "zero out
     const end = f.memory.buffer.byteLength;
     const last = f.put("link", end - 4);
     const args = { ptr: 128, len: 4, out: 512, capacity: 32, used: 256 };
-    if (boundary === "input tail") { args.ptr = end - last; args.len = last + 1; }
-    if (boundary === "input past end") { args.ptr = end; args.len = 1; }
-    if (boundary === "output tail") { args.out = end - 2; args.capacity = 3; }
+    if (boundary === "input tail") {
+      args.ptr = end - last;
+      args.len = last + 1;
+    }
+    if (boundary === "input past end") {
+      args.ptr = end;
+      args.len = 1;
+    }
+    if (boundary === "output tail") {
+      args.out = end - 2;
+      args.capacity = 3;
+    }
     if (boundary === "used tail") args.used = end - 3;
-    if (boundary === "zero output past end") { args.out = end + 1; args.capacity = 0; }
+    if (boundary === "zero output past end") {
+      args.out = end + 1;
+      args.capacity = 0;
+    }
     const before = new Uint8Array(f.memory.buffer).slice();
     const tree = snapshotNode(f.fs.root);
     const encoding = spyOn(TextEncoder.prototype, "encode");
@@ -148,15 +176,19 @@ test("D4 zero capacity accepts the exact memory end and still validates used", (
 
 test("D4 acquires current output views after an ordinary host memory growth", () => {
   const f = fixture("raw target");
-  f.fs.onReadlink = () => { f.memory.grow(1); };
+  f.fs.onReadlink = () => {
+    f.memory.grow(1);
+  };
   expect(f.readlink()).toBe(0);
   expect(new DataView(f.memory.buffer).getUint32(256, true)).toBe(10);
   expect(new Uint8Array(f.memory.buffer).slice(512, 522)).toEqual(encoder.encode("raw target"));
 });
 
 test.each([
-  { path: "ordinary.txt", errno: 28 }, { path: "directory", errno: 28 },
-  { path: "missing", errno: 44 }, { path: "link/", errno: 54 },
+  { path: "ordinary.txt", errno: 28 },
+  { path: "directory", errno: 28 },
+  { path: "missing", errno: 44 },
+  { path: "link/", errno: 54 },
 ])("D4 valid-memory path failure preserves output and namespace %j", ({ path, errno }) => {
   const f = fixture();
   const len = f.put(path);
@@ -205,7 +237,11 @@ function serviceFixture() {
   const peer = createFilesystemConnection(connection.client);
   const client = new FilesystemClient(connection.client);
   const sibling = new FilesystemClient(peer.client);
-  stops.push(() => { client.dispose(); sibling.dispose(); service.dispose(); });
+  stops.push(() => {
+    client.dispose();
+    sibling.dispose();
+    service.dispose();
+  });
   service.connect(connection.server);
   service.connect(peer.server);
   return { fs, backend, service, client, sibling };
@@ -213,7 +249,12 @@ function serviceFixture() {
 async function remoteHandle(client: FilesystemClient, path: string): Promise<number> {
   const root: unknown = await client.asyncCall("preopen", ["/"]);
   const edge: unknown = await client.asyncCall("resolve", [root, path]);
-  if (typeof edge !== "object" || edge === null || !("node" in edge) || typeof edge.node !== "number")
+  if (
+    typeof edge !== "object" ||
+    edge === null ||
+    !("node" in edge) ||
+    typeof edge.node !== "number"
+  )
     throw new Error("missing remote node");
   return edge.node;
 }
@@ -222,7 +263,11 @@ async function rejectedReadlink(client: FilesystemClient, handle: number, errno:
   const completion = client.submit("readlink", [handle]);
   try {
     let failure: unknown;
-    try { await completion.value(); } catch (error) { failure = error; }
+    try {
+      await completion.value();
+    } catch (error) {
+      failure = error;
+    }
     expect(failure).toMatchObject({ errno });
   } finally {
     completion.release();
@@ -252,7 +297,9 @@ test("N5 existing explicit pins preserve a raw link through rename, unlink and n
   expect(() => f.client.release(handle)).toThrow(new FilesystemError(8));
   expect(snapshotNode(f.fs.root)).toEqual(beforeRead);
   expect(new TextDecoder().decode(f.fs.readFile("/ordinary.txt"))).toBe("unchanged text");
-  f.client.dispose(); f.sibling.dispose(); f.service.dispose();
+  f.client.dispose();
+  f.sibling.dispose();
+  f.service.dispose();
   expect(f.backend.pins.size).toBe(0);
   expect(f.service.resources()).toMatchObject({ clients: 0, retained: 0, responses: 0 });
 });

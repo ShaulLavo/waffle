@@ -896,15 +896,36 @@ export class Wasi {
         capacity: number,
         used: number,
       ) => {
+        ptr >>>= 0;
+        len >>>= 0;
+        buf >>>= 0;
+        capacity >>>= 0;
+        used >>>= 0;
+        const size = this.bytes().length;
+        if (ptr + len > size || buf + capacity > size || used + 4 > size) return 21;
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_READLINK);
         if (typeof path === "number") return path;
         if (path.node === undefined) return ENOENT;
-        if (this.opts.fs.stat(path.node).kind !== "symlink") return EINVAL;
-        const target = new TextEncoder().encode(this.opts.fs.readlink(path.node));
-        const count = Math.min(target.length, capacity >>> 0);
-        this.memory.range(used, 4);
-        this.memory.range(buf, capacity).set(target.subarray(0, count));
-        this.view().setUint32(used, count, true);
+        let target: string;
+        try {
+          target = this.opts.fs.readlink(path.node);
+        } catch (error) {
+          if (!(error instanceof FilesystemError)) throw error;
+          return error.errno;
+        }
+        const output = this.memory.range(buf, capacity);
+        const result = this.memory.range(used, 4);
+        const { read, written } = capacity
+          ? encoder.encodeInto(target, output)
+          : { read: 0, written: 0 };
+        let count = written;
+        if (read < target.length && written < capacity) {
+          // encodeInto stops before a partial UTF-8 character; readlink truncates by byte.
+          const tail = encoder.encode(target.slice(read, read + 2)).subarray(0, capacity - written);
+          output.set(tail, written);
+          count += tail.length;
+        }
+        new DataView(result.buffer, result.byteOffset, 4).setUint32(0, count, true);
         return SUCCESS;
       },
       path_remove_directory: (fd: number, ptr: number, len: number) => {

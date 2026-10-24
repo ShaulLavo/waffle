@@ -88,3 +88,24 @@ The focused creation tests use real MemFS planning, service transport, an ordina
 Wasm guest, and the page API with a memory worker under Bun. These checks do not
 qualify native storage, browser execution, Bun installer delivery, readlink memory
 or lifetime guarantees, or export-owned archive refusal.
+
+## D4 readlink memory and error policy
+
+Preview1 readlink normalizes its five memory fields as wasm32 unsigned values.
+It checks the complete input, capacity, and four-byte count spans before filesystem
+work. Invalid spans return EFAULT21 before descriptor and path errors, without
+output. With valid spans, existing descriptor, rights, final-separator, missing,
+and wrong-kind errors retain their meanings.
+
+Readlink copies a raw UTF-8 byte prefix without a NUL and reports the copied count.
+A short buffer may end inside a multibyte character. Valid zero capacity reports
+zero. Both output views come from current memory after filesystem work. Direct
+encoding avoids a target-sized staging buffer. A partial final character needs at
+most two UTF-16 units of scratch encoding. Backend strings and transport responses
+are not included in that local staging bound.
+
+A resolved service handle is still a transient capability, not a multi-call lease.
+Explicit retain/release protects an inode through rename and unlink. An idle
+unretained detached capability may be revoked. D4 does not add atomic ownership
+between resolve and readlink. The stronger N5 borrowed-result lease remains a
+separate shipping requirement. Errors are not retried by resolving another inode.
