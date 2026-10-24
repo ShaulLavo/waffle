@@ -26,6 +26,10 @@ interface StatusWaiter {
 type TerminalOutcome =
   | { readonly kind: "value"; readonly value: unknown }
   | { readonly kind: "error"; readonly errno: number };
+interface OwnerDrain {
+  kind: "draining" | "blocked";
+  readonly answer: ReturnType<typeof Promise.withResolvers<void>>;
+}
 const cleanupOperations = new Set(["closeConnection", "close", "settle"]);
 /** Private transport for the real MemoryBackend authority. It never sends its root SAB. */
 export class ResidentAuthorityServer {
@@ -42,7 +46,7 @@ export class ResidentAuthorityServer {
   private queue = Promise.resolve();
   private stopped = false;
   private stopping: Promise<void> | undefined;
-  private draining: Promise<void> | undefined;
+  private draining: OwnerDrain | undefined;
   private finalizing: Promise<void> | undefined;
   constructor(
     readonly authority: ResidentGrantAuthority,
@@ -350,12 +354,18 @@ export class ResidentAuthorityServer {
   drainForOwner(): Promise<void> {
     this.stopped = true;
     for (const active of this.requests.values()) active.abort.abort();
-    return (this.draining ??= this.drainPersistentTransport());
+    const current = this.draining;
+    if (current && (current.kind === "draining" || this.sessions.size || this.outstanding))
+      return current.answer.promise;
+    const drain: OwnerDrain = { kind: "draining", answer: Promise.withResolvers<void>() };
+    this.draining = drain;
+    void this.drainPersistentTransport(drain).then(drain.answer.resolve, drain.answer.reject);
+    return drain.answer.promise;
   }
-  private async drainPersistentTransport(): Promise<void> {
+  private async drainPersistentTransport(drain: OwnerDrain): Promise<void> {
     await this.queue;
     if (this.sessions.size || this.outstanding) {
-      this.draining = undefined;
+      drain.kind = "blocked";
       throw new FilesystemError(6, "resident clients must finish their original cleanup");
     }
     await this.drainTransport();
