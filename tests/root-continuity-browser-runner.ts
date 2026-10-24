@@ -5,10 +5,13 @@ async function run() {
   const lifecycle = new BrowserRunnerLifecycle(150000);
   try {
     await lifecycle.init();
-    const origin = lifecycle.serve({
-      "/": "<!doctype html><title>Root continuity composition</title>",
-      "/composition.js": await browserBundle("tests/root-continuity-browser.ts"),
-    }, 0);
+    const origin = lifecycle.serve(
+      {
+        "/": "<!doctype html><title>Root continuity composition</title>",
+        "/composition.js": await browserBundle("tests/root-continuity-browser.ts"),
+      },
+      0,
+    );
     for (const control of ["selected", "cancel", "failure"] as const) {
       const browser = await lifecycle.launch("chromium");
       try {
@@ -17,9 +20,15 @@ async function run() {
         const evidence = await page.evaluate(async (name) => {
           const path = "/composition.js";
           const suite: typeof import("./root-continuity-browser") = await import(path);
-          return name === "selected" ? suite.selectedRootComposition() : suite.startupFenceComposition(name);
+          return name === "selected"
+            ? suite.selectedRootComposition()
+            : suite.startupFenceComposition(name);
         }, control);
-        console.log(JSON.stringify({ control, evidence }));
+        console.log(
+          JSON.stringify({ control, evidence }, (_key, value) =>
+            typeof value === "bigint" ? value.toString() : value,
+          ),
+        );
       } finally {
         await lifecycle.closeBrowser(browser);
       }

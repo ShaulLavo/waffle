@@ -14,7 +14,9 @@ function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 function equal(actual: unknown, expected: unknown, message: string) {
-  assert(JSON.stringify(actual) === JSON.stringify(expected), message);
+  const replacer = (_key: string, value: unknown) =>
+    typeof value === "bigint" ? value.toString() : value;
+  assert(JSON.stringify(actual, replacer) === JSON.stringify(expected, replacer), message);
 }
 async function remove(name: string) {
   await new Promise<void>((resolve, reject) => {
@@ -77,11 +79,19 @@ export async function selectedRootComposition() {
   };
   ResidentGrantAuthority.prototype.activate = function () {
     const frontier = connection?.publication?.buffers.sessionLimit;
-    assert(completed?.publication?.sessionSerial === frontier, "reserved frontier durable before activation");
+    assert(
+      completed?.publication?.sessionSerial === frontier,
+      "reserved frontier durable before activation",
+    );
     activations++;
     return Reflect.apply(activate, this, []);
   };
-  const owner = createPersistentResidentOwner(request(name), new AbortController().signal, undefined, memory);
+  const owner = createPersistentResidentOwner(
+    request(name),
+    new AbortController().signal,
+    undefined,
+    memory,
+  );
   try {
     const ready = await owner.ready;
     equal(ready.notice.kind, "completed-cut-recovered", "selected checkpoint restored");
@@ -92,8 +102,15 @@ export async function selectedRootComposition() {
     assert(domain, "real domain bound");
     equal(domain.cut(), saved.cut, "settled cut unchanged during startup");
     for (const receipt of saved.receipts)
-      equal(domain.lookupAny(receipt.id), { kind: "committed", receipt }, "receipt identity preserved");
-    assert(publication.session.serial > saved.sessionSerial, "fresh session above old reserved frontier");
+      equal(
+        domain.lookupAny(receipt.id),
+        { kind: "committed", receipt },
+        "receipt identity preserved",
+      );
+    assert(
+      publication.session.serial > saved.sessionSerial,
+      "fresh session above old reserved frontier",
+    );
     assert(activations === 1, "activated once");
     assert(memory.snapshot().obligations === 0, "fixed reservation closed");
     const published = memory.snapshot();
@@ -102,12 +119,23 @@ export async function selectedRootComposition() {
     const reopened = await IndexedDBStorage.open(name, { whenBusy: "wait" });
     try {
       const selected = await reopened.load();
-      equal(selected?.publication?.sessionSerial, publication.buffers.sessionLimit, "selected native frontier retained");
+      equal(
+        selected?.publication?.sessionSerial,
+        publication.buffers.sessionLimit,
+        "selected native frontier retained",
+      );
       equal(selected?.publication?.receipts, saved.receipts, "selected native receipts retained");
     } finally {
       await reopened.close();
     }
-    return { history: ready.identity.history, session: publication.session.serial, frontier: publication.buffers.sessionLimit, activations, durabilityMs, ledger: published };
+    return {
+      history: ready.identity.history,
+      session: publication.session.serial,
+      frontier: publication.buffers.sessionLimit,
+      activations,
+      durabilityMs,
+      ledger: published,
+    };
   } finally {
     FilesystemService.prototype.connect = connect;
     MemoryBackend.prototype.attachShared = attach;
@@ -148,7 +176,13 @@ export async function startupFenceComposition(mode: "cancel" | "failure") {
   const abort = new AbortController();
   const owner = createPersistentResidentOwner(request(name), abort.signal, undefined, memory);
   let readyPublished = false;
-  const outcome = owner.ready.then(() => { readyPublished = true; return undefined; }, (error: unknown) => error);
+  const outcome = owner.ready.then(
+    () => {
+      readyPublished = true;
+      return undefined;
+    },
+    (error: unknown) => error,
+  );
   let stopped = false;
   try {
     await entered.promise;
@@ -159,18 +193,29 @@ export async function startupFenceComposition(mode: "cancel" | "failure") {
     const error = await outcome;
     if (mode === "failure") assert(error === failure, "startup error identity retained");
     const stopping = owner.stop();
-    void stopping.then(() => { stopped = true; });
+    void stopping.then(() => {
+      stopped = true;
+    });
     await closing.promise;
-    assert(!readyPublished && activations === 0, "no ready or activation after interrupted startup flush");
+    assert(
+      !readyPublished && activations === 0,
+      "no ready or activation after interrupted startup flush",
+    );
     assert(!stopped, "stop joins actual native close debt");
     const locks = await navigator.locks.query();
-    assert(locks.held?.some((lock) => lock.name?.includes(name)), "native close debt retains guards");
+    assert(
+      locks.held?.some((lock) => lock.name?.includes(name)),
+      "native close debt retains guards",
+    );
     equal(memory.snapshot(), charged, "escaped accounting retained while native close is held");
     releaseClose.resolve();
     await stopping;
     equal(memory.snapshot(), charged, "escaped backing is not refunded after actual close");
     const after = await navigator.locks.query();
-    assert(!after.held?.some((lock) => lock.name?.includes(name)), "owned guards released after actual close");
+    assert(
+      !after.held?.some((lock) => lock.name?.includes(name)),
+      "owned guards released after actual close",
+    );
     return { mode, activations, readyPublished, retainedBytes: charged.allocated, stopped };
   } finally {
     release.resolve();

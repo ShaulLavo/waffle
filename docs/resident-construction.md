@@ -63,3 +63,14 @@ segment growth, checkpoint/native payloads, arbitrary caller buffers or WASM
 outputs. It supplies no cross-realm subcapacity transport, generation transition,
 import producer or durable replacement barrier. Ledger metadata allowances are
 not JavaScript heap or process RSS measurements.
+
+## Late checkpoint attachment
+
+`ResidentConstruction.attach(backend, checkpoint?)` accepts the selected durable
+publication only after native recovery has produced the real backend. The fixed
+reservation still precedes native open. Attachment borrows that backend root and
+passes the checkpoint separately from its allocator. It creates neither another
+root nor another memory authority. Restore validates the seed against the admitted
+limits before publishing the pair. The resident flushes the reserved session
+frontier before activation. Private rollback and escaped-backing retention are
+unchanged.

@@ -255,15 +255,18 @@ class PersistentOwner implements PersistentResidentOwner {
       this.request.kind === "initial-open" && this.request.selected.implementation === "indexeddb"
         ? selected?.publication
         : undefined;
-    const { root, service } = this.construction.attach(backend, recovered ?? {
-      kind: "settled-publication-v1",
-      cut: { history: crypto.randomUUID(), generation: 0 },
-      sessionSerial: 0,
-      limits: this.request.publication.limits,
-      receipts: [],
-      changes: [],
-      contentVersions: [],
-    });
+    const { root, service } = this.construction.attach(
+      backend,
+      recovered ?? {
+        kind: "settled-publication-v1",
+        cut: { history: crypto.randomUUID(), generation: 0 },
+        sessionSerial: 0,
+        limits: this.request.publication.limits,
+        receipts: [],
+        changes: [],
+        contentVersions: [],
+      },
+    );
     const handle: number = await root.asyncCall("preopen", ["/"]);
     this.checkLive();
     await backend.flush();

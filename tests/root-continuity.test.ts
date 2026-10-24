@@ -82,9 +82,7 @@ test("late selected checkpoint uses the real restored root and one canonical led
     expect(first.specs).toHaveLength(82);
     expect(first.specs.filter((spec) => spec.bytes > 1024 * 1024)).toHaveLength(1);
     expect(first.memory.snapshot().obligations).toBe(0);
-    expect(first.memory.snapshot().producerFree.allocations).toBe(
-      before.producerFree.allocations,
-    );
+    expect(first.memory.snapshot().producerFree.allocations).toBe(before.producerFree.allocations);
     const domain = first.backend.shared.publication;
     if (!domain) throw new Error("backend publication absent");
     expect(domain.cut()).toEqual(saved.cut);
@@ -170,5 +168,29 @@ test("partial restored allocation releases private fixed backing while escaped r
   } finally {
     connect.mockRestore();
     await escaped.close();
+  }
+});
+
+test("the last reserved restored session fails closed before any arena mutation", async () => {
+  const seed = { ...publicationAdapter.fixture(), sessionSerial: 0x7ffffffd };
+  const owned = await restored(seed);
+  try {
+    const pair = owned.construction.attach(owned.backend, seed);
+    const publication = pair.root.connection.publication;
+    if (!publication) throw new Error("publication absent");
+    expect(publication.session.serial).toBe(0x7ffffffe);
+    const domain = new PublicationDomain(publication.buffers);
+    const buffers = [
+      publication.buffers.control,
+      publication.buffers.sessions,
+      publication.buffers.operations,
+    ];
+    const before = buffers.map((buffer) => Array.from(new Uint8Array(buffer)));
+    const ledger = owned.memory.snapshot();
+    expect(() => domain.openSession()).toThrow();
+    expect(buffers.map((buffer) => Array.from(new Uint8Array(buffer)))).toEqual(before);
+    expect(owned.memory.snapshot()).toEqual(ledger);
+  } finally {
+    await owned.close();
   }
 });
