@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { resourceUsage } from "node:process";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import {
@@ -1317,20 +1317,37 @@ async function symlinkProjectionFixture(logRecords = workspacePublication.limits
   const service = new FilesystemService(backend);
   let client: FilesystemClient | undefined, workspace: WorkspaceVfs | undefined;
   const close = async () => {
-    await workspace?.close();
-    client?.dispose();
-    await service.drainForOwner();
-    service.dispose();
-    pair.client.port.close();
-    pair.server.port.close();
-    expect(service.resources()).toMatchObject({ clients: 0, workspaceCursors: 0, responses: 0 });
-    expect(client?.completions.size ?? 0).toBe(0);
+    const failures: unknown[] = [];
+    for (const release of [
+      () => workspace?.close(),
+      () => client?.dispose(),
+      () => service.drainForOwner(),
+      () => service.dispose(),
+      () => pair.client.port.close(),
+      () => pair.server.port.close(),
+      () =>
+        expect(service.resources()).toMatchObject({
+          clients: 0,
+          workspaceCursors: 0,
+          responses: 0,
+        }),
+      () => expect(client?.completions.size ?? 0).toBe(0),
+    ]) {
+      try {
+        await release();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Projection fixture cleanup failed");
   };
   try {
     service.connect(pair.server);
     client = new FilesystemClient(pair.client);
     workspace = createWorkspaceVfs(client);
-    return { backend, client, service, workspace, close };
+    return { backend, client, service, workspace, close, pair };
   } catch (error) {
     await close();
     throw error;
@@ -1500,4 +1517,93 @@ test("compact symlink projection public target pressure keeps writer links and r
   } finally {
     await current.close();
   }
+});
+
+type ProjectionCloseFailure = readonly ["workspace" | "drain", unknown];
+
+async function projectionCloseFailure(failures: readonly ProjectionCloseFailure[]) {
+  const current = await symlinkProjectionFixture();
+  const workspaceClose = current.workspace.close.bind(current.workspace),
+    serviceDrain = current.service.drainForOwner.bind(current.service);
+  const fail = (step: ProjectionCloseFailure[0]) => {
+    const failure = failures.find(([where]) => where === step);
+    if (failure) throw failure[1];
+  };
+  const workspace = spyOn(current.workspace, "close").mockImplementation(async () => {
+    await workspaceClose();
+    fail("workspace");
+  });
+  const drain = spyOn(current.service, "drainForOwner").mockImplementation(async () => {
+    await serviceDrain();
+    fail("drain");
+  });
+  const client = spyOn(current.client, "dispose"),
+    service = spyOn(current.service, "dispose"),
+    clientPort = spyOn(current.pair.client.port, "close"),
+    serverPort = spyOn(current.pair.server.port, "close");
+  try {
+    const cursor = current.workspace.snapshot();
+    expect((await cursor.next()).kind).toBe("entries");
+    expect(current.service.resources()).toMatchObject({ clients: 1, workspaceCursors: 1 });
+    const observed: unknown[] = [];
+    try {
+      await current.close();
+    } catch (error) {
+      observed.push(error);
+    }
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(service).toHaveBeenCalledTimes(1);
+    expect(clientPort).toHaveBeenCalledTimes(2);
+    expect(serverPort).toHaveBeenCalledTimes(2);
+    expect(current.service.resources()).toMatchObject({
+      clients: 0,
+      workspaceCursors: 0,
+      responses: 0,
+    });
+    expect(current.client.completions.size).toBe(0);
+    expect(observed).toHaveLength(1);
+    assertProjectionCloseErrors(observed[0], failures);
+  } finally {
+    for (const spy of [workspace, drain, client, service, clientPort, serverPort])
+      spy.mockRestore();
+    await current.close();
+  }
+}
+
+function assertProjectionCloseErrors(error: unknown, failures: readonly ProjectionCloseFailure[]) {
+  if (failures.length === 1) {
+    expect(Object.is(error, failures[0]?.[1])).toBe(true);
+    return;
+  }
+  expect(error).toBeInstanceOf(AggregateError);
+  if (!(error instanceof AggregateError)) throw error;
+  expect(error.errors).toHaveLength(failures.length);
+  for (const [index, failure] of failures.entries())
+    expect(Object.is(error.errors[index], failure[1])).toBe(true);
+}
+
+test("compact projection fixture cleanup attempts every release after workspace close rejects", async () => {
+  await projectionCloseFailure([["workspace", new Error("workspace close refusal")]]);
+});
+
+test("compact projection fixture cleanup preserves each falsy drain rejection", async () => {
+  for (const failure of [undefined, null, false, "", 0, -0, NaN])
+    await projectionCloseFailure([["drain", failure]]);
+});
+
+test("compact projection fixture cleanup retains multiple error identities including signed zero", async () => {
+  await projectionCloseFailure([
+    ["workspace", 0],
+    ["drain", -0],
+  ]);
+  await projectionCloseFailure([
+    ["workspace", undefined],
+    ["drain", null],
+  ]);
+  const same = new Error("same cleanup error twice");
+  await projectionCloseFailure([
+    ["workspace", same],
+    ["drain", same],
+  ]);
 });
