@@ -65,3 +65,26 @@ including errno 20 for a bare existing link and errno 54 for its trailing separa
 This replaces the preliminary no-follow limitation stated in the D1/D2 section.
 The redundant second resolution is removed. Other no-follow operations, alias
 selection, creation policy, rights and output ordering remain unchanged.
+
+## D3 explicit directory creation
+
+Page `mkdirp`, configured preopen, and `writeFile` may create missing directories
+named by the input path. They may traverse symbolic links to existing directories
+and create an explicit suffix there. They refuse missing directory components
+introduced by a link target with errno 44, including a missing final directory
+target of `mkdirp`. Nested target suffixes retain that origin. Planning refusal
+attaches no pending nodes and leaves existing bytes, identities, mtimes, and link
+accounting unchanged. Existing non-directory traversal still returns 54.
+
+Nonexclusive `writeFile` may create a missing final file referent under an existing,
+authorized actual parent. It cannot create that referent's missing parent chain.
+Exclusive creation still refuses an existing final link with errno 20. The service's
+existing missing-parent guard remains narrower than direct MemFS for input paths
+that traverse a missing component before `.` or `..`. WASI mkdir remains
+nonrecursive. Actual-parent traversal, root confinement, rights, and each walk's
+single 40-expansion budget remain unchanged.
+
+The focused creation tests use real MemFS planning, service transport, an ordinary
+Wasm guest, and the page API with a memory worker under Bun. These checks do not
+qualify native storage, browser execution, Bun installer delivery, readlink memory
+or lifetime guarantees, or export-owned archive refusal.

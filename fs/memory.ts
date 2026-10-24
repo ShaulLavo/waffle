@@ -74,7 +74,7 @@ interface TreePath {
 interface TreeWalk {
   followFinal?: boolean;
   clampRoot: boolean;
-  child?: (parent: DirNode, name: string) => Node | undefined;
+  child?: (parent: DirNode, name: string, origin: "input" | "target") => Node | undefined;
   search?: (node: DirNode) => void;
   depth?: number;
   pathUnits?: number;
@@ -90,7 +90,11 @@ function expandTreeLink(
   start: number,
   options: TreeWalk,
   expansions: number,
-): { readonly path: string; readonly absolute: boolean } | number | undefined {
+  targetEnd: number,
+):
+  | { readonly path: string; readonly absolute: boolean; readonly targetEnd: number }
+  | number
+  | undefined {
   if (child.kind !== "symlink") return;
   if (!options.followFinal && !/[^/]/.test(path.slice(start))) return;
   if (expansions >= 40) return 32;
@@ -101,7 +105,13 @@ function expandTreeLink(
   const suffix = path.slice(start);
   const expanded = target + (suffix || path.endsWith("/") ? "/" + suffix : "");
   const error = treePathError(expanded, options.pathUnits);
-  return error || { path: expanded, absolute };
+  return (
+    error || {
+      path: expanded,
+      absolute,
+      targetEnd: target.length + (targetEnd > start ? 1 + targetEnd - start : 0),
+    }
+  );
 }
 /** Expand links against actual parent edges, never a lexically normalized pathname. */
 export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePath | number {
@@ -114,10 +124,12 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
   let name = "",
     terminalDot = false,
     expansions = 0,
+    targetEnd = 0,
     start = 0;
   while (start < path.length) {
     let end = path.indexOf("/", start);
     if (end < 0) end = path.length;
+    const origin = start < targetEnd ? "target" : "input";
     const part = path.slice(start, end);
     start = end + 1;
     if (!part) continue;
@@ -137,7 +149,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
     parent = node;
     name = part;
     const child: Node | undefined = options.child
-      ? options.child(parent, part)
+      ? options.child(parent, part, origin)
       : parent.children.get(part);
     if (!child && /[^/]/.test(path.slice(start))) return 44;
     if (!child)
@@ -149,7 +161,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
         trailingSlash: path.endsWith("/"),
         terminalDot: false,
       };
-    const link = expandTreeLink(child, path, start, options, expansions);
+    const link = expandTreeLink(child, path, start, options, expansions, targetEnd);
     if (typeof link === "number") return link;
     if (link?.absolute) {
       dirs.length = 0;
@@ -159,6 +171,7 @@ export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePa
       expansions++;
       node = link.absolute ? root : node;
       path = link.path;
+      targetEnd = link.targetEnd;
       start = 0;
       continue;
     }
@@ -719,9 +732,10 @@ export class MemFS implements FileSystem {
     const edges: NamespaceEdge[] = [],
       created: Node[] = [];
     const pending = new Map<DirNode, Map<string, Node>>();
-    const child = (parent: DirNode, name: string): Node => {
+    const child = (parent: DirNode, name: string, origin: "input" | "target"): Node => {
       const found = pending.get(parent)?.get(name) ?? parent.children.get(name);
       if (found) return found;
+      if (origin === "target") throw new FilesystemError(44);
       const node = this.planDirectoryChild(parent, name, edges, created, bound);
       let entries = pending.get(parent);
       if (!entries) {
@@ -774,6 +788,7 @@ export class MemFS implements FileSystem {
     const existing = parent.children.get(name);
     this.require(parent, 1);
     if (existing && exclusive) throw new FilesystemError(20);
+    if (existing?.kind === "symlink" && resolved === 44) throw new FilesystemError(44);
     if (existing && existing.kind !== "file") throw new FilesystemError(31);
     if (existing) {
       this.require(existing, 2);

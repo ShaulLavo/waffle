@@ -48,10 +48,18 @@ function snapshot(fs: MemFS) {
   const visit = (node: Node, path: string) => {
     counts.set(node.ino, (counts.get(node.ino) ?? 0) + 1);
     entries.push({
-      path, ino: node.ino, mode: node.mode, mtime: node.mtime, identity: node.identity,
+      path,
+      ino: node.ino,
+      mode: node.mode,
+      mtime: node.mtime,
+      identity: node.identity && { ...node.identity },
       kind: node.kind,
-      value: node.kind === "file" ? Array.from(node.data)
-        : node.kind === "symlink" ? node.target : Array.from(node.children.keys()),
+      value:
+        node.kind === "file"
+          ? Array.from(node.data)
+          : node.kind === "symlink"
+            ? node.target
+            : Array.from(node.children.keys()),
     });
     if (node.kind !== "dir") return;
     for (const [name, child] of node.children) visit(child, `${path}/${name}`);
@@ -64,7 +72,10 @@ function service(fs: MemFS) {
   const owner = new FilesystemService(backend);
   cleanup.push(() => owner.dispose());
   const connection = createFilesystemConnection();
-  cleanup.push(() => connection.server.port.close(), () => connection.client.port.close());
+  cleanup.push(
+    () => connection.server.port.close(),
+    () => connection.client.port.close(),
+  );
   const client = new FilesystemClient(connection.client);
   cleanup.push(() => client.dispose());
   owner.connect(connection.server);
@@ -73,10 +84,18 @@ function service(fs: MemFS) {
 function fixture(mode: "direct" | "planned" | "service") {
   const fs = seed();
   const remote = mode === "service" ? service(fs) : undefined;
-  const changes: number[] = [], links: { ino: number; delta: number }[] = [];
-  const oldChange = fs.onChange, oldLink = fs.onLinkChange;
-  fs.onChange = (node) => { changes.push(node.ino); oldChange?.(node); };
-  fs.onLinkChange = (node, delta) => { links.push({ ino: node.ino, delta }); oldLink?.(node, delta); };
+  const changes: number[] = [],
+    links: { ino: number; delta: number }[] = [];
+  const oldChange = fs.onChange,
+    oldLink = fs.onLinkChange;
+  fs.onChange = (node) => {
+    changes.push(node.ino);
+    oldChange?.(node);
+  };
+  fs.onLinkChange = (node, delta) => {
+    links.push({ ino: node.ino, delta });
+    oldLink?.(node, delta);
+  };
   const mkdirp = async (path: string) => {
     if (remote) return remote.client.asyncCall("mkdirp", [path]);
     if (mode === "direct") return fs.mkdirp(path);
@@ -85,31 +104,54 @@ function fixture(mode: "direct" | "planned" | "service") {
     return prepared.node;
   };
   const write = async (path: string, exclusive = false) => {
-    if (remote) return remote.client.asyncCall("writeFile", [path, false, exclusive], encoder.encode("new text"));
+    if (remote)
+      return remote.client.asyncCall(
+        "writeFile",
+        [path, false, exclusive],
+        encoder.encode("new text"),
+      );
     if (!exclusive && mode === "direct") return fs.writeFile(path, "new text");
     const prepared = fs.planHostFile(path, exclusive, 1000);
     fs.applyNamespace(prepared.plan);
     prepared.node.data = encoder.encode("new text");
   };
-  const preopen = async (path: string) => remote
-    ? remote.client.asyncCall("preopen", [path]) : fs.preopen(path);
-  const state = () => ({ tree: snapshot(fs), shared: remote && fs.listFiles().map((path) => {
-    const node = fs.lookup(path);
-    if (!node) throw new Error("missing snapshot file");
-    return remote.backend.shared.stat(fs.handleForNode(node));
-  }) });
-  const read = async (path: string): Promise<Uint8Array | undefined> => remote
-    ? remote.client.asyncCall("readFile", [path]) : fs.readFile(path);
+  const preopen = async (path: string) =>
+    remote ? remote.client.asyncCall("preopen", [path]) : fs.preopen(path);
+  const state = () => ({
+    tree: snapshot(fs),
+    shared:
+      remote &&
+      fs.listFiles().map((path) => {
+        const node = fs.lookup(path);
+        if (node?.kind !== "file") throw new Error("missing snapshot file");
+        const handle = fs.handleForNode(node);
+        if (!remote.backend.shared.hasFile(handle))
+          return { kind: "seed", stat: fs.stat(handle), bytes: Array.from(node.data) };
+        const stat = remote.backend.shared.stat(handle);
+        if (!stat) throw new Error("missing shared file stat");
+        const bytes = new Uint8Array(stat.size);
+        expect(remote.backend.shared.read(handle, [bytes], 0)).toBe(stat.size);
+        return { kind: "shared", stat, bytes: Array.from(bytes) };
+      }),
+  });
+  const read = async (path: string): Promise<Uint8Array | undefined> =>
+    remote ? remote.client.asyncCall("readFile", [path]) : fs.readFile(path);
   return { fs, remote, mkdirp, write, preopen, read, changes, links, state };
 }
 type Fixture = ReturnType<typeof fixture>;
 async function expectErrno(action: () => Promise<unknown>, errno: number) {
   let failure: unknown;
-  try { await action(); } catch (error) { failure = error; }
+  try {
+    await action();
+  } catch (error) {
+    failure = error;
+  }
   expect(failure).toMatchObject({ errno });
 }
 async function rejected(f: Fixture, action: () => Promise<unknown>, errno: number) {
-  const before = f.state(), changes = f.changes.slice(), links = f.links.slice();
+  const before = f.state(),
+    changes = f.changes.slice(),
+    links = f.links.slice();
   await expectErrno(action, errno);
   expect(f.state()).toEqual(before);
   expect(f.changes).toEqual(changes);
@@ -117,17 +159,22 @@ async function rejected(f: Fixture, action: () => Promise<unknown>, errno: numbe
 }
 const modes = ["direct", "planned", "service"] satisfies ("direct" | "planned" | "service")[];
 
-test.each(modes)("D3 %s refuses missing target directories with no attached pending nodes", async (mode) => {
-  const f = fixture(mode);
-  for (const path of ["/last", "/bad", "/bad/explicit", "/nested-bad/new", "/fresh/../bad"])
-    await rejected(f, () => f.mkdirp(path), 44);
-  expect(f.fs.lookup("/fresh")).toBeUndefined();
-  expect(f.fs.lookup("/a/missing")).toBeUndefined();
-  expect(f.fs.lookup("/a/target-missing")).toBeUndefined();
-});
+test.each(modes)(
+  "D3 %s refuses missing target directories with no attached pending nodes",
+  async (mode) => {
+    const f = fixture(mode);
+    for (const path of ["/last", "/bad", "/bad/explicit", "/nested-bad/new", "/fresh/../bad"])
+      await rejected(f, () => f.mkdirp(path), 44);
+    expect(f.fs.lookup("/fresh")).toBeUndefined();
+    expect(f.fs.lookup("/a/missing")).toBeUndefined();
+    expect(f.fs.lookup("/a/target-missing")).toBeUndefined();
+  },
+);
 
 test.each(modes)("D3 %s creates explicit suffixes after existing nested targets", async (mode) => {
-  const f = fixture(mode), original = f.fs.lookup("/link", false), file = f.fs.lookup("/a/b/note.txt");
+  const f = fixture(mode),
+    original = f.fs.lookup("/link", false),
+    file = f.fs.lookup("/a/b/note.txt");
   await f.mkdirp("/nested/new/deep");
   await f.mkdirp("/link/../fresh/leaf");
   await f.write("/link/explicit/child.txt");
@@ -148,21 +195,25 @@ test.each(modes)("D3 %s creates explicit suffixes after existing nested targets"
   expect(f.fs.lookup("/a/base")?.mtime).toBeGreaterThan(1);
 });
 
-test.each(modes)("D3 %s permits a final file referent but not its missing parent chain", async (mode) => {
-  const f = fixture(mode), leaf = f.fs.lookup("/file-leaf", false);
-  await f.write("/file-leaf");
-  expect(new TextDecoder().decode(await f.read("/a/new.txt"))).toBe("new text");
-  expect(f.fs.lookup("/file-leaf", false)).toBe(leaf);
-  expect(leaf?.kind === "symlink" && leaf.target).toBe("./a//b/../new.txt");
-  expect(leaf?.mtime).toBe(1);
-  await rejected(f, () => f.write("/file-bad"), 44);
-  await rejected(f, () => f.write("/bad/explicit.txt"), 44);
-  await rejected(f, () => f.write("/file-link", true), 20);
-  await rejected(f, () => f.write("/file-bad", true), 20);
-  await rejected(f, () => f.mkdirp("/file-link/child"), 54);
-  await rejected(f, () => f.write("/file-link/child"), 54);
-  await rejected(f, () => f.mkdirp("/file-link"), 54);
-});
+test.each(modes)(
+  "D3 %s permits a final file referent but not its missing parent chain",
+  async (mode) => {
+    const f = fixture(mode),
+      leaf = f.fs.lookup("/file-leaf", false);
+    await f.write("/file-leaf");
+    expect(new TextDecoder().decode(await f.read("/a/new.txt"))).toBe("new text");
+    expect(f.fs.lookup("/file-leaf", false)).toBe(leaf);
+    expect(leaf?.kind === "symlink" && leaf.target).toBe("./a//b/../new.txt");
+    expect(leaf?.mtime).toBe(1);
+    await rejected(f, () => f.write("/file-bad"), 44);
+    await rejected(f, () => f.write("/bad/explicit.txt"), 44);
+    await rejected(f, () => f.write("/file-link", true), 20);
+    await rejected(f, () => f.write("/file-bad", true), 20);
+    await rejected(f, () => f.mkdirp("/file-link/child"), 54);
+    await rejected(f, () => f.write("/file-link/child"), 54);
+    await rejected(f, () => f.mkdirp("/file-link"), 54);
+  },
+);
 
 test.each(modes)("D3 %s configured preopen uses the directory rule", async (mode) => {
   const f = fixture(mode);
@@ -172,31 +223,40 @@ test.each(modes)("D3 %s configured preopen uses the directory rule", async (mode
   expect(f.fs.lookup("/a/base/configured")?.kind).toBe("dir");
 });
 
-test.each(modes)("D3 %s keeps target suffix provenance across dotdot and absolute expansion", async (mode) => {
-  const f = fixture(mode);
-  link(f.fs, "/target-dot", "./a//b/../missing");
-  link(f.fs, "/absolute-bad", "/a/absent");
-  link(f.fs, "/absolute", "/a/b");
-  await rejected(f, () => f.mkdirp("/target-dot/explicit"), 44);
-  await rejected(f, () => f.mkdirp("/absolute-bad/explicit"), 44);
-  await f.mkdirp("/absolute/../input");
-  expect(f.fs.lookup("/a/input")?.kind).toBe("dir");
-  expect(f.fs.lookup("/input")).toBeUndefined();
-});
+test.each(modes)(
+  "D3 %s keeps target suffix provenance across dotdot and absolute expansion",
+  async (mode) => {
+    const f = fixture(mode);
+    link(f.fs, "/target-dot", "./a//b/../missing");
+    link(f.fs, "/absolute-bad", "/a/absent");
+    link(f.fs, "/absolute", "/a/b");
+    await rejected(f, () => f.mkdirp("/target-dot/explicit"), 44);
+    await rejected(f, () => f.mkdirp("/absolute-bad/explicit"), 44);
+    link(f.fs, "/a/second", "base");
+    await f.mkdirp("/link/../second/input");
+    expect(f.fs.lookup("/a/base/input")?.kind).toBe("dir");
+    await f.mkdirp("/absolute/../input");
+    expect(f.fs.lookup("/a/input")?.kind).toBe("dir");
+    expect(f.fs.lookup("/input")).toBeUndefined();
+  },
+);
 
-test.each(modes)("D3 %s preserves one 40-expansion allowance with explicit creation", async (mode) => {
-  const f = fixture(mode);
-  for (let index = 0; index < 41; index++)
-    link(f.fs, `/chain${index}`, index === 40 ? "a/b" : `chain${index + 1}`);
-  await f.mkdirp("/chain1/new");
-  expect(f.fs.lookup("/a/b/new")?.kind).toBe("dir");
-  await f.write("/chain1/new/explicit.txt");
-  expect(new TextDecoder().decode(await f.read("/a/b/new/explicit.txt"))).toBe("new text");
-  await rejected(f, () => f.mkdirp("/chain0/other"), 32);
-  await rejected(f, () => f.write("/chain0/other/file.txt"), 32);
-  link(f.fs, "/nested-limit", "chain1/target-missing");
-  await rejected(f, () => f.mkdirp("/nested-limit/explicit"), 32);
-});
+test.each(modes)(
+  "D3 %s preserves one 40-expansion allowance with explicit creation",
+  async (mode) => {
+    const f = fixture(mode);
+    for (let index = 0; index < 41; index++)
+      link(f.fs, `/chain${index}`, index === 40 ? "a/b" : `chain${index + 1}`);
+    await f.mkdirp("/chain1/new");
+    expect(f.fs.lookup("/a/b/new")?.kind).toBe("dir");
+    await f.write("/chain1/new/explicit.txt");
+    expect(new TextDecoder().decode(await f.read("/a/b/new/explicit.txt"))).toBe("new text");
+    await rejected(f, () => f.mkdirp("/chain0/other"), 32);
+    await rejected(f, () => f.write("/chain0/other/file.txt"), 32);
+    link(f.fs, "/nested-limit", "chain1/target-missing");
+    await rejected(f, () => f.mkdirp("/nested-limit/explicit"), 32);
+  },
+);
 
 test("D3 planner keeps effect and access bounds before attachment", async () => {
   const f = fixture("planned");
@@ -209,7 +269,8 @@ test("D3 planner keeps effect and access bounds before attachment", async () => 
 });
 
 test("D3 direct explicit dot-parent convenience does not bypass the service missing-parent guard", async () => {
-  const direct = fixture("direct"), remote = fixture("service");
+  const direct = fixture("direct"),
+    remote = fixture("service");
   await direct.write("/explicit/../a/new.txt");
   expect(direct.fs.lookup("/explicit")?.kind).toBe("dir");
   expect(new TextDecoder().decode(direct.fs.readFile("/a/new.txt"))).toBe("new text");
@@ -217,20 +278,39 @@ test("D3 direct explicit dot-parent convenience does not bypass the service miss
 });
 
 function wasiFixture() {
-  const fs = seed(), memory = new WebAssembly.Memory({ initial: 4 });
-  const wasi = new Wasi({ args: [], env: {}, fs, preopens: { "/sandbox": "/a" },
-    namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() {} });
+  const fs = seed(),
+    memory = new WebAssembly.Memory({ initial: 4 });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs,
+    preopens: { "/sandbox": "/a" },
+    namespaces: { env: { memory } },
+    stdout() {},
+    stderr() {},
+    sleep() {},
+  });
   cleanup.push(() => wasi.descriptors.dispose());
   const module = guestModule("wasi_snapshot_preview1", [
     { name: "path_create_directory", parameters: ["i32", "i32", "i32"] },
-    { name: "path_open", parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"] },
+    {
+      name: "path_open",
+      parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"],
+    },
   ]);
   const instance = new WebAssembly.Instance(module, wasi.imports(module));
   wasi.start(instance);
-  const bytes = new Uint8Array(memory.buffer), view = new DataView(memory.buffer);
-  const put = (path: string) => { const value = encoder.encode(path); bytes.set(value, 2048); return value.length; };
-  const mkdir = (path: string) => guestFunction(instance, "path_create_directory")(3, 2048, put(path));
-  const open = (path: string, flags = 1) => guestFunction(instance, "path_open")(3, 1, 2048, put(path), flags, 66n, 0n, 0, 128);
+  const bytes = new Uint8Array(memory.buffer),
+    view = new DataView(memory.buffer);
+  const put = (path: string) => {
+    const value = encoder.encode(path);
+    bytes.set(value, 2048);
+    return value.length;
+  };
+  const mkdir = (path: string) =>
+    guestFunction(instance, "path_create_directory")(3, 2048, put(path));
+  const open = (path: string, flags = 1) =>
+    guestFunction(instance, "path_open")(3, 1, 2048, put(path), flags, 66n, 0n, 0, 128);
   return { fs, wasi, bytes, view, mkdir, open };
 }
 
@@ -253,13 +333,16 @@ test("D3 ordinary Wasm may create only a final file referent in its authorized e
   link(f.fs, "/a/leaf", "b/new.txt");
   link(f.fs, "/a/missing-parent", "absent/new.txt");
   link(f.fs, "/a/outside", "../outside.txt");
-  const before = snapshot(f.fs), descriptors = Array.from({ length: 12 }, (_unused, fd) => f.wasi.descriptors.get(fd));
+  const before = snapshot(f.fs),
+    descriptors = Array.from({ length: 12 }, (_unused, fd) => f.wasi.descriptors.get(fd));
   f.bytes.fill(0xcc, 128, 132);
   expect(f.open("missing-parent")).toBe(44);
   expect(f.open("outside")).toBe(63);
   expect(f.open("leaf", 5)).toBe(20);
   expect(f.bytes.slice(128, 132)).toEqual(new Uint8Array(4).fill(0xcc));
-  expect(Array.from({ length: 12 }, (_unused, fd) => f.wasi.descriptors.get(fd))).toEqual(descriptors);
+  expect(Array.from({ length: 12 }, (_unused, fd) => f.wasi.descriptors.get(fd))).toEqual(
+    descriptors,
+  );
   expect(snapshot(f.fs)).toEqual(before);
   expect(f.open("leaf")).toBe(0);
   expect(f.fs.lookup("/a/b/new.txt")?.kind).toBe("file");
@@ -267,12 +350,19 @@ test("D3 ordinary Wasm may create only a final file referent in its authorized e
 });
 
 test("D3 real page memory worker preserves creation policy and queued writes after refusal", async () => {
-  const page = new SharedFilesystem({ mode: "memory", workerURL: new URL("../browser/fs-worker.ts", import.meta.url) });
+  const page = new SharedFilesystem({
+    mode: "memory",
+    workerURL: new URL("../browser/fs-worker.ts", import.meta.url),
+  });
   cleanup.push(() => page.dispose());
   await page.writeFile("/a/b/note.txt", "ordinary text");
   const root: unknown = await page.client.asyncCall("preopen", ["/"]);
   if (typeof root !== "number") throw new Error("missing root handle");
-  for (const [name, target] of [["link", "a/b"], ["bad", "a/missing/dir"], ["leaf", "a/new.txt"]]) {
+  for (const [name, target] of [
+    ["link", "a/b"],
+    ["bad", "a/missing/dir"],
+    ["leaf", "a/new.txt"],
+  ]) {
     const path = await page.client.asyncCall("resolve", [root, name, false]);
     expect(await page.client.asyncCall("symlink", [path, target])).toBe(0);
   }
@@ -281,9 +371,13 @@ test("D3 real page memory worker preserves creation policy and queued writes aft
   await expectErrno(() => page.drain(), 44);
   expect(await page.lookup("/a")).toEqual(before);
   expect(await page.lookup("/a/missing")).toBeUndefined();
+  expect(await page.lookup("/bad")).toMatchObject({ kind: "symlink", target: "a/missing/dir" });
+  expect(new TextDecoder().decode(await page.readFile("/a/b/note.txt"))).toBe("ordinary text");
   await page.writeFile("/link/explicit/child.txt", "page text");
   await page.writeFile("/leaf", "leaf text");
-  expect(new TextDecoder().decode(await page.readFile("/a/b/explicit/child.txt"))).toBe("page text");
+  expect(new TextDecoder().decode(await page.readFile("/a/b/explicit/child.txt"))).toBe(
+    "page text",
+  );
   expect(new TextDecoder().decode(await page.readFile("/a/new.txt"))).toBe("leaf text");
   expect(await page.lookup("/link")).toMatchObject({ kind: "symlink", target: "a/b" });
   expect(new TextDecoder().decode(await page.readFile("/a/b/note.txt"))).toBe("ordinary text");
