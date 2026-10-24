@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { MemoryBackend } from "../fs";
 import { MemFS } from "../fs/memory";
 import { FilesystemError } from "../fs/protocol";
@@ -565,7 +565,10 @@ test("empty workspace is a complete root-only archive", async () => {
     expect(events.flatMap((event) => (event.kind === "entry" ? [event.entry.path] : []))).toEqual([
       "/",
     ]);
-    expect(events.at(-1)).toEqual({ kind: "complete", summary: { entries: 1, fileBytes: 0 } });
+    expect(events.at(-1)).toEqual({
+      kind: "complete",
+      summary: { entries: 1, fileBytes: 0, linkTargetBytes: 0 },
+    });
     released(value);
   } finally {
     await value.close();
@@ -1191,7 +1194,7 @@ function unsupportedEntry(page: SnapshotPage, path: string, targetRead: () => ne
       return Object.defineProperties(
         { ...entry },
         {
-          kind: { value: "symlink", enumerable: true },
+          kind: { value: "socket", enumerable: true },
           path: { get: targetRead, enumerable: true },
           target: { get: targetRead, enumerable: true },
         },
@@ -1251,7 +1254,7 @@ async function refuseUnsupportedWindow(position: "first-window" | "beyond-window
   }
 }
 for (const position of ["first-window", "beyond-window"] as const)
-  test(`N7 broken-provider link metadata at ${position} refuses before path/target access or pin`, () =>
+  test(`N7 broken-provider unknown metadata at ${position} refuses before path/target access or pin`, () =>
     refuseUnsupportedWindow(position));
 
 test("N7 unsupported kind on a later broken-provider scan invalidates delivered bytes without completion", async () => {
@@ -1303,6 +1306,368 @@ test("N7 format refusal and falsy cursor cleanup failure retain both causes afte
     expect(error.errors[0]).toMatchObject({ name: "WorkspaceArchiveError", code: "INVALID" });
     expect(error.errors[1]).toBe(false);
     expect(observed.counts.pins).toBe(0);
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+
+async function addVirtualLink(value: Fixture, path: string, target: string): Promise<void> {
+  const root: number = await value.client.asyncCall("preopen", ["/"]);
+  const resolved = await value.client.asyncCall("resolve", [root, path.slice(1), false]);
+  if (typeof resolved === "number") throw new Error(`resolve ${resolved}`);
+  expect(await value.client.asyncCall("symlink", [resolved, target])).toBe(0);
+}
+async function selectedEntries(workspace: WorkspaceVfs) {
+  const cursor = workspace.snapshot({ includeDirs: true });
+  const entries = [];
+  try {
+    for (;;) {
+      const page = await cursor.next();
+      if (page.kind === "complete") return { entries, cut: page.cut };
+      if (page.kind !== "entries") throw new Error(page.kind);
+      entries.push(...page.entries);
+    }
+  } finally {
+    await cursor.close();
+  }
+}
+test("R68 real link leaves preserve raw targets and inode metadata without pin read or readlink", async () => {
+  const value = fixture([], 0);
+  const targets = [
+    "./missing//../item",
+    "/dangling",
+    "cycle-b",
+    "cycle-a",
+    "../é/😀/\ud800/\udfff/\\x",
+  ];
+  const paths = ["/a-relative", "/b-dangling", "/cycle-a", "/cycle-b", "/z-unicode"];
+  const readlink = spyOn(value.backend.fs, "readlink");
+  try {
+    for (const [index, path] of paths.entries()) await addVirtualLink(value, path, targets[index]!);
+    const root: number = await value.client.asyncCall("preopen", ["/"]);
+    const link = await value.client.asyncCall("resolve", [root, "a-relative", false]);
+    if (typeof link === "number" || link.node === undefined) throw new Error("Missing link inode");
+    expect(await value.client.asyncCall("setMtime", [link.node, 12345])).toBe(0);
+    expect(await value.client.asyncCall("setMode", [link.node, 0o400])).toBe(0);
+    const selected = await selectedEntries(value.workspace);
+    const observed = observe(value.workspace);
+    const events = await consume(observed.workspace);
+    const entries = events.flatMap((event) => (event.kind === "entry" ? [event.entry] : []));
+    expect(entries).toEqual(
+      selected.entries.map((entry) => {
+        const fields = {
+          path: entry.path,
+          size: entry.size,
+          mode: entry.mode,
+          mtime: entry.mtime,
+          sourceIdentity: storeIdentity(entry, selected.cut.workspace),
+        };
+        return entry.kind === "symlink"
+          ? { ...fields, kind: "symlink", target: entry.target }
+          : { ...fields, kind: entry.kind };
+      }),
+    );
+    expect(events.some((event) => event.kind === "data")).toBe(false);
+    expect(events.at(-1)).toEqual({
+      kind: "complete",
+      summary: {
+        entries: 6,
+        fileBytes: 0,
+        linkTargetBytes: targets.reduce((sum, target) => sum + encoder.encode(target).length, 0),
+      },
+    });
+    expect(observed.counts).toMatchObject({ scans: 2, pins: 0, reads: 0, closed: 0 });
+    expect(readlink).not.toHaveBeenCalled();
+    released(value);
+  } finally {
+    readlink.mockRestore();
+    await value.close();
+  }
+});
+
+for (const phase of ["scan", "after-initial", "final-pull", "after-final"] as const) {
+  for (const mutation of ["rename", "unlink", "replace"] as const) {
+    test(`R68 link ${mutation} at ${phase} respects the completed cut`, async () => {
+      const value = fixture([], 0);
+      const selected = await (async () => {
+        try {
+          await addVirtualLink(value, "/link", "./old//missing");
+          return await selectedEntries(value.workspace);
+        } catch (error) {
+          await value.close();
+          throw error;
+        }
+      })();
+      let changed = false;
+      const mutate = async () => {
+        if (changed) return;
+        changed = true;
+        if (mutation === "rename") return value.client.asyncCall("move", ["/link", "/renamed"]);
+        await value.client.asyncCall("remove", ["/link"]);
+        if (mutation === "replace") await addVirtualLink(value, "/link", "new-target");
+      };
+      const observed = observe(value.workspace, {
+        async page(page, scan) {
+          if (phase === "scan" && scan === 1 && page.kind === "entries") await mutate();
+          if (phase === "after-initial" && scan === 1 && page.kind === "complete") await mutate();
+          if (phase === "final-pull" && scan === 2 && page.kind === "entries") await mutate();
+          if (phase === "after-final" && scan === 2 && page.kind === "complete") await mutate();
+          return page;
+        },
+      });
+      const probe: CompletionProbe = { delivered: 0, completed: false };
+      try {
+        if (phase !== "after-final") {
+          const error = await capture(inspectCompletion(observed.workspace, probe));
+          expect(error.kind).toBe("error");
+          if (error.kind === "error")
+            expect(["restart", "resnapshot"]).toContain(refusal(error.error).kind);
+          expect(probe.completed).toBe(false);
+        } else {
+          const events = await consume(observed.workspace);
+          const entry = selected.entries.find((item) => item.path === "/link")!;
+          expect(events).toContainEqual({
+            kind: "entry",
+            entry: {
+              path: "/link",
+              kind: "symlink",
+              target: "./old//missing",
+              size: entry.size,
+              mode: entry.mode,
+              mtime: entry.mtime,
+              sourceIdentity: storeIdentity(entry, selected.cut.workspace),
+            },
+          });
+          expect(events.at(-1)?.kind).toBe("complete");
+        }
+        expect(changed).toBe(true);
+        expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
+        released(value);
+      } finally {
+        await value.close();
+      }
+    });
+  }
+}
+test("R68 selection owns raw primitives rather than mutable provider objects", async () => {
+  const value = fixture([], 0);
+  const retained: object[] = [];
+  const observed = observe(value.workspace, {
+    async page(page, scan) {
+      if (scan === 1 && page.kind === "entries") retained.push(...page.entries);
+      if (scan === 1 && page.kind === "complete")
+        retained.forEach((entry) => Object.assign(entry, { target: "changed", mode: 0 }));
+      return page;
+    },
+  });
+  try {
+    await addVirtualLink(value, "/link", "raw-old");
+    const events = await consume(observed.workspace);
+    expect(events).toContainEqual({
+      kind: "entry",
+      entry: expect.objectContaining({
+        path: "/link",
+        kind: "symlink",
+        target: "raw-old",
+        mode: 0o600,
+      }),
+    });
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+test("R68 target-inclusive successor windows drain every independent link record", async () => {
+  const value = fixture([], 0);
+  const target = "x".repeat(8000);
+  const paths = Array.from({ length: 12 }, (_, i) => `/link-${String(i).padStart(2, "0")}`);
+  try {
+    for (const path of paths.toReversed()) await addVirtualLink(value, path, target);
+    const observed = observe(value.workspace);
+    const events = await consume(observed.workspace);
+    expect(events.flatMap((event) => (event.kind === "entry" ? [event.entry.path] : []))).toEqual(
+      ["/"].concat(paths),
+    );
+    expect(events.at(-1)).toMatchObject({ kind: "complete", summary: { linkTargetBytes: 96000 } });
+    expect(observed.counts.scans).toBe(7);
+    expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
+    released(value);
+  } finally {
+    await value.close();
+  }
+});
+for (const limit of ["page", "window", "target-units"] as const) {
+  test(`R68 oversized link ${limit} is not an empty successful export`, async () => {
+    const value = fixture([], 0);
+    const observed = observe(value.workspace, {
+      async page(page) {
+        if (page.kind !== "entries") return page;
+        const original = page.entries.find((entry) => entry.kind === "symlink");
+        if (!original) return page;
+        const path = limit === "window" ? `/${"p".repeat(4000)}` : "/link";
+        const target = "x".repeat(limit === "page" ? 10855 : limit === "window" ? 16415 : 32769);
+        const entry = { ...original, path, kind: "symlink" as const, target, size: target.length };
+        return {
+          kind: "entries",
+          entries:
+            limit === "page"
+              ? [entry, { ...entry, path: "/othe", target: target + "x", size: target.length + 1 }]
+              : [entry],
+        };
+      },
+    });
+    try {
+      await addVirtualLink(value, "/link", "x");
+      const types: number[] = [];
+      const outcome = await capture(
+        (async () => {
+          for await (const chunk of exportWorkspaceArchive(observed.workspace))
+            types.push(chunk[0]!);
+        })(),
+      );
+      expect(outcome).toMatchObject({
+        kind: "error",
+        error:
+          limit === "page"
+            ? {
+                name: "WorkspaceExportError",
+                refusal: { kind: "contract", detail: "Snapshot page bytes exceeded" },
+              }
+            : { name: "WorkspaceArchiveError", code: "LIMIT" },
+      });
+      if (limit === "window")
+        expect(outcome).toMatchObject({
+          error: { message: "Entry exceeds empty metadata window" },
+        });
+      expect(types).not.toContain(5);
+      expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+
+test("R68 link scan cancellation joins started work and exact falsy cursor cleanup", async () => {
+  const value = fixture([], 0);
+  const controller = new AbortController();
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const closed = Promise.withResolvers<void>();
+  const observed = observe(value.workspace, {
+    async page() {
+      controller.abort(false);
+      entered.resolve();
+      await gate.promise;
+      throw null;
+    },
+    async cursorClose() {
+      closed.resolve();
+      throw 0;
+    },
+  });
+  let work: ReturnType<typeof capture> | undefined;
+  try {
+    await addVirtualLink(value, "/link", "../dangling");
+    work = capture(consume(observed.workspace, { signal: controller.signal }));
+    await entered.promise;
+    await closed.promise;
+    let done = false;
+    void work.then(() => {
+      done = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(done).toBe(false);
+    gate.resolve();
+    const outcome = await work;
+    expect(outcome.kind).toBe("error");
+    if (outcome.kind !== "error" || !(outcome.error instanceof AggregateError)) throw outcome;
+    expect(outcome.error.errors).toEqual([false, 0]);
+    expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
+    released(value);
+  } finally {
+    gate.resolve();
+    await work;
+    await value.close();
+  }
+});
+
+function seededLinkFixture(target: string): Fixture {
+  const seed = new MemFS();
+  const resolved = seed.resolve(seed.preopen("/"), "link", false);
+  if (typeof resolved === "number") throw new Error(`resolve ${resolved}`);
+  expect(seed.symlink(resolved, target)).toBe(0);
+  return publicReadFixture(new MemoryBackend(seed));
+}
+for (const limit of ["frame", "total"] as const) {
+  test(`R68 real link ${limit} refusal emits no END and closes owned resources`, async () => {
+    const value = seededLinkFixture(limit === "frame" ? "\u0001".repeat(3000) : "xy");
+    const observed = observe(value.workspace);
+    try {
+      const types: number[] = [];
+      const outcome = await capture(
+        (async () => {
+          for await (const chunk of exportWorkspaceArchive(observed.workspace, {
+            budget: { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: limit === "total" ? 1 : 3000 },
+          }))
+            types.push(chunk[0]!);
+        })(),
+      );
+      expect(outcome).toMatchObject({ kind: "error", error: { code: "LIMIT" } });
+      expect(types).toContain(2);
+      expect(types).not.toContain(5);
+      expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
+      released(value);
+    } finally {
+      await value.close();
+    }
+  });
+}
+test("R68 public early return at a link leaves the caller projection usable", async () => {
+  const value = fixture([], 0);
+  const observed = observe(value.workspace);
+  const stream = parseWorkspaceArchive(exportWorkspaceArchive(observed.workspace));
+  try {
+    await addVirtualLink(value, "/link", "./missing");
+    for await (const event of stream) {
+      if (event.kind === "entry" && event.entry.kind === "symlink") break;
+    }
+    expect(observed.counts).toMatchObject({ scans: 1, pins: 0, reads: 0 });
+    expect((await value.workspace.stat("/")).kind).toBe("ok");
+    released(value);
+  } finally {
+    await stream.return(undefined);
+    await value.close();
+  }
+});
+
+test("R68 each provider target is observed once before retention admission", async () => {
+  const value = fixture([], 0);
+  let observations = 0;
+  const observed = observe(value.workspace, {
+    async page(page) {
+      if (page.kind !== "entries") return page;
+      const entries = page.entries.map((entry) => {
+        if (entry.kind !== "symlink") return entry;
+        const target = entry.target;
+        let reads = 0;
+        return Object.defineProperty({ ...entry }, "target", {
+          get() {
+            observations++;
+            if (++reads > 1) throw new Error("Target was read again after admission");
+            return target;
+          },
+        });
+      });
+      return { kind: "entries", entries };
+    },
+  });
+  try {
+    await addVirtualLink(value, "/link", "./missing");
+    expect((await consume(observed.workspace)).at(-1)?.kind).toBe("complete");
+    expect(observations).toBe(2);
+    expect(observed.counts).toMatchObject({ pins: 0, reads: 0 });
     released(value);
   } finally {
     await value.close();

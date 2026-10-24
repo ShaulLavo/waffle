@@ -12,7 +12,7 @@ import {
 } from "../fs/workspace-archive.js";
 
 const manifest: ArchiveManifest = {
-  format: "waffle-workspace-archive-v1",
+  format: "waffle-workspace-archive-v2",
   sourceFormat: null,
   sourceWorkspace: null,
 };

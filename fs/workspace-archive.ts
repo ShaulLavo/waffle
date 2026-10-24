@@ -2,8 +2,8 @@ import { permissionsFor } from "../core/filesystem.js";
 import { parseStoredIdentity, type StoredIdentity } from "./file-identity.js";
 import type { NamespaceEntry } from "./workspace-types.js";
 
-const MAGIC = new TextEncoder().encode("WAFLAR01");
-const FORMAT = "waffle-workspace-archive-v1";
+const MAGIC = new TextEncoder().encode("WAFLAR02");
+const FORMAT = "waffle-workspace-archive-v2";
 const HEADER = 1,
   ENTRY = 2,
   DATA = 3,
@@ -23,19 +23,25 @@ export interface ArchiveManifest {
   readonly sourceFormat: string | null;
   readonly sourceWorkspace: string | null;
 }
-export type ArchiveEntry = Pick<NamespaceEntry, "path" | "size" | "mtime" | "mode"> & {
-  readonly kind: "file" | "directory";
+type ArchiveFields = Pick<NamespaceEntry, "path" | "size" | "mtime" | "mode"> & {
   readonly sourceIdentity: StoredIdentity | null;
 };
+export type ArchiveEntry = ArchiveFields &
+  (
+    | { readonly kind: "file" }
+    | { readonly kind: "directory" }
+    | { readonly kind: "symlink"; readonly target: string }
+  );
 export type ArchiveSourceEntry =
-  | { readonly metadata: ArchiveEntry & { readonly kind: "directory" } }
+  | { readonly metadata: Exclude<ArchiveEntry, { kind: "file" }>; readonly bytes?: never }
   | {
-      readonly metadata: ArchiveEntry & { readonly kind: "file" };
+      readonly metadata: Extract<ArchiveEntry, { kind: "file" }>;
       readonly bytes: AsyncIterable<Uint8Array>;
     };
 export interface ArchiveSummary {
   readonly entries: number;
   readonly fileBytes: number;
+  readonly linkTargetBytes: number;
 }
 interface ArchiveBudget {
   readonly maxEntries: number;
@@ -56,7 +62,7 @@ export type ArchiveEvent =
 /** All writes are private. Only complete may atomically select the durable staged root. */
 export interface ArchiveStagingSink {
   begin(manifest: ArchiveManifest, signal?: AbortSignal): Promise<void>;
-  entry(entry: ArchiveEntry, signal?: AbortSignal): Promise<void>;
+  entry(entry: Exclude<ArchiveEntry, { kind: "symlink" }>, signal?: AbortSignal): Promise<void>;
   write(bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
   endEntry(signal?: AbortSignal): Promise<void>;
   complete(summary: ArchiveSummary, signal?: AbortSignal): Promise<void>;
@@ -130,8 +136,10 @@ function manifestFor(value: unknown): ArchiveManifest {
 }
 function entryFor(value: unknown, manifest: ArchiveManifest): ArchiveEntry {
   const data = record(value);
-  exactKeys(data, ["path", "kind", "size", "mtime", "mode", "sourceIdentity"]);
-  if (data.kind !== "file" && data.kind !== "directory") fail("INVALID", "Unsupported entry kind");
+  if (data.kind !== "file" && data.kind !== "directory" && data.kind !== "symlink")
+    fail("INVALID", "Unsupported entry kind");
+  const keys = ["path", "kind", "size", "mtime", "mode", "sourceIdentity"];
+  exactKeys(data, data.kind === "symlink" ? keys.concat(["target"]) : keys);
   if (typeof data.path !== "string" || /[\uD800-\uDFFF]/u.test(data.path))
     fail("INVALID", "Invalid path string");
   if (!integer(data.size) || (data.kind === "directory" && data.size !== 0))
@@ -142,14 +150,40 @@ function entryFor(value: unknown, manifest: ArchiveManifest): ArchiveEntry {
   if (!integer(data.mode) || data.mode > mask || (data.mode & ~mask) !== 0)
     fail("INVALID", "Unsupported mode bits");
   const sourceIdentity = sourceIdentityFor(data.sourceIdentity, manifest.sourceWorkspace);
-  return Object.freeze({
+  const fields = {
     path: data.path,
-    kind: data.kind,
     size: data.size,
     mtime: data.mtime,
     mode: data.mode,
     sourceIdentity,
-  });
+  };
+  if (data.kind !== "symlink") return Object.freeze({ ...fields, kind: data.kind });
+  const target = data.target;
+  if (typeof target !== "string") fail("INVALID", "Invalid link target");
+  archiveTargetCharge(target, data.size, 3 * WORKSPACE_ARCHIVE_LIMITS.headerBytes);
+  return Object.freeze({ ...fields, kind: "symlink", target });
+}
+
+/** Internal exporter admission. No encoded target allocation is needed to measure it. */
+export function archiveTargetCharge(target: unknown, size: number, maximum: number): number {
+  if (typeof target !== "string" || !target) fail("INVALID", "Invalid link target");
+  const retained = add(0, 2 * target.length, maximum);
+  let bytes = 0;
+  for (let index = 0; index < target.length; index++) {
+    const unit = target.charCodeAt(index);
+    if (unit === 0) fail("INVALID", "Invalid link target");
+    const pair = isSurrogatePair(target, index);
+    const length = unit < 0x80 ? 1 : unit < 0x800 ? 2 : pair ? 4 : 3;
+    bytes = add(bytes, length, maximum - retained);
+    if (pair) index++;
+  }
+  if (size !== bytes) fail("INVALID", "Link target size mismatch");
+  return retained + bytes;
+}
+function isSurrogatePair(text: string, index: number): boolean {
+  const first = text.charCodeAt(index),
+    second = text.charCodeAt(index + 1);
+  return first >= 0xd800 && first <= 0xdbff && second >= 0xdc00 && second <= 0xdfff;
 }
 function sourceIdentityFor(value: unknown, workspace: string | null): StoredIdentity | null {
   if (value === null) return null;
@@ -193,10 +227,39 @@ class NamespaceOrder {
     if (entry.kind === "directory") this.directories.push({ path, lastChild: "" });
   }
 }
-function json(value: unknown): Uint8Array {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  if (bytes.length > WORKSPACE_ARCHIVE_LIMITS.headerBytes) fail("LIMIT", "Metadata too large");
-  return bytes;
+function jsonStringSize(text: string, maximum: number): number {
+  let size = add(0, 2, maximum);
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    const pair = isSurrogatePair(text, index);
+    let length = unit < 0x80 ? 1 : unit < 0x800 ? 2 : 3;
+    if (unit === 0x22 || unit === 0x5c || (unit >= 8 && unit <= 10) || unit === 12 || unit === 13)
+      length = 2;
+    else if (unit < 0x20 || (unit >= 0xd800 && unit <= 0xdfff && !pair)) length = 6;
+    else if (pair) length = 4;
+    size = add(size, length, maximum);
+    if (pair) index++;
+  }
+  return size;
+}
+function jsonSize(value: unknown, maximum: number): number {
+  if (value === null) return add(0, 4, maximum);
+  if (typeof value === "string") return jsonStringSize(value, maximum);
+  if (typeof value === "number") return add(0, JSON.stringify(value).length, maximum);
+  const fields = record(value);
+  let size = add(0, 2, maximum),
+    separator = 0;
+  for (const key of Object.keys(fields)) {
+    size = add(size, separator + 1, maximum);
+    size += jsonStringSize(key, maximum - size);
+    size += jsonSize(fields[key], maximum - size);
+    separator = 1;
+  }
+  return size;
+}
+function json(value: ArchiveManifest | ArchiveEntry): Uint8Array {
+  jsonSize(value, WORKSPACE_ARCHIVE_LIMITS.headerBytes);
+  return new TextEncoder().encode(JSON.stringify(value));
 }
 function parseJson(bytes: Uint8Array): unknown {
   try {
@@ -236,10 +299,11 @@ class FrameEncoder {
   }
 }
 function summaryBytes(summary: ArchiveSummary): Uint8Array {
-  const bytes = new Uint8Array(16),
+  const bytes = new Uint8Array(24),
     view = new DataView(bytes.buffer);
   view.setBigUint64(0, BigInt(summary.entries));
   view.setBigUint64(8, BigInt(summary.fileBytes));
+  view.setBigUint64(16, BigInt(summary.linkTargetBytes));
   return bytes;
 }
 class ArchiveState {
@@ -247,17 +311,29 @@ class ArchiveState {
   readonly order = new NamespaceOrder();
   entries = 0;
   fileBytes = 0;
+  linkTargetBytes = 0;
   constructor(options: ArchiveOptions) {
     this.budget = budgetFor(options);
   }
   accept(entry: ArchiveEntry): void {
     this.order.accept(entry);
     this.entries = add(this.entries, 1, this.budget.maxEntries);
+    const total = add(this.fileBytes, this.linkTargetBytes, this.budget.maxTotalBytes);
+    add(total, entry.size, this.budget.maxTotalBytes);
+    if (entry.kind === "symlink") {
+      this.linkTargetBytes += entry.size;
+      return;
+    }
+    if (entry.kind !== "file") return;
     if (entry.size > this.budget.maxFileBytes) fail("LIMIT", "File too large");
-    this.fileBytes = add(this.fileBytes, entry.size, this.budget.maxTotalBytes);
+    this.fileBytes += entry.size;
   }
   summary(): ArchiveSummary {
-    return Object.freeze({ entries: this.entries, fileBytes: this.fileBytes });
+    return Object.freeze({
+      entries: this.entries,
+      fileBytes: this.fileBytes,
+      linkTargetBytes: this.linkTargetBytes,
+    });
   }
 }
 async function* encodeEntry(
@@ -270,8 +346,11 @@ async function* encodeEntry(
   const entry = entryFor(source.metadata, manifest);
   state.accept(entry);
   yield await frames.frame(ENTRY, json(entry));
-  if (source.metadata.kind === "file" && "bytes" in source)
-    yield* encodeFile(source.bytes, entry.size, frames, signal);
+  if (source.metadata.kind === "file") {
+    const bytes = source.bytes;
+    if (!bytes) fail("INVALID", "Missing file payload iterator");
+    yield* encodeFile(bytes, entry.size, frames, signal);
+  }
   checkSignal(signal);
   yield await frames.frame(END_ENTRY, new Uint8Array());
 }
@@ -469,7 +548,7 @@ function frameLimit(type: number): number {
   if (type === HEADER || type === ENTRY) return WORKSPACE_ARCHIVE_LIMITS.headerBytes;
   if (type === DATA) return WORKSPACE_ARCHIVE_LIMITS.chunkBytes;
   if (type === END_ENTRY) return 0;
-  if (type === END) return 16;
+  if (type === END) return 24;
   fail("INVALID", "Unknown frame type");
 }
 class FrameReader {
@@ -509,15 +588,16 @@ async function* parseEntry(
     size = add(size, frame.payload.length, entry.size);
     yield { kind: "data", bytes: frame.payload };
   }
-  if (size !== entry.size) fail("INVALID", "Entry file length mismatch");
+  if (entry.kind === "file" && size !== entry.size) fail("INVALID", "Entry file length mismatch");
   yield { kind: "end-entry" };
 }
 function validateSummary(payload: Uint8Array, summary: ArchiveSummary): void {
-  if (payload.length !== 16) fail("INVALID", "Invalid archive summary");
+  if (payload.length !== 24) fail("INVALID", "Invalid archive summary");
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   if (
     view.getBigUint64(0) !== BigInt(summary.entries) ||
-    view.getBigUint64(8) !== BigInt(summary.fileBytes)
+    view.getBigUint64(8) !== BigInt(summary.fileBytes) ||
+    view.getBigUint64(16) !== BigInt(summary.linkTargetBytes)
   )
     fail("INTEGRITY", "Archive totals mismatch");
 }
@@ -580,6 +660,7 @@ async function stage(
     case "manifest":
       return sink.begin(event.manifest, signal);
     case "entry":
+      if (event.entry.kind === "symlink") fail("INVALID", "Link import is not supported");
       return sink.entry(event.entry, signal);
     case "data":
       return sink.write(event.bytes, signal);

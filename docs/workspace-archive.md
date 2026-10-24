@@ -8,25 +8,37 @@ guarantee is implemented by this format module.
 ## Logical data
 
 `encodeWorkspaceArchive` consumes an async iterable of `ArchiveSourceEntry`.
-A file supplies another async iterable of byte chunks. A directory has no bytes.
+A file supplies another async iterable of byte chunks. Directories and symbolic links
+have no payload iterator.
 `parseWorkspaceArchive` emits manifest, entry, data, end-entry, and complete events.
-`importWorkspaceArchive` consumes those events into an `ArchiveStagingSink`.
+The passive parser returns data only. It never resolves link targets.
+`importWorkspaceArchive` consumes ordinary events into an `ArchiveStagingSink`.
+It explicitly refuses a link before calling the file/directory-only sink, aborts
+private staging, and never calls `complete`. Link import is not implemented.
 
-The manifest identifies `waffle-workspace-archive-v1`. `sourceFormat` is descriptive
+The manifest identifies `waffle-workspace-archive-v2`. `sourceFormat` is descriptive
 provenance, not a target adapter selector. It is null or 1 to 128 lowercase ASCII
 letters, digits, or hyphens. `sourceWorkspace` is null or a lowercase UUID.
 Current persisted markers are
 `waffle-indexeddb-chunks-v2` and `waffle-opfs-snapshots-v1`. The archive does not
 contain physical inode numbers, payload keys, packs, journals, or storage handles.
 
-Each entry preserves its absolute virtual path, file or directory kind, file byte
-length, finite millisecond `mtime`, and supported permission bits. Directory size
-is zero. Supported mode masks come from `permissionsFor`: `01700` for directories
-and `0600` for files. No numeric ownership, executable registry, symlink, open
-handle, retained unlinked file, or tool index is serialized. The v1 entry kind is
-fixed to `file | directory`, independent of future public namespace kinds. A link
-cannot be represented as an empty file or as the metadata of its referent. The
-exporter rejects it before copying or charging unknown target metadata.
+Each entry preserves its absolute virtual path, explicit `file`, `directory`, or
+`symlink` kind, finite millisecond `mtime`, and supported permission bits.
+Directory size is zero. File size is its byte length. A link requires a nonempty,
+NUL-free raw `target` string and its TextEncoder UTF-8 byte size. The mode mask is
+`01700` for directories and `0600` for files and links, from `permissionsFor`.
+The supplied link mode is preserved, not replaced with referent permissions.
+No numeric ownership, executable registry, open handle, retained unlinked file,
+or tool index is serialized. The archive vocabulary is explicit and does not
+inherit future namespace kinds.
+
+A link is a metadata-only leaf. Absolute targets, backslashes, dot components,
+repeated separators, dangling targets, cycles, and raw Unicode are data, not
+archive paths. JSON escaping preserves every JavaScript UTF-16 code unit,
+including lone surrogates. Their declared UTF-8 size uses TextEncoder semantics,
+which count an unpaired surrogate as three bytes. That size is distinct from
+the escaped JSON wire length. No target is followed, normalized, or rewritten.
 
 `sourceIdentity` is either null or the existing durable `StoredIdentity` shape.
 It contains the source workspace UUID and hexadecimal 128-bit file ID and version.
@@ -46,7 +58,7 @@ serve as the target's history or index-validation token.
 
 All integers use unsigned big-endian encoding. There is no compression.
 
-The stream starts with the eight ASCII bytes `WAFLAR01`. Every following frame is:
+The stream starts with the eight ASCII bytes `WAFLAR02`. Every following frame is:
 
 | Field          |           Bytes |
 | -------------- | --------------: |
@@ -67,17 +79,26 @@ The frame types and sequence are fixed:
 1. Type 1 is the manifest as fatal-decoded UTF-8 JSON. Exactly one appears first.
 2. Type 2 is one entry as fatal-decoded UTF-8 JSON.
 3. Type 3 contains nonempty file data. It may repeat for that entry only.
-4. Type 4 has an empty payload and closes the entry, including a directory.
-5. Type 5 has exactly 16 payload bytes. Two unsigned 64-bit integers give total
-   entry count and total file bytes. It appears once, after the root and all entries.
+4. Type 4 has an empty payload and closes the entry, including a directory or link.
+5. Type 5 has exactly 24 payload bytes. Three unsigned 64-bit integers give total
+   entry count, file bytes, and link target UTF-8 bytes, in that order. It appears
+   once, after the root and all entries.
 
-Entry data must total exactly its declared file size. Directory data is rejected.
+File data must total exactly its declared file size. Directory and link DATA
+frames are rejected, even when a link has a nonzero declared target size.
 Every frame passes its checksum before its event reaches the sink. The final
 counts must equal the checked entry totals. EOF must follow the archive-end frame.
 Truncation, extra data, or an error from the EOF pull prevents completion.
 
-Metadata objects have exactly the documented fields. JSON parsing follows
-JavaScript JSON semantics. The encoder writes fields in its fixed order. The
+Metadata objects have exactly the documented fields. Only the link arm has
+`target`. Before allocating an encoded metadata string or buffer, the encoder
+measures the complete validated JSON object with bounded scalar scratch. It
+counts field names, punctuation, numbers, quotes, escapes, controls, Unicode
+pairs, and lone-surrogate escapes. More than 16 KiB fails `LIMIT`. It never
+encodes a raw target to measure it. A target that cannot fit its entry frame is
+an explicit format limit, not a truncated or silently omitted entry.
+
+JSON parsing follows JavaScript JSON semantics. The encoder writes fields in its fixed order. The
 parser accepts other JSON whitespace and field ordering. The archive identity is
 versioned independently of persistent layouts. Unknown archive identities and
 frame tags are rejected. There is no downgrade or version-skew negotiation.
@@ -107,10 +128,12 @@ chunk are retained at a time,
 plus bounded hashing scratch and directory prefixes. No file or archive buffer,
 whole-tree index, or background prefetch queue is created.
 
-Default logical budgets are 1,000,000 entries, 1 TiB per file, and 1 TiB of total
-file bytes. `ArchiveOptions.budget` replaces all three with nonnegative safe
+Default logical budgets are 1,000,000 entries, 1 TiB per file, and 1 TiB of combined
+file and link-target bytes. `ArchiveOptions.budget` replaces all three with nonnegative safe
 integers. Addition checks the remaining budget before adding, so counters cannot
-overflow JavaScript's safe integer range. Quotas count directories as entries.
+overflow JavaScript's safe integer range. Quotas count directories and links as entries. `maxFileBytes` applies only to
+files. The separate `fileBytes` and `linkTargetBytes` counters share
+`maxTotalBytes`.
 They bound accepted logical data, not elapsed time or external sink memory.
 
 ## Staging and publication
@@ -184,5 +207,5 @@ case. Controlled promises prove that both pending pulls and returns settle befor
 termination, without using a timeout as cleanup evidence.
 
 These tests prove framing and the sink call contract. They do not certify a
-browser storage adapter, a public import API, link export, identity adoption, SAFE, crash
+browser storage adapter, a public import API, link materialization, identity adoption, SAFE, crash
 recovery, or aggregate runtime memory pressure.

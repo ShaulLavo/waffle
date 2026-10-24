@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   encodeWorkspaceArchive,
@@ -16,7 +16,7 @@ import {
 } from "../fs/workspace-archive.js";
 
 const manifest: ArchiveManifest = {
-  format: "waffle-workspace-archive-v1",
+  format: "waffle-workspace-archive-v2",
   sourceFormat: "waffle-indexeddb-chunks-v2",
   sourceWorkspace: "d66ef453-eaa9-4133-9133-022d96260fce",
 };
@@ -57,11 +57,12 @@ async function* split(
     for (let at = 0; at < bytes.length; at += length) yield bytes.subarray(at, at + length);
   }
 }
-function u64s(entries: bigint, bytes: bigint): Uint8Array {
-  const out = new Uint8Array(16),
+function u64s(entries: bigint, bytes: bigint, targets = 0n): Uint8Array {
+  const out = new Uint8Array(24),
     view = new DataView(out.buffer);
   view.setBigUint64(0, entries);
   view.setBigUint64(8, bytes);
+  view.setBigUint64(16, targets);
   return out;
 }
 function json(value: unknown): Uint8Array {
@@ -87,7 +88,7 @@ function validFrames(): RawFrame[] {
   ]);
 }
 async function* raw(frames: readonly RawFrame[]): AsyncGenerator<Uint8Array> {
-  yield new TextEncoder().encode("WAFLAR01");
+  yield new TextEncoder().encode("WAFLAR02");
   let previous = new Uint8Array(32);
   for (const [type, payload] of frames) {
     const header = new Uint8Array(5);
@@ -198,7 +199,7 @@ describe("workspace archive candidate", () => {
         split(encodeWorkspaceArchive(manifest, sources()), length),
         sink,
       );
-      expect(summary).toEqual({ entries: 4, fileBytes: 3 });
+      expect(summary).toEqual({ entries: 4, fileBytes: 3, linkTargetBytes: 0 });
       expect(sink.staged).toEqual([directory(), file(), directory("/b"), file("/b/é", 0)]);
       expect(sink.bytes).toBe(3);
       expect(sink.completed).toBe(1);
@@ -455,7 +456,7 @@ describe("archive validation before publication", () => {
   test("rejects oversized frame length before pulling its body", async () => {
     let bodyRead = false;
     async function* oversized(): AsyncGenerator<Uint8Array> {
-      yield new TextEncoder().encode("WAFLAR01");
+      yield new TextEncoder().encode("WAFLAR02");
       yield new Uint8Array([1, 255, 255, 255, 255]);
       bodyRead = true;
       yield new Uint8Array(0);
@@ -876,7 +877,7 @@ describe("logical namespace streaming", () => {
       staged++;
     };
     const summary = await importWorkspaceArchive(encodeWorkspaceArchive(manifest, entries()), sink);
-    expect(summary).toEqual({ entries: count + 1, fileBytes: 0 });
+    expect(summary).toEqual({ entries: count + 1, fileBytes: 0, linkTargetBytes: 0 });
     expect(staged).toBe(count + 1);
     expect(maximumAhead).toBe(1);
     expect(sink.staged).toEqual([]);
@@ -925,7 +926,7 @@ describe("logical namespace streaming", () => {
 });
 
 for (const target of ["/a", "/missing", "link"]) {
-  test(`v1 raw link target ${target} is not importable and never selects a staged root`, async () => {
+  test(`v2 raw link target ${target} is not importable and never selects a staged root`, async () => {
     const entry = {
       ...file("/link", new TextEncoder().encode(target).length),
       kind: "symlink",
@@ -937,7 +938,7 @@ for (const target of ["/a", "/missing", "link"]) {
   });
 }
 
-test("v1 encoder rejects link-shaped input without pulling a referent", async () => {
+test("v2 encoder rejects mismatched link size without pulling a referent", async () => {
   let pulls = 0;
   const metadata = Object.defineProperties(file("/link", 1), {
     kind: { value: "symlink", enumerable: true },
@@ -958,4 +959,262 @@ test("v1 encoder rejects link-shaped input without pulling a referent", async ()
     code: "INVALID",
   });
   expect(pulls).toBe(0);
+});
+
+function linkEntry(target: string, path = "/link") {
+  return {
+    ...file(path, new TextEncoder().encode(target).length),
+    kind: "symlink" as const,
+    target,
+  };
+}
+async function archiveEvents(
+  source: AsyncIterable<Uint8Array>,
+  options?: ArchiveOptions,
+): Promise<ArchiveEvent[]> {
+  const events: ArchiveEvent[] = [];
+  for await (const event of parseWorkspaceArchive(source, options)) events.push(event);
+  return events;
+}
+test("R68 codec losslessly roundtrips raw link code units with no DATA", async () => {
+  const entry = linkEntry('./../é/😀/\ud800/\udfff/\\"\n');
+  const events = await archiveEvents(
+    encodeWorkspaceArchive(
+      manifest,
+      values<ArchiveSourceEntry>([{ metadata: directory() }, { metadata: entry }]),
+    ),
+  );
+  expect(events.filter((event) => event.kind === "entry").map((event) => event.entry)).toEqual([
+    directory(),
+    entry,
+  ]);
+  expect(events.some((event) => event.kind === "data")).toBe(false);
+  expect(events.at(-1)).toEqual({
+    kind: "complete",
+    summary: {
+      entries: 2,
+      fileBytes: 0,
+      linkTargetBytes: entry.size,
+    },
+  });
+});
+
+async function encodingFailure(
+  entry: Exclude<ArchiveEntry, { kind: "file" }>,
+  options?: ArchiveOptions,
+) {
+  const types: number[] = [];
+  const stream = encodeWorkspaceArchive(
+    manifest,
+    values<ArchiveSourceEntry>([{ metadata: directory() }, { metadata: entry }]),
+    options,
+  );
+  let error: unknown;
+  try {
+    for await (const chunk of stream) types.push(chunk[0]!);
+  } catch (reason) {
+    error = reason;
+  }
+  expect(types).not.toContain(5);
+  return error;
+}
+for (const unit of ["x", "é", "😀", "\ud800", "\udfff", '"', "\\", "\n", "\u0001"]) {
+  test(`R68 exact metadata preflight boundary for ${JSON.stringify(unit)}`, async () => {
+    const length = (target: string) => json(linkEntry(target)).length;
+    const overhead = length(unit) - json(unit).length + 2;
+    const perUnit = json(unit).length - 2;
+    let repetitions = Math.floor((16384 - overhead) / perUnit);
+    while (length(unit.repeat(repetitions)) > 16384) repetitions--;
+    const target = unit.repeat(repetitions);
+    expect(length(target)).toBeLessThanOrEqual(16384);
+    const entry = linkEntry(target);
+    const events = await archiveEvents(
+      encodeWorkspaceArchive(
+        manifest,
+        values<ArchiveSourceEntry>([{ metadata: directory() }, { metadata: entry }]),
+      ),
+    );
+    expect(events).toContainEqual({ kind: "entry", entry });
+    expect(length(target + unit)).toBeGreaterThan(16384);
+    expect(await encodingFailure(linkEntry(target + unit))).toMatchObject({ code: "LIMIT" });
+  });
+}
+for (const entry of [
+  { ...linkEntry("x"), target: "" },
+  { ...linkEntry("x"), target: "a\0b" },
+  { ...linkEntry("x"), target: 3 },
+  { ...linkEntry("x"), size: 2 },
+  { ...linkEntry("x"), mode: 0o777 },
+  { ...file("/link", 1), target: "x" },
+]) {
+  test(`R68 parser refuses malformed target metadata ${JSON.stringify(entry)}`, async () => {
+    await expect(archiveEvents(raw(rootFrames().concat(entryFrames(entry))))).rejects.toMatchObject(
+      {
+        code: "INVALID",
+      },
+    );
+  });
+}
+test("R68 passive parser returns link data but internal import refuses before its ordinary sink", async () => {
+  const entry = linkEntry("../../absent");
+  const frames = rootFrames().concat(entryFrames(entry), [[5, u64s(2n, 0n, BigInt(entry.size))]]);
+  expect(await archiveEvents(raw(frames))).toContainEqual({ kind: "entry", entry });
+  const sink = new RootModel();
+  const received: ArchiveEntry[] = [];
+  sink.entry = async (metadata) => {
+    received.push(metadata);
+  };
+  await expect(importWorkspaceArchive(raw(frames), sink)).rejects.toMatchObject({
+    code: "INVALID",
+    message: "Link import is not supported",
+  });
+  expect(received).toEqual([directory()]);
+  expect(sink.aborted).toBe(1);
+  expect(sink.completed).toBe(0);
+  expect(sink.selected).toBe("old");
+});
+test("R68 link DATA is forbidden even with a valid digest and matching declared size", async () => {
+  await expect(
+    archiveEvents(raw(rootFrames().concat(entryFrames(linkEntry("x"), [new Uint8Array([1])])))),
+  ).rejects.toMatchObject({ code: "INVALID" });
+});
+test("R68 END accounts separately for file bytes and link target bytes", async () => {
+  const entry = linkEntry("xy", "/b");
+  const frames = rootFrames().concat(entryFrames(file(), [new Uint8Array(3)]), entryFrames(entry));
+  const events = await archiveEvents(raw(frames.concat([[5, u64s(3n, 3n, 2n)]])));
+  expect(events.at(-1)).toEqual({
+    kind: "complete",
+    summary: { entries: 3, fileBytes: 3, linkTargetBytes: 2 },
+  });
+  await expect(archiveEvents(raw(frames.concat([[5, u64s(3n, 5n, 0n)]])))).rejects.toMatchObject({
+    code: "INTEGRITY",
+  });
+});
+for (const budget of [
+  { maxEntries: 1, maxFileBytes: 0, maxTotalBytes: 2 },
+  { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: 1 },
+]) {
+  test(`R68 link counts against entry and total budgets ${JSON.stringify(budget)}`, async () => {
+    expect(await encodingFailure(linkEntry("xy"), { budget })).toMatchObject({ code: "LIMIT" });
+    await expect(
+      archiveEvents(raw(rootFrames().concat(entryFrames(linkEntry("xy")))), { budget }),
+    ).rejects.toBeDefined();
+  });
+}
+test("R68 maxFileBytes applies only to files while combined bytes remain bounded", async () => {
+  const entry = linkEntry("xy", "/b");
+  const input = () =>
+    values<ArchiveSourceEntry>([
+      { metadata: directory() },
+      { metadata: file(), bytes: values([new Uint8Array(3)]) },
+      { metadata: entry },
+    ]);
+  const events = await archiveEvents(
+    encodeWorkspaceArchive(manifest, input(), {
+      budget: { maxEntries: 3, maxFileBytes: 3, maxTotalBytes: 5 },
+    }),
+  );
+  expect(events.at(-1)?.kind).toBe("complete");
+  const types: number[] = [];
+  await expect(
+    (async () => {
+      for await (const chunk of encodeWorkspaceArchive(manifest, input(), {
+        budget: { maxEntries: 3, maxFileBytes: 3, maxTotalBytes: 4 },
+      }))
+        types.push(chunk[0]!);
+    })(),
+  ).rejects.toMatchObject({ code: "LIMIT" });
+  expect(types).not.toContain(5);
+  const links = values<ArchiveSourceEntry>([
+    { metadata: directory() },
+    { metadata: linkEntry("xy") },
+  ]);
+  expect(
+    (
+      await archiveEvents(
+        encodeWorkspaceArchive(manifest, links, {
+          budget: { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: 2 },
+        }),
+      )
+    ).at(-1)?.kind,
+  ).toBe("complete");
+});
+
+test("R68 oversized escaped metadata fails before object stringify or target encoding", async () => {
+  const entry = linkEntry("\u0001".repeat(3000));
+  const stringify = spyOn(JSON, "stringify");
+  const encode = spyOn(TextEncoder.prototype, "encode");
+  try {
+    expect(await encodingFailure(entry)).toMatchObject({ code: "LIMIT" });
+    expect(
+      stringify.mock.calls.some(
+        ([value]) => typeof value === "object" && value !== null && "target" in value,
+      ),
+    ).toBe(false);
+    expect(encode.mock.calls.some(([text]) => text === entry.target)).toBe(false);
+  } finally {
+    stringify.mockRestore();
+    encode.mockRestore();
+  }
+});
+test("R68 new wire identity rejects old magic and old manifest without compatibility fallback", async () => {
+  await expect(archiveEvents(values([new TextEncoder().encode("WAFLAR01")]))).rejects.toMatchObject(
+    { code: "INVALID" },
+  );
+  await expect(
+    archiveEvents(raw(manifestFrames({ ...manifest, format: "waffle-workspace-archive-v1" }))),
+  ).rejects.toMatchObject({ code: "INVALID" });
+});
+
+test("R68 early return at link metadata joins the source return and retains falsy cleanup", async () => {
+  const entered = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  const items: ArchiveSourceEntry[] = [
+    { metadata: directory() },
+    { metadata: linkEntry("../missing") },
+  ];
+  let index = 0,
+    returns = 0;
+  const input: AsyncIterable<ArchiveSourceEntry> = {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          const value = items[index++];
+          return value === undefined ? { done: true, value: undefined } : { done: false, value };
+        },
+        async return() {
+          returns++;
+          entered.resolve();
+          await gate.promise;
+          throw false;
+        },
+      };
+    },
+  };
+  const stream = parseWorkspaceArchive(encodeWorkspaceArchive(manifest, input));
+  let closing: Promise<unknown> | undefined;
+  try {
+    let event = await stream.next();
+    while (!event.done && !(event.value.kind === "entry" && event.value.entry.kind === "symlink"))
+      event = await stream.next();
+    expect(event.done).toBe(false);
+    closing = stream.return(undefined).then(
+      () => "unexpected",
+      (error: unknown) => error,
+    );
+    await entered.promise;
+    let done = false;
+    void closing.then(() => {
+      done = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(done).toBe(false);
+    gate.resolve();
+    expect(await closing).toBe(false);
+    expect(returns).toBe(1);
+  } finally {
+    gate.resolve();
+    await closing;
+    await stream.return(undefined);
+  }
 });
