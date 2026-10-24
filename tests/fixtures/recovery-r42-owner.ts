@@ -18,7 +18,10 @@ BroadcastChannel.prototype.postMessage = function (value: unknown) {
   replies.push(structuredClone(value));
   if (!armed) return Reflect.apply(originalPost, this, [value]);
   armed = false;
-  held = { message: structuredClone(value), send: () => Reflect.apply(originalPost, this, [value]) };
+  held = {
+    message: structuredClone(value),
+    send: () => Reflect.apply(originalPost, this, [value]),
+  };
 };
 
 function execute(operation: string): unknown {
@@ -27,8 +30,7 @@ function execute(operation: string): unknown {
     armed = true;
     return null;
   }
-  if (operation === "r42-probe")
-    return { held: held?.message ?? null, replies: replies.slice() };
+  if (operation === "r42-probe") return { held: held?.message ?? null, replies: replies.slice() };
   if (operation !== "r42-release" || !held) throw new Error("held settlement reply absent");
   held.send();
   held = undefined;
@@ -36,7 +38,8 @@ function execute(operation: string): unknown {
 }
 
 self.onmessage = function (event: MessageEvent<unknown>) {
-  const data = record(event.data), operation = text(data.operation);
+  const data = record(event.data),
+    operation = text(data.operation);
   if (!operation.startsWith("r42-")) return originalMessage?.call(self, event);
   try {
     self.postMessage({ id: text(data.id), value: execute(operation) });

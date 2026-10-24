@@ -7,11 +7,14 @@ import { runStep } from "./persistent-lifecycle-r2-browser-runner";
 import type * as PageModule from "./fixtures/recovery-r42-page";
 
 function call(page: Page, operation: string, body?: unknown): Promise<unknown> {
-  return page.evaluate(async ({ operation, body }) => {
-    const path = "/recovery-r42-page.js";
-    const module: typeof PageModule = await import(path);
-    return module.control(operation, body);
-  }, { operation, body });
+  return page.evaluate(
+    async ({ operation, body }) => {
+      const path = "/recovery-r42-page.js";
+      const module: typeof PageModule = await import(path);
+      return module.control(operation, body);
+    },
+    { operation, body },
+  );
 }
 function owner(page: Page, operation: string, body?: unknown): Promise<unknown> {
   return call(page, "owner", { operation, body });
@@ -61,7 +64,9 @@ export function assertSingleAppend(bytes: unknown, changes: unknown, receipt: un
 function settlementReplies(probe: unknown, request: Record<string, unknown>): unknown[] {
   const replies = record(probe).replies;
   assert(Array.isArray(replies));
-  return replies.map(record).filter((reply) => reply.id === request.id && reply.client === request.client);
+  return replies
+    .map(record)
+    .filter((reply) => reply.id === request.id && reply.client === request.client);
 }
 interface State {
   context: BrowserContext;
@@ -75,7 +80,9 @@ async function open(state: State): Promise<Page> {
   state.pages.push(page);
   page.on("worker", (worker) => {
     const index = state.workerClosed.push(false) - 1;
-    worker.once("close", () => { state.workerClosed[index] = true; });
+    worker.once("close", () => {
+      state.workerClosed[index] = true;
+    });
   });
   await page.goto(state.origin);
   assert.equal(await page.opener(), null);
@@ -89,14 +96,38 @@ async function contain(state: State): Promise<unknown> {
   await until(async () => state.workerClosed.every(Boolean), "owned worker close events");
   await until(async () => {
     const locks = record(await call(audit, "locks"));
-    return Array.isArray(locks.held) && locks.held.length === 0 &&
-      Array.isArray(locks.pending) && locks.pending.length === 0;
+    return (
+      Array.isArray(locks.held) &&
+      locks.held.length === 0 &&
+      Array.isArray(locks.pending) &&
+      locks.pending.length === 0
+    );
   }, "all native guards released");
-  return { locks: await call(audit, "locks"), database: await call(audit, "delete", state.database) };
+  return {
+    locks: await call(audit, "locks"),
+    database: await call(audit, "delete", state.database),
+  };
 }
-async function replaySchedule(state: State, steps: Parameters<typeof runStep>[0], negative: boolean) {
-  const a = await open(state), b = await open(state), c = await open(state);
-  let ready: Record<string, unknown> = {}, before: unknown, receipt: unknown, request: Record<string, unknown> = {};
+async function incorrectFreshAppend(page: Page): Promise<void> {
+  await call(page, "r42-append");
+  await until(
+    async () => record(record(await call(page, "r42-probe")).append).kind !== "pending",
+    "incorrect fresh append completed",
+  );
+  assert.equal(record(record(await call(page, "r42-probe")).append).kind, "fulfilled");
+}
+async function replaySchedule(
+  state: State,
+  steps: Parameters<typeof runStep>[0],
+  negative: boolean,
+) {
+  const a = await open(state),
+    b = await open(state),
+    c = await open(state);
+  let ready: Record<string, unknown> = {},
+    before: unknown,
+    receipt: unknown,
+    request: Record<string, unknown> = {};
   await runStep(steps, 0, async () => {
     ready = record(await call(a, "start", { name: state.database }));
     await call(b, "attach", ready.descriptor);
@@ -110,7 +141,10 @@ async function replaySchedule(state: State, steps: Parameters<typeof runStep>[0]
   await runStep(steps, 1, async () => {
     await owner(a, "r42-arm");
     await call(b, "r42-append");
-    await until(async () => record(await owner(a, "r42-probe")).held !== null, "committed reply held");
+    await until(
+      async () => record(await owner(a, "r42-probe")).held !== null,
+      "committed reply held",
+    );
     const probe = record(await call(b, "r42-probe"));
     assert.equal(record(probe.append).kind, "pending");
     request = record(probe.captured);
@@ -125,30 +159,38 @@ async function replaySchedule(state: State, steps: Parameters<typeof runStep>[0]
   });
   await runStep(steps, 2, async () => {
     assert.deepEqual(await call(b, "r42-replay"), request);
-    await until(async () => record(record(await call(b, "r42-probe")).append).kind !== "pending", "first exact replay reply");
+    await until(
+      async () => record(record(await call(b, "r42-probe")).append).kind !== "pending",
+      "first exact replay reply",
+    );
     const result = record(record(await call(b, "r42-probe")).append);
     assert.equal(result.kind, "fulfilled");
     const tail = record(result.value);
     assert.deepEqual(tail.ack, { written: 1, offset: 4 });
     assert.deepEqual(tail.settlement, { kind: "committed", receipt });
     assert.deepEqual(await call(b, "r42-replay"), request);
-    await until(async () => settlementReplies(await call(b, "r42-probe"), request).length === 2, "second exact replay reply");
+    await until(
+      async () => settlementReplies(await call(b, "r42-probe"), request).length === 2,
+      "second exact replay reply",
+    );
     const held = record(await owner(a, "r42-probe"));
     const first = record(held.held);
-    for (const reply of settlementReplies(await call(b, "r42-probe"), request)) assert.deepEqual(reply, first);
+    for (const reply of settlementReplies(await call(b, "r42-probe"), request))
+      assert.deepEqual(reply, first);
     assert.deepEqual(await owner(a, "r42-release"), { released: true });
-    await until(async () => settlementReplies(await call(b, "r42-probe"), request).length === 3, "delayed original reply");
-    for (const reply of settlementReplies(await call(b, "r42-probe"), request)) assert.deepEqual(reply, first);
+    await until(
+      async () => settlementReplies(await call(b, "r42-probe"), request).length === 3,
+      "delayed original reply",
+    );
+    for (const reply of settlementReplies(await call(b, "r42-probe"), request))
+      assert.deepEqual(reply, first);
     assert.deepEqual(await owner(a, "cut"), record(receipt).cut);
     return { result, replies: settlementReplies(await call(b, "r42-probe"), request) };
   });
   await runStep(steps, 3, async () => {
-    if (negative) {
-      await call(b, "r42-append");
-      await until(async () => record(record(await call(b, "r42-probe")).append).kind !== "pending", "incorrect fresh append completed");
-      assert.equal(record(record(await call(b, "r42-probe")).append).kind, "fulfilled");
-    }
-    const bytes = await read(c), changes = await owner(a, "changes", before);
+    if (negative) await incorrectFreshAppend(b);
+    const bytes = await read(c),
+      changes = await owner(a, "changes", before);
     assertSingleAppend(bytes, changes, receipt);
     assert.deepEqual(await owner(a, "receipt", record(receipt).id), { kind: "committed", receipt });
     await host(b, "flush");
@@ -166,45 +208,78 @@ async function replaySchedule(state: State, steps: Parameters<typeof runStep>[0]
     return { gracefulStop: true, ownerStillAlive: true, locks: await call(a, "locks"), probe };
   });
   await runStep(steps, 5, async () => {
-    const reopened = record(await call(c, "start", { name: state.database, original: ready.identity }));
+    const reopened = record(
+      await call(c, "start", { name: state.database, original: ready.identity }),
+    );
     assert.notEqual(record(reopened.identity).history, record(ready.identity).history);
     assert.notEqual(record(reopened.identity).instance, record(ready.identity).instance);
     assert.deepEqual(reopened.notice, {
-      kind: "v1-new-history", durablePublicationCut: "untracked", oldCapabilities: "not-restored",
-      oldMutationOutcomes: "not-restored", acknowledgedTail: "may-be-lost",
+      kind: "v1-new-history",
+      durablePublicationCut: "untracked",
+      oldCapabilities: "not-restored",
+      oldMutationOutcomes: "not-restored",
+      acknowledgedTail: "may-be-lost",
     });
     assert.deepEqual(await owner(c, "receipt", record(receipt).id), { kind: "unknown" });
     assert.equal(record(await owner(c, "changes", before)).kind, "gap");
-    assert.deepEqual(await call(a, "staleDescriptor", ready.descriptor), { kind: "rejected", errno: 11 });
+    assert.deepEqual(await call(a, "staleDescriptor", ready.descriptor), {
+      kind: "rejected",
+      errno: 11,
+    });
     await call(b, "attach", reopened.descriptor);
     assert.deepEqual(await read(b), [10, 20, 30, 90]);
     const saved = await nativeSaved(a, state.database);
     await call(b, "stopPeer");
     assert.deepEqual(await owner(c, "stop"), { memoized: true, stopped: true });
     assert.deepEqual(await call(a, "locks"), { held: [], pending: [] });
-    return { reopened, saved, oldReceipt: { kind: "unknown" }, oldCursor: "gap", locks: await call(a, "locks") };
+    return {
+      reopened,
+      saved,
+      oldReceipt: { kind: "unknown" },
+      oldCursor: "gap",
+      locks: await call(a, "locks"),
+    };
   });
 }
 async function run(): Promise<void> {
   const runner = new BrowserRunnerLifecycle(150000);
   const steps: Parameters<typeof runStep>[0] = [
-    "native multi-page baseline", "committed settlement reply lost without death",
-    "exact identity replay and delayed original reply", "one mutation and completed native flush",
-    "graceful owner close while worker lives", "explicit reset preserves bytes without old outcomes",
+    "native multi-page baseline",
+    "committed settlement reply lost without death",
+    "exact identity replay and delayed original reply",
+    "one mutation and completed native flush",
+    "graceful owner close while worker lives",
+    "explicit reset preserves bytes without old outcomes",
   ].map((name) => ({ name, kind: "unrun" }));
-  const evidence: Record<string, unknown> = { base: "b80e8dfcef0e27392121190fca8023bacca46e53", negativeControl: process.argv.includes("--negative-control") };
+  const evidence: Record<string, unknown> = {
+    base: "b80e8dfcef0e27392121190fca8023bacca46e53",
+    negativeControl: process.argv.includes("--negative-control"),
+  };
   let state: State | undefined;
   try {
     await runner.init();
     evidence.scratch = runner.scratch;
-    const origin = runner.serve({
-      "/": "<!doctype html><title>Recovery r42</title>",
-      "/recovery-r42-page.js": await browserBundle(resolve(import.meta.dir, "fixtures/recovery-r42-page.ts")),
-      "/persistent-lifecycle-r2-owner.js": await browserBundle(resolve(import.meta.dir, "fixtures/recovery-r42-owner.ts")),
-    }, 0);
+    const origin = runner.serve(
+      {
+        "/": "<!doctype html><title>Recovery r42</title>",
+        "/recovery-r42-page.js": await browserBundle(
+          resolve(import.meta.dir, "fixtures/recovery-r42-page.ts"),
+        ),
+        "/persistent-lifecycle-r2-owner.js": await browserBundle(
+          resolve(import.meta.dir, "fixtures/recovery-r42-owner.ts"),
+        ),
+      },
+      0,
+    );
     const browser = await runner.launch("chromium");
     evidence.browser = browser.version();
-    state = { context: await browser.newContext(), pages: [], workerClosed: [], database: `recovery-r42-${crypto.randomUUID()}`, origin };
+    state = {
+      context: await browser.newContext(),
+      pages: [],
+      workerClosed: [],
+      database: `recovery-r42-${crypto.randomUUID()}`,
+      origin,
+    };
     evidence.database = state.database;
     await replaySchedule(state, steps, evidence.negativeControl === true);
   } catch (error) {
@@ -225,9 +300,15 @@ async function run(): Promise<void> {
       process.exitCode = 1;
     }
     const report = { ...evidence, steps };
-    const json = JSON.stringify(report, (_key, value: unknown) => typeof value === "bigint" ? { kind: "bigint", decimal: String(value) } : value, 2);
+    const json = JSON.stringify(
+      report,
+      (_key, value: unknown) =>
+        typeof value === "bigint" ? { kind: "bigint", decimal: String(value) } : value,
+      2,
+    );
     console.log(json);
-    if (process.env.RECOVERY_R42_REPORT) await Bun.write(process.env.RECOVERY_R42_REPORT, json + "\n");
+    if (process.env.RECOVERY_R42_REPORT)
+      await Bun.write(process.env.RECOVERY_R42_REPORT, json + "\n");
   }
 }
 if (import.meta.main) await run();
