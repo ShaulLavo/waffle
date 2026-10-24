@@ -91,10 +91,11 @@ archive format. They produce `format-path` with the offending path, without
 renaming or silently omitting the entry. Well-formed Unicode, including astral
 characters, is supported.
 
-One scan accepts at most `WORKSPACE_EXPORT_LIMITS.scanPages`, currently 32,770
-pulls, including empty pages. An endless producer cannot extend a scan without
-bound. Every window-selection scan must complete at the initial cut. After the
-last window, an empty same-cut selection scan remains mandatory before END.
+One scan accepts at most `WORKSPACE_EXPORT_LIMITS.scanPages` pulls, derived as
+`WORKSPACE_LIMITS.indexEdges + 2`, including empty pages. An endless producer
+cannot extend a scan without bound. Every window-selection scan must complete at
+the initial cut. After the last window, an empty same-cut selection scan remains
+mandatory before END.
 
 ### Measured cost and remaining limit
 
