@@ -1837,3 +1837,186 @@ test("a kill after the ready hook but before entry prevents every guest instruct
   expect(startStatus(state.signals.outcome)).toBe(-11);
   expect(readOutcome(state.signals.outcome)).toEqual({ kind: "signaled", code: 9, status: 137 });
 });
+
+// Independent imported effects observe Wasm instantiation and _start, not terminal I/O.
+function terminalEntryModule(): WebAssembly.Module {
+  const text = (value: string) =>
+    [value.length].concat(Array.from(new TextEncoder().encode(value)));
+  const section = (id: number, bytes: number[]) => [id, bytes.length].concat(bytes);
+  const imported = (field: string) => text("probe").concat(text(field), [0, 0]);
+  const exported = (field: string, kind: number, index: number) =>
+    text(field).concat([kind, index]);
+  return new WebAssembly.Module(
+    new Uint8Array(
+      [0, 97, 115, 109, 1, 0, 0, 0].concat(
+        section(1, [1, 96, 0, 0]),
+        section(2, [2].concat(imported("startSection"), imported("entry"))),
+        section(3, [2, 0, 0]),
+        section(5, [1, 0, 1]),
+        section(7, [2].concat(exported("memory", 2, 0), exported("_start", 0, 3))),
+        section(8, [2]),
+        section(10, [2, 4, 0, 16, 0, 11, 4, 0, 16, 1, 11]),
+      ),
+    ),
+  );
+}
+function terminalStartupWorker(): string {
+  const moduleURL = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  return `const {parentPort,workerData}=require('node:worker_threads');
+(async()=>{
+ const {bootstrap}=await import(${moduleURL("../browser/worker.ts")});
+ const {attachTerminal}=await import(${moduleURL("../browser/terminal-session.ts")});
+ const {createFilesystemConnection}=await import(${moduleURL("../fs/protocol.ts")});
+ const cells=new Int32Array(workerData.effects), connection=createFilesystemConnection();
+ let guard=()=>{throw Error('unarmed guard')};
+ const terminal=attachTerminal({context:workerData.context,process:workerData.process,checkActive:()=>guard(),
+ policy:{tryRead:()=>-6,inputReadiness:()=>({readable:false,nbytes:0}),transition:()=>({kind:'ok',value:undefined}),tryWrite:()=>0,outputReadiness:()=>({writable:true})}});
+ try {
+ await bootstrap({module:workerData.module,args:[],env:{},filesystem:connection.client,runtimeProcess:workerData.process}, {
+ setup(context){guard=()=>{context.checkActive();if(Atomics.load(cells,4)!==0)throw Error('Shell revoked')};Atomics.store(cells,2,1);parentPort.postMessage({phase:'setup'});
+ const ready=workerData.runControl?{kind:'ok'}:terminal.ready();if(ready.kind==='error')throw Error(ready.code);
+ context.fs.preopen=()=>1;context.fs.retain=()=>{};context.fs.release=()=>{};},
+ namespaces(){return {probe:{startSection(){Atomics.add(cells,0,1)},entry(){Atomics.add(cells,1,1)}}}},
+ resolveTerminal:target=>terminal.resolve(target), run:()=>{if(workerData.runControl){const ready=terminal.ready();if(ready.kind==='error')throw Error(ready.code)}return 0},
+ beforeFinish(){terminal.dispose();Atomics.store(cells,3,1)}
+ },{crossOriginIsolated:true,postMessage:message=>parentPort.postMessage(message)});
+ } finally {terminal.dispose();connection.client.port.close();connection.server.port.close();}
+ parentPort.postMessage({phase:'cleaned'});parentPort.close();
+ })().catch(error=>{parentPort.postMessage({error:String(error)});parentPort.close()});`;
+}
+
+for (const action of [
+  "bind",
+  "cancel",
+  "retire",
+  "plan-reuse",
+  "child-end",
+  "guard-revoke",
+  "root-end",
+  "gate-held-root-end",
+  "run-control",
+] as const)
+  test(`planned setup gate suppresses start-section and _start before ${action}`, async () => {
+    const { Worker } = await import("node:worker_threads");
+    const { createTerminalSession, claimTerminalAuthority } =
+      await import("../browser/runtime-terminals.js");
+    const root = createWorkerProcessTransport({ capacity: 16 });
+    const display = createTerminalSession({
+      controller: root,
+      geometry: { columns: 127, rows: 39 },
+    });
+    const policy = {
+      tryRead: () => -6,
+      inputReadiness: () => ({ readable: false, nbytes: 0 }),
+      transition: () => ({ kind: "ok" as const, value: undefined }),
+      tryWrite: () => 0,
+      outputReadiness: () => ({ writable: true }),
+    };
+    const must = <T>(result: import("../browser/runtime-terminals.js").TerminalResult<T>): T => {
+      if (result.kind === "error") throw Error(result.code);
+      return result.value;
+    };
+    const authority = must(
+      claimTerminalAuthority({
+        identity: display.identity,
+        process: root,
+        checkActive() {},
+        policy,
+      }),
+    );
+    const group = must(authority.createGroup({ initialMode: "cooked" }));
+    const parent = must(authority.admitExisting({ group, pid: root.pid }));
+    const lease = must(authority.acquire({ group, expected: null }));
+    const planned = must(authority.planMember({ group, parent: parent.member }));
+    const later = must(authority.planMember({ group, parent: parent.member }));
+    const descriptors = new DescriptorTable();
+    let child: import("../proc/worker-client.js").WorkerProcessTransport | undefined;
+    const client = new WorkerProcessClient({
+      transport: root,
+      descriptors,
+      codec: {
+        export() {
+          throw Error("no descriptors");
+        },
+        import() {
+          throw Error("no descriptors");
+        },
+        discard() {},
+      },
+      postMessage(message) {
+        if (message.operation === "spawn") child = message.transport;
+      },
+    });
+    const pid = client.spawn(root.pid, {
+      executable: "entry",
+      argv: [],
+      env: {},
+      cwd: "/",
+      job: 0,
+      fds: [],
+    });
+    const effects = new SharedArrayBuffer(32),
+      cells = new Int32Array(effects);
+    let worker: import("node:worker_threads").Worker | undefined;
+    const received: unknown[] = [];
+    try {
+      if (!child) throw Error("no actual child transport");
+      worker = new Worker(terminalStartupWorker(), {
+        eval: true,
+        workerData: {
+          process: child,
+          context: planned.context,
+          effects,
+          module: terminalEntryModule(),
+          runControl: action === "run-control",
+        },
+      });
+      const exited = new Promise((resolve, reject) => {
+        worker!.once("exit", resolve);
+        worker!.once("error", reject);
+      });
+      worker.on("message", (message) => received.push(message));
+      await new Promise<void>((resolve, reject) =>
+        worker!.on("message", (data) => {
+          if (data.phase === "setup") resolve();
+          if (data.type === "error" || data.error) reject(new Error(JSON.stringify(data)));
+        }),
+      );
+      expect(Atomics.load(cells, 2)).toBe(1);
+      // Allow repeated admission rescans. This duration never decides process death.
+      await Bun.sleep(30);
+      expect(Atomics.load(cells, 0)).toBe(action === "run-control" ? 1 : 0);
+      expect(Atomics.load(cells, 1)).toBe(action === "run-control" ? 1 : 0);
+      if (action === "bind") must(authority.bindMember({ planned: planned.member, pid }));
+      if (action === "guard-revoke") Atomics.store(cells, 4, 1);
+      if (action === "child-end")
+        claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 1 });
+      if (action === "retire") {
+        must(authority.release({ lease, restore: null }));
+        must(authority.retireGroup({ group, reason: "cancelled" }));
+      }
+      if (action === "plan-reuse") {
+        must(authority.cancelPlan(planned.member));
+        must(authority.planMember({ group, parent: parent.member }));
+      }
+      if (action === "cancel" || action === "run-control")
+        must(authority.cancelPlan(planned.member));
+      if (action === "gate-held-root-end") {
+        const raw = display.identity as unknown as { buffer: SharedArrayBuffer };
+        Atomics.store(new BigInt64Array(raw.buffer, 64, 1), 0, 999n);
+      }
+      if (action === "root-end" || action === "gate-held-root-end")
+        claimOutcome(workerProcessState(root).signals.outcome, { kind: "exited", code: 0 });
+      await exited;
+      expect(Atomics.load(cells, 0)).toBe(action === "bind" || action === "run-control" ? 1 : 0);
+      expect(Atomics.load(cells, 1)).toBe(action === "bind" || action === "run-control" ? 1 : 0);
+      expect(Atomics.load(cells, 3)).toBe(1);
+      expect(received).toContainEqual({ phase: "cleaned" });
+      if (action === "bind" || action === "cancel" || action === "run-control")
+        must(authority.cancelPlan(later.member));
+    } finally {
+      display.close("disposed");
+      if (worker) await worker.terminate();
+      descriptors.dispose();
+    }
+  });

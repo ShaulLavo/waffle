@@ -342,3 +342,28 @@ for (const operation of ["read", "close"] as const)
       }
     }
   });
+
+test("resolver causal control distinguishes active empty input from the default terminal EOF", () => {
+  const state = fixture();
+  const token = state.codec.export(state.table.get(0)!, 2);
+  const defaultStream = state.codec.import(token, 2).resource as Stream;
+  try {
+    expect(defaultStream.tryRead!([new Uint8Array(1)])).toBe(0);
+    expect(defaultStream.readiness().hangup).toBe(true);
+    const codec = createRuntimeTerminalCodec({
+      fallback: state.fallback,
+      resolveTerminal: () => ({
+        kind: "terminal",
+        read: () => -6,
+        tryRead: () => -6,
+        write: () => -8,
+        readiness: () => ({ readable: false, writable: true, hangup: false }),
+      }),
+    });
+    const live = codec.import(token, 2).resource as Stream;
+    expect(live.tryRead!([new Uint8Array(1)])).toBe(-6);
+    expect(live.readiness()).toEqual({ readable: false, writable: true, hangup: false });
+  } finally {
+    state.table.dispose();
+  }
+});

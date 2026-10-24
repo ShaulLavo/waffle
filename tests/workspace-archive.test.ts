@@ -923,3 +923,39 @@ describe("logical namespace streaming", () => {
     }
   });
 });
+
+for (const target of ["/a", "/missing", "link"]) {
+  test(`v1 raw link target ${target} is not importable and never selects a staged root`, async () => {
+    const entry = {
+      ...file("/link", new TextEncoder().encode(target).length),
+      kind: "symlink",
+      target,
+    };
+    const sink = await rejectsOld(raw(rootFrames().concat(entryFrames(entry))), "INVALID");
+    expect(sink.selected).toBe("old");
+    expect(sink.published).toBe(0);
+  });
+}
+
+test("v1 encoder rejects link-shaped input without pulling a referent", async () => {
+  let pulls = 0;
+  const metadata = Object.defineProperties(file("/link", 1), {
+    kind: { value: "symlink", enumerable: true },
+    target: { value: "/a", enumerable: true },
+  });
+  async function* referent(): AsyncGenerator<Uint8Array> {
+    pulls++;
+    yield new Uint8Array([1]);
+  }
+  const input = values<ArchiveSourceEntry>([
+    { metadata: directory() },
+    { metadata, bytes: referent() },
+  ]);
+  await expect(
+    consume(parseWorkspaceArchive(encodeWorkspaceArchive(manifest, input))),
+  ).rejects.toMatchObject({
+    name: "WorkspaceArchiveError",
+    code: "INVALID",
+  });
+  expect(pulls).toBe(0);
+});

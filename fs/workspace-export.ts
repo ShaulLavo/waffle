@@ -3,6 +3,7 @@ import { storeIdentity } from "./file-identity.js";
 import {
   encodeWorkspaceArchive,
   WORKSPACE_ARCHIVE_LIMITS,
+  WorkspaceArchiveError,
   type ArchiveOptions,
   type ArchiveSourceEntry,
 } from "./workspace-archive.js";
@@ -17,6 +18,8 @@ import {
   type VersionStat,
   type WorkspaceVfs,
 } from "./workspace-types.js";
+
+export type WorkspaceExportOptions = ArchiveOptions;
 
 export const WORKSPACE_EXPORT_LIMITS = Object.freeze({
   scanPages: WORKSPACE_LIMITS.indexEdges + 2,
@@ -146,6 +149,8 @@ class Successor {
     if (entries.length > WORKSPACE_LIMITS.pageEntries) contract("Snapshot page count exceeded");
     let charge = 0;
     for (const entry of entries) {
+      if (entry.kind !== "file" && entry.kind !== "directory")
+        throw new WorkspaceArchiveError("INVALID", "Unsupported entry kind");
       charge += 192 + entry.path.length * 2;
       if (charge > WORKSPACE_LIMITS.pageBytes) contract("Snapshot page bytes exceeded");
       this.take(entry);
@@ -322,7 +327,7 @@ async function* sourceEntries(
 /** Optimistic same-cut export. A refusal invalidates all bytes already yielded. */
 export async function* exportWorkspaceArchive(
   workspace: WorkspaceVfs,
-  options: ArchiveOptions = {},
+  options: WorkspaceExportOptions = {},
 ): AsyncGenerator<Uint8Array> {
   const settings: ArchiveOptions = {
     signal: options.signal,
