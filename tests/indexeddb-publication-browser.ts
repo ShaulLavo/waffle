@@ -16,6 +16,11 @@ import { VfsError } from "../fs/vfs.js";
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
+function publicationFile(history: string) {
+  const allocator = new IdentityAllocator(new Int32Array(9));
+  allocator.configure({ workspace: crypto.randomUUID(), era: 1n });
+  return { birthHistory: history, ino: 2, ...allocator.create() };
+}
 function publicationFixture(): CheckpointPublication {
   const buffers = createPublicationBuffers({
     sessions: 4,
@@ -31,10 +36,8 @@ function publicationFixture(): CheckpointPublication {
     pinBytes: 128,
   });
   const domain = new PublicationDomain(buffers),
-    session = domain.openSession(),
-    allocator = new IdentityAllocator(new Int32Array(9));
-  allocator.configure({ workspace: crypto.randomUUID(), era: 1n });
-  const file = { birthHistory: buffers.history, ino: 2, ...allocator.create() };
+    session = domain.openSession();
+  const file = publicationFile(buffers.history);
   const admitted = domain.admit(
     session,
     domain.next(session),
