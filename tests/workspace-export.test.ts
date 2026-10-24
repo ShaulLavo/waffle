@@ -1198,7 +1198,10 @@ function unsupportedEntry(page: SnapshotPage, path: string, targetRead: () => ne
 }
 
 async function countChunks(stream: AsyncIterable<Uint8Array>, count: () => void): Promise<void> {
-  for await (const _chunk of stream) count();
+  for await (const chunk of stream) {
+    expect(chunk.byteLength).toBeGreaterThan(0);
+    count();
+  }
 }
 interface CompletionProbe {
   delivered: number;
