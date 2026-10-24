@@ -11,6 +11,7 @@ import {
   createWorkspaceVfs,
 } from "../fs";
 import { ResidentAuthorityServer } from "../browser/publication-authority";
+import { WorkspacePeer } from "../fs/publication-workspace";
 import {
   ResidentChannel,
   ResidentGrantClient,
@@ -850,37 +851,42 @@ for (const operation of ["writeFile", "missing-operation"]) {
   });
 }
 
-test("authoritative terminal receipt reconciles an original timeout before the held reply arrives", async () => {
-  const f = await fixture();
-  const held = holdTransportReplies(f.channel.id, false);
-  const clock = transportClock();
-  try {
-    const pending = call(f, "missing-operation", [f.file]);
-    const failed = rejectsErrno(pending, 6);
-    while (!held.held.length) await Bun.sleep(0);
-    clock.expire();
-    await failed;
-
-    const joined = f.channel.joinSettled();
-    let settled = false;
-    void joined.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
-    await Bun.sleep(10);
-    expect(settled).toBe(true);
-    await joined;
-    expect(() => f.channel.assertSettled()).not.toThrow();
-  } finally {
-    held.release();
-    clock.restore();
-    await f.stop();
-  }
-});
+for (const operation of ["writeFile", "missing-operation"]) {
+  test(`cleanup reconciliation replays original ${operation} terminal outcome before the held reply`, async () => {
+    const f = await fixture();
+    const held = holdTransportReplies(f.channel.id, false);
+    const clock = transportClock();
+    try {
+      const before = f.backend.shared.publication!.cut();
+      const pending = call(f, operation, ["/dir/reconciled"], new Uint8Array([9]));
+      const failed = rejectsErrno(pending, 6);
+      while (!held.held.length) await Bun.sleep(0);
+      clock.expire();
+      await failed;
+      const joined = f.channel.joinSettled();
+      let settled = false;
+      void joined.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await Bun.sleep(10);
+      expect(settled).toBe(true);
+      await joined;
+      expect(() => f.channel.assertSettled()).not.toThrow();
+      expect(f.backend.shared.publication!.cut().generation).toBe(
+        before.generation + (operation === "writeFile" ? 1 : 0),
+      );
+    } finally {
+      held.release();
+      clock.restore();
+      await f.stop();
+    }
+  });
+}
 
 test("no authoritative terminal receipt preserves the original cleanup debt", async () => {
   const channel = new ResidentChannel(`absent-${crypto.randomUUID()}`);
@@ -1238,41 +1244,69 @@ test("public snapshot/change projection includes resident namespace authority wr
 
 test("cleanup reconciliation cancels only the exact original client and request pair", async () => {
   const f = await fixture();
+  await call(f, "preopen", ["/"]);
   const observer = new BroadcastChannel(`waffle:resident:${f.session.descriptor.workspace}`);
   const held = holdTransportReplies(f.channel.id, false);
   const clock = transportClock();
-  const requests: Record<string, unknown>[] = [];
-  const cancellations: Record<string, unknown>[] = [];
+  const original = Promise.withResolvers<Record<string, unknown>>();
+  const barrier = Promise.withResolvers<void>();
+  const probed = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<AbortSignal>();
+  const released = Promise.withResolvers<void>();
+  const native = WorkspacePeer.prototype.execute;
+  let executions = 0;
+  WorkspacePeer.prototype.execute = async function (value, signal) {
+    executions++;
+    started.resolve(signal);
+    await released.promise;
+    return native.call(this, value, signal);
+  };
   observer.onmessage = ({ data }: MessageEvent<unknown>) => {
     const message = record(data);
-    if (message.client !== f.channel.id) return;
-    if (message.kind === "request") requests.push(message);
-    if (message.kind === "cancel") cancellations.push(message);
+    if (message.kind === "request" && message.client === f.channel.id) original.resolve(message);
+    if (message.kind !== "reconcileReply") return;
+    if (message.client === "barrier") barrier.resolve();
+    if (message.client === f.channel.id && message.state === "pending") probed.resolve();
   };
+  let joined: Promise<void> | undefined;
   try {
     const before = f.backend.shared.publication!.cut();
-    const pending = call(f, "writeFile", ["/dir/exact-cancellation"], new Uint8Array([9]));
+    const pending = call(f, "stat", [f.directory]);
     const failed = rejectsErrno(pending, 6);
-    while (!held.held.length || !requests.length) await Bun.sleep(0);
-    const original = requests[0]!;
-    observer.postMessage({ kind: "cancel", client: "foreign", id: original.id });
-    observer.postMessage({ kind: "cancel", client: original.client, id: "foreign" });
+    const signal = await started.promise;
+    const request = await original.promise;
+    observer.postMessage({ kind: "cancel", client: "foreign", id: request.id });
+    observer.postMessage({ kind: "cancel", client: request.client, id: "foreign" });
+    observer.postMessage(request);
+    observer.postMessage({ kind: "reconcile", client: "barrier", id: "none" });
+    await barrier.promise;
+    expect(signal.aborted).toBe(false);
+    expect(executions).toBe(1);
+    const cancelled = Promise.withResolvers<void>();
+    signal.addEventListener("abort", () => cancelled.resolve(), { once: true });
     clock.expire();
     await failed;
-    while (!cancellations.length) await Bun.sleep(0);
-    expect(cancellations).toContainEqual({
-      kind: "cancel",
-      client: original.client,
-      id: original.id,
+    await cancelled.promise;
+    joined = f.channel.joinSettled();
+    void joined.catch(() => {});
+    await probed.promise;
+    await remainsPending(joined);
+    released.resolve();
+    await joined;
+    expect(held.held).toHaveLength(1);
+    expect(record(held.held[0]!.message)).toMatchObject({
+      client: request.client,
+      id: request.id,
+      errno: 11,
     });
-    observer.postMessage(original);
-    while (held.held.length < 2) await Bun.sleep(0);
-    await f.channel.joinSettled();
-    expect(f.backend.shared.publication!.cut().generation).toBe(before.generation + 1);
-    expect(held.held[1]!.message).toEqual(held.held[0]!.message);
+    expect(f.backend.shared.publication!.cut()).toEqual(before);
+    expect(() => f.channel.assertSettled()).not.toThrow();
   } finally {
+    released.resolve();
+    WorkspacePeer.prototype.execute = native;
     held.release();
     clock.restore();
+    await joined?.catch(() => {});
     observer.close();
     await f.stop();
   }
@@ -1285,16 +1319,14 @@ test("cleanup reconciliation keeps an unknown original request and its guard own
   const clock = transportClock();
   const session = {
     token: "original",
-    descriptor: {
-      ...residentDescriptor({
-        kind: "workspace",
-        workspace,
-        instance: "original",
-        epoch: 1,
-        description: "original",
-        handle: 1,
-      }),
-    },
+    descriptor: residentDescriptor({
+      kind: "workspace",
+      workspace,
+      instance: "original",
+      epoch: 1,
+      description: "original",
+      handle: 1,
+    }),
     session: { slot: 1, serial: 1 },
   };
   let released = 0;
@@ -1373,6 +1405,89 @@ test("cleanup reconciliation replays the original close failure without releasin
     held.release();
     clock.restore();
     await channel.finish("closeConnection", null);
+    channel.close();
+    await f.stop();
+  }
+});
+
+for (const fails of [false, true]) {
+  test(`cleanup reconciliation joins the same ${fails ? "failed" : "successful"} original peer close`, async () => {
+    const f = await fixture();
+    const host = f.server.authority.workspaceHost;
+    if (!host) throw new Error("workspace host missing");
+    const released = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const failure = new Error("original peer cleanup failure");
+    let closes = 0;
+    const peer = new WorkspacePeer(f.session, {
+      root: host.root,
+      connect: (connection) => host.connect(connection),
+      adopt: (connection, reservation) => host.adopt(connection, reservation),
+      async close(connection) {
+        closes++;
+        started.resolve();
+        await released.promise;
+        if (fails) throw failure;
+        await host.close(connection);
+      },
+    });
+    let stopped: Promise<void> | undefined;
+    try {
+      stopped = peer.stop();
+      void stopped.catch(() => {});
+      await started.promise;
+      const repeated = peer.stop();
+      void repeated.catch(() => {});
+      expect(repeated).toBe(stopped);
+      expect(closes).toBe(1);
+      await remainsPending(stopped);
+      released.resolve();
+      if (fails) await expect(stopped).rejects.toBe(failure);
+      else await stopped;
+      const repeatedTerminal = peer.stop();
+      void repeatedTerminal.catch(() => {});
+      expect(repeatedTerminal).toBe(stopped);
+      expect(closes).toBe(1);
+    } finally {
+      released.resolve();
+      await stopped?.catch(() => {});
+      await host.close(peer.client.connection);
+      peer.client.dispose();
+      await f.stop();
+    }
+  });
+}
+
+test("cleanup reconciliation retains bounded terminal debt until original acknowledgement", async () => {
+  const f = await fixture();
+  const channel = new ResidentChannel(f.session.descriptor.workspace);
+  const held = holdTransportReplies(f.channel.id, false);
+  const clock = transportClock();
+  const observer = new BroadcastChannel(`waffle:resident:${f.session.descriptor.workspace}`);
+  const acknowledged = Promise.withResolvers<void>();
+  observer.onmessage = ({ data }: MessageEvent<unknown>) => {
+    const message = record(data);
+    if (message.kind === "reconcileReply" && message.client === "ack-barrier")
+      acknowledged.resolve();
+  };
+  try {
+    const failed = Array.from({ length: limits.operations }, () =>
+      rejectsErrno(f.channel.call("unsupported", { token: f.session.token }), 6),
+    );
+    while (held.held.length < limits.operations) await Bun.sleep(0);
+    clock.expire();
+    await Promise.all(failed);
+    await rejectsErrno(channel.call("open", f.session.descriptor), 6);
+    await f.channel.joinSettled();
+    f.channel.channel.postMessage({ kind: "reconcile", client: "ack-barrier", id: "none" });
+    await acknowledged.promise;
+    const session = residentSession(await channel.call("open", f.session.descriptor));
+    expect(session.descriptor).toEqual(f.session.descriptor);
+    await channel.finish("closeConnection", null);
+  } finally {
+    held.release();
+    clock.restore();
+    observer.close();
     channel.close();
     await f.stop();
   }
