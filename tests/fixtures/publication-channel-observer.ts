@@ -7,6 +7,7 @@ export function installWorkspaceChannelObserver(): void {
     held: 0,
     closedPending: 0,
     cancelled: 0,
+    reconciled: 0,
     cleanupStarted: 0,
     connectHeld: 0,
     connectReceived: 0,
@@ -17,10 +18,11 @@ export function installWorkspaceChannelObserver(): void {
     release: () => {},
   };
   const NativeChannel = BroadcastChannel;
-  const held = new Map<MessageEvent<unknown>, ObservedChannel>();
+  type Request = { operation: string; held: boolean };
+  const held = new Map<MessageEvent<unknown>, { channel: ObservedChannel; request: Request }>();
   class ObservedChannel extends NativeChannel {
     private closed = false;
-    private requests = new Map<string, string>();
+    private requests = new Map<string, Request>();
     constructor(name: string) {
       super(name);
       if (name.startsWith("waffle:resident:")) state.opened++;
@@ -28,30 +30,36 @@ export function installWorkspaceChannelObserver(): void {
     }
     postMessage(value: unknown): void {
       const data = message(value);
-      if (data?.kind === "request" && typeof data.id === "string")
-        this.track(data.id, data.operation);
-      if (data?.kind === "cancel" && typeof data.id === "string" && this.requests.has(data.id))
-        state.cancelled++;
+      const key = identity(data);
+      if (data?.kind === "request" && key) this.track(key, data.operation);
+      if (data?.kind === "cancel" && key && this.requests.has(key)) state.cancelled++;
       super.postMessage(value);
     }
-    private track(id: string, operation: unknown): void {
+    private track(key: string, operation: unknown): void {
       if (operation !== "workspace" && operation !== "workspaceAdopt") return;
-      this.requests.set(id, operation);
+      this.requests.set(key, { operation, held: false });
       state.pending++;
     }
     private receive(event: MessageEvent<unknown>): void {
       const data = message(event.data);
-      if (data?.kind !== "reply" || typeof data.id !== "string") return;
-      const operation = this.requests.get(data.id);
-      if (!operation) return;
-      if (state.hold === operation) {
+      if (data?.kind !== "reply" && !(data?.kind === "reconcileReply" && data.state === "terminal"))
+        return;
+      const key = identity(data);
+      if (!key) return;
+      const request = this.requests.get(key);
+      if (!request) return;
+      if (data.kind === "reconcileReply") state.reconciled++;
+      if (state.hold === request.operation) {
         state.hold = "";
+        request.held = true;
+      }
+      if (request.held) {
         event.stopImmediatePropagation();
-        held.set(event, this);
+        held.set(event, { channel: this, request });
         state.held++;
         return;
       }
-      this.requests.delete(data.id);
+      this.requests.delete(key);
       state.pending--;
     }
     close(): void {
@@ -61,6 +69,10 @@ export function installWorkspaceChannelObserver(): void {
       super.close();
     }
   }
+  function identity(data: Record<string, unknown> | undefined): string | undefined {
+    if (typeof data?.client !== "string" || typeof data.id !== "string") return;
+    return JSON.stringify([data.client, data.id]);
+  }
   function message(value: unknown): Record<string, unknown> | undefined {
     if (!value || typeof value !== "object") return;
     return Object.fromEntries(Object.entries(value));
@@ -69,8 +81,10 @@ export function installWorkspaceChannelObserver(): void {
     const events = Array.from(held);
     held.clear();
     state.held = 0;
-    for (const [event, channel] of events)
+    for (const [event, { channel, request }] of events) {
+      request.held = false;
       channel.dispatchEvent(new MessageEvent("message", { data: event.data }));
+    }
   };
   const heldConnections: { port: MessagePort; event: MessageEvent<unknown> }[] = [];
   state.releaseConnect = () => {

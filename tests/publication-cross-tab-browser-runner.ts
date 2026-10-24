@@ -86,11 +86,11 @@ async function channelBarrier(page: Page, action: string): Promise<void> {
     release();
   }, action);
 }
-async function heldChannel(page: Page): Promise<void> {
-  await page.waitForFunction(() => {
+async function heldChannel(page: Page, count = 1): Promise<void> {
+  await page.waitForFunction((count) => {
     const state: unknown = Reflect.get(globalThis, "__workspaceChannelCounts");
-    return state && typeof state === "object" && Reflect.get(state, "held") === 1;
-  });
+    return state && typeof state === "object" && Reflect.get(state, "held") === count;
+  }, count);
 }
 async function workspacePage(
   page: Page,
@@ -455,6 +455,7 @@ async function unknownCleanup(page: Page): Promise<void> {
   await waitForCancellation(page, Number(before.cancelled));
   await waitForCancellation(page, Number(before.cancelled) + 1);
   await control(page, "workspaceGuestPendingSettled", { key: "lost" });
+  await heldChannel(page, 2);
   equal(await control(page, "workspaceGuestStatus", { key: "lost" }), {
     exit: false,
     finished: false,
@@ -463,7 +464,8 @@ async function unknownCleanup(page: Page): Promise<void> {
   const held = record(await workspaceChannels(page));
   equal(held.closed, before.closed);
   equal(held.pending, 1);
-  equal(held.held, 1);
+  equal(held.held, 2);
+  equal(held.reconciled, Number(before.reconciled) + 1);
   equal(held.closedPending, 0);
   equal(await continuityGuards(page), guards);
   equal(await control(page, "exclusive"), false);
@@ -489,7 +491,7 @@ async function unknownCleanup(page: Page): Promise<void> {
   console.log("WORKSPACE_UNKNOWN_CLEANUP=" + JSON.stringify({ before, held, reconciled, guards }));
   await control(page, "workspaceGuestDeath", { key: "lost" });
   console.log(
-    "PASS unknown workspace reply keeps original stop and guard pending past the caller deadline; delivery of its original matching reply reconciles exit and channel close before guest death",
+    "PASS withholding both original terminal deliveries keeps stop and guard pending past the caller deadline; releasing the matching result joins exit and one channel close before guest death",
   );
 }
 async function failedCleanup(page: Page): Promise<void> {
