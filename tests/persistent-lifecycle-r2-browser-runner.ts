@@ -37,7 +37,7 @@ function object(value: unknown): Record<string, unknown> {
     throw new Error(`expected lifecycle record, got ${JSON.stringify(value)}`);
   return Object.fromEntries(Object.entries(value));
 }
-async function call(page: Page, operation: string, body?: unknown): Promise<unknown> {
+export async function call(page: Page, operation: string, body?: unknown): Promise<unknown> {
   return page.evaluate(
     async ({ operation, body }) => {
       const path = "/persistent-lifecycle-r2-page.js";
@@ -47,10 +47,10 @@ async function call(page: Page, operation: string, body?: unknown): Promise<unkn
     { operation, body },
   );
 }
-function owner(page: Page, operation: string, body?: unknown): Promise<unknown> {
+export function owner(page: Page, operation: string, body?: unknown): Promise<unknown> {
   return call(page, "owner", { operation, body });
 }
-function host(
+export function host(
   page: Page,
   operation: string,
   args: unknown[] = [],

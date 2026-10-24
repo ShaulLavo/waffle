@@ -8,6 +8,7 @@ import {
 } from "../fs/memory-budget";
 import { parseFileIdentity } from "../fs/file-identity";
 import { createPublicationBuffers, PublicationDomain } from "../fs/publication";
+import type { CheckpointPublication } from "../fs/storage";
 import type { PublicationBuffers, PublicationLimits } from "../fs/publication-internal";
 
 const limits: PublicationLimits = {
@@ -113,7 +114,7 @@ function rig(options: { room?: number; records?: MemoryRecords; serialLimit?: nu
   return { budget, allocator };
 }
 function construct(budget: MemoryBudget, observe: boolean): PublicationBuffers {
-  return createPublicationBuffers(limits, observe, budget);
+  return createPublicationBuffers(limits, observe, { backing: { kind: "budget", budget } });
 }
 function holdBaseline(budget: MemoryBudget) {
   const lease = granted(budget, { bytes: 64, allocations: 1, references: 1, leases: 0 });
@@ -218,6 +219,7 @@ test.each([false, true])("publication fixed backing plan and precharge, observe=
     expect(Object.keys(buffers).sort()).toEqual(
       [
         "history",
+        "sessionLimit",
         "limits",
         "control",
         "sessions",
@@ -452,3 +454,122 @@ test.each([false, true])(
     }
   },
 );
+
+function compositionCheckpoint(): CheckpointPublication {
+  const cut = { history: "publication-constructor-composition", generation: 7 };
+  return {
+    kind: "settled-publication-v1",
+    cut,
+    sessionSerial: 9,
+    limits,
+    receipts: [
+      {
+        id: { session: 9, sequence: 1 },
+        cut,
+        result: { kind: "void" },
+        durability: { kind: "untracked" },
+      },
+    ],
+    changes: [],
+    contentVersions: [{ ino: 1, version: 7 }],
+  };
+}
+
+test.each([false, true])(
+  "publication composition restores within admitted frozen backing, observe=%p",
+  (observe) => {
+    const checkpoint = compositionCheckpoint();
+    const { budget, allocator } = rig({ room: demand(observe).bytes });
+    const admit = spyOn(budget, "tryOperation");
+    try {
+      const before = budget.snapshot();
+      const buffers = createPublicationBuffers(limits, observe, {
+        checkpoint,
+        backing: { kind: "budget", budget },
+      });
+      expect(admit.mock.calls).toEqual([[demand(observe)]]);
+      expect(allocator.specs.map((spec) => spec.bytes)).toEqual(sizes(observe));
+      expectCharged(budget, before, observe);
+      expect(Object.isFrozen(buffers)).toBe(true);
+      expect(Object.isFrozen(buffers.limits)).toBe(true);
+      expect(buffers.sessionLimit).toBe(checkpoint.sessionSerial + 65_536);
+      const restored = new PublicationDomain(buffers);
+      expect(restored.cut()).toEqual(checkpoint.cut);
+      const receipt = checkpoint.receipts[0];
+      if (!receipt) throw new Error("missing composition receipt");
+      expect(restored.lookupAny(receipt.id)).toEqual({ kind: "committed", receipt });
+      expect(restored.contentVersion(1)).toBe(7);
+      const session = restored.openSession();
+      expect(session.serial).toBe(checkpoint.sessionSerial + 1);
+      expect(new PublicationDomain(buffers).cut()).toEqual(checkpoint.cut);
+    } finally {
+      admit.mockRestore();
+      budget.close();
+    }
+  },
+);
+
+test("publication composition validates restore before admission and refuses before allocation", () => {
+  const checkpoint = compositionCheckpoint();
+  const { budget, allocator } = rig({ room: demand(true).bytes - 1 });
+  const admit = spyOn(budget, "tryOperation");
+  const backing = { kind: "budget", budget } as const;
+  try {
+    const before = budget.snapshot();
+    expect(() =>
+      createPublicationBuffers(limits, true, {
+        checkpoint: { ...checkpoint, limits: { ...limits, operations: 3 } },
+        backing,
+      }),
+    ).toThrow("checkpoint publication limits differ");
+    expect(() =>
+      createPublicationBuffers(limits, true, {
+        checkpoint: { ...checkpoint, sessionSerial: 0x7ffffffe },
+        backing,
+      }),
+    ).toThrow("publication session frontier exhausted");
+    expect(admit.mock.calls).toHaveLength(0);
+    expect(failure(() => createPublicationBuffers(limits, true, { checkpoint, backing }))).toEqual(
+      new MemoryBudgetError("capacity"),
+    );
+    expect(admit.mock.calls).toEqual([[demand(true)]]);
+    expect(allocator.specs).toHaveLength(0);
+    expect(budget.snapshot()).toEqual(before);
+  } finally {
+    admit.mockRestore();
+    budget.close();
+  }
+});
+
+test("publication composition rolls back admitted backing when restore initialization fails", () => {
+  const checkpoint = compositionCheckpoint();
+  const { budget, allocator } = rig();
+  const descriptor = Object.getOwnPropertyDescriptor(PublicationDomain.prototype, "restore");
+  if (!descriptor) throw new Error("missing restore initializer");
+  Object.defineProperty(PublicationDomain.prototype, "restore", {
+    ...descriptor,
+    value() {
+      throw reason;
+    },
+  });
+  try {
+    const before = budget.snapshot();
+    expect(
+      failure(() =>
+        createPublicationBuffers(limits, true, {
+          checkpoint,
+          backing: { kind: "budget", budget },
+        }),
+      ),
+    ).toBe(reason);
+    expect(allocator.specs).toHaveLength(demand(true).allocations);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    expect(budget.snapshot().changed).toBeGreaterThan(before.changed);
+  } finally {
+    Object.defineProperty(PublicationDomain.prototype, "restore", descriptor);
+    budget.close();
+  }
+  expect(Object.getOwnPropertyDescriptor(PublicationDomain.prototype, "restore")).toEqual(
+    descriptor,
+  );
+});

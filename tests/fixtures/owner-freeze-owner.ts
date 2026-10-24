@@ -1,3 +1,4 @@
+import { residentMemory } from "./resident-memory";
 import { FilesystemClient } from "../../fs/client";
 import { publicationObserver } from "../../fs/publication-internal";
 import { publicationCut } from "../../fs/publication";
@@ -49,6 +50,8 @@ async function execute(operation: string, body: unknown): Promise<unknown> {
         },
       },
       new AbortController().signal,
+      undefined,
+      residentMemory(),
     );
     return owner.ready;
   }

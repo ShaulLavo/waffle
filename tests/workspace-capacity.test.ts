@@ -11,6 +11,7 @@ import {
   type SnapshotCursor,
 } from "../fs";
 import { MemFS, type Node } from "../fs/memory";
+import { createPublicationBuffers, PublicationDomain } from "../fs/publication";
 import type { PersistedIndex, PersistedNode } from "../fs/storage";
 import { NamespaceAuthority } from "../fs/workspace-namespace";
 import { SIZES } from "../tooling/vfs-workloads";
@@ -408,6 +409,7 @@ async function coldFixture(index: PersistedIndex) {
   let reads = 0,
     persists = 0,
     closes = 0;
+  let closing = false;
   const backend = await PersistentBackend.open(
     {
       async reserveIdentity() {
@@ -427,9 +429,20 @@ async function coldFixture(index: PersistedIndex) {
       retainPayload() {
         throw new Error("namespace retained a cold payload");
       },
-      async persist() {
+      async persist(batch) {
         persists++;
-        throw new Error("namespace changed storage");
+        expect(closing).toBe(true);
+        expect(batch.publication).toMatchObject({
+          kind: "settled-publication-v1",
+          cut: { generation: 0 },
+          receipts: [],
+          changes: [],
+          contentVersions: [],
+        });
+        expect(batch.upserts).toEqual([]);
+        expect(batch.removes).toEqual([]);
+        expect(batch.data.size).toBe(0);
+        expect(batch.retainedData).toEqual([]);
       },
       async flush() {},
       async close() {
@@ -438,7 +451,15 @@ async function coldFixture(index: PersistedIndex) {
     },
     { intervalMs: 0 },
   );
-  return { ...fixture(backend), storageCounts: () => ({ reads, persists, closes }) };
+  const current = fixture(backend);
+  return {
+    ...current,
+    async close() {
+      closing = true;
+      await current.close();
+    },
+    storageCounts: () => ({ reads, persists, closes }),
+  };
 }
 
 test("public cold snapshot preserves logical 128 MiB size without payload or handle allocation", async () => {
@@ -460,7 +481,7 @@ test("public cold snapshot preserves logical 128 MiB size without payload or han
     reads.restore();
     await current.close();
   }
-  expect(current.storageCounts()).toEqual({ reads: 0, persists: 0, closes: 1 });
+  expect(current.storageCounts()).toEqual({ reads: 0, persists: 1, closes: 1 });
 });
 
 async function completeCounts(cursor: SnapshotCursor) {
@@ -530,7 +551,7 @@ test("public W1 topology completes the compact index without payload I/O", async
     await cursor.close();
     await current.close();
   }
-  expect(current.storageCounts()).toEqual({ reads: 0, persists: 0, closes: 1 });
+  expect(current.storageCounts()).toEqual({ reads: 0, persists: 1, closes: 1 });
 });
 
 test("authority stop closes both cursor iterators and late request IDs cannot reopen", async () => {
@@ -558,6 +579,7 @@ test("authority stop closes both cursor iterators and late request IDs cannot re
 test("authority rejects replacement roots and histories without admitting a late cursor", async () => {
   const current = fixture(new MemoryBackend(flat(256)));
   const authority = new NamespaceAuthority(current.backend);
+  const other = new NamespaceAuthority(current.backend);
   try {
     expect(authority.next(1, {}).kind).toBe("entries");
     const original = current.backend.fs.root;
@@ -566,20 +588,25 @@ test("authority rejects replacement roots and histories without admitting a late
     expect(authority.size).toBe(0);
     current.backend.fs.root = original;
     expect(authority.next(2, {})).toEqual({ kind: "stopped" });
-    const other = new NamespaceAuthority(current.backend);
     expect(other.next(1, {}).kind).toBe("entries");
-    const buffers = current.backend.shared.publication!.buffers;
-    const history = buffers.history;
+    const shared = current.backend.shared;
+    const publication = shared.publication!;
+    const descriptor = Object.getOwnPropertyDescriptor(shared, "publication")!;
+    const replacement = new PublicationDomain(createPublicationBuffers(publication.limits));
+    expect(Object.isFrozen(publication.buffers)).toBe(true);
+    expect(replacement.buffers.history).not.toBe(publication.buffers.history);
     try {
-      Object.defineProperty(buffers, "history", { value: crypto.randomUUID(), configurable: true });
+      Object.defineProperty(shared, "publication", { ...descriptor, value: replacement });
       expect(other.next(1, {})).toEqual({ kind: "stopped" });
       expect(other.size).toBe(0);
     } finally {
-      Object.defineProperty(buffers, "history", { value: history, configurable: true });
-      other.close();
+      Object.defineProperty(shared, "publication", descriptor);
     }
+    expect(shared.publication).toBe(publication);
+    expect(other.next(2, {})).toEqual({ kind: "stopped" });
   } finally {
     authority.close();
+    other.close();
     await current.close();
   }
 });

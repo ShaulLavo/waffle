@@ -4,6 +4,8 @@ import { createPublicationBuffers, validatePublicationLimits } from "../fs/publi
 import type { PublicationLimits } from "../fs/publication-internal";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format";
 
+import { residentMemory } from "./fixtures/resident-memory";
+
 const limits: PublicationLimits = {
   sessions: 4,
   operations: 4,
@@ -90,6 +92,8 @@ test("invalid resident arenas fail synchronously before any native ownership or 
             publication: { limits: invalid },
           },
           new AbortController().signal,
+          undefined,
+          residentMemory(),
         ),
       ).toThrow(RangeError);
     expect(nativeAccesses).toEqual([]);

@@ -1,3 +1,4 @@
+import { readyPersistent } from "./fixtures/persistent-ready";
 import { workspaceCleanupPostFailure } from "./fixtures/publication-cleanup-failure";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
 import { resolve } from "node:path";
@@ -589,19 +590,6 @@ async function currentPersistentBaseline(page: Page): Promise<void> {
 function persistentAttempt(name: string, original?: unknown): unknown {
   return { name, runtimeLifetime: crypto.randomUUID(), attempt: crypto.randomUUID(), original };
 }
-function readyPersistent(value: unknown): Record<string, unknown> {
-  const result = record(value);
-  equal(result.ready, true);
-  const ready = record(result.value);
-  equal(ready.notice, {
-    kind: "v1-new-history",
-    durablePublicationCut: "untracked",
-    oldCapabilities: "not-restored",
-    oldMutationOutcomes: "not-restored",
-    acknowledgedTail: "may-be-lost",
-  });
-  return ready;
-}
 function noFactoryNativeOpen(result: Record<string, unknown>): void {
   if (
     !Array.isArray(result.events) ||
@@ -765,6 +753,8 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
       fresh = record(reopened.identity);
     if (previous.instance === fresh.instance || previous.history === fresh.history)
       throw new Error("reopen reused history or instance");
+    if (typeof fresh.history !== "string") throw new Error("reopened history missing");
+    const recoveredCut = { history: fresh.history, generation: 0 };
     equal(await control(holder, "persistentRead", reopened.descriptor), {
       first: [11, 22, 33, 44],
       second: [91, 82, 73],
@@ -782,7 +772,7 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     equal(aborted.pendingBeforeRelease, true);
     nativeClosedBeforeRelease(record(aborted.stopped));
     console.log("PASS abort joins a late actual native adapter and never publishes readiness");
-    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)));
+    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)), recoveredCut);
     await control(owner, "persistentFailClose");
     const failed = record(await control(owner, "persistentStop"));
     equal(failed.same, true);
@@ -792,6 +782,7 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     await control(owner, "persistentDeath");
     const afterFailure = readyPersistent(
       await control(owner, "persistentStart", persistentAttempt(name)),
+      recoveredCut,
     );
     await control(holder, "workspacePeer", afterFailure.descriptor);
     await control(owner, "persistentDeath");
@@ -800,7 +791,7 @@ async function persistentOwnerControls(browser: Browser, origin: string): Promis
     noFactoryNativeOpen(survivorDenied);
     equal(record(await control(owner, "persistentStop")).stopped, true);
     await holder.close();
-    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)));
+    readyPersistent(await control(owner, "persistentStart", persistentAttempt(name)), recoveredCut);
     nativeClosedBeforeRelease(await control(owner, "persistentStop"));
     console.log(
       "PASS failed native close stays failed; surviving real attachment blocks replacement until genuine realm destruction",
