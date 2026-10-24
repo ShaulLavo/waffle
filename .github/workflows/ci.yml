@@ -70,6 +70,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Cache Bun package downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
@@ -141,6 +146,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/cache@v4
         with:
@@ -152,13 +162,22 @@ jobs:
           test -s /etc/apt/apt-mirrors.txt
           cat /etc/apt/apt-mirrors.txt
       - run: bunx playwright install --with-deps chromium firefox webkit
-      - run: bun run test:browser
+      - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
+        shell: bash
         env:
+          DEBUG: pw:protocol
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
       - run: bun tests/publication-browser-runner.ts --workspace chromium
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Retain browser failure protocol
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/waffle-browser-protocol.log
+          retention-days: 7
   site:
     runs-on: ubuntu-latest
     defaults:
@@ -169,5 +188,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - name: Restore Bun package downloads
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-pm-v2-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'site/bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run build
