@@ -93,4 +93,4 @@ Pre-1.0 and experimental. `package.json` says `0.0.89` and `private: true`. Ther
 
 ## License and contributing
 
-[MIT](LICENSE). Adapted upstream code is listed in [docs/bun-patches.md](docs/bun-patches.md) and its licenses are in [LICENSES/](LICENSES/). To change the code, start with [Development](docs/development.md) and [AGENTS.md](AGENTS.md).
+[MIT](LICENSE). Adapted upstream code is listed in [docs/bun-patches.md](docs/bun-patches.md) and its licenses are in [LICENSES/](LICENSES/). To change the code, start with [Development](docs/development.md) and [AGENTS.md](AGENTS.md). Report security issues through [SECURITY.md](SECURITY.md).
