@@ -1,20 +1,16 @@
 import { expect, test } from "bun:test";
-import { PersistentBackend } from "../fs";
 import { PAGE } from "../fs/protocol";
-import { RangeFixture, payloadSize } from "./fixtures/opfs-range-storage";
-import { publicReadFixture } from "./fixtures/workspace-read";
+import { payloadSize } from "./fixtures/opfs-range-storage";
+import { ColdRangeProof } from "./fixtures/cold-range-proof-lifecycle";
 
 const offset = PAGE - 3;
 const byteAt = (at: number) => (at * 17 + 3 + Math.floor(at / PAGE) * 29) & 255;
 
 for (const length of [PAGE, 1024 * 1024]) {
   test(`first cold leased ${length}-byte range survives replacement with exact ordered bytes`, async () => {
-    const physical = new RangeFixture();
-    const gate = physical.gate();
-    const entered = Promise.withResolvers<void>();
-    let view: ReturnType<typeof publicReadFixture> | undefined;
-    let reading: Promise<unknown> | undefined;
-    try {
+    const proof = new ColdRangeProof();
+    const { physical, gate } = proof;
+    await proof.run(async () => {
       await physical.seed();
       physical.file().data = Uint8Array.from({ length: offset + length }, (_, at) => byteAt(at));
       const storage = await physical.open();
@@ -31,8 +27,8 @@ for (const length of [PAGE, 1024 * 1024]) {
         first ??= bytes;
         return bytes;
       };
-      const backend = await PersistentBackend.open(storage, { intervalMs: 0 });
-      view = publicReadFixture(backend);
+      const view = await proof.connect(storage);
+      const { backend } = view;
       const initialUsed = backend.shared.resources().usedBytes;
       expect(physical.file().reads).toHaveLength(0);
       expect(backend.shared.registeredHandles()).toHaveLength(0);
@@ -43,13 +39,8 @@ for (const length of [PAGE, 1024 * 1024]) {
       expect(backend.shared.resources().usedBytes).toBe(initialUsed);
       expect(backend.shared.registeredHandles()).toHaveLength(0);
       const accessCount = physical.file().accesses.length;
-      physical.file().snapshotRead = async () => {
-        entered.resolve();
-        await gate.promise;
-      };
-      const result = pinned.value.read({ offset, length });
-      reading = result;
-      await entered.promise;
+      const result = proof.track(() => pinned.value.read({ offset, length }));
+      await proof.waitForEntry();
       await view.client.asyncCall("remove", ["/file"]);
       await view.client.asyncCall("writeFile", ["/file"], new Uint8Array([91]));
       const current = await view.workspace.read("/file");
@@ -96,14 +87,11 @@ for (const length of [PAGE, 1024 * 1024]) {
           mismatch,
         }),
       );
-    } finally {
-      gate.resolve();
-      await reading;
-      try {
-        await view?.close();
-      } finally {
-        await physical.cleanup();
-      }
-    }
+    });
+    expect(proof.beforePhysical).toEqual({
+      lockHeld: false,
+      activeAccesses: 0,
+      storageHandles: [0],
+    });
   });
 }
