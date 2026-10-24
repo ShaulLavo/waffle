@@ -1521,8 +1521,7 @@ test("R42 completed replay owns new acknowledgement debt without a second mutati
   let closed = false;
   wire.onmessage = ({ data }: MessageEvent<unknown>) => {
     const message = record(data);
-    if (message.kind === "reconcileReply" && message.client === "ack-barrier")
-      barrier.resolve();
+    if (message.kind === "reconcileReply" && message.client === "ack-barrier") barrier.resolve();
     if (message.client !== f.channel.id) return;
     if (message.kind === "request" && message.operation === "settle") {
       request = message;
