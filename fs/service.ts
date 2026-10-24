@@ -406,16 +406,20 @@ export class FilesystemService {
     Atomics.store(session.capabilities, 0, session.transient.size);
     this.backend.release(handle);
   }
-  private trim(session: Session): void {
-    let idle = 0,
-      detached = false;
-    const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
+  private responseReferenceCounts(session: Session): Map<number, number> {
     const responseHeld = new Map<number, number>();
     for (const response of session.responses.values()) {
       if (response.kind !== "resolve") continue;
       for (const handle of response.references.keys())
         responseHeld.set(handle, (responseHeld.get(handle) ?? 0) + 1);
     }
+    return responseHeld;
+  }
+  private trim(session: Session): void {
+    let idle = 0,
+      detached = false;
+    const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
+    const responseHeld = this.responseReferenceCounts(session);
     for (const handle of session.transient.keys()) {
       const references = Atomics.load(session.capabilities, session.handles.get(handle)! + 1);
       if (session.preparingHandles.has(handle) || references !== (responseHeld.get(handle) ?? 0))
