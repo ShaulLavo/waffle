@@ -2,11 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { SharedFilesystem } from "../browser/shared-fs.js";
 import { FilesystemError } from "../core/filesystem.js";
 import { Wasi } from "../core/wasi.js";
-import { MemoryBackend } from "../fs/backend.js";
-import { FilesystemClient } from "../fs/client.js";
 import { MemFS, type Node } from "../fs/memory.js";
-import { createFilesystemConnection } from "../fs/protocol.js";
-import { FilesystemService } from "../fs/service.js";
+import {
+  filesystemServiceFixture,
+  symlinkSnapshotValue,
+} from "./fixtures/installer-symlinks-support.js";
 import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
 
 const cleanup: (() => void | Promise<void>)[] = [];
@@ -54,12 +54,7 @@ function snapshot(fs: MemFS) {
       mtime: node.mtime,
       identity: node.identity && { ...node.identity },
       kind: node.kind,
-      value:
-        node.kind === "file"
-          ? Array.from(node.data)
-          : node.kind === "symlink"
-            ? node.target
-            : Array.from(node.children.keys()),
+      value: symlinkSnapshotValue(node),
     });
     if (node.kind !== "dir") return;
     for (const [name, child] of node.children) visit(child, `${path}/${name}`);
@@ -68,18 +63,7 @@ function snapshot(fs: MemFS) {
   return { entries, links: Array.from(counts) };
 }
 function service(fs: MemFS) {
-  const backend = new MemoryBackend(fs);
-  const owner = new FilesystemService(backend);
-  cleanup.push(() => owner.dispose());
-  const connection = createFilesystemConnection();
-  cleanup.push(
-    () => connection.server.port.close(),
-    () => connection.client.port.close(),
-  );
-  const client = new FilesystemClient(connection.client);
-  cleanup.push(() => client.dispose());
-  owner.connect(connection.server);
-  return { client, backend };
+  return filesystemServiceFixture(fs, (stop) => cleanup.push(stop));
 }
 function fixture(mode: "direct" | "planned" | "service") {
   const fs = seed();
