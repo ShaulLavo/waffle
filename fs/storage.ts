@@ -229,8 +229,13 @@ function encodeSnapshotWire(index: PersistedIndex): PersistedIndexWire {
   };
 }
 
-function decodeChangeBytes(value: unknown): Uint8Array {
-  if (!Array.isArray(value) || !value.every((byte) => validInteger(byte) && byte <= 255)) invalid();
+function decodeChangeBytes(value: unknown, maxLength: number): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length > maxLength ||
+    !value.every((byte) => validInteger(byte) && byte <= 255)
+  )
+    invalid();
   return Uint8Array.from(value);
 }
 
@@ -240,11 +245,15 @@ function decodeSnapshotWire(value: unknown): unknown {
   if (publication === undefined) return value;
   if (!publication || typeof publication !== "object" || !("changes" in publication)) invalid();
   if (!Array.isArray(publication.changes)) invalid();
+  const checkedPublication = snapshotPublicationCheckpoint({ ...publication, changes: [] });
+  if (publication.changes.length > checkedPublication.limits.logRecords) invalid();
   return {
     ...value,
     publication: {
       ...publication,
-      changes: publication.changes.map(decodeChangeBytes),
+      changes: publication.changes.map((change) =>
+        decodeChangeBytes(change, checkedPublication.limits.effectBytes),
+      ),
     },
   };
 }
