@@ -55,3 +55,12 @@ export type {
   WorkspacePressure,
   HistoryGap,
 } from "./fs/workspace.js";
+
+export {
+  exportWorkspaceArchive,
+  WorkspaceExportError,
+  WORKSPACE_EXPORT_LIMITS,
+  type WorkspaceExportOptions,
+  type ExportRefusal,
+} from "./fs/workspace-export.js";
+export { WorkspaceArchiveError } from "./fs/workspace-archive.js";

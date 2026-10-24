@@ -1,9 +1,9 @@
-# Workspace archive candidate
+# Workspace archive format
 
-This is a tested codec candidate for later integration, not a public Waffle
-import or export API. Nothing in the runtime or package entry points calls it.
-It does not migrate storage, persist a staged root, or implement SAFE. Its branch
-must stay a candidate until a real bounded reader and durable staging sink use it.
+The internal codec backs the public [workspace exporter](workspace-export.md).
+The package does not expose its encoder, parser, import driver, or staging sink.
+No durable import adapter, storage migration, staged-root publication, or SAFE
+guarantee is implemented by this format module.
 
 ## Logical data
 
@@ -23,7 +23,10 @@ Each entry preserves its absolute virtual path, file or directory kind, file byt
 length, finite millisecond `mtime`, and supported permission bits. Directory size
 is zero. Supported mode masks come from `permissionsFor`: `01700` for directories
 and `0600` for files. No numeric ownership, executable registry, symlink, open
-handle, retained unlinked file, or tool index is serialized.
+handle, retained unlinked file, or tool index is serialized. The v1 entry kind is
+fixed to `file | directory`, independent of future public namespace kinds. A link
+cannot be represented as an empty file or as the metadata of its referent. The
+exporter rejects it before copying or charging unknown target metadata.
 
 `sourceIdentity` is either null or the existing durable `StoredIdentity` shape.
 It contains the source workspace UUID and hexadecimal 128-bit file ID and version.
@@ -181,5 +184,5 @@ case. Controlled promises prove that both pending pulls and returns settle befor
 termination, without using a timeout as cleanup evidence.
 
 These tests prove framing and the sink call contract. They do not certify a
-browser storage adapter, a real import/export API, identity adoption, SAFE, crash
+browser storage adapter, a public import API, link export, identity adoption, SAFE, crash
 recovery, or aggregate runtime memory pressure.
