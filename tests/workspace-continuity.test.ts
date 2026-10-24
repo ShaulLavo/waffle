@@ -82,7 +82,7 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
     expect(bounded.receipts).toEqual(captured.receipts);
     expect(bounded.contentVersions).toEqual(captured.contentVersions);
     const boundedRestore = new PublicationDomain(
-      createPublicationBuffers(smallLimits, false, bounded),
+      createPublicationBuffers(smallLimits, false, { checkpoint: bounded }),
     );
     expect(boundedRestore.cut()).toEqual(captured.cut);
     expect(boundedRestore.changes(original, 8192)).toEqual({ kind: "gap", current: captured.cut });
@@ -102,7 +102,9 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
     expect(boundedRestore.openSession().serial).toBeGreaterThan(bounded.sessionSerial);
     const empty = live.checkpoint(fixed);
     expect(empty.changes).toEqual([]);
-    const emptyRestore = new PublicationDomain(createPublicationBuffers(smallLimits, false, empty));
+    const emptyRestore = new PublicationDomain(
+      createPublicationBuffers(smallLimits, false, { checkpoint: empty }),
+    );
     expect(emptyRestore.changes(original, 8192)).toEqual({ kind: "gap", current: captured.cut });
     expect(emptyRestore.changes(captured.cut, 8192)).toMatchObject({
       kind: "changes",
@@ -113,7 +115,9 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
     const postCutId = live.next(postCutSession);
     captured.changes[0]?.fill(0);
     expect(owned).toEqual(saved);
-    const restored = new PublicationDomain(createPublicationBuffers(smallLimits, false, owned));
+    const restored = new PublicationDomain(
+      createPublicationBuffers(smallLimits, false, { checkpoint: owned }),
+    );
     expect(restored.cut()).toEqual(saved.cut);
     expect(restored.changes(original, 8192)).toEqual({ kind: "gap", current: saved.cut });
     expect(restored.lookupAny(firstReceipt.id)).toEqual({ kind: "unknown" });
@@ -160,10 +164,12 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
       snapshotPublicationCheckpoint({ ...saved, changes: saved.changes.toReversed() }),
     ).toThrow();
     expect(() =>
-      createPublicationBuffers({ ...smallLimits, operations: 5 }, false, saved),
+      createPublicationBuffers({ ...smallLimits, operations: 5 }, false, { checkpoint: saved }),
     ).toThrow();
     const exhausted = new PublicationDomain(
-      createPublicationBuffers(smallLimits, false, { ...saved, sessionSerial: 0x7ffffffd }),
+      createPublicationBuffers(smallLimits, false, {
+        checkpoint: { ...saved, sessionSerial: 0x7ffffffd },
+      }),
     );
     expect(exhausted.openSession().serial).toBe(0x7ffffffe);
     const beforeExhaustion = exhausted.checkpoint();
@@ -177,7 +183,9 @@ test("real publication checkpoint owns bounded receipts, gap suffix and content 
     expect(arenas.map((buffer) => Array.from(new Uint8Array(buffer)))).toEqual(beforeArenas);
     expect(exhausted.checkpoint()).toEqual(beforeExhaustion);
     expect(createPublicationBuffers(smallLimits).sessionLimit).toBe(0x7ffffffe);
-    expect(() => createPublicationBuffers(smallLimits, false, beforeExhaustion)).toThrow();
+    expect(() =>
+      createPublicationBuffers(smallLimits, false, { checkpoint: beforeExhaustion }),
+    ).toThrow();
     const first = saved.changes[0];
     if (!first) throw new Error("saved suffix absent");
     expect(decodeEffects(first).receipt.cut.generation).toBe(saved.cut.generation - 1);

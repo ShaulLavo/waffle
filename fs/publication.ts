@@ -1,3 +1,5 @@
+import type { MemoryBudget } from "./memory-budget.js";
+import { withPublicationMemory } from "./publication-memory-budget.js";
 import type { CheckpointPublication } from "./storage.js";
 import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
@@ -250,6 +252,12 @@ export function validatePublicationLimits(limits: PublicationLimits): Publicatio
 export interface PublicationBufferConstruction {
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
 }
+export interface PublicationBufferOptions {
+  readonly checkpoint?: CheckpointPublication;
+  readonly backing?:
+    | { readonly kind: "budget"; readonly budget: MemoryBudget }
+    | { readonly kind: "construction"; readonly construction: PublicationBufferConstruction };
+}
 export function publicationBufferPlan(limits: PublicationLimits, observe = false) {
   limits = validatePublicationLimits(limits);
   const sizes = {
@@ -278,12 +286,14 @@ export function publicationBufferPlan(limits: PublicationLimits, observe = false
 export function createPublicationBuffers(
   limits: PublicationLimits,
   observe = false,
-  checkpoint?: CheckpointPublication,
-  construction?: PublicationBufferConstruction,
+  options: PublicationBufferOptions = {},
 ): PublicationBuffers {
   const plan = publicationBufferPlan(limits, observe);
   limits = plan.limits;
-  const saved = checkpoint === undefined ? undefined : snapshotPublicationCheckpoint(checkpoint);
+  const saved =
+    options.checkpoint === undefined
+      ? undefined
+      : snapshotPublicationCheckpoint(options.checkpoint);
   if (saved && !sameLimits(limits, saved.limits))
     throw new FilesystemError(28, "checkpoint publication limits differ");
   const sessionLimit = saved
@@ -292,31 +302,44 @@ export function createPublicationBuffers(
   if (sessionLimit === saved?.sessionSerial)
     throw new FilesystemError(33, "publication session frontier exhausted");
   const sizes = plan.sizes;
-  const allocate = (bytes: number) =>
-    construction ? construction.allocateShared(bytes) : new SharedArrayBuffer(bytes);
-  const buffers: PublicationBuffers = {
-    sessionLimit,
-    history: saved?.cut.history ?? crypto.randomUUID(),
-    ...(sizes.pageReaders !== undefined && sizes.readerLifetimes !== undefined
-      ? {
-          pageReaders: allocate(sizes.pageReaders),
-          readerLifetimes: allocate(sizes.readerLifetimes),
-        }
-      : {}),
-    limits: plan.limits,
-    control: allocate(sizes.control),
-    sessions: allocate(sizes.sessions),
-    operations: allocate(sizes.operations),
-    inputs: allocate(sizes.inputs),
-    results: allocate(sizes.results),
-    log: allocate(sizes.log),
-    logData: allocate(sizes.logData),
-    pins: allocate(sizes.pins),
-    pinData: allocate(sizes.pinData),
-    versions: allocate(sizes.versions),
+  const history = saved?.cut.history ?? crypto.randomUUID();
+  const construct = (allocate: (bytes: number) => SharedArrayBuffer): PublicationBuffers => {
+    const buffers: PublicationBuffers = {
+      sessionLimit,
+      history,
+      ...(sizes.pageReaders !== undefined && sizes.readerLifetimes !== undefined
+        ? {
+            pageReaders: allocate(sizes.pageReaders),
+            readerLifetimes: allocate(sizes.readerLifetimes),
+          }
+        : {}),
+      limits: plan.limits,
+      control: allocate(sizes.control),
+      sessions: allocate(sizes.sessions),
+      operations: allocate(sizes.operations),
+      inputs: allocate(sizes.inputs),
+      results: allocate(sizes.results),
+      log: allocate(sizes.log),
+      logData: allocate(sizes.logData),
+      pins: allocate(sizes.pins),
+      pinData: allocate(sizes.pinData),
+      versions: allocate(sizes.versions),
+    };
+    if (saved) new PublicationDomain(buffers, 0x7fffffff, undefined, saved);
+    return Object.freeze(buffers);
   };
-  if (saved) new PublicationDomain(buffers, 0x7fffffff, undefined, saved);
-  return Object.freeze(buffers);
+  const backing = options.backing;
+  if (backing?.kind === "budget")
+    return withPublicationMemory(
+      backing.budget,
+      { bytes: plan.bytes, allocations: plan.allocations, references: plan.allocations, leases: 0 },
+      construct,
+    );
+  return construct((bytes) =>
+    backing?.kind === "construction"
+      ? backing.construction.allocateShared(bytes)
+      : new SharedArrayBuffer(bytes),
+  );
 }
 function same(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;

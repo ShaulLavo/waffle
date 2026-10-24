@@ -61,3 +61,36 @@ ordering, rollback, alias lifetime, repeated attachment, and no-effect pressure.
 Its separate persistence measurement keeps the root and three production-helper
 payload copies distinct. That fixture is not native IndexedDB, heap, or RAM
 certification.
+
+## Opt-in fixed publication backing
+
+The internal `createPublicationBuffers(limits, observe, options)` factory admits
+its complete fixed backing when `options.backing` is `{ kind: "budget", budget }`,
+using an existing realm-local `MemoryBudget`. `options.checkpoint` restores settled
+publication state with the same admission. Validation precedes admission, and restore
+initialization completes before the group is published.
+Without `options.backing`, allocation has no ledger admission. The root constructor
+uses `{ kind: "construction", construction }` instead, borrowing its existing admitted
+owner allocation without a second admission. These backing owners are mutually exclusive.
+This factory-only hook does not provide production-wide or aggregate enforcement.
+
+Admission reserves one operation lease, ten allocation/reference records, and
+all ten backing byte lengths before the first backing allocation. Observation
+adds two backings and two allocation/reference records. The plan includes the
+version table and both observer arrays. Each backing requests its exact full
+size as both `bytes` and `maximum`. Fixed SABs are accepted and never grown.
+An admission denial allocates nothing. Any unpublished construction failure,
+including final registration, cancels all acquired references and reservation.
+
+Published groups stay strongly retained under their budget. Domain aliases do
+not add charges. Slot clearing, domain stop, `releaseStopped`, and budget close
+do not refund published backings, since raw aliases can survive them. Repeated
+funded constructions charge distinct groups. There is no early-refund API or GC
+callback. Discard the authority and all aliases to retire its ownership container.
+
+This is exact backing-byte accounting only. It excludes factory metadata,
+publication preparation and encoding, returned values, transport, segment growth,
+and staged or adapter copies. Ledger control-table charges remain separate.
+`tests/publication-memory-accounting.test.ts` uses small synthetic constructors
+to check denial, precharge ordering, rollback, fixed allocation, and alias lifetime.
+The excluded allocations and whole-runtime disclaimer above still apply.

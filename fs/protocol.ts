@@ -173,12 +173,10 @@ function identityPublication(
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
     const configuration = "workspace" in publication ? workspacePublication : publication;
-    const buffers = createPublicationBuffers(
-      configuration.limits,
-      configuration.observe,
-      configuration.restore,
-      construction,
-    );
+    const buffers = createPublicationBuffers(configuration.limits, configuration.observe, {
+      checkpoint: configuration.restore,
+      ...(construction ? { backing: { kind: "construction", construction } } : {}),
+    });
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,
