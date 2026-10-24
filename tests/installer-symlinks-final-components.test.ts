@@ -10,7 +10,8 @@ import { guestFunction, guestModule } from "./fixtures/publication-wasm.js";
 
 const cleanup: (() => void)[] = [];
 const encoder = new TextEncoder();
-const READ = 2n, WRITE = 64n;
+const READ = 2n,
+  WRITE = 64n;
 afterEach(() => {
   for (const stop of cleanup.splice(0).reverse()) stop();
 });
@@ -34,6 +35,8 @@ function seed() {
   fs.writeFile("/a/sibling.txt", "sibling text");
   fs.mkdirp("/empty");
   link(fs, "/link", "a/b");
+  for (const path of ["/", "/a", "/a/b", "/a/b/note.txt", "/a/sibling.txt", "/empty", "/link"])
+    expect(fs.setMtime(handle(fs, path), 1)).toBe(0);
   return fs;
 }
 function snapshot(fs: MemFS) {
@@ -42,8 +45,16 @@ function snapshot(fs: MemFS) {
   const visit = (node: Node, path: string) => {
     counts.set(node.ino, (counts.get(node.ino) ?? 0) + 1);
     entries.push({
-      path, node: node.ino, kind: node.kind, mtime: node.mtime,
-      value: node.kind === "file" ? Array.from(node.data) : node.kind === "symlink" ? node.target : Array.from(node.children.keys()),
+      path,
+      node: node.ino,
+      kind: node.kind,
+      mtime: node.mtime,
+      value:
+        node.kind === "file"
+          ? Array.from(node.data)
+          : node.kind === "symlink"
+            ? node.target
+            : Array.from(node.children.keys()),
     });
     if (node.kind !== "dir") return;
     for (const [name, child] of node.children) visit(child, `${path}/${name}`);
@@ -56,63 +67,77 @@ function service(fs: MemFS) {
   const owner = new FilesystemService(backend);
   cleanup.push(() => owner.dispose());
   const connection = createFilesystemConnection();
-  cleanup.push(() => connection.server.port.close(), () => connection.client.port.close());
+  cleanup.push(
+    () => connection.server.port.close(),
+    () => connection.client.port.close(),
+  );
   const client = new FilesystemClient(connection.client);
   cleanup.push(() => client.dispose());
   owner.connect(connection.server);
   return { client, backend };
 }
 
-test.each(["/link/", "/link///"])("D1 no-follow metadata rejects final separators %s without effects", (path) => {
-  const fs = seed(), before = snapshot(fs), root = fs.preopen("/");
-  const linkHandle = handle(fs, "/link"), referent = handle(fs, "/a/b");
-  expect(fs.resolve(root, path.slice(1), false)).toBe(54);
-  expect(() => fs.lookup(path, false)).toThrow(new FilesystemError(54));
-  expect(resolved(fs, path, true).node).toBe(referent);
-  expect(resolved(fs, "/link").node).toBe(linkHandle);
-  expect(fs.readlink(linkHandle)).toBe("a/b");
-  expect(resolved(fs, "/link/.").node).toBe(referent);
-  expect(resolved(fs, "/link/..").node).toBe(handle(fs, "/a"));
-  expect(resolved(fs, "/a/b/..").node).toBe(handle(fs, "/a"));
-  expect(snapshot(fs)).toEqual(before);
-});
+test.each(["/link/", "/link///"])(
+  "D1 no-follow metadata rejects final separators %s without effects",
+  (path) => {
+    const fs = seed(),
+      before = snapshot(fs),
+      root = fs.preopen("/");
+    const linkHandle = handle(fs, "/link"),
+      referent = handle(fs, "/a/b");
+    expect(fs.resolve(root, path.slice(1), false)).toBe(54);
+    expect(() => fs.lookup(path, false)).toThrow(new FilesystemError(54));
+    expect(resolved(fs, path, true).node).toBe(referent);
+    expect(resolved(fs, "/link").node).toBe(linkHandle);
+    expect(fs.readlink(linkHandle)).toBe("a/b");
+    expect(resolved(fs, "/link/.").node).toBe(referent);
+    expect(resolved(fs, "/link/..").node).toBe(handle(fs, "/a"));
+    expect(resolved(fs, "/a/b/..").node).toBe(handle(fs, "/a"));
+    expect(snapshot(fs)).toEqual(before);
+  },
+);
 
-test.each(["direct", "plan", "service"])("D1 %s removal rejects link slash before selecting an edge", async (mode) => {
-  const fs = seed();
-  const remote = mode === "service" ? service(fs) : undefined;
-  const changes: number[] = [], links: number[] = [];
-  if (!remote) {
-    fs.onChange = (node) => changes.push(node.ino);
-    fs.onLinkChange = (_node, delta) => links.push(delta);
-  }
-  const before = snapshot(fs);
-  const remove = async (path: string) => {
-    if (remote) return remote.client.asyncCall("remove", [path]);
-    if (mode === "direct") return fs.remove(path);
-    const prepared = fs.planRemove(path, 100);
-    fs.applyNamespace(prepared.plan);
-    return prepared.result;
-  };
-  await expect(remove("/link///")).rejects.toMatchObject({ errno: 54 });
-  expect(snapshot(fs)).toEqual(before);
-  expect(changes).toEqual([]);
-  expect(links).toEqual([]);
-  expect(await remove("/missing/child")).toBe(false);
-  expect(await remove("/missing")).toBe(false);
-  expect(await remove("/")).toBe(false);
-  expect(await remove("/link/.")).toBe(false);
-  expect(await remove("/link/..")).toBe(false);
-  expect(snapshot(fs)).toEqual(before);
-  expect(await remove("/empty///")).toBe(true);
-  expect(await remove("/link/../sibling.txt")).toBe(true);
-  expect(fs.lookup("/a/sibling.txt")).toBeUndefined();
-  expect(await remove("/link")).toBe(true);
-  expect(fs.lookup("/link", false)).toBeUndefined();
-  expect(new TextDecoder().decode(fs.readFile("/a/b/note.txt"))).toBe("ordinary text");
-});
+test.each(["direct", "plan", "service"])(
+  "D1 %s removal rejects link slash before selecting an edge",
+  async (mode) => {
+    const fs = seed();
+    const remote = mode === "service" ? service(fs) : undefined;
+    const changes: number[] = [],
+      links: number[] = [];
+    if (!remote) {
+      fs.onChange = (node) => changes.push(node.ino);
+      fs.onLinkChange = (_node, delta) => links.push(delta);
+    }
+    const before = snapshot(fs);
+    const remove = async (path: string) => {
+      if (remote) return remote.client.asyncCall("remove", [path]);
+      if (mode === "direct") return fs.remove(path);
+      const prepared = fs.planRemove(path, 100);
+      fs.applyNamespace(prepared.plan);
+      return prepared.result;
+    };
+    await expect(remove("/link///")).rejects.toMatchObject({ errno: 54 });
+    expect(snapshot(fs)).toEqual(before);
+    expect(changes).toEqual([]);
+    expect(links).toEqual([]);
+    expect(await remove("/missing/child")).toBe(false);
+    expect(await remove("/missing")).toBe(false);
+    expect(await remove("/")).toBe(false);
+    expect(await remove("/link/.")).toBe(false);
+    expect(await remove("/link/..")).toBe(false);
+    expect(snapshot(fs)).toEqual(before);
+    expect(await remove("/empty///")).toBe(true);
+    expect(await remove("/link/../sibling.txt")).toBe(true);
+    expect(fs.lookup("/a/sibling.txt")).toBeUndefined();
+    expect(await remove("/link")).toBe(true);
+    expect(fs.lookup("/link", false)).toBeUndefined();
+    expect(new TextDecoder().decode(fs.readFile("/a/b/note.txt"))).toBe("ordinary text");
+  },
+);
 
 test("D1 real service metadata and both move operands reject final link slash atomically", async () => {
-  const fs = seed(), { client } = service(fs);
+  const fs = seed(),
+    { client } = service(fs);
   const before = snapshot(fs);
   await expect(client.asyncCall("resolvePath", ["/link/"])).rejects.toMatchObject({ errno: 54 });
   await expect(client.asyncCall("lookup", ["/link///"])).rejects.toMatchObject({ errno: 54 });
@@ -120,19 +145,53 @@ test("D1 real service metadata and both move operands reject final link slash at
   expect(snapshot(fs)).toEqual(before);
   expect(await client.asyncCall("move", ["/empty", "/link///"])).toBe(54);
   expect(snapshot(fs)).toEqual(before);
-  expect(await client.asyncCall("resolvePath", ["/link/../sibling.txt"])).toEqual({ path: "/a/sibling.txt", kind: "file" });
+  expect(await client.asyncCall("resolvePath", ["/link/../sibling.txt"])).toEqual({
+    path: "/a/sibling.txt",
+    kind: "file",
+  });
   expect(await client.asyncCall("move", ["/link", "/moved"])).toBe(0);
   expect(fs.readlink(handle(fs, "/moved"))).toBe("a/b");
   expect(fs.lookup("/link", false)).toBeUndefined();
   expect(new TextDecoder().decode(fs.readFile("/a/b/note.txt"))).toBe("ordinary text");
 });
 
+test("D1 bare rename replaces only the link edge and preserves its former referent", async () => {
+  const fs = seed(),
+    { client } = service(fs);
+  const referent = fs.stat(handle(fs, "/a/b"));
+  const contents = fs.stat(handle(fs, "/a/b/note.txt"));
+  const source = fs.lookup("/a/sibling.txt");
+  const beforeLinks = snapshot(fs).links;
+  expect(await client.asyncCall("move", ["/a/sibling.txt", "/link"])).toBe(0);
+  expect(fs.lookup("/link", false)).toBe(source);
+  expect(fs.lookup("/a/sibling.txt")).toBeUndefined();
+  expect(fs.stat(handle(fs, "/a/b"))).toEqual(referent);
+  expect(fs.stat(handle(fs, "/a/b/note.txt"))).toEqual(contents);
+  expect(snapshot(fs).links.find(([ino]) => ino === referent.ino)).toEqual(
+    beforeLinks.find(([ino]) => ino === referent.ino),
+  );
+  expect(new TextDecoder().decode(fs.readFile("/a/b/note.txt"))).toBe("ordinary text");
+});
+
 function wasiFixture(preopens: Record<string, string> = { "/": "/" }) {
-  const fs = seed(), memory = new WebAssembly.Memory({ initial: 4 });
-  const wasi = new Wasi({ args: [], env: {}, fs, preopens, namespaces: { env: { memory } }, stdout() {}, stderr() {}, sleep() {} });
+  const fs = seed(),
+    memory = new WebAssembly.Memory({ initial: 4 });
+  const wasi = new Wasi({
+    args: [],
+    env: {},
+    fs,
+    preopens,
+    namespaces: { env: { memory } },
+    stdout() {},
+    stderr() {},
+    sleep() {},
+  });
   cleanup.push(() => wasi.descriptors.dispose());
   const module = guestModule("wasi_snapshot_preview1", [
-    { name: "path_open", parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"] },
+    {
+      name: "path_open",
+      parameters: ["i32", "i32", "i32", "i32", "i32", "i64", "i64", "i32", "i32"],
+    },
     { name: "path_filestat_get", parameters: ["i32", "i32", "i32", "i32", "i32"] },
     { name: "path_readlink", parameters: ["i32", "i32", "i32", "i32", "i32", "i32"] },
     { name: "path_unlink_file", parameters: ["i32", "i32", "i32"] },
@@ -142,14 +201,17 @@ function wasiFixture(preopens: Record<string, string> = { "/": "/" }) {
   ]);
   const instance = new WebAssembly.Instance(module, wasi.imports(module));
   wasi.start(instance);
-  const call = (name: string, ...args: (number | bigint)[]) => guestFunction(instance, name)(...args);
-  const view = new DataView(memory.buffer), bytes = new Uint8Array(memory.buffer);
+  const call = (name: string, ...args: (number | bigint)[]) =>
+    guestFunction(instance, name)(...args);
+  const view = new DataView(memory.buffer),
+    bytes = new Uint8Array(memory.buffer);
   const put = (path: string, at = 2048) => {
     const encoded = encoder.encode(path);
     bytes.set(encoded, at);
     return encoded.length;
   };
-  const open = (path: string, follow = false, oflags = 0, flags = 0, dir = 3) => call("path_open", dir, Number(follow), 2048, put(path), oflags, READ | WRITE, 0n, flags, 128);
+  const open = (path: string, follow = false, oflags = 0, flags = 0, dir = 3) =>
+    call("path_open", dir, Number(follow), 2048, put(path), oflags, READ | WRITE, 0n, flags, 128);
   const read = (fd: number, length: number) => {
     view.setUint32(256, 4096, true);
     view.setUint32(260, length, true);
@@ -179,12 +241,15 @@ function rejectOpen(f: WasiFixture, path: string, follow: boolean, oflags: numbe
   f.bytes.fill(0xcc, 128, 132);
   expect(f.open(path, follow, oflags)).toBe(errno);
   expect(f.bytes.slice(128, 132)).toEqual(new Uint8Array(4).fill(0xcc));
-  expect(Array.from({ length: 16 }, (_unused, fd) => f.wasi.descriptors.get(fd))).toEqual(descriptors);
+  expect(Array.from({ length: 16 }, (_unused, fd) => f.wasi.descriptors.get(fd))).toEqual(
+    descriptors,
+  );
   expect(snapshot(f.fs)).toEqual(before);
 }
 
 test("D1 Preview1 no-follow metadata and readlink slash leave output and namespace unchanged", () => {
-  const f = wasiFixture(), before = snapshot(f.fs);
+  const f = wasiFixture(),
+    before = snapshot(f.fs);
   f.bytes.fill(0xcc, 512, 1024);
   expect(f.call("path_filestat_get", 3, 0, 2048, f.put("link///"), 512)).toBe(54);
   expect(f.bytes.slice(512, 576)).toEqual(new Uint8Array(64).fill(0xcc));
@@ -199,10 +264,13 @@ test("D1 Preview1 no-follow metadata and readlink slash leave output and namespa
 });
 
 test("D1 Preview1 rejects slash unlink, rmdir and either rename operand before effects", () => {
-  const f = wasiFixture(), before = snapshot(f.fs);
+  const f = wasiFixture(),
+    before = snapshot(f.fs);
   expect(f.call("path_unlink_file", 3, 2048, f.put("link/"))).toBe(54);
   expect(f.call("path_remove_directory", 3, 2048, f.put("link///"))).toBe(54);
-  expect(f.call("path_rename", 3, 2048, f.put("link/"), 3, 3072, f.put("empty/moved", 3072))).toBe(54);
+  expect(f.call("path_rename", 3, 2048, f.put("link/"), 3, 3072, f.put("empty/moved", 3072))).toBe(
+    54,
+  );
   expect(snapshot(f.fs)).toEqual(before);
   expect(f.call("path_rename", 3, 2048, f.put("empty"), 3, 3072, f.put("link/", 3072))).toBe(54);
   expect(snapshot(f.fs)).toEqual(before);
@@ -220,7 +288,8 @@ test.each([
   { suffix: "/", follow: false, oflags: 5, errno: 54 },
 ])("D2 actual-final real alias link policy %j", ({ suffix, follow, oflags, errno }) => {
   const f = aliasFixture();
-  const source = fileResource(f, f.fd), description = f.wasi.descriptors.get(f.fd)?.description;
+  const source = fileResource(f, f.fd),
+    description = f.wasi.descriptors.get(f.fd)?.description;
   rejectOpen(f, f.candidate + suffix, follow, oflags, errno);
   expect(fileResource(f, f.fd)).toBe(source);
   expect(f.wasi.descriptors.get(f.fd)?.description).toBe(description);
@@ -247,7 +316,9 @@ test("D2 explicit follow and direct virtual aliases keep identity, flags and ind
   expect(fileResource(f, followed).handle).toBe(fileResource(f, f.fd).handle);
   expect(fileResource(f, followed).fdflags).toBe(5);
   expect(fileResource(f, f.fd).fdflags).toBe(0);
-  expect(f.wasi.descriptors.get(followed)?.description).not.toBe(f.wasi.descriptors.get(f.fd)?.description);
+  expect(f.wasi.descriptors.get(followed)?.description).not.toBe(
+    f.wasi.descriptors.get(f.fd)?.description,
+  );
   expect(f.read(followed, 8)).toBe("ordinary");
   expect(fileResource(f, f.fd).offset).toBe(2);
   expect(f.open(`dev/fd/${f.fd}`, false)).toBe(0);
@@ -259,11 +330,11 @@ test("D2 a real link with dot suffix remains intermediate and shares the 40 expa
   const f = aliasFixture();
   const intermediate = `deep/./../../dev/fd/${f.fd}`;
   expect(f.open(intermediate, false)).toBe(0);
-  for (let index = 0; index < 40; index++) link(f.fs, `/chain${index}`, index === 39 ? "a/b" : `chain${index + 1}`);
+  for (let index = 0; index < 40; index++)
+    link(f.fs, `/chain${index}`, index === 39 ? "a/b" : `chain${index + 1}`);
   expect(f.open(`chain1/../dev/fd/${f.fd}`, true)).toBe(0);
   rejectOpen(f, `chain0/../dev/fd/${f.fd}`, true, 8, 32);
 });
-
 
 test("D2 no-follow slash rejects a real final link to a virtual directory alias", () => {
   const f = aliasFixture();

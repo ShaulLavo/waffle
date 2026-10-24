@@ -34,3 +34,24 @@ between absence and an invalid or denied walk, not a claim of complete POSIX beh
 Native IndexedDB and OPFS durability, archive export, the real Bun page, and consumer
 delivery are not accepted by the metadata checks. Archive export must refuse a link
 before charging or pinning it; that integration belongs to the export owner.
+
+## D1 and D2 final components
+
+No-follow resolution rejects a final symbolic link followed only by separators with
+errno 54. This supersedes the unresolved trailing-slash policy described above.
+Bare link metadata and readlink still return the link and its raw target. Explicit
+final-follow resolution can reach a directory link with trailing separators.
+A suffix containing `.` or `..` makes the link intermediate and uses actual parents.
+Page removal selects the actual no-follow edge, keeps missing paths false, and does
+not remove root or terminal-dot paths. Both rename operands resolve before effects.
+
+In a descriptor-alias candidate walk, only real symbolic links obey the caller's
+final-link policy. Without trailing separators, exclusive creation returns20 and
+other no-follow opens return32. A no-follow final link with separators returns54
+first. Explicit follow retains the same 40-expansion budget. Virtual descriptor
+aliases retain their existing reopening, rights, identity, flags and offset rules.
+The ordinary `path_open` preliminary no-follow resolve is unchanged; this section
+does not grant a broader rewrite of that open path or linked executable admission.
+
+Directory-creation provenance, readlink pointer and lifetime guarantees, native
+storage, archive refusal and consumer delivery remain separately gated.

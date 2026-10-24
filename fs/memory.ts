@@ -92,7 +92,7 @@ function expandTreeLink(
   expansions: number,
 ): { readonly path: string; readonly absolute: boolean } | number | undefined {
   if (child.kind !== "symlink") return;
-  if (!options.followFinal && start >= path.length && !path.endsWith("/")) return;
+  if (!options.followFinal && !/[^/]/.test(path.slice(start))) return;
   if (expansions >= 40) return 32;
   const target = child.target;
   if (!target) return 44;
@@ -805,12 +805,9 @@ export class MemFS implements FileSystem {
     path: string,
     bound: number,
   ): { readonly plan: NamespacePlan; readonly result: boolean } {
-    const parent = this.lookup(dirname(path));
-    if (parent?.kind !== "dir") return { plan: namespacePlan(), result: false };
-    this.require(parent, 3);
-    const name = basename(path),
-      node = parent.children.get(name);
-    if (!node) return { plan: namespacePlan(), result: false };
+    const edge = this.removalEdge(path);
+    if (!edge) return { plan: namespacePlan(), result: false };
+    const { parent, name, node } = edge;
     const plan = namespacePlan(
       [{ parent, name, before: node, after: undefined }],
       [],
@@ -821,6 +818,16 @@ export class MemFS implements FileSystem {
     const pending: Node[] = [node];
     while (pending.length) this.collectRemovalEdges(pending.pop()!, pending, edges, bound);
     return { plan: boundedNamespace({ ...plan, edges }, bound), result: true };
+  }
+  private removalEdge(path: string): { parent: DirNode; name: string; node: Node } | undefined {
+    const resolved = this.resolveAbsolute(path.startsWith("/") ? path : "/" + path);
+    if (resolved === 44) return;
+    if (typeof resolved === "number") throw new FilesystemError(resolved);
+    if (resolved.terminalDot || resolved.parent === undefined) return;
+    const parent = this.directory(resolved.parent);
+    this.require(parent, 3);
+    if (resolved.node === undefined) return;
+    return { parent, name: resolved.name, node: this.nodeForHandle(resolved.node) };
   }
   private collectRemovalEdges(
     node: Node,
@@ -910,14 +917,13 @@ export class MemFS implements FileSystem {
   }
 
   remove(path: string): boolean {
-    const parent = this.lookup(dirname(path));
-    if (parent?.kind !== "dir") return false;
-    this.require(parent, 3);
-    const node = parent.children.get(basename(path));
-    const removed = parent.children.delete(basename(path));
+    const edge = this.removalEdge(path);
+    if (!edge) return false;
+    const { parent, name, node } = edge;
+    const removed = parent.children.delete(name);
     if (removed) {
-      this.onLinkChange?.(node!, -1);
-      this.forget(node!);
+      this.onLinkChange?.(node, -1);
+      this.forget(node);
       parent.mtime = Date.now();
       this.changed(parent);
     }

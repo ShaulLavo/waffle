@@ -118,12 +118,15 @@ function searchEntry(fs: FileSystem, entry: PathEntry): number {
   return typeof result === "number" ? result : 0;
 }
 
+type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
+
 /** Undefined delegates ordinary paths unchanged, without per-component service calls. */
 export function resolveDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
   directory: Descriptor,
   path: string,
+  finalLink: FinalLinkPolicy,
 ): { source: number } | number | undefined {
   // Normalization only selects candidates. The walker below authorizes the ORIGINAL path:
   // canceled components, root escape and terminal slashes/dots are never discarded there.
@@ -153,6 +156,10 @@ export function resolveDescriptorPath(
     const next = lookupEntry(table, fs, current, part);
     if (typeof next === "number") return next;
     if (next.kind === "symlink") {
+      const final = !pending.slice(offset).some(Boolean);
+      if (final && finalLink !== "follow" && pending[pending.length - 1] === "") return 54;
+      if (final && finalLink === "exclusive-create") return 20;
+      if (final && finalLink === "nofollow") return 32;
       if (++expansions > 40) return 32;
       const target = fs.readlink(next.handle);
       if (!target) return 44;

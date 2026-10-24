@@ -842,7 +842,17 @@ export class Wasi {
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
         const name = this.str(ptr, len);
-        const alias = resolveDescriptorPath(this.descriptors, this.opts.fs, dir, name);
+        const alias = resolveDescriptorPath(
+          this.descriptors,
+          this.opts.fs,
+          dir,
+          name,
+          oflags & O_CREAT && oflags & O_EXCL
+            ? "exclusive-create"
+            : dirflags & 1
+              ? "follow"
+              : "nofollow",
+        );
         if (typeof alias === "number") return alias;
         if (alias !== undefined) {
           if (!this.descriptors.get(alias.source)) return ENOENT;
