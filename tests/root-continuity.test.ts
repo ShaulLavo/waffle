@@ -141,7 +141,7 @@ test("late restore rejects limits and exhausted frontier without publishing or l
 test("partial restored allocation releases private fixed backing while escaped restored sessions remain charged", async () => {
   const seed = publicationAdapter.fixture();
   const privateOwner = await restored(seed, undefined, 75);
-  const rootOnly = privateOwner.memory.snapshot().allocated - privateOwner.memory.snapshot().obligations;
+  const rootOnly = privateOwner.memory.snapshot().allocated;
   try {
     expect(() => privateOwner.construction.attach(privateOwner.backend, seed)).toThrow(
       privateOwner.failure,
