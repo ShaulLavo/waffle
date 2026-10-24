@@ -1185,61 +1185,90 @@ function unsupportedEntry(page: SnapshotPage, path: string, targetRead: () => ne
     kind: "entries",
     entries: page.entries.map((entry) => {
       if (entry.path !== path) return entry;
-      return Object.defineProperties({ ...entry }, {
-        kind: { value: "symlink", enumerable: true },
-        path: { get: targetRead, enumerable: true },
-        target: { get: targetRead, enumerable: true },
-      });
+      return Object.defineProperties(
+        { ...entry },
+        {
+          kind: { value: "symlink", enumerable: true },
+          path: { get: targetRead, enumerable: true },
+          target: { get: targetRead, enumerable: true },
+        },
+      );
     }),
   };
 }
 
-for (const position of ["first-window", "beyond-window"] as const) {
-  test(`N7 broken-provider link metadata at ${position} refuses before path/target access or pin`, async () => {
-    const paths = position === "first-window" ? ["/link"] : Array.from({ length: 130 }, (_, i) => `/a${i}`).concat(["/zz-link"]);
-    const path = paths.at(-1)!;
-    const value = fixture(paths, 0);
-    let touched = 0, chunks = 0;
-    const observed = observe(value.workspace, {
-      async page(page) {
-        return unsupportedEntry(page, path, () => { touched++; throw new Error("Must not touch unsupported metadata"); });
-      },
-    });
-    try {
-      const outcome = await capture((async () => {
-        for await (const _chunk of exportWorkspaceArchive(observed.workspace)) chunks++;
-      })());
-      expect(outcome).toMatchObject({ kind: "error", error: { name: "WorkspaceArchiveError", code: "INVALID" } });
-      expect(touched).toBe(0);
-      expect(chunks).toBe(0);
-      expect(observed.counts.pins).toBe(0);
-      expect(observed.counts.reads).toBe(0);
-      released(value);
-    } finally {
-      await value.close();
-    }
-  });
+async function countChunks(stream: AsyncIterable<Uint8Array>, count: () => void): Promise<void> {
+  for await (const _chunk of stream) count();
 }
-
-test("N7 unsupported kind on a later broken-provider scan invalidates delivered bytes without completion", async () => {
-  const value = fixture(["/link"], 1);
-  let touched = 0, delivered = 0, completed = false;
+interface CompletionProbe {
+  delivered: number;
+  completed: boolean;
+}
+async function inspectCompletion(workspace: WorkspaceVfs, probe: CompletionProbe): Promise<void> {
+  for await (const event of parseWorkspaceArchive(exportWorkspaceArchive(workspace))) {
+    if (event.kind === "data") probe.delivered += event.bytes.length;
+    if (event.kind === "complete") probe.completed = true;
+  }
+}
+async function refuseUnsupportedWindow(position: "first-window" | "beyond-window"): Promise<void> {
+  const paths =
+    position === "first-window"
+      ? ["/link"]
+      : Array.from({ length: 130 }, (_, i) => `/a${i}`).concat(["/zz-link"]);
+  const path = paths.at(-1)!;
+  const value = fixture(paths, 0);
+  let touched = 0,
+    chunks = 0;
   const observed = observe(value.workspace, {
-    async page(page, scan) {
-      if (scan === 1) return page;
-      return unsupportedEntry(page, "/link", () => { touched++; throw new Error("Must not copy raw target"); });
+    async page(page) {
+      return unsupportedEntry(page, path, () => {
+        touched++;
+        throw new Error("Must not touch unsupported metadata");
+      });
     },
   });
   try {
-    const outcome = await capture((async () => {
-      for await (const event of parseWorkspaceArchive(exportWorkspaceArchive(observed.workspace))) {
-        if (event.kind === "data") delivered += event.bytes.length;
-        if (event.kind === "complete") completed = true;
-      }
-    })());
-    expect(outcome).toMatchObject({ kind: "error", error: { name: "WorkspaceArchiveError", code: "INVALID" } });
-    expect(delivered).toBe(1);
-    expect(completed).toBe(false);
+    const outcome = await capture(
+      countChunks(exportWorkspaceArchive(observed.workspace), () => chunks++),
+    );
+    expect(outcome).toMatchObject({
+      kind: "error",
+      error: { name: "WorkspaceArchiveError", code: "INVALID" },
+    });
+    expect(touched).toBe(0);
+    expect(chunks).toBe(0);
+    expect(observed.counts.pins).toBe(0);
+    expect(observed.counts.reads).toBe(0);
+    released(value);
+  } finally {
+    await value.close();
+  }
+}
+for (const position of ["first-window", "beyond-window"] as const)
+  test(`N7 broken-provider link metadata at ${position} refuses before path/target access or pin`, () =>
+    refuseUnsupportedWindow(position));
+
+test("N7 unsupported kind on a later broken-provider scan invalidates delivered bytes without completion", async () => {
+  const value = fixture(["/link"], 1);
+  let touched = 0;
+  const probe: CompletionProbe = { delivered: 0, completed: false };
+  const observed = observe(value.workspace, {
+    async page(page, scan) {
+      if (scan === 1) return page;
+      return unsupportedEntry(page, "/link", () => {
+        touched++;
+        throw new Error("Must not copy raw target");
+      });
+    },
+  });
+  try {
+    const outcome = await capture(inspectCompletion(observed.workspace, probe));
+    expect(outcome).toMatchObject({
+      kind: "error",
+      error: { name: "WorkspaceArchiveError", code: "INVALID" },
+    });
+    expect(probe.delivered).toBe(1);
+    expect(probe.completed).toBe(false);
     expect(touched).toBe(0);
     expect(observed.counts.pins).toBe(1);
     expect(observed.counts.closed).toBe(1);
@@ -1253,9 +1282,13 @@ test("N7 format refusal and falsy cursor cleanup failure retain both causes afte
   const value = fixture(["/link"], 0);
   const observed = observe(value.workspace, {
     async page(page) {
-      return unsupportedEntry(page, "/link", () => { throw new Error("Must refuse before metadata"); });
+      return unsupportedEntry(page, "/link", () => {
+        throw new Error("Must refuse before metadata");
+      });
     },
-    async cursorClose() { throw false; },
+    async cursorClose() {
+      throw false;
+    },
   });
   try {
     const error = await rejected(observed.workspace);
