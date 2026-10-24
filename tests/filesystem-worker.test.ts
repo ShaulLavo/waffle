@@ -597,6 +597,7 @@ test("resolve protects both returned capabilities from eviction when an old hard
     await client.asyncCall("writeFile", [`/filler-${i}`], new Uint8Array([i]));
     await client.asyncCall("resolve", [root, `filler-${i}`]);
   }
+  await client.asyncCall("listFiles", ["/"]);
   expect(service.resources().transient).toBe(256);
   const linked = await client.asyncCall("resolve", [root, "new-parent/link"]);
   expect(linked.node).toBe(original.node);
