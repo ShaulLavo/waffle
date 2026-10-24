@@ -669,6 +669,40 @@ test("bounded change pulls keep complete rename groups ordered across pages", as
   }
 });
 
+test("stale change outcomes preserve a newer accepted snapshot", async () => {
+  const current = await fixture();
+  try {
+    const first = await snapshot(current.workspace);
+    const held = holdResponse(current.serverPort);
+    try {
+      const pending = current.workspace.changes(first.cut.watermark);
+      await held.held;
+      const second = await snapshot(current.workspace);
+      held.release();
+      expect((await pending).kind).toBe("gap");
+      expect((await changed(current.workspace, second.cut)).batches).toHaveLength(0);
+
+      const late = holdResponse(current.serverPort);
+      try {
+        const abort = new AbortController();
+        const cancelled = current.workspace.changes(second.cut.watermark, abort.signal);
+        await late.held;
+        const third = await snapshot(current.workspace);
+        abort.abort();
+        expect(await cancelled).toEqual({ kind: "cancelled" });
+        late.release();
+        expect((await changed(current.workspace, third.cut)).batches).toHaveLength(0);
+      } finally {
+        late.release();
+      }
+    } finally {
+      held.release();
+    }
+  } finally {
+    await current.stop();
+  }
+});
+
 test("change cancellation and concurrent pulls release receipts without late index installation", async () => {
   const current = await fixture();
   try {
