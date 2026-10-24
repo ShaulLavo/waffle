@@ -39,6 +39,7 @@ export class ResidentAuthorityServer {
   private requests = new Map<string, { client: string; token: unknown; abort: AbortController }>();
   private terminal = new Map<string, TerminalOutcome>();
   private reconciling = new Set<string>();
+  private acknowledgements: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   private status = new Map<string, StatusWaiter>();
   private outstanding:
     | { readonly client: string; readonly token: string; readonly grant: string }
@@ -89,17 +90,25 @@ export class ResidentAuthorityServer {
       return;
     }
     if (message.kind === "cancel") this.requests.get(key)?.abort.abort();
-    else this.terminal.delete(key);
+    else if (this.terminal.delete(key) && !this.terminal.size) {
+      const joined = this.acknowledgements;
+      this.acknowledgements = undefined;
+      joined?.resolve();
+    }
   }
   private postTerminal(client: string, id: string, outcome: TerminalOutcome): void {
     const key = this.key(client, id);
+    this.acknowledgements ??= Promise.withResolvers<void>();
     this.terminal.set(key, outcome);
-    this.channel.postMessage(
-      outcome.kind === "value"
-        ? { kind: "reply", client, id, value: outcome.value }
-        : { kind: "reply", client, id, errno: outcome.errno },
-    );
-    if (this.reconciling.delete(key)) this.reconcile({ client, id });
+    try {
+      this.channel.postMessage(
+        outcome.kind === "value"
+          ? { kind: "reply", client, id, value: outcome.value }
+          : { kind: "reply", client, id, errno: outcome.errno },
+      );
+    } finally {
+      if (this.reconciling.delete(key)) this.reconcile({ client, id });
+    }
   }
   private reconcile(message: Record<string, unknown>): void {
     let client: string, id: string;
@@ -381,8 +390,9 @@ export class ResidentAuthorityServer {
     return (this.finalizing ??= this.finalizeTransport());
   }
   private async finalizeTransport(): Promise<void> {
+    await this.queue;
+    while (this.acknowledgements) await this.acknowledgements.promise;
     this.channel.close();
-    this.terminal.clear();
     this.reconciling.clear();
     this.authority.dispose();
     await this.guard.release();

@@ -227,7 +227,11 @@ export async function acquirePublicationGuard(
 type CallAnswer = ReturnType<typeof Promise.withResolvers<unknown>>;
 type ReceiveValue = (value: unknown, late: boolean) => void;
 type ReconcileState = "terminal" | "pending" | "unknown";
-type PendingCall = { readonly terminal: CallAnswer; readonly receive: ReceiveValue | undefined } & (
+type PendingCall = {
+  readonly operation: string;
+  readonly terminal: CallAnswer;
+  readonly receive: ReceiveValue | undefined;
+} & (
   | {
       readonly kind: "waiting";
       readonly answer: CallAnswer;
@@ -274,9 +278,21 @@ export class ResidentChannel {
     if (data.kind !== "reply") return;
     const pending = this.pending.get(id);
     if (!pending) return;
-    const error =
-      data.errno === undefined ? undefined : new FilesystemError(integer(data.errno, 76));
-    if (!error) pending.receive?.(data.value, pending.kind === "unconfirmed");
+    if (Object.hasOwn(data, "value") === Object.hasOwn(data, "errno"))
+      throw new FilesystemError(28);
+    const error = Object.hasOwn(data, "errno")
+      ? new FilesystemError(integer(data.errno, 76))
+      : undefined;
+    if (error?.errno === 0) throw new FilesystemError(28);
+    if (!error) {
+      if (
+        (pending.operation === "close" || pending.operation === "closeConnection") &&
+        data.value !== null
+      )
+        throw new FilesystemError(28);
+      if (pending.operation === "settle") settlement(data.value);
+      pending.receive?.(data.value, pending.kind === "unconfirmed");
+    }
     this.pending.delete(id);
     const waiter = this.reconciliation.get(id);
     if (waiter) {
@@ -342,11 +358,11 @@ export class ResidentChannel {
     const timer = setTimeout(() => {
       const pending = this.pending.get(id);
       if (!pending || pending.kind !== "waiting") return;
-      this.pending.set(id, { kind: "unconfirmed", terminal, receive });
+      this.pending.set(id, { kind: "unconfirmed", operation, terminal, receive });
       this.channel.postMessage({ kind: "cancel", client: this.id, id });
       answer.reject(new FilesystemError(6));
     }, callBound);
-    this.pending.set(id, { kind: "waiting", answer, terminal, timer, receive });
+    this.pending.set(id, { kind: "waiting", operation, answer, terminal, timer, receive });
     try {
       this.channel.postMessage({ kind: "request", id, client: this.id, operation, body });
     } catch (error) {
