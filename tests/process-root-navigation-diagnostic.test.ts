@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   cleanupCollection,
+  collectChild,
   cleanupRun,
   runReceipt,
   finishStreams,
@@ -13,6 +14,7 @@ import {
   releaseRunResources,
   type RunState,
   assertIdentity,
+  assertSourceProvenance,
   captureRecordsIntact,
   Failures,
   terminalEvidence,
@@ -33,6 +35,8 @@ const request = `GET / HTTP/1.1\r\nx-waffle-navigation-id: ${receipt.navigationI
 const response = `HTTP/1.1 200 OK\r\n${Object.entries(rootHeaders)
   .map(([key, value]) => `${key}: ${value}\r\n`)
   .join("")}Content-Length: 53\r\n\r\n${rootHTML}`;
+const protocolTrace =
+  "pw:browser <launched> pid=123\npw:protocol SEND ► command\npw:protocol ◀ RECV result\n";
 
 function packet(from: number, sequence: number, ack: number, flags: number, payload = ""): string {
   const body = Buffer.from(payload);
@@ -246,6 +250,23 @@ test("refuses engine/version and approved executable identity mismatch", () => {
   expect(() => assertIdentity(identity, {})).toThrow();
 });
 
+test("source provenance accepts the declared diagnostic inputs and rejects wrong bytes", () => {
+  const lockfile = new URL("../bun.lock", import.meta.url).pathname;
+  const runner = new URL("./process-recycling-browser-runner.ts", import.meta.url).pathname;
+  const root = mkdtempSync(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"));
+  try {
+    expect(() => assertSourceProvenance(lockfile, runner)).not.toThrow();
+    const wrongLockfile = join(root, "bun.lock");
+    writeFileSync(wrongLockfile, `${readFileSync(lockfile, "utf8")}\n`);
+    expect(() => assertSourceProvenance(wrongLockfile, runner)).toThrow("Lockfile");
+    const wrongRunner = join(root, "process-recycling-browser-runner.ts");
+    writeFileSync(wrongRunner, `${readFileSync(runner, "utf8")}\n`);
+    expect(() => assertSourceProvenance(lockfile, wrongRunner)).toThrow("Original runner changed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function killIfAlive(pid: number): void {
   try {
     process.kill(pid, "SIGKILL");
@@ -367,6 +388,47 @@ test(
   15000,
 );
 
+test(
+  "collector forwards capture environment set immediately before spawn",
+  async () => {
+    const root = mkdtempSync(
+      join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-environment-"),
+    );
+    const evidence = join(root, "evidence");
+    mkdirSync(evidence);
+    mkdirSync(join(root, "scratch"));
+    const previousTMPDIR = process.env.TMPDIR;
+    try {
+      process.env.TMPDIR = join(root, "scratch");
+      process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE = "present";
+      const status = await collectChild(
+        [
+          process.execPath,
+          "-e",
+          'process.stdout.write(process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE ?? "missing")',
+        ],
+        evidence,
+      );
+      expect(status).toBe(0);
+      expect(readFileSync(join(evidence, "stdout.bin"), "utf8")).toBe("present");
+      expect(
+        JSON.parse(readFileSync(join(evidence, "collector-result.json"), "utf8")),
+      ).toMatchObject({
+        status: 0,
+        primaryPresent: false,
+        cleanupErrors: [],
+        unresolvedOwnership: [],
+      });
+    } finally {
+      if (previousTMPDIR === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTMPDIR;
+      delete process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15000,
+);
+
 test("durable evidence refuses accidental overwrite", () => {
   const root = mkdtempSync(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-json-"));
   try {
@@ -383,14 +445,26 @@ test("admission requires protocol/browser readback and final collection cannot c
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-final-"),
   );
-  const trace =
-    'pw:browser <launched> pid=123\npw:protocol SEND command\npw:protocol RECV result\n[pid 123] execve("/engine/bin/MiniBrowser", [], [])\n';
+  const trace = `${protocolTrace}[pid 123] execve("/engine/bin/MiniBrowser", [], [])\n`;
   try {
     expect(hasProtocolCollection(trace)).toBe(true);
-    expect(hasProtocolCollection(trace.replace("pw:protocol RECV", "missing"))).toBe(false);
+    expect(hasProtocolCollection(trace.replace("◀ RECV", "RECV"))).toBe(false);
+    expect(hasProtocolCollection(trace.replace("◀ RECV", "◀ RECVIVED"))).toBe(false);
     expect(finalizeCollection(root, 0, { kind: "none" }).classification).toBe("CENSORED_CAPTURE");
     writeTerminalFixture(root, 0, "NONREPRODUCTION");
     expect(finalizeCollection(root, 0, { kind: "none" }).classification).toBe("NONREPRODUCTION");
+    const child = JSON.parse(readFileSync(join(root, "result.json"), "utf8"));
+    writeFileSync(
+      join(root, "stderr.bin"),
+      readFileSync(join(root, "stderr.bin"), "utf8").replace("◀ RECV", "RECV"),
+    );
+    const collectorPath = join(root, "collector-result.json");
+    const collector = JSON.parse(readFileSync(collectorPath, "utf8"));
+    collector.stderrSHA256 = sha256(readFileSync(join(root, "stderr.bin")));
+    writeFileSync(collectorPath, JSON.stringify(collector));
+    expect(terminalEvidence(root, 0, child)).toBe(true);
+    expect(finalizeCollection(root, 0, { kind: "none" }).classification).toBe("CENSORED_CAPTURE");
+    writeTerminalFixture(root, 0, "NONREPRODUCTION");
     expect(finalizeCollection(root, 1, { kind: "none" }).classification).toBe("CENSORED_CAPTURE");
     expect(
       finalizeCollection(root, 0, { kind: "rejected", reason: new Error("interrupted") })
@@ -631,7 +705,7 @@ function writeTerminalFixture(
   ending?: string,
 ): void {
   const trace =
-    "pw:browser <launched> pid=123\npw:protocol SEND command\npw:protocol RECV result\n" +
+    protocolTrace +
     '[pid 123] 1.0 execve("/engine/bin/MiniBrowser", [], []) = 0\n' +
     '[pid 456] 1.0 execve("/tools/bun", ["bun", "/owned/root.ts", "--root-child"], []) = 0\n' +
     "[pid 123] 2.0 +++ exited with 0 +++\n" +
