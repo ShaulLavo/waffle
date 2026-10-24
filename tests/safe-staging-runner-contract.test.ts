@@ -20,7 +20,10 @@ test("the native matrix discovers the checkpoint decoder control without a secon
   expect(browser).toContain(
     "async function checkpointDecodeBounds(): Promise<void> {\n  await checkpointDecodeControl.run();\n}",
   );
-  const cases = browser.slice(browser.indexOf("const cases = {"), browser.indexOf("/** @browserEntry"));
+  const cases = browser.slice(
+    browser.indexOf("const cases = {"),
+    browser.indexOf("/** @browserEntry"),
+  );
   expect(cases.match(/^  checkpointDecodeBounds,$/gm)).toHaveLength(1);
   expect(browser.split("checkpointDecodeControl.run()").length - 1).toBe(1);
   const units = await Bun.file(new URL("indexeddb-checkpoint-decode.test.ts", import.meta.url)).text();

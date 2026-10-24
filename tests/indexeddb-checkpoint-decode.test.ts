@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import { snapshotPublicationCheckpoint } from "../fs/publication.js";
-import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle.js";
 import { checkpointDecodeControl } from "./indexeddb-checkpoint-decode-browser.js";
 
 function validationTests(): void {
@@ -30,39 +29,4 @@ function validationTests(): void {
     ).toThrow();
   });
 }
-async function nativeControl(): Promise<void> {
-  const lifecycle = new BrowserRunnerLifecycle(180000);
-  try {
-    await lifecycle.init();
-    const origin = lifecycle.serve(
-      {
-        "/": "<!doctype html><title>Checkpoint decoder bounds</title>",
-        "/tests.js": await browserBundle("tests/indexeddb-checkpoint-decode-browser.ts"),
-      },
-      0,
-    );
-    const browser = await lifecycle.launch("chromium");
-    const page = await browser.newPage();
-    page.on("console", (message) => console.log(message.text()));
-    await page.goto(origin);
-    await page.evaluate(async () => {
-      const path = "/tests.js";
-      const controls: typeof import("./indexeddb-checkpoint-decode-browser.js") = await import(
-        path
-      );
-      await controls.checkpointDecodeControl.run();
-    });
-    console.log(
-      JSON.stringify({
-        engine: "chromium",
-        version: browser.version(),
-        passed: "checkpoint pre-copy bounds",
-      }),
-    );
-    await lifecycle.closeBrowser(browser);
-  } finally {
-    await lifecycle.close();
-  }
-}
-if (import.meta.main && process.argv.includes("--native")) await nativeControl();
-else validationTests();
+validationTests();

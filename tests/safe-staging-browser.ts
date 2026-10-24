@@ -1,4 +1,5 @@
 import { IdentityAllocator } from "../fs/file-identity.js";
+import { checkpointDecodeControl } from "./indexeddb-checkpoint-decode-browser.js";
 import {
   PublicationDomain,
   createPublicationBuffers,
@@ -1147,7 +1148,11 @@ async function observerReentry(
   assert((await driver.submit(next)).kind === "committed", "fresh observer slot allows retry");
   assert(equal(secondPrepared, 1), "refused callback did not stage an extra operation");
 }
+async function checkpointDecodeBounds(): Promise<void> {
+  await checkpointDecodeControl.run();
+}
 const cases = {
+  checkpointDecodeBounds,
   genesisReopen,
   observerCapacity,
   observerCancellation,
