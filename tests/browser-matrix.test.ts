@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
@@ -14,19 +14,29 @@ const runners = [
   "publication-cross-tab",
 ];
 const continuity = "workspace-continuity";
+const rootContinuity = "root-continuity";
+const chromiumOnly = [continuity, rootContinuity];
 const fixture = `
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const name = process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const engines = process.argv.slice(2).join(",");
-if (name === "${continuity}") {
+if (${JSON.stringify(chromiumOnly)}.includes(name)) {
+  appendFileSync(name + ".invocations", engines + "\\n");
   if (engines !== "chromium") throw Error("continuity engine repeated or changed");
   if (existsSync(name + ".finished")) throw Error("continuity repeated");
   const scratch = process.env.STORAGE_SCRATCH_ROOT;
   if (scratch !== process.cwd() && !scratch?.startsWith(process.cwd() + "/wb-")) throw Error("scratch missing");
   if (process.platform === "linux" && process.env.PROCESS_SCRATCH_ROOT !== scratch) throw Error("supervised scratch missing");
+  if (!statSync(scratch).isDirectory() || realpathSync(scratch) !== scratch) throw Error("scratch not an actual directory");
+  if (process.platform === "linux") {
+    if (!scratch.startsWith(process.cwd() + "/wb-")) throw Error("scratch not supervisor-owned");
+    if (!readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").includes("/scripts/browser-supervisor.ts")) throw Error("supervisor not running");
+    if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
+  }
+  writeFileSync(name + ".scratch", scratch);
   writeFileSync(name + ".finished", engines);
-  if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
+  if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
   process.exit(0);
 }
 if (engines === "chromium,firefox") {
@@ -37,10 +47,23 @@ if (engines === "chromium,firefox") {
   if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
 } else throw Error("missing engine");
 writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
-if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
+if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
 `;
 
-async function matrix(failing: string): Promise<void> {
+const matrixEntry = `
+import { writeFileSync } from "node:fs";
+let failures = [];
+try {
+  await import("./test-browser.ts");
+} catch (error) {
+  failures = error instanceof AggregateError ? error.errors.map((entry) => entry.message) : [String(error)];
+  throw error;
+} finally {
+  writeFileSync("failures.json", JSON.stringify(failures));
+}
+`;
+
+async function matrix(failing: readonly string[]): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "waffle-browser-matrix-"));
   let cleanupError: CommandCleanupError | undefined;
   try {
@@ -56,22 +79,36 @@ async function matrix(failing: string): Promise<void> {
     );
     for (const name of ["browser-command.ts", "browser-supervisor.ts"])
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
-    for (const runner of runners.concat([continuity]))
+    await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
+    for (const runner of runners.concat(chromiumOnly))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     let failure: unknown;
     try {
-      await runOwned([process.execPath, "scripts/test-browser.ts"], {
+      await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
         cwd: root,
-        env: { ...process.env, MATRIX_FAIL: failing, STORAGE_SCRATCH_ROOT: root },
+        env: { ...process.env, MATRIX_FAIL: failing.join("|"), STORAGE_SCRATCH_ROOT: root },
         timeoutMs: 5000,
       });
     } catch (error) {
       cleanupError = error instanceof CommandCleanupError ? error : undefined;
       failure = error;
     }
-    expect(await readFile(join(root, `${continuity}.finished`), "utf8")).toBe("chromium");
+    for (const runner of chromiumOnly) {
+      expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("chromium");
+      expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe("chromium\n");
+      const scratch = await readFile(join(root, `${runner}.scratch`), "utf8");
+      expect(scratch.startsWith(root + "/wb-") || (process.platform !== "linux" && scratch === root)).toBe(true);
+    }
+    expect((await readdir(root)).filter((name) => name.startsWith("wb-"))).toEqual([]);
     expect(cleanupError).toBeUndefined();
-    expect(failure instanceof Error).toBe(failing !== "");
+    expect(failure instanceof Error).toBe(failing.length !== 0);
+    const order = runners.map((runner) => `${runner}:chromium,firefox`).concat(
+      runners.map((runner) => `${runner}:webkit`),
+      chromiumOnly.map((runner) => `${runner}:chromium`),
+    );
+    expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
+      order.filter((entry) => failing.includes(entry)).map((entry) => `tests/${entry.split(":")[0]}-browser-runner.ts failed`),
+    );
     for (const runner of runners) {
       expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
         "chromium,firefox",
@@ -85,17 +122,25 @@ async function matrix(failing: string): Promise<void> {
 }
 
 test("browser matrix overlaps Chromium and Firefox suites before running WebKit suites alone", async () => {
-  await matrix("");
+  await matrix([]);
 }, 15_000);
 
 for (const runner of runners) {
   for (const phase of ["chromium,firefox", "webkit"]) {
     test(`${runner} ${phase} failure remains blocking without hiding other suites`, async () => {
-      await matrix(`${runner}:${phase}`);
+      await matrix([`${runner}:${phase}`]);
     }, 15_000);
   }
 }
 
 test("continuity Chromium failure remains blocking in its single supervised invocation", async () => {
-  await matrix(`${continuity}:chromium`);
+  await matrix([`${continuity}:chromium`]);
+}, 15_000);
+
+test("root continuity Chromium failure remains blocking in its single supervised invocation", async () => {
+  await matrix([`${rootContinuity}:chromium`]);
+}, 15_000);
+
+test("browser matrix reports ordered failures after every other suite finishes", async () => {
+  await matrix([`${rootContinuity}:chromium`, "storage:chromium,firefox", `${continuity}:chromium`, "safe-staging:chromium,firefox", "network:webkit"]);
 }, 15_000);
