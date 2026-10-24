@@ -90,6 +90,40 @@ function stepsFor(name: string): Array<Record<string, unknown>> {
   return steps.map(record);
 }
 
+function artifactStep(steps: readonly Record<string, unknown>[], path: string) {
+  const step = steps.find(
+    (step) => step.uses === "actions/upload-artifact@v4" && record(step.with).path === path,
+  );
+  if (!step) throw new Error(`expected artifact upload for ${path}`);
+  return step;
+}
+
+const recoveryReportPath = "${{ runner.temp }}/recovery-r42-report.json";
+const browserProtocolPath = "${{ runner.temp }}/waffle-browser-protocol.log";
+
+test("browser failure retains structured recovery evidence before full protocol", () => {
+  const steps = stepsFor("browser");
+  const browserTest = steps.find(
+    (step) =>
+      step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
+  );
+  expect(record(browserTest?.env).RECOVERY_R42_REPORT).toBe(recoveryReportPath);
+  const recoveryUpload = artifactStep(steps, recoveryReportPath);
+  const protocolUpload = artifactStep(steps, browserProtocolPath);
+  expect(recoveryUpload.if).toBe("failure()");
+  expect(record(recoveryUpload.with).name).toBe(
+    "browser-recovery-report-${{ github.run_id }}-${{ github.run_attempt }}",
+  );
+  expect(steps.indexOf(recoveryUpload)).toBeLessThan(steps.indexOf(protocolUpload));
+  expect(record(recoveryUpload.with).path).not.toBe(record(protocolUpload.with).path);
+});
+
+test("missing recovery report does not replace the browser failure", () => {
+  const recoveryUpload = artifactStep(stepsFor("browser"), recoveryReportPath);
+  expect(recoveryUpload.if).toBe("failure()");
+  expect(record(recoveryUpload.with)["if-no-files-found"]).toBe("ignore");
+});
+
 test("package installs share one Bun package-manager cache contract", () => {
   const expectedCacheUses = {
     package: "actions/cache@v4",
