@@ -233,6 +233,6 @@ test("Preview1 readlink rejects an invalid count buffer before changing output",
   expect(h.symlink("raw-target", "link")).toBe(0);
   const view = h.wasi["view"]();
   new Uint8Array(view.buffer, 5000, 10).fill(0xcc);
-  expect(() => h.calls.path_readlink(3, 256, h.path("link"), 5000, 10, view.byteLength)).toThrow();
+  expect(h.calls.path_readlink(3, 256, h.path("link"), 5000, 10, view.byteLength)).toBe(21);
   expect(new Uint8Array(view.buffer, 5000, 10)).toEqual(new Uint8Array(10).fill(0xcc));
 });
