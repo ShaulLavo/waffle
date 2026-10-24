@@ -28,6 +28,19 @@ writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.fin
 if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
 `;
 
+const recoveryFixture = `
+import { appendFileSync, existsSync } from "node:fs";
+const names = ${JSON.stringify(runners)};
+const engines = process.argv.slice(2);
+const scratch = process.env.STORAGE_SCRATCH_ROOT;
+const supervised = Boolean(process.env.WAFFLE_BROWSER_PARENT);
+const ownedScratch = Boolean(scratch && existsSync(scratch) && scratch === process.env.PROCESS_SCRATCH_ROOT);
+appendFileSync("recovery-r42.invocations", JSON.stringify({ engines, supervised, ownedScratch }) + "\\n");
+if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early recovery");
+if (names.some((entry) => existsSync(entry + ".webkit.finished"))) throw Error("late recovery");
+if (process.env.MATRIX_FAIL === "recovery-r42:chromium") throw Error("recovery fixture failure");
+`;
+
 async function matrix(failing: string): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "waffle-browser-matrix-"));
   let cleanupError: CommandCleanupError | undefined;
@@ -46,6 +59,7 @@ async function matrix(failing: string): Promise<void> {
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
     for (const runner of runners)
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
+    await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     let failure: unknown;
     try {
       await runOwned([process.execPath, "scripts/test-browser.ts"], {
@@ -59,6 +73,19 @@ async function matrix(failing: string): Promise<void> {
     }
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing !== "");
+    const discovery = Bun.file(join(root, "recovery-r42.invocations"));
+    expect(await discovery.exists()).toBe(true);
+    const invocations: unknown[] = (await discovery.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(invocations).toEqual([
+      {
+        engines: ["chromium"],
+        supervised: process.platform === "linux",
+        ownedScratch: process.platform === "linux",
+      },
+    ]);
     for (const runner of runners) {
       expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
         "chromium,firefox",
@@ -82,3 +109,7 @@ for (const runner of runners) {
     }, 15_000);
   }
 }
+
+test("Chromium-only recovery failure blocks matrix without hiding later WebKit suites", async () => {
+  await matrix("recovery-r42:chromium");
+}, 15_000);
