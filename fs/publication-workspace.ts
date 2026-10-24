@@ -118,6 +118,7 @@ export class WorkspacePeer {
   private pending = new Set<FilesystemCompletion>();
   private identities = new Map<number, MutationId>();
   private stopped = false;
+  private stopping: Promise<void> | undefined;
   constructor(
     readonly session: ResidentSession,
     private host: WorkspaceHost,
@@ -222,8 +223,15 @@ export class WorkspacePeer {
       completion.release();
     }
   }
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     this.stopped = true;
+    if (this.stopping) return this.stopping;
+    const answer = Promise.withResolvers<void>();
+    this.stopping = answer.promise;
+    void this.stopOwned().then(answer.resolve, answer.reject);
+    return this.stopping;
+  }
+  private async stopOwned(): Promise<void> {
     for (const completion of this.pending) completion.cancel();
     await this.host.close(this.client.connection);
     this.client.dispose();

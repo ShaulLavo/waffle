@@ -190,6 +190,11 @@ async function replaySchedule(
     );
     for (const reply of settlementReplies(await call(b, "r42-probe"), request))
       assert.deepEqual(reply, first);
+    assert.deepEqual(await call(b, "r42-acknowledge"), {
+      kind: "ack",
+      client: request.client,
+      id: request.id,
+    });
     assert.deepEqual(await owner(a, "cut"), record(receipt).cut);
     return {
       ack: tail.ack,

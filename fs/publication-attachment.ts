@@ -226,7 +226,12 @@ export async function acquirePublicationGuard(
 
 type CallAnswer = ReturnType<typeof Promise.withResolvers<unknown>>;
 type ReceiveValue = (value: unknown, late: boolean) => void;
-type PendingCall = { readonly terminal: CallAnswer; readonly receive: ReceiveValue | undefined } & (
+type ReconcileState = "terminal" | "pending" | "unknown";
+type PendingCall = {
+  readonly operation: string;
+  readonly terminal: CallAnswer;
+  readonly receive: ReceiveValue | undefined;
+} & (
   | {
       readonly kind: "waiting";
       readonly answer: CallAnswer;
@@ -234,11 +239,16 @@ type PendingCall = { readonly terminal: CallAnswer; readonly receive: ReceiveVal
     }
   | { readonly kind: "unconfirmed" }
 );
+interface ReconcileWaiter {
+  readonly answer: ReturnType<typeof Promise.withResolvers<ReconcileState>>;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
 /** The channel never transfers an authority SAB. Status asks the original cell owner. */
 export class ResidentChannel {
   readonly id = crypto.randomUUID();
   readonly channel: BroadcastChannel;
   private pending = new Map<string, PendingCall>();
+  private reconciliation = new Map<string, ReconcileWaiter>();
   private closed = false;
   status: (() => ResidentOutcome | undefined) | undefined;
   constructor(workspace: string) {
@@ -264,13 +274,32 @@ export class ResidentChannel {
       });
       return;
     }
+    if (data.kind === "reconcileReply") return this.receiveReconciliation(id, data);
     if (data.kind !== "reply") return;
     const pending = this.pending.get(id);
     if (!pending) return;
-    const error =
-      data.errno === undefined ? undefined : new FilesystemError(integer(data.errno, 76));
-    if (!error) pending.receive?.(data.value, pending.kind === "unconfirmed");
+    if (Object.hasOwn(data, "value") === Object.hasOwn(data, "errno"))
+      throw new FilesystemError(28);
+    const error = Object.hasOwn(data, "errno")
+      ? new FilesystemError(integer(data.errno, 76))
+      : undefined;
+    if (error?.errno === 0) throw new FilesystemError(28);
+    if (!error) {
+      if (
+        (pending.operation === "close" || pending.operation === "closeConnection") &&
+        data.value !== null
+      )
+        throw new FilesystemError(28);
+      if (pending.operation === "settle") settlement(data.value);
+      pending.receive?.(data.value, pending.kind === "unconfirmed");
+    }
     this.pending.delete(id);
+    const waiter = this.reconciliation.get(id);
+    if (waiter) {
+      this.reconciliation.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.answer.resolve("terminal");
+    }
     if (pending.kind === "waiting") {
       clearTimeout(pending.timer);
       if (error) pending.answer.reject(error);
@@ -278,13 +307,48 @@ export class ResidentChannel {
     }
     if (error) pending.terminal.reject(error);
     else pending.terminal.resolve(data.value);
+    this.channel.postMessage({ kind: "ack", client: this.id, id });
+  }
+  private receiveReconciliation(id: string, data: Record<string, unknown>): void {
+    if (data.state === "terminal") return this.receive({ ...data, kind: "reply" });
+    const waiter = this.reconciliation.get(id);
+    if (!waiter) return;
+    const state = data.state;
+    if (state !== "pending" && state !== "unknown") return;
+    this.reconciliation.delete(id);
+    clearTimeout(waiter.timer);
+    waiter.answer.resolve(state);
+  }
+  private async reconcile(id: string): Promise<ReconcileState> {
+    if (!this.pending.has(id)) return "terminal";
+    const current = this.reconciliation.get(id);
+    if (current) return current.answer.promise;
+    const answer = Promise.withResolvers<ReconcileState>();
+    const timer = setTimeout(() => {
+      this.reconciliation.delete(id);
+      answer.resolve("unknown");
+    }, callBound);
+    this.reconciliation.set(id, { answer, timer });
+    try {
+      this.channel.postMessage({ kind: "reconcile", client: this.id, id });
+    } catch {
+      clearTimeout(timer);
+      this.reconciliation.delete(id);
+      answer.resolve("unknown");
+    }
+    return answer.promise;
+  }
+  private async joinCall(id: string, pending: PendingCall): Promise<void> {
+    if (pending.kind === "waiting") await pending.answer.promise.catch(() => {});
+    await this.reconcile(id);
+    await pending.terminal.promise.catch(() => {});
   }
   private send(
     operation: string,
     body: unknown,
     signal?: AbortSignal,
     receive?: ReceiveValue,
-  ): { answer: Promise<unknown>; terminal: Promise<unknown> } {
+  ): { id: string; answer: Promise<unknown>; terminal: Promise<unknown> } {
     if (this.closed || this.pending.size >= 16) throw new FilesystemError(6);
     if (signal?.aborted) throw new FilesystemError(11);
     const id = crypto.randomUUID();
@@ -294,11 +358,11 @@ export class ResidentChannel {
     const timer = setTimeout(() => {
       const pending = this.pending.get(id);
       if (!pending || pending.kind !== "waiting") return;
-      this.pending.set(id, { kind: "unconfirmed", terminal, receive });
+      this.pending.set(id, { kind: "unconfirmed", operation, terminal, receive });
       this.channel.postMessage({ kind: "cancel", client: this.id, id });
       answer.reject(new FilesystemError(6));
     }, callBound);
-    this.pending.set(id, { kind: "waiting", answer, terminal, timer, receive });
+    this.pending.set(id, { kind: "waiting", operation, answer, terminal, timer, receive });
     try {
       this.channel.postMessage({ kind: "request", id, client: this.id, operation, body });
     } catch (error) {
@@ -310,6 +374,7 @@ export class ResidentChannel {
     const cancel = () => this.channel.postMessage({ kind: "cancel", client: this.id, id });
     signal?.addEventListener("abort", cancel, { once: true });
     return {
+      id,
       answer: answer.promise.finally(() => signal?.removeEventListener("abort", cancel)),
       terminal: terminal.promise,
     };
@@ -325,13 +390,11 @@ export class ResidentChannel {
   /** Cleanup consumes the original reply even when its caller deadline expires. */
   async finish(operation: "close" | "closeConnection" | "settle", body: unknown): Promise<unknown> {
     const request = this.send(operation, body);
-    void request.answer.catch(() => {});
+    await request.answer.catch(() => this.reconcile(request.id));
     return request.terminal;
   }
   async joinSettled(): Promise<void> {
-    await Promise.all(
-      Array.from(this.pending.values(), (pending) => pending.terminal.promise.catch(() => {})),
-    );
+    await Promise.all(Array.from(this.pending, ([id, pending]) => this.joinCall(id, pending)));
     this.assertSettled();
   }
   assertSettled(): void {
@@ -349,6 +412,11 @@ export class ResidentChannel {
       }
       pending.terminal.reject(new FilesystemError(11));
     }
+    for (const waiter of this.reconciliation.values()) {
+      clearTimeout(waiter.timer);
+      waiter.answer.resolve("unknown");
+    }
+    this.reconciliation.clear();
     this.pending.clear();
     this.channel.close();
   }

@@ -23,12 +23,23 @@ interface StatusWaiter {
   readonly reject: (error: unknown) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 }
+type TerminalOutcome =
+  | { readonly kind: "value"; readonly value: unknown }
+  | { readonly kind: "error"; readonly errno: number };
+interface OwnerDrain {
+  kind: "draining" | "blocked";
+  readonly answer: ReturnType<typeof Promise.withResolvers<void>>;
+}
+const cleanupOperations = new Set(["closeConnection", "close", "settle"]);
 /** Private transport for the real MemoryBackend authority. It never sends its root SAB. */
 export class ResidentAuthorityServer {
   private channel: BroadcastChannel;
   private sessions = new Map<string, ResidentSession>();
   private peers = new Map<string, WorkspacePeer>();
   private requests = new Map<string, { client: string; token: unknown; abort: AbortController }>();
+  private terminal = new Map<string, TerminalOutcome>();
+  private reconciling = new Set<string>();
+  private acknowledgements: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   private status = new Map<string, StatusWaiter>();
   private outstanding:
     | { readonly client: string; readonly token: string; readonly grant: string }
@@ -36,7 +47,7 @@ export class ResidentAuthorityServer {
   private queue = Promise.resolve();
   private stopped = false;
   private stopping: Promise<void> | undefined;
-  private draining: Promise<void> | undefined;
+  private draining: OwnerDrain | undefined;
   private finalizing: Promise<void> | undefined;
   constructor(
     readonly authority: ResidentGrantAuthority,
@@ -55,17 +66,75 @@ export class ResidentAuthorityServer {
         this.receiveStatus(message);
         return;
       }
-      if (message.kind === "cancel") {
-        this.requests.get(`${String(message.client)}:${String(message.id)}`)?.abort.abort();
+      if (message.kind === "cancel" || message.kind === "ack") return this.control(message);
+      if (message.kind === "reconcile") {
+        this.reconcile(message);
         return;
       }
       if (message.kind === "cancelSession") {
         this.cancelSession(message.token);
         return;
       }
-      if (message.kind !== "request" || this.stopped) return;
+      if (message.kind !== "request") return;
       this.admit(message);
     };
+  }
+  private key(client: string, id: string): string {
+    return JSON.stringify([client, id]);
+  }
+  private control(message: Record<string, unknown>): void {
+    let key: string;
+    try {
+      key = this.key(text(message.client), text(message.id));
+    } catch {
+      return;
+    }
+    if (message.kind === "cancel") this.requests.get(key)?.abort.abort();
+    else if (this.terminal.delete(key) && !this.terminal.size) {
+      const joined = this.acknowledgements;
+      this.acknowledgements = undefined;
+      joined?.resolve();
+    }
+  }
+  private postTerminal(client: string, id: string, outcome: TerminalOutcome): void {
+    const key = this.key(client, id);
+    this.acknowledgements ??= Promise.withResolvers<void>();
+    this.terminal.set(key, outcome);
+    try {
+      this.channel.postMessage(
+        outcome.kind === "value"
+          ? { kind: "reply", client, id, value: outcome.value }
+          : { kind: "reply", client, id, errno: outcome.errno },
+      );
+    } finally {
+      if (this.reconciling.delete(key)) this.reconcile({ client, id });
+    }
+  }
+  private reconcile(message: Record<string, unknown>): void {
+    let client: string, id: string;
+    try {
+      client = text(message.client);
+      id = text(message.id);
+    } catch {
+      return;
+    }
+    const key = this.key(client, id),
+      terminal = this.terminal.get(key);
+    if (terminal) {
+      this.channel.postMessage(
+        terminal.kind === "value"
+          ? { kind: "reconcileReply", client, id, state: "terminal", value: terminal.value }
+          : { kind: "reconcileReply", client, id, state: "terminal", errno: terminal.errno },
+      );
+      return;
+    }
+    if (this.requests.has(key)) this.reconciling.add(key);
+    this.channel.postMessage({
+      kind: "reconcileReply",
+      client,
+      id,
+      state: this.requests.has(key) ? "pending" : "unknown",
+    });
   }
   private cancelSession(token: unknown): void {
     for (const active of this.requests.values()) if (active.token === token) active.abort.abort();
@@ -78,7 +147,25 @@ export class ResidentAuthorityServer {
     } catch {
       return;
     }
-    const key = `${client}:${id}`;
+    const key = this.key(client, id);
+    const terminal = this.terminal.get(key);
+    if (terminal) {
+      this.postTerminal(client, id, terminal);
+      return;
+    }
+    if (this.requests.has(key)) return;
+    if (
+      this.requests.size + this.terminal.size >=
+      this.authority.backend.shared.publication!.limits.operations
+    ) {
+      this.channel.postMessage({ kind: "reply", client, id, errno: 6 });
+      return;
+    }
+    const operation = typeof message.operation === "string" ? message.operation : undefined;
+    if (this.stopped && (!operation || !cleanupOperations.has(operation))) {
+      this.postTerminal(client, id, { kind: "error", errno: 11 });
+      return;
+    }
     if (message.operation === "workspace") {
       try {
         const body = record(message.body),
@@ -88,19 +175,12 @@ export class ResidentAuthorityServer {
           request: workspaceRequest(body.request, limits.inputBytes, limits.argumentBytes),
         };
       } catch (error) {
-        this.channel.postMessage({
-          kind: "reply",
-          client,
-          id,
+        this.postTerminal(client, id, {
+          kind: "error",
           errno: error instanceof FilesystemError ? error.errno : 29,
         });
         return;
       }
-    }
-    if (this.requests.has(key)) return;
-    if (this.requests.size >= this.authority.backend.shared.publication!.limits.operations) {
-      this.channel.postMessage({ kind: "reply", client, id, errno: 6 });
-      return;
     }
     const abort = new AbortController();
     const body = message.body;
@@ -185,7 +265,6 @@ export class ResidentAuthorityServer {
     value: unknown,
     signal: AbortSignal,
   ): Promise<unknown> {
-    if (this.stopped) throw new FilesystemError(11);
     if (operation === "closeConnection") {
       const session = this.sessions.get(client);
       if (session) await this.closeSession(session);
@@ -194,6 +273,7 @@ export class ResidentAuthorityServer {
     }
     if (operation === "close" || operation === "settle")
       return this.finish(client, operation, record(value));
+    if (this.stopped) throw new FilesystemError(11);
     if (signal.aborted) throw new FilesystemError(11);
     if (operation === "open") {
       if (this.sessions.has(client)) throw new FilesystemError(6);
@@ -261,13 +341,15 @@ export class ResidentAuthorityServer {
     } catch {
       return;
     }
+    let outcome: TerminalOutcome;
     try {
       const value = await this.execute(client, text(data.operation), data.body, signal);
-      this.channel.postMessage({ kind: "reply", client, id, value });
+      outcome = { kind: "value", value };
     } catch (error) {
       const errno = error instanceof FilesystemError ? error.errno : 29;
-      this.channel.postMessage({ kind: "reply", client, id, errno });
+      outcome = { kind: "error", errno };
     }
+    this.postTerminal(client, id, outcome);
   }
   stop(): Promise<void> {
     this.stopped = true;
@@ -281,12 +363,20 @@ export class ResidentAuthorityServer {
   drainForOwner(): Promise<void> {
     this.stopped = true;
     for (const active of this.requests.values()) active.abort.abort();
-    return (this.draining ??= this.drainPersistentTransport());
+    const current = this.draining;
+    if (current && (current.kind === "draining" || this.sessions.size || this.outstanding))
+      return current.answer.promise;
+    const drain: OwnerDrain = { kind: "draining", answer: Promise.withResolvers<void>() };
+    this.draining = drain;
+    void this.drainPersistentTransport(drain).then(drain.answer.resolve, drain.answer.reject);
+    return drain.answer.promise;
   }
-  private async drainPersistentTransport(): Promise<void> {
+  private async drainPersistentTransport(drain: OwnerDrain): Promise<void> {
     await this.queue;
-    if (this.sessions.size || this.outstanding)
+    if (this.sessions.size || this.outstanding) {
+      drain.kind = "blocked";
       throw new FilesystemError(6, "resident clients must finish their original cleanup");
+    }
     await this.drainTransport();
   }
   private async drainTransport(): Promise<void> {
@@ -300,7 +390,10 @@ export class ResidentAuthorityServer {
     return (this.finalizing ??= this.finalizeTransport());
   }
   private async finalizeTransport(): Promise<void> {
+    await this.queue;
+    while (this.acknowledgements) await this.acknowledgements.promise;
     this.channel.close();
+    this.reconciling.clear();
     this.authority.dispose();
     await this.guard.release();
     await this.bootstrap.release();

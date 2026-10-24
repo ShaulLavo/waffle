@@ -42,6 +42,13 @@ export async function control(operation: string, body?: unknown): Promise<unknow
     wire.postMessage(captured);
     return structuredClone(captured);
   }
+  if (operation === "r42-acknowledge") {
+    if (!wire || !captured || append.kind !== "fulfilled")
+      throw new Error("completed settlement request absent");
+    const acknowledgement = { kind: "ack", client: captured.client, id: captured.id };
+    wire.postMessage(acknowledgement);
+    return acknowledgement;
+  }
   if (operation === "attach") {
     const descriptor = residentDescriptor(body);
     wire = new BroadcastChannel(`waffle:resident:${descriptor.workspace}`);
