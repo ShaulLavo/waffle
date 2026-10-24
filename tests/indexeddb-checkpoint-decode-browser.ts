@@ -80,10 +80,11 @@ async function replaceSnapshot(name: string, value: unknown): Promise<void> {
   });
 }
 function observeConversions() {
-  const descriptor = Object.getOwnPropertyDescriptor(Uint8Array, "from")!;
+  const descriptor = Object.getOwnPropertyDescriptor(Uint8Array, "from");
   const lengths: number[] = [];
   Object.defineProperty(Uint8Array, "from", {
-    ...descriptor,
+    configurable: true,
+    writable: true,
     value: new Proxy(Uint8Array.from, {
       apply(target, receiver, args) {
         if (Array.isArray(args[0])) lengths.push(args[0].length);
@@ -91,7 +92,13 @@ function observeConversions() {
       },
     }),
   });
-  return { lengths, restore: () => Object.defineProperty(Uint8Array, "from", descriptor) };
+  return {
+    lengths,
+    restore() {
+      if (descriptor) Object.defineProperty(Uint8Array, "from", descriptor);
+      else Reflect.deleteProperty(Uint8Array, "from");
+    },
+  };
 }
 function invalidCases(checkpoint: CheckpointPublication) {
   const changes = checkpoint.changes.map((change) => Array.from(change));
@@ -109,7 +116,7 @@ function invalidCases(checkpoint: CheckpointPublication) {
     { label: "count", publication: { ...checkpoint, changes: changes.concat(changes) }, copies: 0 },
     {
       label: "effect bytes",
-      publication: { ...checkpoint, changes: [Array(checkpoint.limits.effectBytes + 1).fill(0)] },
+      publication: { ...checkpoint, changes: [new Array<number>(checkpoint.limits.effectBytes + 1).fill(0)] },
       copies: 0,
     },
     { label: "fractional offset", publication: { ...checkpoint, changes: [range(0.5)] }, copies: 1 },
@@ -148,6 +155,20 @@ async function roundtrip(name: string, checkpoint: CheckpointPublication): Promi
     await storage.close();
   }
 }
+async function invalidSelections(
+  name: string,
+  snapshot: object,
+  checkpoint: CheckpointPublication,
+): Promise<string[]> {
+  const failures: string[] = [];
+  for (const control of invalidCases(checkpoint)) {
+    await replaceSnapshot(name, { ...snapshot, publication: control.publication });
+    await rejectsBeforeCopy(name, control.copies, control.label).catch((error: unknown) =>
+      failures.push(String(error)),
+    );
+  }
+  return failures;
+}
 async function run(): Promise<void> {
   const name = `checkpoint-decoder-r30-${crypto.randomUUID()}`;
   try {
@@ -170,15 +191,13 @@ async function run(): Promise<void> {
     );
     const snapshot = await decodeRecord(original);
     assert(snapshot && typeof snapshot === "object", "real selected snapshot exists");
-    for (const control of invalidCases(checkpoint)) {
-      await replaceSnapshot(name, { ...snapshot, publication: control.publication });
-      await rejectsBeforeCopy(name, control.copies, control.label);
-    }
+    const failures = await invalidSelections(name, snapshot, checkpoint);
     await replaceSnapshot(name, {
       ...snapshot,
       publication: { ...checkpoint, changes: checkpoint.changes.map((change) => Array.from(change)) },
     });
     await roundtrip(name, checkpoint);
+    if (failures.length) throw new Error(failures.join("\n"));
   } finally {
     await request(indexedDB.deleteDatabase(name));
   }
