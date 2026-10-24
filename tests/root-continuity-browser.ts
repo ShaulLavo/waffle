@@ -57,7 +57,7 @@ export async function selectedRootComposition() {
   const persist = IndexedDBStorage.prototype.persist;
   const activate = ResidentGrantAuthority.prototype.activate;
   let connection: FilesystemConnection | undefined;
-  let backend: PersistentBackend | undefined;
+  const captured: { backend?: PersistentBackend } = {};
   let completed: PersistenceBatch | undefined;
   let activations = 0;
   let durabilityMs = 0;
@@ -67,7 +67,7 @@ export async function selectedRootComposition() {
   };
   MemoryBackend.prototype.attachShared = function (...args) {
     assert(this instanceof PersistentBackend, "real persistent backend attached");
-    backend = this;
+    captured.backend = this;
     assert(args[0] === this.shared.buffer, "borrowed actual restored root");
     return Reflect.apply(attach, this, args);
   };
@@ -96,6 +96,7 @@ export async function selectedRootComposition() {
     const ready = await owner.ready;
     equal(ready.notice.kind, "completed-cut-recovered", "selected checkpoint restored");
     equal(ready.identity.history, saved.cut.history, "history identity retained");
+    const backend = captured.backend;
     assert(connection?.publication && backend, "real attached pair captured");
     const publication = connection.publication;
     const domain = backend.shared.publication;
