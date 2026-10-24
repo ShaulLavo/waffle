@@ -97,17 +97,23 @@ async function matrix(failing: readonly string[]): Promise<void> {
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("chromium");
       expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe("chromium\n");
       const scratch = await readFile(join(root, `${runner}.scratch`), "utf8");
-      expect(scratch.startsWith(root + "/wb-") || (process.platform !== "linux" && scratch === root)).toBe(true);
+      expect(
+        scratch.startsWith(root + "/wb-") || (process.platform !== "linux" && scratch === root),
+      ).toBe(true);
     }
     expect((await readdir(root)).filter((name) => name.startsWith("wb-"))).toEqual([]);
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing.length !== 0);
-    const order = runners.map((runner) => `${runner}:chromium,firefox`).concat(
-      runners.map((runner) => `${runner}:webkit`),
-      chromiumOnly.map((runner) => `${runner}:chromium`),
-    );
+    const order = runners
+      .map((runner) => `${runner}:chromium,firefox`)
+      .concat(
+        runners.map((runner) => `${runner}:webkit`),
+        chromiumOnly.map((runner) => `${runner}:chromium`),
+      );
     expect(JSON.parse(await readFile(join(root, "failures.json"), "utf8"))).toEqual(
-      order.filter((entry) => failing.includes(entry)).map((entry) => `tests/${entry.split(":")[0]}-browser-runner.ts failed`),
+      order
+        .filter((entry) => failing.includes(entry))
+        .map((entry) => `tests/${entry.split(":")[0]}-browser-runner.ts failed`),
     );
     for (const runner of runners) {
       expect(await readFile(join(root, `${runner}.parallel.finished`), "utf8")).toBe(
@@ -142,5 +148,11 @@ test("root continuity Chromium failure remains blocking in its single supervised
 }, 15_000);
 
 test("browser matrix reports ordered failures after every other suite finishes", async () => {
-  await matrix([`${rootContinuity}:chromium`, "storage:chromium,firefox", `${continuity}:chromium`, "safe-staging:chromium,firefox", "network:webkit"]);
+  await matrix([
+    `${rootContinuity}:chromium`,
+    "storage:chromium,firefox",
+    `${continuity}:chromium`,
+    "safe-staging:chromium,firefox",
+    "network:webkit",
+  ]);
 }, 15_000);

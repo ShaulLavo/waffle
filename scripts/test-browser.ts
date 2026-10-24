@@ -16,6 +16,7 @@ const runners = [
 const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
   runners.map((runner) => [{ runner, engines: ["webkit"] }]),
   [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
+  [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],
 );
 let failures: Error[] = [];
 try {
