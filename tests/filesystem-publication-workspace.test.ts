@@ -87,6 +87,7 @@ async function fixture(backend = new MemoryBackend()) {
   return {
     channel,
     server,
+    service,
     session,
     root,
     backend,
@@ -848,6 +849,84 @@ for (const operation of ["writeFile", "missing-operation"]) {
     }
   });
 }
+
+test("authoritative terminal receipt reconciles an original timeout before the held reply arrives", async () => {
+  const f = await fixture();
+  const held = holdTransportReplies(f.channel.id);
+  const clock = transportClock();
+  try {
+    const pending = call(f, "missing-operation", [f.file]);
+    const failed = rejectsErrno(pending, 6);
+    while (!held.held.length) await Bun.sleep(0);
+    clock.expire();
+    await failed;
+
+    const joined = f.channel.joinSettled();
+    let settled = false;
+    void joined.finally(() => {
+      settled = true;
+    });
+    await Bun.sleep(10);
+    expect(settled).toBe(true);
+    await joined;
+    expect(() => f.channel.assertSettled()).not.toThrow();
+  } finally {
+    held.release();
+    clock.restore();
+    await f.stop();
+  }
+});
+
+test("no authoritative terminal receipt preserves the original cleanup debt", async () => {
+  const channel = new ResidentChannel(`absent-${crypto.randomUUID()}`);
+  const clock = transportClock();
+  try {
+    const pending = channel.call("workspace", {});
+    const failed = rejectsErrno(pending, 6);
+    clock.expire();
+    await failed;
+
+    const joined = channel.joinSettled();
+    void joined.catch(() => {});
+    let settled = false;
+    void joined.finally(() => {
+      settled = true;
+    });
+    await Bun.sleep(10);
+    expect(settled).toBe(true);
+    clock.expire();
+    await rejectsErrno(joined, 6);
+    expect(() => channel.assertSettled()).toThrow();
+  } finally {
+    clock.restore();
+    channel.close();
+  }
+});
+
+test("owner drain accepts only the original close after its first refusal", async () => {
+  const f = await fixture();
+  const clock = transportClock();
+  try {
+    await rejectsErrno(f.server.drainForOwner(), 6);
+
+    const closing = f.channel.finish("closeConnection", null);
+    let settled = false;
+    void closing.finally(() => {
+      settled = true;
+    });
+    await Bun.sleep(10);
+    expect(settled).toBe(true);
+    await closing;
+    await f.server.drainForOwner();
+  } finally {
+    clock.expire();
+    clock.restore();
+    f.channel.close();
+    await f.server.stop().catch(() => {});
+    f.root.dispose();
+    f.service.dispose();
+  }
+});
 
 test("unresolved timeout identities keep the original sixteen-call admission bound", async () => {
   const channel = new ResidentChannel(`absent-${crypto.randomUUID()}`);
