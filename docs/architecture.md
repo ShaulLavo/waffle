@@ -1,8 +1,8 @@
 # Architecture and API notes
 
-This document holds the detailed runtime notes that used to live in the root README. It is the
-reference for the browser runtime's ownership, filesystem, process, pipe and guest interfaces.
-For a short introduction and installation example, start with [the root README](../README.md).
+This page is the reference for the browser runtime's ownership, filesystem, process, pipe and
+guest interfaces. For the mental model, read [How Waffle works](concepts.md). To build something,
+start with [Getting started](getting-started.md).
 
 ## Package layers
 
