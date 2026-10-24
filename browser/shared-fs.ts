@@ -1,4 +1,9 @@
-import { localPublication, type PublicationConfiguration } from "../fs/publication-internal.js";
+import {
+  localMemory,
+  localPublication,
+  type PublicationConfiguration,
+} from "../fs/publication-internal.js";
+import { MemoryBudget } from "../fs/memory-budget.js";
 import { mutationValue, type PublicationAdmission } from "../fs/publication.js";
 import {
   reportRuntimeStartup,
@@ -49,6 +54,7 @@ export type SharedFilesystemOptions = VfsSelection & {
   /** Allocate all-writer namespace history before the filesystem worker starts. */
   workspace?: boolean;
   [localPublication]?: PublicationConfiguration;
+  [localMemory]?: MemoryBudget;
   workerURL?: string | URL;
   name?: string;
   /** Called when startup enters or leaves the queued ownership state. */
@@ -114,6 +120,11 @@ export class SharedFilesystem {
   onOwnershipLost?: () => void;
   onStateChange?: SharedFilesystemStateObserver;
   constructor(options: SharedFilesystemOptions = {}, onStartupStage?: RuntimeStartupObserver) {
+    const projectionBudget = options[localMemory];
+    if (projectionBudget !== undefined && !(projectionBudget instanceof MemoryBudget))
+      throw new TypeError("localMemory requires a same-realm MemoryBudget");
+    if (projectionBudget !== undefined && options.workspace !== true)
+      throw new TypeError("localMemory requires workspace: true");
     const selection = resolveVfs(options, Reflect.get(options, vfsImplementation));
     this.vfs = selection.descriptor;
     this.onStateChange = options.onStateChange;
@@ -132,7 +143,7 @@ export class SharedFilesystem {
       );
       reportRuntimeStartup(onStartupStage, "filesystem-worker-created");
       this.client = client = new FilesystemClient(connection.client);
-      this.workspace = options.workspace ? createWorkspaceVfs(client) : undefined;
+      this.workspace = options.workspace ? createWorkspaceVfs(client, projectionBudget) : undefined;
       worker.addEventListener("message", (event) => this.receiveMessage(event, onStartupStage));
       worker.addEventListener("error", (event) => {
         event.preventDefault();

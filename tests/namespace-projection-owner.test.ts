@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { SharedFilesystem } from "../browser/shared-fs";
 import { parseFileIdentity } from "../fs/file-identity";
 import {
   MemoryBudget,
@@ -9,6 +10,7 @@ import {
 } from "../fs/memory-budget";
 import { NamespaceProjectionOwner } from "../fs/namespace-projection-owner";
 import { namespaceProjectionPlan } from "../fs/namespace-projection-table";
+import { localMemory } from "../fs/publication-internal";
 import type { NamespaceRecord } from "../fs/workspace-protocol";
 import {
   createFilesystemConnection,
@@ -16,6 +18,7 @@ import {
   FilesystemClient,
   FilesystemService,
   MemoryBackend,
+  type FilesystemConnection,
   type NamespaceEntry,
   type WorkspaceVfs,
 } from "../fs";
@@ -632,5 +635,246 @@ test("a history gap retires acceptance without invalidating copied change pages"
   } finally {
     await current.stop();
     retiring.spy.mockRestore();
+  }
+});
+
+type PageWorkerMessage = {
+  readonly connect?: FilesystemConnection;
+  readonly dispose?: true;
+};
+
+class ProjectionWorker {
+  static readonly instances: ProjectionWorker[] = [];
+  readonly messages: PageWorkerMessage[] = [];
+  private listener: ((event: MessageEvent) => void) | undefined;
+  private service: FilesystemService | undefined;
+
+  constructor() {
+    ProjectionWorker.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent) => void): void {
+    if (type === "message") this.listener = listener;
+  }
+
+  postMessage(message: PageWorkerMessage): void {
+    this.messages.push(message);
+    if (message.dispose) return this.dispose();
+    if (!message.connect) return;
+    this.service = new FilesystemService(new MemoryBackend());
+    this.service.connect(message.connect);
+    this.emit({ type: "filesystem-state", status: "ready" });
+  }
+
+  terminate(): void {
+    this.service?.dispose();
+  }
+
+  get serverPort(): MessagePort | undefined {
+    return this.messages[0]?.connect?.port;
+  }
+
+  get workspaceCursors(): number | undefined {
+    return this.service?.resources().workspaceCursors;
+  }
+
+  private dispose(): void {
+    const service = this.service;
+    if (!service) {
+      this.emit({ type: "filesystem-disposed" });
+      return;
+    }
+    void service.shutdown().then(
+      () => this.emit({ type: "filesystem-disposed" }),
+      (error: unknown) =>
+        this.emit({
+          type: "filesystem-disposed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    );
+  }
+
+  private emit(data: unknown): void {
+    this.listener?.(new MessageEvent("message", { data }));
+  }
+}
+
+function sharedProjectionFixture(budget?: MemoryBudget) {
+  const previousWorker = globalThis.Worker;
+  ProjectionWorker.instances.length = 0;
+  globalThis.Worker = ProjectionWorker as unknown as typeof Worker;
+  let fs: SharedFilesystem;
+  try {
+    fs = new SharedFilesystem({
+      mode: "memory",
+      workspace: true,
+      workerURL: "https://example.test/fs.js",
+      ...(budget === undefined ? {} : { [localMemory]: budget }),
+    });
+  } catch (error) {
+    globalThis.Worker = previousWorker;
+    throw error;
+  }
+  const worker = ProjectionWorker.instances[0]!;
+  return {
+    fs,
+    worker,
+    async stop() {
+      try {
+        await fs.dispose();
+      } finally {
+        worker.serverPort?.close();
+        globalThis.Worker = previousWorker;
+      }
+    },
+  };
+}
+
+async function stopSharedProjection(
+  current: ReturnType<typeof sharedProjectionFixture>,
+  budget: MemoryBudget,
+): Promise<void> {
+  try {
+    await current.stop();
+  } finally {
+    budget.close();
+  }
+}
+
+async function sharedConstructionRejection(options: object): Promise<unknown> {
+  let fs: SharedFilesystem;
+  try {
+    fs = Reflect.construct(SharedFilesystem, [options]);
+  } catch (error) {
+    return error;
+  }
+  try {
+    await fs.dispose();
+  } finally {
+    for (const worker of ProjectionWorker.instances) worker.serverPort?.close();
+  }
+  throw new Error("expected SharedFilesystem construction to fail");
+}
+
+test("SharedFilesystem funds only its memoized workspace projections", async () => {
+  const { allocator, budget } = rig(workspaceChargedBytes);
+  const admit = spyOn(budget, "tryOperation");
+  const current = sharedProjectionFixture(budget);
+  const submission = spyOn(current.fs.client, "submit");
+  try {
+    const before = budget.snapshot();
+    expect(createWorkspaceVfs(current.fs.client, budget)).toBe(current.fs.workspace);
+    expect(createWorkspaceVfs(current.fs.client)).toBe(current.fs.workspace);
+    expect(current.worker.messages).toHaveLength(1);
+    expect(Reflect.ownKeys(current.worker.messages[0]!)).not.toContain(localMemory);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    const workspace = current.fs.workspace;
+    if (!workspace) throw new Error("expected SharedFilesystem workspace");
+    const cursor = workspace.snapshot();
+    expect(admit.mock.calls).toEqual([
+      [{ bytes: workspaceChargedBytes, allocations: 2, references: 2, leases: 0 }],
+    ]);
+    expect(allocator.specs).toEqual([{ kind: "array", bytes: workspacePlan.backingBytes }]);
+    expectCharged(before, budget, 1, workspaceChargedBytes);
+    expect(submission.mock.calls).toHaveLength(0);
+    expect(current.worker.messages).toHaveLength(1);
+    const closing = cursor.close();
+    expect(cursor.close()).toBe(closing);
+    await closing;
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    await cursor.close();
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    await current.fs.dispose();
+    current.worker.serverPort?.close();
+    expect(budget.snapshot().stopped).toBe(false);
+  } finally {
+    submission.mockRestore();
+    admit.mockRestore();
+    await stopSharedProjection(current, budget);
+  }
+});
+
+test("SharedFilesystem admission denial precedes allocation and remote work", async () => {
+  const { allocator, budget } = rig(workspaceChargedBytes - 1);
+  const current = sharedProjectionFixture(budget);
+  const submission = spyOn(current.fs.client, "submit");
+  try {
+    const before = budget.snapshot();
+    const workspace = current.fs.workspace;
+    if (!workspace) throw new Error("expected SharedFilesystem workspace");
+    const error = thrown(() => workspace.snapshot());
+    expect(error).toEqual(new MemoryBudgetError("capacity"));
+    expect(allocator.specs).toHaveLength(0);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    expect(submission.mock.calls).toHaveLength(0);
+    expect(current.worker.messages).toHaveLength(1);
+    expect(current.worker.workspaceCursors).toBe(0);
+    await current.fs.dispose();
+    expect(budget.snapshot().stopped).toBe(false);
+  } finally {
+    submission.mockRestore();
+    await stopSharedProjection(current, budget);
+  }
+});
+
+test("SharedFilesystem rejects invalid funding before connection or Worker creation", async () => {
+  const { budget } = rig();
+  const previousWorker = globalThis.Worker;
+  const NativeSharedArrayBuffer = globalThis.SharedArrayBuffer;
+  let allocations = 0;
+  ProjectionWorker.instances.length = 0;
+  try {
+    globalThis.Worker = ProjectionWorker as unknown as typeof Worker;
+    globalThis.SharedArrayBuffer = new Proxy(NativeSharedArrayBuffer, {
+      construct(target, args) {
+        allocations++;
+        return Reflect.construct(target, args);
+      },
+    });
+    const invalid = await sharedConstructionRejection({
+      mode: "memory",
+      workspace: true,
+      workerURL: "https://example.test/fs.js",
+      [localMemory]: {},
+    });
+    expect(invalid).toBeInstanceOf(TypeError);
+    expect(String(invalid)).toContain("MemoryBudget");
+    const withoutWorkspace = await sharedConstructionRejection({
+      mode: "memory",
+      workerURL: "https://example.test/fs.js",
+      [localMemory]: budget,
+    });
+    expect(withoutWorkspace).toBeInstanceOf(Error);
+    expect(String(withoutWorkspace)).toContain("workspace");
+    expect(ProjectionWorker.instances).toHaveLength(0);
+    expect(allocations).toBe(0);
+  } finally {
+    globalThis.Worker = previousWorker;
+    globalThis.SharedArrayBuffer = NativeSharedArrayBuffer;
+    budget.close();
+  }
+});
+
+test("SharedFilesystem without funding keeps its ordinary unfunded workspace", async () => {
+  const probe = rig(workspaceChargedBytes);
+  const current = sharedProjectionFixture();
+  const submission = spyOn(current.fs.client, "submit");
+  try {
+    const before = probe.budget.snapshot();
+    const workspace = current.fs.workspace;
+    if (!workspace) throw new Error("expected SharedFilesystem workspace");
+    expect(createWorkspaceVfs(current.fs.client)).toBe(workspace);
+    expect(() => createWorkspaceVfs(current.fs.client, probe.budget)).toThrow(
+      "different namespace projection budget",
+    );
+    const cursor = workspace.snapshot();
+    expect(submission.mock.calls).toHaveLength(0);
+    expect(probe.allocator.specs).toHaveLength(0);
+    expect(usage(probe.budget.snapshot())).toEqual(usage(before));
+    await cursor.close();
+    expect(usage(probe.budget.snapshot())).toEqual(usage(before));
+  } finally {
+    submission.mockRestore();
+    await stopSharedProjection(current, probe.budget);
   }
 });

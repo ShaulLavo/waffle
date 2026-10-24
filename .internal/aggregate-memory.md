@@ -123,6 +123,14 @@ is rejected instead of silently replacing or adding funding. An initial
 `createWorkspaceVfs(client)` call without a budget keeps that client's projections
 unaccounted.
 
+`SharedFilesystem` accepts the package-internal symbol-keyed `localMemory` option
+only with `workspace: true`. It requires a same-realm `MemoryBudget` before
+connection or Worker construction and passes that identity to its memoized
+workspace. The caller retains and closes the budget. Filesystem disposal never
+closes it, and the budget never enters worker messages. Without this option the
+ordinary workspace remains unfunded. `createRuntime()` has no corresponding
+option, and this hook does not fund protocol or other runtime allocations.
+
 Scanning and accepted workspace projections remain charged. Replacement,
 cancellation, and workspace close retire their owners and release the charges
 after borrowing ends. Returned pages and changes, remote cursor and protocol
