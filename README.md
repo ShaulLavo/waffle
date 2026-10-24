@@ -41,37 +41,28 @@ The page owns every service. Guests only borrow them, and they never create a se
 
 ## Quick start
 
-Waffle is a library for a browser app, so there is no CLI. You need [Bun](https://bun.sh). These steps were run with Bun 1.4.4, the version CI uses.
+Waffle is a library for a browser app, so there is no CLI. Install it with [Bun](https://bun.sh), because Waffle's `prepare` step runs `bun prepare.ts`. Nothing is published to npm, so the command pins an exact commit and trusts Waffle's build step:
 
-1. Pin an exact commit in `package.json`, trust Waffle's build step, and install:
+```sh
+bun add github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3 --trust
+```
 
-   ```json
-   {
-     "dependencies": { "waffle": "github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3" },
-     "trustedDependencies": ["waffle"]
-   }
-   ```
+Then:
 
-   ```sh
-   bun install
-   ```
+1. Add `fs-worker.ts` (`import "waffle/browser/fs-worker";`) and the example above as `app.ts`.
+2. Bundle both entries with `bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting`.
+3. Serve `public/` with the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, then open the page and its console. The runtime needs `SharedArrayBuffer`, which browsers give only to cross-origin isolated pages.
 
-2. Add `fs-worker.ts` (`import "waffle/browser/fs-worker";`) and the example above as `app.ts`.
-3. Bundle both entries with `bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting`.
-4. Serve `public/` with the `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` headers, then open the page and its console.
-
-[Getting started](docs/getting-started.md) has the HTML file, a short Bun server that sets the headers, and the failure you see without them.
+[Getting started](docs/getting-started.md) has the HTML file, a short Bun server that sets the headers, and the failure you see without them. These steps were run with Bun 1.4.4, the version CI uses.
 
 ## What you can do
 
-| Task                                    | Where                                                                                                  |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Run a WASI program from the page        | [Run a WASI program](docs/guides/run-a-wasi-program.md)                                                |
-| Keep files between page loads           | [Persist the filesystem](docs/guides/persist-the-filesystem.md)                                        |
-| Read, search and snapshot a workspace   | [WorkspaceVfs](docs/workspace-vfs.md), [workspace search](docs/workspace-search.md)                    |
-| Give guests loopback TCP and previews   | [Networking](docs/network.md)                                                                          |
-| Write an adapter for a new guest engine | [Guest executor extensions](docs/architecture.md#guest-executor-extensions), [Host ABI](docs/host-abi.md) |
-| Fix a page that does not start          | [Troubleshooting](docs/troubleshooting.md)                                                             |
+- Run a WASI program from the page: [Run a WASI program](docs/guides/run-a-wasi-program.md).
+- Keep files between page loads: [Persist the filesystem](docs/guides/persist-the-filesystem.md).
+- Read, search and snapshot a workspace: [WorkspaceVfs](docs/workspace-vfs.md) and [workspace search](docs/workspace-search.md).
+- Give guests loopback TCP and previews: [Networking](docs/network.md).
+- Write an adapter for a new guest engine: [Guest executor extensions](docs/architecture.md#guest-executor-extensions) and [Host ABI](docs/host-abi.md).
+- Fix a page that does not start: [Troubleshooting](docs/troubleshooting.md).
 
 ## How it works
 

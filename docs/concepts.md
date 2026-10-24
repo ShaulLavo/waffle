@@ -49,9 +49,9 @@ The reservation snapshots argv, environment and working directory and retains th
 
 Killing a process first selects its outcome, for example `signaled` with 137 for `SIGKILL`, and revokes its descriptors. Terminating the worker comes later, after the filesystem confirms that nothing the guest started is still inside a critical section. The delay is deliberate. A worker killed while it holds a filesystem lock would leave that lock held forever, and every other guest would hang. The cost is that "the process is dead" and "the worker is gone" are two moments. Waffle never hands a killed process's buffers to another process.
 
-## Why guests block, and where that bites
+## Why guests block
 
-A guest call such as `fd_read` has to return a value to WebAssembly code that cannot await. A worker can block on `Atomics.wait` until a service writes the answer into shared memory, so Waffle does that and keeps Preview 1 semantics intact. The price is placement. Any thread that serves a blocked guest must stay responsive, so the page's main thread cannot be a guest, and a network helper cannot share a thread with the guest it serves. Firefox adds a rule of its own. Creating a `MessageChannel` in a blocked guest would deadlock it, so a guest that spawns a child creates only an identity and lets the page attach the channel.
+A guest call such as `fd_read` has to return a value to WebAssembly code that cannot await. A worker can block on `Atomics.wait` until a service writes the answer into shared memory, so Waffle does that and keeps Preview 1 semantics intact. The cost is placement. Any thread that serves a blocked guest must stay responsive, so the page's main thread cannot be a guest, and a network helper cannot share a thread with the guest it serves. Firefox adds a rule of its own. Creating a `MessageChannel` in a blocked guest would deadlock it, so a guest that spawns a child creates only an identity and lets the page attach the channel.
 
 ## What a guest can and cannot touch
 

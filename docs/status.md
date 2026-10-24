@@ -4,14 +4,12 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Stability
 
-| Item              | State                                                                                  |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| Version           | `0.0.89` in `package.json`, with `private: true`. Only patch versions change.          |
-| Distribution      | Exact-commit Git dependency. No npm package, no tags, no GitHub releases.              |
-| API compatibility | None promised between revisions. Consumers move their pin, lockfile and code together. |
-| Changelog         | None. Read the commit history between two pins.                                        |
-| SAFE filesystem   | Reserved. `mode: "safe"` throws `VfsError` with code `UNSUPPORTED_VFS`.                |
-| Security audit    | None recorded in this repository.                                                      |
+- **Version:** `0.0.89` in `package.json`, with `private: true`. Only patch versions change.
+- **Distribution:** exact-commit Git dependency. No npm package, no tags, no GitHub releases.
+- **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
+- **Changelog:** none. Read the commit history between two pins.
+- **SAFE filesystem:** reserved. `mode: "safe"` throws `VfsError` with code `UNSUPPORTED_VFS`.
+- **Security audit:** none recorded in this repository.
 
 Why Git pins: [ADR 001](adr/001-install-as-an-exact-commit-git-dependency.md).
 
@@ -25,26 +23,20 @@ Without `SharedArrayBuffer`, `createRuntime()` throws `Page runtime requires Sha
 
 The CI `browser` job installs Playwright's Chromium, Firefox and WebKit on `ubuntu-latest`. It runs these suites in all three engines: safe-staging, storage, storage-lock, process-recycling, network, publication and publication-cross-tab. The Getting started example was also run in Chromium on macOS.
 
-| Environment                        | Status                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------ |
-| Chromium (Playwright, Linux)       | Tested in CI.                                                                        |
-| Firefox (Playwright, Linux)        | Tested in CI.                                                                        |
-| WebKit (Playwright, Linux)         | Tested in CI.                                                                        |
-| Safari on macOS or iOS, as shipped | Not tested in CI. `tooling/workspace-safari-runner.ts` is a manual WebDriver runner. |
-| Chrome on Android                  | Not tested.                                                                          |
-| Node and Bun                       | Run the unit tests and tooling. The browser suites run only in browsers.             |
+- **Chromium, Firefox and WebKit (Playwright, Linux):** tested in CI.
+- **Safari on macOS or iOS, as shipped:** not tested in CI. `tooling/workspace-safari-runner.ts` is a manual WebDriver runner.
+- **Chrome on Android:** not tested.
+- **Node and Bun:** run the unit tests and tooling. The browser suites run only in browsers.
 
 ## Guest programs
 
-| Guest                                                    | Result                                                                                              |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| WASI Preview 1 command that exports `_start` and memory  | Runs through the generic `preview1` worker. See [Run a WASI program](guides/run-a-wasi-program.md). |
-| Module that imports `runtime_proc`                       | Gets spawn, pipes, jobs, signals and poll. See [Host ABI](host-abi.md).                             |
-| Module that imports an unknown namespace or name         | Fails at link time. Waffle adds no stub that returns `ENOSYS`.                                      |
-| Preview 1 `sock_accept`, `sock_recv`, `sock_shutdown`    | Return `ENOTSUP`. TCP reaches guests only through an adapter such as Bun's.                         |
-| Symlinks (`path_symlink`)                                | Return `ENOTSUP`.                                                                                   |
-| Guest that inherits file descriptor 3 and scans preopens | Needs a wasi-libc rebuilt with the patch in [Guest libc](wasi-libc.md).                             |
-| Bun and Bash Web                                         | Run on Waffle through their own adapters, in their own repositories.                                |
+- **WASI Preview 1 command that exports `_start` and memory:** runs through the generic `preview1` worker. See [Run a WASI program](guides/run-a-wasi-program.md).
+- **Module that imports `runtime_proc`:** gets spawn, pipes, jobs, signals and poll. See [Host ABI](host-abi.md).
+- **Module that imports an unknown namespace or name:** fails at link time. Waffle adds no stub that returns `ENOSYS`.
+- **Preview 1 `sock_accept`, `sock_recv`, `sock_shutdown`:** return `ENOTSUP`. TCP reaches guests only through an adapter such as Bun's.
+- **Symlinks (`path_symlink`):** return `ENOTSUP`.
+- **Guest that inherits file descriptor 3 and scans preopens:** needs a wasi-libc rebuilt with the patch in [Guest libc](wasi-libc.md).
+- **Bun and Bash Web:** run on Waffle through their own adapters, in their own repositories.
 
 Waffle's code and docs do not mention Wasm threads or other post-Preview 1 interfaces.
 
