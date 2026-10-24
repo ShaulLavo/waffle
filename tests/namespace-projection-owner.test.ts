@@ -242,19 +242,7 @@ test.each([0, "", undefined] as const)(
   "cleanup rejection %p retains the charge and failure",
   async (reason) => {
     const { budget } = rig();
-    const tryOperation = budget.tryOperation.bind(budget);
-    let releases = 0;
-    const admission = spyOn(budget, "tryOperation").mockImplementation((demand) => {
-      const result = tryOperation(demand);
-      if (result.kind !== "granted") return result;
-      const release = result.lease.release;
-      spyOn(result.lease, "release").mockImplementation((reference) => {
-        releases++;
-        if (releases === 1) throw reason;
-        return release(reference);
-      });
-      return result;
-    });
+    const failing = failFirstReferenceRelease(budget, reason);
     try {
       const before = budget.snapshot();
       const owner = NamespaceProjectionOwner.create(capacity, budget);
@@ -266,11 +254,11 @@ test.each([0, "", undefined] as const)(
       expect(Object.is(failure, reason)).toBe(true);
       expect(owner.retire()).toBe(retiring);
       expectCharged(before, budget);
-      expect(releases).toBe(1);
+      expect(failing.releases()).toBe(1);
       expect(await retiring.catch((error: unknown) => error)).toBe(reason);
-      expect(releases).toBe(1);
+      expect(failing.releases()).toBe(1);
     } finally {
-      admission.mockRestore();
+      failing.admission.mockRestore();
       budget.close();
     }
   },
