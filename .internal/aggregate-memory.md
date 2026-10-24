@@ -94,3 +94,24 @@ and staged or adapter copies. Ledger control-table charges remain separate.
 `tests/publication-memory-accounting.test.ts` uses small synthetic constructors
 to check denial, precharge ordering, rollback, fixed allocation, and alias lifetime.
 The excluded allocations and whole-runtime disclaimer above still apply.
+
+## Opt-in namespace projection backing
+
+`new NamespaceProjectionTable(options, budget)` admits the complete private
+`ArrayBuffer` when the optional realm-local `MemoryBudget` is present. Validation
+precedes admission. The plan reserves the exact backing byte length, one
+allocation/reference pair, and one operation lease before allocation. The 8,192
+bookkeeping units reported by `allocation().chargedBytes` remain diagnostic and
+are not part of this backing-only admission.
+
+A failed allocation, view initialization, or publication registration returns the
+reservation and all acquired records. Published tables remain strongly retained
+under their budget. Raw aliases and budget close do not refund the charge. There
+is no early-refund API, GC callback, or table retirement. Construction without
+the budget keeps its existing unaccounted behavior.
+
+This constructor-only hook does not wire scanning cursors, accepted projections,
+replacement, or workspace close into ledger ownership. It excludes returned
+pages and changes, component bookkeeping allowances, and every other exclusion
+listed above. `tests/namespace-projection-memory-budget.test.ts` uses a 157-byte
+synthetic backing to check denial, precharge, rollback, and published lifetime.

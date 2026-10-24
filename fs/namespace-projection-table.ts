@@ -1,4 +1,6 @@
 import type { FileId } from "./file-identity.js";
+import type { MemoryBudget } from "./memory-budget.js";
+import { allocateNamespaceProjectionBacking } from "./namespace-projection-memory-budget.js";
 import type { PublicationEffect, PublicationFile } from "./publication.js";
 import type { NamespaceRecord } from "./workspace-protocol.js";
 import { WORKSPACE_LIMITS, type WorkspaceChange } from "./workspace-types.js";
@@ -166,7 +168,7 @@ export class NamespaceProjectionTable {
   private compactionPasses = 0;
   private movedBytes = 0;
 
-  constructor(options: Partial<Capacity> = {}) {
+  constructor(options: Partial<Capacity> = {}, budget?: MemoryBudget) {
     this.capacity = {
       nodes: 65535,
       edges: WORKSPACE_LIMITS.indexEdges,
@@ -191,29 +193,38 @@ export class NamespaceProjectionTable {
     const nameStart = directoryStart + Math.ceil(nodes / 8);
     const backingBytes = nameStart + nameBytes;
     check(backingBytes + BOOKKEEPING_BYTES, this.capacity.byteLimit, "bytes");
-    this.backing = new ArrayBuffer(backingBytes);
-    let at = 0;
-    this.ids = new BigUint64Array(this.backing, at, nodes * 2);
-    at += nodes * 16;
-    this.offsets = new Uint32Array(this.backing, at, nodes);
-    at += nodes * 4;
-    this.parents = new Uint16Array(this.backing, at, nodes);
-    at += nodes * 2;
-    this.lengths = new Uint16Array(this.backing, at, nodes);
-    at += nodes * 2;
-    this.extraOffsets = new Uint32Array(this.backing, at, extraLinks);
-    at += extraLinks * 4;
-    this.extraNodes = new Uint16Array(this.backing, at, extraLinks);
-    at += extraLinks * 2;
-    this.extraParents = new Uint16Array(this.backing, at, extraLinks);
-    at += extraLinks * 2;
-    this.extraLengths = new Uint16Array(this.backing, at, extraLinks);
-    this.heap = new Uint32Array(this.backing, heapStart, scratchSlots);
-    this.directories = new Uint8Array(this.backing, directoryStart, Math.ceil(nodes / 8));
-    this.names = new Uint8Array(this.backing, nameStart, nameBytes);
-    this.offsets.fill(EMPTY);
-    this.parents.fill(NONE);
-    this.extraNodes.fill(NONE);
+    const allocation = budget
+      ? allocateNamespaceProjectionBacking(budget, backingBytes)
+      : undefined;
+    try {
+      this.backing = allocation?.buffer ?? new ArrayBuffer(backingBytes);
+      let at = 0;
+      this.ids = new BigUint64Array(this.backing, at, nodes * 2);
+      at += nodes * 16;
+      this.offsets = new Uint32Array(this.backing, at, nodes);
+      at += nodes * 4;
+      this.parents = new Uint16Array(this.backing, at, nodes);
+      at += nodes * 2;
+      this.lengths = new Uint16Array(this.backing, at, nodes);
+      at += nodes * 2;
+      this.extraOffsets = new Uint32Array(this.backing, at, extraLinks);
+      at += extraLinks * 4;
+      this.extraNodes = new Uint16Array(this.backing, at, extraLinks);
+      at += extraLinks * 2;
+      this.extraParents = new Uint16Array(this.backing, at, extraLinks);
+      at += extraLinks * 2;
+      this.extraLengths = new Uint16Array(this.backing, at, extraLinks);
+      this.heap = new Uint32Array(this.backing, heapStart, scratchSlots);
+      this.directories = new Uint8Array(this.backing, directoryStart, Math.ceil(nodes / 8));
+      this.names = new Uint8Array(this.backing, nameStart, nameBytes);
+      this.offsets.fill(EMPTY);
+      this.parents.fill(NONE);
+      this.extraNodes.fill(NONE);
+      allocation?.publish();
+    } catch (error) {
+      allocation?.cancel();
+      throw error;
+    }
   }
 
   allocation() {
