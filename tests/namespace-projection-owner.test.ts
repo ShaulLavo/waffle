@@ -8,6 +8,7 @@ import {
   type MemoryRecords,
 } from "../fs/memory-budget";
 import { NamespaceProjectionOwner } from "../fs/namespace-projection-owner";
+import { namespaceProjectionPlan } from "../fs/namespace-projection-table";
 import type { NamespaceRecord } from "../fs/workspace-protocol";
 import {
   createFilesystemConnection,
@@ -29,6 +30,8 @@ const capacity = {
 };
 const backingBytes = 157;
 const chargedBytes = 8349;
+const workspacePlan = namespaceProjectionPlan();
+const workspaceChargedBytes = workspacePlan.backingBytes + workspacePlan.bookkeepingBytes;
 const records: MemoryRecords = { allocations: 4, references: 4, leases: 2 };
 type Snapshot = ReturnType<MemoryBudget["snapshot"]>;
 
@@ -74,16 +77,21 @@ function usage(snapshot: Snapshot) {
   };
 }
 
-function expectCharged(before: Snapshot, budget: MemoryBudget): void {
+function expectCharged(
+  before: Snapshot,
+  budget: MemoryBudget,
+  count = 1,
+  bytes = chargedBytes,
+): void {
   expect(usage(budget.snapshot())).toEqual({
     ...usage(before),
-    backingBytes: before.backingBytes + backingBytes,
-    metadataUnits: before.metadataUnits + 8192,
-    allocated: before.allocated + chargedBytes,
+    backingBytes: before.backingBytes + count * (bytes - 8192),
+    metadataUnits: before.metadataUnits + count * 8192,
+    allocated: before.allocated + count * bytes,
     producerFree: {
-      allocations: before.producerFree.allocations - 2,
-      references: before.producerFree.references - 2,
-      leases: before.producerFree.leases - 1,
+      allocations: before.producerFree.allocations - count * 2,
+      references: before.producerFree.references - count * 2,
+      leases: before.producerFree.leases - count,
     },
   });
 }
@@ -101,16 +109,19 @@ function constructWithUint32ArrayFailure(
   before: Snapshot,
   budget: MemoryBudget,
   reason: unknown,
+  options: { readonly construct?: () => unknown; readonly bytes?: number } = {},
 ): unknown {
+  const construct = options.construct ?? (() => NamespaceProjectionOwner.create(capacity, budget));
+  const bytes = options.bytes ?? chargedBytes;
   const NativeUint32Array = globalThis.Uint32Array;
   try {
     globalThis.Uint32Array = new Proxy(NativeUint32Array, {
       construct() {
-        expectCharged(before, budget);
+        expectCharged(before, budget, 1, bytes);
         throw reason;
       },
     });
-    return thrown(() => NamespaceProjectionOwner.create(capacity, budget));
+    return thrown(construct);
   } finally {
     globalThis.Uint32Array = NativeUint32Array;
   }
@@ -264,13 +275,6 @@ test.each([0, "", undefined] as const)(
   },
 );
 
-function fundWorkspaceFactory(budget: MemoryBudget) {
-  const create = NamespaceProjectionOwner.create;
-  return spyOn(NamespaceProjectionOwner, "create").mockImplementation(() =>
-    create.call(NamespaceProjectionOwner, capacity, budget),
-  );
-}
-
 function failFirstReferenceRelease(budget: MemoryBudget, reason: unknown) {
   const tryOperation = budget.tryOperation.bind(budget);
   let releases = 0;
@@ -288,12 +292,12 @@ function failFirstReferenceRelease(budget: MemoryBudget, reason: unknown) {
   return { admission, releases: () => releases };
 }
 
-async function fixture() {
+async function fixture(budget?: MemoryBudget) {
   const pair = createFilesystemConnection(undefined, { workspace: true });
   const service = new FilesystemService(new MemoryBackend());
   service.connect(pair.server);
   const client = new FilesystemClient(pair.client);
-  const workspace = createWorkspaceVfs(client);
+  const workspace = createWorkspaceVfs(client, budget);
   return {
     client,
     serverPort: pair.server.port,
@@ -348,15 +352,148 @@ function retirements() {
   return { owners, spy };
 }
 
+function holdFirstBorrow() {
+  const original = NamespaceProjectionOwner.prototype.borrow;
+  let held: ReturnType<NamespaceProjectionOwner["borrow"]>;
+  const spy = spyOn(NamespaceProjectionOwner.prototype, "borrow").mockImplementation(function (
+    this: NamespaceProjectionOwner,
+  ) {
+    const borrow = original.call(this);
+    if (borrow && !held) held = original.call(this);
+    return borrow;
+  });
+  return {
+    spy,
+    release() {
+      held?.release();
+    },
+  };
+}
+
+test("workspace factory preserves funding across memoized repeats", async () => {
+  const funded = rig(workspaceChargedBytes);
+  const other = rig(workspaceChargedBytes);
+  const fundedFixture = await fixture(funded.budget);
+  const defaultFixture = await fixture();
+  try {
+    const before = funded.budget.snapshot();
+    expect(createWorkspaceVfs(fundedFixture.client, funded.budget)).toBe(fundedFixture.workspace);
+    expect(createWorkspaceVfs(fundedFixture.client)).toBe(fundedFixture.workspace);
+    expect(() => createWorkspaceVfs(fundedFixture.client, other.budget)).toThrow(
+      "different namespace projection budget",
+    );
+    expect(createWorkspaceVfs(defaultFixture.client)).toBe(defaultFixture.workspace);
+    expect(() => createWorkspaceVfs(defaultFixture.client, funded.budget)).toThrow(
+      "different namespace projection budget",
+    );
+    await snapshot(defaultFixture.workspace);
+    expect(funded.allocator.specs).toHaveLength(0);
+    expect(usage(funded.budget.snapshot())).toEqual(usage(before));
+  } finally {
+    await fundedFixture.stop();
+    await defaultFixture.stop();
+    funded.budget.close();
+    other.budget.close();
+  }
+});
+
+test("workspace admission denial precedes projection allocation and remote work", async () => {
+  const { allocator, budget } = rig(workspaceChargedBytes - 1);
+  const current = await fixture(budget);
+  const submission = spyOn(current.client, "submit");
+  try {
+    const before = budget.snapshot();
+    const error = thrown(() => current.workspace.snapshot());
+    expect(error).toEqual(new MemoryBudgetError("capacity"));
+    expect(allocator.specs).toHaveLength(0);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    expect(submission.mock.calls).toHaveLength(0);
+    expect(current.service.resources().workspaceCursors).toBe(0);
+  } finally {
+    submission.mockRestore();
+    await current.stop();
+    budget.close();
+  }
+});
+
+test("workspace table constructor failure rolls back with exact error identity", async () => {
+  const { allocator, budget } = rig(workspaceChargedBytes);
+  const current = await fixture(budget);
+  const submission = spyOn(current.client, "submit");
+  const reason = new Error("controlled workspace projection construction failure");
+  try {
+    const before = budget.snapshot();
+    const error = constructWithUint32ArrayFailure(before, budget, reason, {
+      construct: () => current.workspace.snapshot(),
+      bytes: workspaceChargedBytes,
+    });
+    expect(Object.is(error, reason)).toBe(true);
+    expect(allocator.specs).toEqual([{ kind: "array", bytes: workspacePlan.backingBytes }]);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    expect(submission.mock.calls).toHaveLength(0);
+    expect(current.service.resources().workspaceCursors).toBe(0);
+  } finally {
+    submission.mockRestore();
+    await current.stop();
+    budget.close();
+  }
+});
+
+test("workspace cancellation releases a funded scanning projection exactly once", async () => {
+  const { budget } = rig(workspaceChargedBytes);
+  const current = await fixture(budget);
+  try {
+    const before = budget.snapshot();
+    const cursor = current.workspace.snapshot();
+    expectCharged(before, budget, 1, workspaceChargedBytes);
+    const closing = cursor.close();
+    expect(cursor.close()).toBe(closing);
+    await closing;
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    await cursor.close();
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+  } finally {
+    await current.stop();
+    budget.close();
+  }
+});
+
+test("workspace accepted and borrowed projections release only after the final borrower", async () => {
+  const { budget } = rig(workspaceChargedBytes);
+  const current = await fixture(budget);
+  const borrowing = holdFirstBorrow();
+  try {
+    const before = budget.snapshot();
+    await current.client.asyncCall("writeFile", ["/held"], new Uint8Array([65]));
+    const cursor = current.workspace.snapshot();
+    expect((await cursor.next()).kind).toBe("entries");
+    expectCharged(before, budget, 1, workspaceChargedBytes);
+    expect((await cursor.next()).kind).toBe("complete");
+    expectCharged(before, budget, 1, workspaceChargedBytes);
+    const closing = current.workspace.close();
+    expect(current.workspace.close()).toBe(closing);
+    expectCharged(before, budget, 1, workspaceChargedBytes);
+    borrowing.release();
+    await closing;
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+    await current.workspace.close();
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+  } finally {
+    borrowing.release();
+    await current.stop();
+    borrowing.spy.mockRestore();
+    budget.close();
+  }
+});
+
 test.each([0, "", undefined] as const)(
   "workspace close reports a scanning retirement failure once for %p",
   async (reason) => {
-    const { budget } = rig();
+    const { budget } = rig(workspaceChargedBytes);
     const failing = failFirstReferenceRelease(budget, reason);
-    const factory = fundWorkspaceFactory(budget);
     let current: Awaited<ReturnType<typeof fixture>> | undefined;
     try {
-      current = await fixture();
+      current = await fixture(budget);
       await current.client.asyncCall("writeFile", ["/held"], new Uint8Array([65]));
       const cursor = current.workspace.snapshot();
       expect((await cursor.next()).kind).toBe("entries");
@@ -375,7 +512,6 @@ test.each([0, "", undefined] as const)(
       await current?.workspace.close().catch(() => {});
       current?.client.dispose();
       current?.service.dispose();
-      factory.mockRestore();
       failing.admission.mockRestore();
       budget.close();
     }
@@ -383,15 +519,14 @@ test.each([0, "", undefined] as const)(
 );
 
 test("cursor close reports an independent remote close failure once", async () => {
-  const { budget } = rig();
+  const { budget } = rig(workspaceChargedBytes);
   const retirementReason = 0;
   const remoteReason = new Error("remote close failed");
   const failing = failFirstReferenceRelease(budget, retirementReason);
-  const factory = fundWorkspaceFactory(budget);
   let current: Awaited<ReturnType<typeof fixture>> | undefined;
   let remoteFailures = 0;
   try {
-    current = await fixture();
+    current = await fixture(budget);
     await current.client.asyncCall("writeFile", ["/held"], new Uint8Array([65]));
     const cursor = current.workspace.snapshot();
     expect((await cursor.next()).kind).toBe("entries");
@@ -416,7 +551,6 @@ test("cursor close reports an independent remote close failure once", async () =
     await current?.workspace.close().catch(() => {});
     current?.client.dispose();
     current?.service.dispose();
-    factory.mockRestore();
     failing.admission.mockRestore();
     budget.close();
   }
@@ -445,15 +579,19 @@ test("completion transfers the scanning owner and close retires the accepted own
 });
 
 test("replacement retires the old owner while a stale reply preserves the new one", async () => {
-  const current = await fixture();
+  const { budget } = rig(workspaceChargedBytes * 2);
+  const current = await fixture(budget);
   const retiring = retirements();
   let held: ReturnType<typeof holdResponse> | undefined;
   try {
+    const before = budget.snapshot();
     const first = await snapshot(current.workspace);
+    expectCharged(before, budget, 1, workspaceChargedBytes);
     held = holdResponse(current.serverPort);
     const pending = current.workspace.changes(first.cut.watermark);
     await held.held;
     const second = await snapshot(current.workspace);
+    expectCharged(before, budget, 1, workspaceChargedBytes);
     expect(retiring.owners).toHaveLength(1);
     held.release();
     expect((await pending).kind).toBe("gap");
@@ -463,10 +601,13 @@ test("replacement retires the old owner while a stale reply preserves the new on
       batches: [],
     });
     expect(retiring.owners).toHaveLength(1);
+    await current.workspace.close();
+    expect(usage(budget.snapshot())).toEqual(usage(before));
   } finally {
     held?.release();
     await current.stop();
     retiring.spy.mockRestore();
+    budget.close();
   }
 });
 
