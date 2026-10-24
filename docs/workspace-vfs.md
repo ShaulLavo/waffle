@@ -234,10 +234,9 @@ and history. Consumers own previously returned pages and their memory.
 ## Scope
 
 This API implements namespace snapshots, changes, bounded reads, generation stat,
-and explicit full-file version leases. Live search, index validation,
-import/export, aggregate memory pressure, SAFE durability, endurance
-certification, and real Safari proof remain
-in [the VFS plan](../plans/001-vfs-family.md#4-workspacevfs-beside-wasi).
+and explicit full-file version leases. [Live search](workspace-search.md) and an
+[archive export adapter](workspace-export.md) build on it. SAFE durability and a
+whole-runtime memory limit are not implemented.
 
 Cold-key retention metadata stays charged to the root's 2 MiB reader metadata
 limit while reader-only disk debt remains. Aliases share one key charge. Closing
