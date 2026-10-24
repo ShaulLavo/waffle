@@ -346,7 +346,7 @@ class WorkspaceOwner implements WorkspaceVfs {
         this.accepted !== accepted ||
         !same(after, accepted.next)
       ) {
-        this.accepted = undefined;
+        if (this.accepted === accepted) this.accepted = undefined;
         return {
           kind: "gap",
           current: reply.current,
@@ -358,7 +358,7 @@ class WorkspaceOwner implements WorkspaceVfs {
       accepted.next = reply.next;
       return { kind: "changes", batches, next: reply.next };
     } catch (error) {
-      this.accepted = undefined;
+      if (this.accepted === accepted) this.accepted = undefined;
       if (this.stopped) return { kind: "stopped" };
       if (signal?.aborted) return { kind: "cancelled" };
       if (error instanceof ProjectionPressure)
