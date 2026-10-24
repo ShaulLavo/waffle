@@ -763,13 +763,13 @@ test("SharedFilesystem funds only its memoized workspace projections", async () 
   const submission = spyOn(current.fs.client, "submit");
   try {
     const before = budget.snapshot();
-    expect(createWorkspaceVfs(current.fs.client, budget)).toBe(current.fs.workspace);
-    expect(createWorkspaceVfs(current.fs.client)).toBe(current.fs.workspace);
+    const workspace = current.fs.workspace;
+    if (!workspace) throw new Error("expected SharedFilesystem workspace");
+    expect(createWorkspaceVfs(current.fs.client, budget)).toBe(workspace);
+    expect(createWorkspaceVfs(current.fs.client)).toBe(workspace);
     expect(current.worker.messages).toHaveLength(1);
     expect(Reflect.ownKeys(current.worker.messages[0]!)).not.toContain(localMemory);
     expect(usage(budget.snapshot())).toEqual(usage(before));
-    const workspace = current.fs.workspace;
-    if (!workspace) throw new Error("expected SharedFilesystem workspace");
     const cursor = workspace.snapshot();
     expect(admit.mock.calls).toEqual([
       [{ bytes: workspaceChargedBytes, allocations: 2, references: 2, leases: 0 }],
