@@ -1559,7 +1559,9 @@ test("R42 completed replay owns new acknowledgement debt without a second mutati
     wire.postMessage({ kind: "reconcile", client: captured.client, id: captured.id });
     expect(await retired.promise).toMatchObject({ state: "unknown" });
     wire.postMessage(captured);
-    expect(await duplicate.promise).toEqual(replies[0]);
+    const first = replies[0];
+    if (!first) throw new Error("original settlement reply absent");
+    expect(await duplicate.promise).toEqual(first);
     expect(replies[1]?.value).toEqual(settled);
     const output = new Uint8Array(4);
     expect(f.backend.shared.read(f.file, [output], 0)).toBe(4);
