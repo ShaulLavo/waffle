@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { parseFileIdentity } from "../fs/file-identity";
 import {
   MemoryBudget,
+  MemoryBudgetError,
   type MemoryAllocator,
   type MemoryBackingSpec,
   type MemoryRecords,
@@ -33,8 +34,10 @@ type Snapshot = ReturnType<MemoryBudget["snapshot"]>;
 
 class Allocator implements MemoryAllocator {
   readonly specs: MemoryBackingSpec[] = [];
+  failure: { readonly reason: unknown } | undefined;
   allocate(spec: MemoryBackingSpec): ArrayBuffer | SharedArrayBuffer {
     this.specs.push(spec);
+    if (this.failure) throw this.failure.reason;
     return new ArrayBuffer(spec.bytes);
   }
   grow(): void {
@@ -42,7 +45,7 @@ class Allocator implements MemoryAllocator {
   }
 }
 
-function rig() {
+function rig(room = 16384) {
   const allocator = new Allocator();
   const configuration = {
     bytes: 65536,
@@ -54,7 +57,7 @@ function rig() {
   const probe = new MemoryBudget(configuration);
   const overhead = probe.snapshot().allocated;
   probe.close();
-  const budget = new MemoryBudget({ ...configuration, bytes: overhead + 16384 }, allocator);
+  const budget = new MemoryBudget({ ...configuration, bytes: overhead + room }, allocator);
   return { allocator, budget };
 }
 
@@ -85,6 +88,15 @@ function expectCharged(before: Snapshot, budget: MemoryBudget): void {
   });
 }
 
+function thrown(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected funded construction to fail");
+}
+
 function borrowed(owner: NamespaceProjectionOwner) {
   const borrow = owner.borrow();
   if (!borrow) throw new Error("expected an open namespace projection");
@@ -109,6 +121,64 @@ function record(serial: number, parent: number | null, name: string): NamespaceR
     mode: 0o600,
   };
 }
+
+test("funded admission denial allocates nothing and preserves every ledger record", () => {
+  const { allocator, budget } = rig(chargedBytes - 1);
+  try {
+    const before = budget.snapshot();
+    const error = thrown(() => NamespaceProjectionOwner.create(capacity, budget));
+    expect(error).toEqual(new MemoryBudgetError("capacity"));
+    expect(allocator.specs).toHaveLength(0);
+    expect(usage(budget.snapshot())).toEqual(usage(before));
+  } finally {
+    budget.close();
+  }
+});
+
+test.each([0, "", undefined] as const)(
+  "backing allocation rejection %p rolls back its reservation and lease",
+  (reason) => {
+    const { allocator, budget } = rig();
+    allocator.failure = { reason };
+    try {
+      const before = budget.snapshot();
+      const error = thrown(() => NamespaceProjectionOwner.create(capacity, budget));
+      expect(Object.is(error, reason)).toBe(true);
+      expect(allocator.specs).toEqual([{ kind: "array", bytes: backingBytes }]);
+      expect(usage(budget.snapshot())).toEqual(usage(before));
+    } finally {
+      budget.close();
+    }
+  },
+);
+
+test.each([0, "", undefined] as const)(
+  "table construction rejection %p releases both allocations and references",
+  (reason) => {
+    const { allocator, budget } = rig();
+    const NativeUint32Array = globalThis.Uint32Array;
+    try {
+      const before = budget.snapshot();
+      let error: unknown;
+      try {
+        globalThis.Uint32Array = new Proxy(NativeUint32Array, {
+          construct() {
+            expectCharged(before, budget);
+            throw reason;
+          },
+        });
+        error = thrown(() => NamespaceProjectionOwner.create(capacity, budget));
+      } finally {
+        globalThis.Uint32Array = NativeUint32Array;
+      }
+      expect(Object.is(error, reason)).toBe(true);
+      expect(allocator.specs).toEqual([{ kind: "array", bytes: backingBytes }]);
+      expect(usage(budget.snapshot())).toEqual(usage(before));
+    } finally {
+      budget.close();
+    }
+  },
+);
 
 test("funded retirement waits for the final borrower and refunds exactly once", async () => {
   const { allocator, budget } = rig();
