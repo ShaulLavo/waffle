@@ -26,7 +26,7 @@ if (engines === "chromium,firefox") {
   if (!names.slice(0, names.indexOf(name)).every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("overlapping WebKit");
 } else throw Error("missing engine");
 writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
-if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
+if (process.env.MATRIX_FAIL?.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
 `;
 
 const recoveryFixture = `
@@ -39,7 +39,19 @@ const ownedScratch = Boolean(scratch && existsSync(scratch) && scratch === proce
 appendFileSync("recovery-r42.invocations", JSON.stringify({ engines, supervised, ownedScratch }) + "\\n");
 if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early recovery");
 if (names.some((entry) => existsSync(entry + ".webkit.finished"))) throw Error("late recovery");
-if (process.env.MATRIX_FAIL === "recovery-r42:chromium") throw Error("recovery fixture failure");
+if (process.env.MATRIX_FAIL?.split("|").includes("recovery-r42:chromium")) throw Error("recovery fixture failure");
+`;
+
+const matrixFixture = `
+import { writeFileSync } from "node:fs";
+try {
+  await import("./test-browser.ts");
+} catch (error) {
+  if (!(error instanceof AggregateError)) throw error;
+  writeFileSync("matrix.failures", JSON.stringify(error.errors.map((failure: unknown) =>
+    failure instanceof Error ? failure.message : null)));
+  throw error;
+}
 `;
 
 async function matrix(failing: string): Promise<void> {
@@ -61,9 +73,10 @@ async function matrix(failing: string): Promise<void> {
     for (const runner of runners)
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
+    await writeFile(join(root, "scripts/matrix-fixture.ts"), matrixFixture);
     let failure: unknown;
     try {
-      await runOwned([process.execPath, "scripts/test-browser.ts"], {
+      await runOwned([process.execPath, "scripts/matrix-fixture.ts"], {
         cwd: root,
         env: { ...process.env, MATRIX_FAIL: failing },
         timeoutMs: 5000,
@@ -74,6 +87,14 @@ async function matrix(failing: string): Promise<void> {
     }
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing !== "");
+    const aggregate = Bun.file(join(root, "matrix.failures"));
+    expect(await aggregate.exists()).toBe(failing !== "");
+    if (failing) {
+      const failures: unknown = await aggregate.json();
+      expect(failures).toEqual(
+        failing.split("|").map((entry) => `tests/${entry.split(":")[0]}-browser-runner.ts failed`),
+      );
+    }
     const discovery = Bun.file(join(root, "recovery-r42.invocations"));
     expect(await discovery.exists()).toBe(true);
     const invocations: unknown[] = (await discovery.text())
@@ -113,4 +134,8 @@ for (const runner of runners) {
 
 test("Chromium-only recovery failure blocks matrix without hiding later WebKit suites", async () => {
   await matrix("recovery-r42:chromium");
+}, 15_000);
+
+test("recovery failure preserves earlier and later suite failures in the aggregate", async () => {
+  await matrix("storage:chromium,firefox|recovery-r42:chromium|publication:webkit");
 }, 15_000);
