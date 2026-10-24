@@ -459,10 +459,17 @@ function requirePublicationGroups(
   if (page.publications?.length !== count) throw new Error("missing complete publication group");
 }
 
-async function localPublicationFixture(backend = new MemoryBackend(), seed = true) {
+async function localPublicationFixture(
+  backend = new MemoryBackend(),
+  seed = true,
+  publicationLimits = limits,
+) {
   if (seed) backend.fs.writeFile("/file", new Uint8Array([1, 2, 3]));
   const service = new FilesystemService(backend);
-  const connection = createFilesystemConnection(undefined, { limits, observe: true });
+  const connection = createFilesystemConnection(undefined, {
+    limits: publicationLimits,
+    observe: true,
+  });
   service.connect(connection.server);
   const root = new FilesystemClient(connection.client);
   const sibling = new FilesystemClient(root.fork());
@@ -475,7 +482,7 @@ async function localPublicationFixture(backend = new MemoryBackend(), seed = tru
   const grant = connection.client.publication!.observer;
   const cut = () => root.asyncCall("publicationCut", [grant]);
   const changes = (after: unknown) =>
-    root.asyncCall("publicationChanges", [grant, after, limits.logBytes]);
+    root.asyncCall("publicationChanges", [grant, after, publicationLimits.logBytes]);
   const stop = () => {
     sibling.dispose();
     root.dispose();
@@ -1106,7 +1113,12 @@ test("production recursive removal publishes every edge and retained directory c
 });
 
 test("production host replace append exclusive and move each publish one complete group", async () => {
-  const fixture = await localPublicationFixture();
+  // Crossing a millisecond during creation can add a separate file metadata effect.
+  const fixture = await localPublicationFixture(undefined, true, {
+    ...limits,
+    effectBytes: 4096,
+    logBytes: 8192,
+  });
   try {
     const start = await fixture.cut();
     await fixture.root.asyncCall("writeFile", ["/file"], new Uint8Array([9, 8]));
