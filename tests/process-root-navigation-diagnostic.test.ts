@@ -253,7 +253,9 @@ test("refuses engine/version and approved executable identity mismatch", () => {
 test("source provenance accepts the declared diagnostic inputs and rejects wrong bytes", () => {
   const lockfile = new URL("../bun.lock", import.meta.url).pathname;
   const runner = new URL("./process-recycling-browser-runner.ts", import.meta.url).pathname;
-  const root = mkdtempSync(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"));
+  const root = mkdtempSync(
+    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"),
+  );
   try {
     expect(() => assertSourceProvenance(lockfile, runner)).not.toThrow();
     const wrongLockfile = join(root, "bun.lock");
@@ -388,46 +390,42 @@ test(
   15000,
 );
 
-test(
-  "collector forwards capture environment set immediately before spawn",
-  async () => {
-    const root = mkdtempSync(
-      join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-environment-"),
+test("collector forwards capture environment set immediately before spawn", async () => {
+  const root = mkdtempSync(
+    join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-environment-"),
+  );
+  const evidence = join(root, "evidence");
+  mkdirSync(evidence);
+  mkdirSync(join(root, "scratch"));
+  const previousTMPDIR = process.env.TMPDIR;
+  try {
+    process.env.TMPDIR = join(root, "scratch");
+    process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE = "present";
+    const status = await collectChild(
+      [
+        process.execPath,
+        "-e",
+        'process.stdout.write(process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE ?? "missing")',
+      ],
+      evidence,
     );
-    const evidence = join(root, "evidence");
-    mkdirSync(evidence);
-    mkdirSync(join(root, "scratch"));
-    const previousTMPDIR = process.env.TMPDIR;
-    try {
-      process.env.TMPDIR = join(root, "scratch");
-      process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE = "present";
-      const status = await collectChild(
-        [
-          process.execPath,
-          "-e",
-          'process.stdout.write(process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE ?? "missing")',
-        ],
-        evidence,
-      );
-      expect(status).toBe(0);
-      expect(readFileSync(join(evidence, "stdout.bin"), "utf8")).toBe("present");
-      expect(
-        JSON.parse(readFileSync(join(evidence, "collector-result.json"), "utf8")),
-      ).toMatchObject({
+    expect(status).toBe(0);
+    expect(readFileSync(join(evidence, "stdout.bin"), "utf8")).toBe("present");
+    expect(JSON.parse(readFileSync(join(evidence, "collector-result.json"), "utf8"))).toMatchObject(
+      {
         status: 0,
         primaryPresent: false,
         cleanupErrors: [],
         unresolvedOwnership: [],
-      });
-    } finally {
-      if (previousTMPDIR === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = previousTMPDIR;
-      delete process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE;
-      rmSync(root, { recursive: true, force: true });
-    }
-  },
-  15000,
-);
+      },
+    );
+  } finally {
+    if (previousTMPDIR === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previousTMPDIR;
+    delete process.env.ROOT_NAVIGATION_DYNAMIC_CAPTURE;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15000);
 
 test("durable evidence refuses accidental overwrite", () => {
   const root = mkdtempSync(join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-json-"));
