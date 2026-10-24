@@ -14,6 +14,7 @@ const runners = [
   "tests/publication-cross-tab-browser-runner.ts",
 ];
 const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
+  [[{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }]],
   runners.map((runner) => [{ runner, engines: ["webkit"] }]),
   [[{ runner: "tests/workspace-continuity-browser-runner.ts", engines: ["chromium"] }]],
   [[{ runner: "tests/root-continuity-browser-runner.ts", engines: ["chromium"] }]],

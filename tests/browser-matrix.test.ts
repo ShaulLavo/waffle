@@ -206,7 +206,6 @@ test("browser matrix reports ordered failures after every other suite finishes",
   ]);
 }, 15_000);
 
-
 test("Chromium-only recovery failure blocks matrix without hiding later WebKit suites", async () => {
   await matrix([`${recovery}:chromium`]);
 }, 15_000);
