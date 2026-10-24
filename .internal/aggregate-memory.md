@@ -107,11 +107,31 @@ are not part of this backing-only admission.
 A failed allocation, view initialization, or publication registration returns the
 reservation and all acquired records. Published tables remain strongly retained
 under their budget. Raw aliases and budget close do not refund the charge. There
-is no early-refund API, GC callback, or table retirement. Construction without
+is no early-refund API, GC callback, or raw-table retirement. Construction without
 the budget keeps its existing unaccounted behavior.
 
-This constructor-only hook does not wire scanning cursors, accepted projections,
-replacement, or workspace close into ledger ownership. It excludes returned
-pages and changes, component bookkeeping allowances, and every other exclusion
-listed above. `tests/namespace-projection-memory-budget.test.ts` uses a 157-byte
-synthetic backing to check denial, precharge, rollback, and published lifetime.
+`NamespaceProjectionOwner.create(options, budget)` owns a retiring funded table.
+Its admission includes the backing, 8,192 bookkeeping units, two
+allocation/reference pairs, and one operation lease. Construction rollback and
+admission denial leave no retained allocation or remote work. Retirement waits
+for the final borrower, then releases both references exactly once.
+
+`createWorkspaceVfs(client, projectionBudget)` uses this owner for every snapshot
+in the memoized workspace. Repeating the factory with the same budget, or without
+a budget argument, returns the established workspace. A different budget identity
+is rejected instead of silently replacing or adding funding. An initial
+`createWorkspaceVfs(client)` call without a budget keeps that client's projections
+unaccounted.
+
+Scanning and accepted workspace projections remain charged. Replacement,
+cancellation, and workspace close retire their owners and release the charges
+after borrowing ends. Returned pages and changes, remote cursor and protocol
+allocations, and every exclusion listed above remain outside this hook. The raw
+`NamespaceProjectionTable` constructor keeps its backing-only behavior and does
+not gain retirement. Neither path provides production-wide or aggregate
+enforcement.
+
+`tests/namespace-projection-memory-budget.test.ts` uses a 157-byte synthetic
+backing to check raw-table denial, precharge, rollback, and published lifetime.
+`tests/namespace-projection-owner.test.ts` checks the real workspace factory,
+including funded lifetime and memoized budget identity.

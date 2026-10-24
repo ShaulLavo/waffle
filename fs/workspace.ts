@@ -1,4 +1,5 @@
 import type { FilesystemClient } from "./client.js";
+import type { MemoryBudget } from "./memory-budget.js";
 import { FilesystemError, isRevoked } from "./protocol.js";
 import {
   namespacePage,
@@ -50,7 +51,11 @@ type Accepted = {
 type CursorState =
   | { readonly kind: "scanning"; readonly projection: NamespaceProjectionOwner }
   | { readonly kind: "terminal"; readonly page: TerminalPage };
-const owners = new WeakMap<FilesystemClient, WorkspaceVfs>();
+type OwnedWorkspace = {
+  readonly workspace: WorkspaceVfs;
+  readonly projectionBudget: MemoryBudget | undefined;
+};
+const owners = new WeakMap<FilesystemClient, OwnedWorkspace>();
 function options(value: SnapshotOptions = {}): Required<SnapshotOptions> {
   const prefix = value.prefix ?? "/",
     includeDirs = value.includeDirs ?? true;
@@ -72,12 +77,19 @@ function same(a: Watermark, b: Watermark): boolean {
   return a.history === b.history && a.seq === b.seq;
 }
 /** Trusted root observer. Guests never inherit the observer grant. */
-export function createWorkspaceVfs(client: FilesystemClient): WorkspaceVfs {
+export function createWorkspaceVfs(
+  client: FilesystemClient,
+  projectionBudget?: MemoryBudget,
+): WorkspaceVfs {
   if (!client.connection.publication?.observer)
     throw new FilesystemError(2, "workspace access requires the root observer grant");
   const previous = owners.get(client);
-  if (previous) return previous;
-  const owner = new WorkspaceOwner(client);
+  if (previous) {
+    if (projectionBudget && previous.projectionBudget !== projectionBudget)
+      throw new Error("Workspace already has a different namespace projection budget");
+    return previous.workspace;
+  }
+  const owner = new WorkspaceOwner(client, projectionBudget);
   const workspace: WorkspaceVfs = Object.freeze({
     read: owner.read.bind(owner),
     stat: owner.stat.bind(owner),
@@ -86,7 +98,7 @@ export function createWorkspaceVfs(client: FilesystemClient): WorkspaceVfs {
     changes: owner.changes.bind(owner),
     close: owner.close.bind(owner),
   });
-  owners.set(client, workspace);
+  owners.set(client, { workspace, projectionBudget });
   return workspace;
 }
 class WorkspaceOwner implements WorkspaceVfs {
@@ -102,7 +114,10 @@ class WorkspaceOwner implements WorkspaceVfs {
   private readonly leases = new Set<RemoteVersionLease>();
   private activeReads = 0;
   private readControl: Promise<void> = Promise.resolve();
-  constructor(readonly client: FilesystemClient) {}
+  constructor(
+    readonly client: FilesystemClient,
+    readonly projectionBudget?: MemoryBudget,
+  ) {}
   get stopped(): boolean {
     return this.closed || isRevoked(this.client.connection);
   }
@@ -463,7 +478,10 @@ class RemoteSnapshot implements SnapshotCursor {
   ) {
     this.state = terminal
       ? { kind: "terminal", page: terminal }
-      : { kind: "scanning", projection: NamespaceProjectionOwner.create() };
+      : {
+          kind: "scanning",
+          projection: NamespaceProjectionOwner.create({}, owner.projectionBudget),
+        };
     if (!terminal) signal?.addEventListener("abort", this.abort, { once: true });
   }
   async next(): Promise<SnapshotPage> {
