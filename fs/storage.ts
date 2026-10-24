@@ -1,4 +1,10 @@
 import {
+  snapshotPublicationCheckpoint,
+  type PublicationCut,
+  type PublicationReceipt,
+} from "./publication.js";
+import type { PublicationLimits } from "./publication-internal.js";
+import {
   parseStoredIdentity,
   type StoredIdentity,
   type IdentityReservation,
@@ -18,7 +24,18 @@ interface PersistedMetadata {
 export type PersistedNode = PersistedMetadata &
   ({ kind: "file" | "dir"; target?: never } | { kind: "symlink"; target: string });
 
+export interface CheckpointPublication {
+  readonly kind: "settled-publication-v1";
+  readonly cut: PublicationCut;
+  readonly sessionSerial: number;
+  readonly limits: PublicationLimits;
+  readonly receipts: readonly PublicationReceipt[];
+  readonly changes: readonly Uint8Array[];
+  readonly contentVersions: readonly { readonly ino: number; readonly version: number }[];
+}
+
 export interface PersistedIndex {
+  publication?: CheckpointPublication;
   version: 1;
   generation: number;
   root: number;
@@ -27,6 +44,7 @@ export interface PersistedIndex {
 
 /** One logical generation. Unchanged inode and immutable payload identities are preserved. */
 export interface PersistenceBatch {
+  publication?: CheckpointPublication;
   generation: number;
   root: number;
   upserts: PersistedNode[];
@@ -46,6 +64,7 @@ export function snapshotBatch(batch: PersistenceBatch): PersistenceBatch {
       removes: batch.removes,
       retainedData: batch.retainedData,
     }),
+    ...(batch.publication ? { publication: snapshotPublicationCheckpoint(batch.publication) } : {}),
     data: new Map(Array.from(batch.data, ([key, bytes]) => [key, new Uint8Array(bytes)])),
   };
 }
@@ -148,6 +167,7 @@ export function validatePersistedIndex(value: unknown): asserts value is Persist
     !Array.isArray(index.nodes)
   )
     invalid();
+  if (index.publication !== undefined) snapshotPublicationCheckpoint(index.publication);
   const nodes = new Map<number, PersistedNode>();
   for (const node of index.nodes) {
     validatePersistedNode(node);
