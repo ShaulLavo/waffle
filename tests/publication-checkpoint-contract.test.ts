@@ -95,6 +95,50 @@ test("publication snapshots preserve typed bytes and reject invalid records", as
   );
 });
 
+test.each([
+  {
+    name: "change count",
+    limits: { effectBytes: limits.effectBytes, logRecords: 1 },
+    changes: [[1], [1]],
+  },
+  {
+    name: "change bytes",
+    limits: { effectBytes: 1, logRecords: limits.logRecords },
+    changes: [[1, 2]],
+  },
+])(
+  "publication snapshots reject over-limit $name before typed byte conversion",
+  async ({ limits: declaredLimits, changes }) => {
+    const checkpoint = await checkpointFixture();
+    const record = await encodeRecord({
+      ...coldPublicationRoot(),
+      publication: {
+        ...checkpoint,
+        limits: { ...checkpoint.limits, ...declaredLimits },
+        changes,
+      },
+    });
+    const originalFrom = Uint8Array.from;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(Uint8Array, "from");
+    let conversionCalls = 0;
+    Object.defineProperty(Uint8Array, "from", {
+      configurable: true,
+      writable: true,
+      value: function (...args: Parameters<typeof Uint8Array.from>) {
+        conversionCalls++;
+        return Reflect.apply(originalFrom, Uint8Array, args);
+      },
+    });
+    try {
+      expect(await decodeSnapshot(record)).toBeUndefined();
+      expect(conversionCalls).toBe(0);
+    } finally {
+      if (originalDescriptor) Object.defineProperty(Uint8Array, "from", originalDescriptor);
+      else Reflect.deleteProperty(Uint8Array, "from");
+    }
+  },
+);
+
 function withContent(
   checkpoint: CheckpointPublication,
   kind: "bytes" | "resize",
