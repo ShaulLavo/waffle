@@ -344,7 +344,6 @@ test("D2 no-follow slash rejects a real final link to a virtual directory alias"
   rejectOpen(f, `deep/../dev/fd/${directory}///`, false, 0, 54);
 });
 
-
 test.each([0, 1, 2])(
   "r34 ordinary explicit-follow final directory-link slash opens without namespace effects, oflags=%i",
   (oflags) => {

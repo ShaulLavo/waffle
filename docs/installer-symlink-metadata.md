@@ -55,3 +55,13 @@ does not grant a broader rewrite of that open path or linked executable admissio
 
 Directory-creation provenance, readlink pointer and lifetime guarantees, native
 storage, archive refusal and consumer delivery remain separately gated.
+
+## Ordinary path_open explicit follow
+
+For a nonexclusive ordinary open, `path_open` applies the requested final-follow
+flag on its first resolution. A directory link with trailing separators can open
+when follow is explicit. Exclusive creation keeps no-follow resolution first,
+including errno 20 for a bare existing link and errno 54 for its trailing separators.
+This replaces the preliminary no-follow limitation stated in the D1/D2 section.
+The redundant second resolution is removed. Other no-follow operations, alias
+selection, creation policy, rights and output ordering remain unchanged.
