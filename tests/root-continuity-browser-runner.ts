@@ -9,11 +9,10 @@ async function run() {
       "/": "<!doctype html><title>Root continuity composition</title>",
       "/composition.js": await browserBundle("tests/root-continuity-browser.ts"),
     }, 0);
-    const browser = await lifecycle.launch("chromium");
     for (const control of ["selected", "cancel", "failure"] as const) {
-      const context = await lifecycle.context(browser);
+      const browser = await lifecycle.launch("chromium");
       try {
-        const page = await context.newPage();
+        const page = await browser.newPage();
         await page.goto(origin);
         const evidence = await page.evaluate(async (name) => {
           const path = "/composition.js";
@@ -22,10 +21,9 @@ async function run() {
         }, control);
         console.log(JSON.stringify({ control, evidence }));
       } finally {
-        await lifecycle.closeContext(context);
+        await lifecycle.closeBrowser(browser);
       }
     }
-    await lifecycle.closeBrowser(browser);
   } finally {
     await lifecycle.close();
   }
