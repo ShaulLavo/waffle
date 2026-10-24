@@ -162,13 +162,22 @@ jobs:
           test -s /etc/apt/apt-mirrors.txt
           cat /etc/apt/apt-mirrors.txt
       - run: bunx playwright install --with-deps chromium firefox webkit
-      - run: bun run test:browser
+      - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
+        shell: bash
         env:
+          DEBUG: pw:protocol
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
       - run: bun tests/publication-browser-runner.ts --workspace chromium
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
+      - name: Retain browser failure protocol
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-protocol-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/waffle-browser-protocol.log
+          retention-days: 7
   site:
     runs-on: ubuntu-latest
     defaults:
