@@ -142,7 +142,8 @@ function entryFor(value: unknown, manifest: ArchiveManifest): ArchiveEntry {
   exactKeys(data, data.kind === "symlink" ? keys.concat(["target"]) : keys);
   if (typeof data.path !== "string" || /[\uD800-\uDFFF]/u.test(data.path))
     fail("INVALID", "Invalid path string");
-  if (!integer(data.size) || (data.kind === "directory" && data.size !== 0))
+  const size = data.size;
+  if (!integer(size) || (data.kind === "directory" && size !== 0))
     fail("INVALID", "Invalid entry size");
   if (typeof data.mtime !== "number" || !Number.isFinite(data.mtime))
     fail("INVALID", "Invalid mtime");
@@ -152,7 +153,7 @@ function entryFor(value: unknown, manifest: ArchiveManifest): ArchiveEntry {
   const sourceIdentity = sourceIdentityFor(data.sourceIdentity, manifest.sourceWorkspace);
   const fields = {
     path: data.path,
-    size: data.size,
+    size,
     mtime: data.mtime,
     mode: data.mode,
     sourceIdentity,
@@ -160,7 +161,7 @@ function entryFor(value: unknown, manifest: ArchiveManifest): ArchiveEntry {
   if (data.kind !== "symlink") return Object.freeze({ ...fields, kind: data.kind });
   const target = data.target;
   if (typeof target !== "string") fail("INVALID", "Invalid link target");
-  archiveTargetCharge(target, data.size, 3 * WORKSPACE_ARCHIVE_LIMITS.headerBytes);
+  archiveTargetCharge(target, size, 3 * WORKSPACE_ARCHIVE_LIMITS.headerBytes);
   return Object.freeze({ ...fields, kind: "symlink", target });
 }
 

@@ -1218,3 +1218,64 @@ test("R68 early return at link metadata joins the source return and retains fals
     await stream.return(undefined);
   }
 });
+
+test("R75 codec rejects a target getter that changes its captured size without END", async () => {
+  let size = 1;
+  let sizeReads = 0;
+  let targetReads = 0;
+  const entry = {
+    ...linkEntry("xy"),
+    get size() {
+      sizeReads++;
+      return size;
+    },
+    get target() {
+      targetReads++;
+      size = 2;
+      return "xy";
+    },
+  };
+  expect(
+    await encodingFailure(entry, {
+      budget: { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: 1 },
+    }),
+  ).toMatchObject({ code: "INVALID", message: "Link target size mismatch" });
+  expect(size).toBe(2);
+  expect(sizeReads).toBe(1);
+  expect(targetReads).toBe(1);
+});
+
+test("R75 codec observes size and target once and retains the validated byte count", async () => {
+  let size = 2;
+  const observations: string[] = [];
+  const entry = {
+    ...linkEntry("xy"),
+    get size() {
+      observations.push("size");
+      if (observations.length !== 1) throw new Error("Size re-observed");
+      return size;
+    },
+    get target() {
+      observations.push("target");
+      if (observations.length !== 2) throw new Error("Target re-observed");
+      size = 1;
+      return "xy";
+    },
+  };
+  const events = await archiveEvents(
+    encodeWorkspaceArchive(
+      manifest,
+      values<ArchiveSourceEntry>([{ metadata: directory() }, { metadata: entry }]),
+      { budget: { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: 2 } },
+    ),
+    { budget: { maxEntries: 2, maxFileBytes: 0, maxTotalBytes: 2 } },
+  );
+  expect(events).toContainEqual({ kind: "entry", entry: linkEntry("xy") });
+  expect(events.at(-1)).toEqual({
+    kind: "complete",
+    summary: { entries: 2, fileBytes: 0, linkTargetBytes: 2 },
+  });
+  expect(events.some((event) => event.kind === "data")).toBe(false);
+  expect(observations).toEqual(["size", "target"]);
+  expect(size).toBe(1);
+});
