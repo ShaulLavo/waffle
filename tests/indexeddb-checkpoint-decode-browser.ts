@@ -116,10 +116,17 @@ function invalidCases(checkpoint: CheckpointPublication) {
     { label: "count", publication: { ...checkpoint, changes: changes.concat(changes) }, copies: 0 },
     {
       label: "effect bytes",
-      publication: { ...checkpoint, changes: [new Array<number>(checkpoint.limits.effectBytes + 1).fill(0)] },
+      publication: {
+        ...checkpoint,
+        changes: [Array.from({ length: checkpoint.limits.effectBytes + 1 }, () => 0)],
+      },
       copies: 0,
     },
-    { label: "fractional offset", publication: { ...checkpoint, changes: [range(0.5)] }, copies: 1 },
+    {
+      label: "fractional offset",
+      publication: { ...checkpoint, changes: [range(0.5)] },
+      copies: 1,
+    },
     { label: "tail range", publication: { ...checkpoint, changes: [range(1)] }, copies: 1 },
   ];
 }
@@ -135,20 +142,32 @@ async function rejectsBeforeCopy(name: string, expected: number, label: string):
     observed.restore();
     await storage.close();
   }
-  assert(failure instanceof VfsError && failure.code === "INVALID_VFS_FORMAT", `${label}: format error`);
+  assert(
+    failure instanceof VfsError && failure.code === "INVALID_VFS_FORMAT",
+    `${label}: format error`,
+  );
   console.log(JSON.stringify({ boundary: label, conversions: observed.lengths, expected }));
-  assert(observed.lengths.length === expected, `${label}: expected ${expected} conversions, got ${observed.lengths.length}`);
+  assert(
+    observed.lengths.length === expected,
+    `${label}: expected ${expected} conversions, got ${observed.lengths.length}`,
+  );
 }
 async function roundtrip(name: string, checkpoint: CheckpointPublication): Promise<void> {
   const storage = await IndexedDBStorage.open(name, { whenBusy: "wait", compactEvery: 8 });
   const observed = observeConversions();
   try {
     const loaded = await storage.load();
-    assert(JSON.stringify(loaded?.publication) === JSON.stringify(checkpoint), "valid selected record roundtrip");
+    assert(
+      JSON.stringify(loaded?.publication) === JSON.stringify(checkpoint),
+      "valid selected record roundtrip",
+    );
     assert(loaded?.publication?.changes[0] instanceof Uint8Array, "typed owned change bytes");
     assert(observed.lengths.length === 1, "valid selected record converts once");
     loaded.publication.changes[0].fill(0);
-    assert(JSON.stringify((await storage.load())?.publication) === JSON.stringify(checkpoint), "load copy cannot alter selection");
+    assert(
+      JSON.stringify((await storage.load())?.publication) === JSON.stringify(checkpoint),
+      "load copy cannot alter selection",
+    );
     console.log(JSON.stringify({ boundary: "valid roundtrip", conversions: observed.lengths }));
   } finally {
     observed.restore();
@@ -194,7 +213,10 @@ async function run(): Promise<void> {
     const failures = await invalidSelections(name, snapshot, checkpoint);
     await replaceSnapshot(name, {
       ...snapshot,
-      publication: { ...checkpoint, changes: checkpoint.changes.map((change) => Array.from(change)) },
+      publication: {
+        ...checkpoint,
+        changes: checkpoint.changes.map((change) => Array.from(change)),
+      },
     });
     await roundtrip(name, checkpoint);
     if (failures.length) throw new Error(failures.join("\n"));
