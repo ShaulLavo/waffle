@@ -273,8 +273,13 @@ for (const observe of [false, true]) {
 }
 test("publication UUID failure precedes allocation and reservation", () => {
   const { budget, allocator } = rig();
-  const uuid = spyOn(crypto, "randomUUID").mockImplementation(() => {
-    throw reason;
+  const uuid = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+  Object.defineProperty(crypto, "randomUUID", {
+    configurable: true,
+    writable: true,
+    value: () => {
+      throw reason;
+    },
   });
   try {
     const before = budget.snapshot();
@@ -282,9 +287,11 @@ test("publication UUID failure precedes allocation and reservation", () => {
     expect(allocator.specs).toHaveLength(0);
     expect(budget.snapshot()).toEqual(before);
   } finally {
-    uuid.mockRestore();
+    if (uuid) Object.defineProperty(crypto, "randomUUID", uuid);
+    else Reflect.deleteProperty(crypto, "randomUUID");
     budget.close();
   }
+  expect(Object.getOwnPropertyDescriptor(crypto, "randomUUID")).toEqual(uuid);
 });
 test.each(["before", "after"])(
   "publication registry failure %p final insertion removes the group",
