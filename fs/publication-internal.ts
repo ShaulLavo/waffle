@@ -1,3 +1,4 @@
+import type { CheckpointPublication } from "./storage.js";
 import type { FilesystemClient } from "./client.js";
 import type {
   ChangePage,
@@ -26,10 +27,12 @@ export interface PublicationLimits {
   readonly pinBytes: number;
 }
 export interface PublicationConfiguration {
+  readonly restore?: CheckpointPublication;
   readonly limits: PublicationLimits;
   readonly observe?: boolean;
 }
 export interface PublicationBuffers {
+  readonly sessionLimit: number;
   readonly history: string;
   readonly limits: PublicationLimits;
   readonly control: SharedArrayBuffer;

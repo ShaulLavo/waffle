@@ -1,3 +1,4 @@
+import { residentMemory } from "./fixtures/resident-memory";
 import { fixturePayloadHooks } from "./fixtures/publication-storage";
 import { nextReservation } from "../fs/file-identity";
 import { INDEXEDDB_FORMAT } from "../fs/vfs-format.js";
@@ -308,6 +309,8 @@ function pendingNativeClaim(closeFailure?: { value: unknown }, setupFailure?: Er
       publication: { limits },
     },
     new AbortController().signal,
+    undefined,
+    residentMemory(),
   );
   const readiness = owner.ready.catch((error: unknown) => error);
   return {

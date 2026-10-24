@@ -9,7 +9,12 @@ import {
   Uint8ArrayConstructor,
 } from "../proc/intrinsics.js";
 import type { ResidentDescriptor } from "./publication-grant.js";
-import { createPublicationBuffers, PublicationDomain, forkPublication } from "./publication.js";
+import {
+  createPublicationBuffers,
+  publicationBufferPlan,
+  PublicationDomain,
+  forkPublication,
+} from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { FilesystemError } from "../core/filesystem.js";
 export { FilesystemError } from "../core/filesystem.js";
@@ -92,6 +97,20 @@ export interface FilesystemReservation {
   state: SharedArrayBuffer;
 }
 export type FilesystemIdentity = Omit<FilesystemConnection, "port">;
+export interface FilesystemOwnerConstruction {
+  readonly shared: SharedArrayBuffer;
+  allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
+}
+export function filesystemOwnerPlan(publication: PublicationConfiguration) {
+  const arena = publicationBufferPlan(publication.limits, publication.observe);
+  const allocations = 6 + MAX_SHARED_SEGMENTS - 1 + arena.allocations;
+  return {
+    bytes: MAX_CONNECTION_OWNERS * 4 + CAPABILITY_LENGTH * 4 + 16 + arena.bytes,
+    allocations,
+    references: allocations,
+    leases: 0,
+  };
+}
 /** Guests can allocate a child identity while blocked; its controller creates the ports.
  * Firefox does not activate guest-created channels until that guest returns to its event loop.
  */
@@ -99,30 +118,67 @@ export function createFilesystemIdentity(
   parent?: FilesystemIdentity,
   maxBytes = DEFAULT_SHARED_MAX_BYTES,
   publication?: PublicationConfiguration | WorkspaceConfiguration,
+  construction?: FilesystemOwnerConstruction,
 ): FilesystemIdentity {
+  if (construction && parent) throw new TypeError("owner construction cannot fork an identity");
+  const allocate = (bytes: number) =>
+    construction ? construction.allocateShared(bytes) : new SharedArrayBuffer(bytes);
   maxBytes = parent?.maxBytes ?? normalizeSharedMaxBytes(maxBytes);
-  const shared = parent?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
+  const shared =
+    parent?.shared ?? construction?.shared ?? new SharedArrayBuffer(CONNECTION_SHARED_BYTES);
   const segments =
     parent?.segments ??
-    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () => createSharedSegment());
+    Array.from({ length: maxBytes / SHARED_SEGMENT_BYTES - 1 }, () =>
+      construction ? construction.allocateShared(0, SHARED_SEGMENT_BYTES) : createSharedSegment(),
+    );
   const owner = Atomics.add(new Int32Array(shared), 5, 1) + 1;
   if (owner >= MAX_CONNECTION_OWNERS)
     throw new FilesystemError(33, "filesystem identity table exhausted");
-  const ownerStates = parent?.ownerStates ?? new SharedArrayBuffer(MAX_CONNECTION_OWNERS * 4);
+  const ownerStates = parent?.ownerStates ?? allocate(MAX_CONNECTION_OWNERS * 4);
   const workspace = parent?.residentPublication?.kind === "workspace";
-  const capabilities = new SharedArrayBufferConstructor(
-    (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4,
-  );
+  const capabilityBytes = (CAPABILITY_LENGTH + (workspace ? 1 : 0)) * 4;
+  const capabilities = construction
+    ? construction.allocateShared(capabilityBytes)
+    : new SharedArrayBufferConstructor(capabilityBytes);
   const entries = new Int32ArrayConstructor(capabilities, 0, CAPABILITY_LENGTH);
   entries.fill(-1);
   entries[0] = 0;
   if (workspace) new Int32ArrayConstructor(capabilities, CAPABILITY_LENGTH * 4, 1)[0] = 0;
+  const domain = identityPublication(parent, publication, owner, construction);
+  return {
+    ...(domain ? { publication: domain } : {}),
+    ...(parent?.residentPublication ? { residentPublication: parent.residentPublication } : {}),
+    epoch: parent?.epoch ?? allocate(4),
+    // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
+    signal: parent?.signal ?? allocate(4),
+    revocations: [allocate(4)].concat(parent?.revocations ?? []),
+    shared,
+    segments,
+    capabilities,
+    sections: allocate(4),
+    owner,
+    maxBytes,
+    ownerStates,
+    reservations: [],
+  };
+}
+function identityPublication(
+  parent: FilesystemIdentity | undefined,
+  publication: PublicationConfiguration | WorkspaceConfiguration | undefined,
+  owner: number,
+  construction: FilesystemOwnerConstruction | undefined,
+): PublicationConnection | undefined {
   let domain: PublicationConnection | undefined;
   if (parent?.publication)
     domain = forkPublication(parent.publication, parent.owner, new FilesystemSection(parent));
   else if (!parent && publication) {
     const configuration = "workspace" in publication ? workspacePublication : publication;
-    const buffers = createPublicationBuffers(configuration.limits, configuration.observe);
+    const buffers = createPublicationBuffers(
+      configuration.limits,
+      configuration.observe,
+      configuration.restore,
+      construction,
+    );
     const session = new PublicationDomain(buffers, owner).openSession();
     domain = {
       buffers,
@@ -130,22 +186,7 @@ export function createFilesystemIdentity(
       ...(configuration.observe ? { observer: crypto.randomUUID() } : {}),
     };
   }
-  return {
-    ...(domain ? { publication: domain } : {}),
-    ...(parent?.residentPublication ? { residentPublication: parent.residentPublication } : {}),
-    epoch: parent?.epoch ?? new SharedArrayBuffer(4),
-    // Every descendant waits here too, so root revocation can wake blocked guests after a crash.
-    signal: parent?.signal ?? new SharedArrayBuffer(4),
-    revocations: [new SharedArrayBuffer(4)].concat(parent?.revocations ?? []),
-    shared,
-    segments,
-    capabilities,
-    sections: new SharedArrayBuffer(4),
-    owner,
-    maxBytes,
-    ownerStates,
-    reservations: [],
-  };
+  return domain;
 }
 /** Processes share storage, not the lifetime of the process that spawned them. */
 export function createProcessFilesystemIdentity(parent: FilesystemIdentity): FilesystemIdentity {
@@ -183,8 +224,11 @@ export function connectFilesystemIdentity(identity: FilesystemIdentity) {
 export function createFilesystemConnection(
   parent?: FilesystemIdentity,
   publication?: PublicationConfiguration | WorkspaceConfiguration,
+  construction?: FilesystemOwnerConstruction,
 ) {
-  return connectFilesystemIdentity(createFilesystemIdentity(parent, undefined, publication));
+  return connectFilesystemIdentity(
+    createFilesystemIdentity(parent, undefined, publication, construction),
+  );
 }
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {

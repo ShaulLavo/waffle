@@ -34,6 +34,8 @@ export default {
         "tests/fixtures/private-authority-cases.ts",
         "tests/persistent-authority-browser-runner.ts",
         "tests/owner-freeze-browser-runner.ts",
+        "tests/workspace-continuity-browser-runner.ts",
+        "tests/root-continuity-browser-runner.ts",
         "tests/fixtures/owner-freeze-{owner,guest}.ts",
         "tests/fixtures/persistent-authority-observer.ts",
         "tests/fixtures/publication-resident-{authority,guest}.ts",
