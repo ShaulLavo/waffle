@@ -350,18 +350,14 @@ export class ResidentAuthorityServer {
   drainForOwner(): Promise<void> {
     this.stopped = true;
     for (const active of this.requests.values()) active.abort.abort();
-    if (this.draining) return this.draining;
-    const draining = this.drainPersistentTransport();
-    this.draining = draining;
-    void draining.catch(() => {
-      if (this.draining === draining) this.draining = undefined;
-    });
-    return draining;
+    return (this.draining ??= this.drainPersistentTransport());
   }
   private async drainPersistentTransport(): Promise<void> {
     await this.queue;
-    if (this.sessions.size || this.outstanding)
+    if (this.sessions.size || this.outstanding) {
+      this.draining = undefined;
       throw new FilesystemError(6, "resident clients must finish their original cleanup");
+    }
     await this.drainTransport();
   }
   private async drainTransport(): Promise<void> {
