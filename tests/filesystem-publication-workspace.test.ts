@@ -1503,6 +1503,104 @@ test("cleanup reconciliation retains bounded terminal debt until original acknow
   }
 });
 
+test("R42 completed replay owns new acknowledgement debt without a second mutation", async () => {
+  let releases = 0;
+  const f = await fixture(new MemoryBackend(), {
+    async release() {
+      releases++;
+    },
+  });
+  const wire = new BroadcastChannel(`waffle:resident:${f.session.descriptor.workspace}`);
+  const original = Promise.withResolvers<Record<string, unknown>>();
+  const acknowledged = Promise.withResolvers<void>();
+  const retired = Promise.withResolvers<Record<string, unknown>>();
+  const duplicate = Promise.withResolvers<Record<string, unknown>>();
+  const barrier = Promise.withResolvers<void>();
+  const replies: Record<string, unknown>[] = [];
+  let request: Record<string, unknown> | undefined;
+  let closed = false;
+  wire.onmessage = ({ data }: MessageEvent<unknown>) => {
+    const message = record(data);
+    if (message.kind === "reconcileReply" && message.client === "ack-barrier")
+      barrier.resolve();
+    if (message.client !== f.channel.id) return;
+    if (message.kind === "request" && message.operation === "settle") {
+      request = message;
+      original.resolve(message);
+    }
+    if (!request || message.id !== request.id) return;
+    if (message.kind === "ack") acknowledged.resolve();
+    if (message.kind === "reconcileReply") retired.resolve(message);
+    if (message.kind !== "reply") return;
+    replies.push(message);
+    if (replies.length === 2) duplicate.resolve(message);
+  };
+  try {
+    await call(f, "preopen", ["/"]);
+    await call(f, "resolve", [f.directory, "dir/a"]);
+    const before = f.backend.shared.publication!.cut();
+    const grant = residentGrant(
+      await f.channel.call("prepare", {
+        token: f.session.token,
+        handle: f.file,
+        request: { kind: "append", maxBytes: 1 },
+      }),
+    );
+    const cell = new ResidentGrantCell(grant);
+    expect(cell.tryAppend(f.file, [new Uint8Array([9])])).toEqual({ written: 1, offset: 4 });
+    const outcome = cell.snapshot();
+    if (outcome.kind !== "committed") throw new Error("original append did not commit");
+    const settled = await f.channel.call("settle", {
+      token: f.session.token,
+      outcome: encodeResidentOutcome(outcome),
+    });
+    expect(record(settled).kind).toBe("committed");
+    const captured = await original.promise;
+    await acknowledged.promise;
+    wire.postMessage({ kind: "reconcile", client: captured.client, id: captured.id });
+    expect(await retired.promise).toMatchObject({ state: "unknown" });
+    wire.postMessage(captured);
+    expect(await duplicate.promise).toEqual(replies[0]);
+    expect(replies[1]?.value).toEqual(settled);
+    const output = new Uint8Array(4);
+    expect(f.backend.shared.read(f.file, [output], 0)).toBe(4);
+    expect(output).toEqual(new Uint8Array([1, 2, 3, 9]));
+    expect(f.backend.shared.publication!.cut().generation).toBe(before.generation + 1);
+    const changes = await f.root.asyncCall("publicationChanges", [
+      f.root.connection.publication!.observer,
+      before,
+      limits.logBytes,
+    ]);
+    expect(changes.publications).toHaveLength(1);
+    expect(changes.publications[0]?.receipt).toEqual(outcome.publication.receipt);
+    await f.channel.finish("closeConnection", null);
+    closed = true;
+    await f.server.drainForOwner();
+    const finalizing = f.server.finishStop();
+    await remainsPending(finalizing);
+    expect(releases).toBe(0);
+    wire.postMessage({ kind: "ack", client: "foreign", id: captured.id });
+    wire.postMessage({ kind: "ack", client: captured.client, id: "foreign" });
+    wire.postMessage({ kind: "ack", client: [captured.client], id: captured.id });
+    wire.postMessage({ kind: "ack", client: captured.client, id: [captured.id] });
+    wire.postMessage({ kind: "reconcile", client: "ack-barrier", id: "none" });
+    await barrier.promise;
+    await remainsPending(finalizing);
+    expect(releases).toBe(0);
+    wire.postMessage({ kind: "ack", client: captured.client, id: captured.id });
+    await finalizing;
+    expect(releases).toBe(2);
+  } finally {
+    if (request) wire.postMessage({ kind: "ack", client: request.client, id: request.id });
+    if (!closed) await f.channel.finish("closeConnection", null);
+    await f.server.stop();
+    wire.close();
+    f.channel.close();
+    f.root.dispose();
+    f.service.dispose();
+  }
+});
+
 test("review reconciliation holds finalization until the original last close is acknowledged", async () => {
   let authorityReleases = 0;
   const f = await fixture(new MemoryBackend(), {
