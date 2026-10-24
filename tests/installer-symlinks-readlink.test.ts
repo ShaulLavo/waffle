@@ -218,6 +218,17 @@ async function remoteHandle(client: FilesystemClient, path: string): Promise<num
   return edge.node;
 }
 
+async function rejectedReadlink(client: FilesystemClient, handle: number, errno: number) {
+  const completion = client.submit("readlink", [handle]);
+  try {
+    let failure: unknown;
+    try { await completion.value(); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ errno });
+  } finally {
+    completion.release();
+  }
+}
+
 test("N5 existing explicit pins preserve a raw link through rename, unlink and name reuse", async () => {
   const f = serviceFixture();
   const handle = await remoteHandle(f.client, "link");
@@ -236,7 +247,7 @@ test("N5 existing explicit pins preserve a raw link through rename, unlink and n
   f.client.release(handle);
   await f.client.asyncCall("listFiles", ["/"]);
   expect(f.backend.pins.has(handle)).toBe(false);
-  await expect(f.client.asyncCall("readlink", [handle])).rejects.toMatchObject({ errno: 8 });
+  await rejectedReadlink(f.client, handle, 8);
   expect(() => f.client.retain(handle)).toThrow(new FilesystemError(8));
   expect(() => f.client.release(handle)).toThrow(new FilesystemError(8));
   expect(snapshotNode(f.fs.root)).toEqual(beforeRead);
@@ -251,7 +262,7 @@ test("N5 existing transient results are not leases after sibling unlink", async 
   const handle = await remoteHandle(f.client, "link");
   expect(await f.sibling.asyncCall("remove", ["/link"])).toBe(true);
   const tree = snapshotNode(f.fs.root);
-  await expect(f.client.asyncCall("readlink", [handle])).rejects.toMatchObject({ errno: 8 });
+  await rejectedReadlink(f.client, handle, 8);
   expect(() => f.client.retain(handle)).toThrow(new FilesystemError(8));
   expect(f.backend.pins.has(handle)).toBe(false);
   expect(snapshotNode(f.fs.root)).toEqual(tree);
@@ -262,7 +273,7 @@ test("N5 service readlink preserves wrong-kind and foreign-handle errors", async
   const file = await remoteHandle(f.client, "ordinary.txt");
   const linkHandle = await remoteHandle(f.client, "link");
   const tree = snapshotNode(f.fs.root);
-  await expect(f.client.asyncCall("readlink", [file])).rejects.toMatchObject({ errno: 28 });
-  await expect(f.sibling.asyncCall("readlink", [linkHandle])).rejects.toMatchObject({ errno: 8 });
+  await rejectedReadlink(f.client, file, 28);
+  await rejectedReadlink(f.sibling, linkHandle, 8);
   expect(snapshotNode(f.fs.root)).toEqual(tree);
 });
