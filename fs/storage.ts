@@ -11,10 +11,9 @@ import {
 } from "./file-identity.js";
 import { permissionsFor } from "../core/filesystem.js";
 /** Durable inode metadata. Payload keys are immutable, including across snapshots. */
-export interface PersistedNode {
+interface PersistedMetadata {
   identity?: StoredIdentity;
   ino: number;
-  kind: "file" | "dir";
   mtime: number;
   /** Absent only in saved metadata predating permission adoption. */
   mode?: number;
@@ -22,6 +21,8 @@ export interface PersistedNode {
   children?: [string, number][];
   data?: string;
 }
+export type PersistedNode = PersistedMetadata &
+  ({ kind: "file" | "dir"; target?: never } | { kind: "symlink"; target: string });
 
 export interface CheckpointPublication {
   readonly kind: "settled-publication-v1";
@@ -105,6 +106,18 @@ function validateMode(node: PersistedNode): void {
   if (!validInteger(node.mode) || node.mode > mask || (node.mode & ~mask) !== 0) invalid();
 }
 
+function validateSymlink(node: PersistedNode): void {
+  if (
+    typeof node.target !== "string" ||
+    !node.target ||
+    node.target.includes("\0") ||
+    node.children !== undefined ||
+    node.data !== undefined ||
+    node.size !== new TextEncoder().encode(node.target).length
+  )
+    invalid();
+}
+
 export function validatePersistedNode(value: unknown): asserts value is PersistedNode {
   if (!value || typeof value !== "object") invalid();
   const node = value as PersistedNode;
@@ -114,13 +127,15 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
   if (node.identity !== undefined) parseStoredIdentity(node.identity);
   if (node.kind === "file") {
     if (
+      node.target !== undefined ||
       node.children !== undefined ||
       (node.data !== undefined && (typeof node.data !== "string" || !node.data)) ||
       (node.size > 0 && node.data === undefined)
     )
       invalid();
   } else if (node.kind === "dir") {
-    if (node.data !== undefined || !Array.isArray(node.children)) invalid();
+    if (node.target !== undefined || node.data !== undefined || !Array.isArray(node.children))
+      invalid();
     const names = new Set<string>();
     for (const entry of node.children) {
       if (!Array.isArray(entry) || entry.length !== 2) invalid();
@@ -137,6 +152,8 @@ export function validatePersistedNode(value: unknown): asserts value is Persiste
         invalid();
       names.add(name);
     }
+  } else if (node.kind === "symlink") {
+    validateSymlink(node);
   } else invalid();
 }
 

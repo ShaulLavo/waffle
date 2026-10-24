@@ -1,5 +1,6 @@
 import type { MemoryBudget } from "./memory-budget.js";
 import { withPublicationMemory } from "./publication-memory-budget.js";
+import type { InodeMetadata } from "./workspace-types.js";
 import type { CheckpointPublication } from "./storage.js";
 import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
 import {
@@ -64,6 +65,7 @@ export type MutationIntent =
       readonly nodeKind: "file" | "directory";
       readonly exclusive: boolean;
     }
+  | { readonly kind: "symlink"; readonly path: ResolvedPath; readonly target: string }
   | { readonly kind: "link" | "rename"; readonly from: ResolvedPath; readonly to: ResolvedPath }
   | { readonly kind: "removePath"; readonly path: ResolvedPath; readonly directory: boolean };
 export type MutationResult =
@@ -104,13 +106,12 @@ export type PublicationEffect<F extends FileKey = PublicationFile> =
       readonly before: F | null;
       readonly after: F | null;
     }
-  | {
+  | (InodeMetadata & {
       readonly kind: "inode";
       readonly file: F;
-      readonly nodeKind: "file" | "directory";
       readonly mode: number;
       readonly mtime: number;
-    };
+    });
 export interface PublicationReceipt {
   readonly id: MutationId;
   readonly cut: PublicationCut;
@@ -1530,16 +1531,31 @@ function decodeEffect(value: unknown, tail: Uint8Array): PublicationEffect {
   ) {
     if (value.kind === "metadata")
       return { kind: "metadata", file, mode: value.mode, mtime: value.mtime };
-    if ("nodeKind" in value && (value.nodeKind === "file" || value.nodeKind === "directory"))
-      return {
-        kind: "inode",
-        file,
-        mode: value.mode,
-        mtime: value.mtime,
-        nodeKind: value.nodeKind,
-      };
+    return {
+      kind: "inode",
+      file,
+      mode: value.mode,
+      mtime: value.mtime,
+      ...decodeInodeMetadata(value),
+    };
   }
   return decodeContentEffect(value, file, tail);
+}
+function decodeInodeMetadata(value: object): InodeMetadata {
+  if (!("nodeKind" in value)) throw new FilesystemError(29);
+  const target = "target" in value ? value.target : undefined;
+  if (value.nodeKind === "file" || value.nodeKind === "directory") {
+    if (target !== undefined) throw new FilesystemError(29);
+    return { nodeKind: value.nodeKind };
+  }
+  if (
+    value.nodeKind !== "symlink" ||
+    typeof target !== "string" ||
+    !target ||
+    target.includes("\0")
+  )
+    throw new FilesystemError(29);
+  return { nodeKind: "symlink", target };
 }
 function decodeContentEffect(
   value: object & { readonly kind: unknown },
@@ -1638,6 +1654,8 @@ export function mutationIntent(
     case "create":
       if (b !== "file" && b !== "directory") throw new FilesystemError(28);
       return { kind: "create", path: path(a), nodeKind: b, exclusive: c !== false };
+    case "symlink":
+      return { kind: "symlink", path: path(a), target: text(b) };
     case "link":
     case "rename":
       return { kind: operation, from: path(a), to: path(b) };

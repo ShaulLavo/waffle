@@ -1,8 +1,8 @@
+import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
+import type { NodeMetadata } from "./workspace-types.js";
 import { permissionsFor, FilesystemError } from "../core/filesystem.js";
 import {
-  normalize,
-  splitPath,
   dirname,
   basename,
   type FileSystem,
@@ -37,7 +37,154 @@ export interface DirNode {
   ino: number;
 }
 
-export type Node = FileNode | DirNode;
+export interface SymlinkNode {
+  identity?: FileIdentity;
+  kind: "symlink";
+  readonly target: string;
+  mode: number;
+  mtime: number;
+  ino: number;
+}
+export type Node = FileNode | DirNode | SymlinkNode;
+
+export function newSymlink(target: string): SymlinkNode {
+  return { kind: "symlink", target, mode: 0o600, mtime: Date.now(), ino: newIno() };
+}
+export function nodeKind(node: Node): FileStat["kind"] {
+  return node.kind === "dir" ? "directory" : node.kind;
+}
+export function nodeMetadata(node: Node): NodeMetadata {
+  if (node.kind === "symlink") return { kind: "symlink", target: node.target };
+  return { kind: node.kind === "dir" ? "directory" : "file" };
+}
+export function nodeSize(node: Node): number {
+  if (node.kind === "symlink") return utf8ByteLength(node.target);
+  return node.kind === "file" ? (node.size ?? node.data.length) : 0;
+}
+interface MemoryPath extends ResolvedPath {
+  readonly canonicalPath: string;
+}
+interface TreePath {
+  canonicalPath: string;
+  parent: DirNode | undefined;
+  node: Node | undefined;
+  name: string;
+  trailingSlash: boolean;
+  terminalDot: boolean;
+}
+interface TreeWalk {
+  followFinal?: boolean;
+  clampRoot: boolean;
+  child?: (parent: DirNode, name: string, origin: "input" | "target") => Node | undefined;
+  search?: (node: DirNode) => void;
+  depth?: number;
+  pathUnits?: number;
+}
+function treePathError(path: string, limit: number | undefined): number {
+  if (!path) return 44;
+  if (path.includes("\0")) return 28;
+  return limit !== undefined && path.length > limit ? 37 : 0;
+}
+function expandTreeLink(
+  child: Node,
+  path: string,
+  start: number,
+  options: TreeWalk,
+  expansions: number,
+  targetEnd: number,
+):
+  | { readonly path: string; readonly absolute: boolean; readonly targetEnd: number }
+  | number
+  | undefined {
+  if (child.kind !== "symlink") return;
+  if (!options.followFinal && !/[^/]/.test(path.slice(start))) return;
+  if (expansions >= 40) return 32;
+  const target = child.target;
+  if (!target) return 44;
+  const absolute = target.startsWith("/");
+  if (absolute && !options.clampRoot) return 63;
+  const suffix = path.slice(start);
+  const expanded = target + (suffix || path.endsWith("/") ? "/" + suffix : "");
+  const error = treePathError(expanded, options.pathUnits);
+  return (
+    error || {
+      path: expanded,
+      absolute,
+      targetEnd: target.length + (targetEnd > start ? 1 + targetEnd - start : 0),
+    }
+  );
+}
+/** Expand links against actual parent edges, never a lexically normalized pathname. */
+export function walkTree(root: DirNode, path: string, options: TreeWalk): TreePath | number {
+  const error = treePathError(path, options.pathUnits);
+  if (error) return error;
+  const dirs: DirNode[] = [];
+  const names: string[] = [];
+  let node: Node = root;
+  let parent: DirNode | undefined;
+  let name = "",
+    terminalDot = false,
+    expansions = 0,
+    targetEnd = 0,
+    start = 0;
+  while (start < path.length) {
+    let end = path.indexOf("/", start);
+    if (end < 0) end = path.length;
+    const origin = start < targetEnd ? "target" : "input";
+    const part = path.slice(start, end);
+    start = end + 1;
+    if (!part) continue;
+    if (node.kind !== "dir") return 54;
+    if (options.search) options.search(node);
+    else if (!(node.mode & 0o100)) return 2;
+    terminalDot = part === "." || part === "..";
+    if (part === ".") continue;
+    if (part === ".." && !dirs.length && !options.clampRoot) return 63;
+    if (part === "..") {
+      node = dirs.pop() ?? root;
+      names.pop();
+      parent = undefined;
+      name = "";
+      continue;
+    }
+    parent = node;
+    name = part;
+    const child: Node | undefined = options.child
+      ? options.child(parent, part, origin)
+      : parent.children.get(part);
+    if (!child && /[^/]/.test(path.slice(start))) return 44;
+    if (!child)
+      return {
+        canonicalPath: "/" + names.concat(part).join("/"),
+        parent,
+        name,
+        node: undefined,
+        trailingSlash: path.endsWith("/"),
+        terminalDot: false,
+      };
+    const link = expandTreeLink(child, path, start, options, expansions, targetEnd);
+    if (typeof link === "number") return link;
+    if (link?.absolute) {
+      dirs.length = 0;
+      names.length = 0;
+    }
+    if (link) {
+      expansions++;
+      node = link.absolute ? root : node;
+      path = link.path;
+      targetEnd = link.targetEnd;
+      start = 0;
+      continue;
+    }
+    if (options.depth !== undefined && dirs.length >= options.depth) return 6;
+    dirs.push(parent);
+    names.push(part);
+    node = child;
+  }
+  const trailingSlash = path.endsWith("/");
+  if (trailingSlash && node.kind !== "dir") return 54;
+  return { parent, name, node, trailingSlash, terminalDot, canonicalPath: "/" + names.join("/") };
+}
 
 export interface NamespaceEdge {
   readonly parent: DirNode;
@@ -132,7 +279,6 @@ export class MemFS implements FileSystem {
   private references = new Map<FileHandle, number>();
   private directoryParents = new WeakMap<DirNode, DirNode>();
   private removedDirectories = new WeakSet<DirNode>();
-  private pathDirs: DirNode[] = [];
 
   private handle(node: Node): FileHandle {
     // Capability identity follows the object, independently of names and links.
@@ -208,82 +354,91 @@ export class MemFS implements FileSystem {
     this.directoryParents.set(node, this.directoryParent(node) ?? node);
     return this.handle(node);
   }
-  resolve(directory: FileHandle, path: string): ResolvedPath | number {
+  resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
     if (path.startsWith("/")) return 63;
-    return this.walk(directory, path, false);
-  }
-  /** Page paths are absolute: parent-of-root stays at root, unlike WASI capabilities. */
-  resolveAbsolute(path: string): ResolvedPath | number {
-    if (!path.startsWith("/")) return 28;
-    return this.walk(this.handle(this.root), path.replace(/^\/+/, "") || ".", true);
-  }
-  private walk(directory: FileHandle, path: string, clampRoot: boolean): ResolvedPath | number {
-    if (path.length === 0) return 44;
-    const dirs = this.pathDirs;
-    dirs.length = 0;
-    let node: Node = this.directory(directory);
-    let parent: DirNode | undefined;
-    let name = "";
-    let terminalDot = false;
-    // Keep the actual-tree fast path: no lexical cancellation of missing/.. or file/...
-    for (let start = 0; start < path.length;) {
-      let end = path.indexOf("/", start);
-      if (end < 0) end = path.length;
-      const part = path.slice(start, end);
-      start = end + 1;
-      if (part === "") continue;
-      terminalDot = part === "." || part === "..";
-      if (node.kind !== "dir") return 54;
-      if (!(node.mode & 0o100)) return 2;
-      if (part === ".") continue;
-      if (part === "..") {
-        if (dirs.length === 0) {
-          if (!clampRoot) return 63;
-        } else node = dirs.pop()!;
-        parent = undefined;
-        name = "";
-        continue;
-      }
-      parent = node;
-      name = part;
-      const child = parent.children.get(part);
-      if (!child) {
-        for (let i = start; i < path.length; i++) if (path.charCodeAt(i) !== 47) return 44;
-        return {
-          parent: this.handle(parent),
-          name,
-          node: undefined,
-          trailingSlash: path.endsWith("/"),
-          terminalDot: false,
-        };
-      }
-      dirs.push(parent);
-      if (child.kind === "dir") this.directoryParents.set(child, parent);
-      node = child;
-    }
-    const trailingSlash = path.endsWith("/");
-    if (trailingSlash && node.kind !== "dir") return 54;
+    const resolved = this.walk(directory, path, false, followFinal);
+    if (typeof resolved === "number") return resolved;
     return {
-      parent: parent ? this.handle(parent) : undefined,
-      name,
-      node: this.handle(node),
-      trailingSlash,
-      terminalDot,
+      name: resolved.name,
+      trailingSlash: resolved.trailingSlash,
+      terminalDot: resolved.terminalDot,
+      parent: resolved.parent,
+      node: resolved.node,
     };
+  }
+  /** Page paths clamp parent-of-root, unlike WASI directory capabilities. */
+  resolveAbsolute(path: string, followFinal = false): MemoryPath | number {
+    if (!path.startsWith("/")) return 28;
+    return this.walk(this.handle(this.root), path.replace(/^\/+/, "") || ".", true, followFinal);
+  }
+  private walk(
+    directory: FileHandle,
+    path: string,
+    clampRoot: boolean,
+    followFinal: boolean,
+  ): MemoryPath | number {
+    const resolved = walkTree(this.directory(directory), path, {
+      clampRoot,
+      followFinal,
+      child: (parent, name) => {
+        const child = parent.children.get(name);
+        if (child?.kind === "dir") this.directoryParents.set(child, parent);
+        return child;
+      },
+    });
+    if (typeof resolved === "number") return resolved;
+    return {
+      canonicalPath: resolved.canonicalPath,
+      name: resolved.name,
+      trailingSlash: resolved.trailingSlash,
+      terminalDot: resolved.terminalDot,
+      parent: resolved.parent ? this.handle(resolved.parent) : undefined,
+      node: resolved.node ? this.handle(resolved.node) : undefined,
+    };
+  }
+  symlink(path: ResolvedPath, target: string): number {
+    const prepared = this.planSymlink(path, target, 4);
+    this.applyNamespace(prepared.plan);
+    return prepared.result;
+  }
+  readlink(handle: FileHandle): string {
+    const node = this.nodeForHandle(handle);
+    if (node.kind !== "symlink") throw new FilesystemError(28);
+    return node.target;
+  }
+  planSymlink(
+    path: ResolvedPath,
+    target: string,
+    bound: number,
+  ): { plan: NamespacePlan; result: number } {
+    if (!target || target.includes("\0"))
+      return { plan: namespacePlan(), result: target ? 28 : 44 };
+    const parent = this.parentOf(path);
+    if (typeof parent === "number") return { plan: namespacePlan(), result: parent };
+    if (parent.children.has(path.name)) return { plan: namespacePlan(), result: 20 };
+    if (path.trailingSlash) return { plan: namespacePlan(), result: 54 };
+    const node = newSymlink(target);
+    const plan = namespacePlan(
+      [{ parent, name: path.name, before: undefined, after: node }],
+      [node],
+      [],
+      [{ node, delta: 1 }],
+    );
+    return { plan: boundedNamespace(plan, bound), result: 0 };
   }
   stat(handle: FileHandle): FileStat {
     const node = this.nodeForHandle(handle);
     return {
-      kind: node.kind === "dir" ? "directory" : "file",
+      kind: nodeKind(node),
       ino: node.ino,
-      size: node.kind === "file" ? (node.size ?? node.data.length) : 0,
+      size: nodeSize(node),
       mtime: node.mtime,
       mode: node.mode,
     };
   }
   permissions(handle: FileHandle) {
     const node = this.nodeForHandle(handle);
-    return permissionsFor(node.kind === "dir" ? "directory" : "file", node.mode);
+    return permissionsFor(nodeKind(node), node.mode);
   }
   /** Host policy mutation. All inodes belong to the same virtual principal. */
   setMode(handle: FileHandle, mode: number): number {
@@ -352,7 +507,7 @@ export class MemFS implements FileSystem {
     const entry = (name: string, node: Node): DirectoryEntry => ({
       name,
       ino: node.ino,
-      kind: node.kind === "dir" ? "directory" : "file",
+      kind: nodeKind(node),
     });
     const list = [entry(".", node), entry("..", parent)];
     // One list per call, not one list per entry or cookie. No file buffers cross the boundary.
@@ -575,16 +730,30 @@ export class MemFS implements FileSystem {
     path: string,
     bound: number,
   ): { readonly plan: NamespacePlan; readonly node: DirNode } {
-    let node = this.root;
     const edges: NamespaceEdge[] = [],
       created: Node[] = [];
-    for (const part of splitPath(path)) {
-      this.require(node, 1);
-      let child = node.children.get(part);
-      if (!child) child = this.planDirectoryChild(node, part, edges, created, bound);
-      if (child.kind !== "dir") throw new FilesystemError(54);
-      node = child;
-    }
+    const pending = new Map<DirNode, Map<string, Node>>();
+    const child = (parent: DirNode, name: string, origin: "input" | "target"): Node => {
+      const found = pending.get(parent)?.get(name) ?? parent.children.get(name);
+      if (found) return found;
+      if (origin === "target") throw new FilesystemError(44);
+      const node = this.planDirectoryChild(parent, name, edges, created, bound);
+      let entries = pending.get(parent);
+      if (!entries) {
+        entries = new Map();
+        pending.set(parent, entries);
+      }
+      entries.set(name, node);
+      return node;
+    };
+    const resolved = walkTree(this.root, path || ".", {
+      clampRoot: true,
+      followFinal: true,
+      child,
+    });
+    if (typeof resolved === "number") throw new FilesystemError(resolved);
+    const node = resolved.node;
+    if (node?.kind !== "dir") throw new FilesystemError(54);
     const plan = boundedNamespace(
       namespacePlan(
         edges,
@@ -601,13 +770,27 @@ export class MemFS implements FileSystem {
     exclusive: boolean,
     bound: number,
   ): { readonly plan: NamespacePlan; readonly node: FileNode } {
-    const prepared = this.planMkdirp(dirname(path), bound);
-    const parent = prepared.node,
-      name = basename(path),
-      existing = parent.children.get(name);
+    path = path.startsWith("/") ? path : "/" + path;
+    const resolved = this.resolveAbsolute(path, !exclusive);
+    if (typeof resolved === "number" && resolved !== 44) throw new FilesystemError(resolved);
+    if (
+      typeof resolved !== "number" &&
+      resolved.node !== undefined &&
+      this.nodeForHandle(resolved.node).kind === "dir"
+    )
+      throw new FilesystemError(31);
+    if (typeof resolved !== "number" && resolved.trailingSlash) throw new FilesystemError(54);
+    const prepared =
+      typeof resolved !== "number" && resolved.parent !== undefined
+        ? { node: this.directory(resolved.parent), plan: namespacePlan() }
+        : this.planMkdirp(dirname(path), bound);
+    const parent = prepared.node;
+    const name = typeof resolved === "number" ? basename(path) : resolved.name;
+    const existing = parent.children.get(name);
     this.require(parent, 1);
     if (existing && exclusive) throw new FilesystemError(20);
-    if (existing?.kind === "dir") throw new FilesystemError(31);
+    if (existing?.kind === "symlink" && resolved === 44) throw new FilesystemError(44);
+    if (existing && existing.kind !== "file") throw new FilesystemError(31);
     if (existing) {
       this.require(existing, 2);
       return { plan: prepared.plan, node: existing };
@@ -638,12 +821,9 @@ export class MemFS implements FileSystem {
     path: string,
     bound: number,
   ): { readonly plan: NamespacePlan; readonly result: boolean } {
-    const parent = this.lookup(dirname(path));
-    if (parent?.kind !== "dir") return { plan: namespacePlan(), result: false };
-    this.require(parent, 3);
-    const name = basename(path),
-      node = parent.children.get(name);
-    if (!node) return { plan: namespacePlan(), result: false };
+    const edge = this.removalEdge(path);
+    if (!edge) return { plan: namespacePlan(), result: false };
+    const { parent, name, node } = edge;
     const plan = namespacePlan(
       [{ parent, name, before: node, after: undefined }],
       [],
@@ -654,6 +834,16 @@ export class MemFS implements FileSystem {
     const pending: Node[] = [node];
     while (pending.length) this.collectRemovalEdges(pending.pop()!, pending, edges, bound);
     return { plan: boundedNamespace({ ...plan, edges }, bound), result: true };
+  }
+  private removalEdge(path: string): { parent: DirNode; name: string; node: Node } | undefined {
+    const resolved = this.resolveAbsolute(path.startsWith("/") ? path : "/" + path);
+    if (resolved === 44) return;
+    if (typeof resolved === "number") throw new FilesystemError(resolved);
+    if (resolved.terminalDot || resolved.parent === undefined) return;
+    const parent = this.directory(resolved.parent);
+    this.require(parent, 3);
+    if (resolved.node === undefined) return;
+    return { parent, name: resolved.name, node: this.nodeForHandle(resolved.node) };
   }
   private collectRemovalEdges(
     node: Node,
@@ -706,70 +896,35 @@ export class MemFS implements FileSystem {
     return walk(this.root);
   }
 
-  lookup(path: string): Node | undefined {
-    let node: Node = this.root;
-    for (const part of splitPath(path)) {
-      if (node.kind !== "dir") return undefined;
-      this.require(node, 1);
-      const child = node.children.get(part);
-      if (!child) return undefined;
-      node = child;
+  lookup(path: string): Exclude<Node, SymlinkNode> | undefined;
+  lookup(path: string, followFinal: boolean): Node | undefined;
+  lookup(path: string, followFinal = true): Node | undefined {
+    const resolved = this.resolveAbsolute(path.startsWith("/") ? path : "/" + path, followFinal);
+    if (typeof resolved === "number") {
+      if (resolved === 44) return;
+      throw new FilesystemError(resolved);
     }
-    return node;
+    return resolved.node === undefined ? undefined : this.nodeForHandle(resolved.node);
   }
-
   mkdirp(path: string): DirNode {
-    let node: DirNode = this.root;
-    for (const part of splitPath(path)) {
-      this.require(node, 1);
-      let child = node.children.get(part);
-      if (!child) {
-        this.require(node, 2);
-        child = newDir();
-        node.children.set(part, child);
-        this.onLinkChange?.(child, 1);
-        node.mtime = Date.now();
-        this.changed(child);
-        this.changed(node);
-      }
-      if (child.kind !== "dir") throw new Error(`${part}: not a directory`);
-      node = child;
-    }
-    return node;
+    const prepared = this.planMkdirp(path, Number.MAX_SAFE_INTEGER);
+    this.applyNamespace(prepared.plan);
+    return prepared.node;
   }
-
   writeFile(path: string, content: string | Uint8Array, append = false): void {
     const data = typeof content === "string" ? encode(content) : content;
-    const parent = this.mkdirp(dirname(path));
-    this.require(parent, 1);
-    const name = basename(path);
-    const existing = parent.children.get(name);
-    if (existing) this.require(existing, 2);
-    else this.require(parent, 3);
-    if (existing?.kind === "dir") throw new Error(`${name}: is a directory`);
-    if (existing && append) {
-      const merged = new Uint8Array(existing.data.length + data.length);
-      merged.set(existing.data);
-      merged.set(data, existing.data.length);
-      existing.data = merged;
-      existing.mtime = Date.now();
-      this.changed(existing);
-      return;
-    }
-    if (existing) {
-      existing.data = data;
-      existing.mtime = Date.now();
-      this.changed(existing);
-      return;
-    }
-    const file = newFile(data);
-    parent.children.set(name, file);
-    this.onLinkChange?.(file, 1);
-    parent.mtime = Date.now();
-    this.changed(file);
-    this.changed(parent);
+    const prepared = this.planHostFile(path, false, Number.MAX_SAFE_INTEGER);
+    this.applyNamespace(prepared.plan);
+    const node = prepared.node;
+    if (append) {
+      const merged = new Uint8Array(node.data.length + data.length);
+      merged.set(node.data);
+      merged.set(data, node.data.length);
+      node.data = merged;
+    } else node.data = data;
+    node.mtime = Date.now();
+    this.changed(node);
   }
-
   readFile(path: string): Uint8Array | undefined {
     const node = this.lookup(path);
     if (node?.kind !== "file") return undefined;
@@ -778,14 +933,13 @@ export class MemFS implements FileSystem {
   }
 
   remove(path: string): boolean {
-    const parent = this.lookup(dirname(path));
-    if (parent?.kind !== "dir") return false;
-    this.require(parent, 3);
-    const node = parent.children.get(basename(path));
-    const removed = parent.children.delete(basename(path));
+    const edge = this.removalEdge(path);
+    if (!edge) return false;
+    const { parent, name, node } = edge;
+    const removed = parent.children.delete(name);
     if (removed) {
-      this.onLinkChange?.(node!, -1);
-      this.forget(node!);
+      this.onLinkChange?.(node, -1);
+      this.forget(node);
       parent.mtime = Date.now();
       this.changed(parent);
     }
@@ -800,12 +954,17 @@ export class MemFS implements FileSystem {
         out.push(path);
         return;
       }
+      if (node.kind !== "dir") return;
       this.require(node, 5);
       for (const [name, child] of node.children)
         walk(child, path === "/" ? `/${name}` : `${path}/${name}`);
     };
-    const start = this.lookup(dir);
-    if (start) walk(start, normalize(dir));
+    const start = this.resolveAbsolute(dir.startsWith("/") ? dir : "/" + dir, true);
+    if (typeof start === "number") {
+      if (start === 44) return out;
+      throw new FilesystemError(start);
+    }
+    if (start.node !== undefined) walk(this.nodeForHandle(start.node), start.canonicalPath);
     return out.sort();
   }
 }

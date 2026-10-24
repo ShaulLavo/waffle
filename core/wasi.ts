@@ -16,6 +16,7 @@ import {
   RIGHT_PATH_OPEN,
   RIGHT_FD_READDIR,
   RIGHT_PATH_READLINK,
+  RIGHT_PATH_SYMLINK,
   RIGHT_PATH_RENAME_SOURCE,
   RIGHT_PATH_RENAME_TARGET,
   RIGHT_PATH_FILESTAT_GET,
@@ -52,6 +53,7 @@ const EINTR = 27;
 const EINVAL = 28;
 const EIO = 29;
 const EISDIR = 31;
+const ELOOP = 32;
 const ENOENT = 44;
 const ENOSYS = 52;
 const ENOTDIR = 54;
@@ -63,6 +65,8 @@ const ENOTCAPABLE = 76;
 const FT_CHAR = 2;
 const FT_DIR = 3;
 const FT_FILE = 4;
+const filetype = (kind: FileStat["kind"]) =>
+  kind === "directory" ? FT_DIR : kind === "symlink" ? 7 : FT_FILE;
 
 // oflags / fdflags
 const O_CREAT = 1;
@@ -394,12 +398,18 @@ export class Wasi {
     return out;
   }
 
-  private resolve(dirfd: number, ptr: number, len: number, right: bigint): ResolvedPath | number {
+  private resolve(
+    dirfd: number,
+    ptr: number,
+    len: number,
+    right: bigint,
+    followFinal = false,
+  ): ResolvedPath | number {
     const dir = this.descriptors.get(dirfd);
     if (!dir) return EBADF;
     if (dir.resource.kind !== "directory") return ENOTDIR;
     if ((dir.rightsBase & right) !== right) return ENOTCAPABLE;
-    return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len));
+    return this.opts.fs.resolve(dir.resource.handle, this.str(ptr, len), followFinal);
   }
 
   private pathPermissions(
@@ -446,9 +456,9 @@ export class Wasi {
     const times = node ? msToNs(node.mtime) : 0n;
     view.setBigUint64(ptr, 0n, true); // dev
     view.setBigUint64(ptr + 8, BigInt(node?.ino ?? 0), true);
-    view.setUint8(ptr + 16, node ? (node.kind === "directory" ? FT_DIR : FT_FILE) : streamType);
+    view.setUint8(ptr + 16, node ? filetype(node.kind) : streamType);
     view.setBigUint64(ptr + 24, 1n, true); // nlink
-    view.setBigUint64(ptr + 32, BigInt(node?.kind === "file" ? node.size : 0), true);
+    view.setBigUint64(ptr + 32, BigInt(node?.size ?? 0), true);
     view.setBigUint64(ptr + 40, times, true);
     view.setBigUint64(ptr + 48, times, true);
     view.setBigUint64(ptr + 56, times, true);
@@ -702,7 +712,7 @@ export class Wasi {
             rv.setBigUint64(0, BigInt(i + 1), true);
             rv.setBigUint64(8, BigInt(ino), true);
             rv.setUint32(16, nameBytes.length, true);
-            rv.setUint8(20, kind === "directory" ? FT_DIR : FT_FILE);
+            rv.setUint8(20, filetype(kind));
             record.set(nameBytes, 24);
             const room = bufLen - used;
             mem.set(record.subarray(0, Math.min(room, record.length)), buf + used);
@@ -766,8 +776,8 @@ export class Wasi {
         const result = this.opts.fs.create(path, "directory");
         return typeof result === "number" ? SUCCESS : result.error;
       },
-      path_filestat_get: (fd: number, _flags: number, ptr: number, len: number, buf: number) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET);
+      path_filestat_get: (fd: number, flags: number, ptr: number, len: number, buf: number) => {
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_GET, (flags & 1) !== 0);
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
@@ -776,14 +786,14 @@ export class Wasi {
       },
       path_filestat_set_times: (
         fd: number,
-        _flags: number,
+        flags: number,
         ptr: number,
         len: number,
         _atim: bigint,
         mtim: bigint,
         fst: number,
       ) => {
-        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_SET_TIMES);
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_FILESTAT_SET_TIMES, (flags & 1) !== 0);
         if (typeof path === "number") return path;
         const node = path.node;
         if (node === undefined) return ENOENT;
@@ -793,14 +803,14 @@ export class Wasi {
       },
       path_link: (
         oldFd: number,
-        _flags: number,
+        flags: number,
         oldPtr: number,
         oldLen: number,
         newFd: number,
         newPtr: number,
         newLen: number,
       ) => {
-        const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_LINK_SOURCE);
+        const from = this.resolve(oldFd, oldPtr, oldLen, RIGHT_PATH_LINK_SOURCE, (flags & 1) !== 0);
         if (typeof from === "number") return from;
         const to = this.resolve(newFd, newPtr, newLen, RIGHT_PATH_LINK_TARGET);
         if (typeof to === "number") return to;
@@ -808,7 +818,7 @@ export class Wasi {
       },
       path_open: (
         fd: number,
-        _dirflags: number,
+        dirflags: number,
         ptr: number,
         len: number,
         oflags: number,
@@ -832,16 +842,31 @@ export class Wasi {
         if (oflags & O_TRUNC && !(dir.rightsBase & RIGHT_PATH_FILESTAT_SET_SIZE))
           return ENOTCAPABLE;
         const name = this.str(ptr, len);
-        const alias = resolveDescriptorPath(this.descriptors, this.opts.fs, dir, name);
+        const alias = resolveDescriptorPath(
+          this.descriptors,
+          this.opts.fs,
+          dir,
+          name,
+          oflags & O_CREAT && oflags & O_EXCL
+            ? "exclusive-create"
+            : dirflags & 1
+              ? "follow"
+              : "nofollow",
+        );
         if (typeof alias === "number") return alias;
         if (alias !== undefined) {
           if (!this.descriptors.get(alias.source)) return ENOENT;
           return this.reopen(alias.source, oflags, fdflags, rightsBase, rightsInheriting, fdOut);
         }
-        const path = this.opts.fs.resolve(dir.resource.handle, name);
+        const path = this.opts.fs.resolve(
+          dir.resource.handle,
+          name,
+          (dirflags & 1) !== 0 && !(oflags & O_CREAT && oflags & O_EXCL),
+        );
         if (typeof path === "number") return path;
         let node = path.node;
         if (node !== undefined && oflags & O_CREAT && oflags & O_EXCL) return EEXIST;
+        if (node !== undefined && this.opts.fs.stat(node).kind === "symlink") return ELOOP;
         if (node === undefined) {
           if (!(oflags & O_CREAT) || path.trailingSlash) return ENOENT;
           if (oflags & O_DIRECTORY) return EINVAL;
@@ -854,7 +879,7 @@ export class Wasi {
             this.descriptors,
             this.opts.fs,
             node,
-            this.opts.fs.stat(node).kind,
+            this.opts.fs.stat(node).kind === "directory" ? "directory" : "file",
             oflags,
             fdflags,
             rightsBase,
@@ -863,10 +888,45 @@ export class Wasi {
           fdOut,
         );
       },
-      path_readlink: (fd: number, ptr: number, len: number) => {
+      path_readlink: (
+        fd: number,
+        ptr: number,
+        len: number,
+        buf: number,
+        capacity: number,
+        used: number,
+      ) => {
+        ptr >>>= 0;
+        len >>>= 0;
+        buf >>>= 0;
+        capacity >>>= 0;
+        used >>>= 0;
+        const size = this.bytes().length;
+        if (ptr + len > size || buf + capacity > size || used + 4 > size) return 21;
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_READLINK);
         if (typeof path === "number") return path;
-        return path.node !== undefined ? EINVAL : ENOENT; // this filesystem has no symlinks
+        if (path.node === undefined) return ENOENT;
+        let target: string;
+        try {
+          target = this.opts.fs.readlink(path.node);
+        } catch (error) {
+          if (!(error instanceof FilesystemError)) throw error;
+          return error.errno;
+        }
+        const output = this.memory.range(buf, capacity);
+        const result = this.memory.range(used, 4);
+        const { read, written } = capacity
+          ? encoder.encodeInto(target, output)
+          : { read: 0, written: 0 };
+        let count = written;
+        if (read < target.length && written < capacity) {
+          // encodeInto stops before a partial UTF-8 character; readlink truncates by byte.
+          const tail = encoder.encode(target.slice(read, read + 2)).subarray(0, capacity - written);
+          output.set(tail, written);
+          count += tail.length;
+        }
+        new DataView(result.buffer, result.byteOffset, 4).setUint32(0, count, true);
+        return SUCCESS;
       },
       path_remove_directory: (fd: number, ptr: number, len: number) => {
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_REMOVE_DIRECTORY);
@@ -887,7 +947,17 @@ export class Wasi {
         if (typeof to === "number") return to;
         return this.opts.fs.rename(from, to);
       },
-      path_symlink: () => ENOTSUP,
+      path_symlink: (
+        targetPtr: number,
+        targetLen: number,
+        fd: number,
+        ptr: number,
+        len: number,
+      ) => {
+        const path = this.resolve(fd, ptr, len, RIGHT_PATH_SYMLINK);
+        if (typeof path === "number") return path;
+        return this.opts.fs.symlink(path, this.str(targetPtr, targetLen));
+      },
       path_unlink_file: (fd: number, ptr: number, len: number) => {
         const path = this.resolve(fd, ptr, len, RIGHT_PATH_UNLINK_FILE);
         if (typeof path === "number") return path;

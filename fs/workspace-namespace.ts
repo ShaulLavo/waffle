@@ -1,5 +1,5 @@
 import type { MemoryBackend } from "./backend.js";
-import type { DirNode, Node } from "./memory.js";
+import { nodeSize, type DirNode, type Node } from "./memory.js";
 import { NamespaceCursor } from "./namespace-cursor.js";
 import { namespaceCut, type NamespacePage, type NamespaceRecord } from "./workspace-protocol.js";
 import { WORKSPACE_LIMITS, type NamespaceCut, type SnapshotOptions } from "./workspace-types.js";
@@ -87,7 +87,7 @@ export class NamespaceAuthority {
       };
     return {
       ...this.backend.ensureIdentity(node),
-      size: node.kind === "file" ? (node.size ?? node.data.length) : 0,
+      size: nodeSize(node),
       mode: node.mode,
       mtime: node.mtime,
     };

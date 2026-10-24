@@ -549,6 +549,10 @@ export class NamespaceProjectionTable {
       nameBytes = 0;
     for (const effect of effects) {
       budget.take(256);
+      if (effect.kind === "inode" && effect.nodeKind === "symlink") {
+        budget.take(2 * effect.target.length);
+        budget.take(nameSize(effect.target));
+      }
       if (effect.kind === "inode") this.pendingNode(nodes, effect.file.id).create = true;
       if (effect.kind !== "entry") continue;
       this.pendingNode(nodes, effect.parent.id).create = true;
@@ -669,6 +673,15 @@ export class NamespaceProjectionTable {
       case "metadata":
         return { ...file, kind: "metadata", mode: effect.mode, mtime: effect.mtime };
       case "inode":
+        if (effect.nodeKind === "symlink")
+          return {
+            ...file,
+            kind: "inode",
+            nodeKind: "symlink",
+            target: effect.target,
+            mode: effect.mode,
+            mtime: effect.mtime,
+          };
         return {
           ...file,
           kind: "inode",

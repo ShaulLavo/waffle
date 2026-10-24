@@ -384,6 +384,7 @@ test("resource counts include transient capabilities, bound them, and preserve e
   await client.asyncCall("retain", [root]);
   await client.asyncCall("writeFile", ["/opened"], encode("open identity"));
   const opened = await client.asyncCall("resolve", [root, "opened"]);
+  await client.asyncCall("listFiles", ["/"]);
   expect(service.resources().retained).toBe(backend.pinCount);
   expect(service.resources().transient).toBe(1);
   await client.asyncCall("retain", [opened.node]);
@@ -513,7 +514,7 @@ test("transient eviction invalidates hot resolve/read/stat caches before a cache
   result = nextMessage(worker);
   worker.postMessage({ scenario: "snapshot" });
   expect(await result).toEqual(original);
-  expect(backend.calls.length).toBe(warmed);
+  expect(backend.calls.slice(warmed)).toEqual([]);
 });
 
 for (const length of [8, PAGE + 7])
@@ -597,6 +598,7 @@ test("resolve protects both returned capabilities from eviction when an old hard
     await client.asyncCall("writeFile", [`/filler-${i}`], new Uint8Array([i]));
     await client.asyncCall("resolve", [root, `filler-${i}`]);
   }
+  await client.asyncCall("listFiles", ["/"]);
   expect(service.resources().transient).toBe(256);
   const linked = await client.asyncCall("resolve", [root, "new-parent/link"]);
   expect(linked.node).toBe(original.node);

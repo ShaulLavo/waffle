@@ -1464,7 +1464,9 @@ test("runtime spawn and PATH metadata agree on live canonical executable files",
     await supervisor.start(child);
     return supervisor.waitForExit(root, child);
   }
-  expect((await runtime.filesystem.lookup("/bin"))?.children.get("test-guest")?.kind).toBe("file");
+  const bin = await runtime.filesystem.lookup("/bin");
+  if (bin?.kind !== "dir") throw new Error("expected /bin directory");
+  expect(bin.children.get("test-guest")?.kind).toBe("file");
   expect(await spawn("./test-guest", "/bin")).toEqual({ kind: "exited", code: 17, status: 17 });
   expect(await spawn("/bin/../bin/./test-guest")).toEqual({ kind: "exited", code: 17, status: 17 });
   await runtime.filesystem.remove("/bin/test-guest");

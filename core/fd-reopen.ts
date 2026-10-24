@@ -5,7 +5,7 @@ import {
   RIGHT_PATH_FILESTAT_SET_SIZE as PATH_RESIZE,
 } from "./rights.js";
 import type { Descriptor, DescriptorTable } from "./descriptors.js";
-import type { FileSystem, FileStat } from "./filesystem.js";
+import type { FileSystem } from "./filesystem.js";
 import { normalize } from "./path.js";
 
 /** Open the inode again, not its old pathname. Negative results are WASI errno. */
@@ -44,7 +44,7 @@ export function openInode(
   table: DescriptorTable,
   fs: FileSystem,
   handle: number,
-  kind: FileStat["kind"],
+  kind: "file" | "directory",
   oflags: number,
   fdflags: number,
   base: bigint,
@@ -79,12 +79,10 @@ function descriptorPath(path: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-interface PathEntry {
-  prefix: string;
-  kind: "file" | "directory";
-  handle?: number;
-  source?: number;
-}
+type PathEntry = { prefix: string } & (
+  | { kind: "symlink"; handle: number; source?: never }
+  | { kind: "file" | "directory"; handle?: number; source?: number }
+);
 const virtualDirectories = ["/dev", "/dev/fd", "/proc", "/proc/self", "/proc/self/fd"];
 
 function lookupEntry(
@@ -106,7 +104,7 @@ function lookupEntry(
         resource.kind === "directory" || resource.kind === "file" ? resource.handle : undefined,
     };
   }
-  const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name);
+  const path = parent.handle === undefined ? undefined : fs.resolve(parent.handle, name, false);
   if (typeof path === "number") return path;
   if (path?.node !== undefined) return { prefix, handle: path.node, kind: fs.stat(path.node).kind };
   if (virtualDirectories.includes(prefix)) return { prefix, kind: "directory" };
@@ -120,12 +118,15 @@ function searchEntry(fs: FileSystem, entry: PathEntry): number {
   return typeof result === "number" ? result : 0;
 }
 
+type FinalLinkPolicy = "follow" | "nofollow" | "exclusive-create";
+
 /** Undefined delegates ordinary paths unchanged, without per-component service calls. */
 export function resolveDescriptorPath(
   table: DescriptorTable,
   fs: FileSystem,
   directory: Descriptor,
   path: string,
+  finalLink: FinalLinkPolicy,
 ): { source: number } | number | undefined {
   // Normalization only selects candidates. The walker below authorizes the ORIGINAL path:
   // canceled components, root escape and terminal slashes/dots are never discarded there.
@@ -137,7 +138,11 @@ export function resolveDescriptorPath(
     return undefined;
   let current: PathEntry = { prefix: "", kind: "directory", handle };
   const parents: PathEntry[] = [];
-  for (const part of path.split("/")) {
+  let pending = path.split("/"),
+    offset = 0,
+    expansions = 0;
+  while (offset < pending.length) {
+    const part = pending[offset++];
     if (!part) continue;
     const error = searchEntry(fs, current);
     if (error) return error;
@@ -150,6 +155,19 @@ export function resolveDescriptorPath(
     }
     const next = lookupEntry(table, fs, current, part);
     if (typeof next === "number") return next;
+    if (next.kind === "symlink") {
+      const final = !pending.slice(offset).some(Boolean);
+      if (final && finalLink !== "follow" && pending[pending.length - 1] === "") return 54;
+      if (final && finalLink === "exclusive-create") return 20;
+      if (final && finalLink === "nofollow") return 32;
+      if (++expansions > 40) return 32;
+      const target = fs.readlink(next.handle);
+      if (!target) return 44;
+      if (target.startsWith("/")) return 63;
+      pending = target.split("/").concat(pending.slice(offset));
+      offset = 0;
+      continue;
+    }
     parents.push(current);
     current = next;
   }
