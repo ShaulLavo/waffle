@@ -210,14 +210,63 @@ export async function decodeRecord(value: unknown): Promise<unknown> {
   }
 }
 
+type PublicationWire = Omit<CheckpointPublication, "changes"> & {
+  changes: number[][];
+};
+type PersistedIndexWire = Omit<PersistedIndex, "publication"> & {
+  publication?: PublicationWire;
+};
+
+function encodeSnapshotWire(index: PersistedIndex): PersistedIndexWire {
+  const { publication, ...snapshot } = index;
+  if (!publication) return snapshot;
+  return {
+    ...snapshot,
+    publication: {
+      ...publication,
+      changes: publication.changes.map((change) => Array.from(change)),
+    },
+  };
+}
+
+function decodeChangeBytes(value: unknown, maxLength: number): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length > maxLength ||
+    !value.every((byte) => validInteger(byte) && byte <= 255)
+  )
+    invalid();
+  return Uint8Array.from(value);
+}
+
+function decodeSnapshotWire(value: unknown): unknown {
+  if (!value || typeof value !== "object" || !("publication" in value)) return value;
+  const publication = value.publication;
+  if (publication === undefined) return value;
+  if (!publication || typeof publication !== "object" || !("changes" in publication)) invalid();
+  if (!Array.isArray(publication.changes)) invalid();
+  const checkedPublication = snapshotPublicationCheckpoint({ ...publication, changes: [] });
+  if (publication.changes.length > checkedPublication.limits.logRecords) invalid();
+  return {
+    ...value,
+    publication: {
+      ...publication,
+      changes: publication.changes.map((change) =>
+        decodeChangeBytes(change, checkedPublication.limits.effectBytes),
+      ),
+    },
+  };
+}
+
 export async function encodeSnapshot(index: PersistedIndex): Promise<ChecksummedRecord> {
   validatePersistedIndex(index);
-  return encodeRecord(index);
+  return encodeRecord(encodeSnapshotWire(index));
 }
 
 export async function decodeSnapshot(value: unknown): Promise<PersistedIndex | undefined> {
-  const index = await decodeRecord(value);
+  const record = await decodeRecord(value);
   try {
+    const index = decodeSnapshotWire(record);
     validatePersistedIndex(index);
     return index;
   } catch {
