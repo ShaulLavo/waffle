@@ -9,7 +9,7 @@ export interface ImportLimits {
   readonly maxMetadataBytes: number;
 }
 
-export interface ImportLimitPlan {
+interface ImportLimitPlan {
   readonly [importPlan]: true;
   readonly archiveBytes: number;
   readonly limits: Readonly<ImportLimits>;
