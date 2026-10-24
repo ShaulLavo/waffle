@@ -225,8 +225,9 @@ async function run(): Promise<void> {
       process.exitCode = 1;
     }
     const report = { ...evidence, steps };
-    console.log(JSON.stringify(report));
-    if (process.env.RECOVERY_R42_REPORT) await Bun.write(process.env.RECOVERY_R42_REPORT, JSON.stringify(report, null, 2) + "\n");
+    const json = JSON.stringify(report, (_key, value: unknown) => typeof value === "bigint" ? { kind: "bigint", decimal: String(value) } : value, 2);
+    console.log(json);
+    if (process.env.RECOVERY_R42_REPORT) await Bun.write(process.env.RECOVERY_R42_REPORT, json + "\n");
   }
 }
 if (import.meta.main) await run();
