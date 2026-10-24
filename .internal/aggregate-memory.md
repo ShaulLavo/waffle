@@ -64,10 +64,14 @@ certification.
 
 ## Opt-in fixed publication backing
 
-The internal `createPublicationBuffers(limits, observe, budget)` factory can admit
-its complete fixed backing through an existing realm-local `MemoryBudget`.
-Calls without that third argument keep allocating without ledger admission.
-The production call in `createFilesystemIdentity` does not supply a budget.
+The internal `createPublicationBuffers(limits, observe, options)` factory admits
+its complete fixed backing when `options.backing` is `{ kind: "budget", budget }`,
+using an existing realm-local `MemoryBudget`. `options.checkpoint` restores settled
+publication state with the same admission. Validation precedes admission, and restore
+initialization completes before the group is published.
+Without `options.backing`, allocation has no ledger admission. The root constructor
+uses `{ kind: "construction", construction }` instead, borrowing its existing admitted
+owner allocation without a second admission. These backing owners are mutually exclusive.
 This factory-only hook does not provide production-wide or aggregate enforcement.
 
 Admission reserves one operation lease, ten allocation/reference records, and

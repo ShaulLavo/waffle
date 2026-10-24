@@ -1,3 +1,4 @@
+import { residentMemory } from "./resident-memory";
 import {
   FilesystemClient,
   FilesystemService,
@@ -196,11 +197,16 @@ function beginPersistent(body: unknown): PersistentResidentOwner {
   persistentAbort = new AbortController();
   persistentStop = undefined;
   const request = persistentRequest(body);
-  persistentOwner = createPersistentResidentOwner(request, persistentAbort.signal, (stage) => {
-    nativeEvents.push(stage);
-    if (startupBarrier?.stage === stage) startupBarrier.arrived.resolve();
-    if (abortAtStage === stage) persistentAbort!.abort();
-  });
+  persistentOwner = createPersistentResidentOwner(
+    request,
+    persistentAbort.signal,
+    (stage) => {
+      nativeEvents.push(stage);
+      if (startupBarrier?.stage === stage) startupBarrier.arrived.resolve();
+      if (abortAtStage === stage) persistentAbort!.abort();
+    },
+    residentMemory(),
+  );
   return persistentOwner;
 }
 async function stopPersistent(): Promise<unknown> {
