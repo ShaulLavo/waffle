@@ -1,7 +1,7 @@
 # IndexedDB immutable chunks
 
-Status: approved implementation contract. This adapter work does not change FAST,
-SAFE, multi-tab support, or the public StorageBackend API.
+This adapter does not change FAST, SAFE, multi-tab support, or the public
+StorageBackend API.
 
 ## Physical records and range reads
 
@@ -64,21 +64,6 @@ boundaries retains both recovery bases, required journal references and current
 pins. Once none refers to a key, the same atomic transaction removes its manifest
 and the bounded chunk-key range for that revision. This does not add a reader lease
 API. Callers must supply existing runtime pins while a revision is in use.
-
-## Logical streaming export and import design
-
-Export and import are specified here, not implemented. A future exporter pins one
-committed generation, streams logical inode metadata and directory entries, then
-bounded byte segments per immutable revision with lengths and checksums. A final
-manifest includes filesystem identity, logical schema, generation and an archive
-integrity digest. Physical IndexedDB keys and chunk packing are not the archive API.
-A stalled or cancelled exporter releases pins and its bounded queue.
-
-A future importer validates the logical schema, inode graph, names, lengths and
-segment checksums while writing into an isolated staging namespace. It enforces
-byte and metadata budgets, reports quota errors, and publishes one complete root
-only after final integrity validation. Cancellation and interruption discard the
-staging namespace without changing the old root. Adapter switching is explicit.
 
 ## Damaged recovery candidates
 

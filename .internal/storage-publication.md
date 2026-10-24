@@ -299,4 +299,4 @@ A failed joined filesystem disposal must retain the runtime's stable page guard;
 that terminal runtime ownership is separate from this reader implementation.
 Private resident authority owners keep their existing disposal rejection and
 checkpoint behavior. FAST memory ACK, explicit flush, and untracked durability
-are unchanged. See [WorkspaceVfs](workspace-vfs.md) for API and budget details.
+are unchanged. See [WorkspaceVfs](../docs/workspace-vfs.md) for API and budget details.

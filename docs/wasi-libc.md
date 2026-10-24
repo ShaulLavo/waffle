@@ -16,12 +16,9 @@ Pin Waffle to an exact merged Git commit in each consumer, keep `waffle` in Bun'
 
 The script needs wasi-sdk **34.0**, CMake **3.26+**, Ninja, curl, tar, patch, sha256sum, Linux `setsid`, and GNU `timeout`. It verifies the SDK's libc revision and the downloaded source archive's SHA-256. Each command owns a process group, with a 600-second timeout (override `WASI_LIBC_COMMAND_TIMEOUT_SECONDS`). Its uniquely owned source/build/download directory is removed on success, failure, SIGINT and SIGTERM only after descendants stop; if cleanup cannot be verified, the script retains scratch and prints its path. Compiler intermediates use that owned scratch through `TMPDIR`, `TMP`, and `TEMP`. The output must not already exist; the script never deletes an existing output directory. Choose and verify a data-volume scratch root and output before running a build.
 
-On the development PC, with the workload admitted through the normal heavy runner:
+Set `WASI_SDK_PATH` to the wasi-sdk 34.0 directory, put CMake and Ninja on `PATH`, and set `WASI_LIBC_SCRATCH_ROOT` to a scratch directory:
 
 ```sh
-export PATH=/work/cache/wasm-tools/cmake/bin:/work/cache/wasm-tools/ninja:$PATH
-export WASI_SDK_PATH=/work/cache/wasi-sdk-34.0-x86_64-linux
-export WASI_LIBC_SCRATCH_ROOT=/work/tmp
 # Substitute the pinned Waffle checkout and a new consumer-owned output directory.
 bash "$WAFFLE_CHECKOUT/scripts/build-wasi-libc.sh" "$PATCHED_SYSROOT"
 "$WASI_SDK_PATH/bin/clang" --target=wasm32-wasip1 \
@@ -32,7 +29,7 @@ Use that sysroot for the final link, not only for compiling sources. Rust/Bun co
 
 ## Regression gate
 
-`bun run test:libc` builds the patched sysroot, compiles the original C fixture against both patched and stock libc, and removes its entire temporary tree afterwards. Set `WASI_SDK_PATH`, `WASI_LIBC_SCRATCH_ROOT`, and `WASMTIME` when their PC defaults are not appropriate. CI runs this gate separately; ordinary `bun test` explicitly skips the real-libc cases if their generated fixtures are absent.
+`bun run test:libc` builds the patched sysroot, compiles the original C fixture against both patched and stock libc, and removes its entire temporary tree afterwards. Set `WASI_SDK_PATH`, `WASI_LIBC_SCRATCH_ROOT`, and `WASMTIME` when their defaults are not appropriate. CI runs this gate separately; ordinary `bun test` explicitly skips the real-libc cases if their generated fixtures are absent.
 
 The gate checks all required layouts, multiple preopens, a parent closing its transferred descriptor, root lifetime and rights, bounded discovery with fd 1,000,000, real fdstat errors, literal fd-3 writes, constructors, and a real Wasm start section. Its start-section wrapper preserves LLD's imported-memory initializer before calling libc. Generic worker bootstrap is exercised with the libc guest, not an adapter-side preopen relocation. An unchanged libc guest demonstrates the fd-3 limitation. The patched ordinary guest also runs on unmodified Wasmtime and Node WASI, with no new imports.
 

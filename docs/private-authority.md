@@ -54,7 +54,7 @@ A callback that closes over a private endpoint is authority too.
 runtime imports to build its declaration inventory. The default command checks
 the enforced process boundary; `bun tooling/private-authority.ts
 --audit-dependencies` additionally prints reachable out-of-scope audit findings
-for the owning filesystem/WASI lane. It uses local lexical type
+for filesystem and WASI code outside that boundary. It uses local lexical type
 inference: annotations, type aliases, collection arguments, initializers,
 constructor aliases, runtime fields and callback captures. It distinguishes
 private collection elements from the collection's own API. Imported captured

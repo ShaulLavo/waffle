@@ -26,14 +26,12 @@ are rejected, not translated. Backend names are not accepted modes.
 | SAFE   | Every successful mutation is durably recoverable before success, including namespace effects. A complete strict IndexedDB transaction or durable redo record is sufficient; final-page checkpointing may follow. | No. `mode: "safe"` throws typed `UNSUPPORTED_VFS`, with no fallback.                                 |
 | Memory | Isolated volatile tree; flush is ordering only.                                                                                                                                                                  | Yes, for tests and explicitly nonpersistent uses.                                                    |
 
-The approved engine work also requires bounded pending data with backpressure,
-coherent multi-tab writers, above-RAM workloads, and a combined memory budget.
-Those full-engine requirements remain open. Opt-in
+The checkpoint engine does not yet provide bounded pending data with backpressure,
+coherent multi-tab writers, above-RAM workloads, or a combined memory budget. Opt-in
 [WorkspaceVfs](workspace-vfs.md) supports bounded current and leased-version ranges
 without whole-file hydration. The checkpoint engine
 descriptors truthfully report `pendingDataBound: "not-yet-enforced"` and
-`multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine;
-see [the approved execution plan](../plans/001-vfs-family.md).
+`multiTab: "exclusive-owner"`. The API/identity step does not certify a new engine.
 
 FAST currently uses IndexedDB in every browser to preserve saved workspace identity.
 Browser-specific adapters may win later experiments; changing adapters must include
@@ -101,27 +99,3 @@ implementation for storage errors. Selection/settings errors occur before worker
 allocation. Worker startup failure enters the existing failed state and rejects
 queued operations with the typed error. Other storage errors retain their original
 diagnostics; no blanket fallback conceals failure.
-
-## Prepared consumer changes (not delivered here)
-
-Consumer delivery updates exact merged Waffle pins, lockfiles, source locks and trusted
-installation together. This step changes no bun-wasm/bash-web source or dependency pin.
-
-For bun-wasm `web/src/main.ts`, replace its storage-query fallback with an explicitly
-validated mode. Preserve workspace names and omitted-query FAST behavior:
-
-```ts
-const mode = getVfsDescriptor(params.get("mode") ?? "fast").mode;
-const runtime = createRuntime({ filesystem: { mode, name: "bun-wasm-workspace" } });
-```
-
-Show typed unsupported errors, including SAFE; never convert them into FAST. Preserve
-waiting/ready UI, unsaved-text and ownership-loss handling, disposal before replacement,
-and sandbox write → targeted flush → HMR ordering. Implement ordered reload in the
-consumer delivery, not an unload durability promise.
-
-For bash-web `src/browser/main.tsx`, add `mode?: VfsMode` only to standalone-owned
-host options and pass it to `createRuntime`. Borrowed runtime/acquireRuntime branches
-must not override selection, create a second runtime or dispose its owner. Preserve
-idempotent lease cleanup and storage readiness; start the shell's active startup
-timeout after ready. Validate standalone queries and display typed failures.

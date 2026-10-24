@@ -194,7 +194,7 @@ Those requirements and all existing workload gates below remain open.
 
 Status: Merged as PR #44 at `cc14e0f4cb36bec655425596cd49dbd25704b35a`. The
 local publication unit adds opt-in publication to the existing root,
-not a new public storage mode. See [the internal contract](../docs/storage-publication.md).
+not a new public storage mode. See [the internal contract](../.internal/storage-publication.md).
 
 The compiling baseline oracle failed with errno52 at `dcf989f`. The enabled
 unified host/WASI/direct oracle passes in the unfiltered 34-test local file at
@@ -218,7 +218,7 @@ attachment and one outstanding operation grant. It does not add another proof
 filesystem, public selector, persistent format or consumer pin.
 
 The private authority, attachment and actual-bootstrap contracts are described
-in [the publication contract](../docs/storage-publication.md). Exact immutable
+in [the publication contract](../.internal/storage-publication.md). Exact immutable
 heads, original reds, focused controls, gate approvals and actual-host cleanup
 are owned by `/work/reports/waffle-finish-20261021/storage-cross-tab-grant-pilot/`.
 Independent review, required broad gates and program acceptance remain root-owned;
