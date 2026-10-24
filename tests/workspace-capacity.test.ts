@@ -463,23 +463,31 @@ test("public cold snapshot preserves logical 128 MiB size without payload or han
   expect(current.storageCounts()).toEqual({ reads: 0, persists: 0, closes: 1 });
 });
 
-async function indexPressure(cursor: SnapshotCursor) {
+async function completeCounts(cursor: SnapshotCursor) {
   let records = 0,
-    pages = 0;
+    pages = 0,
+    files = 0,
+    directories = 0;
   for (;;) {
     const page = await cursor.next();
-    if (page.kind !== "entries") {
-      expect(page).toEqual({ kind: "pressure", resource: "index" });
+    if (page.kind === "complete") {
       expect(await cursor.next()).toEqual(page);
-      return { records, pages };
+      return { records, pages, files, directories, cut: page.cut };
     }
+    if (page.kind !== "entries") throw new Error(`unexpected ${page.kind}`);
     records += page.entries.length;
     pages++;
     expect(page.entries.length).toBeLessThanOrEqual(WORKSPACE_LIMITS.pageEntries);
+    expect(
+      page.entries.reduce((sum, entry) => sum + 192 + 2 * entry.path.length, 0),
+    ).toBeLessThanOrEqual(WORKSPACE_LIMITS.pageBytes);
+    const pageFiles = page.entries.reduce((sum, entry) => sum + Number(entry.kind === "file"), 0);
+    files += pageFiles;
+    directories += page.entries.length - pageFiles;
   }
 }
 
-test("public W1 topology still reports the independent index ceiling without payload I/O", async () => {
+test("public W1 topology completes the compact index without payload I/O", async () => {
   const index = storedTree(SIZES.W1.directories, 10, SIZES.W1.largeFiles);
   expect(index.nodes).toHaveLength(55_033);
   const current = await coldFixture(index);
@@ -487,9 +495,21 @@ test("public W1 topology still reports the independent index ceiling without pay
   const reads = observe(current);
   const cursor = current.workspace.snapshot();
   try {
-    const { records, pages } = await indexPressure(cursor);
-    expect(records).toBe(6528);
-    expect(pages).toBe(51);
+    const { records, pages, files, directories, cut } = await completeCounts(cursor);
+    expect(records).toBe(55_033);
+    expect(pages).toBe(430);
+    expect(files).toBe(50_032);
+    expect(directories).toBe(5_001);
+    expect(cut.workspace).toBe(current.backend.workspaceId);
+    expect(cut.watermark.history).toBe(current.backend.shared.publication!.buffers.history);
+    expect(typeof cut.generation).toBe("bigint");
+    expect(typeof cut.watermark.seq).toBe("bigint");
+    expect(cut.generation - cut.watermark.seq).toBe(0n);
+    expect(await current.workspace.changes(cut.watermark)).toEqual({
+      kind: "changes",
+      batches: [],
+      next: cut.watermark,
+    });
     expect(reads.counts()).toEqual({ stats: 0, identities: 0, arrays: 0, registrations: 0 });
     expect(current.storageCounts()).toEqual({ reads: 0, persists: 0, closes: 0 });
     released(current);
@@ -500,7 +520,9 @@ test("public W1 topology still reports the independent index ceiling without pay
         cell: "public-W1-namespace-only",
         records,
         pages,
-        terminal: "pressure/index",
+        files,
+        directories,
+        terminal: "complete",
       }),
     );
   } finally {
