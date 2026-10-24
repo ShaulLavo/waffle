@@ -90,7 +90,7 @@ async function fixture() {
 for (const capacity of [1024, 1])
   test(`N5 direct ready unconsumed resolve survives sibling unlink with capacity=${capacity}`, async () => {
     const f = await fixture();
-    const completion = f.client.submit("resolve", [f.root, "link", false], new Uint8Array(), capacity);
+    const completion = f.client.submit("resolve", [f.root, "link"], new Uint8Array(), capacity);
     cleanups.push(() => completion.release());
     await barrier(f.client);
     expect(completion.ready).toBe(true);
