@@ -150,9 +150,30 @@ async function exclusiveFilesystemCase(open: () => Promise<StorageBackend>): Pro
       new TextDecoder().decode(await client.asyncCall("readFile", ["/canonical"])) === "canonical",
       "canonical target receives bytes",
     );
+    const canonical = await client.asyncCall("lookup", ["/canonical"]);
+    const throughDots = await client.asyncCall("lookup", ["/a/../canonical"]);
     assert(
-      (await client.asyncCall("lookup", ["/a/../canonical"])) === undefined,
+      canonical?.kind === "file" &&
+        throughDots?.kind === "file" &&
+        throughDots.ino === canonical.ino,
+      "dot path resolves the canonical inode",
+    );
+    const traversed = await client.asyncCall("lookup", ["/a"]);
+    assert(
+      traversed?.kind === "dir" && traversed.children.size === 0,
       "raw dot path is not a duplicate entry",
+    );
+    assert(
+      (await client.asyncCall("listFiles", ["/"])).join("\n") === "/canonical\n/created",
+      "only canonical file entries are present",
+    );
+    await rejects(
+      client.asyncCall("writeFile", ["/a/../canonical", false, true], bytes("clobber")),
+      "20",
+    );
+    assert(
+      new TextDecoder().decode(await client.asyncCall("readFile", ["/canonical"])) === "canonical",
+      "exclusive dot-path refusal preserves canonical bytes",
     );
     await client.asyncCall("writeFile", ["/a/./nested/file", false, true], bytes("nested"));
     assert(
