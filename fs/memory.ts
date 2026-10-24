@@ -1,3 +1,4 @@
+import { utf8ByteLength } from "./utf8-size.js";
 import type { FileIdentity } from "./file-identity.js";
 import type { NodeMetadata } from "./workspace-types.js";
 import { permissionsFor, FilesystemError } from "../core/filesystem.js";
@@ -57,7 +58,7 @@ export function nodeMetadata(node: Node): NodeMetadata {
   return { kind: node.kind === "dir" ? "directory" : "file" };
 }
 export function nodeSize(node: Node): number {
-  if (node.kind === "symlink") return encode(node.target).length;
+  if (node.kind === "symlink") return utf8ByteLength(node.target);
   return node.kind === "file" ? (node.size ?? node.data.length) : 0;
 }
 interface MemoryPath extends ResolvedPath {

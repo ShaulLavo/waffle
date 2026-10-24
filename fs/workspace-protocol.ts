@@ -1,3 +1,4 @@
+import { utf8ByteLength } from "./utf8-size.js";
 import { BigIntConstructor } from "../proc/intrinsics.js";
 import { FilesystemError } from "../core/filesystem.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
@@ -121,7 +122,7 @@ export function nodeMetadata(value: Record<string, unknown>): NodeMetadata {
     value.target.includes("\0")
   )
     throw new FilesystemError(29);
-  if (value.size !== new TextEncoder().encode(value.target).length) throw new FilesystemError(29);
+  if (value.size !== utf8ByteLength(value.target)) throw new FilesystemError(29);
   return { kind: "symlink", target: value.target };
 }
 function entry(value: unknown): NamespaceRecord {
