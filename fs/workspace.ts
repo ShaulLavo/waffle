@@ -428,10 +428,11 @@ class WorkspaceOwner implements WorkspaceVfs {
     this.closed = true;
     this.clearAccepted(this.accepted);
     this.lifetime.abort();
+    const retirements = Array.from(this.retirements.values());
     const closing = Array.from(this.cursors, (cursor) => cursor.stop());
     this.closing = Promise.allSettled(
       closing.concat(
-        Array.from(this.retirements.values()),
+        retirements,
         Array.from(this.leases, (lease) => lease.close()),
         [this.closeCursor(), this.closeRead()],
       ),
