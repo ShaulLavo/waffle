@@ -15,6 +15,7 @@ const runners = [
 ];
 const continuity = "workspace-continuity";
 const rootContinuity = "root-continuity";
+const recovery = "recovery-r42";
 const chromiumOnly = [continuity, rootContinuity];
 const fixture = `
 import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -34,6 +35,10 @@ if (${JSON.stringify(chromiumOnly)}.includes(name)) {
     if (!readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").includes("/scripts/browser-supervisor.ts")) throw Error("supervisor not running");
     if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("supervised shared scratch missing");
   }
+  if (!names.every((entry) => existsSync(entry + ".webkit.finished"))) throw Error("early continuity");
+  const predecessor = name === "workspace-continuity" ? "recovery-r42" : "workspace-continuity";
+  if (process.platform === "linux" && existsSync(readFileSync(predecessor + ".scratch", "utf8"))) throw Error("isolated predecessor scratch retained");
+  appendFileSync("isolated.order", name + "\\n");
   writeFileSync(name + ".scratch", scratch);
   writeFileSync(name + ".finished", engines);
   if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
@@ -48,6 +53,27 @@ if (engines === "chromium,firefox") {
 } else throw Error("missing engine");
 writeFileSync(name + (engines === "webkit" ? ".webkit.finished" : ".parallel.finished"), engines);
 if (process.env.MATRIX_FAIL.split("|").includes(name + ":" + engines)) throw Error("fixture failure");
+`;
+
+const recoveryFixture = `
+import { appendFileSync, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+const names = ${JSON.stringify(runners)};
+const engines = process.argv.slice(2);
+const scratch = process.env.STORAGE_SCRATCH_ROOT;
+const supervised = Boolean(process.env.WAFFLE_BROWSER_PARENT);
+const ownedScratch = Boolean(scratch && existsSync(scratch) && scratch === process.env.PROCESS_SCRATCH_ROOT);
+appendFileSync("recovery-r42.invocations", JSON.stringify({ engines, supervised, ownedScratch }) + "\\n");
+if (!names.every((entry) => existsSync(entry + ".parallel.finished"))) throw Error("early recovery");
+if (names.some((entry) => existsSync(entry + ".webkit.finished"))) throw Error("late recovery");
+if (!scratch || !statSync(scratch).isDirectory() || realpathSync(scratch) !== scratch) throw Error("recovery scratch not an actual directory");
+if (process.platform === "linux") {
+  if (!scratch.startsWith(process.cwd() + "/wb-")) throw Error("recovery scratch not supervisor-owned");
+  if (!readFileSync("/proc/" + process.ppid + "/cmdline", "utf8").includes("/scripts/browser-supervisor.ts")) throw Error("recovery supervisor not running");
+  if (!statSync(process.env.WAFFLE_BROWSER_SHM_ROOT).isDirectory()) throw Error("recovery shared scratch missing");
+}
+writeFileSync("recovery-r42.scratch", scratch);
+appendFileSync("isolated.order", "recovery-r42\\n");
+if (process.env.MATRIX_FAIL?.split("|").includes("recovery-r42:chromium")) throw Error("recovery fixture failure");
 `;
 
 const matrixEntry = `
@@ -82,6 +108,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     await writeFile(join(root, "scripts/matrix-entry.ts"), matrixEntry);
     for (const runner of runners.concat(chromiumOnly))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
+    await writeFile(join(root, "tests/recovery-r42-browser-runner.ts"), recoveryFixture);
     let failure: unknown;
     try {
       await runOwned([process.execPath, "scripts/matrix-entry.ts"], {
@@ -93,6 +120,27 @@ async function matrix(failing: readonly string[]): Promise<void> {
       cleanupError = error instanceof CommandCleanupError ? error : undefined;
       failure = error;
     }
+    const discovery = Bun.file(join(root, "recovery-r42.invocations"));
+    expect(await discovery.exists()).toBe(true);
+    const invocations: unknown[] = (await discovery.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(invocations).toEqual([
+      {
+        engines: ["chromium"],
+        supervised: process.platform === "linux",
+        ownedScratch: process.platform === "linux",
+      },
+    ]);
+    const recoveryScratch = await readFile(join(root, "recovery-r42.scratch"), "utf8");
+    expect(
+      recoveryScratch.startsWith(root + "/wb-") ||
+        (process.platform !== "linux" && recoveryScratch === root),
+    ).toBe(true);
+    expect(await readFile(join(root, "isolated.order"), "utf8")).toBe(
+      [recovery].concat(chromiumOnly).join("\n") + "\n",
+    );
     for (const runner of chromiumOnly) {
       expect(await readFile(join(root, `${runner}.finished`), "utf8")).toBe("chromium");
       expect(await readFile(join(root, `${runner}.invocations`), "utf8")).toBe("chromium\n");
@@ -107,6 +155,7 @@ async function matrix(failing: readonly string[]): Promise<void> {
     const order = runners
       .map((runner) => `${runner}:chromium,firefox`)
       .concat(
+        [`${recovery}:chromium`],
         runners.map((runner) => `${runner}:webkit`),
         chromiumOnly.map((runner) => `${runner}:chromium`),
       );
@@ -154,5 +203,24 @@ test("browser matrix reports ordered failures after every other suite finishes",
     `${continuity}:chromium`,
     "safe-staging:chromium,firefox",
     "network:webkit",
+  ]);
+}, 15_000);
+
+
+test("Chromium-only recovery failure blocks matrix without hiding later WebKit suites", async () => {
+  await matrix([`${recovery}:chromium`]);
+}, 15_000);
+
+test("recovery failure preserves earlier and later suite failures in the aggregate", async () => {
+  await matrix(["storage:chromium,firefox", `${recovery}:chromium`, "publication:webkit"]);
+}, 15_000);
+
+test("combined isolated Chromium failures retain supervised order and cleanup", async () => {
+  await matrix([
+    `${rootContinuity}:chromium`,
+    "network:webkit",
+    `${continuity}:chromium`,
+    `${recovery}:chromium`,
+    "storage:chromium,firefox",
   ]);
 }, 15_000);
