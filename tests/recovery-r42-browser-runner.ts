@@ -5,6 +5,7 @@ import { record } from "../fs/publication-attachment";
 import { BrowserRunnerLifecycle, browserBundle } from "./browser-runner-lifecycle";
 import { runStep } from "./persistent-lifecycle-r2-browser-runner";
 import type * as PageModule from "./fixtures/recovery-r42-page";
+import type {} from "./fixtures/recovery-r42-owner";
 
 function call(page: Page, operation: string, body?: unknown): Promise<unknown> {
   return page.evaluate(
@@ -155,7 +156,12 @@ async function replaySchedule(
     receipt = record(changes.publications[0]).receipt;
     assertSingleAppend(await read(c), changes, receipt);
     assert.equal(state.workerClosed[0], false);
-    return { held: await owner(a, "r42-probe"), request, receipt, changes };
+    return {
+      replyHeld: true,
+      requestIdentity: { client: request.client, id: request.id },
+      receipt,
+      changes,
+    };
   });
   await runStep(steps, 2, async () => {
     assert.deepEqual(await call(b, "r42-replay"), request);
@@ -185,7 +191,11 @@ async function replaySchedule(
     for (const reply of settlementReplies(await call(b, "r42-probe"), request))
       assert.deepEqual(reply, first);
     assert.deepEqual(await owner(a, "cut"), record(receipt).cut);
-    return { result, replies: settlementReplies(await call(b, "r42-probe"), request) };
+    return {
+      ack: tail.ack,
+      settlement: tail.settlement,
+      identicalReplyCount: settlementReplies(await call(b, "r42-probe"), request).length,
+    };
   });
   await runStep(steps, 3, async () => {
     if (negative) await incorrectFreshAppend(b);
