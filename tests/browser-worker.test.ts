@@ -1885,6 +1885,51 @@ function terminalStartupWorker(): string {
  })().catch(error=>{parentPort.postMessage({error:String(error)});parentPort.close()});`;
 }
 
+async function startupControl<T>(
+  operation: () => import("../browser/runtime-terminals.js").TerminalResult<T>,
+): Promise<T> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const result = operation();
+    if (result.kind === "ok") return result.value;
+    if (result.code !== "AGAIN") throw Error(result.code);
+    await Bun.sleep(1);
+  }
+  throw Error("startup control gate-contention budget exhausted");
+}
+
+test("planned setup controls yield to gate contention without accepting terminal failures", async () => {
+  const { createTerminalSession } = await import("../browser/runtime-terminals.js");
+  const root = createWorkerProcessTransport({ capacity: 16 });
+  const display = createTerminalSession({
+    controller: root,
+    geometry: { columns: 127, rows: 39 },
+  });
+  let release: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const identity: unknown = display.identity;
+    if (typeof identity !== "object" || identity === null || !("buffer" in identity))
+      throw Error("missing terminal buffer");
+    if (!(identity.buffer instanceof SharedArrayBuffer)) throw Error("invalid terminal buffer");
+    const gate = new BigInt64Array(identity.buffer, 64, 1);
+    Atomics.store(gate, 0, 999n);
+    release = setTimeout(() => Atomics.store(gate, 0, 0n), 0);
+    let contended = false;
+    const snapshot = await startupControl(() => {
+      const result = display.snapshot();
+      if (result.kind === "error" && result.code === "AGAIN") contended = true;
+      return result;
+    });
+    expect(contended).toBe(true);
+    expect(Atomics.load(gate, 0)).toBe(0n);
+    expect(snapshot.geometry).toEqual({ columns: 127, rows: 39, revision: 1 });
+    display.close("disposed");
+    await expect(startupControl(() => display.snapshot())).rejects.toThrow("CLOSED");
+  } finally {
+    clearTimeout(release);
+    display.close("disposed");
+  }
+});
+
 for (const action of [
   "bind",
   "cancel",
@@ -1987,20 +2032,21 @@ for (const action of [
       await Bun.sleep(30);
       expect(Atomics.load(cells, 0)).toBe(action === "run-control" ? 1 : 0);
       expect(Atomics.load(cells, 1)).toBe(action === "run-control" ? 1 : 0);
-      if (action === "bind") must(authority.bindMember({ planned: planned.member, pid }));
+      if (action === "bind")
+        await startupControl(() => authority.bindMember({ planned: planned.member, pid }));
       if (action === "guard-revoke") Atomics.store(cells, 4, 1);
       if (action === "child-end")
         claimOutcome(workerProcessState(child).signals.outcome, { kind: "exited", code: 1 });
       if (action === "retire") {
-        must(authority.release({ lease, restore: null }));
-        must(authority.retireGroup({ group, reason: "cancelled" }));
+        await startupControl(() => authority.release({ lease, restore: null }));
+        await startupControl(() => authority.retireGroup({ group, reason: "cancelled" }));
       }
       if (action === "plan-reuse") {
-        must(authority.cancelPlan(planned.member));
-        must(authority.planMember({ group, parent: parent.member }));
+        await startupControl(() => authority.cancelPlan(planned.member));
+        await startupControl(() => authority.planMember({ group, parent: parent.member }));
       }
       if (action === "cancel" || action === "run-control")
-        must(authority.cancelPlan(planned.member));
+        await startupControl(() => authority.cancelPlan(planned.member));
       if (action === "gate-held-root-end") {
         const raw = display.identity as unknown as { buffer: SharedArrayBuffer };
         Atomics.store(new BigInt64Array(raw.buffer, 64, 1), 0, 999n);
