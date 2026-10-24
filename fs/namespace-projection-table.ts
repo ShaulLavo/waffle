@@ -143,6 +143,36 @@ function reference(file: PublicationFile | null) {
   return file ? { id: file.id, version: file.version } : null;
 }
 
+function projectionLayout(options: Partial<Capacity>) {
+  const capacity: Capacity = {
+    nodes: 65535,
+    edges: WORKSPACE_LIMITS.indexEdges,
+    extraLinks: 4096,
+    nameBytes: 393216,
+    scratchSlots: 4096,
+    byteLimit: WORKSPACE_LIMITS.indexBytes,
+    ...options,
+  };
+  for (const value of Object.values(capacity))
+    if (!Number.isSafeInteger(value) || value < 0) throw new RangeError("invalid table capacity");
+  if (capacity.nodes > NONE || capacity.extraLinks > NONE || capacity.nameBytes >= UNLINKED)
+    throw new RangeError("table capacity exceeds column width");
+  const columns = capacity.nodes * 24 + capacity.extraLinks * 10;
+  const heapStart = Math.ceil(columns / 4) * 4;
+  const directoryStart = heapStart + capacity.scratchSlots * 4;
+  const nameStart = directoryStart + Math.ceil(capacity.nodes / 8);
+  const backingBytes = nameStart + capacity.nameBytes;
+  check(backingBytes + BOOKKEEPING_BYTES, capacity.byteLimit, "bytes");
+  return { capacity, heapStart, directoryStart, nameStart, backingBytes };
+}
+
+export function namespaceProjectionPlan(
+  options: ConstructorParameters<typeof NamespaceProjectionTable>[0] = {},
+) {
+  const layout = projectionLayout(options ?? {});
+  return { backingBytes: layout.backingBytes, bookkeepingBytes: BOOKKEEPING_BYTES };
+}
+
 /** Derived names only. File bytes, revisions and read permissions stay with the authority. */
 export class NamespaceProjectionTable {
   private readonly capacity: Capacity;
@@ -168,36 +198,20 @@ export class NamespaceProjectionTable {
   private compactionPasses = 0;
   private movedBytes = 0;
 
-  constructor(options: Partial<Capacity> = {}, budget?: MemoryBudget) {
-    this.capacity = {
-      nodes: 65535,
-      edges: WORKSPACE_LIMITS.indexEdges,
-      extraLinks: 4096,
-      nameBytes: 393216,
-      scratchSlots: 4096,
-      byteLimit: WORKSPACE_LIMITS.indexBytes,
-      ...options,
-    };
-    for (const value of Object.values(this.capacity))
-      if (!Number.isSafeInteger(value) || value < 0) throw new RangeError("invalid table capacity");
-    if (
-      this.capacity.nodes > NONE ||
-      this.capacity.extraLinks > NONE ||
-      this.capacity.nameBytes >= UNLINKED
-    )
-      throw new RangeError("table capacity exceeds column width");
-    const { nodes, extraLinks, scratchSlots, nameBytes } = this.capacity;
-    const columns = nodes * 24 + extraLinks * 10;
-    const heapStart = Math.ceil(columns / 4) * 4;
-    const directoryStart = heapStart + scratchSlots * 4;
-    const nameStart = directoryStart + Math.ceil(nodes / 8);
-    const backingBytes = nameStart + nameBytes;
-    check(backingBytes + BOOKKEEPING_BYTES, this.capacity.byteLimit, "bytes");
-    const allocation = budget
-      ? allocateNamespaceProjectionBacking(budget, backingBytes)
-      : undefined;
+  constructor(options: Partial<Capacity> = {}, budget?: MemoryBudget, exactBacking?: ArrayBuffer) {
+    const layout = projectionLayout(options);
+    const { nodes, extraLinks, scratchSlots, nameBytes } = layout.capacity;
+    this.capacity = layout.capacity;
+    if (exactBacking && budget) throw new TypeError("exact backing replaces budget admission");
+    if (exactBacking && exactBacking.byteLength !== layout.backingBytes)
+      throw new RangeError("invalid exact namespace projection backing");
+    const allocation = exactBacking
+      ? undefined
+      : budget
+        ? allocateNamespaceProjectionBacking(budget, layout.backingBytes)
+        : undefined;
     try {
-      this.backing = allocation?.buffer ?? new ArrayBuffer(backingBytes);
+      this.backing = exactBacking ?? allocation?.buffer ?? new ArrayBuffer(layout.backingBytes);
       let at = 0;
       this.ids = new BigUint64Array(this.backing, at, nodes * 2);
       at += nodes * 16;
@@ -214,9 +228,9 @@ export class NamespaceProjectionTable {
       this.extraParents = new Uint16Array(this.backing, at, extraLinks);
       at += extraLinks * 2;
       this.extraLengths = new Uint16Array(this.backing, at, extraLinks);
-      this.heap = new Uint32Array(this.backing, heapStart, scratchSlots);
-      this.directories = new Uint8Array(this.backing, directoryStart, Math.ceil(nodes / 8));
-      this.names = new Uint8Array(this.backing, nameStart, nameBytes);
+      this.heap = new Uint32Array(this.backing, layout.heapStart, scratchSlots);
+      this.directories = new Uint8Array(this.backing, layout.directoryStart, Math.ceil(nodes / 8));
+      this.names = new Uint8Array(this.backing, layout.nameStart, nameBytes);
       this.offsets.fill(EMPTY);
       this.parents.fill(NONE);
       this.extraNodes.fill(NONE);
