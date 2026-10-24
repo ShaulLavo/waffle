@@ -1,3 +1,4 @@
+import type { ResolvedPath } from "../core/filesystem.js";
 import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
@@ -52,6 +53,13 @@ const mutations = new Set([
   "remove",
   "move",
 ]);
+type ResponsePayload =
+  | { kind: "pending" }
+  | { kind: "inline" }
+  | { kind: "overflow"; bytes: Uint8Array };
+type Response =
+  | { kind: "bytes"; bytes: Uint8Array }
+  | { kind: "resolve"; references: Map<number, number>; payload: ResponsePayload };
 interface Session {
   connection: FilesystemConnection;
   handles: Map<number, number>;
@@ -60,7 +68,7 @@ interface Session {
   preopens: Set<number>;
   transient: Map<number, true>;
   references: Map<number, number>;
-  responses: Map<number, Uint8Array>;
+  responses: Map<number, Response>;
   pending: Map<number, SharedArrayBuffer>;
   preparingHandles: Map<number, number>;
   preparations: Set<Promise<void>>;
@@ -180,8 +188,8 @@ export class FilesystemService {
           for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
         });
       } else if ("discard" in data) {
-        session.responses.delete(data.discard);
         session.reader?.cancel(data.discard);
+        this.enqueueMaintenance(session, () => this.discardResponse(session, data.discard));
       } else if ("trim" in data)
         this.enqueueMaintenance(session, () => {
           if (this.sessions.has(session) && !isRevoked(connection)) this.trim(session);
@@ -306,7 +314,59 @@ export class FilesystemService {
     Atomics.notify(cells, 0);
     wake(session.connection);
     session.pending.delete(id);
+    this.discardResponse(session, id);
     session.connection.port.postMessage({ completed: id });
+  }
+  private holdResolvedResponse(session: Session, id: number, path: ResolvedPath): void {
+    const references = new Map<number, number>();
+    session.responses.set(id, { kind: "resolve", references, payload: { kind: "pending" } });
+    try {
+      for (const handle of [path.parent, path.node]) {
+        if (handle === undefined || references.has(handle)) continue;
+        this.holdResponseReference(session, references, handle);
+      }
+    } catch (error) {
+      this.discardResponse(session, id);
+      throw error;
+    }
+  }
+  private holdResponseReference(
+    session: Session,
+    references: Map<number, number>,
+    handle: number,
+  ): void {
+    this.pin(session, handle);
+    const key = session.handles.get(handle);
+    if (key === undefined) throw new FilesystemError(11);
+    for (;;) {
+      if (isRevoked(session.connection) || !this.sessions.has(session))
+        throw new FilesystemError(11);
+      const count = Atomics.load(session.capabilities, key + 1);
+      if (count < 0) throw new FilesystemError(8);
+      if (count === 0x7fffffff) throw new FilesystemError(33);
+      if (Atomics.compareExchange(session.capabilities, key + 1, count, count + 1) !== count)
+        continue;
+      references.set(handle, key);
+      return;
+    }
+  }
+  private dropResponseReference(session: Session, handle: number, key: number): void {
+    for (;;) {
+      if (session.handles.get(handle) !== key || Atomics.load(session.capabilities, key) !== handle)
+        return;
+      const count = Atomics.load(session.capabilities, key + 1);
+      if (count <= 0) return;
+      if (Atomics.compareExchange(session.capabilities, key + 1, count, count - 1) === count)
+        return;
+    }
+  }
+  private discardResponse(session: Session, id: number): void {
+    const response = session.responses.get(id);
+    session.responses.delete(id);
+    if (response?.kind !== "resolve") return;
+    for (const [handle, key] of response.references)
+      this.dropResponseReference(session, handle, key);
+    if (this.sessions.has(session) && !isRevoked(session.connection)) this.trim(session);
   }
   private pin(session: Session, handle: number | undefined, preopen = false): void {
     if (handle === undefined) return;
@@ -452,9 +512,17 @@ export class FilesystemService {
     const [a, b, c] = args;
     if (operation === "take") {
       const response = session.responses.get(a);
-      if (!response) throw new FilesystemError(11);
-      const part = response.slice(b, b + c);
-      if (b + c >= response.length) session.responses.delete(a);
+      const bytes =
+        response?.kind === "bytes"
+          ? response.bytes
+          : response?.payload.kind === "overflow"
+            ? response.payload.bytes
+            : undefined;
+      if (!bytes) throw new FilesystemError(11);
+      const part = bytes.slice(b, b + c);
+      if (b + c < bytes.length) return part;
+      if (response?.kind === "resolve") response.payload = { kind: "inline" };
+      else session.responses.delete(a);
       return part;
     }
     if (operation === "retain") {
@@ -522,10 +590,8 @@ export class FilesystemService {
       this.pin(session, result, operation === "preopen");
     // Touch every returned identity before choosing an eviction victim: a new parent may point
     // to a hard-linked node that was previously the oldest transient capability.
-    if (operation === "resolve" && typeof result !== "number") {
-      this.pin(session, result.parent);
-      this.pin(session, result.node);
-    }
+    if (operation === "resolve" && typeof result !== "number")
+      this.holdResolvedResponse(session, id, result);
     if (mutations.has(operation)) {
       for (const peer of this.sessions) if (!isRevoked(peer.connection)) this.trim(peer);
     } else this.trim(session);
@@ -594,6 +660,7 @@ export class FilesystemService {
           peer.connection.port.postMessage({ segment: segment.buffer, index: segment.index });
       state = this.writeResponse(session, id, cells, bytes, value);
     } catch (error) {
+      this.discardResponse(session, id);
       if (
         error instanceof DirtyCapacityError &&
         !error.permanent &&
@@ -624,7 +691,7 @@ export class FilesystemService {
         this.releasePrepared(session, prepared);
         cells[5] = Atomics.load(epoch, 0);
         if (isRevoked(session.connection) || Atomics.load(cells, 6)) {
-          session.responses.delete(id);
+          this.discardResponse(session, id);
           state = State.Cancelled;
         }
         Atomics.store(cells, 0, state);
@@ -654,10 +721,13 @@ export class FilesystemService {
     const result = binary ? value : pack(value);
     cells[2] = result.length;
     cells[4] = binary ? 1 : 0;
+    const response = session.responses.get(id);
     if (result.length > bytes.length) {
-      session.responses.set(id, result);
+      if (response?.kind === "resolve") response.payload = { kind: "overflow", bytes: result };
+      else session.responses.set(id, { kind: "bytes", bytes: result });
       return State.Overflow;
     }
+    if (response?.kind === "resolve") response.payload = { kind: "inline" };
     bytes.set(result);
     return State.Complete;
   }

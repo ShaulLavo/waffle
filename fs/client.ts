@@ -76,6 +76,11 @@ import {
   sharedRevoked,
 } from "./shared.js";
 
+export interface BorrowedResolvedPath {
+  readonly path: Readonly<ResolvedPath>;
+  release(): void;
+}
+
 export interface WriteFileOptions {
   /** Append bytes instead of replacing the existing file. */
   append?: boolean;
@@ -1012,6 +1017,35 @@ export class FilesystemClient implements FileSystem {
       return { readable: true, writable: true, hangup: false };
     }
   }
+  resolveBorrowed(
+    directory: FileHandle,
+    path: string,
+    followFinal = false,
+  ): BorrowedResolvedPath | number {
+    if (this.connection.residentPublication) return 58;
+    const held: FileHandle[] = [];
+    const release = () => {
+      for (const handle of held.splice(0)) this.release(handle);
+    };
+    let completion: FilesystemCompletion | undefined;
+    try {
+      completion = this.submit("resolve", [directory, path, followFinal]);
+      const resolved: ResolvedPath | number = completion.wait();
+      if (typeof resolved === "number") return resolved;
+      for (const handle of [resolved.parent, resolved.node]) {
+        if (handle === undefined || held.includes(handle)) continue;
+        this.retain(handle);
+        held.push(handle);
+      }
+      return { path: Object.freeze({ ...resolved }), release };
+    } catch (error) {
+      release();
+      return errno(error);
+    } finally {
+      completion?.release();
+    }
+  }
+
   resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
     try {
       const epoch = this.version();

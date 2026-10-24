@@ -109,3 +109,32 @@ Explicit retain/release protects an inode through rename and unlink. An idle
 unretained detached capability may be revoked. D4 does not add atomic ownership
 between resolve and readlink. The stronger N5 borrowed-result lease remains a
 separate shipping requirement. Errors are not retried by resolving another inode.
+
+## Direct resolve completion ownership
+
+An ordinary `FilesystemService` resolve completion owns one reference to each
+unique defined parent and node before trimming or publishing the result. Inline
+results retain those references without storing payload bytes. An overflow
+result keeps them after its last payload transfer. Discard, cancellation, failed
+acquisition, and session disposal release the completion's ownership. These
+references use the existing capability counts and backend pins, independently
+of explicit retain RPC ownership. No new authority or capability limit is added.
+
+`FilesystemClient.resolveBorrowed(directory, path, followFinal)` performs an
+uncached direct resolve. It adopts each unique defined identity while the
+completion still owns it, then discards the completion. It returns either a
+positive errno or `{ path, release }`. `path` is a readonly snapshot. `release()`
+is idempotent and drops only the borrow's acquired references. Partial adoption
+rolls back before completion disposal. A retained identity survives ordinary
+rename, unlink, and name replacement, but never session revocation.
+
+Existing `resolve()` remains transient, including its cache. Decoding a raw
+completion alone does not adopt its identities. Retain them before releasing the
+completion if they must survive later namespace changes.
+
+This contract covers the direct service and client only. A resident connection
+returns unsupported-operation58 from `resolveBorrowed` before submission.
+Resident forwarding, the required `FileSystem` interface, MemFS borrows, and WASI
+borrow integration remain separate work. Backend implementations must preserve
+their own result until returning it. This direct unit does not establish a lease
+inside arbitrary asynchronous backends, native storage, or Bun consumers.
