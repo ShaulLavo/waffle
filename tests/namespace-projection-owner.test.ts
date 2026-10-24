@@ -250,7 +250,9 @@ function holdResponse(port: MessagePort) {
 function retirements() {
   const original = NamespaceProjectionOwner.prototype.retire;
   const owners: NamespaceProjectionOwner[] = [];
-  const spy = spyOn(NamespaceProjectionOwner.prototype, "retire").mockImplementation(function () {
+  const spy = spyOn(NamespaceProjectionOwner.prototype, "retire").mockImplementation(function (
+    this: NamespaceProjectionOwner,
+  ) {
     owners.push(this);
     return original.call(this);
   });
@@ -317,9 +319,10 @@ test("a history gap retires acceptance without invalidating copied change pages"
       .flatMap((batch) => batch.changes)
       .find((change) => change.kind === "write");
     expect(copied).toMatchObject({ kind: "write", paths: ["/copied"] });
-    expect(
-      await current.workspace.changes({ ...changed.next, seq: changed.next.seq + 1n }),
-    ).toMatchObject({ kind: "gap", resync: "snapshot" });
+    expect(await current.workspace.changes(initial.cut.watermark)).toMatchObject({
+      kind: "gap",
+      resync: "snapshot",
+    });
     expect(retiring.owners).toHaveLength(1);
     expect(copied).toMatchObject({ kind: "write", paths: ["/copied"] });
   } finally {
