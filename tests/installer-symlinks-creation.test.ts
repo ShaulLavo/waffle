@@ -103,9 +103,14 @@ function fixture(mode: "direct" | "planned" | "service") {
   return { fs, remote, mkdirp, write, preopen, read, changes, links, state };
 }
 type Fixture = ReturnType<typeof fixture>;
+async function expectErrno(action: () => Promise<unknown>, errno: number) {
+  let failure: unknown;
+  try { await action(); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ errno });
+}
 async function rejected(f: Fixture, action: () => Promise<unknown>, errno: number) {
   const before = f.state(), changes = f.changes.slice(), links = f.links.slice();
-  await expect(action()).rejects.toMatchObject({ errno });
+  await expectErrno(action, errno);
   expect(f.state()).toEqual(before);
   expect(f.changes).toEqual(changes);
   expect(f.links).toEqual(links);
@@ -272,8 +277,8 @@ test("D3 real page memory worker preserves creation policy and queued writes aft
     expect(await page.client.asyncCall("symlink", [path, target])).toBe(0);
   }
   const before = await page.lookup("/a");
-  await expect(page.mkdirp("/bad/explicit")).rejects.toMatchObject({ errno: 44 });
-  await expect(page.drain()).rejects.toMatchObject({ errno: 44 });
+  await expectErrno(() => page.mkdirp("/bad/explicit"), 44);
+  await expectErrno(() => page.drain(), 44);
   expect(await page.lookup("/a")).toEqual(before);
   expect(await page.lookup("/a/missing")).toBeUndefined();
   await page.writeFile("/link/explicit/child.txt", "page text");
