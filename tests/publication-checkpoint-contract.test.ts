@@ -12,7 +12,13 @@ import {
   type PublicationEffect,
 } from "../fs/publication";
 import { publicationObserver, type PublicationLimits } from "../fs/publication-internal";
-import type { CheckpointPublication } from "../fs/storage";
+import {
+  decodeSnapshot,
+  encodeRecord,
+  encodeSnapshot,
+  type CheckpointPublication,
+} from "../fs/storage";
+import { coldPublicationRoot } from "./fixtures/publication-storage";
 
 const limits: PublicationLimits = {
   sessions: 4,
@@ -61,6 +67,33 @@ async function checkpointFixture(): Promise<CheckpointPublication> {
     service.dispose();
   }
 }
+
+test("publication snapshots preserve typed bytes and reject invalid records", async () => {
+  const publication = await checkpointFixture();
+  const value = { ...coldPublicationRoot(), publication };
+  const snapshot = await encodeSnapshot(value);
+  const decoded = await decodeSnapshot(snapshot);
+  expect(decoded).toEqual(value);
+  for (const [index, change] of publication.changes.entries()) {
+    expect(decoded?.publication?.changes[index]).toBeInstanceOf(Uint8Array);
+    expect(decoded?.publication?.changes[index]).toEqual(change);
+  }
+  expect(
+    await decodeSnapshot({
+      ...snapshot,
+      json: snapshot.json.replace('"generation":1', '"generation":2'),
+    }),
+  ).toBeUndefined();
+  const invalidBytes = {
+    ...value,
+    publication: { ...publication, changes: [[0, 256]] },
+  };
+  expect(await decodeSnapshot(await encodeRecord(invalidBytes))).toBeUndefined();
+  const withoutPublication = coldPublicationRoot();
+  expect(await decodeSnapshot(await encodeSnapshot(withoutPublication))).toEqual(
+    withoutPublication,
+  );
+});
 
 function withContent(
   checkpoint: CheckpointPublication,
