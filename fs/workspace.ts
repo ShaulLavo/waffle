@@ -16,7 +16,8 @@ import {
   versionStat,
   nodeMetadata,
 } from "./workspace-protocol.js";
-import { ChangeBudget, NamespaceIndex, ProjectionPressure } from "./workspace-index.js";
+import { ChangeBudget, ProjectionPressure } from "./workspace-index.js";
+import { NamespaceProjectionOwner } from "./namespace-projection-owner.js";
 import {
   WORKSPACE_LIMITS,
   type WorkspaceVfs,
@@ -41,9 +42,13 @@ export * from "./workspace-types.js";
 export type { WorkspaceConfiguration } from "./workspace-protocol.js";
 
 type TerminalPage = Exclude<SnapshotPage, { kind: "entries" }>;
-type Accepted = { readonly cut: NamespaceCut; readonly index: NamespaceIndex; next: Watermark };
+type Accepted = {
+  readonly cut: NamespaceCut;
+  readonly projection: NamespaceProjectionOwner;
+  next: Watermark;
+};
 type CursorState =
-  | { readonly kind: "scanning"; readonly index: NamespaceIndex }
+  | { readonly kind: "scanning"; readonly projection: NamespaceProjectionOwner }
   | { readonly kind: "terminal"; readonly page: TerminalPage };
 const owners = new WeakMap<FilesystemClient, WorkspaceVfs>();
 function options(value: SnapshotOptions = {}): Required<SnapshotOptions> {
@@ -91,6 +96,7 @@ class WorkspaceOwner implements WorkspaceVfs {
   private closed = false;
   private pulling = false;
   private accepted: Accepted | undefined;
+  private readonly retirements = new Map<NamespaceProjectionOwner, Promise<void>>();
   private closing: Promise<void> | undefined;
   private readonly lifetime = new AbortController();
   private readonly leases = new Set<RemoteVersionLease>();
@@ -121,8 +127,32 @@ class WorkspaceOwner implements WorkspaceVfs {
   release(cursor: RemoteSnapshot): void {
     this.cursors.delete(cursor);
   }
-  accept(cut: NamespaceCut, index: NamespaceIndex): void {
-    if (!this.stopped) this.accepted = { cut, index, next: cut.watermark };
+  accept(cut: NamespaceCut, projection: NamespaceProjectionOwner): void {
+    if (this.stopped) {
+      this.retire(projection);
+      return;
+    }
+    const previous = this.accepted;
+    this.accepted = { cut, projection, next: cut.watermark };
+    if (previous) this.retire(previous.projection);
+  }
+  retire(projection: NamespaceProjectionOwner): Promise<void> {
+    const previous = this.retirements.get(projection);
+    if (previous) return previous;
+    const retiring = projection.retire();
+    this.retirements.set(projection, retiring);
+    void retiring.then(
+      () => {
+        if (this.retirements.get(projection) === retiring) this.retirements.delete(projection);
+      },
+      () => {},
+    );
+    return retiring;
+  }
+  private clearAccepted(expected: Accepted | undefined): void {
+    if (!expected || this.accepted !== expected) return;
+    this.accepted = undefined;
+    this.retire(expected.projection);
   }
   async request(
     operation: string,
@@ -346,7 +376,7 @@ class WorkspaceOwner implements WorkspaceVfs {
         this.accepted !== accepted ||
         !same(after, accepted.next)
       ) {
-        if (this.accepted === accepted) this.accepted = undefined;
+        this.clearAccepted(accepted);
         return {
           kind: "gap",
           current: reply.current,
@@ -358,7 +388,7 @@ class WorkspaceOwner implements WorkspaceVfs {
       accepted.next = reply.next;
       return { kind: "changes", batches, next: reply.next };
     } catch (error) {
-      if (this.accepted === accepted) this.accepted = undefined;
+      this.clearAccepted(accepted);
       if (this.stopped) return { kind: "stopped" };
       if (signal?.aborted) return { kind: "cancelled" };
       if (error instanceof ProjectionPressure)
@@ -372,29 +402,37 @@ class WorkspaceOwner implements WorkspaceVfs {
     reply: ReturnType<typeof workspaceChanges>,
     accepted: Accepted,
   ): readonly ChangeBatch[] {
-    const budget = new ChangeBudget();
-    return reply.publications.map((publication) => {
-      const cut = namespaceCut(accepted.cut.workspace, publication.receipt.cut);
-      const actor = `${cut.watermark.history}/${publication.receipt.id.session}`;
-      budget.take(256);
-      return {
-        seq: cut.watermark.seq,
-        generation: cut.generation,
-        actor,
-        transaction: { actor, sequence: publication.receipt.id.sequence },
-        durability: publication.receipt.durability,
-        changes: accepted.index.project(publication.changes, budget),
-      };
-    });
+    const borrow = accepted.projection.borrow();
+    if (!borrow) throw new Error("accepted namespace projection is retired");
+    try {
+      const budget = new ChangeBudget();
+      return reply.publications.map((publication) => {
+        const cut = namespaceCut(accepted.cut.workspace, publication.receipt.cut);
+        const actor = `${cut.watermark.history}/${publication.receipt.id.session}`;
+        budget.take(256);
+        return {
+          seq: cut.watermark.seq,
+          generation: cut.generation,
+          actor,
+          transaction: { actor, sequence: publication.receipt.id.sequence },
+          durability: publication.receipt.durability,
+          changes: borrow.table.project(publication.changes, budget),
+        };
+      });
+    } finally {
+      borrow.release();
+    }
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;
     this.closed = true;
-    this.accepted = undefined;
+    this.clearAccepted(this.accepted);
     this.lifetime.abort();
+    const retirements = Array.from(this.retirements.values());
     const closing = Array.from(this.cursors, (cursor) => cursor.stop());
     this.closing = Promise.allSettled(
       closing.concat(
+        retirements,
         Array.from(this.leases, (lease) => lease.close()),
         [this.closeCursor(), this.closeRead()],
       ),
@@ -425,7 +463,7 @@ class RemoteSnapshot implements SnapshotCursor {
   ) {
     this.state = terminal
       ? { kind: "terminal", page: terminal }
-      : { kind: "scanning", index: new NamespaceIndex() };
+      : { kind: "scanning", projection: NamespaceProjectionOwner.create() };
     if (!terminal) signal?.addEventListener("abort", this.abort, { once: true });
   }
   async next(): Promise<SnapshotPage> {
@@ -451,8 +489,14 @@ class RemoteSnapshot implements SnapshotCursor {
         return { kind: "stopped" };
       }
       if (this.terminalPage) return this.terminalPage;
-      if (reply.kind !== "entries") return await this.terminal(reply, scanning.index);
-      for (const record of reply.entries) scanning.index.add(record);
+      if (reply.kind !== "entries") return await this.terminal(reply, scanning.projection);
+      const borrow = scanning.projection.borrow();
+      if (!borrow) throw new Error("scanning namespace projection is retired");
+      try {
+        for (const record of reply.entries) borrow.table.add(record);
+      } finally {
+        borrow.release();
+      }
       return {
         kind: "entries",
         entries: reply.entries
@@ -487,19 +531,34 @@ class RemoteSnapshot implements SnapshotCursor {
   private get terminalPage(): TerminalPage | undefined {
     return this.state.kind === "terminal" ? this.state.page : undefined;
   }
-  private async terminal(page: TerminalPage, index: NamespaceIndex): Promise<SnapshotPage> {
-    if (page.kind === "complete") this.owner.accept(page.cut, index);
+  private async terminal(
+    page: TerminalPage,
+    projection: NamespaceProjectionOwner,
+  ): Promise<SnapshotPage> {
+    if (page.kind === "complete") this.owner.accept(page.cut, projection);
     await this.finish(page);
     return this.state.kind === "terminal" ? this.state.page : page;
   }
   private finish(page: TerminalPage): Promise<void> {
     if (this.state.kind === "terminal") return this.closing ?? Promise.resolve();
+    const projection =
+      this.state.kind === "scanning" && page.kind !== "complete"
+        ? this.state.projection
+        : undefined;
     this.state = { kind: "terminal", page };
     this.lifetime.abort();
     this.signal?.removeEventListener("abort", this.abort);
+    const retiring = projection ? this.owner.retire(projection) : Promise.resolve();
     this.owner.release(this);
-    this.closing =
+    const closing =
       this.serial === undefined ? Promise.resolve() : this.owner.closeCursor(this.serial);
+    this.closing = Promise.allSettled([retiring, closing]).then((results) => {
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "Namespace cursor close failed");
+    });
     return this.closing;
   }
   stop(): Promise<void> {
