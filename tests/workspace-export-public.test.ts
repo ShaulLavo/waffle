@@ -7,14 +7,13 @@ import * as fs from "waffle/fs";
 import type { WorkspaceExportOptions as FsOptions } from "waffle/fs";
 import * as fsIndex from "waffle/fs/index";
 import type { WorkspaceExportOptions as AliasOptions } from "waffle/fs/index";
-import type { exportWorkspaceArchive } from "../fs/workspace-export";
 import { parseWorkspaceArchive, type ArchiveEvent } from "../fs/workspace-archive";
 import { storeIdentity } from "../fs/file-identity";
 import { MemoryBackend } from "../fs/backend";
 import { MemFS } from "../fs/memory";
 import { publicReadFixture } from "./fixtures/workspace-read";
 
-function publicExporter(entry: object): typeof exportWorkspaceArchive {
+function publicExporter(entry: object): typeof root.exportWorkspaceArchive {
   const selected: unknown = Reflect.get(entry, "exportWorkspaceArchive");
   if (typeof selected !== "function" || selected !== root.exportWorkspaceArchive)
     throw new Error("Missing public workspace exporter");
@@ -25,7 +24,7 @@ function publicExporter(entry: object): typeof exportWorkspaceArchive {
   expect(Reflect.get(entry, "WORKSPACE_EXPORT_LIMITS")).toBe(root.WORKSPACE_EXPORT_LIMITS);
   expect(Reflect.has(entry, "importWorkspaceArchive")).toBe(false);
   expect(Reflect.has(entry, "ArchiveStagingSink")).toBe(false);
-  return selected;
+  return root.exportWorkspaceArchive;
 }
 
 interface Received {
