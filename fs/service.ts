@@ -410,14 +410,19 @@ export class FilesystemService {
     let idle = 0,
       detached = false;
     const shared = this.backend instanceof MemoryBackend ? this.backend.shared : undefined;
-    for (const handle of session.transient.keys())
-      if (
-        !session.preparingHandles.has(handle) &&
-        Atomics.load(session.capabilities, session.handles.get(handle)! + 1) === 0
-      ) {
-        idle++;
-        if (shared?.isUnlinked(handle)) detached = true;
-      }
+    const responseHeld = new Map<number, number>();
+    for (const response of session.responses.values()) {
+      if (response.kind !== "resolve") continue;
+      for (const handle of response.references.keys())
+        responseHeld.set(handle, (responseHeld.get(handle) ?? 0) + 1);
+    }
+    for (const handle of session.transient.keys()) {
+      const references = Atomics.load(session.capabilities, session.handles.get(handle)! + 1);
+      if (session.preparingHandles.has(handle) || references !== (responseHeld.get(handle) ?? 0))
+        continue;
+      idle++;
+      if (references === 0 && shared?.isUnlinked(handle)) detached = true;
+    }
     if (idle <= TRANSIENT_HANDLES && !detached) return;
     // Eviction is a capability mutation, serialized against direct guest mutations too.
     const epoch = new Int32Array(session.connection.epoch);

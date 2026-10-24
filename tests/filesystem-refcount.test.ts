@@ -223,6 +223,7 @@ test("a transient stat keeps its capability alive through service eviction and r
 test("stat releases its temporary reference when a missing shared slot reaches a failed service call", async () => {
   const { client } = fixture();
   const { handle } = await file(client);
+  await client.asyncCall("listFiles", ["/"]);
   const cells = table(client.connection);
   const index = refIndex(cells, handle);
   const failure = new FilesystemError(29);
