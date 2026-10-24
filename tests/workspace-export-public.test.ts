@@ -7,14 +7,9 @@ import * as fs from "waffle/fs";
 import type { WorkspaceExportOptions as FsOptions } from "waffle/fs";
 import * as fsIndex from "waffle/fs/index";
 import type { WorkspaceExportOptions as AliasOptions } from "waffle/fs/index";
-import {
-  exportWorkspaceArchive,
-  WorkspaceExportError,
-  WORKSPACE_EXPORT_LIMITS,
-} from "../fs/workspace-export";
+import type { exportWorkspaceArchive } from "../fs/workspace-export";
 import {
   parseWorkspaceArchive,
-  WorkspaceArchiveError,
   type ArchiveEvent,
 } from "../fs/workspace-archive";
 import { storeIdentity } from "../fs/file-identity";
@@ -23,11 +18,14 @@ import { MemFS } from "../fs/memory";
 import { publicReadFixture } from "./fixtures/workspace-read";
 
 function publicExporter(entry: object): typeof exportWorkspaceArchive {
-  const selected = Reflect.get(entry, "exportWorkspaceArchive");
-  if (selected !== exportWorkspaceArchive) throw new Error("Missing public workspace exporter");
-  expect(Reflect.get(entry, "WorkspaceExportError")).toBe(WorkspaceExportError);
-  expect(Reflect.get(entry, "WorkspaceArchiveError")).toBe(WorkspaceArchiveError);
-  expect(Reflect.get(entry, "WORKSPACE_EXPORT_LIMITS")).toBe(WORKSPACE_EXPORT_LIMITS);
+  const selected: unknown = Reflect.get(entry, "exportWorkspaceArchive");
+  if (typeof selected !== "function" || selected !== root.exportWorkspaceArchive)
+    throw new Error("Missing public workspace exporter");
+  expect(typeof root.WorkspaceExportError).toBe("function");
+  expect(typeof root.WorkspaceArchiveError).toBe("function");
+  expect(Reflect.get(entry, "WorkspaceExportError")).toBe(root.WorkspaceExportError);
+  expect(Reflect.get(entry, "WorkspaceArchiveError")).toBe(root.WorkspaceArchiveError);
+  expect(Reflect.get(entry, "WORKSPACE_EXPORT_LIMITS")).toBe(root.WORKSPACE_EXPORT_LIMITS);
   expect(Reflect.has(entry, "importWorkspaceArchive")).toBe(false);
   expect(Reflect.has(entry, "ArchiveStagingSink")).toBe(false);
   return selected;
