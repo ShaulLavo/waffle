@@ -13,11 +13,22 @@ const runners = [
   "publication",
   "publication-cross-tab",
 ];
+const continuity = "workspace-continuity";
 const fixture = `
 import { existsSync, writeFileSync } from "node:fs";
 const names = ${JSON.stringify(runners)};
 const name = process.argv[1].split("/").at(-1).replace("-browser-runner.ts", "");
 const engines = process.argv.slice(2).join(",");
+if (name === "${continuity}") {
+  if (engines !== "chromium") throw Error("continuity engine repeated or changed");
+  if (existsSync(name + ".finished")) throw Error("continuity repeated");
+  const scratch = process.env.STORAGE_SCRATCH_ROOT;
+  if (scratch !== process.cwd() && !scratch?.startsWith(process.cwd() + "/wb-")) throw Error("scratch missing");
+  if (process.platform === "linux" && process.env.PROCESS_SCRATCH_ROOT !== scratch) throw Error("supervised scratch missing");
+  writeFileSync(name + ".finished", engines);
+  if (process.env.MATRIX_FAIL === name + ":" + engines) throw Error("fixture failure");
+  process.exit(0);
+}
 if (engines === "chromium,firefox") {
   writeFileSync(name + ".started", "");
   while (!names.every((entry) => existsSync(entry + ".started"))) await Bun.sleep(10);
@@ -45,19 +56,20 @@ async function matrix(failing: string): Promise<void> {
     );
     for (const name of ["browser-command.ts", "browser-supervisor.ts"])
       await copyFile(join(import.meta.dir, "../scripts", name), join(root, "scripts", name));
-    for (const runner of runners)
+    for (const runner of runners.concat([continuity]))
       await writeFile(join(root, "tests", `${runner}-browser-runner.ts`), fixture);
     let failure: unknown;
     try {
       await runOwned([process.execPath, "scripts/test-browser.ts"], {
         cwd: root,
-        env: { ...process.env, MATRIX_FAIL: failing },
+        env: { ...process.env, MATRIX_FAIL: failing, STORAGE_SCRATCH_ROOT: root },
         timeoutMs: 5000,
       });
     } catch (error) {
       cleanupError = error instanceof CommandCleanupError ? error : undefined;
       failure = error;
     }
+    expect(await readFile(join(root, `${continuity}.finished`), "utf8")).toBe("chromium");
     expect(cleanupError).toBeUndefined();
     expect(failure instanceof Error).toBe(failing !== "");
     for (const runner of runners) {
@@ -83,3 +95,7 @@ for (const runner of runners) {
     }, 15_000);
   }
 }
+
+test("continuity Chromium failure remains blocking in its single supervised invocation", async () => {
+  await matrix(`${continuity}:chromium`);
+}, 15_000);

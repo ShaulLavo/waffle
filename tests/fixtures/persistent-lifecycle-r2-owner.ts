@@ -1,3 +1,4 @@
+import { residentMemory } from "./resident-memory";
 import {
   createPersistentResidentOwner,
   selectPersistentWorkspace,
@@ -92,7 +93,12 @@ async function execute(operation: string, value: unknown): Promise<unknown> {
           original: { instance: text(original.instance), history: text(original.history) },
         }
       : { ...base, kind: "initial-open" };
-    owner = createPersistentResidentOwner(request, new AbortController().signal);
+    owner = createPersistentResidentOwner(
+      request,
+      new AbortController().signal,
+      undefined,
+      residentMemory(),
+    );
     return owner.ready;
   }
   if (operation === "stop") {
