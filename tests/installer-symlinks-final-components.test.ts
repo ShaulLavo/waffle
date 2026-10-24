@@ -343,3 +343,66 @@ test("D2 no-follow slash rejects a real final link to a virtual directory alias"
   link(f.fs, `/a/dev/fd/${directory}`, `../../../dev/fd/${directory}`);
   rejectOpen(f, `deep/../dev/fd/${directory}///`, false, 0, 54);
 });
+
+
+test.each([0, 1, 2])(
+  "r34 ordinary explicit-follow final directory-link slash opens without namespace effects, oflags=%i",
+  (oflags) => {
+    const f = wasiFixture(),
+      before = snapshot(f.fs),
+      referent = handle(f.fs, "/a/b");
+    f.bytes.fill(0xcc, 128, 132);
+    expect(f.open("link///", true, oflags)).toBe(0);
+    const fd = f.view.getUint32(128, true);
+    expect(fd).toBe(4);
+    expect(f.wasi.descriptors.get(fd)?.resource).toEqual({ kind: "directory", handle: referent });
+    expect(f.wasi.descriptors.get(fd)?.rightsBase).toBe(READ | WRITE);
+    expect(f.wasi.descriptors.get(fd)?.rightsInheriting).toBe(0n);
+    expect(snapshot(f.fs)).toEqual(before);
+  },
+);
+
+test.each([
+  { path: "link/", follow: false, oflags: 0, errno: 54 },
+  { path: "link///", follow: false, oflags: 2, errno: 54 },
+  { path: "link/", follow: false, oflags: 5, errno: 54 },
+  { path: "link/", follow: true, oflags: 5, errno: 54 },
+  { path: "link", follow: false, oflags: 0, errno: 32 },
+  { path: "link", follow: false, oflags: 8, errno: 32 },
+  { path: "link", follow: false, oflags: 5, errno: 20 },
+  { path: "link", follow: true, oflags: 5, errno: 20 },
+  { path: "link/", follow: true, oflags: 8, errno: 31 },
+])("r34 ordinary final-directory-link flags retain errno and reject before effects %j", (row) => {
+  const f = wasiFixture();
+  rejectOpen(f, row.path, row.follow, row.oflags, row.errno);
+});
+
+test.each([
+  { path: "a/b///", target: "/a/b", follow: false },
+  { path: "a/b///", target: "/a/b", follow: true },
+  { path: "link/.", target: "/a/b", follow: false },
+  { path: "link/..", target: "/a", follow: false },
+])("r34 ordinary directories and actual-parent suffixes retain open identity %j", (row) => {
+  const f = wasiFixture(),
+    before = snapshot(f.fs);
+  expect(f.open(row.path, row.follow, 2)).toBe(0);
+  expect(f.wasi.descriptors.get(f.view.getUint32(128, true))?.resource).toEqual({
+    kind: "directory",
+    handle: handle(f.fs, row.target),
+  });
+  expect(snapshot(f.fs)).toEqual(before);
+});
+
+test("r34 ordinary explicit-follow slash uses the existing 40-expansion bound", () => {
+  const f = wasiFixture();
+  for (let index = 0; index < 41; index++)
+    link(f.fs, `/ordinary${index}`, index === 40 ? "a/b" : `ordinary${index + 1}`);
+  const before = snapshot(f.fs);
+  expect(f.open("ordinary1/", true, 2)).toBe(0);
+  expect(f.wasi.descriptors.get(f.view.getUint32(128, true))?.resource).toEqual({
+    kind: "directory",
+    handle: handle(f.fs, "/a/b"),
+  });
+  expect(snapshot(f.fs)).toEqual(before);
+  rejectOpen(f, "ordinary0/", true, 8, 32);
+});
