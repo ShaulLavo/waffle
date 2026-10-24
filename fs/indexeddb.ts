@@ -353,8 +353,12 @@ function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references
     }
   return { references, parents };
 }
-function decodeChangeBytes(value: unknown): Uint8Array {
-  if (!Array.isArray(value) || !value.every((byte: unknown) => validInteger(byte) && byte <= 255))
+function decodeChangeBytes(value: unknown, bound: number): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length > bound ||
+    !value.every((byte: unknown) => validInteger(byte) && byte <= 255)
+  )
     metadataError();
   return Uint8Array.from(value);
 }
@@ -368,22 +372,24 @@ async function encodeSelection(selection: Journal | PersistedIndex): Promise<Che
     },
   });
 }
+function decodePublication(value: unknown): CheckpointPublication {
+  if (!value || typeof value !== "object" || !("changes" in value)) metadataError();
+  const checkpoint = snapshotPublicationCheckpoint({ ...value, changes: [] });
+  if (!Array.isArray(value.changes) || value.changes.length > checkpoint.limits.logRecords)
+    metadataError();
+  return snapshotPublicationCheckpoint({
+    ...checkpoint,
+    changes: value.changes.map((change: unknown) =>
+      decodeChangeBytes(change, checkpoint.limits.effectBytes),
+    ),
+  });
+}
 async function decodeSelection(value: unknown): Promise<unknown> {
   const selection = await decodeRecord(value);
   if (!selection || typeof selection !== "object" || !("publication" in selection))
     return selection;
   try {
-    const publication = selection.publication;
-    if (!publication || typeof publication !== "object" || !("changes" in publication))
-      metadataError();
-    if (!Array.isArray(publication.changes)) metadataError();
-    return {
-      ...selection,
-      publication: snapshotPublicationCheckpoint({
-        ...publication,
-        changes: publication.changes.map(decodeChangeBytes),
-      }),
-    };
+    return { ...selection, publication: decodePublication(selection.publication) };
   } catch {
     return undefined;
   }
