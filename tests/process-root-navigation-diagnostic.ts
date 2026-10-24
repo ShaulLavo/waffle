@@ -394,7 +394,13 @@ export async function collectChild(command: string[], directory: string): Promis
   try {
     journals.push(new Journal(stdoutPath));
     journals.push(new Journal(join(root, "stderr.bin")));
-    child = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+    child = Bun.spawn(command, {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+      env: process.env,
+    });
     readers.push(child.stdout.getReader(), child.stderr.getReader());
     streams = Promise.all([
       collectStream(readers[0]!, journals[0]!, stdoutPath, root),
@@ -598,6 +604,19 @@ export function assertIdentity(actual: Record<string, string>, expected: unknown
   }
 }
 
+export function assertSourceProvenance(lockfilePath: string, runnerPath: string): void {
+  if (
+    sha256(readFileSync(lockfilePath)) !==
+    "511031108aa6f8dc745f22cacdf25f25f3070c5fb9e48e229c20d4dca3f94bcd"
+  )
+    throw new Error("Lockfile does not match approved diagnostic inputs");
+  if (
+    sha256(readFileSync(runnerPath)) !==
+    "e047547fb7100d46214c378487c206f95c11b9bbfe644a49f9faaf52abc27693"
+  )
+    throw new Error("Original runner changed");
+}
+
 function identity(): Record<string, string> {
   if (process.platform !== "linux")
     throw new Error("Linux process and Ethernet capture hooks required");
@@ -627,16 +646,10 @@ function identity(): Record<string, string> {
     throw new Error("Explicit installed browser root required");
   const executable = join(browserRoot, "webkit-2370", "pw_run.sh");
   const root = dirname(import.meta.dir);
-  if (
-    sha256(readFileSync(join(root, "bun.lock"))) !==
-    "57c977e25709d7010f84865182f1dccfc3ab8460a165172fa8846092d08bec16"
-  )
-    throw new Error("Lockfile is not main88");
-  if (
-    sha256(readFileSync(join(import.meta.dir, "process-recycling-browser-runner.ts"))) !==
-    "e047547fb7100d46214c378487c206f95c11b9bbfe644a49f9faaf52abc27693"
-  )
-    throw new Error("Original runner changed");
+  assertSourceProvenance(
+    join(root, "bun.lock"),
+    join(import.meta.dir, "process-recycling-browser-runner.ts"),
+  );
   return {
     playwright: String(JSON.parse(readFileSync(packagePath, "utf8")).version),
     webkit: String(webkit.browserVersion),
@@ -693,7 +706,7 @@ async function waitForProcessTrace(root: string, pid: number): Promise<void> {
 export function hasProtocolCollection(trace: string): boolean {
   return (
     trace.includes("pw:protocol SEND") &&
-    trace.includes("pw:protocol RECV") &&
+    /pw:protocol ◀ RECV\b/.test(trace) &&
     /pw:browser.*<launched> pid=\d+/.test(trace) &&
     /execve\(.*MiniBrowser/.test(trace)
   );
