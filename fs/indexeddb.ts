@@ -1,3 +1,21 @@
+import {
+  STAGED_FORMAT,
+  STAGING_LIMITS,
+  StagingCapacity,
+  NativeCommitControl,
+  initialEnvelope,
+  encodeCommit,
+  decodeCommit,
+  commitRoots,
+  invalidCommit,
+  sameRecord,
+  validateGroup,
+  type CommitEnvelope,
+  type CommittedRecovery,
+  type CommittedStorage,
+  type NativeCommit,
+  type PreparedDurableGroup,
+} from "./safe-staging.js";
 import { nextReservation, storeReservation, type IdentityReservation } from "./file-identity.js";
 import {
   CHUNK_SIZE,
@@ -15,6 +33,7 @@ import {
   type ChunkManifest,
   type IndexedDBRange,
 } from "./indexeddb-chunks.js";
+import { snapshotPublicationCheckpoint } from "./publication.js";
 import { INDEXEDDB_FORMAT } from "./vfs-format.js";
 import { VfsError } from "./vfs.js";
 import { reportRuntimeStartup, type RuntimeStartupObserver } from "./startup.js";
@@ -25,12 +44,12 @@ import {
   type ReaderMetadataBudget,
   decodeRecord,
   snapshotBatch,
-  decodeSnapshot,
   encodeRecord,
-  encodeSnapshot,
   validatePersistedIndex,
   validatePersistedNode,
   validInteger,
+  type ChecksummedRecord,
+  type CheckpointPublication,
   type PersistenceBatch,
   type PersistedIndex,
   type PersistedNode,
@@ -195,8 +214,10 @@ interface Journal {
   root: number;
   upserts: PersistedNode[];
   removes: number[];
+  publication?: CheckpointPublication;
 }
 interface TreeState {
+  publication?: CheckpointPublication;
   generation: number;
   root: number;
   nodes: Map<number, PersistedNode>;
@@ -209,6 +230,90 @@ interface State extends TreeState {
   journalKeys: IDBValidKey[];
   payloadKeys: Set<string>;
   sinceCompaction: number;
+}
+interface CommittedTransaction {
+  group: PreparedDurableGroup;
+  envelope: CommitEnvelope;
+  expected: ChecksummedRecord;
+  control: NativeCommitControl;
+}
+function validateDatabaseLayout(
+  committed: boolean,
+  format: unknown,
+  keys: IDBValidKey[],
+  journalKeys: IDBValidKey[],
+  dataKeys: IDBValidKey[],
+): boolean {
+  const empty =
+    committed &&
+    !keys.includes("format") &&
+    keys.every((key) => key === "epoch") &&
+    !journalKeys.length &&
+    !dataKeys.length;
+  if (committed && !empty && format !== STAGED_FORMAT) invalidCommit();
+  if (
+    !committed &&
+    keys.includes("format") &&
+    format !== INDEXEDDB_FORMAT &&
+    format !== "waffle-indexeddb-v1"
+  )
+    throw new VfsError(
+      "INVALID_VFS_FORMAT",
+      "indexeddb",
+      "Incompatible IndexedDB filesystem format identity",
+    );
+  const allowed: IDBValidKey[] = [0, 1, "epoch", "active", "format", "identity"];
+  if (committed) allowed.push("commit");
+  if (keys.some((key) => !allowed.includes(key)))
+    throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Incompatible IndexedDB metadata layout");
+  return empty;
+}
+function requiredPayloads(
+  nodes: Iterable<PersistedNode>,
+  durable: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const expected = new Map(durable);
+  for (const node of nodes) {
+    if (node.data === undefined) continue;
+    if (expected.has(node.data) && expected.get(node.data) !== node.size) metadataError();
+    expected.set(node.data, node.size);
+  }
+  return expected;
+}
+function transactionFailure(
+  tx: IDBTransaction,
+  ownership: unknown,
+  failure: { cause: unknown } | undefined,
+  committed?: CommittedTransaction,
+): unknown {
+  if (committed && failure) return failure.cause;
+  return (
+    ownership ??
+    failure?.cause ??
+    committed?.control.abortReason ??
+    tx.error ??
+    new Error("Filesystem transaction aborted")
+  );
+}
+function checkCommitHead(
+  tx: IDBTransaction,
+  committed: CommittedTransaction,
+  checked: () => void,
+  abort: (error: unknown) => void,
+): void {
+  const head = tx.objectStore("metadata").get("commit");
+  head.onsuccess = () => {
+    if (!sameRecord(head.result, committed.expected)) {
+      abort(new Error("Staged commit head changed"));
+      return;
+    }
+    checked();
+  };
+}
+function snapshotSlot(bases: State["bases"]): 0 | 1 {
+  if (!bases[0]) return 0;
+  if (!bases[1]) return 1;
+  return bases[0].generation <= bases[1].generation ? 0 : 1;
 }
 function metadataError(): never {
   throw new VfsError("INVALID_VFS_FORMAT", "indexeddb", "Invalid persisted filesystem metadata");
@@ -247,6 +352,56 @@ function referenceIndex(nodes: Iterable<PersistedNode>): Pick<State, "references
       parents.set(ino, node.ino);
     }
   return { references, parents };
+}
+function decodeChangeBytes(value: unknown, bound: number): Uint8Array {
+  if (
+    !Array.isArray(value) ||
+    value.length > bound ||
+    !value.every((byte: unknown) => validInteger(byte) && byte <= 255)
+  )
+    metadataError();
+  return Uint8Array.from(value);
+}
+async function encodeSelection(selection: Journal | PersistedIndex): Promise<ChecksummedRecord> {
+  const publication = selection.publication;
+  return encodeRecord({
+    ...selection,
+    publication: publication && {
+      ...publication,
+      changes: publication.changes.map((change) => Array.from(change)),
+    },
+  });
+}
+function decodePublication(value: unknown): CheckpointPublication {
+  if (!value || typeof value !== "object" || !("changes" in value)) metadataError();
+  const checkpoint = snapshotPublicationCheckpoint({ ...value, changes: [] });
+  if (!Array.isArray(value.changes) || value.changes.length > checkpoint.limits.logRecords)
+    metadataError();
+  return snapshotPublicationCheckpoint({
+    ...checkpoint,
+    changes: value.changes.map((change: unknown) =>
+      decodeChangeBytes(change, checkpoint.limits.effectBytes),
+    ),
+  });
+}
+async function decodeSelection(value: unknown): Promise<unknown> {
+  const selection = await decodeRecord(value);
+  if (!selection || typeof selection !== "object" || !("publication" in selection))
+    return selection;
+  try {
+    return { ...selection, publication: decodePublication(selection.publication) };
+  } catch {
+    return undefined;
+  }
+}
+async function decodeIndex(value: unknown): Promise<PersistedIndex | undefined> {
+  const index = await decodeSelection(value);
+  try {
+    validatePersistedIndex(index);
+    return index;
+  } catch {
+    return undefined;
+  }
 }
 function validateJournal(value: unknown): value is Journal {
   try {
@@ -354,8 +509,7 @@ function stageChanges(
 function applyChanges(
   state: TreeState,
   staged: StagedChanges,
-  generation: number,
-  root: number,
+  selection: Pick<PersistenceBatch, "generation" | "root" | "publication">,
 ): void {
   for (const ino of staged.removes) state.nodes.delete(ino);
   for (const [ino, node] of staged.upserts) state.nodes.set(ino, node);
@@ -367,8 +521,9 @@ function applyChanges(
     if (parent === undefined) state.parents.delete(ino);
     else state.parents.set(ino, parent);
   }
-  state.generation = generation;
-  state.root = root;
+  state.generation = selection.generation;
+  state.root = selection.root;
+  state.publication = selection.publication;
 }
 
 /** Recover newest-first, copying the full tree only for a candidate with a complete chain. */
@@ -399,17 +554,18 @@ export function recoverIndex(
     const tree: TreeState = {
       generation: base.generation,
       root: base.root,
+      publication: base.publication,
       nodes,
       ...referenceIndex(nodes.values()),
     };
     chain.reverse();
     try {
-      for (const entry of chain)
-        applyChanges(tree, stageChanges(tree, entry), entry.generation, entry.root);
+      for (const entry of chain) applyChanges(tree, stageChanges(tree, entry), entry);
       const index: PersistedIndex = {
         version: 1,
         generation: tree.generation,
         root: tree.root,
+        ...(tree.publication ? { publication: tree.publication } : {}),
         nodes: Array.from(nodes.values()),
       };
       validatePersistedIndex(index);
@@ -434,22 +590,43 @@ export class IndexedDBStorage implements StorageBackend {
   private closing?: Promise<void>;
   private ownershipError?: Error;
   private transactions = new Set<IDBTransaction>();
+  private committedEnvelope: CommitEnvelope | undefined;
+  private committedRecord: ChecksummedRecord | undefined;
+  private committedPending = false;
 
   private constructor(
     private readonly db: IDBDatabase,
     private readonly unlock: () => Promise<void>,
     private readonly compactEvery: number,
     private readonly epoch: number,
-    private readonly onOwnershipLost?: () => void,
+    private readonly onOwnershipLost: (() => void) | undefined,
+    private readonly committedMode = false,
   ) {
     db.onversionchange = () => {
       void this.close();
     };
   }
 
-  static async open(
+  static open(name: string, options: IndexedDBStorageOptions = {}): Promise<IndexedDBStorage> {
+    return IndexedDBStorage.openMode(name, options, false);
+  }
+  static async openCommitted(
     name: string,
     options: IndexedDBStorageOptions = {},
+  ): Promise<CommittedStorage> {
+    const storage = await IndexedDBStorage.openMode(name, options, true);
+    try {
+      await storage.recoverCommitted();
+      return storage;
+    } catch (error) {
+      await storage.close();
+      throw error;
+    }
+  }
+  private static async openMode(
+    name: string,
+    options: IndexedDBStorageOptions,
+    committedMode: boolean,
   ): Promise<IndexedDBStorage> {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     const locks: StorageLockManager | undefined = options.locks ?? globalThis.navigator?.locks;
@@ -541,6 +718,7 @@ export class IndexedDBStorage implements StorageBackend {
           compactEvery,
           value,
           options.onOwnershipLost,
+          committedMode,
         );
         acquired(owner);
         await held;
@@ -796,6 +974,87 @@ export class IndexedDBStorage implements StorageBackend {
     }
   }
 
+  recoverCommitted(): Promise<CommittedRecovery> {
+    return this.enqueue(async () => {
+      if (!this.committedMode) invalidCommit();
+      await this.initialize();
+      if (!this.committedEnvelope) invalidCommit();
+      return structuredClone({
+        index: this.state && this.index(this.state),
+        envelope: this.committedEnvelope,
+        epoch: this.epoch,
+      });
+    });
+  }
+  beginCommit(group: PreparedDurableGroup): NativeCommit {
+    const control = new NativeCommitControl();
+    let copy: PreparedDurableGroup;
+    try {
+      if (!this.committedMode) invalidCommit();
+      if (this.committedPending) throw new StagingCapacity();
+      const bytes = Array.from(group.batch.data.values()).reduce(
+        (sum, bytes) => sum + bytes.byteLength,
+        0,
+      );
+      const metadata =
+        JSON.stringify({
+          upserts: group.batch.upserts,
+          removes: group.batch.removes,
+          retainedData: group.batch.retainedData,
+          publication: group.batch.publication,
+          keys: Array.from(group.batch.data.keys()),
+        }).length * 2;
+      const base = this.state ? JSON.stringify(this.index(this.state)).length * 2 : 0;
+      if (
+        metadata + base > STAGING_LIMITS.metadataBytes ||
+        group.envelope.json.length * 2 > STAGING_LIMITS.metadataBytes ||
+        bytes * 6 + (metadata + base + group.envelope.json.length * 2) * 16 > STAGING_LIMITS.bytes
+      )
+        throw new StagingCapacity();
+      copy = {
+        ...structuredClone({
+          expectedHead: group.expectedHead,
+          envelope: group.envelope,
+          receipt: group.receipt,
+        }),
+        batch: snapshotBatch(group.batch),
+      };
+    } catch (error) {
+      control.finish(error);
+      return control;
+    }
+    this.committedPending = true;
+    void this.enqueue(async () => {
+      control.checkAbort();
+      await this.initialize();
+      if (!this.committedEnvelope || !this.committedRecord) invalidCommit();
+      const envelope = await validateGroup(copy, {
+        index: this.state && this.index(this.state),
+        envelope: this.committedEnvelope,
+        epoch: this.epoch,
+      });
+      await this.commit(copy.batch, {
+        group: copy,
+        envelope,
+        expected: this.committedRecord,
+        control,
+      });
+    }).then(
+      () => {
+        this.committedPending = false;
+        control.finish();
+      },
+      (error: unknown) => {
+        this.committedPending = false;
+        try {
+          if (control.durable) this.loseOwnership();
+        } catch {}
+        control.finish(error);
+      },
+    );
+    return control;
+  }
+
   persist(batch: PersistenceBatch): Promise<void> {
     // Snapshot at submission, not when this operation reaches the asynchronous write queue.
     let copy: PersistenceBatch;
@@ -839,6 +1098,7 @@ export class IndexedDBStorage implements StorageBackend {
       version: 1,
       generation: state.generation,
       root: state.root,
+      ...(state.publication ? { publication: state.publication } : {}),
       nodes: Array.from(state.nodes.values()),
     };
   }
@@ -848,49 +1108,46 @@ export class IndexedDBStorage implements StorageBackend {
     const tx = this.db.transaction(["metadata", "journal", "data"], "readonly");
     const metadata = tx.objectStore("metadata"),
       journal = tx.objectStore("journal");
-    const [first, second, metadataKeys, journalValues, journalKeys, dataKeys, format] =
-      await Promise.all([
-        request(metadata.get(0)),
-        request(metadata.get(1)),
-        request(metadata.getAllKeys()),
-        request(journal.getAll()),
-        request(journal.getAllKeys()),
-        request(tx.objectStore("data").getAllKeys()),
-        request(metadata.get("format")),
-        completed(tx),
-      ]);
-    const formatPresent = metadataKeys.includes("format");
-    if (formatPresent && format !== INDEXEDDB_FORMAT && format !== "waffle-indexeddb-v1")
-      throw new VfsError(
-        "INVALID_VFS_FORMAT",
-        "indexeddb",
-        "Incompatible IndexedDB filesystem format identity",
-      );
-    if (
-      metadataKeys.some(
-        (key) =>
-          key !== 0 &&
-          key !== 1 &&
-          key !== "epoch" &&
-          key !== "active" &&
-          key !== "format" &&
-          key !== "identity",
-      )
-    )
-      throw new VfsError(
-        "INVALID_VFS_FORMAT",
-        "indexeddb",
-        "Incompatible IndexedDB metadata layout",
-      );
+    const [
+      first,
+      second,
+      metadataKeys,
+      journalValues,
+      journalKeys,
+      dataKeys,
+      format,
+      storedCommit,
+      active,
+    ] = await Promise.all([
+      request(metadata.get(0)),
+      request(metadata.get(1)),
+      request(metadata.getAllKeys()),
+      request(journal.getAll()),
+      request(journal.getAllKeys()),
+      request(tx.objectStore("data").getAllKeys()),
+      request(metadata.get("format")),
+      request(metadata.get("commit")),
+      request(metadata.get("active")),
+      completed(tx),
+    ]);
+    const stagedEmpty = validateDatabaseLayout(
+      this.committedMode,
+      format,
+      metadataKeys,
+      journalKeys,
+      dataKeys,
+    );
     const payloadKeys = new Set<string>();
     for (const key of dataKeys) {
       if (typeof key === "string") payloadKeys.add(key);
       else if (Array.isArray(key) && typeof key[0] === "string") payloadKeys.add(key[0]);
     }
     const physical =
-      format === INDEXEDDB_FORMAT ? await this.validateChunks(dataKeys, signal) : undefined;
+      format === INDEXEDDB_FORMAT || format === STAGED_FORMAT
+        ? await this.validateChunks(dataKeys, signal)
+        : undefined;
     const available = physical ? new Set(physical.keys()) : payloadKeys;
-    const decoded = await Promise.all([decodeSnapshot(first), decodeSnapshot(second)]);
+    const decoded = await Promise.all([decodeIndex(first), decodeIndex(second)]);
     const bases: State["bases"] = [decoded[0], decoded[1]];
     for (const slot of [0, 1] as const)
       if (
@@ -902,7 +1159,7 @@ export class IndexedDBStorage implements StorageBackend {
     const journals = new Map<number, Journal>();
     await Promise.all(
       journalValues.map(async (value, i) => {
-        const entry = await decodeRecord(value);
+        const entry = await decodeSelection(value);
         if (
           validateJournal(entry) &&
           entry.generation === journalKeys[i] &&
@@ -913,9 +1170,14 @@ export class IndexedDBStorage implements StorageBackend {
       }),
     );
     const newest = recoverIndex(bases, journals, available);
+    if (this.committedMode && !stagedEmpty)
+      await this.recoverRequiredHead(storedCommit, active, newest, physical, journalKeys, dataKeys);
     if (
       !newest &&
-      (metadataKeys.filter((key) => key !== "format" && key !== "identity").length > 1 ||
+      (metadataKeys.filter(
+        (key) =>
+          key !== "format" && key !== "identity" && (!this.committedMode || key !== "commit"),
+      ).length > 1 ||
         journalKeys.length > 0 ||
         dataKeys.length > 0)
     ) {
@@ -933,6 +1195,7 @@ export class IndexedDBStorage implements StorageBackend {
       this.state = {
         generation: newest.generation,
         root: newest.root,
+        publication: newest.publication,
         nodes,
         ...referenceIndex(nodes.values()),
         bases,
@@ -944,9 +1207,53 @@ export class IndexedDBStorage implements StorageBackend {
         ).length,
       };
     }
-    if (format !== INDEXEDDB_FORMAT) await this.migrateLegacy(dataKeys, signal);
-    if (this.state) this.recordRecovery(this.state);
+    if (stagedEmpty) {
+      const envelope = initialEnvelope(this.epoch),
+        encoded = await encodeCommit(envelope);
+      await this.fencedWrite((_data, metadata) => {
+        metadata.put(STAGED_FORMAT, "format");
+        metadata.put(encoded, "commit");
+      }, signal);
+      this.committedEnvelope = envelope;
+      this.committedRecord = encoded;
+    }
+    if (!this.committedMode && format !== INDEXEDDB_FORMAT)
+      await this.migrateLegacy(dataKeys, signal);
+    if (this.state)
+      this.recordRecovery(
+        this.state,
+        this.committedEnvelope && Array.from(commitRoots(this.committedEnvelope).keys()),
+      );
     this.initialized = true;
+  }
+
+  private async recoverRequiredHead(
+    storedCommit: unknown,
+    active: unknown,
+    newest: PersistedIndex | undefined,
+    physical: Map<string, ChunkManifest> | undefined,
+    journalKeys: IDBValidKey[],
+    dataKeys: IDBValidKey[],
+  ): Promise<void> {
+    const envelope = await decodeCommit(storedCommit);
+    if (
+      envelope.head.epoch < 1 ||
+      envelope.head.epoch > this.epoch ||
+      (envelope.head.sequence === 0n ? active !== undefined : active !== envelope.head.generation)
+    )
+      invalidCommit();
+    if (
+      envelope.head.sequence === 0n
+        ? !!newest || journalKeys.length > 0 || dataKeys.length > 0
+        : !newest ||
+          newest.generation !== envelope.head.generation ||
+          newest.root !== envelope.head.root
+    )
+      invalidCommit();
+    for (const [key, size] of commitRoots(envelope))
+      if (physical?.get(key)?.size !== size) invalidCommit();
+    this.committedEnvelope = envelope;
+    this.committedRecord = await encodeCommit(envelope);
   }
 
   private recordRecovery(state: State, extra?: readonly string[]): void {
@@ -1078,7 +1385,9 @@ export class IndexedDBStorage implements StorageBackend {
     }, signal);
   }
 
-  private async commit(batch: PersistenceBatch): Promise<void> {
+  private async commit(batch: PersistenceBatch, committed?: CommittedTransaction): Promise<void> {
+    if (this.committedMode !== !!committed)
+      throw new Error("Committed storage requires a complete durable group");
     const prepared = await preparePayloads(batch.data);
     const staged = stageChanges(this.state, batch),
       old = this.state;
@@ -1095,8 +1404,9 @@ export class IndexedDBStorage implements StorageBackend {
       root: batch.root,
       upserts: batch.upserts,
       removes: batch.removes,
+      publication: batch.publication,
     };
-    const encodedJournal = entry && (await encodeRecord(entry));
+    const encodedJournal = entry && (await encodeSelection(entry));
     let snapshot: PersistedIndex | undefined;
     const bases: State["bases"] = old ? [old.bases[0], old.bases[1]] : [undefined, undefined];
     let slot: 0 | 1 = 0;
@@ -1108,24 +1418,20 @@ export class IndexedDBStorage implements StorageBackend {
         version: 1,
         generation: batch.generation,
         root: batch.root,
+        ...(batch.publication ? { publication: batch.publication } : {}),
         nodes: Array.from(nodes.values()),
       };
       validatePersistedIndex(snapshot);
-      slot = !bases[0] ? 0 : !bases[1] ? 1 : bases[0].generation <= bases[1].generation ? 0 : 1;
+      slot = snapshotSlot(bases);
       bases[slot] = snapshot;
     }
-    const encodedSnapshot = snapshot && (await encodeSnapshot(snapshot));
-    const expected = new Map<string, number>();
-    for (const node of staged.upserts.values())
-      if (node.data !== undefined) {
-        const size = expected.get(node.data);
-        if (size !== undefined && size !== node.size) metadataError();
-        expected.set(node.data, node.size);
-      }
+    const encodedSnapshot = snapshot && (await encodeSelection(snapshot));
+    const durableRoots = committed ? commitRoots(committed.envelope) : new Map<string, number>();
+    const expected = requiredPayloads(staged.upserts.values(), durableRoots);
     const checking = new Set(Array.from(expected.keys()).concat(Array.from(batch.data.keys())));
     const pinChecks = new Set(batch.retainedData?.filter((key) => !checking.has(key)));
     let cutoff = -1;
-    const retained = new Set(batch.retainedData);
+    const retained = new Set((batch.retainedData ?? []).concat(Array.from(durableRoots.keys())));
     if (compact) {
       cutoff = Math.min(
         ...bases.filter((base): base is PersistedIndex => !!base).map((base) => base.generation),
@@ -1139,30 +1445,33 @@ export class IndexedDBStorage implements StorageBackend {
     }
     const deletedReaders: string[] = [];
     // No await inside this transaction: all hashes and compaction preparation are complete.
+    committed?.control.checkAbort();
     this.assertOwner();
     const tx = this.db.transaction(["metadata", "journal", "data"], "readwrite", {
       durability: "strict",
     });
     this.transactions.add(tx);
+    committed?.control.attach(tx);
     const data = tx.objectStore("data");
     await new Promise<void>((resolve, reject) => {
-      let failure: unknown;
+      let failure: { cause: unknown } | undefined;
       const abort = (error: unknown) => {
-        failure = error;
+        if (!committed || !failure) failure = { cause: error };
         try {
           tx.abort();
         } catch {}
       };
       tx.oncomplete = () => {
         this.transactions.delete(tx);
+        committed?.control.committed(committed.group.receipt);
         resolve();
       };
       tx.onabort = () => {
         this.transactions.delete(tx);
         for (const key of deletedReaders) this.deletingPayloads.delete(key);
-        reject(
-          this.ownershipError ?? failure ?? tx.error ?? new Error("Filesystem transaction aborted"),
-        );
+        const cause = transactionFailure(tx, this.ownershipError, failure, committed);
+        committed?.control.aborted(cause);
+        reject(cause);
       };
       const finish = () => {
         try {
@@ -1172,6 +1481,7 @@ export class IndexedDBStorage implements StorageBackend {
           if (encodedJournal) tx.objectStore("journal").put(encodedJournal, batch.generation);
           if (encodedSnapshot) tx.objectStore("metadata").put(encodedSnapshot, slot);
           tx.objectStore("metadata").put(batch.generation, "active");
+          if (committed) tx.objectStore("metadata").put(committed.group.envelope, "commit");
           if (compact) {
             for (const key of old?.journalKeys ?? [])
               if (typeof key === "number" && key <= cutoff) tx.objectStore("journal").delete(key);
@@ -1188,7 +1498,7 @@ export class IndexedDBStorage implements StorageBackend {
           abort(error);
         }
       };
-      let remaining = checking.size + pinChecks.size;
+      let remaining = checking.size + pinChecks.size + (committed ? 2 : 0);
       const checked = () => {
         if (--remaining === 0) finish();
       };
@@ -1198,7 +1508,9 @@ export class IndexedDBStorage implements StorageBackend {
           abort(this.loseOwnership());
           return;
         }
+        if (committed) checked();
       };
+      if (committed) checkCommitHead(tx, committed, checked, abort);
       try {
         if (!remaining) finish();
         for (const key of checking) {
@@ -1245,7 +1557,7 @@ export class IndexedDBStorage implements StorageBackend {
     };
     for (const key of discarded) if (typeof key === "number") state.journals.delete(key);
     state.journalKeys = state.journalKeys.filter((key) => !discarded.has(key));
-    applyChanges(state, staged, batch.generation, batch.root);
+    applyChanges(state, staged, batch);
     state.bases = bases;
     if (entry) {
       state.journals.set(entry.generation, entry);
@@ -1265,7 +1577,18 @@ export class IndexedDBStorage implements StorageBackend {
       this.readers.recovery(retained);
     }
     state.sinceCompaction = compact ? 0 : state.sinceCompaction + 1;
+    this.installCommit(
+      state,
+      (batch.retainedData ?? []).concat(Array.from(durableRoots.keys())),
+      committed,
+    );
+  }
+  private installCommit(state: State, retained: string[], committed?: CommittedTransaction): void {
+    if (committed) {
+      this.committedEnvelope = committed.envelope;
+      this.committedRecord = committed.group.envelope;
+    }
     this.state = state;
-    this.recordRecovery(state, batch.retainedData);
+    this.recordRecovery(state, retained);
   }
 }

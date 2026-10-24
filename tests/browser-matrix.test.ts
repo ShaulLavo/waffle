@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { CommandCleanupError, runOwned } from "../scripts/owned-command.ts";
 
 const runners = [
+  "safe-staging",
   "storage",
   "storage-lock",
   "process-recycling",
