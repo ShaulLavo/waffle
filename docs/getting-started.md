@@ -1,30 +1,30 @@
 # Getting started
 
-Waffle is a library for an application that runs in the browser, not a command-line shell.
-The page creates one runtime. Bash Web and Bun are programs that borrow that runtime; see
-[their repositories](https://github.com/ShaulLavo/bash-web) and
-[the Bun browser demo](https://bun.sprockt.dev/) for complete applications.
+In this tutorial you build a small page that starts a Waffle runtime, writes a file into its filesystem, reads it back, and prints it. It takes a few minutes and needs [Bun](https://bun.sh), because Waffle's `prepare` step runs `bun prepare.ts` and the tutorial bundles and serves with Bun. The steps were run with Bun 1.4.4, the version CI uses.
+
+Waffle is a library for a browser app, not a command-line shell. The page creates one runtime. Bash Web and Bun are programs that borrow that runtime. See [Bash Web](https://github.com/ShaulLavo/bash-web) and [the Bun browser demo](https://bun.sprockt.dev/) for complete applications.
 
 ## Install
 
-Add `waffle` as an exact Git dependency and trust its build step in `package.json`:
+Install `waffle` as an exact Git dependency and trust its build step:
 
-```json
-{
-  "dependencies": {
-    "waffle": "github:ShaulLavo/waffle#fc58a532f0d7a617e631ea4b7580a190915d4ed6"
-  },
-  "trustedDependencies": ["waffle"]
-}
+```sh
+bun add github:ShaulLavo/waffle#4b9b6c668a59bd5aa52f0b87c3d76090b03706c3 --trust
 ```
 
-Run `bun install`. The commit above is a real revision, not a moving branch; update the pin
-when adopting a newer Waffle revision. Installation's `prepare` step emits the Node exports
-under `dist/`. Browser bundlers consume the TypeScript source.
+You should see the package line and no "Blocked 1 postinstall" warning:
 
-## A small browser page
+```text
+installed waffle@github:ShaulLavo/waffle#4b9b6c6
 
-Create `fs-worker.ts` so your build includes Waffle's filesystem service:
+1 package installed
+```
+
+The command writes the `waffle` dependency and `trustedDependencies` into `package.json`. The commit above is a real revision, not a moving branch. Change the pin when you adopt a newer Waffle revision. The `prepare` step that `--trust` allows writes the Node entry points under `dist/`. Browser bundlers read the TypeScript source and do not need them.
+
+## Write the page
+
+Create `fs-worker.ts`. It makes your build include Waffle's filesystem service:
 
 ```ts
 import "waffle/browser/fs-worker";
@@ -47,13 +47,9 @@ try {
 }
 ```
 
-Bundle both entries with Bun:
+`mode: "memory"` selects a disposable in-memory filesystem, so this example never touches saved workspaces. [Persist the filesystem](guides/persist-the-filesystem.md) shows the other modes.
 
-```sh
-bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting
-```
-
-Add a `public/index.html` that loads the page entry:
+Create `public/index.html`:
 
 ```html
 <!doctype html>
@@ -66,32 +62,56 @@ Add a `public/index.html` that loads the page entry:
 </html>
 ```
 
-Serve `public/` over HTTPS (or localhost) with these response headers:
+## Build
 
-```text
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
+Bundle both entries into `public/`:
+
+```sh
+bun build ./app.ts ./fs-worker.ts --outdir ./public --target browser --splitting
 ```
 
-Those headers enable cross-origin isolation and `SharedArrayBuffer`, which the runtime needs.
-Opening the HTML file directly does not work. The page should print `hello from Waffle`.
-The example uses a disposable in-memory filesystem, so it does not change saved workspaces.
+`public/` now holds `app.js`, `fs-worker.js` and a few chunk files.
 
-## Running programs
+## Serve with isolation headers
 
-Creating a runtime does not install a shell or Bun. A consumer supplies the compiled WebAssembly
-program and a worker adapter, registers both, and launches through the runtime's process service.
-Program registrations use absolute canonical paths, and the caller creates the corresponding
-filesystem file before spawning. Read [registration and executable paths](architecture.md#registration-leases),
-[worker adapter hooks](architecture.md#guest-executor-extensions), and the
-[guest/host contract](host-abi.md) before writing an adapter.
+The runtime needs `SharedArrayBuffer`. Browsers only provide it on a cross-origin isolated page, which means the server must send two headers. Create `serve.ts`:
+
+```ts
+Bun.serve({
+  port: 8080,
+  async fetch(request) {
+    const path = new URL(request.url).pathname;
+    const file = Bun.file("./public" + (path === "/" ? "/index.html" : path));
+    if (!(await file.exists())) return new Response("not found", { status: 404 });
+    return new Response(file, {
+      headers: {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp",
+      },
+    });
+  },
+});
+```
+
+Start it and open <http://localhost:8080>:
+
+```sh
+bun serve.ts
+```
+
+The page prints:
+
+```text
+hello from Waffle
+```
+
+Opening the HTML file directly from disk does not work, and neither does a server that omits the headers. Without them the console shows `SharedArrayBuffer is not defined`. Other symptoms are in [Troubleshooting](troubleshooting.md). Production hosts must send the same headers, and must use HTTPS unless they serve `localhost`.
 
 ## Next steps
 
-- [Architecture and API notes](architecture.md): services, handles, processes and pipes.
-- [Host ABI](host-abi.md): guest imports, wait results and startup errors.
-- [Runtime startup](runtime-startup.md): observing initialization without console logging.
-- [Storage](storage.md) and [filesystem modes](vfs.md): persistence, ownership, and current limits.
-- [Permissions](permissions.md): supported mode bits and effective access.
-- [Networking](network.md): runtime-owned services and borrowed worker helpers.
-- [Development](development.md): repository setup, gates and further reference links.
+- [Run a WASI program](guides/run-a-wasi-program.md): register a program and spawn it from the page.
+- [Persist the filesystem](guides/persist-the-filesystem.md): keep files between page loads.
+- [Concepts](concepts.md): who owns what, and why a guest never creates its own runtime.
+- [Status and limits](status.md): what works today and what does not.
+- [Architecture and API notes](architecture.md) and [Host ABI](host-abi.md): the full reference.
+- [Development](development.md): repository setup and checks.

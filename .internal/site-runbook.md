@@ -24,7 +24,7 @@ candidate build.
 The owner's original self-extracting HTML remains outside the repository. It
 contains three design boards, not just this landing page. The extracted React/DC
 page is a test reference only and is never included in the production build.
-See [the provenance notes](bun-patches.md) for the adapted scene and layout.
+See [the provenance notes](../docs/bun-patches.md) for the adapted scene and layout.
 
 ## Build and local development
 
@@ -105,7 +105,7 @@ bun /work/platform-production/heavy/current/run.js --class browser waffle-site-p
 pointer/click states with synchronized animation time, writing screenshots and
 `visual-diff.json`. Before comparison, it applies the exact published link destinations,
 two action-label, one launch-description and two documentation-caption corrections and `© 2026 Waffle` to the original reference;
-[the provenance ledger](bun-patches.md#waffle-landing-page) records these intentional
+[the provenance ledger](../docs/bun-patches.md#waffle-landing-page) records these intentional
 departures. It validates the original values before replacing them, does not modify the
 candidate, and still fails on any remaining pixel/content mismatch. `ENGINES=chromium`
 and `WIDTHS=375,1280` select a smaller diagnostic subset; they do not replace the
