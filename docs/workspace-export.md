@@ -1,12 +1,13 @@
 # Coherent workspace archive export
 
 `fs/workspace-export.ts` adapts the public `WorkspaceVfs` snapshot and version-lease
-contracts to the [archive codec](workspace-archive.md). It is source-module code,
-not a new package export or a `runtime.filesystem` method. No import adapter,
+contracts to the [archive codec](workspace-archive.md). The package root, `waffle/fs`,
+and `waffle/fs/index` export the same function. There is no `runtime.filesystem`
+export method. No import adapter,
 durable staged-root publication, or SAFE guarantee is implemented here.
 
 ```ts
-import { exportWorkspaceArchive } from "../fs/workspace-export";
+import { exportWorkspaceArchive } from "waffle";
 
 const archive = exportWorkspaceArchive(workspace, { signal });
 for await (const chunk of archive) {
@@ -90,10 +91,11 @@ archive format. They produce `format-path` with the offending path, without
 renaming or silently omitting the entry. Well-formed Unicode, including astral
 characters, is supported.
 
-One scan accepts at most `WORKSPACE_EXPORT_LIMITS.scanPages`, currently 32,770
-pulls, including empty pages. An endless producer cannot extend a scan without
-bound. Every window-selection scan must complete at the initial cut. After the
-last window, an empty same-cut selection scan remains mandatory before END.
+One scan accepts at most `WORKSPACE_EXPORT_LIMITS.scanPages` pulls, derived as
+`WORKSPACE_LIMITS.indexEdges + 2`, including empty pages. An endless producer
+cannot extend a scan without bound. Every window-selection scan must complete at
+the initial cut. After the last window, an empty same-cut selection scan remains
+mandatory before END.
 
 ### Measured cost and remaining limit
 
@@ -127,7 +129,7 @@ retain after delivery. Public leases also have their existing backing/page/key
 charges, which can be larger than a chunk and can refuse acquisition. Nothing
 here claims an aggregate runtime heap or disk bound.
 
-`ArchiveOptions.budget` and `signal` are accepted. Logical entry/file/total byte
+`WorkspaceExportOptions.budget` and `signal` are accepted. Logical entry/file/total byte
 budgets are enforced by the codec. Signal and budget settings are copied when
 iteration first starts. A budget failure closes the current real lease.
 
@@ -135,12 +137,39 @@ Completed snapshots update the projection's normal accepted change watermark.
 The adapter does not consume changes, but callers must account for that ordinary
 snapshot side effect when sharing the same projection with a change reader.
 
+## Symbolic links and the v1 boundary
+
+The v1 format represents only files and directories. A snapshot entry of any other
+kind causes `WorkspaceArchiveError` with code `INVALID` before its path or target
+is charged, copied, pinned, or read. Nothing follows the target, copies its
+referent, normalizes raw target text, or silently omits the entry. A refusal on a
+later scan invalidates all bytes already delivered and prevents archive completion.
+
+The current public `NamespaceEntry` has no symbolic-link kind or raw target.
+This wiring therefore does not claim export of links, dangling links, or cycles.
+A link-capable namespace producer must deliver immutable raw `target: string`
+together with the link inode's own id, version, path, mode, mtime, and UTF-8 target
+byte size in its historical snapshot. The completed cut must cover all of these
+fields. Links must be leaves and their target metadata must fit the producer's
+page and retention charges. The producer owns that hook and its lifetime.
+Calling live `readlink` after a snapshot would mix cuts and is not an adaptation.
+
+A later lossless format unit must define bounded raw-target encoding and import
+policy before accepting links. Raw target text and link inode identity cannot be
+replaced with followed-target metadata. Dangling targets and cycles must not
+trigger traversal. Archive paths are virtual paths, never host extraction paths.
+Guest absolute-target and escape checks belong to the resolver when following a
+link. They do not authorize following or rewriting a stored raw target in export.
+v1's explicit refusal is the current policy, not a partial link representation.
+
 ## Failure and cancellation ownership
 
 `WorkspaceExportError.refusal` retains public snapshot/read refusals, or reports
 `resnapshot` with expected/current cuts, `scan-limit`, `format-path` with the
 offending path, or a violated public `contract`. The module exports the
-`ExportRefusal` type, but adds no package export. A directory traversal
+`ExportRefusal` and `WorkspaceExportOptions` types through the same package entries.
+`WorkspaceArchiveError` is also exported for format and budget failures. The codec
+parser, encoder, staging sink, and import driver remain internal. A directory traversal
 `FilesystemError` with permission errno 2 maps to `denied`, matching file-read
 denial. These errors describe an unsuccessful attempt, not missing entries.
 Other raw operation failures retain their original values, including falsy values.
@@ -181,6 +210,13 @@ Promise-delivery tests count exactly one `then` observation for pages and read
 outcomes, preserve fulfilled accessors, and retain exact falsy getter rejections.
 
 The test suite does not certify browser import/export, durable import staging,
-crash recovery, public package wiring, SAFE, aggregate memory admission, or
+crash recovery, link export, SAFE, aggregate memory admission, or
 throughput under large or continuously changing namespaces. Those remain separate
 units. This new feature requires its own independent review before integration.
+
+`tests/workspace-export-public.test.ts` exercises the root and both fs package
+entries against a real service and granted projection. Prepared Node modules use
+the same exporter and stream bounded bytes. Early return releases the owned lease
+without closing the caller projection. Broken-provider controls inject unsupported
+link-shaped metadata around real snapshot cursors. They prove pre-charge refusal
+and cleanup, not the missing real symbolic-link producer or its lifetime.

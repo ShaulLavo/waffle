@@ -23,7 +23,8 @@ export interface ArchiveManifest {
   readonly sourceFormat: string | null;
   readonly sourceWorkspace: string | null;
 }
-export type ArchiveEntry = Pick<NamespaceEntry, "path" | "kind" | "size" | "mtime" | "mode"> & {
+export type ArchiveEntry = Pick<NamespaceEntry, "path" | "size" | "mtime" | "mode"> & {
+  readonly kind: "file" | "directory";
   readonly sourceIdentity: StoredIdentity | null;
 };
 export type ArchiveSourceEntry =

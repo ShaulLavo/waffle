@@ -56,3 +56,12 @@ export {
   type WorkspaceSearch,
   type SearchLimits,
 } from "./workspace-search.js";
+
+export {
+  exportWorkspaceArchive,
+  WorkspaceExportError,
+  WORKSPACE_EXPORT_LIMITS,
+  type WorkspaceExportOptions,
+  type ExportRefusal,
+} from "./workspace-export.js";
+export { WorkspaceArchiveError } from "./workspace-archive.js";
