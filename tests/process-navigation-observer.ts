@@ -1,3 +1,13 @@
+import {
+  closeSync,
+  fsyncSync,
+  mkdtempSync,
+  openSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Browser, BrowserContext, Frame, Page, Request as BrowserRequest } from "playwright";
 
 type NavigationIdentity = {
@@ -97,10 +107,55 @@ class CaptureBuffer {
   }
 }
 
+function evidenceDirectory(): string {
+  const directory = process.env.PROCESS_NAVIGATION_WIRE_DIR;
+  if (!directory || !isAbsolute(directory))
+    throw new Error(
+      "PROCESS_NAVIGATION_WIRE_DIR must name an absolute task-owned evidence directory",
+    );
+  const root = realpathSync(directory);
+  const scratch = process.env.TMPDIR;
+  if (!scratch) return root;
+  const location = relative(realpathSync(scratch), root);
+  if (
+    location === "" ||
+    (!location.startsWith(`..${sep}`) && location !== ".." && !isAbsolute(location))
+  )
+    throw new Error("Navigation wire evidence directory must be outside disposable TMPDIR");
+  return root;
+}
+
+function syncDirectory(path: string): void {
+  const descriptor = openSync(path, "r");
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function writeSnapshot(directory: string, value: unknown): void {
+  const pending = join(directory, "snapshot.pending");
+  const descriptor = openSync(pending, "w", 0o600);
+  try {
+    writeFileSync(descriptor, JSON.stringify(value));
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  renameSync(pending, join(directory, "snapshot.json"));
+  syncDirectory(directory);
+}
+
 class NavigationCapture {
   private child: Bun.Subprocess<"ignore", "pipe", "pipe"> | undefined;
-  private readonly output = new CaptureBuffer(1024 * 1024);
+  private readonly output: CaptureBuffer;
+  private readonly hex = process.env.PROCESS_NAVIGATION_WIRE_FORMAT === "hex";
+  private updates = Promise.withResolvers<void>();
   private readonly diagnostics = new CaptureBuffer(16 * 1024);
+  private readonly errors = new CaptureBuffer(16 * 1024);
+  private failureCount = 0;
+  private evidence: { directory: string; writable: boolean } | undefined;
   private readonly readiness = Promise.withResolvers<void>();
   private readonly readers: {
     reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -111,10 +166,24 @@ class NavigationCapture {
   private stopped = false;
   private unexpectedExit = false;
 
-  constructor(private readonly serverPort: number) {}
+  constructor(private readonly serverPort: number) {
+    this.output = new CaptureBuffer(this.hex ? 8 * 1024 * 1024 : 1024 * 1024);
+  }
 
   async start(): Promise<void> {
     const serverPort = this.serverPort;
+    const root = evidenceDirectory();
+    this.evidence = {
+      directory: mkdtempSync(join(root, "process-navigation-wire-")),
+      writable: true,
+    };
+    diagnosticLog("PROCESS_NAVIGATION_EVIDENCE_OWNER", {
+      directory: this.evidence.directory,
+      snapshot: "snapshot.json",
+      collection: "task owner collects before teardown; capture stop preserves files",
+    });
+    writeSnapshot(this.evidence.directory, this.snapshot("capture-starting"));
+    syncDirectory(root);
     this.child = Bun.spawn(
       [
         "/usr/bin/tcpdump",
@@ -124,8 +193,8 @@ class NavigationCapture {
         "-tt",
         "-l",
         "-s",
-        "512",
-        "-A",
+        this.hex ? "0" : "512",
+        this.hex ? "-xx" : "-A",
         `tcp and host 127.0.0.1 and port ${serverPort}`,
       ],
       { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
@@ -139,10 +208,11 @@ class NavigationCapture {
       serverPort,
       address: "127.0.0.1",
       interface: "lo",
-      snaplen: 512,
+      snaplen: this.hex ? 0 : 512,
       monotonicMs: performance.now(),
       wallClockMs: Date.now(),
     });
+    this.persist("capture-spawned");
     this.ownReader(this.child.stdout, "stdout");
     this.ownReader(this.child.stderr, "stderr");
     await bounded(this.readiness.promise, 5000, "startup");
@@ -162,14 +232,33 @@ class NavigationCapture {
     }
   }
 
-  private readerFailure(phase: string, error: unknown): void {
+  private failure(phase: string, error: unknown): void {
+    this.failureCount++;
+    this.errors.append(`${phase}: ${String(error)}\n`);
     secondaryFailure(`capture ${phase}`, error);
+    this.persist("capture-error");
+  }
+
+  private readerFailure(phase: string, error: unknown): void {
+    this.failure(phase, error);
     this.readiness.reject(error);
+  }
+
+  private persist(reason: string): void {
+    if (!this.evidence?.writable) return;
+    try {
+      writeSnapshot(this.evidence.directory, this.snapshot(reason));
+    } catch (error) {
+      this.evidence.writable = false;
+      secondaryFailure("capture evidence persistence", error);
+    }
   }
 
   private append(text: string, stream: "stdout" | "stderr"): void {
     if (stream === "stdout") {
       this.output.append(text);
+      this.persist("stdout-consumed");
+      this.changed();
       return;
     }
     this.diagnostics.append(text);
@@ -177,6 +266,8 @@ class NavigationCapture {
       this.ready = true;
       this.readiness.resolve();
     }
+    this.persist("stderr-consumed");
+    this.changed();
   }
 
   private async read(
@@ -196,19 +287,64 @@ class NavigationCapture {
     }
   }
 
-  emit(reason: string): void {
-    diagnosticLog("PROCESS_NAVIGATION_WIRE", {
+  private changed(): void {
+    this.updates.resolve();
+    this.updates = Promise.withResolvers<void>();
+  }
+
+  assertReady(): void {
+    this.persist("strict-admission");
+    if (!this.evidence?.writable) throw new Error("Navigation capture durable sink unavailable");
+    if (!this.ready || this.stopping || this.child?.exitCode !== null)
+      throw new Error("Navigation capture is not live and ready");
+    const state = this.snapshot("strict-admission");
+    if (state.failureCount || state.output.evictedBytes || state.diagnostics.evictedBytes)
+      throw new Error("Navigation capture evidence is incomplete");
+  }
+
+  async waitFor(
+    check: (state: ReturnType<NavigationCapture["snapshot"]>) => boolean,
+  ): Promise<void> {
+    await bounded(this.until(check), 5000, "wire preflight");
+    this.assertReady();
+  }
+
+  private async until(
+    check: (state: ReturnType<NavigationCapture["snapshot"]>) => boolean,
+  ): Promise<void> {
+    while (true) {
+      this.assertReady();
+      if (check(this.snapshot("wire-preflight"))) return;
+      await this.updates.promise;
+    }
+  }
+
+  snapshot(reason: string) {
+    return {
       reason,
+      wallClockMs: Date.now(),
+      monotonicMs: performance.now(),
       serverPort: this.serverPort,
       ready: this.ready,
       stopped: this.stopped,
       exitCode: this.child?.exitCode ?? null,
       unexpectedExit: this.unexpectedExit,
-      snaplen: 512,
-      inference: "requires complete matching TCP exchange and zero relevant loss",
+      snaplen: this.hex ? 0 : 512,
+      inference:
+        "retained records only; queued capture tail and cancellation window are unvalidated",
+      closingBoundary: "unvalidated",
+      format: this.hex ? "ethernet-hex" : "ascii",
+      durable: this.evidence?.writable ?? false,
       output: this.output.snapshot(),
       diagnostics: this.diagnostics.snapshot(),
-    });
+      errors: this.errors.snapshot(),
+      failureCount: this.failureCount,
+    };
+  }
+
+  emit(reason: string): void {
+    this.persist(reason);
+    diagnosticLog("PROCESS_NAVIGATION_WIRE", this.snapshot(reason));
   }
 
   stop(): Promise<void> {
@@ -218,10 +354,9 @@ class NavigationCapture {
   private async waitForExit(child: Bun.Subprocess<"ignore", "pipe", "pipe">): Promise<void> {
     try {
       const status = await bounded(child.exited, 2000, "SIGINT exit");
-      if (status !== 0)
-        secondaryFailure("capture exit", new Error(`Capture exit status ${status}`));
+      if (status !== 0) this.failure("exit", new Error(`Capture exit status ${status}`));
     } catch (error) {
-      secondaryFailure("capture SIGINT shutdown", error);
+      this.failure("SIGINT shutdown", error);
       observe(() => child.kill("SIGKILL"));
       await bounded(child.exited, 2000, "SIGKILL exit");
     }
@@ -232,7 +367,7 @@ class NavigationCapture {
     try {
       await bounded(completions, 2000, "output readers");
     } catch (error) {
-      secondaryFailure("capture output shutdown", error);
+      this.failure("output shutdown", error);
       await this.cancelReaders();
     } finally {
       for (const { reader } of this.readers) observe(() => reader.releaseLock());
@@ -243,11 +378,10 @@ class NavigationCapture {
     try {
       const cancellations = this.readers.map(({ reader }) => reader.cancel());
       const results = await bounded(Promise.allSettled(cancellations), 2000, "reader cancellation");
-      for (const result of results) {
-        if (result.status === "rejected") secondaryFailure("capture cancellation", result.reason);
-      }
+      const rejected = results.filter((result) => result.status === "rejected");
+      for (const result of rejected) this.failure("cancellation", result.reason);
     } catch (error) {
-      secondaryFailure("capture cancellation", error);
+      this.failure("cancellation", error);
     }
     await bounded(
       Promise.all(this.readers.map(({ completion }) => completion)),
@@ -263,16 +397,15 @@ class NavigationCapture {
       if (child.exitCode === null) observe(() => child.kill("SIGINT"));
       await this.waitForExit(child);
     } catch (error) {
-      secondaryFailure("capture process shutdown", error);
+      this.failure("process shutdown", error);
     }
     try {
       await this.joinReaders();
       this.stopped = child.exitCode !== null;
     } catch (error) {
-      secondaryFailure("capture reader join", error);
+      this.failure("reader join", error);
     }
-    if (!this.stopped)
-      secondaryFailure("capture ownership", new Error("Capture shutdown unconfirmed"));
+    if (!this.stopped) this.failure("ownership", new Error("Capture shutdown unconfirmed"));
     this.emit("capture-stopped");
   }
 }
@@ -282,6 +415,23 @@ export async function startNavigationCapture(serverPort: number | undefined): Pr
   if (serverPort === undefined) throw new Error("Navigation capture requires a TCP server port");
   capture = new NavigationCapture(serverPort);
   await capture.start();
+}
+
+export function navigationCaptureSnapshot() {
+  if (!capture) throw new Error("Navigation capture is disabled or unstarted");
+  return capture.snapshot("readback");
+}
+
+export function assertNavigationCaptureReady(): void {
+  if (!capture) throw new Error("Navigation capture is disabled or unstarted");
+  capture.assertReady();
+}
+
+export async function waitForNavigationCapture(
+  check: (state: ReturnType<typeof navigationCaptureSnapshot>) => boolean,
+): Promise<void> {
+  if (!capture) throw new Error("Navigation capture is disabled or unstarted");
+  await capture.waitFor(check);
 }
 
 export async function stopNavigationCapture(): Promise<void> {
