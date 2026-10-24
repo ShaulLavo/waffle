@@ -97,6 +97,25 @@ function thrown(run: () => unknown): unknown {
   throw new Error("expected funded construction to fail");
 }
 
+function constructWithUint32ArrayFailure(
+  before: Snapshot,
+  budget: MemoryBudget,
+  reason: unknown,
+): unknown {
+  const NativeUint32Array = globalThis.Uint32Array;
+  try {
+    globalThis.Uint32Array = new Proxy(NativeUint32Array, {
+      construct() {
+        expectCharged(before, budget);
+        throw reason;
+      },
+    });
+    return thrown(() => NamespaceProjectionOwner.create(capacity, budget));
+  } finally {
+    globalThis.Uint32Array = NativeUint32Array;
+  }
+}
+
 function borrowed(owner: NamespaceProjectionOwner) {
   const borrow = owner.borrow();
   if (!borrow) throw new Error("expected an open namespace projection");
@@ -156,21 +175,9 @@ test.each([0, "", undefined] as const)(
   "table construction rejection %p releases both allocations and references",
   (reason) => {
     const { allocator, budget } = rig();
-    const NativeUint32Array = globalThis.Uint32Array;
     try {
       const before = budget.snapshot();
-      let error: unknown;
-      try {
-        globalThis.Uint32Array = new Proxy(NativeUint32Array, {
-          construct() {
-            expectCharged(before, budget);
-            throw reason;
-          },
-        });
-        error = thrown(() => NamespaceProjectionOwner.create(capacity, budget));
-      } finally {
-        globalThis.Uint32Array = NativeUint32Array;
-      }
+      const error = constructWithUint32ArrayFailure(before, budget, reason);
       expect(Object.is(error, reason)).toBe(true);
       expect(allocator.specs).toEqual([{ kind: "array", bytes: backingBytes }]);
       expect(usage(budget.snapshot())).toEqual(usage(before));
@@ -269,6 +276,30 @@ test.each([0, "", undefined] as const)(
   },
 );
 
+function fundWorkspaceFactory(budget: MemoryBudget) {
+  const create = NamespaceProjectionOwner.create;
+  return spyOn(NamespaceProjectionOwner, "create").mockImplementation(() =>
+    create.call(NamespaceProjectionOwner, capacity, budget),
+  );
+}
+
+function failFirstReferenceRelease(budget: MemoryBudget, reason: unknown) {
+  const tryOperation = budget.tryOperation.bind(budget);
+  let releases = 0;
+  const admission = spyOn(budget, "tryOperation").mockImplementation((demand) => {
+    const result = tryOperation(demand);
+    if (result.kind !== "granted") return result;
+    const release = result.lease.release;
+    spyOn(result.lease, "release").mockImplementation((reference) => {
+      releases++;
+      if (releases === 1) throw reason;
+      return release(reference);
+    });
+    return result;
+  });
+  return { admission, releases: () => releases };
+}
+
 async function fixture() {
   const pair = createFilesystemConnection(undefined, { workspace: true });
   const service = new FilesystemService(new MemoryBackend());
@@ -328,6 +359,80 @@ function retirements() {
   });
   return { owners, spy };
 }
+
+test.each([0, "", undefined] as const)(
+  "workspace close reports a scanning retirement failure once for %p",
+  async (reason) => {
+    const { budget } = rig();
+    const failing = failFirstReferenceRelease(budget, reason);
+    const factory = fundWorkspaceFactory(budget);
+    let current: Awaited<ReturnType<typeof fixture>> | undefined;
+    try {
+      current = await fixture();
+      await current.client.asyncCall("writeFile", ["/held"], new Uint8Array([65]));
+      const cursor = current.workspace.snapshot();
+      expect((await cursor.next()).kind).toBe("entries");
+      const charged = budget.snapshot();
+      const closing = current.workspace.close();
+      expect(current.workspace.close()).toBe(closing);
+      const failure = await closing.then(
+        () => "closed",
+        (error: unknown) => error,
+      );
+      expect(Object.is(failure, reason)).toBe(true);
+      expect(Object.is(await closing.catch((error: unknown) => error), reason)).toBe(true);
+      expect(usage(budget.snapshot())).toEqual(usage(charged));
+      expect(failing.releases()).toBe(1);
+    } finally {
+      await current?.workspace.close().catch(() => {});
+      current?.client.dispose();
+      current?.service.dispose();
+      factory.mockRestore();
+      failing.admission.mockRestore();
+      budget.close();
+    }
+  },
+);
+
+test("cursor close reports an independent remote close failure once", async () => {
+  const { budget } = rig();
+  const retirementReason = 0;
+  const remoteReason = new Error("remote close failed");
+  const failing = failFirstReferenceRelease(budget, retirementReason);
+  const factory = fundWorkspaceFactory(budget);
+  let current: Awaited<ReturnType<typeof fixture>> | undefined;
+  let remoteFailures = 0;
+  try {
+    current = await fixture();
+    await current.client.asyncCall("writeFile", ["/held"], new Uint8Array([65]));
+    const cursor = current.workspace.snapshot();
+    expect((await cursor.next()).kind).toBe("entries");
+    const submit = current.client.submit.bind(current.client);
+    const submission = spyOn(current.client, "submit").mockImplementation((operation, ...args) => {
+      if (operation !== "publicationNamespaceClose" || remoteFailures++)
+        return submit(operation, ...args);
+      return {
+        value: () => Promise.reject(remoteReason),
+        release() {},
+      } as ReturnType<FilesystemClient["submit"]>;
+    });
+    const failure = await cursor.close().then(
+      () => "closed",
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([retirementReason, remoteReason]);
+    expect(failing.releases()).toBe(1);
+    submission.mockRestore();
+  } finally {
+    await current?.workspace.close().catch(() => {});
+    current?.client.dispose();
+    current?.service.dispose();
+    factory.mockRestore();
+    failing.admission.mockRestore();
+    budget.close();
+  }
+});
 
 test("completion transfers the scanning owner and close retires the accepted owner once", async () => {
   const current = await fixture();
