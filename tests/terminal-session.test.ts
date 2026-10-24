@@ -713,6 +713,11 @@ test("installed inherited root stdio follows explicit admission without replacin
       policy,
       checkActive,
     });
+    const queueNextByte = () => {
+      cells[5] = 67;
+      cells[1] = 2;
+      return 1;
+    };
     try {
       expect(must(terminalControls(admittedView.resolve(0))!.snapshot()).selection).not.toBeNull();
       expect(table.get(0)!.resource).toBe(installed);
@@ -720,13 +725,7 @@ test("installed inherited root stdio follows explicit admission without replacin
       expect(installed.tryRead!([output])).toBe(1);
       expect(output[0]).toBe(65);
       must(authority.removeMember(admitted.member));
-      must(
-        display.input(() => {
-          cells[5] = 67;
-          cells[1] = 2;
-          return 1;
-        }),
-      );
+      must(display.input(queueNextByte));
       expect(installed.tryRead!([output])).toBe(-6);
       expect(cells[0]).toBe(1);
     } finally {
@@ -1071,7 +1070,6 @@ test("page close never steals the gate from an actually terminated worker", asyn
   }
 });
 
-
 function controlWords(display: ReturnType<typeof createTerminalSession>): Int32Array {
   const identity = display.identity as unknown as { buffer: SharedArrayBuffer };
   return new Int32Array(identity.buffer);
@@ -1085,9 +1083,9 @@ function expectClosedWithoutPublication(
   expect(after[0]).toBe(1);
   after[0] = before[0]!;
   after[15] = before[15]!;
-  expect(after).toEqual(before);
+  expect(Array.from(after)).toEqual(Array.from(before));
 }
-function transitionFixture() {
+function boundaryFixture() {
   let revoked = false;
   let action: TerminalPolicy["transition"] | undefined;
   const checkActive = () => {
@@ -1123,7 +1121,7 @@ type TransitionCase =
   | "acquire"
   | "admit"
   | "bind";
-function transitionOperation(f: ReturnType<typeof transitionFixture>, operation: TransitionCase) {
+function transitionOperation(f: ReturnType<typeof boundaryFixture>, operation: TransitionCase) {
   const group = must(f.authority.createGroup({ initialMode: "cooked" }));
   const child = f.spawn();
   const controls = terminalControls(f.attachment.resolve(0))!;
@@ -1150,11 +1148,18 @@ function transitionOperation(f: ReturnType<typeof transitionFixture>, operation:
   }
 }
 const transitionCases: readonly TransitionCase[] = [
-  "mode", "remove", "release-null", "restore", "transfer", "acquire", "admit", "bind",
+  "mode",
+  "remove",
+  "release-null",
+  "restore",
+  "transfer",
+  "acquire",
+  "admit",
+  "bind",
 ];
 for (const operation of transitionCases)
   test(`R29 post-policy ${operation} admission throws close before any control publication`, () => {
-    const f = transitionFixture();
+    const f = boundaryFixture();
     const run = transitionOperation(f, operation);
     const before = controlWords(f.display).slice();
     f.fault(() => {
@@ -1172,7 +1177,7 @@ for (const operation of transitionCases)
   });
 
 test("R29 post-policy endpoint disposal fails closed without publishing mode", () => {
-  const f = transitionFixture();
+  const f = boundaryFixture();
   const run = transitionOperation(f, "mode");
   const before = controlWords(f.display).slice();
   f.fault(() => {
@@ -1191,7 +1196,7 @@ test("R29 post-policy endpoint disposal fails closed without publishing mode", (
 
 for (const operation of transitionCases)
   test(`R29 ${operation} gate contention has zero control and policy mutation`, () => {
-    const f = transitionFixture();
+    const f = boundaryFixture();
     const run = transitionOperation(f, operation);
     const words = controlWords(f.display);
     const gate = new BigInt64Array(words.buffer, 64, 1);
@@ -1211,7 +1216,7 @@ for (const operation of transitionCases)
   });
 
 test("R29 throwing transition discriminant is guarded after policy mutation", () => {
-  const f = transitionFixture();
+  const f = boundaryFixture();
   const run = transitionOperation(f, "mode");
   const before = controlWords(f.display).slice();
   f.fault(() => {
@@ -1235,14 +1240,20 @@ test("R29 throwing transition discriminant is guarded after policy mutation", ()
 
 test("R29 initial geometry object and dimensions are each captured once", () => {
   const root = createWorkerProcessTransport({ capacity: 4 });
-  let objects = 0, columns = 0, rows = 0;
+  let objects = 0,
+    columns = 0,
+    rows = 0;
   const display = createTerminalSession({
     controller: root,
     get geometry() {
       objects++;
       return {
-        get columns() { return ++columns === 1 ? 120 : 0; },
-        get rows() { return ++rows === 1 ? 24 : 0; },
+        get columns() {
+          return ++columns === 1 ? 120 : 0;
+        },
+        get rows() {
+          return ++rows === 1 ? 24 : 0;
+        },
       };
     },
   });
@@ -1256,11 +1267,16 @@ test("R29 initial geometry object and dimensions are each captured once", () => 
 
 test("R29 resize captures changing dimensions once before gate entry", () => {
   const f = fixture();
-  let columns = 0, rows = 0;
+  let columns = 0,
+    rows = 0;
   try {
     const result = f.display.resize({
-      get columns() { return ++columns === 1 ? 103 : 0; },
-      get rows() { return ++rows === 1 ? 31 : 0; },
+      get columns() {
+        return ++columns === 1 ? 103 : 0;
+      },
+      get rows() {
+        return ++rows === 1 ? 31 : 0;
+      },
     });
     expect(result).toEqual({ kind: "ok", value: { columns: 103, rows: 31, revision: 2 } });
     expect(must(f.display.snapshot()).geometry).toEqual({ columns: 103, rows: 31, revision: 2 });
@@ -1275,7 +1291,11 @@ for (const dimension of ["columns", "rows"] as const)
     const f = fixture();
     const before = controlWords(f.display).slice();
     const geometry = { columns: 103, rows: 31 };
-    Object.defineProperty(geometry, dimension, { get() { throw new Error("R29 geometry accessor"); } });
+    Object.defineProperty(geometry, dimension, {
+      get() {
+        throw new Error("R29 geometry accessor");
+      },
+    });
     try {
       expect(() => f.display.resize(geometry)).toThrow("R29 geometry accessor");
       expect(controlWords(f.display)).toEqual(before);
@@ -1314,10 +1334,15 @@ test("R29 resize getter reentry observes precommit geometry with a free gate", (
   try {
     must(f.display.resize(geometry));
     expect(observed).toHaveLength(1);
-    expect(observed[0]).toEqual({ kind: "ok", value: {
-      mode: "raw", modeRevision: 2,
-      geometry: { columns: 120, rows: 24, revision: 1 }, selection: 1,
-    } });
+    expect(observed[0]).toEqual({
+      kind: "ok",
+      value: {
+        mode: "raw",
+        modeRevision: 2,
+        geometry: { columns: 120, rows: 24, revision: 1 },
+        selection: 1,
+      },
+    });
   } finally {
     f.cleanup();
   }
@@ -1329,24 +1354,35 @@ test("R29 invalid resize preserves every control word", () => {
   try {
     expect(f.display.resize({ columns: 0, rows: 31 })).toEqual({ kind: "error", code: "INVALID" });
     expect(controlWords(f.display)).toEqual(before);
-  } finally { f.cleanup(); }
+  } finally {
+    f.cleanup();
+  }
 });
 
 test("R29 throwing group options preserve full block and all remaining capacity", () => {
   const f = fixture();
   const before = controlWords(f.display).slice();
-  const options = { get initialMode(): "raw" { throw new Error("R29 mode accessor"); } };
+  const options = {
+    get initialMode(): "raw" {
+      throw new Error("R29 mode accessor");
+    },
+  };
   try {
     expect(() => f.authority.createGroup(options)).toThrow("R29 mode accessor");
     expect(controlWords(f.display)).toEqual(before);
     for (let i = 1; i < TERMINAL_SESSION_LIMITS.groups; i++)
       must(f.authority.createGroup({ initialMode: "raw" }));
-    expect(f.authority.createGroup({ initialMode: "raw" })).toEqual({ kind: "error", code: "CAPACITY" });
-  } finally { f.cleanup(); }
+    expect(f.authority.createGroup({ initialMode: "raw" })).toEqual({
+      kind: "error",
+      code: "CAPACITY",
+    });
+  } finally {
+    f.cleanup();
+  }
 });
 
 test("R29 group option reads finish before reservation and reconfirm admission", () => {
-  const f = transitionFixture();
+  const f = boundaryFixture();
   const before = controlWords(f.display).slice();
   let reads = 0;
   const options = {
@@ -1361,19 +1397,29 @@ test("R29 group option reads finish before reservation and reconfirm admission",
     expect(() => f.authority.createGroup(options)).toThrow("R29 admission revoked");
     expect(reads).toBe(1);
     expect(controlWords(f.display)).toEqual(before);
-  } finally { f.cleanup(); }
+  } finally {
+    f.cleanup();
+  }
 });
-
 
 for (const dimension of ["columns", "rows"] as const)
   test(`R29 throwing initial ${dimension} getter leaves root transport unchanged`, () => {
     const root = createWorkerProcessTransport({ capacity: 4 });
     const before = new Uint8Array(root.directory).slice();
     const geometry = { columns: 120, rows: 24 };
-    Object.defineProperty(geometry, dimension, { get() { throw new Error("R29 initial geometry"); } });
-    expect(() => createTerminalSession({ controller: root, geometry })).toThrow("R29 initial geometry");
-    expect(new Uint8Array(root.directory)).toEqual(before);
-    const display = createTerminalSession({ controller: root, geometry: { columns: 120, rows: 24 } });
+    Object.defineProperty(geometry, dimension, {
+      get() {
+        throw new Error("R29 initial geometry");
+      },
+    });
+    expect(() => createTerminalSession({ controller: root, geometry })).toThrow(
+      "R29 initial geometry",
+    );
+    expect(Array.from(new Uint8Array(root.directory))).toEqual(Array.from(before));
+    const display = createTerminalSession({
+      controller: root,
+      geometry: { columns: 120, rows: 24 },
+    });
     expect(must(display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
     display.close("disposed");
   });
@@ -1386,7 +1432,10 @@ test("R29 creation geometry getter can reenter before outer control publication"
     geometry: {
       get columns() {
         reads++;
-        const nested = createTerminalSession({ controller: root, geometry: { columns: 103, rows: 31 } });
+        const nested = createTerminalSession({
+          controller: root,
+          geometry: { columns: 103, rows: 31 },
+        });
         expect(must(nested.snapshot()).geometry).toEqual({ columns: 103, rows: 31, revision: 1 });
         nested.close("disposed");
         return 120;
@@ -1397,7 +1446,9 @@ test("R29 creation geometry getter can reenter before outer control publication"
   try {
     expect(reads).toBe(1);
     expect(must(display.snapshot()).geometry).toEqual({ columns: 120, rows: 24, revision: 1 });
-  } finally { display.close("disposed"); }
+  } finally {
+    display.close("disposed");
+  }
 });
 
 test("R29 authority claim options throw before claiming the shared block", () => {
@@ -1409,17 +1460,28 @@ test("R29 authority claim options throw before claiming the shared block", () =>
     identity: display.identity,
     process: root,
     checkActive() {},
-    get policy(): TerminalPolicy { throw new Error("R29 claim policy accessor"); },
+    get policy(): TerminalPolicy {
+      throw new Error("R29 claim policy accessor");
+    },
   };
   try {
     expect(() => claimTerminalAuthority(options)).toThrow("R29 claim policy accessor");
     expect(controlWords(display)).toEqual(before);
-    expect(claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }).kind).toBe("ok");
-  } finally { display.close("disposed"); }
+    expect(
+      claimTerminalAuthority({
+        identity: display.identity,
+        process: root,
+        checkActive() {},
+        policy,
+      }).kind,
+    ).toBe("ok");
+  } finally {
+    display.close("disposed");
+  }
 });
 
 test("R29 mode options are captured once before policy and no getter follows mutation", () => {
-  const f = transitionFixture();
+  const f = boundaryFixture();
   const controls = terminalControls(f.attachment.resolve(0))!;
   const expected = must(controls.snapshot()).selection;
   let reads = 0;
@@ -1431,20 +1493,131 @@ test("R29 mode options are captured once before policy and no getter follows mut
       return "cooked";
     },
   };
-  f.fault(() => { f.cells[130]!++; return { kind: "ok", value: undefined }; });
+  f.fault(() => {
+    f.cells[130]!++;
+    return { kind: "ok", value: undefined };
+  });
   try {
     expect(controls.setMode(options)).toEqual({ kind: "ok", value: undefined });
     expect(reads).toBe(1);
     expect(f.cells[130]).toBe(1);
     expect(must(f.display.snapshot()).mode).toBe("cooked");
-  } finally { f.cleanup(); }
+  } finally {
+    f.cleanup();
+  }
 });
 
 test("R29 invalid group mode consumes no shared capacity", () => {
   const f = fixture();
   const before = controlWords(f.display).slice();
   try {
-    expect(Reflect.apply(f.authority.createGroup, f.authority, [{ initialMode: "invalid" }])).toEqual({ kind: "error", code: "INVALID" });
+    expect(
+      Reflect.apply(f.authority.createGroup, f.authority, [{ initialMode: "invalid" }]),
+    ).toEqual({ kind: "error", code: "INVALID" });
     expect(controlWords(f.display)).toEqual(before);
-  } finally { f.cleanup(); }
+  } finally {
+    f.cleanup();
+  }
 });
+
+test("R29 successful transition discriminant is normalized once within the turn", () => {
+  const f = boundaryFixture();
+  const run = transitionOperation(f, "mode");
+  let reads = 0;
+  f.fault(() => ({
+    get kind(): "ok" {
+      if (++reads > 1) throw new Error("R29 result reread");
+      return "ok";
+    },
+    value: undefined,
+  }));
+  try {
+    expect(run()).toEqual({ kind: "ok", value: undefined });
+    expect(reads).toBe(1);
+    expect(must(f.display.snapshot()).mode).toBe("cooked");
+  } finally {
+    f.cleanup();
+  }
+});
+
+function revokingOption<T extends object, K extends keyof T>(
+  f: ReturnType<typeof boundaryFixture>,
+  options: T,
+  key: K,
+): T {
+  const value = options[key];
+  return Object.defineProperty(options, key, {
+    get() {
+      f.revoke();
+      return value;
+    },
+  });
+}
+const optionCases = [
+  "group",
+  "plan",
+  "bind",
+  "admit",
+  "acquire",
+  "transfer",
+  "release",
+  "retire",
+  "mode",
+] as const;
+function optionOperation(
+  f: ReturnType<typeof boundaryFixture>,
+  operation: (typeof optionCases)[number],
+) {
+  const group = must(f.authority.createGroup({ initialMode: "cooked" }));
+  const child = f.spawn();
+  const planned = must(f.authority.planMember({ group, parent: f.editorMember.member }));
+  const controls = terminalControls(f.attachment.resolve(0))!;
+  const expected = must(controls.snapshot()).selection;
+  switch (operation) {
+    case "group":
+      return () =>
+        f.authority.createGroup(revokingOption(f, { initialMode: "raw" as const }, "initialMode"));
+    case "plan":
+      return () =>
+        f.authority.planMember(
+          revokingOption(f, { group, parent: f.editorMember.member }, "parent"),
+        );
+    case "bind":
+      return () =>
+        f.authority.bindMember(
+          revokingOption(f, { planned: planned.member, pid: child.pid }, "planned"),
+        );
+    case "admit":
+      return () => f.authority.admitExisting(revokingOption(f, { group, pid: child.pid }, "group"));
+    case "acquire":
+      must(f.authority.release({ lease: f.editorLease, restore: null }));
+      return () => f.authority.acquire(revokingOption(f, { group, expected: null }, "group"));
+    case "transfer":
+      return () =>
+        f.authority.transfer(revokingOption(f, { from: f.editorLease, to: group }, "to"));
+    case "release":
+      return () =>
+        f.authority.release(revokingOption(f, { lease: f.editorLease, restore: null }, "restore"));
+    case "retire":
+      return () =>
+        f.authority.retireGroup(
+          revokingOption(f, { group, reason: "completed" as const }, "group"),
+        );
+    case "mode":
+      return () =>
+        controls.setMode(revokingOption(f, { expected, mode: "cooked" as const }, "mode"));
+  }
+}
+for (const operation of optionCases)
+  test(`R29 ${operation} rechecks admission after caller option getters before any shared write`, () => {
+    const f = boundaryFixture();
+    const run = optionOperation(f, operation);
+    const before = controlWords(f.display).slice();
+    try {
+      expect(run).toThrow("R29 admission revoked");
+      expect(controlWords(f.display)).toEqual(before);
+      expect(f.cells[130]).toBe(0);
+    } finally {
+      f.cleanup();
+    }
+  });

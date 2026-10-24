@@ -308,6 +308,9 @@ function ok<T>(value: T): TerminalResult<T> {
 function error(code: TerminalFailure): { kind: "error"; code: TerminalFailure } {
   return { kind: "error", code };
 }
+function captureGeometry(geometry: TerminalGeometry): TerminalGeometry {
+  return { columns: geometry.columns, rows: geometry.rows };
+}
 function validGeometry(size: TerminalGeometry): boolean {
   return (
     integer(size.columns) &&
@@ -512,8 +515,8 @@ class Session {
     }
   }
   transition(policy: TerminalPolicy, change: TerminalChange): TerminalResult<void> {
-    const result = this.turn((turn) => policy.transition(turn, change));
-    if (result.kind === "ok" && !this.closed() && this.rootLive()) return result;
+    const accepted = this.turn((turn) => policy.transition(turn, change).kind === "ok");
+    if (accepted && !this.closed() && this.rootLive()) return ok(undefined);
     this.close();
     return error("CLOSED");
   }
@@ -535,8 +538,10 @@ export function createTerminalSession(options: {
   readonly controller: WorkerProcessTransport;
   readonly geometry: TerminalGeometry;
 }): TerminalDisplay {
-  if (!validGeometry(options.geometry)) throw new RangeError("invalid terminal geometry");
-  const state = workerProcessState(options.controller);
+  const controller = options.controller,
+    geometry = captureGeometry(options.geometry);
+  if (!validGeometry(geometry)) throw new RangeError("invalid terminal geometry");
+  const state = workerProcessState(controller);
   if (!live(state) || state.rootPid !== state.pid)
     throw new ProcessError(ProcessErrno.SRCH, "terminal root is not live");
   const buffer = new SharedArrayBufferConstructor(TERMINAL_SESSION_LIMITS.controlBytes);
@@ -545,8 +550,8 @@ export function createTerminalSession(options: {
     [identityBrand]: true as const,
     kind: "waffle-terminal",
     buffer,
-    directory: options.controller.directory,
-    directoryId: workerProcessDirectoryId(options.controller),
+    directory: controller.directory,
+    directoryId: workerProcessDirectoryId(controller),
     nonce0: random[0]! | 0,
     nonce1: random[1]! | 0,
     rootSlot: state.slot,
@@ -557,8 +562,8 @@ export function createTerminalSession(options: {
   session.put(H.rootPid, state.pid);
   session.put(H.nonce0, identity.nonce0);
   session.put(H.nonce1, identity.nonce1);
-  session.put(H.columns, options.geometry.columns);
-  session.put(H.rows, options.geometry.rows);
+  session.put(H.columns, geometry.columns);
+  session.put(H.rows, geometry.rows);
   session.put(H.geometry, 1);
   session.put(H.modeRevision, 1);
   return new Display(session);
@@ -589,8 +594,9 @@ class Display implements TerminalDisplay {
     return this.session.closed() ? error("CLOSED") : ok(count);
   }
   resize(geometry: TerminalGeometry): TerminalResult<TerminalGeometrySnapshot> {
-    if (!validGeometry(geometry)) return error("INVALID");
-    return this.session.transact(pageOwner, () => this.publishGeometry(geometry));
+    const captured = captureGeometry(geometry);
+    if (!validGeometry(captured)) return error("INVALID");
+    return this.session.transact(pageOwner, () => this.publishGeometry(captured));
   }
   private publishGeometry(geometry: TerminalGeometry): TerminalResult<TerminalGeometrySnapshot> {
     const s = this.session;
@@ -655,18 +661,20 @@ export function claimTerminalAuthority(options: {
   readonly checkActive: () => void;
   readonly policy: TerminalPolicy;
 }): TerminalResult<TerminalAuthority> {
-  const identity = parseIdentity(options.identity);
-  options.checkActive();
+  const { identity: input, process, checkActive, policy } = options;
+  const identity = parseIdentity(input);
+  checkActive();
   if (
-    workerProcessDirectoryId(options.process) !== identity.directoryId ||
-    options.process.slot !== identity.rootSlot ||
-    options.process.pid !== identity.rootPid
+    workerProcessDirectoryId(process) !== identity.directoryId ||
+    process.slot !== identity.rootSlot ||
+    process.pid !== identity.rootPid
   )
     return error("DENIED");
   const session = new Session(identity);
   return session.transact(BigIntConstructor(identity.rootPid), () => {
+    checkActive();
     if (atomicsCompareExchange(session.words, H.claimed, 0, 1) !== 0) return error("DENIED");
-    return ok(new Authority(session, options.checkActive, options.policy));
+    return ok(new Authority(session, checkActive, policy));
   });
 }
 class Authority implements TerminalAuthority {
@@ -686,7 +694,7 @@ class Authority implements TerminalAuthority {
   private confirm(check: () => boolean): TerminalResult<void> {
     try {
       this.checkActive();
-      if (this.session.rootLive() && check()) return ok(undefined);
+      if (!this.session.closed() && this.session.rootLive() && check()) return ok(undefined);
     } catch (cause) {
       this.session.close();
       throw cause;
@@ -731,14 +739,16 @@ class Authority implements TerminalAuthority {
     return error("CAPACITY");
   }
   createGroup(options: { readonly initialMode: TerminalMode }): TerminalResult<TerminalGroup> {
+    const { initialMode } = options;
     return this.run(() => {
+      if (initialMode !== "raw" && initialMode !== "cooked") return error("INVALID");
       const allocated = this.allocate(GROUPS, TERMINAL_SESSION_LIMITS.groups);
       if (allocated.kind === "error") return allocated;
       const row = allocated.value,
         generation = this.session.get(row) + 1;
       this.session.put(row, generation);
       this.session.put(row + 1, PREPARING);
-      this.session.put(row + 2, modeWord(options.initialMode));
+      this.session.put(row + 2, modeWord(initialMode));
       this.session.put(row + 3, 0);
       return ok(new Group(this, row, generation));
     });
@@ -747,7 +757,8 @@ class Authority implements TerminalAuthority {
     readonly group: TerminalGroup;
     readonly parent: TerminalMember;
   }): TerminalResult<TerminalPlannedMember> {
-    return this.run(() => this.planInGroup(options));
+    const { group, parent } = options;
+    return this.run(() => this.planInGroup({ group, parent }));
   }
   private planInGroup(options: {
     readonly group: TerminalGroup;
@@ -780,8 +791,9 @@ class Authority implements TerminalAuthority {
     readonly planned: TerminalMemberPlan;
     readonly pid: number;
   }): TerminalResult<TerminalAdmittedMember> {
-    const state = findProcess(this.session.identity, options.pid);
-    return this.run(() => this.bind(options.planned, state));
+    const { planned, pid } = options;
+    const state = findProcess(this.session.identity, pid);
+    return this.run(() => this.bind(planned, state));
   }
   private bind(
     value: TerminalMemberPlan,
@@ -802,15 +814,14 @@ class Authority implements TerminalAuthority {
     const group = this.rowGroup(plan.row);
     if (!group) return error("STALE");
     if (this.existingMember(group, state.pid) !== undefined) return error("INVALID");
-    const changed = this.membershipChange(group);
-    if (changed.kind === "error") return changed;
-    const confirmed = this.confirm(
+    const changed = this.membershipChange(
+      group,
       () =>
         !!alive(s.identity, state.slot, state.pid) &&
         this.authorized(state) &&
         !!alive(s.identity, s.get(plan.row + 6), state.parentPid),
     );
-    if (confirmed.kind === "error") return confirmed;
+    if (changed.kind === "error") return changed;
     s.put(plan.row + 4, state.slot);
     s.put(plan.row + 5, state.pid);
     s.put(plan.row + 1, BOUND);
@@ -837,8 +848,9 @@ class Authority implements TerminalAuthority {
     readonly group: TerminalGroup;
     readonly pid: number;
   }): TerminalResult<TerminalAdmittedMember> {
-    const state = findProcess(this.session.identity, options.pid);
-    return this.run(() => this.admit(options.group, state));
+    const { group, pid } = options;
+    const state = findProcess(this.session.identity, pid);
+    return this.run(() => this.admit(group, state));
   }
   private admit(
     value: TerminalGroup,
@@ -853,14 +865,13 @@ class Authority implements TerminalAuthority {
     if (duplicate !== undefined) return ok(this.admitted(duplicate));
     const allocation = this.allocate(MEMBERS, TERMINAL_SESSION_LIMITS.memberships);
     if (allocation.kind === "error") return allocation;
-    const changed = this.membershipChange(group);
-    if (changed.kind === "error") return changed;
-    const confirmed = this.confirm(
+    const changed = this.membershipChange(
+      group,
       () =>
         !!alive(s.identity, state.slot, state.pid) &&
         (state.pid === s.identity.rootPid || this.authorized(state)),
     );
-    if (confirmed.kind === "error") return confirmed;
+    if (changed.kind === "error") return changed;
     const row = allocation.value;
     s.put(row, s.get(row) + 1);
     s.put(row + 1, BOUND);
@@ -895,24 +906,24 @@ class Authority implements TerminalAuthority {
       lease: this.currentLease(group),
     };
   }
-  private membershipChange(group: Group): TerminalResult<void> {
+  private membershipChange(group: Group, check = () => true): TerminalResult<void> {
     const s = this.session,
       roster = s.next(group.row + 3);
     if (roster.kind === "error") return roster;
-    if (this.currentLease(group) === null) {
-      s.put(group.row + 3, roster.value);
-      return ok(undefined);
-    }
-    const selection = s.next(H.selection);
+    const selection = this.currentLease(group) === null ? ok(null) : s.next(H.selection);
     if (selection.kind === "error") return selection;
-    const changed = s.transition(this.policy, {
-      kind: "membership",
-      previous: s.selection()!,
-      next: selection.value as TerminalSelection,
-    });
-    if (changed.kind === "error") return changed;
+    if (selection.value !== null) {
+      const changed = s.transition(this.policy, {
+        kind: "membership",
+        previous: s.selection()!,
+        next: selection.value as TerminalSelection,
+      });
+      if (changed.kind === "error") return changed;
+    }
+    const confirmed = this.confirm(check);
+    if (confirmed.kind === "error") return confirmed;
     s.put(group.row + 3, roster.value);
-    s.put(H.selection, selection.value);
+    if (selection.value !== null) s.put(H.selection, selection.value);
     return ok(undefined);
   }
   cancelPlan(value: TerminalMemberPlan): TerminalResult<void> {
@@ -955,18 +966,20 @@ class Authority implements TerminalAuthority {
     readonly group: TerminalGroup;
     readonly expected: null;
   }): TerminalResult<TerminalLease> {
+    const { group } = options;
     return this.run(() => {
       if (this.session.get(H.selected) !== 0) return error("STALE");
-      return this.select(options.group);
+      return this.select(group);
     });
   }
   transfer(options: {
     readonly from: TerminalLease;
     readonly to: TerminalGroup;
   }): TerminalResult<TerminalLease> {
+    const { from, to } = options;
     return this.run(() => {
-      if (!this.lease(options.from)) return error("STALE");
-      return this.select(options.to);
+      if (!this.lease(from)) return error("STALE");
+      return this.select(to);
     });
   }
   private select(value: TerminalGroup): TerminalResult<Lease> {
@@ -1013,9 +1026,10 @@ class Authority implements TerminalAuthority {
     readonly lease: TerminalLease;
     readonly restore: TerminalGroup | null;
   }): TerminalResult<TerminalLease | null> {
+    const { lease, restore } = options;
     return this.run(() => {
-      if (!this.lease(options.lease)) return error("STALE");
-      if (options.restore !== null) return this.select(options.restore);
+      if (!this.lease(lease)) return error("STALE");
+      if (restore !== null) return this.select(restore);
       const next = this.session.next(H.selection);
       if (next.kind === "error") return next;
       const changed = this.session.transition(this.policy, {
@@ -1024,6 +1038,8 @@ class Authority implements TerminalAuthority {
         next: null,
       });
       if (changed.kind === "error") return changed;
+      const confirmed = this.confirm(() => true);
+      if (confirmed.kind === "error") return confirmed;
       this.saveMode();
       this.session.put(H.selected, 0);
       this.session.put(H.selection, next.value);
@@ -1034,7 +1050,8 @@ class Authority implements TerminalAuthority {
     readonly group: TerminalGroup;
     readonly reason: TerminalReason;
   }): TerminalResult<void> {
-    return this.run(() => this.retire(options.group));
+    const { group } = options;
+    return this.run(() => this.retire(group));
   }
   private retire(value: TerminalGroup): TerminalResult<void> {
     const group = this.group(value),
@@ -1335,7 +1352,8 @@ class Controls implements TerminalControls {
     readonly expected: TerminalSelection | null;
     readonly mode: TerminalMode;
   }): TerminalResult<void> {
-    return this.endpoint.run(() => this.set(options));
+    const { expected, mode } = options;
+    return this.endpoint.run(() => this.set({ expected, mode }));
   }
   private set(options: {
     readonly expected: TerminalSelection | null;
@@ -1344,6 +1362,7 @@ class Controls implements TerminalControls {
     const a = this.endpoint.attachment,
       s = a.session;
     if (!a.selected(this.endpoint.state)) return error("DENIED");
+    if (options.mode !== "raw" && options.mode !== "cooked") return error("INVALID");
     if (s.selection() !== options.expected) return error("STALE");
     if (mode(s.get(H.mode)) === options.mode) return ok(undefined);
     const next = s.next(H.modeRevision);
@@ -1354,10 +1373,15 @@ class Controls implements TerminalControls {
       next: options.mode,
     });
     if (changed.kind === "error") return changed;
-    const failure = this.endpoint.check();
-    if (failure) {
+    try {
+      const failure = this.endpoint.check();
+      if (failure) {
+        s.close();
+        return error(failure);
+      }
+    } catch (cause) {
       s.close();
-      return error(failure);
+      throw cause;
     }
     s.put(H.mode, modeWord(options.mode));
     s.put(H.modeRevision, next.value);
