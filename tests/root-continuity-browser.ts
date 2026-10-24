@@ -41,6 +41,7 @@ function request(name: string) {
   };
 }
 
+/** @browserEntry Invoked through the explicit composition runner bundle. */
 export async function selectedRootComposition() {
   const name = `root-continuity-${crypto.randomUUID()}`;
   const saved = publicationAdapter.fixture();
@@ -147,6 +148,7 @@ export async function selectedRootComposition() {
   }
 }
 
+/** @browserEntry Invoked through the explicit composition runner bundle. */
 export async function startupFenceComposition(mode: "cancel" | "failure") {
   const name = `root-continuity-${mode}-${crypto.randomUUID()}`;
   const memory = residentMemory();
