@@ -1,5 +1,6 @@
 import { FilesystemClient } from "./client.js";
 import { FilesystemService } from "./service.js";
+import type { CheckpointPublication } from "./storage.js";
 import type { MemoryBackend } from "./backend.js";
 import {
   MemoryBudgetError,
@@ -46,14 +47,18 @@ export class ResidentConstruction {
     this.buffers.push(buffer);
     return buffer;
   }
-  attach(backend: MemoryBackend): LocalPair {
+  attach(backend: MemoryBackend, checkpoint?: CheckpointPublication): LocalPair {
     if (this.phase !== "private" || this.connection) throw new MemoryBudgetError("closed");
     if (backend.shared.startupMemoryBudget !== this.memory)
       throw new TypeError("resident backend must own this admitted startup root");
-    const connection = createFilesystemConnection(undefined, this.publication, {
-      shared: backend.shared.buffer,
-      allocateShared: (bytes, maximum) => this.allocateShared(bytes, maximum),
-    });
+    const connection = createFilesystemConnection(
+      undefined,
+      checkpoint === undefined ? this.publication : { ...this.publication, restore: checkpoint },
+      {
+        shared: backend.shared.buffer,
+        allocateShared: (bytes, maximum) => this.allocateShared(bytes, maximum),
+      },
+    );
     this.connection = connection;
     const root = new FilesystemClient(connection.client);
     const service = new FilesystemService(backend);
