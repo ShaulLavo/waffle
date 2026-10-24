@@ -249,7 +249,7 @@ export function validatePublicationLimits(limits: PublicationLimits): Publicatio
     throw new RangeError("publication arena is too large");
   return Object.freeze({ ...limits });
 }
-export interface PublicationBufferConstruction {
+interface PublicationBufferConstruction {
   allocateShared(bytes: number, maximum?: number): SharedArrayBuffer;
 }
 export interface PublicationBufferOptions {
