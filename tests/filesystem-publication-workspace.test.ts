@@ -1277,6 +1277,8 @@ test("cleanup reconciliation cancels only the exact original client and request 
     const request = await original.promise;
     observer.postMessage({ kind: "cancel", client: "foreign", id: request.id });
     observer.postMessage({ kind: "cancel", client: request.client, id: "foreign" });
+    observer.postMessage({ kind: "cancel", client: [request.client], id: request.id });
+    observer.postMessage({ kind: "cancel", client: request.client, id: [request.id] });
     observer.postMessage(request);
     observer.postMessage({ kind: "reconcile", client: "barrier", id: "none" });
     await barrier.promise;

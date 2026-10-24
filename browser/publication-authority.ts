@@ -61,16 +61,9 @@ export class ResidentAuthorityServer {
         this.receiveStatus(message);
         return;
       }
-      if (message.kind === "cancel") {
-        this.requests.get(this.key(String(message.client), String(message.id)))?.abort.abort();
-        return;
-      }
+      if (message.kind === "cancel" || message.kind === "ack") return this.control(message);
       if (message.kind === "reconcile") {
         this.reconcile(message);
-        return;
-      }
-      if (message.kind === "ack") {
-        this.terminal.delete(this.key(String(message.client), String(message.id)));
         return;
       }
       if (message.kind === "cancelSession") {
@@ -83,6 +76,16 @@ export class ResidentAuthorityServer {
   }
   private key(client: string, id: string): string {
     return JSON.stringify([client, id]);
+  }
+  private control(message: Record<string, unknown>): void {
+    let key: string;
+    try {
+      key = this.key(text(message.client), text(message.id));
+    } catch {
+      return;
+    }
+    if (message.kind === "cancel") this.requests.get(key)?.abort.abort();
+    else this.terminal.delete(key);
   }
   private postTerminal(client: string, id: string, outcome: TerminalOutcome): void {
     const key = this.key(client, id);
