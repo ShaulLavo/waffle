@@ -8,10 +8,7 @@ import type { WorkspaceExportOptions as FsOptions } from "waffle/fs";
 import * as fsIndex from "waffle/fs/index";
 import type { WorkspaceExportOptions as AliasOptions } from "waffle/fs/index";
 import type { exportWorkspaceArchive } from "../fs/workspace-export";
-import {
-  parseWorkspaceArchive,
-  type ArchiveEvent,
-} from "../fs/workspace-archive";
+import { parseWorkspaceArchive, type ArchiveEvent } from "../fs/workspace-archive";
 import { storeIdentity } from "../fs/file-identity";
 import { MemoryBackend } from "../fs/backend";
 import { MemFS } from "../fs/memory";
