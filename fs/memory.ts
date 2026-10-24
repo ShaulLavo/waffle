@@ -2,7 +2,6 @@ import type { FileIdentity } from "./file-identity.js";
 import type { NodeMetadata } from "./workspace-types.js";
 import { permissionsFor, FilesystemError } from "../core/filesystem.js";
 import {
-  normalize,
   dirname,
   basename,
   type FileSystem,
@@ -60,6 +59,9 @@ export function nodeMetadata(node: Node): NodeMetadata {
 export function nodeSize(node: Node): number {
   if (node.kind === "symlink") return encode(node.target).length;
   return node.kind === "file" ? (node.size ?? node.data.length) : 0;
+}
+interface MemoryPath extends ResolvedPath {
+  readonly canonicalPath: string;
 }
 interface TreePath {
   canonicalPath: string;
@@ -340,10 +342,18 @@ export class MemFS implements FileSystem {
   }
   resolve(directory: FileHandle, path: string, followFinal = false): ResolvedPath | number {
     if (path.startsWith("/")) return 63;
-    return this.walk(directory, path, false, followFinal);
+    const resolved = this.walk(directory, path, false, followFinal);
+    if (typeof resolved === "number") return resolved;
+    return {
+      name: resolved.name,
+      trailingSlash: resolved.trailingSlash,
+      terminalDot: resolved.terminalDot,
+      parent: resolved.parent,
+      node: resolved.node,
+    };
   }
   /** Page paths clamp parent-of-root, unlike WASI directory capabilities. */
-  resolveAbsolute(path: string, followFinal = false): ResolvedPath | number {
+  resolveAbsolute(path: string, followFinal = false): MemoryPath | number {
     if (!path.startsWith("/")) return 28;
     return this.walk(this.handle(this.root), path.replace(/^\/+/, "") || ".", true, followFinal);
   }
@@ -352,7 +362,7 @@ export class MemFS implements FileSystem {
     path: string,
     clampRoot: boolean,
     followFinal: boolean,
-  ): ResolvedPath | number {
+  ): MemoryPath | number {
     const resolved = walkTree(this.directory(directory), path, {
       clampRoot,
       followFinal,
@@ -364,6 +374,7 @@ export class MemFS implements FileSystem {
     });
     if (typeof resolved === "number") return resolved;
     return {
+      canonicalPath: resolved.canonicalPath,
       name: resolved.name,
       trailingSlash: resolved.trailingSlash,
       terminalDot: resolved.terminalDot,
@@ -926,8 +937,12 @@ export class MemFS implements FileSystem {
       for (const [name, child] of node.children)
         walk(child, path === "/" ? `/${name}` : `${path}/${name}`);
     };
-    const start = this.lookup(dir);
-    if (start) walk(start, normalize(dir));
+    const start = this.resolveAbsolute(dir.startsWith("/") ? dir : "/" + dir, true);
+    if (typeof start === "number") {
+      if (start === 44) return out;
+      throw new FilesystemError(start);
+    }
+    if (start.node !== undefined) walk(this.nodeForHandle(start.node), start.canonicalPath);
     return out.sort();
   }
 }

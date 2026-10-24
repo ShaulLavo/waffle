@@ -12,7 +12,7 @@ import {
 } from "./publication.js";
 import { type FileIdentity, type IdentityReservation, IdentityAllocator } from "./file-identity.js";
 import type { PublicationBuffers } from "./publication-internal.js";
-import { normalize, type FileHandle, type ResolvedPath } from "../core/index.js";
+import { type FileHandle, type ResolvedPath } from "../core/index.js";
 import { MemFS, type Node, type NamespacePlan } from "./memory.js";
 import { FilesystemError } from "./protocol.js";
 import { SharedFilesystemState, type SharedSegment } from "./shared.js";
@@ -339,7 +339,11 @@ export class MemoryBackend implements FilesystemBackend {
         const resolved = this.fs.resolveAbsolute(a);
         if (typeof resolved === "number") throw new FilesystemError(resolved);
         if (resolved.node === undefined) return;
-        return { path: normalize(a), kind: this.fs.nodeForHandle(resolved.node).kind };
+        const node = this.fs.nodeForHandle(resolved.node);
+        const path = resolved.canonicalPath;
+        return node.kind === "symlink"
+          ? { path, kind: node.kind, target: node.target }
+          : { path, kind: node.kind };
       }
       case "lookup":
         return this.lookup(a);

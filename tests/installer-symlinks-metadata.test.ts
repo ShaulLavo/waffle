@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import type { EntryMetadata } from "../browser/shared-fs.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { MemFS } from "../fs/memory.js";
 import { FilesystemClient } from "../fs/client.js";
@@ -77,9 +78,7 @@ test("listing keeps regular-file-only recursion and ordinary controls", () => {
   expect(fs.listFiles("/a")).toEqual(["/a/b/child.txt", "/a/note.txt"]);
   expect(fs.listFiles("a/b/../note.txt")).toEqual(["/a/note.txt"]);
   expect(fs.listFiles("/a/missing")).toEqual([]);
-  expect(backend.execute("listFiles", ["/link"], new Uint8Array())).toEqual([
-    "/a/b/child.txt",
-  ]);
+  expect(backend.execute("listFiles", ["/link"], new Uint8Array())).toEqual(["/a/b/child.txt"]);
 });
 
 test("relative descriptor resolution retains its existing transport shape", () => {
@@ -116,11 +115,11 @@ test("service lookup returns shallow child metadata with required link targets",
     target: "./b//../note.txt",
     ino: raw.ino,
     mtime: raw.mtime,
-  };
+  } satisfies EntryMetadata;
   expect(await client.asyncCall("lookup", ["/a/raw"])).toEqual(rawMetadata);
   expect(await client.asyncCall("lookup", ["/a"])).toMatchObject({
     kind: "dir",
-    children: new Map([
+    children: new Map<string, EntryMetadata>([
       ["b", { kind: "dir", ino: directory.ino, mtime: directory.mtime }],
       ["note.txt", { kind: "file", ino: file.ino, mtime: file.mtime }],
       ["raw", rawMetadata],

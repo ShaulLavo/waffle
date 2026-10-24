@@ -55,16 +55,17 @@ export type SharedFilesystemOptions = VfsSelection & {
   onStateChange?: SharedFilesystemStateObserver;
 };
 
-export interface ResolvedEntry {
-  readonly path: string;
-  readonly kind: "file" | "dir";
-}
-export interface Entry {
-  kind: "file" | "dir";
+export type ResolvedEntry = { readonly path: string } & (
+  | { readonly kind: "file" | "dir" }
+  | { readonly kind: "symlink"; readonly target: string }
+);
+interface EntryStat {
   ino: number;
   mtime: number;
-  children: Map<string, Entry>;
 }
+type LeafEntry = EntryStat & ({ kind: "file" } | { kind: "symlink"; target: string });
+export type EntryMetadata = LeafEntry | (EntryStat & { kind: "dir" });
+export type Entry = LeafEntry | (EntryStat & { kind: "dir"; children: Map<string, EntryMetadata> });
 export const WORKSPACE_TAKEN_OVER =
   "This workspace was opened in another tab. Reload to continue here.";
 export const UNSAVED_CHANGES_LOST =
