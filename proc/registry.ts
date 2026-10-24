@@ -6,9 +6,9 @@ import { normalize } from "../core/path.js";
 export type ExecutableLookup = (
   path: string,
 ) =>
-  | { readonly path: string; readonly kind: "file" | "dir" }
+  | { readonly path: string; readonly kind: "file" | "dir" | "symlink" }
   | undefined
-  | Promise<{ readonly path: string; readonly kind: "file" | "dir" } | undefined>;
+  | Promise<{ readonly path: string; readonly kind: "file" | "dir" | "symlink" } | undefined>;
 
 export interface Executable {
   /** The loader compiles asynchronously (normally in a compiler worker). Never instantiate here. */

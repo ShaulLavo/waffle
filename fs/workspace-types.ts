@@ -12,15 +12,20 @@ export interface NamespaceCut {
   readonly generation: Generation;
   readonly watermark: Watermark;
 }
-export interface NamespaceEntry {
+export type NodeMetadata =
+  | { readonly kind: "file" | "directory"; readonly target?: never }
+  | { readonly kind: "symlink"; readonly target: string };
+export type InodeMetadata =
+  | { readonly nodeKind: "file" | "directory"; readonly target?: never }
+  | { readonly nodeKind: "symlink"; readonly target: string };
+export type NamespaceEntry = NodeMetadata & {
   readonly id: FileId;
   readonly version: FileVersion;
   readonly path: string;
-  readonly kind: "file" | "directory";
   readonly size: number;
   readonly mtime: number;
   readonly mode: number;
-}
+};
 export interface SnapshotOptions {
   readonly prefix?: string;
   readonly includeDirs?: boolean;
@@ -67,12 +72,12 @@ export type WorkspaceChange =
     })
   | (ChangedFile & { readonly kind: "resize"; readonly size: number })
   | (ChangedFile & { readonly kind: "metadata"; readonly mode: number; readonly mtime: number })
-  | (ChangedFile & {
-      readonly kind: "inode";
-      readonly nodeKind: "file" | "directory";
-      readonly mode: number;
-      readonly mtime: number;
-    })
+  | (ChangedFile &
+      InodeMetadata & {
+        readonly kind: "inode";
+        readonly mode: number;
+        readonly mtime: number;
+      })
   | {
       readonly kind: "entry";
       readonly parent: FileReference;
@@ -99,15 +104,14 @@ export interface ByteRange {
   readonly offset: number;
   readonly length: number;
 }
-export interface VersionStat {
+export type VersionStat = NodeMetadata & {
   readonly id: FileId;
   readonly version: FileVersion;
   readonly cut: NamespaceCut;
-  readonly kind: "file" | "directory";
   readonly size: number;
   readonly mtime: number;
   readonly mode: number;
-}
+};
 export interface ReadValue {
   readonly stat: VersionStat;
   readonly range: ByteRange;

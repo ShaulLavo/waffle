@@ -223,6 +223,7 @@ test("a transient stat keeps its capability alive through service eviction and r
 test("stat releases its temporary reference when a missing shared slot reaches a failed service call", async () => {
   const { client } = fixture();
   const { handle } = await file(client);
+  await client.asyncCall("listFiles", ["/"]);
   const cells = table(client.connection);
   const index = refIndex(cells, handle);
   const failure = new FilesystemError(29);
@@ -354,6 +355,7 @@ test("a retain winning exactly at trim's CAS prevents eviction", async () => {
   for (let i = 0; i < 256; i++)
     await client.asyncCall("writeFile", [`/other-${i}`], new Uint8Array());
   for (let i = 0; i < 255; i++) await client.asyncCall("resolve", [root, `other-${i}`]);
+  await client.asyncCall("listFiles", ["/"]);
   const cells = table(client.connection);
   const index = refIndex(cells, handle);
   const compareExchange = Atomics.compareExchange;
@@ -378,6 +380,7 @@ test("a retain winning exactly at trim's CAS prevents eviction", async () => {
   }) as typeof Atomics.compareExchange;
   try {
     await client.asyncCall("resolve", [root, "other-255"]);
+    await client.asyncCall("listFiles", ["/"]);
   } finally {
     Atomics.compareExchange = compareExchange;
   }
@@ -391,6 +394,7 @@ test("reused capability entries cannot make a stale retain acquire a different h
   const { hooks, Client } = isolatedClient();
   const { client } = fixture(Client);
   const { handle } = await file(client);
+  await client.asyncCall("listFiles", ["/"]);
   const cells = table(client.connection);
   const index = refIndex(cells, handle);
   const compareExchange = hooks.compareExchange;

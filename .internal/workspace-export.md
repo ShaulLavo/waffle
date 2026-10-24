@@ -71,8 +71,11 @@ JavaScript string order. Ancestors precede descendants. For example, `/a/x`
 precedes `/a-`, even though whole-path comparison gives the opposite result.
 
 Each window holds at most 128 candidates and 64 KiB of charged metadata. The
-charge per candidate is `256 + 4 * path.length + 32 * componentCount`, including
-path and component strings. Insertion can temporarily add one extra candidate.
+charge per candidate is `256 + 4 * path.length + 32 * componentCount`, plus
+`2 * target.length + utf8ByteLength(target)` for a link. Each link record pays
+independently, including repeated equal target strings. Insertion can temporarily
+add one admitted candidate. A single candidate larger than an empty window
+fails with `WorkspaceArchiveError` code `LIMIT`, never empty-success termination.
 The selector also retains the previous path and the earliest excluded path,
 each under the codec's path and depth limits. The excluded path prevents gaps
 when inserting an earlier, cheaper candidate frees space. A window can therefore
@@ -137,30 +140,48 @@ Completed snapshots update the projection's normal accepted change watermark.
 The adapter does not consume changes, but callers must account for that ordinary
 snapshot side effect when sharing the same projection with a change reader.
 
-## Symbolic links and the v1 boundary
+## Symbolic links in archive v2
 
-The v1 format represents only files and directories. A snapshot entry of any other
-kind causes `WorkspaceArchiveError` with code `INVALID` before its path or target
-is charged, copied, pinned, or read. Nothing follows the target, copies its
-referent, normalizes raw target text, or silently omits the entry. A refusal on a
-later scan invalidates all bytes already delivered and prevents archive completion.
+The composed public `NamespaceEntry` already includes raw symbolic-link metadata.
+A completed snapshot validates the link inode's own id, version, path, mode,
+mtime, size, and raw target at the selected cut. The adapter copies those
+primitive fields into its bounded candidate window. It does not retain a mutable
+provider record as authority. Only files enter the lease and payload-iterator
+path. Directories and links carry no DATA frames. No live `readlink`, referent
+lookup, pin, stat, or read is performed for a link.
 
-The current public `NamespaceEntry` has no symbolic-link kind or raw target.
-This wiring therefore does not claim export of links, dangling links, or cycles.
-A link-capable namespace producer must deliver immutable raw `target: string`
-together with the link inode's own id, version, path, mode, mtime, and UTF-8 target
-byte size in its historical snapshot. The completed cut must cover all of these
-fields. Links must be leaves and their target metadata must fit the producer's
-page and retention charges. The producer owns that hook and its lifetime.
-Calling live `readlink` after a snapshot would mix cuts and is not an adaptation.
+The encoder and passive parser use `waffle-workspace-archive-v2` and magic
+`WAFLAR02`. There is no v1 compatibility path. Required raw targets are stored
+losslessly in checksummed entry JSON, including lone surrogates. Absolute,
+relative, dangling, cyclic, repeated-separator, dot-component, and backslash
+text is preserved without traversal or normalization. Link modes use the existing
+`0600` supported mask and retain the supplied bits.
 
-A later lossless format unit must define bounded raw-target encoding and import
-policy before accepting links. Raw target text and link inode identity cannot be
-replaced with followed-target metadata. Dangling targets and cycles must not
-trigger traversal. Archive paths are virtual paths, never host extraction paths.
-Guest absolute-target and escape checks belong to the resolver when following a
-link. They do not authorize following or rewriting a stored raw target in export.
-v1's explicit refusal is the current policy, not a partial link representation.
+Unknown kinds still fail `INVALID` before path or target access, copying,
+charging, pinning, or reading. Every delivered link pays its target charge in
+the page guard, even outside the selected window. The public-page estimate is
+`192 + 2 * path.length + 2 * target.length + utf8ByteLength(target)`. It omits the
+producer's name and is only a detectable lower bound. Target UTF-16 units are
+debited before an allocation-free, bounded UTF-8 scan. Window retention also
+includes that target allowance. Oversized targets fail `LIMIT` explicitly.
+
+The codec preflights the exact complete JSON UTF-8 length before stringify or
+encoding. Entry metadata must fit 16 KiB. JSON escape length and declared raw
+target UTF-8 size are different quantities. Links count against `maxEntries` and
+their declared sizes share `maxTotalBytes` with file bytes. `maxFileBytes` applies
+only to files. The v2 END stores separate file and link-target byte totals.
+
+These guards bound admitted exporter metadata and codec buffers, not all earlier
+producer allocations or aggregate runtime heap. The separate producer target
+preallocation defect is not fixed or qualified by this unit. Same-cut scans,
+final empty scan, refusal invalidation, and joined cleanup remain mandatory.
+There is no arbitrary historical target lookup or promise to finish under churn.
+
+Archive paths are virtual paths, never host extraction paths. The passive parser
+returns data only. The internal import driver explicitly refuses links before
+its file/directory-only staging sink sees them. Public import, virtual link
+materialization, host extraction, SAFE, N5, native, consumer, and shipping holds
+remain unchanged.
 
 ## Failure and cancellation ownership
 
@@ -210,7 +231,7 @@ Promise-delivery tests count exactly one `then` observation for pages and read
 outcomes, preserve fulfilled accessors, and retain exact falsy getter rejections.
 
 The test suite does not certify browser import/export, durable import staging,
-crash recovery, link export, SAFE, aggregate memory admission, or
+crash recovery, link import, SAFE, aggregate memory admission, or
 throughput under large or continuously changing namespaces. Those remain separate
 units. This new feature requires its own independent review before integration.
 
@@ -218,5 +239,9 @@ units. This new feature requires its own independent review before integration.
 entries against a real service and granted projection. Prepared Node modules use
 the same exporter and stream bounded bytes. Early return releases the owned lease
 without closing the caller projection. Broken-provider controls inject unsupported
-link-shaped metadata around real snapshot cursors. They prove pre-charge refusal
-and cleanup, not the missing real symbolic-link producer or its lifetime.
+unknown-kind metadata around real snapshot cursors. They prove pre-charge
+refusal and cleanup. R68 service fixtures additionally cover real raw link leaves,
+source identity and metadata, churn around completed cuts, target-inclusive
+windows, codec/page/window/total limits, no END on refusal, and early return.
+These controls do not establish whole-runtime allocation safety or release the
+independent integration holds.

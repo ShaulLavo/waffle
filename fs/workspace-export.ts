@@ -2,6 +2,7 @@ import { FilesystemError } from "./protocol.js";
 import { storeIdentity } from "./file-identity.js";
 import {
   encodeWorkspaceArchive,
+  archiveTargetCharge,
   WORKSPACE_ARCHIVE_LIMITS,
   WorkspaceArchiveError,
   type ArchiveOptions,
@@ -11,6 +12,7 @@ import {
   WORKSPACE_LIMITS,
   type NamespaceCut,
   type NamespaceEntry,
+  type NodeMetadata,
   type ReadFailure,
   type SnapshotPage,
   type SnapshotCursor,
@@ -149,21 +151,37 @@ class Successor {
     if (entries.length > WORKSPACE_LIMITS.pageEntries) contract("Snapshot page count exceeded");
     let charge = 0;
     for (const entry of entries) {
-      if (entry.kind !== "file" && entry.kind !== "directory")
+      if (entry.kind !== "file" && entry.kind !== "directory" && entry.kind !== "symlink")
         throw new WorkspaceArchiveError("INVALID", "Unsupported entry kind");
-      charge += 192 + entry.path.length * 2;
+      const metadata: NodeMetadata =
+        entry.kind === "symlink" ? { kind: "symlink", target: entry.target } : { kind: entry.kind };
+      const targetCharge =
+        metadata.kind === "symlink"
+          ? archiveTargetCharge(metadata.target, entry.size, WORKSPACE_LIMITS.pageBytes)
+          : 0;
+      charge += 192 + entry.path.length * 2 + targetCharge;
       if (charge > WORKSPACE_LIMITS.pageBytes) contract("Snapshot page bytes exceeded");
-      this.take(entry);
+      this.take(entry, metadata, targetCharge);
     }
   }
-  private take(entry: NamespaceEntry): void {
+  private take(entry: NamespaceEntry, metadata: NodeMetadata, targetCharge: number): void {
     const parts = pathParts(entry.path);
     if (this.after && compare(parts, this.after) <= 0) return;
     if (this.excluded && compare(parts, this.excluded) >= 0) return;
     const at = this.position(parts);
     if (this.entries[at] && compare(parts, this.entries[at].parts) === 0) return;
-    const charge = 256 + entry.path.length * 4 + parts.length * 32;
-    this.entries.splice(at, 0, { entry: { ...entry }, parts, charge });
+    const charge = 256 + entry.path.length * 4 + parts.length * 32 + targetCharge;
+    if (charge > WORKSPACE_EXPORT_LIMITS.windowMetadataBytes)
+      throw new WorkspaceArchiveError("LIMIT", "Entry exceeds empty metadata window");
+    const fields = {
+      id: entry.id,
+      version: entry.version,
+      path: entry.path,
+      size: entry.size,
+      mode: entry.mode,
+      mtime: entry.mtime,
+    };
+    this.entries.splice(at, 0, { entry: { ...fields, ...metadata }, parts, charge });
     this.charge += charge;
     this.trim();
   }
@@ -279,16 +297,25 @@ async function* sourceEntry(
 ): AsyncGenerator<ArchiveSourceEntry> {
   const metadata = {
     path: entry.path,
-    kind: entry.kind,
     size: entry.size,
     mode: entry.mode,
     mtime: entry.mtime,
     sourceIdentity: storeIdentity(entry, cut.workspace),
   };
   checkSignal(signal);
-  if (entry.kind === "directory") {
-    yield { metadata: { ...metadata, kind: "directory" } };
-    return;
+  switch (entry.kind) {
+    case "directory":
+      yield { metadata: { ...metadata, kind: "directory" } };
+      return;
+    case "symlink":
+      yield { metadata: { ...metadata, kind: "symlink", target: entry.target } };
+      return;
+    case "file":
+      break;
+    default: {
+      const unexpected: never = entry;
+      return unexpected;
+    }
   }
   const result = await workspace.pin(entry.id, entry.version, signal);
   if (result.kind !== "ok") refuse(result);
@@ -339,7 +366,7 @@ export async function* exportWorkspaceArchive(
     contract("Completed snapshot has no root directory");
   yield* encodeWorkspaceArchive(
     {
-      format: "waffle-workspace-archive-v1",
+      format: "waffle-workspace-archive-v2",
       sourceFormat: null,
       sourceWorkspace: initial.cut.workspace,
     },

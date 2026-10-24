@@ -134,7 +134,13 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   await client.asyncCall("mkdirp", ["/a"]);
   await client.asyncCall("writeFile", ["/a/../canonical", false, true], encode("canonical"));
   expect(decode(await client.asyncCall("readFile", ["/canonical"]))).toBe("canonical");
-  expect(await client.asyncCall("lookup", ["/a/../canonical"])).toBeUndefined();
+  const canonical: unknown = await client.asyncCall("lookup", ["/canonical"]);
+  expect(canonical).toMatchObject({
+    kind: "file",
+    ino: expect.any(Number),
+    mtime: expect.any(Number),
+  });
+  expect(await client.asyncCall("lookup", ["/a/../canonical"])).toEqual(canonical);
   await client.asyncCall("writeFile", ["/a/./nested/file", false, true], encode("nested"));
   expect(decode(await client.asyncCall("readFile", ["/a/nested/file"]))).toBe("nested");
   await client.asyncCall("writeFile", ["/a/./nested/file", false, false], encode("ordinary"));

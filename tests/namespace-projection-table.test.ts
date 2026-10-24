@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { resourceUsage } from "node:process";
 import { parseFileIdentity } from "../fs/file-identity.js";
 import {
@@ -6,13 +6,14 @@ import {
   NamespaceProjectionPressure,
 } from "../fs/namespace-projection-table.js";
 import type { PublicationEffect } from "../fs/publication.js";
-import { NamespaceIndex, ProjectionPressure } from "../fs/workspace-index.js";
-import type { NamespaceRecord } from "../fs/workspace-protocol.js";
+import { ChangeBudget, NamespaceIndex, ProjectionPressure } from "../fs/workspace-index.js";
+import { workspacePublication, type NamespaceRecord } from "../fs/workspace-protocol.js";
 import {
   createFilesystemConnection,
   createWorkspaceVfs,
   FilesystemClient,
   FilesystemService,
+  MemoryBackend,
   PersistentBackend,
   WORKSPACE_LIMITS,
   type SnapshotOptions,
@@ -24,6 +25,7 @@ import {
 } from "../fs/index.js";
 import type { PersistedIndex, PersistedNode, StorageBackend } from "../fs/storage.js";
 import { SIZES } from "../tooling/vfs-workloads.js";
+import type { ResolvedPath } from "../core/filesystem.js";
 
 function identity(serial: number) {
   const token = ((1n << 64n) | BigInt(serial)).toString(16);
@@ -1116,4 +1118,492 @@ test("the public wire and accepted projection preserve valid lone-surrogate file
   } finally {
     await current.close();
   }
+});
+
+function linkInode(serial: number, target: string): PublicationEffect {
+  return { kind: "inode", file: file(serial), nodeKind: "symlink", target, mode: 0o700, mtime: 7 };
+}
+
+function recordedBudget() {
+  const debits: number[] = [];
+  return {
+    debits,
+    take: (bytes: number) => {
+      debits.push(bytes);
+    },
+  };
+}
+
+test("compact symlink projection preserves raw leaf metadata and ordinary variants", () => {
+  const table = small();
+  table.add(record(2, 1, "referent"));
+  const target = "./referent//../missing/.",
+    before = table.allocation();
+  const changes = table.project(
+    [
+      linkInode(3, target),
+      entry(1, "alias", null, 3),
+      { kind: "inode", file: file(4), nodeKind: "file", mode: 0o600, mtime: 8 },
+      { kind: "inode", file: file(5), nodeKind: "directory", mode: 0o700, mtime: 9 },
+    ],
+    budget(),
+  );
+  expect(changes[0]).toEqual({
+    kind: "inode",
+    ...identity(3),
+    nodeKind: "symlink",
+    target,
+    mode: 0o700,
+    mtime: 7,
+    paths: ["/alias"],
+  });
+  expect(changes[2]).not.toHaveProperty("target");
+  expect(changes[3]).not.toHaveProperty("target");
+  expect(paths(table, 2)).toEqual(["/referent"]);
+  expect(paths(table, 3)).toEqual(["/alias"]);
+  expect(table.allocation().nameBytes - before.nameBytes).toBe(5);
+  expect(Object.values(table).includes(target)).toBe(false);
+});
+
+test("compact symlink projection debits exact UTF16 and UTF8 including repeated long targets", () => {
+  const targets = [
+    "ascii",
+    "café",
+    "文件",
+    "🧇",
+    "\ud800",
+    "\udc00",
+    "a\ud800b\udc00",
+    "é".repeat(32768),
+  ];
+  for (const target of targets) {
+    const table = small(),
+      charges = recordedBudget();
+    table.project([linkInode(2, target)], charges);
+    expect(charges.debits).toEqual([
+      256,
+      2 * target.length,
+      new TextEncoder().encode(target).length,
+    ]);
+    expect(table.allocation().nameBytes).toBe(0);
+  }
+  const target = "🧇/\ud800",
+    charges = recordedBudget();
+  small().project([linkInode(2, target), linkInode(3, target)], charges);
+  const each = [256, 2 * target.length, new TextEncoder().encode(target).length];
+  expect(charges.debits).toEqual(each.concat(each));
+});
+
+function refusingTargetBudget(at: number, refusal: Error) {
+  const debits: number[] = [];
+  return {
+    debits,
+    take(bytes: number) {
+      debits.push(bytes);
+      if (debits.length === at) throw refusal;
+    },
+  };
+}
+
+function refuseTargetDebit(debit: 1 | 2) {
+  const table = small({ nameBytes: 11, scratchSlots: 1 });
+  table.add(record(2, 1, "old"));
+  table.add(record(6, 1, "gone"));
+  table.project([entry(1, "gone", 6, null)], budget());
+  const before = table.allocation(),
+    target = "raw//🧇/\ud800";
+  const effects = [
+    entry(1, "old", 2, null),
+    {
+      kind: "inode",
+      file: file(3),
+      nodeKind: "file",
+      mode: 0,
+      mtime: 0,
+    } satisfies PublicationEffect,
+    entry(1, "new", null, 3),
+    linkInode(4, target),
+    entry(1, "alias", null, 4),
+  ];
+  const refusal = new Error(`target debit ${debit}`);
+  const charges = refusingTargetBudget(4 + debit, refusal);
+  const charCodeAt = String.prototype.charCodeAt;
+  let scanned = 0;
+  String.prototype.charCodeAt = function (this: string, at: number) {
+    if (this.valueOf() === target) scanned++;
+    return charCodeAt.call(this, at);
+  };
+  try {
+    expect(() => table.project(effects, charges)).toThrow(refusal);
+  } finally {
+    String.prototype.charCodeAt = charCodeAt;
+  }
+  const expected = [256, 256, 256, 256, 2 * target.length];
+  if (debit === 2) expected.push(new TextEncoder().encode(target).length);
+  expect(charges.debits).toEqual(expected);
+  expect(scanned === 0).toBe(debit === 1);
+  expect(table.allocation()).toEqual(before);
+  expect(paths(table, 2)).toEqual(["/old"]);
+  expect(paths(table, 3)).toEqual([]);
+  expect(paths(table, 4)).toEqual([]);
+  const changes = table.project(effects, budget());
+  expect(changes[3]).toMatchObject({ nodeKind: "symlink", target, paths: ["/alias"] });
+  expect(paths(table, 2)).toEqual([]);
+  expect(paths(table, 3)).toEqual(["/new"]);
+  expect(paths(table, 4)).toEqual(["/alias"]);
+  expect(table.allocation()).toMatchObject({ nodes: 3, edges: 2, nameBytes: 8 });
+  expect(table.allocation().compactions).toBeGreaterThan(before.compactions);
+}
+
+test("compact symlink projection refuses each target debit before effects and retries fresh", () => {
+  refuseTargetDebit(1);
+  refuseTargetDebit(2);
+});
+
+function expectChangePressure(action: () => void) {
+  try {
+    action();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProjectionPressure);
+    expect(error).toBeInstanceOf(NamespaceProjectionPressure);
+    if (!(error instanceof NamespaceProjectionPressure)) throw error;
+    expect(error.resource).toBe("changes");
+    return;
+  }
+  throw new Error("expected change pressure");
+}
+
+test("compact symlink projection honors the real ChangeBudget boundary and pressure identity", () => {
+  const target = "🧇/\ud800",
+    cost = 2 * target.length + new TextEncoder().encode(target).length;
+  const table = small(),
+    before = table.allocation(),
+    charges = new ChangeBudget();
+  charges.take(WORKSPACE_LIMITS.changeBytes - 256 - cost + 1);
+  expectChangePressure(() => table.project([linkInode(2, target)], charges));
+  expect(table.allocation()).toEqual(before);
+  expect(paths(table, 2)).toEqual([]);
+  for (const spare of [0, 1]) {
+    const charges = new ChangeBudget();
+    charges.take(WORKSPACE_LIMITS.changeBytes - 256 - cost - spare);
+    expect(small().project([linkInode(2, target)], charges)[0]).toMatchObject({
+      target,
+      paths: [],
+    });
+  }
+  const pathBudget = new ChangeBudget(),
+    alias = "/alias",
+    pathCost = alias.length * 2 + 32;
+  pathBudget.take(WORKSPACE_LIMITS.changeBytes - 512 - cost - 2 * pathCost);
+  expect(
+    small().project([linkInode(2, target), entry(1, "alias", null, 2)], pathBudget)[0],
+  ).toMatchObject({ target, paths: [alias] });
+  expect(() => pathBudget.take(1)).toThrow(ProjectionPressure);
+});
+
+async function symlinkProjectionFixture(logRecords = workspacePublication.limits.logRecords) {
+  const backend = new MemoryBackend();
+  const pair = createFilesystemConnection(undefined, {
+    ...workspacePublication,
+    limits: {
+      ...workspacePublication.limits,
+      logRecords,
+      logBytes: Math.max(
+        workspacePublication.limits.logBytes,
+        workspacePublication.limits.effectBytes * logRecords,
+      ),
+    },
+  });
+  const service = new FilesystemService(backend);
+  let client: FilesystemClient | undefined, workspace: WorkspaceVfs | undefined;
+  const close = async () => {
+    const failures: unknown[] = [];
+    for (const release of [
+      () => workspace?.close(),
+      () => client?.dispose(),
+      () => service.drainForOwner(),
+      () => service.dispose(),
+      () => pair.client.port.close(),
+      () => pair.server.port.close(),
+      () =>
+        expect(service.resources()).toMatchObject({
+          clients: 0,
+          workspaceCursors: 0,
+          responses: 0,
+        }),
+      () => expect(client?.completions.size ?? 0).toBe(0),
+    ]) {
+      try {
+        await release();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1)
+      throw new AggregateError(failures, "Projection fixture cleanup failed");
+  };
+  try {
+    service.connect(pair.server);
+    client = new FilesystemClient(pair.client);
+    workspace = createWorkspaceVfs(client);
+    return { backend, client, service, workspace, close, pair };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+type SymlinkProjectionFixture = Awaited<ReturnType<typeof symlinkProjectionFixture>>;
+async function projectionPath(
+  current: SymlinkProjectionFixture,
+  name: string,
+): Promise<ResolvedPath> {
+  const root: number = await current.client.asyncCall("preopen", ["/"]);
+  const found: ResolvedPath | number = await current.client.asyncCall("resolve", [
+    root,
+    name,
+    false,
+  ]);
+  if (typeof found === "number") throw new Error(`resolve errno ${found}`);
+  return found;
+}
+async function projectionLink(current: SymlinkProjectionFixture, name: string, target: string) {
+  expect(
+    await current.client.asyncCall("symlink", [await projectionPath(current, name), target]),
+  ).toBe(0);
+  const path = await projectionPath(current, name);
+  if (path.node === undefined) throw new Error("missing link handle");
+  return current.backend.identity(path.node);
+}
+async function projectionChanges(current: SymlinkProjectionFixture, watermark: Watermark) {
+  const page = await current.workspace.changes(watermark);
+  if (page.kind !== "changes") throw new Error(`change pull returned ${page.kind}`);
+  return { page, changes: page.batches.flatMap((batch) => batch.changes) };
+}
+
+test("compact symlink projection public history keeps raw targets and rename unlink reinsert identities", async () => {
+  const current = await symlinkProjectionFixture();
+  try {
+    const bytes = new Uint8Array([65, 66]);
+    await current.client.asyncCall("writeFile", ["/referent"], bytes);
+    const initial = await publicScan(current.workspace),
+      target = "./referent//../missing/.";
+    const original = await projectionLink(current, "alias", target);
+    const created = await projectionChanges(current, initial.cut.watermark);
+    expect(created.page.next.seq - initial.cut.watermark.seq).toBe(1n);
+    expect(created.changes).toContainEqual({
+      kind: "inode",
+      ...original,
+      nodeKind: "symlink",
+      target,
+      mode: 0o600,
+      mtime: expect.any(Number),
+      paths: ["/alias"],
+    });
+    expect(
+      await current.client.asyncCall("rename", [
+        await projectionPath(current, "alias"),
+        await projectionPath(current, "moved"),
+      ]),
+    ).toBe(0);
+    const movedPath = await projectionPath(current, "moved");
+    if (movedPath.node === undefined) throw new Error("missing moved link");
+    const movedIdentity = current.backend.identity(movedPath.node);
+    expect(movedIdentity.id).toBe(original.id);
+    expect(movedIdentity.version).toBeGreaterThan(original.version);
+    const renamed = await projectionChanges(current, created.page.next);
+    expect(renamed.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        before: movedIdentity,
+        beforePath: "/alias",
+        afterPath: null,
+      }),
+    );
+    expect(renamed.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        after: movedIdentity,
+        beforePath: null,
+        afterPath: "/moved",
+      }),
+    );
+    expect(
+      await current.client.asyncCall("removePath", [await projectionPath(current, "moved"), false]),
+    ).toBe(0);
+    const removed = await projectionChanges(current, renamed.page.next);
+    expect(removed.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "entry",
+        before: expect.objectContaining({ id: original.id }),
+        beforePath: "/moved",
+        after: null,
+      }),
+    );
+    const removedEdge = removed.changes.find(
+      (change) => change.kind === "entry" && change.before?.id === original.id,
+    );
+    if (!removedEdge || removedEdge.kind !== "entry" || !removedEdge.before)
+      throw new Error("missing removed identity");
+    expect(removedEdge.before.version).toBeGreaterThan(movedIdentity.version);
+    const replacement = await projectionLink(current, "moved", "../raw//target");
+    expect(replacement.id).not.toBe(original.id);
+    const reinserted = await projectionChanges(current, removed.page.next);
+    expect(reinserted.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "inode",
+        ...replacement,
+        nodeKind: "symlink",
+        target: "../raw//target",
+        paths: ["/moved"],
+      }),
+    );
+    expect(await current.workspace.read("/referent")).toMatchObject({
+      kind: "ok",
+      value: { bytes },
+    });
+  } finally {
+    await current.close();
+  }
+});
+
+async function removeProjectedWriterLink(
+  current: SymlinkProjectionFixture,
+  name: string,
+  expected: ReturnType<MemoryBackend["identity"]>,
+  target: string,
+) {
+  const path = await projectionPath(current, name);
+  if (path.node === undefined) throw new Error("writer link disappeared");
+  expect(current.backend.identity(path.node)).toEqual(expected);
+  expect(current.backend.fs.lookup(`/${name}`, false)).toMatchObject({ kind: "symlink", target });
+  expect(await current.client.asyncCall("removePath", [path, false])).toBe(0);
+}
+
+test("compact symlink projection public target pressure keeps writer links and recovers with a fresh cut", async () => {
+  const current = await symlinkProjectionFixture(64);
+  try {
+    const initial = await publicScan(current.workspace),
+      target = "x".repeat(8000);
+    const identities = [];
+    for (let at = 0; at < 48; at++)
+      identities.push(await projectionLink(current, `l${at}`, target));
+    expect(await current.workspace.changes(initial.cut.watermark)).toEqual({
+      kind: "pressure",
+      resource: "changes",
+    });
+    expect((await current.workspace.changes(initial.cut.watermark)).kind).toBe("gap");
+    for (let at = 0; at < 48; at++)
+      await removeProjectedWriterLink(current, `l${at}`, identities[at]!, target);
+    const fresh = await publicScan(current.workspace);
+    expect(fresh.entries).toBe(1);
+    expect(await current.workspace.changes(fresh.cut.watermark)).toMatchObject({
+      kind: "changes",
+      batches: [],
+    });
+    const next = await projectionLink(current, "after", "raw");
+    const recovered = await projectionChanges(current, fresh.cut.watermark);
+    expect(recovered.page.next.seq - fresh.cut.watermark.seq).toBe(1n);
+    expect(recovered.changes).toContainEqual(
+      expect.objectContaining({
+        kind: "inode",
+        ...next,
+        nodeKind: "symlink",
+        target: "raw",
+        paths: ["/after"],
+      }),
+    );
+  } finally {
+    await current.close();
+  }
+});
+
+type ProjectionCloseFailure = readonly ["workspace" | "drain", unknown];
+
+async function projectionCloseFailure(failures: readonly ProjectionCloseFailure[]) {
+  const current = await symlinkProjectionFixture();
+  const workspaceClose = current.workspace.close.bind(current.workspace),
+    serviceDrain = current.service.drainForOwner.bind(current.service);
+  const fail = (step: ProjectionCloseFailure[0]) => {
+    const failure = failures.find(([where]) => where === step);
+    if (failure) throw failure[1];
+  };
+  const workspace = spyOn(current.workspace, "close").mockImplementation(async () => {
+    await workspaceClose();
+    fail("workspace");
+  });
+  const drain = spyOn(current.service, "drainForOwner").mockImplementation(async () => {
+    await serviceDrain();
+    fail("drain");
+  });
+  const client = spyOn(current.client, "dispose"),
+    service = spyOn(current.service, "dispose"),
+    clientPort = spyOn(current.pair.client.port, "close"),
+    serverPort = spyOn(current.pair.server.port, "close");
+  try {
+    const cursor = current.workspace.snapshot();
+    expect((await cursor.next()).kind).toBe("entries");
+    expect(current.service.resources()).toMatchObject({ clients: 1, workspaceCursors: 1 });
+    const observed: unknown[] = [];
+    try {
+      await current.close();
+    } catch (error) {
+      observed.push(error);
+    }
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(service).toHaveBeenCalledTimes(1);
+    expect(clientPort).toHaveBeenCalledTimes(2);
+    expect(serverPort).toHaveBeenCalledTimes(2);
+    expect(current.service.resources()).toMatchObject({
+      clients: 0,
+      workspaceCursors: 0,
+      responses: 0,
+    });
+    expect(current.client.completions.size).toBe(0);
+    expect(observed).toHaveLength(1);
+    assertProjectionCloseErrors(observed[0], failures);
+  } finally {
+    for (const spy of [workspace, drain, client, service, clientPort, serverPort])
+      spy.mockRestore();
+    await current.close();
+  }
+}
+
+function assertProjectionCloseErrors(error: unknown, failures: readonly ProjectionCloseFailure[]) {
+  if (failures.length === 1) {
+    expect(Object.is(error, failures[0]?.[1])).toBe(true);
+    return;
+  }
+  expect(error).toBeInstanceOf(AggregateError);
+  if (!(error instanceof AggregateError)) throw error;
+  expect(error.errors).toHaveLength(failures.length);
+  for (const [index, failure] of failures.entries())
+    expect(Object.is(error.errors[index], failure[1])).toBe(true);
+}
+
+test("compact projection fixture cleanup attempts every release after workspace close rejects", async () => {
+  await projectionCloseFailure([["workspace", new Error("workspace close refusal")]]);
+});
+
+test("compact projection fixture cleanup preserves each falsy drain rejection", async () => {
+  for (const failure of [undefined, null, false, "", 0, -0, NaN])
+    await projectionCloseFailure([["drain", failure]]);
+});
+
+test("compact projection fixture cleanup retains multiple error identities including signed zero", async () => {
+  await projectionCloseFailure([
+    ["workspace", 0],
+    ["drain", -0],
+  ]);
+  await projectionCloseFailure([
+    ["workspace", undefined],
+    ["drain", null],
+  ]);
+  const same = new Error("same cleanup error twice");
+  await projectionCloseFailure([
+    ["workspace", same],
+    ["drain", same],
+  ]);
 });
