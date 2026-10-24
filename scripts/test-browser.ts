@@ -12,9 +12,10 @@ const runners = [
   "tests/publication-browser-runner.ts",
   "tests/publication-cross-tab-browser-runner.ts",
 ];
-const batches = [runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] }))].concat(
-  runners.map((runner) => [{ runner, engines: ["webkit"] }]),
-);
+const batches = [
+  runners.map((runner) => ({ runner, engines: ["chromium", "firefox"] })),
+  [{ runner: "tests/recovery-r42-browser-runner.ts", engines: ["chromium"] }],
+].concat(runners.map((runner) => [{ runner, engines: ["webkit"] }]));
 let failures: Error[] = [];
 try {
   for (const batch of batches) {
