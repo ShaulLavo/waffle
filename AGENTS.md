@@ -32,8 +32,7 @@ source-only consumers and the generated Node exports working together.
   overview row and section in `docs/bun-patches.md`, including upstream path and
   revision, local changes and reasons. Distinguish original adapters.
 - Change matching consumers together. Write no old-shape fallbacks, version-skew paths or
-  compatibility negotiation. Bump only the patch version; concurrent PRs coordinate
-  the next unused patch before landing.
+  compatibility negotiation. Feature PRs do not bump versions; bump the patch once at release or consumer pin update.
 - Do not open GitHub issues. Fix findings in scope, or record them in the owning plan.
 - Source files and the landing site link to `docs/host-abi.md`, `docs/runtime-startup.md`,
   `docs/private-authority.md`, `docs/bun-patches.md`, `docs/getting-started.md` and

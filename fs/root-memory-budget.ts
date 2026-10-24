@@ -1,33 +1,10 @@
-import {
-  type MemoryBudget,
-  MemoryBudgetError,
-  type MemoryAdmission,
-  type MemoryLease,
-  type MemoryReference,
-} from "./memory-budget.js";
+import type { MemoryBudget, MemoryLease, MemoryReference } from "./memory-budget.js";
+import { admittedLease } from "./memory-admission.js";
 
 // Declared control allowance, not a measurement of JavaScript heap usage.
 const ROOT_OWNER_UNITS = 512;
 const NativeSharedBuffer = SharedArrayBuffer;
 const publishedRoots = new WeakMap<MemoryBudget, Set<SharedArrayBuffer>>();
-
-function admittedLease(admission: MemoryAdmission): MemoryLease {
-  switch (admission.kind) {
-    case "granted":
-      return admission.lease;
-    case "pressure":
-    case "impossible":
-      throw new MemoryBudgetError("capacity");
-    case "exhausted":
-      throw new MemoryBudgetError("serial");
-    case "stopped":
-      throw new MemoryBudgetError("closed");
-    default: {
-      const exhaustive: never = admission;
-      return exhaustive;
-    }
-  }
-}
 
 class StartupRootAllocation {
   private phase: "pending" | "published" | "cancelled" = "pending";

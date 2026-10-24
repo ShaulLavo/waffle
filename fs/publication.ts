@@ -1,3 +1,5 @@
+import type { MemoryBudget } from "./memory-budget.js";
+import { withPublicationMemory } from "./publication-memory-budget.js";
 import type { InodeMetadata } from "./workspace-types.js";
 import type { CheckpointPublication } from "./storage.js";
 import { parseFileIdentity, type FileIdentity } from "./file-identity.js";
@@ -247,31 +249,66 @@ export function validatePublicationLimits(limits: PublicationLimits): Publicatio
     throw new RangeError("publication arena is too large");
   return Object.freeze({ ...limits });
 }
+function publicationSizePlan(limits: PublicationLimits, observe: boolean) {
+  const fixed = {
+    control: CONTROL_WORDS * 4,
+    sessions: limits.sessions * SESSION_WORDS * 4,
+    operations: limits.operations * OP_WORDS * 4,
+    inputs: limits.operations * (limits.argumentBytes + limits.inputBytes),
+    results: limits.operations * limits.resultBytes,
+    log: limits.logRecords * LOG_WORDS * 4,
+    logData: limits.logBytes,
+    pins: limits.pins * PIN_WORDS * 4,
+    pinData: limits.pinBytes,
+    versions: VERSION_SLOTS * VERSION_WORDS * 4,
+  };
+  const observer = observe
+    ? { pageReaders: 16_384 * 4, readerLifetimes: limits.sessions * 8 }
+    : undefined;
+  const sizes = Object.values(fixed).concat(observer ? Object.values(observer) : []);
+  let bytes = 0;
+  for (const size of sizes) {
+    if (!Number.isSafeInteger(size) || size > Number.MAX_SAFE_INTEGER - bytes)
+      throw new RangeError("publication backing plan is too large");
+    bytes += size;
+  }
+  return {
+    fixed,
+    observer,
+    demand: { bytes, allocations: sizes.length, references: sizes.length, leases: 0 },
+  };
+}
+
 export function createPublicationBuffers(
   limits: PublicationLimits,
   observe = false,
+  budget?: MemoryBudget,
 ): PublicationBuffers {
   limits = validatePublicationLimits(limits);
-  return {
-    history: crypto.randomUUID(),
-    ...(observe
+  const plan = publicationSizePlan(limits, observe);
+  const history = crypto.randomUUID();
+  const construct = (allocate: (bytes: number) => SharedArrayBuffer): PublicationBuffers => ({
+    history,
+    ...(plan.observer
       ? {
-          pageReaders: new SharedArrayBuffer(16_384 * 4),
-          readerLifetimes: new SharedArrayBuffer(limits.sessions * 8),
+          pageReaders: allocate(plan.observer.pageReaders),
+          readerLifetimes: allocate(plan.observer.readerLifetimes),
         }
       : {}),
     limits,
-    control: new SharedArrayBuffer(CONTROL_WORDS * 4),
-    sessions: new SharedArrayBuffer(limits.sessions * SESSION_WORDS * 4),
-    operations: new SharedArrayBuffer(limits.operations * OP_WORDS * 4),
-    inputs: new SharedArrayBuffer(limits.operations * (limits.argumentBytes + limits.inputBytes)),
-    results: new SharedArrayBuffer(limits.operations * limits.resultBytes),
-    log: new SharedArrayBuffer(limits.logRecords * LOG_WORDS * 4),
-    logData: new SharedArrayBuffer(limits.logBytes),
-    pins: new SharedArrayBuffer(limits.pins * PIN_WORDS * 4),
-    pinData: new SharedArrayBuffer(limits.pinBytes),
-    versions: new SharedArrayBuffer(VERSION_SLOTS * VERSION_WORDS * 4),
-  };
+    control: allocate(plan.fixed.control),
+    sessions: allocate(plan.fixed.sessions),
+    operations: allocate(plan.fixed.operations),
+    inputs: allocate(plan.fixed.inputs),
+    results: allocate(plan.fixed.results),
+    log: allocate(plan.fixed.log),
+    logData: allocate(plan.fixed.logData),
+    pins: allocate(plan.fixed.pins),
+    pinData: allocate(plan.fixed.pinData),
+    versions: allocate(plan.fixed.versions),
+  });
+  if (!budget) return construct((bytes) => new SharedArrayBuffer(bytes));
+  return withPublicationMemory(budget, plan.demand, construct);
 }
 function same(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
