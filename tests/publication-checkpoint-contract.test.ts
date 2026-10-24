@@ -12,7 +12,13 @@ import {
   type PublicationEffect,
 } from "../fs/publication";
 import { publicationObserver, type PublicationLimits } from "../fs/publication-internal";
-import type { CheckpointPublication } from "../fs/storage";
+import {
+  decodeSnapshot,
+  encodeRecord,
+  encodeSnapshot,
+  type CheckpointPublication,
+} from "../fs/storage";
+import { coldPublicationRoot } from "./fixtures/publication-storage";
 
 const limits: PublicationLimits = {
   sessions: 4,
@@ -61,6 +67,77 @@ async function checkpointFixture(): Promise<CheckpointPublication> {
     service.dispose();
   }
 }
+
+test("publication snapshots preserve typed bytes and reject invalid records", async () => {
+  const publication = await checkpointFixture();
+  const value = { ...coldPublicationRoot(), publication };
+  const snapshot = await encodeSnapshot(value);
+  const decoded = await decodeSnapshot(snapshot);
+  expect(decoded).toEqual(value);
+  for (const [index, change] of publication.changes.entries()) {
+    expect(decoded?.publication?.changes[index]).toBeInstanceOf(Uint8Array);
+    expect(decoded?.publication?.changes[index]).toEqual(change);
+  }
+  expect(
+    await decodeSnapshot({
+      ...snapshot,
+      json: snapshot.json.replace('"generation":1', '"generation":2'),
+    }),
+  ).toBeUndefined();
+  const invalidBytes = {
+    ...value,
+    publication: { ...publication, changes: [[0, 256]] },
+  };
+  expect(await decodeSnapshot(await encodeRecord(invalidBytes))).toBeUndefined();
+  const withoutPublication = coldPublicationRoot();
+  expect(await decodeSnapshot(await encodeSnapshot(withoutPublication))).toEqual(
+    withoutPublication,
+  );
+});
+
+test.each([
+  {
+    name: "change count",
+    limits: { effectBytes: limits.effectBytes, logRecords: 1 },
+    changes: [[1], [1]],
+  },
+  {
+    name: "change bytes",
+    limits: { effectBytes: 1, logRecords: limits.logRecords },
+    changes: [[1, 2]],
+  },
+])(
+  "publication snapshots reject over-limit $name before typed byte conversion",
+  async ({ limits: declaredLimits, changes }) => {
+    const checkpoint = await checkpointFixture();
+    const record = await encodeRecord({
+      ...coldPublicationRoot(),
+      publication: {
+        ...checkpoint,
+        limits: { ...checkpoint.limits, ...declaredLimits },
+        changes,
+      },
+    });
+    const originalFrom = Uint8Array.from;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(Uint8Array, "from");
+    let conversionCalls = 0;
+    Object.defineProperty(Uint8Array, "from", {
+      configurable: true,
+      writable: true,
+      value: function (...args: Parameters<typeof Uint8Array.from>) {
+        conversionCalls++;
+        return Reflect.apply(originalFrom, Uint8Array, args);
+      },
+    });
+    try {
+      expect(await decodeSnapshot(record)).toBeUndefined();
+      expect(conversionCalls).toBe(0);
+    } finally {
+      if (originalDescriptor) Object.defineProperty(Uint8Array, "from", originalDescriptor);
+      else Reflect.deleteProperty(Uint8Array, "from");
+    }
+  },
+);
 
 function withContent(
   checkpoint: CheckpointPublication,
