@@ -138,6 +138,7 @@ export class ExecutableRegistry {
     try {
       module = await pending;
     } catch (error) {
+      if (this.modules.get(entry.module) === pending) this.modules.delete(entry.module);
       if (error instanceof WebAssembly.CompileError)
         throw new ExecutableFormatError(error.message, { cause: error });
       throw error;

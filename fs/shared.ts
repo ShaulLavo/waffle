@@ -5,6 +5,7 @@ import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-ad
 import {
   ReaderPagePressure,
   SharedPageVersion,
+  truncateBoundaryEnd,
   type RetainedSharedPage,
 } from "./shared-version-pages.js";
 import {
@@ -1650,17 +1651,10 @@ export class SharedFilesystemState {
       const publication = admission
         ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
         : undefined;
-      if (resident && truncate && size < old) this.prepareVersionPages(slot, size, old, next);
+      if (resident && truncate && size < old)
+        this.prepareVersionPages(slot, size, truncateBoundaryEnd(size, old), next);
       if (truncate || next !== old) this.dirty(slot, next);
-      if (resident && truncate && size < old) {
-        let position = size;
-        while (position < old) {
-          const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
-          const count = Math.min(old - position, PAGE - (position % PAGE));
-          this.segmentFor(page).fill(0, position % PAGE, (position % PAGE) + count);
-          position += count;
-        }
-      }
+      if (resident && truncate && size < old) this.zeroTruncatedPages(slot, size, old);
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), next);
       this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
       if (truncate) this.setTimestamp(slot, mtime);
@@ -1670,6 +1664,17 @@ export class SharedFilesystemState {
       return 0;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
+    }
+  }
+  private zeroTruncatedPages(slot: number, size: number, old: number): void {
+    let position = size;
+    while (position < old) {
+      const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
+      const count = Math.min(old - position, PAGE - (position % PAGE));
+      // Whole pinned pages leave the live mapping in reclaimLocked, unchanged for readers.
+      if (position % PAGE || !this.pageReaders?.[page])
+        this.segmentFor(page).fill(0, position % PAGE, (position % PAGE) + count);
+      position += count;
     }
   }
   private prepareResize(
