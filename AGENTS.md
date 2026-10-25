@@ -20,7 +20,10 @@ source-only consumers and the generated Node exports working together.
 - Work in an exclusive worktree. Never edit, build or test the shared checkout. Each run
   owns teardown of its processes and scratch. The owner's machine paths are in
   `.internal/owner-machine.md`.
-- New code is TypeScript. Do not check in compiled JavaScript, `dist/`, binaries,
+- New code is TypeScript, except the native-only Rust TCP leaf in `native/tcp/`,
+  explicitly authorized for the Bun native host transport extraction. It must not
+  enter browser bundles or carry Bun API, JSON, error-shaping or handle policy.
+  Do not check in compiled JavaScript, `dist/`, binaries,
   screenshots or test evidence: consumers clone this repository. The existing
   `core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.
 - Preserve pay-for-use loading: do not load the process implementation before the
