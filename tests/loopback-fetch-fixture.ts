@@ -48,6 +48,24 @@ function peer(
   return {
     ready: ready.promise,
     close,
+    counts() {
+      const jobs: unknown = Reflect.get(helper, "fetches");
+      const sockets: unknown = Reflect.get(helper, "sockets");
+      const connections: unknown = Reflect.get(helper, "connections");
+      if (!(jobs instanceof Map) || !(sockets instanceof Map) || !(connections instanceof Map))
+        throw Error("Invalid helper counters");
+      const inFlight = Array.from(jobs.values(), (job: unknown) => {
+        if (
+          typeof job !== "object" ||
+          job === null ||
+          !("inFlight" in job) ||
+          typeof job.inFlight !== "number"
+        )
+          throw Error("Invalid fetch credit");
+        return job.inFlight;
+      });
+      return { jobs: jobs.size, sockets: sockets.size, connections: connections.size, inFlight };
+    },
     call(command: FetchCommand) {
       const call = Promise.withResolvers<unknown>();
       const id = ++next;
@@ -63,7 +81,7 @@ export async function handle(peer: Peer, command: FetchCommand): Promise<number>
   if (typeof value !== "number") throw Error("Expected handle");
   return value;
 }
-async function settled(peer: Peer, command: FetchCommand): Promise<unknown> {
+export async function settled(peer: Peer, command: FetchCommand): Promise<unknown> {
   for (let i = 0; i < 1000; i++) {
     const value = await peer.call(command);
     if (value !== AGAIN) return value;

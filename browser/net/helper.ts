@@ -38,7 +38,8 @@ const json = (value: unknown) => encoder.encode(JSON.stringify(value));
 type FetchRequest = NetRequest & { type: "fetch" };
 interface FetchResponse {
   head: FetchHead;
-  body: ReadableStream<Uint8Array> | null;
+  body: ReadableStream<Uint8Array<ArrayBuffer>> | null;
+  encodings: string[];
 }
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -479,7 +480,7 @@ export class NetHelper {
         return;
       }
       await this.ring.write(req.id, Kind.Head, json(response.head));
-      await this.pumpBody(req.id, job, response.body);
+      await this.pumpBody(req.id, job, decodedBody(response));
     } catch (err) {
       await this.failFetch(req.id, err);
     }
@@ -529,6 +530,7 @@ export class NetHelper {
         headers: Array.from(response.headers),
       },
       body: response.body,
+      encodings: [],
     };
   }
 
@@ -586,7 +588,7 @@ export class NetHelper {
   /** Adapt a virtual HTTP response to a bounded stream without publishing an intermediate head. */
   private loopback(req: FetchRequest, port: number, signal: AbortSignal): Promise<FetchResponse> {
     const result = Promise.withResolvers<FetchResponse>();
-    const stream = new TransformStream<Uint8Array, Uint8Array>();
+    const stream = new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>();
     const writer = stream.writable.getWriter();
     const url = new URL(req.url);
     let connection: PreviewConnection | null = null;
@@ -616,6 +618,14 @@ export class NetHelper {
           result.resolve({
             head: { ...head, url: req.url, redirected: false },
             body: stream.readable,
+            encodings:
+              req.method === "HEAD" || head.status === 204 || head.status === 304
+                ? []
+                : head.headers
+                    .filter(([name]) => name === "content-encoding")
+                    .flatMap(([, value]) => value.split(","))
+                    .map((value) => value.trim().toLowerCase())
+                    .filter((value) => value !== "identity"),
           }),
         data: (chunk) => {
           sending = sending.then(() => writer.write(chunk));
@@ -767,4 +777,28 @@ function redirectRequest(req: FetchRequest, head: FetchHead, location: string): 
   for (const name of ["content-encoding", "content-language", "content-location", "content-type"])
     headers.delete(name);
   return { ...req, url: url.href, method: "GET", body: null, headers: Array.from(headers) };
+}
+
+function decodedBody(response: FetchResponse): ReadableStream<Uint8Array<ArrayBuffer>> | null {
+  if (!response.body || response.encodings.length === 0) return response.body;
+  try {
+    const decoders = response.encodings.toReversed().map(contentDecoder);
+    return decoders.reduce((body, decoder) => {
+      void body.pipeTo(decoder.writable).catch(() => {});
+      return decoder.readable;
+    }, response.body);
+  } catch (error) {
+    void response.body.cancel().catch(() => {});
+    throw error;
+  }
+}
+
+function contentDecoder(encoding: string): DecompressionStream {
+  const format = encoding === "br" ? "brotli" : encoding === "x-gzip" ? "gzip" : encoding;
+  if (!["gzip", "deflate", "brotli", "zstd"].includes(format))
+    throw new TypeError(`Unsupported content encoding: ${encoding}`);
+  // Browser codec support varies. Construction rejects unsupported codecs before any body read.
+  const decoder: unknown = Reflect.construct(DecompressionStream, [format]);
+  if (!(decoder instanceof DecompressionStream)) throw new TypeError("Invalid content decoder");
+  return decoder;
 }

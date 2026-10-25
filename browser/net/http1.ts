@@ -47,7 +47,7 @@ export interface ResponseHead {
 
 export interface ResponseSink {
   head(head: ResponseHead): void;
-  data(chunk: Uint8Array): void | Promise<void>;
+  data(chunk: Uint8Array<ArrayBuffer>): void | Promise<void>;
   end(): void;
   error(message: string): void;
 }

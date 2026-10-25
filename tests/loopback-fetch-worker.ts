@@ -12,7 +12,8 @@ export type FetchCommand =
       headers?: [string, string][];
       body?: Uint8Array;
     }
-  | { op: "head" | "error" | "close"; handle: number }
+  | { op: "head" | "error" | "close" | "accept" | "shutdown"; handle: number }
+  | { op: "write"; handle: number; bytes: Uint8Array }
   | { op: "read"; handle: number; cap: number }
   | { op: "listen"; port: number }
   | { op: "respond"; listener: number; bytes: Uint8Array };
@@ -69,6 +70,12 @@ function execute(host: NetHost, command: FetchCommand): unknown {
   switch (command.op) {
     case "fetch":
       return host.fetch(JSON.stringify(command), command.body ?? null);
+    case "accept":
+      return host.accept(command.handle);
+    case "shutdown":
+      return host.shutdown(command.handle);
+    case "write":
+      return host.write(command.handle, command.bytes);
     case "head":
       return host.fetchHead(command.handle);
     case "error":
