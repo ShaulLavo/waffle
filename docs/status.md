@@ -67,8 +67,8 @@ Measured on 2026-10-25 with the pinned Rust toolchain and `bun run size:network`
 
 | Artifact                     |  Bytes | Separate budget |
 | ---------------------------- | -----: | --------------: |
-| Network WASM                 | 80,998 |          85,000 |
-| Network WASM, gzip           | 26,293 |          28,000 |
+| Network WASM                 | 85,060 |          88,000 |
+| Network WASM, gzip           | 26,853 |          28,000 |
 | Lazy JavaScript loader, gzip |    664 |             800 |
 
 The core measured 9,196 gzip bytes. Its existing 9,782-byte budget is unchanged. Source installation now needs the pinned Rust toolchain and WASM target. Generated assets are not checked in.

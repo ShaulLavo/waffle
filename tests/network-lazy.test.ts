@@ -62,16 +62,63 @@ test("no module compilation before network(), and exactly one instance belongs t
   expect(output).toContain("compile=1, instances=2, helpers=4");
 });
 
-test("guest network hosts do not load the namespace module or WASM loader", async () => {
-  const result = await Bun.build({
-    entrypoints: [new URL("../browser/net/host.ts", import.meta.url).pathname],
-    target: "browser",
-    metafile: true,
+for (const entry of ["../browser/net/host.ts", "./network-browser-worker.ts"]) {
+  test(`${entry} excludes owner, helper, loader, native and WASM inputs from the guest graph`, async () => {
+    const result = await Bun.build({
+      entrypoints: [new URL(entry, import.meta.url).pathname],
+      target: "browser",
+      metafile: true,
+    });
+    expect(result.success).toBe(true);
+    if (!result.metafile) throw new Error("missing guest graph");
+    expect(
+      Object.keys(result.metafile.inputs).filter((path) =>
+        /browser\/net\/(?:module|namespace|runtime|helper)\.ts$|(?:^|\/)(?:network|native)\/|\.wasm$/.test(
+          path,
+        ),
+      ),
+    ).toEqual([]);
+    expect(result.outputs.some((output) => output.path.endsWith(".wasm"))).toBe(false);
   });
-  expect(result.success).toBe(true);
+}
+
+test("disposal during a held module load creates no orphan instance", () => {
+  const root = new URL("../index.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
+  const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
+  const script = `
+    import assert from "node:assert/strict";
+    import { mock } from "bun:test";
+    const started = Promise.withResolvers(), release = Promise.withResolvers();
+    let instances = 0, disposals = 0;
+    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ async loadNetworkModule() {
+      started.resolve(); await release.promise;
+      const compiled = await originalLoad();
+      return { create(...args) {
+        instances++;
+        const instance = compiled.create(...args);
+        return { ...instance, dispose() { disposals++; instance.dispose(); } };
+      } };
+    } }));
+    const { createRuntime } = await import(${JSON.stringify(root)});
+    const options = { filesystem: { mode: "memory", workerURL: new URL(${JSON.stringify(worker)}) } };
+    const runtime = createRuntime(options);
+    const outcome = runtime.network().then(() => "unexpected", error => error.message);
+    await started.promise;
+    const disposal = runtime.dispose();
+    release.resolve();
+    await disposal;
+    assert.match(await outcome, /disposed/i);
+    assert.equal(instances, 0); assert.equal(disposals, 0);
+    const next = createRuntime(options);
+    await next.network();
+    assert.equal(instances, 1);
+    await next.dispose(); await next.dispose();
+    assert.equal(disposals, 1);
+    console.log("pending activation instances=0; subsequent instances=1 disposals=1");
+  `;
   expect(
-    Object.keys(result.metafile!.inputs).filter((path) =>
-      /browser\/net\/(?:module|namespace)\.ts$/.test(path),
-    ),
-  ).toEqual([]);
+    execFileSync(process.execPath, ["--eval", script], { encoding: "utf8", timeout: 10000 }),
+  ).toContain("subsequent instances=1 disposals=1");
 });

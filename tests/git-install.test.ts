@@ -69,7 +69,7 @@ test("a clean Git consumer prepares the exact restored artifact without Cargo an
     const installed = join(app, "node_modules/waffle");
     for (const name of ["network.wasm", "network.input-hash", "network.sha256"])
       copyFileSync(join(root, "browser/net", name), join(installed, "browser/net", name));
-    execFileSync("bun", ["tooling/build-network.ts", "--verify"], {
+    execFileSync("bun", [join(installed, "tooling", "build-network.ts"), "--verify"], {
       cwd: installed,
       env,
       stdio: "pipe",

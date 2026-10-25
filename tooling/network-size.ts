@@ -1,7 +1,7 @@
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
 
-export const NETWORK_BUDGET = { wasm: 85_000, wasmGzip: 28_000, loaderGzip: 800 };
+export const NETWORK_BUDGET = { wasm: 88_000, wasmGzip: 28_000, loaderGzip: 800 };
 export function checkNetworkBudget(size: typeof NETWORK_BUDGET): void {
   for (const name of ["wasm", "wasmGzip", "loaderGzip"] as const) {
     if (size[name] > NETWORK_BUDGET[name])

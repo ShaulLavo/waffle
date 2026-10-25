@@ -45,6 +45,8 @@ jobs:
               - "browser/net/module.ts"
               - "browser/net/namespace.ts"
               - "tests/network-module.test.ts"
+              - "tests/network-module-host.test.ts"
+              - "tests/network-wire.test.ts"
               - "tests/network-size.test.ts"
               - "tests/network-lazy.test.ts"
               - "tests/packaging.test.ts"

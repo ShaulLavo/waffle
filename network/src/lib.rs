@@ -1,6 +1,6 @@
 //! TCP state shared by the standalone WebAssembly module and native host tests.
 //! Bun-specific handles, JSON and error messages do not belong here.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -139,6 +139,7 @@ impl Stream {
 pub struct Tcp<H: SocketHost> {
     host: H,
     sockets: BTreeMap<u32, State>,
+    issued: BTreeSet<u32>,
 }
 
 impl<H: SocketHost> Tcp<H> {
@@ -146,6 +147,7 @@ impl<H: SocketHost> Tcp<H> {
         Self {
             host,
             sockets: BTreeMap::new(),
+            issued: BTreeSet::new(),
         }
     }
 
@@ -176,6 +178,7 @@ impl<H: SocketHost> Tcp<H> {
 
     fn bind_listener(&mut self, address: SocketAddr, dual: bool) -> io::Result<SocketId> {
         let socket = self.host.open(address.is_ipv6())?;
+        self.claim(socket)?;
         let bound = self.configure_listener(socket, address, dual);
         if let Err(error) = bound {
             self.host.close(socket);
@@ -200,6 +203,7 @@ impl<H: SocketHost> Tcp<H> {
 
     pub fn connect(&mut self, address: SocketAddr) -> io::Result<SocketId> {
         let socket = self.host.open(address.is_ipv6())?;
+        self.claim(socket)?;
         let connecting = match self.host.connect(socket, address) {
             Ok(()) => false,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => true,
@@ -218,9 +222,28 @@ impl<H: SocketHost> Tcp<H> {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let socket = self.host.accept(listener.0)?;
+        self.claim(socket)?;
         self.sockets
             .insert(socket, State::Stream(Stream::new(false)));
         Ok(SocketId(socket))
+    }
+
+    fn claim(&mut self, socket: u32) -> io::Result<()> {
+        if socket > 0 && socket <= i32::MAX as u32 && self.issued.insert(socket) {
+            return Ok(());
+        }
+        // A duplicate live token refers to the existing resource, not a new one to close.
+        if !self.sockets.contains_key(&socket) {
+            self.host.close(socket);
+        }
+        Err(io::ErrorKind::InvalidInput.into())
+    }
+
+    /// Close resources without permitting delayed readiness to alias a reused host token.
+    pub fn dispose(&mut self) {
+        for socket in std::mem::take(&mut self.sockets).keys() {
+            self.host.close(*socket);
+        }
     }
 
     fn stream(&mut self, socket: SocketId) -> io::Result<&mut Stream> {
@@ -310,8 +333,6 @@ impl<H: SocketHost> Tcp<H> {
 
 impl<H: SocketHost> Drop for Tcp<H> {
     fn drop(&mut self) {
-        for socket in self.sockets.keys() {
-            self.host.close(*socket);
-        }
+        self.dispose();
     }
 }

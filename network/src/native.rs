@@ -150,14 +150,14 @@ impl NativeHost {
             BIND => self
                 .bind(
                     socket,
-                    decode_address(span(memory, pointer, ADDRESS_SIZE as u32)?)?,
+                    decode_address(address_span(memory, pointer, length)?)?,
                 )
                 .map(|()| 0),
             LISTEN => self.listen(socket).map(|()| 0),
             CONNECT => self
                 .connect(
                     socket,
-                    decode_address(span(memory, pointer, ADDRESS_SIZE as u32)?)?,
+                    decode_address(address_span(memory, pointer, length)?)?,
                 )
                 .map(|()| 0),
             CONNECTED => self.connected(socket).map(|()| 0),
@@ -170,9 +170,9 @@ impl NativeHost {
                 .map(|n| n as u32),
             SHUTDOWN => self.shutdown(socket).map(|()| 0),
             LOCAL_ADDR | PEER_ADDR => {
+                let bytes = address_span(memory, pointer, length)?;
                 let address = self.address_for(operation, socket)?;
-                span(memory, pointer, ADDRESS_SIZE as u32)?
-                    .copy_from_slice(&encode_address(address));
+                bytes.copy_from_slice(&encode_address(address));
                 Ok(0)
             }
             CLOSE => {
@@ -182,6 +182,13 @@ impl NativeHost {
             _ => Err(io::ErrorKind::InvalidInput.into()),
         }
     }
+}
+
+fn address_span(memory: &mut [u8], pointer: u32, length: u32) -> io::Result<&mut [u8]> {
+    if length != crate::abi::ADDRESS_SIZE as u32 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    span(memory, pointer, length)
 }
 
 fn span(memory: &mut [u8], pointer: u32, length: u32) -> io::Result<&mut [u8]> {

@@ -206,6 +206,8 @@ test("Rust network inputs select one release test/build lane and an exact WASM c
     "tooling/build-network.ts",
     "browser/net/module.ts",
     "tests/network-module.test.ts",
+    "tests/network-module-host.test.ts",
+    "tests/network-wire.test.ts",
   ])
     expect(selected("network", path), path).toBe(true);
   expect(selected("network", "docs/network.md")).toBe(false);

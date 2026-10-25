@@ -180,7 +180,7 @@ pub extern "C" fn tcp_peer_addr(socket: u32) -> i32 {
 pub extern "C" fn tcp_dispose() -> i32 {
     MODULE.with(|module| {
         let mut module = module.borrow_mut();
-        module.tcp = Tcp::new(ImportedHost);
+        module.tcp.dispose();
         module.net.dispose();
     });
     0
