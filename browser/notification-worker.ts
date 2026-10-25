@@ -35,6 +35,17 @@ async function observeSafely(
   }
 }
 
+function arm(
+  words: readonly NotificationWord[],
+  state: Int32Array,
+  reply: (value: NotificationRelayReply) => void,
+): void {
+  if (typeof atomicsWaitAsync !== "function")
+    throw new Error("notification relay requires Atomics.waitAsync");
+  for (const word of words) void observeSafely(word, state, reply);
+  reply({ type: "armed" });
+}
+
 function connect({ port, state }: NotificationConnection): void {
   let armed = false;
   const reply = (value: NotificationRelayReply) => port.postMessage(value);
@@ -47,10 +58,7 @@ function connect({ port, state }: NotificationConnection): void {
     if (armed || Atomics.load(state, 1)) return;
     armed = true;
     try {
-      if (typeof atomicsWaitAsync !== "function")
-        throw new Error("notification relay requires Atomics.waitAsync");
-      for (const word of data.words) void observeSafely(word, state, reply);
-      reply({ type: "armed" });
+      arm(data.words, state, reply);
     } catch (error) {
       reply({ type: "error", message: String(error) });
     }

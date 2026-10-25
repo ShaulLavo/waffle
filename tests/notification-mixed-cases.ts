@@ -119,14 +119,17 @@ function sourcePublisher(
     if (stage === "fs-direct") fs.write(node, [new Uint8Array([2])], 0);
     if (stage === "network") await publishNetwork(network);
     if (stage === "process") writer.tryWrite([new Uint8Array([3])]);
-    if (stage === "deadline")
-      timers.push(
-        setTimeout(() => {
-          void network.write(1, Kind.Data, new Uint8Array([82]));
-        }, 90),
-      );
+    if (stage === "deadline") scheduleDeadlineNews(network, timers);
     if (stage === "revoke") await bridge.dispose();
   };
+}
+
+function scheduleDeadlineNews(network: RingWriter, timers: ReturnType<typeof setTimeout>[]): void {
+  timers.push(
+    setTimeout(() => {
+      void network.write(1, Kind.Data, new Uint8Array([82]));
+    }, 90),
+  );
 }
 
 async function publishNetwork(network: RingWriter): Promise<void> {
