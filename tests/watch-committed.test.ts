@@ -505,3 +505,17 @@ test("observed service revocation detaches the watch AbortSignal listener", asyn
     await f.close();
   }
 }, 10000);
+
+test("namespace event names preserve a leading UTF8 BOM", async () => {
+  const f = await fixture();
+  try {
+    const watch = await f.page.watch(f.root);
+    await file(f.guest, f.guestRoot, "\ufeffentry");
+    expect((await watch.read()).events).toContainEqual(
+      expect.objectContaining({ type: "rename", name: "\ufeffentry" }),
+    );
+    await watch.close();
+  } finally {
+    await f.close();
+  }
+}, 10000);

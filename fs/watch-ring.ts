@@ -8,7 +8,7 @@ const POINTER = 26;
 const NAME_OFFSET = 20;
 export const WATCH_NAME_BYTES = 1024;
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 export type WatchRecord =
   | { kind: "overflow" }
   | { kind: "change"; file: bigint }
