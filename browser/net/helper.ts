@@ -35,6 +35,13 @@ const encoder = new TextEncoder();
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "[::]"]);
 const json = (value: unknown) => encoder.encode(JSON.stringify(value));
 
+type FetchRequest = NetRequest & { type: "fetch" };
+interface FetchResponse {
+  head: FetchHead;
+  body: ReadableStream<Uint8Array> | null;
+}
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 interface FetchJob {
   controller: AbortController;
   /** Body bytes sent minus bytes the guest has read. */
@@ -462,39 +469,67 @@ export class NetHelper {
 
   // ---------- fetch ----------
 
-  private async fetch(req: NetRequest & { type: "fetch" }): Promise<void> {
+  private async fetch(req: FetchRequest): Promise<void> {
     const job: FetchJob = { controller: new AbortController(), inFlight: 0, wake: null };
     this.fetches.set(req.id, job);
-    const port = this.loopbackPort(req.url);
-    if (port !== undefined) {
-      this.loopback(req, port);
-      return;
-    }
-    let response: Response;
     try {
-      // Browser fetch can require its global receiver; do not bind it to this helper.
-      const fetchRequest = this.fetchRequest;
-      response = await fetchRequest(req.url, {
-        method: req.method,
-        headers: req.headers,
-        body: req.body as BodyInit | null,
-        redirect: req.redirect,
-        signal: job.controller.signal,
-      });
+      const response = await this.followRedirects({ ...req, url: new URL(req.url).href }, job);
+      if (!this.fetches.has(req.id)) {
+        await response.body?.cancel();
+        return;
+      }
+      await this.ring.write(req.id, Kind.Head, json(response.head));
+      await this.pumpBody(req.id, job, response.body);
     } catch (err) {
       await this.failFetch(req.id, err);
-      return;
     }
-    if (!this.fetches.has(req.id)) return;
-    const head: FetchHead = {
-      status: response.status,
-      statusText: response.statusText,
-      url: response.url,
-      redirected: response.redirected,
-      headers: Array.from(response.headers),
+  }
+
+  private async followRedirects(req: FetchRequest, job: FetchJob): Promise<FetchResponse> {
+    for (let count = 0; ; count++) {
+      job.controller.signal.throwIfAborted();
+      const response = await this.fetchHop(req, job);
+      response.head.redirected ||= count > 0;
+      const location = response.head.headers.find(
+        ([name]) => name.toLowerCase() === "location",
+      )?.[1];
+      if (!REDIRECT_STATUSES.has(response.head.status) || req.redirect === "manual")
+        return response;
+      if (req.redirect !== "error" && location === undefined) return response;
+      await response.body?.cancel();
+      if (req.redirect === "error") throw new TypeError("Fetch redirect mode is error");
+      if (location === undefined) return response;
+      if (count === 20) throw new TypeError("Fetch redirect limit exceeded");
+      req = redirectRequest(req, response.head, location);
+    }
+  }
+
+  private async fetchHop(req: FetchRequest, job: FetchJob): Promise<FetchResponse> {
+    const port = this.loopbackPort(req.url);
+    if (port !== undefined) return this.loopback(req, port, job.controller.signal);
+    // Browser fetch can require its global receiver; do not bind it to this helper.
+    const fetchRequest = this.fetchRequest;
+    const response = await fetchRequest(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body as BodyInit | null,
+      redirect: "manual",
+      signal: job.controller.signal,
+    });
+    if (response.type === "opaqueredirect" && req.redirect !== "manual") {
+      await response.body?.cancel();
+      throw new TypeError("Network policy hides the redirect destination");
+    }
+    return {
+      head: {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url || req.url,
+        redirected: response.redirected,
+        headers: Array.from(response.headers),
+      },
+      body: response.body,
     };
-    await this.ring.write(req.id, Kind.Head, json(head));
-    await this.pumpBody(req.id, job, response.body);
   }
 
   private async pumpBody(
@@ -503,9 +538,15 @@ export class NetHelper {
     body: ReadableStream<Uint8Array> | null,
   ): Promise<void> {
     const reader = body?.getReader();
+    const cancel = () => {
+      void reader?.cancel().catch(() => {});
+    };
+    job.controller.signal.addEventListener("abort", cancel, { once: true });
     try {
       for (;;) {
         if (!reader) break;
+        await this.waitForWindow(id, job);
+        if (!this.fetches.has(id)) return;
         const { done, value } = await reader.read();
         if (done) break;
         if (!this.fetches.has(id)) return;
@@ -514,6 +555,10 @@ export class NetHelper {
     } catch (err) {
       await this.failFetch(id, err);
       return;
+    } finally {
+      job.controller.signal.removeEventListener("abort", cancel);
+      await reader?.cancel().catch(() => {});
+      reader?.releaseLock();
     }
     if (!this.fetches.has(id)) return;
     this.fetches.delete(id);
@@ -538,28 +583,27 @@ export class NetHelper {
     return this.namespace.has(port) ? port : undefined;
   }
 
-  /**
-   * A fetch to the guest's own server, over a virtual connection: the page's network can't reach
-   * it. (Redirects are not followed; the response comes back as the server sent it.)
-   */
-  private loopback(req: NetRequest & { type: "fetch" }, port: number): void {
-    const id = req.id;
-    const job = this.fetches.get(id)!;
-    const live = () => this.fetches.get(id) === job;
-    // Queue whole response operations, not individual ring records: splitting a large data
-    // chunk must finish before the next chunk or terminal record can overtake it.
-    let sending: Promise<void> = Promise.resolve();
-    const enqueue = (operation: () => Promise<void>) => {
-      sending = sending.then(() => (live() ? operation() : undefined));
-      return sending;
-    };
-    const finish = (kind: number, payload?: Uint8Array) =>
-      enqueue(async () => {
-        await this.ring.write(id, kind, payload);
-        if (live()) this.fetches.delete(id);
-      });
+  /** Adapt a virtual HTTP response to a bounded stream without publishing an intermediate head. */
+  private loopback(req: FetchRequest, port: number, signal: AbortSignal): Promise<FetchResponse> {
+    const result = Promise.withResolvers<FetchResponse>();
+    const stream = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = stream.writable.getWriter();
     const url = new URL(req.url);
-    const connection = this.requestConnection(
+    let connection: PreviewConnection | null = null;
+    let sending = Promise.resolve();
+    const close = () => {
+      signal.removeEventListener("abort", abort);
+      connection?.close();
+    };
+    const fail = (error: unknown) => {
+      result.reject(error);
+      void sending.then(() => writer.abort(error)).catch(() => {});
+      close();
+    };
+    const abort = () => fail(signal.reason);
+    // Cancelling a redirect body must close its virtual peer even if the server never ends it.
+    void writer.closed.catch(close);
+    connection = this.requestConnection(
       port,
       {
         method: req.method,
@@ -568,29 +612,26 @@ export class NetHelper {
         body: req.body,
       },
       {
-        head: (head) => {
-          const payload = json({ ...head, url: req.url, redirected: false } satisfies FetchHead);
-          enqueue(() => this.ring.write(id, Kind.Head, payload));
-        },
+        head: (head) =>
+          result.resolve({
+            head: { ...head, url: req.url, redirected: false },
+            body: stream.readable,
+          }),
         data: (chunk) => {
-          const owned = chunk.slice();
-          return enqueue(() => this.pumpChunk(id, job, owned));
+          sending = sending.then(() => writer.write(chunk));
+          return sending.catch(close);
         },
-        end: () => finish(Kind.End),
-        error: (message) =>
-          finish(Kind.Error, json({ name: "TypeError", message } satisfies NetError)),
+        end: () => {
+          close();
+          void sending.then(() => writer.close()).catch(() => {});
+        },
+        error: (message) => fail(new TypeError(message)),
       },
       url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname,
     );
-    if (!connection) {
-      void finish(
-        Kind.Error,
-        json({ name: "TypeError", message: `connect ECONNREFUSED ${url.host}` } satisfies NetError),
-      );
-      return;
-    }
-    // A cancelled fetch owns the other end of this virtual connection, not just its job entry.
-    job.controller.signal.addEventListener("abort", () => connection?.close(), { once: true });
+    if (!connection) fail(new TypeError(`connect ECONNREFUSED ${url.host}`));
+    else signal.addEventListener("abort", abort, { once: true });
+    return result.promise;
   }
 
   /** Backpressure: don't send more than FETCH_WINDOW bytes ahead of what the guest has read. */
@@ -611,7 +652,10 @@ export class NetHelper {
 
   private async failFetch(id: number, err: unknown): Promise<void> {
     if (!this.fetches.has(id)) return; // closed by the guest: the abort is expected
+    const job = this.fetches.get(id)!;
     this.fetches.delete(id);
+    job.controller.abort();
+    job.wake?.();
     // Pass the engine's own wording through ("Failed to fetch" in Chromium, "Load failed" in WebKit).
     const error: NetError =
       err instanceof Error
@@ -700,4 +744,27 @@ function snapshotRequest(req: NetRequest): NetRequest {
     case "shutdown":
       return { type, id };
   }
+}
+
+function redirectRequest(req: FetchRequest, head: FetchHead, location: string): FetchRequest {
+  const previous = new URL(req.url);
+  const url = new URL(location, head.url);
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new TypeError("Fetch redirect requires HTTP or HTTPS");
+  if (url.username || url.password) throw new TypeError("Fetch redirect contains credentials");
+  if (!location.includes("#")) url.hash = previous.hash;
+  const headers = new Headers(req.headers);
+  if (url.origin !== previous.origin) {
+    headers.delete("authorization");
+    headers.delete("proxy-authorization");
+    headers.delete("cookie");
+    headers.delete("cookie2");
+  }
+  const discardBody =
+    ((head.status === 301 || head.status === 302) && req.method === "POST") ||
+    (head.status === 303 && req.method !== "GET" && req.method !== "HEAD");
+  if (!discardBody) return { ...req, url: url.href, headers: Array.from(headers) };
+  for (const name of ["content-encoding", "content-language", "content-location", "content-type"])
+    headers.delete(name);
+  return { ...req, url: url.href, method: "GET", body: null, headers: Array.from(headers) };
 }

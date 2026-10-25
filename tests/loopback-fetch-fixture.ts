@@ -5,13 +5,22 @@ import { createRing } from "../browser/net/ring.js";
 import type { FetchCommand, FetchMessage } from "./loopback-fetch-worker.js";
 
 const teardown = new Set<() => void>();
-afterEach(() => { for (const close of teardown) close(); });
+afterEach(() => {
+  for (const close of teardown) close();
+});
 export const encode = (text: string) => new TextEncoder().encode(text);
 export const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-export function peer(namespace: NetNamespace, fetchRequest: NetFetch = async () => { throw Error("Outbound denied"); }) {
+export function peer(
+  namespace: NetNamespace,
+  fetchRequest: NetFetch = async () => {
+    throw Error("Outbound denied");
+  },
+) {
   const ring = createRing();
   const helper = new NetHelper(ring, fetchRequest, {}, namespace);
-  const worker = new Worker(new URL("./loopback-fetch-worker.ts", import.meta.url), { type: "module" });
+  const worker = new Worker(new URL("./loopback-fetch-worker.ts", import.meta.url), {
+    type: "module",
+  });
   const ready = Promise.withResolvers<void>();
   const pending = new Map<number, ReturnType<typeof Promise.withResolvers<unknown>>>();
   let next = 0;
@@ -24,11 +33,16 @@ export function peer(namespace: NetNamespace, fetchRequest: NetFetch = async () 
     else call?.resolve(data.value);
   };
   worker.onerror = (event) => ready.reject(Error(event.message));
-  const close = () => { teardown.delete(close); worker.terminate(); helper.dispose(); };
+  const close = () => {
+    teardown.delete(close);
+    worker.terminate();
+    helper.dispose();
+  };
   teardown.add(close);
   worker.postMessage({ ring });
   return {
-    ready: ready.promise, close,
+    ready: ready.promise,
+    close,
     call(command: FetchCommand) {
       const call = Promise.withResolvers<unknown>();
       const id = ++next;
@@ -64,13 +78,16 @@ export async function body(peer: Peer, handle: number): Promise<Uint8Array> {
   for (;;) {
     const chunk = await settled(peer, { op: "read", handle, cap: 65536 });
     if (chunk === 0) break;
-    if (!(chunk instanceof Uint8Array)) throw Error(`Body failed: ${await peer.call({ op: "error", handle })}`);
+    if (!(chunk instanceof Uint8Array))
+      throw Error(`Body failed: ${await peer.call({ op: "error", handle })}`);
     chunks.push(chunk);
   }
   return new Uint8Array(Buffer.concat(chunks));
 }
 export function response(status: number, headers: string, text = "") {
-  return encode(`HTTP/1.1 ${status} Test\r\n${headers}Content-Length: ${encode(text).length}\r\n\r\n${text}`);
+  return encode(
+    `HTTP/1.1 ${status} Test\r\n${headers}Content-Length: ${encode(text).length}\r\n\r\n${text}`,
+  );
 }
 export async function pair(fetchRequest?: NetFetch) {
   const namespace = new NetNamespace();

@@ -4,7 +4,14 @@ import { AGAIN, type NetRequest } from "../browser/net/protocol.js";
 
 declare const self: DedicatedWorkerGlobalScope;
 export type FetchCommand =
-  | { op: "fetch"; url: string; redirect?: RequestRedirect; method?: string; headers?: [string, string][]; body?: Uint8Array }
+  | {
+      op: "fetch";
+      url: string;
+      redirect?: RequestRedirect;
+      method?: string;
+      headers?: [string, string][];
+      body?: Uint8Array;
+    }
   | { op: "head" | "error" | "close"; handle: number }
   | { op: "read"; handle: number; cap: number }
   | { op: "listen"; port: number }
@@ -46,7 +53,10 @@ function respond(host: NetHost, listener: number, bytes: Uint8Array) {
   let written = 0;
   while (written < bytes.length) {
     const count = host.write(handle, bytes.subarray(written));
-    if (count === AGAIN) { host.poll(1000); continue; }
+    if (count === AGAIN) {
+      host.poll(1000);
+      continue;
+    }
     if (count < 0) break;
     written += count;
   }
@@ -57,24 +67,41 @@ function respond(host: NetHost, listener: number, bytes: Uint8Array) {
 
 function execute(host: NetHost, command: FetchCommand): unknown {
   switch (command.op) {
-    case "fetch": return host.fetch(JSON.stringify(command), command.body ?? null);
-    case "head": return host.fetchHead(command.handle);
-    case "error": return host.error(command.handle);
-    case "close": return host.close(command.handle);
-    case "read": return host.read(command.handle, command.cap);
-    case "listen": return host.listen("localhost", command.port);
-    case "respond": return respond(host, command.listener, command.bytes);
+    case "fetch":
+      return host.fetch(JSON.stringify(command), command.body ?? null);
+    case "head":
+      return host.fetchHead(command.handle);
+    case "error":
+      return host.error(command.handle);
+    case "close":
+      return host.close(command.handle);
+    case "read":
+      return host.read(command.handle, command.cap);
+    case "listen":
+      return host.listen("localhost", command.port);
+    case "respond":
+      return respond(host, command.listener, command.bytes);
   }
 }
 let host: NetHost;
 self.onmessage = ({ data }: MessageEvent<Incoming>) => {
   if ("ring" in data) {
-    host = new NetHost(data.ring, (request, transfer = []) => self.postMessage({ kind: "net", request } satisfies FetchMessage, { transfer }), undefined, { shared: true });
+    host = new NetHost(
+      data.ring,
+      (request, transfer = []) =>
+        self.postMessage({ kind: "net", request } satisfies FetchMessage, { transfer }),
+      undefined,
+      { shared: true },
+    );
     self.postMessage({ kind: "ready" } satisfies FetchMessage);
     return;
   }
   try {
-    self.postMessage({ kind: "result", id: data.id, value: execute(host, data.command) } satisfies FetchMessage);
+    self.postMessage({
+      kind: "result",
+      id: data.id,
+      value: execute(host, data.command),
+    } satisfies FetchMessage);
   } catch (error) {
     self.postMessage({ kind: "error", id: data.id, message: String(error) } satisfies FetchMessage);
   }
