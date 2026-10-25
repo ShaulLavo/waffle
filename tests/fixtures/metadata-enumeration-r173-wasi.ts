@@ -134,7 +134,7 @@ export function directoryPage(
   return { used, entries, partialBytes: used - at };
 }
 
-export function enumerateDirectory(fs: FileSystem, count: number) {
+export function enumerateDirectory(fs: FileSystem, count: number, capacity = 4096) {
   const h = metadataGuest(fs);
   try {
     const names: string[] = [];
@@ -143,7 +143,7 @@ export function enumerateDirectory(fs: FileSystem, count: number) {
     let calls = 0;
     let partialPages = 0;
     for (; calls < count + 3; calls++) {
-      const page = directoryPage(h, cookie);
+      const page = directoryPage(h, cookie, capacity);
       if (!page.used) break;
       if (!page.entries.length) throw new Error("no complete dirent in 4 KiB buffer");
       if (page.partialBytes) partialPages++;

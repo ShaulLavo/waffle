@@ -701,25 +701,18 @@ export class Wasi {
         RIGHT_FD_READDIR,
         (resource, buf: number, bufLen: number, cookie: bigint, usedPtr: number) => {
           if (resource.kind !== "directory") return ENOTDIR;
-          const list = this.opts.fs.readdir(resource.handle);
           const mem = this.bytes();
-          let used = 0;
-          for (let i = Number(cookie); i < list.length; i++) {
-            const { name, ino, kind } = list[i]!;
-            const nameBytes = encoder.encode(name);
-            const record = new Uint8Array(24 + nameBytes.length);
-            const rv = new DataView(record.buffer);
-            rv.setBigUint64(0, BigInt(i + 1), true);
-            rv.setBigUint64(8, BigInt(ino), true);
-            rv.setUint32(16, nameBytes.length, true);
-            rv.setUint8(20, filetype(kind));
-            record.set(nameBytes, 24);
-            const room = bufLen - used;
-            mem.set(record.subarray(0, Math.min(room, record.length)), buf + used);
-            used += Math.min(room, record.length);
-            if (used >= bufLen) break;
-          }
-          this.view().setUint32(usedPtr, used, true);
+          buf >>>= 0;
+          bufLen >>>= 0;
+          usedPtr >>>= 0;
+          if (buf + bufLen > mem.length || usedPtr + 4 > mem.length) return 21;
+          const page = this.opts.fs.readdirPage(
+            resource.handle,
+            BigInt.asUintN(64, cookie),
+            bufLen,
+          );
+          mem.set(page, buf);
+          this.view().setUint32(usedPtr, page.length, true);
           return SUCCESS;
         },
       ),

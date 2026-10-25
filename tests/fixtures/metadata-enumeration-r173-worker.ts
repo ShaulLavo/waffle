@@ -8,7 +8,7 @@ import {
 
 type Input = { connection: FilesystemConnection } & (
   | { scenario: "links"; root: string }
-  | { scenario: "directory"; count: number }
+  | { scenario: "directory"; count: number; capacity?: number }
   | { scenario: "reload" }
   | { scenario: "delete"; count: number }
 );
@@ -43,7 +43,7 @@ self.onmessage = (event: MessageEvent<Input>) => {
   const fs = new FilesystemClient(event.data.connection);
   try {
     if (event.data.scenario === "directory") {
-      self.postMessage(enumerateDirectory(fs, event.data.count));
+      self.postMessage(enumerateDirectory(fs, event.data.count, event.data.capacity));
       return;
     }
     if (event.data.scenario === "reload") {

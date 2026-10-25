@@ -3,6 +3,7 @@ import { MemoryBackend } from "../fs/backend.js";
 import type { FilesystemService } from "../fs/service.js";
 import { State } from "../fs/protocol.js";
 import { MemFS } from "../fs/memory.js";
+import { DirectoryPages } from "../fs/directory-pages.js";
 import type { FileHandle } from "../core/filesystem.js";
 import { metadataWorker } from "./fixtures/metadata-enumeration-r173-service.js";
 import { enumerateDirectory } from "./fixtures/metadata-enumeration-r173-wasi.js";
@@ -16,6 +17,32 @@ class CountedDirectory extends MemFS {
     this.materialized += result.length;
     return result;
   }
+}
+
+function indexCounter(pages: DirectoryPages) {
+  const counters = { steps: 0 };
+  const root = pages["root"];
+  function visit(branch: typeof root): void {
+    if (!branch) return;
+    const left = branch.left,
+      right = branch.right;
+    visit(left);
+    visit(right);
+    Object.defineProperty(branch, "left", {
+      get() {
+        counters.steps++;
+        return left;
+      },
+    });
+    Object.defineProperty(branch, "right", {
+      get() {
+        counters.steps++;
+        return right;
+      },
+    });
+  }
+  visit(root);
+  return counters;
 }
 
 function countTransport(
@@ -40,18 +67,30 @@ async function directoryRun(count: number) {
     Array.from({ length: count }, (_, index) => `entry-${String(index).padStart(5, "0")}`),
   );
   for (const name of expected.slice(2)) fs.writeFile(`/${name}`, "");
+  const index = indexCounter(fs["directoryPages"](fs.root));
+  const entriesAfter = DirectoryPages.prototype.entriesAfter;
+  DirectoryPages.prototype.entriesAfter = function* (cookie: bigint) {
+    for (const entry of entriesAfter.call(this, cookie)) {
+      fs.materialized++;
+      yield entry;
+    }
+  };
   const backend = new MemoryBackend(fs);
   const transport = { responseCalls: 0, responseBytes: 0, serializedListBytes: 0 };
-  const result = await metadataWorker<ReturnType<typeof enumerateDirectory>>(
+  const run = metadataWorker<ReturnType<typeof enumerateDirectory>>(
     backend,
     { scenario: "directory", count },
     (service) => countTransport(service, transport),
   );
+  const result = await run.finally(() => {
+    DirectoryPages.prototype.entriesAfter = entriesAfter;
+  });
   const counters = {
     count,
     guestCalls: result.calls,
     fullLists: fs.listCalls,
     materialized: fs.materialized,
+    indexSteps: index.steps,
     ...transport,
   };
   console.log("readdir counters", counters);
@@ -77,10 +116,11 @@ for (const count of [1000, 10000]) {
     const { result, counters } = await directoryRun(count);
     // Includes EOF probes, a partial-header probe and one explicit rewind page.
     const budget = count + 2 + 256 + result.calls * 2;
-    expect(counters.materialized).toBeGreaterThanOrEqual(result.names.length);
+    expect(counters.materialized).toBeGreaterThanOrEqual(count);
     expect({
+      boundedIndex: counters.indexSteps <= count * 4 + result.calls * 64,
       boundedMaterialization: counters.materialized <= budget,
       boundedTransport: counters.responseBytes <= budget * 100,
-    }).toEqual({ boundedMaterialization: true, boundedTransport: true });
+    }).toEqual({ boundedIndex: true, boundedMaterialization: true, boundedTransport: true });
   });
 }

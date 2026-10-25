@@ -139,6 +139,7 @@ test("core uses only the filesystem contract and accepts a zero-valued opaque ha
     resize: unexpected,
     setMtime: unexpected,
     readdir: unexpected,
+    readdirPage: unexpected,
     create: unexpected,
     link: unexpected,
     symlink: unexpected,
