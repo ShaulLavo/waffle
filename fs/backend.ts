@@ -339,6 +339,9 @@ export class MemoryBackend implements FilesystemBackend {
         this.publicationFile(a);
         this.shared.grow(a, b);
         return;
+      case "readdirPage":
+        this.check(a, "directory");
+        return this.fs.readdirPage(a, b, c);
       case "readdir":
         this.check(a, "directory");
         return this.fs.readdir(a);
