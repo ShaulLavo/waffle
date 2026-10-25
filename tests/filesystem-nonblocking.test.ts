@@ -152,6 +152,14 @@ async function persistentFixture(failure = false) {
     started = done;
   });
   let reads = 0;
+  const payload = new Uint8Array([65, 66, 67, 68]);
+  const readPayload = async () => {
+    reads++;
+    started();
+    await gate;
+    if (failure) throw new Error("storage unavailable");
+    return payload;
+  };
   const backend = await PersistentBackend.open(
     {
       ...fixturePayloadHooks(new Map([["payload", new Uint8Array([65, 66, 67, 68])]])),
@@ -169,12 +177,9 @@ async function persistentFixture(failure = false) {
           ],
         };
       },
-      async read() {
-        reads++;
-        started();
-        await gate;
-        if (failure) throw new Error("storage unavailable");
-        return new Uint8Array([65, 66, 67, 68]);
+      read: readPayload,
+      async readRange(_key, { offset, length }) {
+        return (await readPayload()).slice(offset, offset + length);
       },
       async persist() {},
       async flush() {},
@@ -210,7 +215,7 @@ async function persistentFixture(failure = false) {
   };
 }
 
-test("polling a cold persistent file starts hydration without a preceding read", async () => {
+test("polling a cold persistent file starts a bounded range without a preceding read", async () => {
   const { client, handle, release, reading, reads } = await persistentFixture();
   expect(client.ioReadiness(handle, false).readable).toBe(false);
   await reading;
@@ -223,7 +228,7 @@ test("polling a cold persistent file starts hydration without a preceding read",
   expect(Array.from(bytes)).toEqual([65, 66, 67, 68]);
 });
 
-test("persistent hydration errors wake readiness and reach the syscall without waiting", async () => {
+test("persistent range errors wake readiness and reach the syscall without waiting", async () => {
   const { client, handle, release, reading } = await persistentFixture(true);
   expect(client.tryRead(handle, [new Uint8Array(4)], 0)).toBe(-6);
   await reading;
@@ -246,6 +251,8 @@ test("cold open file I/O keeps its inode across unlink and pathname reuse", asyn
   const bytes = new Uint8Array(4);
   expect(client.tryRead(handle, [bytes], 0)).toBe(4);
   expect(Array.from(bytes)).toEqual([65, 66, 67, 68]);
+  expect(client.tryWrite(handle, [new Uint8Array([89])], 0)).toBe(-6);
+  await ready(client, handle, true);
   expect(client.tryWrite(handle, [new Uint8Array([89])], 0)).toBe(1);
   expect(Array.from(await client.asyncCall("readFile", ["/file"]))).toEqual([90]);
 });
@@ -290,7 +297,7 @@ test("closing the last open reference cancels and releases pending preparation",
   release();
 });
 
-test("runtime_proc file read returns EAGAIN before worker poll waits for real persistent hydration", async () => {
+test("runtime_proc file read returns EAGAIN before worker poll waits for a real persistent range", async () => {
   const { client, release, reading } = await persistentFixture();
   const connection = client.fork();
   const worker = new Worker(new URL("./fixtures/filesystem-proc-guest.ts", import.meta.url).href);

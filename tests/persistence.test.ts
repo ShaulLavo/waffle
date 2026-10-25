@@ -7,7 +7,7 @@ import { ExecutableRegistry } from "../proc/registry.js";
 import { permissionStorageCase } from "./fixtures/permissions-storage.js";
 import { afterEach, expect, test } from "bun:test";
 import { PersistentBackend } from "../fs/persistent";
-import { validatePersistedIndex } from "../fs/storage";
+import { validatePersistedIndex, type StorageBackend } from "../fs/storage";
 import {
   FilesystemService,
   FilesystemClient,
@@ -31,7 +31,11 @@ class Store {
   }
   index: any;
   payloads = new Map<string, Uint8Array>();
-  readRange = fixturePayloadHooks(this.payloads).readRange;
+  ranges: { offset: number; length: number }[] = [];
+  readRange = (key: string, range: Parameters<StorageBackend["readRange"]>[1]) => {
+    this.ranges.push({ offset: range.offset, length: range.length });
+    return fixturePayloadHooks(this.payloads).readRange(key, range);
+  };
   retainPayload = fixturePayloadHooks(this.payloads).retainPayload;
   reads = 0;
   batches: any[] = [];
@@ -175,7 +179,7 @@ test("direct shared writes are checkpointed, including writes during an older co
   const second = await fixture(store);
   expect(decode(await second.client.asyncCall("readFile", ["/direct"]))).toBe("laterata");
 });
-test("lazy stat and descriptor retain do not read payloads; first direct read does", async () => {
+test("lazy stat and descriptor retain do not read payloads; first direct read stays bounded", async () => {
   const store = new Store();
   const first = await fixture(store);
   await first.client.asyncCall("writeFile", ["/lazy"], encode("payload"));
@@ -186,8 +190,11 @@ test("lazy stat and descriptor retain do not read payloads; first direct read do
   second.client.retain(path.node);
   expect(second.client.stat(path.node).size).toBe(7);
   expect(store.reads).toBe(0);
+  expect(store.ranges).toEqual([]);
   expect(decode(await second.client.asyncCall("read", [path.node, 100, 0]))).toBe("payload");
-  expect(store.reads).toBe(1);
+  expect(store.reads).toBe(0);
+  expect(store.ranges).toEqual([{ offset: 0, length: 7 }]);
+  expect(second.backend.shared.isResident(path.node)).toBe(false);
   second.client.release(path.node);
 });
 test("metadata-only edits to a lazy open file persist without loading its bytes", async () => {
@@ -384,6 +391,83 @@ test("cold detached descriptors retain their payload key across unrelated failed
   second.client.release(path.node);
 });
 
+async function failedCheckpoint(
+  backend: PersistentBackend,
+  store: Store,
+  failure: "capture" | "persist",
+  hot: number,
+) {
+  if (failure === "persist") {
+    store.fail = true;
+    try {
+      await expect(backend.flush()).rejects.toThrow("storage failed");
+    } finally {
+      store.fail = false;
+    }
+    return;
+  }
+  const snapshot = backend.shared.snapshot.bind(backend.shared);
+  backend.shared.snapshot = (handle) => {
+    if (handle === hot) throw new Error("capture failed");
+    return snapshot(handle);
+  };
+  try {
+    await expect(backend.flush()).rejects.toThrow("capture failed");
+  } finally {
+    backend.shared.snapshot = snapshot;
+  }
+}
+
+for (const failure of ["capture", "persist"] as const)
+  test(`checkpoint rollback preserves cold baselines and retries resident bytes after ${failure} failure`, async () => {
+    const store = new Store();
+    const first = await fixture(store);
+    for (const path of ["/linked", "/detached", "/stale", "/hot"])
+      await first.client.asyncCall("writeFile", [path], encode("OLD"));
+    await first.client.asyncCall("flush");
+    const { client, backend } = await fixture(store);
+    const root = await client.asyncCall("preopen", ["/"]);
+    const linked = (await client.asyncCall("resolve", [root, "linked"])).node;
+    const detached = await client.asyncCall("resolve", [root, "detached"]);
+    const stale = await client.asyncCall("resolve", [root, "stale"]);
+    const hot = (await client.asyncCall("resolve", [root, "hot"])).node;
+    for (const handle of [linked, detached.node, stale.node, hot]) client.retain(handle);
+    await client.asyncCall("removePath", [detached, false]);
+    await client.asyncCall("removePath", [stale, false]);
+    await backend.flush();
+    const identities = [backend.identity(linked), backend.identity(detached.node)];
+    const staleRevision = backend.shared.revision(stale.node);
+    await client.asyncCall("setMtime", [stale.node, 123456]);
+    expect(backend.shared.revision(stale.node)).not.toBe(staleRevision);
+    expect(backend.shared.isResident(stale.node)).toBe(false);
+    await backend.prepare("read", [hot]);
+    expect(client.write(hot, [encode("NEW")], 0)).toBe(3);
+    const reads = store.reads;
+    const residentBytes = backend.shared.resources().usedBytes;
+    await failedCheckpoint(backend, store, failure, hot);
+    expect(backend.checkpointPressure().pendingOperations).toBe(0);
+    expect(decode(await client.asyncCall("read", [linked, 3, 0]))).toBe("OLD");
+    expect(decode(await client.asyncCall("read", [detached.node, 3, 0]))).toBe("OLD");
+    expect(backend.shared.isResident(linked)).toBe(false);
+    expect(backend.shared.isResident(detached.node)).toBe(false);
+    expect([backend.identity(linked), backend.identity(detached.node)]).toEqual(identities);
+    const ranges = store.ranges.length;
+    expect(() => backend.prepareDescriptorRead(stale.node, 0, 3, () => false)).toThrow(
+      "cold revision is not retained",
+    );
+    expect(store.ranges.length).toBe(ranges);
+    expect(store.reads).toBe(reads);
+    expect(backend.shared.resources().usedBytes).toBe(residentBytes);
+    await backend.flush();
+    expect(decode(await client.asyncCall("read", [linked, 3, 0]))).toBe("OLD");
+    expect(decode(await client.asyncCall("read", [detached.node, 3, 0]))).toBe("OLD");
+    expect(store.reads).toBe(reads);
+    const reloaded = await fixture(store);
+    expect(decode(await reloaded.client.asyncCall("readFile", ["/hot"]))).toBe("NEW");
+    expect(await reloaded.client.asyncCall("readFile", ["/detached"])).toBeUndefined();
+    for (const handle of [linked, detached.node, stale.node, hot]) client.release(handle);
+  });
+
 test("closing a detached descriptor during its commit does not resurrect a payload pin", async () => {
   const store = new Store();
   const first = await fixture(store);
@@ -481,11 +565,11 @@ test("dirty detached bytes survive relink and last close before durability", asy
   const first = await fixture(store);
   await first.client.asyncCall("writeFile", ["/a"], encode("OLD"));
   await first.client.asyncCall("flush");
-  const { client } = await fixture(store);
+  const { client, backend } = await fixture(store);
   const root = await client.asyncCall("preopen", ["/"]);
   const a = await client.asyncCall("resolve", [root, "a"]);
   client.retain(a.node);
-  await client.asyncCall("read", [a.node, 3, 0]);
+  await backend.prepare("read", [a.node]);
   await client.asyncCall("removePath", [a, false]);
   expect(client.write(a.node, [encode("NEW")], 0)).toBe(3);
   const b = await client.asyncCall("resolve", [root, "b"]);
@@ -625,8 +709,8 @@ async function coldPermissionFixture(mode: number) {
 }
 
 for (const pollFirst of [false, true]) {
-  test(`cold read-only process read hydrates with read rights, pollFirst=${pollFirst}`, async () => {
-    const { client, store, handle } = await coldPermissionFixture(0o400);
+  test(`cold read-only process read stays bounded with read rights, pollFirst=${pollFirst}`, async () => {
+    const { client, store, backend, handle } = await coldPermissionFixture(0o400);
     const descriptors = new DescriptorTable();
     const supervisor = new ProcessSupervisor({
       registry: new ExecutableRegistry(),
@@ -655,7 +739,9 @@ for (const pollFirst of [false, true]) {
     while (!client.ioReadiness(handle, false).readable) await Bun.sleep(1);
     expect(abi.imports.read!(fd, 1024, 4)).toBe(4);
     expect(decode(bytes)).toBe("ABCD");
-    expect(store.reads).toBe(1);
+    expect(store.reads).toBe(0);
+    expect(store.ranges).toEqual([{ offset: 0, length: 4 }]);
+    expect(backend.shared.isResident(handle)).toBe(false);
     expect(client.tryWrite(handle, [encode("deny")], 0)).toBe(-2);
     expect(client.resize(handle, 0, true)).toBe(2);
     expect(client.completions.size).toBe(0);

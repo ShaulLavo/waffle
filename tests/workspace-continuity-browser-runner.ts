@@ -373,6 +373,8 @@ async function completedCheckpoint(): Promise<void> {
     recovered: Record<string, unknown> = {};
   let savedCut: unknown, savedReceipt: unknown, savedChanges: unknown;
   let root: Page | undefined, peer: Page | undefined, audit: Page | undefined;
+  let primaryFailure: { error: unknown } | undefined;
+  let cleanupFailure: { error: unknown } | undefined;
   try {
     await runner.init();
     const port = Number(process.env.WORKSPACE_CONTINUITY_PORT ?? (await unusedPort()));
@@ -527,8 +529,8 @@ async function completedCheckpoint(): Promise<void> {
       return { recoveredCut: savedCut, exactReceipt: true, freshCapabilities: true };
     });
   } catch (error) {
+    primaryFailure = { error };
     evidence.failure = String(error);
-    throw error;
   } finally {
     try {
       await debug?.close();
@@ -544,6 +546,9 @@ async function completedCheckpoint(): Promise<void> {
           deleted: await call(audit, "delete", name),
         };
       }
+    } catch (error) {
+      cleanupFailure = { error };
+      evidence.cleanupFailure = String(error);
     } finally {
       await runner.close();
       evidence.outerCleanup = "browser, server and scratch retired";
@@ -553,6 +558,14 @@ async function completedCheckpoint(): Promise<void> {
         await Bun.write(process.env.WORKSPACE_CONTINUITY_REPORT, reportJson(report, 2) + "\n");
     }
   }
+  if (primaryFailure && cleanupFailure)
+    throw new AggregateError(
+      [primaryFailure.error, cleanupFailure.error],
+      "Workspace continuity failed before cleanup also failed",
+      { cause: primaryFailure.error },
+    );
+  if (primaryFailure) throw primaryFailure.error;
+  if (cleanupFailure) throw cleanupFailure.error;
 }
 
 async function checkpointPressure(): Promise<void> {

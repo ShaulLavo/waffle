@@ -907,16 +907,42 @@ export class SharedFilesystemState {
     }
     return handles;
   }
-  revision(handle: FileHandle): number | undefined {
+  revision(
+    handle: FileHandle,
+    nonblocking = false,
+    revoked?: () => boolean,
+    owner = this.lockOwner,
+  ): number | undefined {
+    return this.current(nonblocking, revoked, owner, () =>
+      this.revisionLocked(handle, nonblocking, revoked, owner),
+    );
+  }
+  private revisionLocked(
+    handle: FileHandle,
+    nonblocking: boolean,
+    revoked: (() => boolean) | undefined,
+    owner: number,
+  ): number | undefined {
     const slot = this.findSlot(handle);
     if (!slot) return undefined;
-    this.lock(this.at(slot, FILE_LOCK));
+    const lock = this.at(slot, FILE_LOCK);
+    this.section?.enter();
     try {
+      if (Atomics.compareExchange(this.slots, lock, 0, owner) !== 0) {
+        if (nonblocking) throw new FilesystemError(6);
+        this.contend(this.slots, lock, revoked, owner);
+      }
+    } catch (error) {
+      this.section?.exit();
+      throw error;
+    }
+    try {
+      if (revoked?.()) throw new FilesystemError(11);
       return this.slots[this.at(slot, HANDLE)] === handle + 1 && this.slots[this.at(slot, 0)]
         ? this.getRevision(slot)
         : undefined;
     } finally {
-      this.unlock(this.at(slot, FILE_LOCK));
+      this.unlock(this.at(slot, FILE_LOCK), owner);
     }
   }
   /** One file lock covers the bytes, stat and revision; the returned bytes are an owned copy. */

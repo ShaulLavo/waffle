@@ -27,7 +27,13 @@ class BlockedStore implements StorageBackend {
       ["replacement", encode("new")],
     ]),
   );
-  readRange = this.rangeHooks.readRange;
+  async readRange(key: string, range: Parameters<StorageBackend["readRange"]>[1]) {
+    if (key === "cold") this.started.resolve();
+    await this.storageQueue;
+    if (key === "cold") await this.release.promise;
+    if (this.failReads) throw new Error("storage read failed");
+    return this.rangeHooks.readRange(key, range);
+  }
   retainPayload = this.rangeHooks.retainPayload;
   private identityReservation?: StoredReservation;
   async reserveIdentity(workspace?: string) {
@@ -164,13 +170,17 @@ test("a prepared path read observes deletion instead of reviving an old file", a
   expect(await client.asyncCall("lookup", ["/cold"])).toBeUndefined();
 });
 
-test("concurrent reads of one cold handle share a load and cannot overwrite a later write", async () => {
-  const { store, client } = await fixture();
+test("concurrent full preparations share a load and cannot overwrite a later write", async () => {
+  const { store, backend, client } = await fixture();
   const root = await client.asyncCall("preopen", ["/"]);
   const path = await client.asyncCall("resolve", [root, "cold"]);
-  const first = client.asyncCall("read", [path.node, 4, 0]);
+  const first = Promise.resolve(backend.prepare("read", [path.node])).then(() =>
+    client.asyncCall("read", [path.node, 4, 0]),
+  );
   await store.started.promise;
-  const second = client.asyncCall("read", [path.node, 4, 0]);
+  const second = Promise.resolve(backend.prepare("read", [path.node])).then(() =>
+    client.asyncCall("read", [path.node, 4, 0]),
+  );
   try {
     await promptly(client.asyncCall("writeFile", ["/hot"], encode("hot")));
     expect(store.reads).toBe(1);

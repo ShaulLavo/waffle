@@ -27,6 +27,13 @@ export interface FilesystemBackend {
   revokeOwner?(owner: number, epoch?: Int32Array): void;
   takeSharedSegments?(): SharedSegment[];
   sharedSegments?(): SharedSegment[];
+  /** Select a bounded cold descriptor range before asynchronous storage work. */
+  prepareDescriptorRead?(
+    handle: FileHandle,
+    offset: number,
+    length: number,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> | undefined;
   /** Lazy storage reads finish before the service acquires its mutation lock. */
   prepare?(operation: string, args: any[], data: Uint8Array): void | Promise<void>;
   waitForDirtyCapacity?(changed: number, cancelled: () => boolean): Promise<void>;
