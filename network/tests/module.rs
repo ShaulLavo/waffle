@@ -271,3 +271,32 @@ fn compiled_module_ipv4_fallback_without_ipv6() {
     }
     assert!(child.status().unwrap().success());
 }
+
+#[cfg(unix)]
+#[test]
+fn graceful_close_drains_admitted_output_and_unread_input_before_eof() {
+    let mut guest = Guest::new();
+    let listener = guest.call("tcp_listen_default", 0) as u32;
+    let address = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), guest.address(listener, false).port());
+    let mut peer = TcpStream::connect(address).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    peer.write_all(&[9; 128]).unwrap();
+    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_ne!(guest.store.data().wait_ready(listener, 1, Duration::from_secs(3)).unwrap(), 0);
+    let server = guest.call("tcp_accept", listener) as u32;
+    let response = b"response admitted only once";
+    guest.buffer()[..response.len()].copy_from_slice(response);
+    assert_eq!(guest.io("tcp_write", server, response.len() as u32), response.len() as i32);
+    assert_eq!(guest.call("tcp_close_graceful", server), 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while guest.call("tcp_close_status", server) != 3 {
+        assert!(Instant::now() < deadline);
+        let interests = guest.call("tcp_interests", server) as u32;
+        assert_ne!(guest.store.data().wait_ready(server, interests, deadline.saturating_duration_since(Instant::now())).unwrap(), 0);
+        assert_eq!(guest.call("tcp_poll", server), 0);
+    }
+    assert_eq!(guest.call("tcp_close", server), 0);
+    let mut received = Vec::new();
+    peer.read_to_end(&mut received).unwrap();
+    assert_eq!(received, response);
+}
