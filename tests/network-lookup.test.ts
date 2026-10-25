@@ -1,5 +1,9 @@
 import { expect, spyOn, test } from "bun:test";
-import { createRuntime, RuntimeNetworkLookupError } from "../index.js";
+import {
+  createRuntime,
+  RuntimeNetworkLookupError,
+  type RuntimeNetworkLookupResult,
+} from "../index.js";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 
 function create() {
@@ -34,7 +38,7 @@ test("exported runtime lookup follows virtual policy before any helper or listen
     spyOn(NetNamespace.prototype, "listen").mockImplementation(noIO),
     spyOn(NetNamespace.prototype, "connect").mockImplementation(noIO),
     spyOn(NetHelper.prototype, "handle").mockImplementation(noIO),
-    spyOn(globalThis, "fetch").mockImplementation(noIO),
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(noIO, { preconnect: noIO })),
     spyOn(Bun, "listen").mockImplementation(noIO),
     spyOn(Bun, "connect").mockImplementation(noIO),
     spyOn(Bun, "spawn").mockImplementation(noIO),
@@ -42,7 +46,7 @@ test("exported runtime lookup follows virtual policy before any helper or listen
   ];
   try {
     expect(Object.keys(network)).toEqual(["createHelper", "lookup"]);
-    const localhost = [{ address: "127.0.0.1", family: 4 }];
+    const localhost: RuntimeNetworkLookupResult[] = [{ address: "127.0.0.1", family: 4 }];
     expect(network.lookup("localhost", { family: 0, hints: 0 })).toEqual(localhost);
     expect(network.lookup("localhost")).toEqual(localhost);
     expect(network.lookup("localhost", { family: 4 })).toEqual(localhost);
