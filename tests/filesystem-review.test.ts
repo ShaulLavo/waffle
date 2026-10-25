@@ -54,8 +54,8 @@ test("readFile honors a truncate between length sampling and read lock", () => {
 
 test("geometric growth falls back to the final available page", () => {
   const state = new SharedFilesystemState(undefined, PAGE * 256);
-  state.register(0, { kind: "file", ino: 1, size: PAGE * 128, mtime: 1 });
-  state.register(1, { kind: "file", ino: 2, size: PAGE * 127, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 128, mtime: 1 });
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 127, mtime: 1 });
   state.grow(0, PAGE * 129);
   expect(state.info(0)?.capacity).toBe(PAGE * 129);
   expect(state.resources().usedBytes).toBe(PAGE * 256);
@@ -64,7 +64,11 @@ test("geometric growth falls back to the final available page", () => {
 function directFixture() {
   const pair = createFilesystemConnection();
   const client = new FilesystemClient(pair.client);
-  client.shared.register(0, { kind: "file", ino: 1, size: 1, mtime: 1 }, new Uint8Array([65]));
+  client.shared.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 },
+    new Uint8Array([65]),
+  );
   client.call = () => undefined;
   const capabilities = new Int32Array(pair.client.capabilities);
   Atomics.store(capabilities, 1, 0);
@@ -183,7 +187,7 @@ test("revoking a live in-flight writer keeps its locks and pages until it exits"
 
 test("zero-byte positioned writes do not grow or timestamp a file", () => {
   const state = new SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, size: 1, mtime: 1 }, new Uint8Array([65]));
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([65]));
   expect(state.write(0, [empty], 4096)).toBe(0);
   expect(state.stat(0)).toMatchObject({ size: 1, mtime: 1 });
   expect(state.append(0, [empty])).toEqual({ written: 0, offset: 1 });
@@ -204,17 +208,19 @@ test("a successful truncate returns trailing capacity for another file", () => {
 
 test("a failed SAB allocation rolls back all uncommitted page owners", () => {
   const state = new SharedFilesystemState(undefined, PAGE * 512);
-  state.register(0, { kind: "file", ino: 1, size: PAGE * 255, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 255, mtime: 1 });
   const allocator = state as unknown as { ensureSegment(index: number): void };
   const original = allocator.ensureSegment.bind(state);
   allocator.ensureSegment = (index) => {
     if (index === 1) throw new RangeError("injected SAB allocation failure");
     original(index);
   };
-  expect(() => state.register(1, { kind: "file", ino: 2, size: PAGE * 2, mtime: 1 })).toThrow();
+  expect(() =>
+    state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE * 2, mtime: 1 }),
+  ).toThrow();
   expect(Array.from(state.owners).filter((owner) => owner !== 0).length).toBe(255);
   allocator.ensureSegment = original;
-  state.register(2, { kind: "file", ino: 3, size: PAGE, mtime: 1 });
+  state.register(2, { kind: "file", ino: 3, nlink: 1, size: PAGE, mtime: 1 });
   expect(state.resources().usedBytes).toBe(PAGE * 256);
 });
 
@@ -222,7 +228,11 @@ test("shared stat cannot observe a torn two-word timestamp", () => {
   const state = new SharedFilesystemState();
   const oldTime = 0x1ffffffff;
   const newTime = 0x200000000;
-  state.register(0, { kind: "file", ino: 1, size: 1, mtime: oldTime }, new Uint8Array([65]));
+  state.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: 1, mtime: oldTime },
+    new Uint8Array([65]),
+  );
   const originalLoad = Atomics.load;
   let intercepted = false;
   Atomics.load = ((...args: any[]) => {

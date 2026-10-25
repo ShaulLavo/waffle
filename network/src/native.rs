@@ -46,12 +46,15 @@ impl SocketHost for NativeHost {
         self.socket(socket)?.set_only_v6(false)
     }
     fn bind(&mut self, socket: u32, address: SocketAddr) -> io::Result<()> {
+        #[cfg(unix)]
+        self.socket(socket)?.set_reuse_address(true)?;
         self.socket(socket)?.bind(&address.into())
     }
     fn listen(&mut self, socket: u32) -> io::Result<()> {
         self.socket(socket)?.listen(128)
     }
     fn connect(&mut self, socket: u32, address: SocketAddr) -> io::Result<()> {
+        self.socket(socket)?.set_tcp_nodelay(true)?;
         match self.socket(socket)?.connect(&address.into()) {
             Err(error) if in_progress(&error) => Err(io::ErrorKind::WouldBlock.into()),
             result => result,
@@ -201,10 +204,100 @@ fn span(memory: &mut [u8], pointer: u32, length: u32) -> io::Result<&mut [u8]> {
         .ok_or_else(|| io::ErrorKind::InvalidInput.into())
 }
 
+/// A coalescing control notification. It carries no module, socket table or guest memory.
+#[cfg(unix)]
+#[derive(Clone)]
+pub struct ControlWake(std::sync::Arc<std::os::unix::net::UnixStream>);
+
+#[cfg(unix)]
+impl ControlWake {
+    pub fn wake(&self) -> io::Result<()> {
+        match self.0.as_ref().write(&[1]) {
+            Ok(0) => Err(io::ErrorKind::BrokenPipe.into()),
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// One actor owns the read endpoint. Send commands before waking it, then rescan after wake.
+#[cfg(unix)]
+pub struct Readiness(std::os::unix::net::UnixStream);
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+pub struct Ready {
+    pub sockets: Vec<(u32, u32)>,
+    pub control: bool,
+}
+
+#[cfg(unix)]
+impl Readiness {
+    pub fn new() -> io::Result<(Self, ControlWake)> {
+        let (read, write) = std::os::unix::net::UnixStream::pair()?;
+        read.set_nonblocking(true)?;
+        write.set_nonblocking(true)?;
+        Ok((Self(read), ControlWake(std::sync::Arc::new(write))))
+    }
+
+    fn consume(&mut self) -> io::Result<()> {
+        let mut bytes = [0; 256];
+        loop {
+            match self.0.read(&mut bytes) {
+                Ok(0) => return Err(io::ErrorKind::BrokenPipe.into()),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 impl NativeHost {
-    /// Readiness belongs to the OS event loop, outside WASM. Bits: readable=1, writable=2,
-    /// terminal=4. After notification the embedder calls tcp_poll or tcp_accept in WASM.
+    /// Wait for every registered token and external commands in one OS call.
+    /// The module actor owns this host throughout the wait; other threads use ControlWake only.
+    pub fn wait_many(
+        &self,
+        interests: &[(u32, u32)],
+        control: &mut Readiness,
+        timeout: Option<std::time::Duration>,
+    ) -> io::Result<Ready> {
+        use std::os::fd::AsRawFd;
+        let mut descriptors = vec![poll_descriptor(control.0.as_raw_fd(), 1)];
+        let mut ids = Vec::new();
+        for &(id, interest) in interests {
+            if interest & !3 != 0 {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            let socket = self.socket(id)?;
+            if interest & 3 == 0 {
+                continue;
+            }
+            ids.push(id);
+            descriptors.push(poll_descriptor(socket.as_raw_fd(), interest));
+        }
+        poll_descriptors(&mut descriptors, timeout)?;
+        let woken = descriptors[0].revents != 0;
+        if woken {
+            control.consume()?;
+        }
+        let sockets = ids
+            .into_iter()
+            .zip(&descriptors[1..])
+            .filter_map(|(id, descriptor)| {
+                let bits = ready_bits(descriptor.revents);
+                (bits != 0).then_some((id, bits))
+            })
+            .collect();
+        Ok(Ready {
+            sockets,
+            control: woken,
+        })
+    }
+
     pub fn wait_ready(
         &self,
         id: u32,
@@ -212,30 +305,58 @@ impl NativeHost {
         timeout: std::time::Duration,
     ) -> io::Result<u32> {
         use std::os::fd::AsRawFd;
-        let events = if interests & 1 != 0 { libc::POLLIN } else { 0 }
-            | if interests & 2 != 0 { libc::POLLOUT } else { 0 };
-        let mut descriptor = libc::pollfd {
-            fd: self.socket(id)?.as_raw_fd(),
-            events,
-            revents: 0,
+        let mut descriptors = [poll_descriptor(self.socket(id)?.as_raw_fd(), interests)];
+        poll_descriptors(&mut descriptors, Some(timeout))?;
+        Ok(ready_bits(descriptors[0].revents))
+    }
+}
+
+#[cfg(unix)]
+fn poll_descriptor(fd: std::os::fd::RawFd, interests: u32) -> libc::pollfd {
+    libc::pollfd {
+        fd,
+        events: if interests & 1 != 0 { libc::POLLIN } else { 0 }
+            | if interests & 2 != 0 { libc::POLLOUT } else { 0 },
+        revents: 0,
+    }
+}
+
+#[cfg(unix)]
+fn ready_bits(events: i16) -> u32 {
+    u32::from(events & libc::POLLIN != 0)
+        | (u32::from(events & libc::POLLOUT != 0) << 1)
+        | (u32::from(events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0) << 2)
+}
+
+#[cfg(unix)]
+fn poll_descriptors(
+    descriptors: &mut [libc::pollfd],
+    timeout: Option<std::time::Duration>,
+) -> io::Result<()> {
+    let deadline = timeout.map(|duration| std::time::Instant::now() + duration);
+    loop {
+        let millis = deadline.map_or(-1, |deadline| {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            remaining
+                .as_millis()
+                .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0))
+                .min(i32::MAX as u128) as i32
+        });
+        // Every descriptor stays owned by the actor; poll retains no array or descriptor pointer.
+        let result = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                millis,
+            )
         };
-        let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
-        // poll borrows this live descriptor and retains neither it nor the array pointer.
-        let result = unsafe { libc::poll(&mut descriptor, 1, millis) };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
+        if result >= 0 {
+            return Ok(());
         }
-        let mut ready = 0;
-        if descriptor.revents & libc::POLLIN != 0 {
-            ready |= 1;
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
-        if descriptor.revents & libc::POLLOUT != 0 {
-            ready |= 2;
-        }
-        if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-            ready |= 4;
-        }
-        Ok(ready)
     }
 }
 
@@ -248,4 +369,27 @@ fn socket_error(error: io::Error) -> io::Error {
         return io::Error::new(io::ErrorKind::Unsupported, error);
     }
     error
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outgoing_and_accepted_connections_enable_nodelay() {
+        let mut host = NativeHost::default();
+        let listener = host.open(false).unwrap();
+        host.bind(listener, "127.0.0.1:0".parse().unwrap()).unwrap();
+        host.listen(listener).unwrap();
+        let address = host.local_addr(listener).unwrap();
+        let outgoing = host.open(false).unwrap();
+        let result = host.connect(outgoing, address);
+        assert!(result.is_ok() || result.unwrap_err().kind() == io::ErrorKind::WouldBlock);
+        assert!(host.socket(outgoing).unwrap().tcp_nodelay().unwrap());
+        #[cfg(unix)]
+        host.wait_ready(listener, 1, std::time::Duration::from_secs(3))
+            .unwrap();
+        let accepted = host.accept(listener).unwrap();
+        assert!(host.socket(accepted).unwrap().tcp_nodelay().unwrap());
+    }
 }

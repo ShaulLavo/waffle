@@ -42,13 +42,25 @@ enum Phase {
     Open,
     Failed(io::ErrorKind),
 }
+#[derive(Clone, Copy, PartialEq)]
+enum Receive {
+    Open,
+    Eof,
+    Draining,
+    Drained,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Send {
+    Open,
+    Shutdown,
+    Finished,
+}
 struct Stream {
     phase: Phase,
     received: queue::ByteQueue,
     outgoing: queue::ByteQueue,
-    eof: bool,
-    shutdown: bool,
-    shutdown_sent: bool,
+    receive: Receive,
+    send: Send,
 }
 impl Stream {
     fn new(connecting: bool) -> Self {
@@ -60,9 +72,8 @@ impl Stream {
             },
             received: Default::default(),
             outgoing: Default::default(),
-            eof: false,
-            shutdown: false,
-            shutdown_sent: false,
+            receive: Receive::Open,
+            send: Send::Open,
         }
     }
     fn connected(&mut self, host: &mut impl SocketHost, id: u32) -> io::Result<()> {
@@ -88,25 +99,46 @@ impl Stream {
             Phase::Connecting => 2,
             Phase::Failed(_) => 4,
             Phase::Open => {
-                u32::from(!self.eof && self.received.len() < virtual_net::LIMIT)
-                    | (u32::from(!self.outgoing.is_empty()) << 1)
+                u32::from(self.can_receive()) | (u32::from(!self.outgoing.is_empty()) << 1)
             }
         }
+    }
+    fn can_receive(&self) -> bool {
+        self.receive == Receive::Draining
+            || (self.receive == Receive::Open && self.received.len() < virtual_net::LIMIT)
+    }
+    fn close_graceful(&mut self) {
+        self.received = Default::default();
+        self.receive = match self.receive {
+            Receive::Open | Receive::Draining => Receive::Draining,
+            Receive::Eof | Receive::Drained => Receive::Drained,
+        };
+        if self.send == Send::Open {
+            self.send = Send::Shutdown;
+        }
+    }
+    fn close_status(&self) -> io::Result<u32> {
+        if let Phase::Failed(kind) = self.phase {
+            return Err(kind.into());
+        }
+        Ok(u32::from(self.send == Send::Finished)
+            | (u32::from(self.receive == Receive::Drained) << 1))
     }
     fn progress(&mut self, host: &mut impl SocketHost, id: u32) -> io::Result<()> {
         self.connected(host, id)?;
         self.flush(host, id)?;
-        if self.shutdown && self.outgoing.is_empty() && !self.shutdown_sent {
+        if self.send == Send::Shutdown && self.outgoing.is_empty() {
             host.shutdown(id)?;
-            self.shutdown_sent = true;
+            self.send = Send::Finished;
         }
-        if self.eof || self.received.len() == virtual_net::LIMIT {
+        if !self.can_receive() {
             return Ok(());
         }
         let mut bytes = [0; abi::BUFFER_SIZE];
         let length = bytes.len().min(virtual_net::LIMIT - self.received.len());
         match host.read(id, &mut bytes[..length]) {
-            Ok(0) => self.eof = true,
+            Ok(0) => self.receive_eof(),
+            Ok(_) if self.receive == Receive::Draining => {}
             Ok(count) => self.received.push(&bytes[..count]),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => {
@@ -115,6 +147,13 @@ impl Stream {
             }
         }
         Ok(())
+    }
+    fn receive_eof(&mut self) {
+        self.receive = if self.receive == Receive::Draining {
+            Receive::Drained
+        } else {
+            Receive::Eof
+        };
     }
     fn flush(&mut self, host: &mut impl SocketHost, id: u32) -> io::Result<()> {
         if self.outgoing.is_empty() {
@@ -268,7 +307,13 @@ impl<H: SocketHost> Tcp<H> {
         let Some(State::Stream(stream)) = self.sockets.get_mut(&socket.0) else {
             return Err(io::ErrorKind::InvalidInput.into());
         };
-        stream.progress(&mut self.host, socket.0)
+        let result = stream.progress(&mut self.host, socket.0);
+        if let Err(error) = &result
+            && error.kind() != io::ErrorKind::WouldBlock
+        {
+            stream.phase = Phase::Failed(error.kind());
+        }
+        result
     }
     pub fn read(&mut self, socket: SocketId, bytes: &mut [u8]) -> io::Result<usize> {
         let progress = self.poll(socket);
@@ -279,7 +324,7 @@ impl<H: SocketHost> Tcp<H> {
             return Ok(stream.received.take(bytes));
         }
         progress?;
-        if stream.eof || bytes.is_empty() {
+        if matches!(stream.receive, Receive::Eof | Receive::Drained) || bytes.is_empty() {
             return Ok(0);
         }
         Err(io::ErrorKind::WouldBlock.into())
@@ -287,7 +332,7 @@ impl<H: SocketHost> Tcp<H> {
     pub fn write(&mut self, socket: SocketId, bytes: &[u8]) -> io::Result<usize> {
         self.poll(socket)?;
         let stream = self.stream(socket)?;
-        if stream.shutdown {
+        if stream.send != Send::Open {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         let room = virtual_net::LIMIT.saturating_sub(stream.outgoing.len());
@@ -301,8 +346,65 @@ impl<H: SocketHost> Tcp<H> {
         Ok(count)
     }
     pub fn shutdown(&mut self, socket: SocketId) -> io::Result<()> {
-        self.stream(socket)?.shutdown = true;
+        let stream = self.stream(socket)?;
+        if stream.send == Send::Open {
+            stream.send = Send::Shutdown;
+        }
         self.poll(socket)
+    }
+
+    /// Retire the public stream while keeping admitted output and discard reads alive.
+    /// The owner drives readiness until close_status is 3, or its own deadline expires.
+    pub fn close_graceful(&mut self, socket: SocketId) -> io::Result<()> {
+        if matches!(self.sockets.get(&socket.0), Some(State::Listener)) {
+            return self.close_listener_graceful(socket);
+        }
+        let Some(State::Stream(stream)) = self.sockets.get_mut(&socket.0) else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        stream.close_graceful();
+        match self.poll(socket) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            result => result,
+        }
+    }
+
+    fn close_listener_graceful(&mut self, listener: SocketId) -> io::Result<()> {
+        let result = self.drain_listener(listener);
+        self.close(listener)?;
+        result
+    }
+
+    fn drain_listener(&mut self, listener: SocketId) -> io::Result<()> {
+        while let Some(socket) = self.accept_pending(listener)? {
+            let _ = self.close_graceful(socket);
+        }
+        Ok(())
+    }
+
+    fn accept_pending(&mut self, listener: SocketId) -> io::Result<Option<SocketId>> {
+        match self.accept(listener) {
+            Ok(socket) => Ok(Some(socket)),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Bits: FIN sent = 1, graceful discard reached peer EOF = 2. Failures stay negative in ABI.
+    pub fn close_status(&self, socket: SocketId) -> io::Result<u32> {
+        match self.sockets.get(&socket.0) {
+            Some(State::Stream(stream)) => stream.close_status(),
+            _ => Err(io::ErrorKind::InvalidInput.into()),
+        }
+    }
+
+    /// Enumerate transport tokens, including drains accepted during listener retirement.
+    pub fn next_socket(&self, after: u32) -> Option<SocketId> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.sockets
+            .range((Excluded(after), Unbounded))
+            .next()
+            .map(|(id, _)| SocketId(*id))
     }
 
     pub fn local_addr(&mut self, socket: SocketId) -> io::Result<SocketAddr> {

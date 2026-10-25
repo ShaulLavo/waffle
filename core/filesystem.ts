@@ -30,6 +30,7 @@ export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermis
 export interface FileStat {
   kind: "file" | "directory" | "symlink";
   ino: number;
+  nlink: number;
   size: number;
   mtime: number;
   /** Absent means unsupported, not mode zero. */
@@ -80,6 +81,8 @@ export interface FileSystem {
   sync?(handle: FileHandle): number;
   /** Throws FilesystemError for mode denial and other filesystem failures. */
   readdir(handle: FileHandle): DirectoryEntry[];
+  /** Preview1 bytes after cookie, bounded by unsigned 32-bit byteLength, including a partial dirent. */
+  readdirPage(handle: FileHandle, cookie: bigint, byteLength: number): Uint8Array;
   /** Atomically create at parent/name; exclusive rejects existing entries. Nonexclusive file
    * creation returns the current entry, even if it appeared after resolve. */
   create(

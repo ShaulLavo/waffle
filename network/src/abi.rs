@@ -20,6 +20,9 @@ pub fn encode_error(error: &io::Error) -> i32 {
         Unsupported => 10,
         ConnectionReset => 11,
         ConnectionAborted => 12,
+        HostUnreachable => 14,
+        NetworkUnreachable => 15,
+        NetworkDown => 16,
         _ => 13,
     })
 }
@@ -39,6 +42,9 @@ pub fn decode_error(code: i32) -> io::Error {
         10 => Unsupported,
         11 => ConnectionReset,
         12 => ConnectionAborted,
+        14 => HostUnreachable,
+        15 => NetworkUnreachable,
+        16 => NetworkDown,
         _ => Other,
     };
     kind.into()

@@ -13,6 +13,9 @@ struct Guest {
 }
 impl Guest {
     fn new() -> Self {
+        Self::with_error(None)
+    }
+    fn with_error(failure: Option<(u32, i32)>) -> Self {
         let bytes =
             std::fs::read(std::env::var("WAFFLE_TCP_MODULE").expect("build the WASM module first"))
                 .unwrap();
@@ -24,7 +27,12 @@ impl Guest {
             .func_wrap(
                 "waffle_tcp_host",
                 "io",
-                |mut caller: Caller<'_, NativeHost>, op: u32, id: u32, ptr: u32, len: u32| {
+                move |mut caller: Caller<'_, NativeHost>, op: u32, id: u32, ptr: u32, len: u32| {
+                    if let Some((operation, error)) = failure
+                        && op == operation
+                    {
+                        return error;
+                    }
                     let memory = caller
                         .get_export("memory")
                         .and_then(Extern::into_memory)
@@ -270,4 +278,350 @@ fn compiled_module_ipv4_fallback_without_ipv6() {
         child.pre_exec(support::deny_ipv6_socket);
     }
     assert!(child.status().unwrap().success());
+}
+
+#[cfg(unix)]
+#[test]
+fn graceful_close_drains_admitted_output_and_unread_input_before_eof() {
+    let mut guest = Guest::new();
+    let listener = guest.call("tcp_listen_default", 0) as u32;
+    let address = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        guest.address(listener, false).port(),
+    );
+    let mut peer = TcpStream::connect(address).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    peer.write_all(&[9; 128]).unwrap();
+    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_ne!(
+        guest
+            .store
+            .data()
+            .wait_ready(listener, 1, Duration::from_secs(3))
+            .unwrap(),
+        0
+    );
+    let server = guest.call("tcp_accept", listener) as u32;
+    let response = b"response admitted only once";
+    guest.buffer()[..response.len()].copy_from_slice(response);
+    assert_eq!(
+        guest.io("tcp_write", server, response.len() as u32),
+        response.len() as i32
+    );
+    assert_eq!(guest.call("tcp_close_graceful", server), 0);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while guest.call("tcp_close_status", server) != 3 {
+        assert!(Instant::now() < deadline);
+        let interests = guest.call("tcp_interests", server) as u32;
+        assert_ne!(
+            guest
+                .store
+                .data()
+                .wait_ready(
+                    server,
+                    interests,
+                    deadline.saturating_duration_since(Instant::now())
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(guest.call("tcp_poll", server), 0);
+    }
+    assert_eq!(guest.call("tcp_close", server), 0);
+    let mut received = Vec::new();
+    peer.read_to_end(&mut received).unwrap();
+    assert_eq!(received, response);
+}
+
+#[cfg(unix)]
+fn accept_ready(guest: &mut Guest, listener: u32) -> u32 {
+    assert_ne!(
+        guest
+            .store
+            .data()
+            .wait_ready(listener, 1, Duration::from_secs(3))
+            .unwrap(),
+        0
+    );
+    let accepted = guest.call("tcp_accept", listener);
+    assert!(accepted > 0);
+    accepted as u32
+}
+
+#[cfg(unix)]
+#[test]
+fn wait_many_does_not_hide_ready_connection_behind_idle_connection() {
+    use waffle_tcp::native::Readiness;
+    let mut guest = Guest::new();
+    let listener = guest.call("tcp_listen_default", 0) as u32;
+    let address = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        guest.address(listener, false).port(),
+    );
+    let _idle_peer = TcpStream::connect(address).unwrap();
+    let idle = accept_ready(&mut guest, listener);
+    let mut ready_peer = TcpStream::connect(address).unwrap();
+    let active = accept_ready(&mut guest, listener);
+    ready_peer.write_all(b"B").unwrap();
+    let (mut control, _wake) = Readiness::new().unwrap();
+    let ready = guest
+        .store
+        .data()
+        .wait_many(
+            &[(idle, 1), (active, 1)],
+            &mut control,
+            Some(Duration::from_secs(3)),
+        )
+        .unwrap();
+    assert!(!ready.control);
+    assert_eq!(ready.sockets, vec![(active, 1)]);
+    assert_eq!(guest.call("tcp_poll", active), 0);
+    assert_eq!(guest.io("tcp_read", active, 1), 1);
+    assert_eq!(guest.buffer()[0], b'B');
+    assert_eq!(guest.call("tcp_close", listener), 0);
+    guest.buffer()[..ADDRESS_SIZE].copy_from_slice(&encode_address(SocketAddr::new(
+        std::net::Ipv6Addr::UNSPECIFIED.into(),
+        address.port(),
+    )));
+    let rebound = guest.zero("tcp_listen");
+    assert!(
+        rebound > 0,
+        "accepted streams must not retain the listener port: {rebound}"
+    );
+    assert_eq!(guest.call("tcp_close", rebound as u32), 0);
+    ready_peer.write_all(b"C").unwrap();
+    assert_ne!(
+        guest
+            .store
+            .data()
+            .wait_ready(active, 1, Duration::from_secs(3))
+            .unwrap(),
+        0
+    );
+    assert_eq!(guest.io("tcp_read", active, 1), 1);
+    assert_eq!(guest.buffer()[0], b'C');
+}
+
+#[cfg(unix)]
+#[test]
+fn listener_graceful_close_accepts_pending_peer_and_requires_eof_not_reset() {
+    let mut guest = Guest::new();
+    let listener = guest.call("tcp_listen_default", 0) as u32;
+    let address = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        guest.address(listener, false).port(),
+    );
+    let mut peer = TcpStream::connect(address).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    peer.write_all(b"pending request").unwrap();
+    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    assert_eq!(guest.call("tcp_close_graceful", listener), 0);
+    assert_eq!(guest.call("tcp_accept", listener), -2);
+    let draining = guest.call("tcp_next", 0) as u32;
+    assert!(draining > listener);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while guest.call("tcp_close_status", draining) != 3 {
+        assert!(Instant::now() < deadline);
+        assert_ne!(
+            guest
+                .store
+                .data()
+                .wait_ready(
+                    draining,
+                    1,
+                    deadline.saturating_duration_since(Instant::now())
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(guest.call("tcp_poll", draining), 0);
+    }
+    assert_eq!(guest.call("tcp_close", draining), 0);
+    assert_eq!(guest.call("tcp_next", 0), 0);
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+}
+
+#[cfg(unix)]
+struct JoinedDriver {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: waffle_tcp::native::ControlWake,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl JoinedDriver {
+    fn start(mut guest: Guest, target: u32) -> (Self, std::sync::mpsc::Receiver<u32>) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        use waffle_tcp::native::Readiness;
+        let (mut control, wake) = Readiness::new().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let (send, receive) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let mut last_status = 0;
+            while !stopping.load(Ordering::SeqCst) {
+                publish_close_status(&mut guest, target, &mut last_status, &send);
+                let interests = module_interests(&mut guest);
+                send.send(4).unwrap();
+                let ready = guest
+                    .store
+                    .data()
+                    .wait_many(&interests, &mut control, Some(Duration::from_secs(3)))
+                    .unwrap();
+                assert!(
+                    ready.control || !ready.sockets.is_empty(),
+                    "module actor readiness deadline expired"
+                );
+                poll_ready(&mut guest, ready.sockets);
+            }
+            assert_eq!(guest.zero("tcp_dispose"), 0);
+            assert_eq!(guest.call("tcp_next", 0), 0);
+        });
+        (
+            Self {
+                stop,
+                wake,
+                thread: Some(thread),
+            },
+            receive,
+        )
+    }
+
+    fn join(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.wake.wake().unwrap();
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+
+#[cfg(unix)]
+impl Drop for JoinedDriver {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.wake.wake();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn publish_close_status(
+    guest: &mut Guest,
+    target: u32,
+    last: &mut u32,
+    send: &std::sync::mpsc::Sender<u32>,
+) {
+    if *last == 3 {
+        return;
+    }
+    let status = guest.call("tcp_close_status", target);
+    assert!(status >= 0);
+    if status as u32 == *last {
+        return;
+    }
+    *last = status as u32;
+    send.send(*last).unwrap();
+    if *last == 3 {
+        assert_eq!(guest.call("tcp_close", target), 0);
+    }
+}
+
+#[cfg(unix)]
+fn module_interests(guest: &mut Guest) -> Vec<(u32, u32)> {
+    let mut interests = Vec::new();
+    let mut id = guest.call("tcp_next", 0);
+    while id > 0 {
+        let bits = guest.call("tcp_interests", id as u32);
+        assert!((0..4).contains(&bits));
+        interests.push((id as u32, bits as u32));
+        id = guest.call("tcp_next", id as u32);
+    }
+    assert_eq!(id, 0);
+    interests
+}
+
+#[cfg(unix)]
+fn receive_status(events: &std::sync::mpsc::Receiver<u32>, expected: u32) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let event = events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        if event == expected {
+            return;
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn actor_drains_without_repeat_write_reports_flushed_then_joins_on_control_wake() {
+    let mut guest = Guest::new();
+    let listener = guest.call("tcp_listen_default", 0) as u32;
+    let address = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        guest.address(listener, false).port(),
+    );
+    let mut idle_peer = TcpStream::connect(address).unwrap();
+    idle_peer
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    accept_ready(&mut guest, listener);
+    let mut peer = TcpStream::connect(address).unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let active = accept_ready(&mut guest, listener);
+    assert_eq!(guest.call("tcp_close", listener), 0);
+    peer.write_all(&[7; 256]).unwrap();
+    let response = b"one admitted response, many readiness turns";
+    guest.buffer()[..response.len()].copy_from_slice(response);
+    assert_eq!(
+        guest.io("tcp_write", active, response.len() as u32),
+        response.len() as i32
+    );
+    assert_eq!(guest.call("tcp_close_graceful", active), 0);
+    assert_eq!(guest.call("tcp_close_status", active), 0);
+    let (mut driver, events) = JoinedDriver::start(guest, active);
+    receive_status(&events, 1);
+    let mut bytes = Vec::new();
+    peer.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, response);
+    peer.shutdown(std::net::Shutdown::Write).unwrap();
+    receive_status(&events, 3);
+    receive_status(&events, 4);
+    let before_cancel = Instant::now();
+    driver.join();
+    assert!(
+        before_cancel.elapsed() < Duration::from_secs(2),
+        "control wake must interrupt the three-second OS wait"
+    );
+    assert_eq!(idle_peer.read(&mut [0]).unwrap(), 0);
+    let mut fresh = Guest::new();
+    fresh.buffer()[..ADDRESS_SIZE].copy_from_slice(&encode_address(SocketAddr::new(
+        std::net::Ipv6Addr::UNSPECIFIED.into(),
+        address.port(),
+    )));
+    assert!(fresh.zero("tcp_listen") > 0);
+}
+
+#[test]
+fn compiled_module_preserves_transport_reachability_classes() {
+    for code in [-14, -15, -16] {
+        let mut guest = Guest::with_error(Some((CONNECT, code)));
+        guest.buffer()[..ADDRESS_SIZE]
+            .copy_from_slice(&encode_address("127.0.0.1:1".parse().unwrap()));
+        assert_eq!(guest.zero("tcp_connect"), code);
+        assert_eq!(guest.call("tcp_next", 0), 0);
+    }
+}
+
+#[cfg(unix)]
+fn poll_ready(guest: &mut Guest, ready: Vec<(u32, u32)>) {
+    for (id, _) in ready {
+        assert_eq!(guest.call("tcp_poll", id), 0);
+    }
 }

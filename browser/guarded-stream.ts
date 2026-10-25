@@ -2,6 +2,7 @@ import {
   objectCreate,
   objectGetPrototypeOf,
   reflectGet,
+  reflectSet,
   reflectApply,
   ProxyConstructor,
   MapConstructor,
@@ -24,6 +25,11 @@ export function guardedStream(
   const target: Stream = objectCreate(objectGetPrototypeOf(stream));
   const handler: ProxyHandler<Stream> & { __proto__: null } = {
     __proto__: null,
+    set(target, key, value, receiver) {
+      if (key !== "fdflags") return reflectSet(target, key, value, receiver);
+      checkActive();
+      return reflectSet(stream, key, value, stream);
+    },
     get(_target, key) {
       const value = reflectGet(stream, key, stream);
       if (typeof value !== "function") return value;

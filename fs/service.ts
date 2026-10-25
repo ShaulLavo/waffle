@@ -1,3 +1,5 @@
+import { WatchService } from "./watch-service.js";
+import { checkDirectoryPage } from "./directory-pages.js";
 import type { ResolvedPath } from "../core/filesystem.js";
 import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
@@ -104,6 +106,7 @@ export class FilesystemService {
   private shutdownOwner: ShutdownOwner | undefined;
   private refusedConnections = new Set<FilesystemConnection>();
   residentPublication: ResidentGrantAuthority | undefined;
+  private watchService?: WatchService;
   constructor(private backend: FilesystemBackend) {}
   connect(connection: FilesystemConnection): void {
     if (this.ownerStopping) {
@@ -467,6 +470,12 @@ export class FilesystemService {
   }
   private checkRequest(session: Session, operation: string, args: any[], held?: number[]): void {
     const [a, b] = args;
+    if (operation === "watchOpen") {
+      if (typeof a !== "number" || !Number.isSafeInteger(a) || typeof b !== "boolean")
+        throw new FilesystemError(28);
+      this.check(session, a, held);
+    }
+    if (operation === "readdirPage") checkDirectoryPage(b, args[2]);
     if (operation === "publicationPin") {
       const grant = session.connection.publication?.observer;
       if (!grant || a !== grant) throw new FilesystemError(2);
@@ -490,6 +499,7 @@ export class FilesystemService {
         "resize",
         "setMtime",
         "readdir",
+        "readdirPage",
         "resolve",
       ].includes(operation)
     )
@@ -511,6 +521,28 @@ export class FilesystemService {
     }
     if (prepared) prepared.handles.length = 0;
   }
+  private watchRequest(session: Session, operation: string, args: any[]): unknown {
+    const [a, b] = args;
+    if (operation === "watchOpen") {
+      if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
+      this.watchService ??= new WatchService(this.backend);
+      return this.watchService.open(
+        session.connection.owner,
+        a,
+        b,
+        () => isRevoked(session.connection) || !this.sessions.has(session),
+      );
+    }
+    if (operation === "watchRead") {
+      if (!this.watchService) throw new FilesystemError(8);
+      return this.watchService.read(session.connection.owner, a);
+    }
+    if (operation === "watchClose") {
+      this.watchService?.close(session.connection.owner, a);
+      return;
+    }
+    throw new FilesystemError(58);
+  }
   private execute(
     session: Session,
     id: number,
@@ -519,6 +551,7 @@ export class FilesystemService {
     data: Uint8Array,
   ): unknown | Promise<unknown> {
     const [a, b, c] = args;
+    if (operation.startsWith("watch")) return this.watchRequest(session, operation, args);
     if (operation === "take") {
       const response = session.responses.get(a);
       const bytes =
@@ -1123,6 +1156,7 @@ export class FilesystemService {
     }
   }
   private releaseSessionPins(session: Session): void {
+    this.watchService?.closeOwner(session.connection.owner);
     session.namespace?.close();
     this.stopSessionReader(session);
     revokeFilesystem(session.connection);

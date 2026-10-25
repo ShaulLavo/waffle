@@ -2,6 +2,12 @@
 
 Waffle is pre-1.0 and experimental. This page lists what the code does today, with the numbers and where they come from. It states facts and gives no advice. The [guides](README.md#guides) show how to work within these limits.
 
+## Current delivery
+
+- [PR #123](https://github.com/ShaulLavo/waffle/pull/123) merged the loader retry fix as `cc885cd`. Its main gate is pending.
+- [PR #126](https://github.com/ShaulLavo/waffle/pull/126) adds stream NONBLOCK support. It is a draft pending verification.
+- No consumer dependency repin is included.
+
 ## Stability
 
 - **Version:** `0.0.90` in `package.json`, with `private: true`. Only patch versions change.
