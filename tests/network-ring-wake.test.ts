@@ -9,6 +9,11 @@ const RECORD_HEADER = 12;
 const modes = ["waitAsync", "fallback"] as const;
 type Mode = (typeof modes)[number];
 
+function invokeCapturedTimer(callback: unknown): void {
+  if (typeof callback !== "function") throw new Error("Expected a timer callback");
+  callback();
+}
+
 function fixture(mode: Mode) {
   const sab = createRing();
   const writer = new RingWriter(sab);
@@ -34,10 +39,7 @@ function fixture(mode: Mode) {
   const releaseTimers = () => {
     const scheduled = timer.mock.calls.slice(releasedTimers);
     releasedTimers = timer.mock.calls.length;
-    for (const [callback] of scheduled) {
-      if (typeof callback !== "function") throw new Error("Expected a timer callback");
-      callback();
-    }
+    for (const [callback] of scheduled) invokeCapturedTimer(callback);
   };
   return {
     sab,
@@ -72,34 +74,36 @@ function checkpoint(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+function loadWithDrain(
+  f: ReturnType<typeof fixture>,
+  capture: (records: ReturnType<RingReader["drain"]>) => void,
+): typeof Atomics.load {
+  let injectDrain = true;
+  return new Proxy(Atomics.load, {
+    apply(target, receiver, args) {
+      const seen = Reflect.apply(target, receiver, args);
+      const [word, index] = args;
+      if (!(word instanceof Int32Array) || word.buffer !== f.sab || index !== READ || !injectDrain)
+        return seen;
+      injectDrain = false;
+      capture(f.reader.drain());
+      return seen;
+    },
+  });
+}
+
 async function drainInterleaving(mode: Mode) {
   const f = fixture(mode);
-  const load = Atomics.load;
-  let injectDrain = true;
   let drained: ReturnType<RingReader["drain"]> = [];
   let pending = Promise.resolve();
   let completed = false;
   let hook: { mockRestore(): void } | undefined;
   try {
     const filled = await fillRing(f);
-    hook = spyOn(Atomics, "load").mockImplementation(
-      new Proxy(load, {
-        apply(target, receiver, args) {
-          const seen = Reflect.apply(target, receiver, args);
-          const [word, index] = args;
-          if (
-            !(word instanceof Int32Array) ||
-            word.buffer !== f.sab ||
-            index !== READ ||
-            !injectDrain
-          )
-            return seen;
-          injectDrain = false;
-          drained = f.reader.drain();
-          return seen;
-        },
-      }),
-    );
+    const load = loadWithDrain(f, (records) => {
+      drained = records;
+    });
+    hook = spyOn(Atomics, "load").mockImplementation(load);
     const payload = new Uint8Array([1, 2, 3]);
     pending = Promise.all([
       f.writer.write(filled, 3, payload),
