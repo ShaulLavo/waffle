@@ -139,7 +139,7 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
     identity.segments,
   );
   const page = SHARED_SEGMENT_BYTES / 256;
-  state.register(0, { kind: "file", ino: 1, size: page * 255, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: page * 255, mtime: 1 });
   const wrapper = identity.segments[0] as SharedArrayBuffer & { grow(size: number): void };
   const original = wrapper.grow;
   wrapper.grow = () => {
@@ -148,7 +148,7 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
   try {
     let failure: unknown;
     try {
-      state.register(1, { kind: "file", ino: 2, size: page * 2, mtime: 1 });
+      state.register(1, { kind: "file", ino: 2, nlink: 1, size: page * 2, mtime: 1 });
     } catch (error) {
       failure = error;
     }
@@ -162,7 +162,7 @@ test("failed growth of a prepublished wrapper rolls back reservations and preser
   } finally {
     wrapper.grow = original;
   }
-  state.register(2, { kind: "file", ino: 3, size: page * 2, mtime: 1 });
+  state.register(2, { kind: "file", ino: 3, nlink: 1, size: page * 2, mtime: 1 });
   expect(state.resources()).toMatchObject({
     poolBytes: SHARED_SEGMENT_BYTES * 2,
     usedBytes: page * 257,

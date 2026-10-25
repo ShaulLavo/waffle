@@ -30,6 +30,7 @@ export function permissionsFor(kind: FileStat["kind"], mode: number): FilePermis
 export interface FileStat {
   kind: "file" | "directory" | "symlink";
   ino: number;
+  nlink: number;
   size: number;
   mtime: number;
   /** Absent means unsupported, not mode zero. */

@@ -305,7 +305,7 @@ function directPublicationFixture() {
   shared.identities.configure({ workspace: crypto.randomUUID(), era: 1n }, 1n);
   shared.register(
     3,
-    { kind: "file", ino: file.ino, mode: 0o600, mtime: 1, size: 3 },
+    { kind: "file", ino: file.ino, nlink: 1, mode: 0o600, mtime: 1, size: 3 },
     new Uint8Array([1, 2, 3]),
     true,
     { id: file.id, version: file.version },
