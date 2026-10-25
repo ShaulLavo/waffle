@@ -238,6 +238,12 @@ function installPoll(
     nativeError: number;
   };
   type PollState = { emitted: number; timeout: number };
+  function restorePollSubscriptions(items: Subscription[], views: Views): void {
+    for (const item of items) {
+      if (item.type === 0) continue;
+      views.view().setUint32(item.ptr + 16, item.fd, true);
+    }
+  }
   function pollNative(
     items: Subscription[],
     views: Views,
@@ -253,10 +259,7 @@ function installPoll(
     try {
       return nativePoll!(input, output, count, result);
     } finally {
-      for (const item of items) {
-        if (item.type === 0) continue;
-        views.view().setUint32(item.ptr + 16, item.fd, true);
-      }
+      restorePollSubscriptions(items, views);
     }
   }
   function pollSubscription(
@@ -331,6 +334,19 @@ function installPoll(
     emitPollEvent(item, event, views, output + state.emitted++ * 32);
     return 0;
   }
+  function emitPollSubscriptions(
+    subscriptions: Subscription[],
+    views: Views,
+    output: number,
+    result: number,
+  ): PollState | number {
+    const state = { emitted: 0, timeout: Infinity };
+    for (const item of subscriptions) {
+      const nativeError = emitPollSubscription(item, views, output, result, state);
+      if (nativeError) return nativeError;
+    }
+    return state;
+  }
   wasi.poll_oneoff = guard((input, output, count, result) => {
     if (!count) return 28;
     if (isSignalPending()) return 27;
@@ -369,16 +385,13 @@ function installPoll(
       const expected = Atomics.load(client.wake, 0);
       guard(() => 0)();
       if (isSignalPending()) return 27;
-      const state = { emitted: 0, timeout: Infinity };
-      for (const item of subscriptions) {
-        const nativeError = emitPollSubscription(item, views, output!, result!, state);
-        if (nativeError) return nativeError;
-      }
-      if (state.emitted) {
-        views.view().setUint32(result!, state.emitted, true);
+      const pollResult = emitPollSubscriptions(subscriptions, views, output!, result!);
+      if (typeof pollResult === "number") return pollResult;
+      if (pollResult.emitted) {
+        views.view().setUint32(result!, pollResult.emitted, true);
         return 0;
       }
-      Atomics.wait(client.wake, 0, expected, Math.max(0, Math.min(state.timeout, 10)));
+      Atomics.wait(client.wake, 0, expected, Math.max(0, Math.min(pollResult.timeout, 10)));
     }
   });
 }
