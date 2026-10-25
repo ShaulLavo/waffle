@@ -1,4 +1,5 @@
 import { WatchService } from "./watch-service.js";
+import { checkDirectoryPage } from "./directory-pages.js";
 import type { ResolvedPath } from "../core/filesystem.js";
 import { ReaderLifetime } from "./workspace-protocol.js";
 import { WorkspaceReadAuthority, WorkspaceReadBudget } from "./workspace-read.js";
@@ -474,6 +475,7 @@ export class FilesystemService {
         throw new FilesystemError(28);
       this.check(session, a, held);
     }
+    if (operation === "readdirPage") checkDirectoryPage(b, args[2]);
     if (operation === "publicationPin") {
       const grant = session.connection.publication?.observer;
       if (!grant || a !== grant) throw new FilesystemError(2);
@@ -497,6 +499,7 @@ export class FilesystemService {
         "resize",
         "setMtime",
         "readdir",
+        "readdirPage",
         "resolve",
       ].includes(operation)
     )
