@@ -485,7 +485,7 @@ test("cold namespace is not pending checkpoint debt", async () => {
     const directory = await client.asyncCall("resolve", [root, "d"]);
     const file = await client.asyncCall("resolve", [directory.node, "file-1"]);
     client.retain(file.node);
-    await client.asyncCall("read", [file.node, 1, 0]);
+    await backend.prepare("read", [file.node]);
     expect(client.tryWrite(file.node, [data(1, 66)], 0)).toBe(1);
     await backend.flush();
     expect(await client.asyncCall("readFile", ["/d/file-1"])).toEqual(data(1, 66));

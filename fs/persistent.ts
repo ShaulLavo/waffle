@@ -692,6 +692,12 @@ export class PersistentBackend extends MemoryBackend {
     }
     return true;
   }
+  private invalidateCapturedState(): void {
+    this.keys = new Map(this.committedKeys);
+    // Cold baselines still identify retained durable bytes. Only resident captures need retry.
+    for (const handle of this.revisions.keys())
+      if (this.shared.isResident(handle)) this.revisions.delete(handle);
+  }
   private reserveCheckpoint(request: CheckpointRequest): Promise<void> {
     const cost = { ...this.captureCost(request) };
     this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
@@ -722,8 +728,7 @@ export class PersistentBackend extends MemoryBackend {
     } catch (error) {
       this.pressure.release(reservation);
       this.shared.dirtyAdmission.releaseCopy(cost);
-      this.keys = new Map(this.committedKeys);
-      this.revisions.clear();
+      this.invalidateCapturedState();
       throw error;
     }
   }
@@ -895,8 +900,7 @@ export class PersistentBackend extends MemoryBackend {
       // A later request may have linked an open inode back into the namespace while
       // this commit waited. Retry the current tree, not the failed checkpoint's removals.
       for (const ino of removes) if (!this.nodes.has(ino)) this.removed.add(ino);
-      this.keys = new Map(this.committedKeys);
-      this.revisions.clear();
+      this.invalidateCapturedState();
     });
     return commit.then(() => {
       this.assertOpen();

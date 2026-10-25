@@ -52,7 +52,7 @@ test("persistent service dirty refusal rolls back complete retained writeFile re
     value = publicReadFixture(backend);
     const root = await value.client.asyncCall("preopen", ["/"]);
     const handle = (await value.client.asyncCall("resolve", [root, "file"])).node;
-    await value.client.asyncCall("read", [handle, 1, 0]);
+    await backend.prepare("read", [handle]);
     const old = await value.workspace.pin("/file");
     if (old.kind !== "ok") throw new Error(old.kind);
     const before = backend.shared.snapshot(handle);
