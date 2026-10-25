@@ -295,3 +295,16 @@ pub extern "C" fn tcp_poll(id: u32) -> i32 {
 pub extern "C" fn tcp_interests(id: u32) -> i32 {
     run(|module| module.tcp.interests(SocketId(id)))
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn tcp_close_graceful(id: u32) -> i32 {
+    run(|module| module.tcp.close_graceful(SocketId(id)).map(|()| 0))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn tcp_close_status(id: u32) -> i32 {
+    run(|module| module.tcp.close_status(SocketId(id)))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn tcp_next(after: u32) -> i32 {
+    run(|module| Ok(module.tcp.next_socket(after).map_or(0, |id| id.0)))
+}

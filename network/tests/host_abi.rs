@@ -29,3 +29,37 @@ fn host_span_bounds_do_not_modify_memory_or_issue_socket_operations() {
     host.close(socket);
     assert_eq!(host.dispatch(READ, socket, 0, 0, &mut memory), -2);
 }
+
+#[test]
+fn transport_reachability_errors_keep_distinct_wire_classes() {
+    use std::io::ErrorKind;
+    for (kind, code) in [
+        (ErrorKind::HostUnreachable, -14),
+        (ErrorKind::NetworkUnreachable, -15),
+        (ErrorKind::NetworkDown, -16),
+    ] {
+        assert_eq!(encode_error(&kind.into()), code);
+        assert_eq!(decode_error(code).kind(), kind);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn control_wake_is_sticky_coalesced_and_consumed_without_socket_readiness() {
+    use std::time::Duration;
+    use waffle_tcp::native::Readiness;
+    let host = NativeHost::default();
+    let (mut control, wake) = Readiness::new().unwrap();
+    wake.wake().unwrap();
+    wake.clone().wake().unwrap();
+    let ready = host
+        .wait_many(&[], &mut control, Some(Duration::ZERO))
+        .unwrap();
+    assert!(ready.control);
+    assert!(ready.sockets.is_empty());
+    let ready = host
+        .wait_many(&[], &mut control, Some(Duration::ZERO))
+        .unwrap();
+    assert!(!ready.control);
+    assert!(ready.sockets.is_empty());
+}
