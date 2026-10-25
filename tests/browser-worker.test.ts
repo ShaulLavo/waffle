@@ -2436,3 +2436,58 @@ test("instantiate binds ProcessABI before initialization and rejects replacement
     connection.server.port.close();
   }
 });
+
+test("guest constructor calls the real ProcessABI with bound memory before instance publication", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  const guest = guestModule({
+    namespace: "runtime_proc",
+    name: "poll",
+    params: [127, 127, 127, 127],
+    body: [65, 0, 65, 1, 65, 0, 65, 16, 16, 0, 26],
+  });
+  let constructorResult: unknown;
+  try {
+    await bootstrap(
+      {
+        module: guest,
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess: createWorkerProcessTransport(),
+      },
+      {
+        ...armingExecutor(() => {}),
+        instantiate(imports, context) {
+          const original = imports.runtime_proc!.poll;
+          if (typeof original !== "function") throw Error("missing real ProcessABI");
+          imports.runtime_proc!.poll = (...args: number[]) => {
+            constructorResult = original(...args);
+            return constructorResult;
+          };
+          const instance = new WebAssembly.Instance(guest, imports);
+          const memory = instance.exports.memory;
+          if (!(memory instanceof WebAssembly.Memory)) throw Error("missing memory");
+          context.bindMemory(memory);
+          new DataView(memory.buffer).setUint32(0, 7, true);
+          // This guest function stands in for a constructor running before publication.
+          const ctor = instance.exports._start;
+          if (typeof ctor !== "function") throw Error("missing constructor fixture");
+          ctor();
+          expect(constructorResult).toBe(-28);
+          return instance;
+        },
+        run({ process }) {
+          expect(process).toBeDefined();
+          return 0;
+        },
+      },
+      armingHost(messages),
+    );
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([{ code: 0 }]);
+    expect(messages.some((message) => message.type === "error")).toBe(false);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});

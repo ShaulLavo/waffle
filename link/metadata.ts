@@ -74,6 +74,8 @@ function importGlobal(reader: Reader, side: boolean, namespace: string, name: st
   if (reader.byte() !== 0x7f) invalid(reader.member, "only i32 global imports are supported");
   const mutable = reader.byte();
   if (mutable > 1) invalid(reader.member, "invalid global mutability");
+  if (namespace === "env" && name === "__stack_pointer" && mutable !== 1)
+    invalid(reader.member, "side stack pointer must be mutable i32");
   if (namespace === "GOT.mem" && mutable !== 1)
     invalid(reader.member, "GOT.mem requires mutable i32 address globals");
   if (side && namespace !== "env" && namespace !== "GOT.mem")
@@ -231,6 +233,24 @@ export function requireSignature(
     invalid(member, `export ${name} has an unsupported Wasm signature`);
 }
 
+function definedGlobals(globals: Reader | undefined, member: string): boolean[] {
+  const immutable: boolean[] = [];
+  const count = globals?.u32() ?? 0;
+  for (let index = 0; index < count; index++) {
+    const value = globals!.byte(),
+      mutable = globals!.byte();
+    if (value !== 0x7f || mutable > 1) invalid(member, "only defined i32 globals are supported");
+    immutable.push(mutable === 0);
+    if (globals!.byte() !== 0x41) invalid(member, "globals require constant i32 initializers");
+    // Signed LEB values need not be interpreted to inspect the global's type.
+    let more = true;
+    while (more) more = globals!.byte() >= 128;
+    if (globals!.byte() !== 0x0b) invalid(member, "unsupported global initializer");
+  }
+  globals?.done();
+  return immutable;
+}
+
 function coreLayout(sections: Map<number, Reader>, member: string): ReadonlySet<string> {
   const table = sections.get(4),
     memory = sections.get(5);
@@ -241,21 +261,7 @@ function coreLayout(sections: Map<number, Reader>, member: string): ReadonlySet<
   if (!memory || memory.u32() !== 1) invalid(member, "core requires one defined memory");
   limits(memory);
   memory.done();
-  const globals = sections.get(6),
-    immutable: boolean[] = [];
-  const count = globals?.u32() ?? 0;
-  for (let index = 0; index < count; index++) {
-    const value = globals!.byte(),
-      mutable = globals!.byte();
-    if (value !== 0x7f || mutable > 1) invalid(member, "core requires i32 globals");
-    immutable.push(mutable === 0);
-    if (globals!.byte() !== 0x41) invalid(member, "core globals require constant i32 initializers");
-    // Signed LEB values need not be interpreted to inspect the global's type.
-    let more = true;
-    while (more) more = globals!.byte() >= 128;
-    if (globals!.byte() !== 0x0b) invalid(member, "unsupported core global initializer");
-  }
-  globals?.done();
+  const immutable = definedGlobals(sections.get(6), member);
   const exports = sections.get(7),
     names = new Set<string>();
   const size = exports?.u32() ?? 0;
@@ -309,10 +315,12 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
       immutableI32Exports: coreLayout(sections, member),
     };
   if (!imported) invalid(member, "side requires imports");
-  for (const id of [4, 5, 6]) {
+  if (!globalImports.includes("__stack_pointer"))
+    invalid(member, "side must import the core stack pointer");
+  definedGlobals(sections.get(6), member);
+  for (const id of [4, 5]) {
     const section = sections.get(id);
-    if (section && section.u32() !== 0)
-      invalid(member, "side cannot define tables, memory or globals");
+    if (section && section.u32() !== 0) invalid(member, "side cannot define tables or memory");
   }
   if (!memory) invalid(member, "missing memory-info");
   const data = sections.get(11),

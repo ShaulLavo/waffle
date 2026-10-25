@@ -4,7 +4,7 @@ import {
   prepareLinkPlan,
   type LinkPlanSource,
   type LinkedGroup,
-} from "./index.js";
+} from "./plan.js";
 
 export interface LinkedWorkerRequest extends RuntimeWorkerRequest {
   readonly linkPlan: LinkPlanSource;

@@ -310,3 +310,38 @@ test("normal worker structured-clones exact source, re-admits it, links and exec
     await worker.terminate();
   }
 });
+
+test("transport snapshots cannot mutate admitted configuration or bytes", async () => {
+  const plan = await prepareLinkPlan(source());
+  const transfer = plan.toSource();
+  transfer.core.source.fill(0);
+  const group = instantiateLinkPlan(plan, host());
+  try {
+    group.initialize();
+    expect(call(group.entry, "invoke", 1)).toBe(8);
+  } finally {
+    group.dispose();
+  }
+  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
+  expect(restored.entryModule).toBe(plan.entryModule);
+});
+
+for (const symbol of ["stdout", "_CLOCK_MONOTONIC", "errno"]) {
+  test(`observed data GOT ${symbol} resolves to core's actual data address`, async () => {
+    const input = source();
+    const plan = await prepareLinkPlan({
+      ...input,
+      libraries: [{ ...input.libraries[0]!, source: side(symbol) }],
+    });
+    const group = instantiateLinkPlan(plan, host());
+    try {
+      const coreSymbol = group.entry.exports[symbol];
+      const imported = group.libraries[0]!.instance.exports.got;
+      expect(coreSymbol).toBeInstanceOf(WebAssembly.Global);
+      expect(imported).toBeInstanceOf(WebAssembly.Global);
+      expect((imported as WebAssembly.Global).value).toBe((coreSymbol as WebAssembly.Global).value);
+    } finally {
+      group.dispose();
+    }
+  });
+}

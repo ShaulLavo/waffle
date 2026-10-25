@@ -76,7 +76,7 @@ requires explicit ordered memory initialization and relocation. For passive
 members, rename the generic `__wasm_apply_data_relocs` export and list it after
 memory initialization. Waffle will not guess that order. For active-only
 members, an exported generic data-relocation function runs before constructors.
-Declared zero-argument initializers run once, libraries then core.
+Declared zero-argument initializers run once, core then libraries.
 
 The observed `GOT.mem` names `stdout`, `_CLOCK_MONOTONIC`, and `errno` resolve
 only to immutable core i32 address exports inside the same memory. Libraries

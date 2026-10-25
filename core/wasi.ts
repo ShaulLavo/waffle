@@ -301,7 +301,9 @@ export class Wasi {
       throw new TypeError("guest has no exported or supplied memory");
     const start = instance.exports._start;
     if (typeof start !== "function") throw new TypeError("guest has no _start entry point");
-    this.bindMemory(memory);
+    if (this.boundMemory && this.boundMemory !== memory)
+      throw new TypeError("cannot replace bound WASI memory");
+    this.memory = memoryViews(memory);
     // Hosts commit entry after all fallible setup, with no user hook before the call.
     beforeStart?.();
     try {
@@ -363,8 +365,8 @@ export class Wasi {
           throw new TypeError(`import ${imp.module}.${imp.name} must be WebAssembly.Memory`);
         if (this.importedMemory && this.importedMemory !== value)
           throw new TypeError("multiple imported memories are unsupported");
-        this.importedMemory = value;
         this.bindMemory(value);
+        this.importedMemory = value;
       }
       ns[imp.name] = value;
     }

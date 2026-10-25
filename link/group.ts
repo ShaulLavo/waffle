@@ -1,4 +1,4 @@
-import type { CompiledMember, LinkHost, PlanData } from "./index.js";
+import type { CompiledMember, LinkHost, PlanData } from "./plan.js";
 import { invalid } from "./metadata.js";
 
 export interface LinkedLibrary {
@@ -227,9 +227,9 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
       if (lifecycle.state !== "linked") throw new Error(`link group is ${lifecycle.state}`);
       lifecycle.state = "initializing";
       try {
+        initializeMember(plan.core, core, host);
         for (let index = 0; index < libraries.length; index++)
           initializeMember(plan.libraries[index]!, libraries[index]!.instance, host);
-        initializeMember(plan.core, core, host);
         host.checkActive();
         if (lifecycle.state !== "initializing") throw new Error(`link group is ${lifecycle.state}`);
         lifecycle.state = "ready";
