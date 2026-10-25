@@ -1,5 +1,5 @@
 import { ExecutableFormatError } from "../proc/start-failure.js";
-import { rewriteInterruptsOwned } from "./rewriter.js";
+import { rewriteInterruptsOwned } from "./rewriter-internal.js";
 
 /** Content-addressed, process-independent modules. Instances always get fresh countdown globals.
  * The shared content cache is bounded. Active executable registries separately retain their
