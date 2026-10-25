@@ -31,17 +31,25 @@ export class WatchService {
   private incomplete = false;
   constructor(private readonly backend: MemoryBackend) {}
   open(owner: number, handle: number, recursive: boolean, cancelled: () => boolean): number {
-    return this.backend.shared.mutate(undefined, cancelled, () => {
-      try {
-        if (cancelled()) throw new FilesystemError(11);
-        const id = this.openLocked(owner, handle, recursive);
-        if (!cancelled()) return id;
-        this.close(owner, id);
-        throw new FilesystemError(11);
-      } finally {
-        if (!this.subscriptions.size) this.nodes.clear();
-      }
-    });
+    return this.backend.shared.mutate(undefined, cancelled, () =>
+      this.registerWatch(owner, handle, recursive, cancelled),
+    );
+  }
+  private registerWatch(
+    owner: number,
+    handle: number,
+    recursive: boolean,
+    cancelled: () => boolean,
+  ): number {
+    try {
+      if (cancelled()) throw new FilesystemError(11);
+      const id = this.openLocked(owner, handle, recursive);
+      if (!cancelled()) return id;
+      this.close(owner, id);
+      throw new FilesystemError(11);
+    } finally {
+      if (!this.subscriptions.size) this.nodes.clear();
+    }
   }
   private openLocked(owner: number, handle: number, recursive: boolean): number {
     if (this.subscriptions.size >= MAX_WATCHES)
