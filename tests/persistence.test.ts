@@ -709,8 +709,8 @@ async function coldPermissionFixture(mode: number) {
 }
 
 for (const pollFirst of [false, true]) {
-  test(`cold read-only process read hydrates with read rights, pollFirst=${pollFirst}`, async () => {
-    const { client, store, handle } = await coldPermissionFixture(0o400);
+  test(`cold read-only process read stays bounded with read rights, pollFirst=${pollFirst}`, async () => {
+    const { client, store, backend, handle } = await coldPermissionFixture(0o400);
     const descriptors = new DescriptorTable();
     const supervisor = new ProcessSupervisor({
       registry: new ExecutableRegistry(),
@@ -739,7 +739,9 @@ for (const pollFirst of [false, true]) {
     while (!client.ioReadiness(handle, false).readable) await Bun.sleep(1);
     expect(abi.imports.read!(fd, 1024, 4)).toBe(4);
     expect(decode(bytes)).toBe("ABCD");
-    expect(store.reads).toBe(1);
+    expect(store.reads).toBe(0);
+    expect(store.ranges).toEqual([{ offset: 0, length: 4 }]);
+    expect(backend.shared.isResident(handle)).toBe(false);
     expect(client.tryWrite(handle, [encode("deny")], 0)).toBe(-2);
     expect(client.resize(handle, 0, true)).toBe(2);
     expect(client.completions.size).toBe(0);

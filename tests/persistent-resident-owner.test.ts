@@ -26,9 +26,22 @@ async function fixture(kind: "read" | "flush") {
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let armed = false;
+  const payloadHooks = fixturePayloadHooks(new Map([["payload", new Uint8Array([1, 2, 3, 4])]]));
+  const reads: { full: number; ranges: { offset: number; length: number }[] } = {
+    full: 0,
+    ranges: [],
+  };
   const backend = await PersistentBackend.open(
     {
-      ...fixturePayloadHooks(new Map([["payload", new Uint8Array([1, 2, 3, 4])]])),
+      ...payloadHooks,
+      async readRange(key, range) {
+        reads.ranges.push({ offset: range.offset, length: range.length });
+        if (kind === "read") {
+          started.resolve();
+          await release.promise;
+        }
+        return payloadHooks.readRange(key, range);
+      },
       async reserveIdentity() {
         return nextReservation(undefined);
       },
@@ -44,6 +57,7 @@ async function fixture(kind: "read" | "flush") {
         };
       },
       async read() {
+        reads.full++;
         if (kind === "read") {
           started.resolve();
           await release.promise;
@@ -74,6 +88,7 @@ async function fixture(kind: "read" | "flush") {
     service,
     client,
     handle: file.node,
+    reads,
     started: started.promise,
     release: () => release.resolve(),
     close() {
@@ -103,6 +118,8 @@ test("owner drain retains a cold preparation after revocation sweeps its actual 
   try {
     const read = owned.client.asyncCall("read", [owned.handle, 4, 0]).catch(() => "cancelled");
     await owned.started;
+    expect(owned.reads).toEqual({ full: 0, ranges: [{ offset: 0, length: 4 }] });
+    expect(owned.backend.shared.isResident(owned.handle)).toBe(false);
     revokeFilesystem(owned.client.connection);
     owned.service.sweep();
     const draining = owned.service.drainForOwner();
@@ -110,7 +127,9 @@ test("owner drain retains a cold preparation after revocation sweeps its actual 
     await assertPending(draining);
     owned.release();
     await draining;
-    await read;
+    expect(await read).toBe("cancelled");
+    expect(owned.reads).toEqual({ full: 0, ranges: [{ offset: 0, length: 4 }] });
+    expect(owned.backend.shared.isResident(owned.handle)).toBe(false);
     expect(owned.service.resources().clients).toBe(0);
     expect(owned.backend.shared.publication!.stopped).toBe(false);
     await owned.backend.flush();
