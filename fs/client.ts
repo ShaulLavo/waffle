@@ -541,7 +541,6 @@ export class FilesystemClient implements FileSystem {
     return watcher;
   }
   dispose(): void {
-    this.shared.watch.wake();
     this.resident?.invalidate();
     this.beginWorkspaceStop();
     // The disposing agent is quiescent: no synchronous file operation can be active here.

@@ -34,11 +34,18 @@ export class FilesystemWatch {
   }
   async read(): Promise<WatchBatch> {
     if (this.closed) return { kind: "closed", events: [] };
-    if (isRevoked(this.client.connection)) throw new FilesystemError(11);
+    if (isRevoked(this.client.connection)) {
+      await this.close();
+      throw new FilesystemError(11);
+    }
     try {
       const batch: WatchBatch = await this.client.asyncCall("watchRead", [this.id]);
       return this.closed ? { kind: "closed", events: [] } : batch;
     } catch (error) {
+      if (isRevoked(this.client.connection) && !this.closed) {
+        await this.close();
+        throw error;
+      }
       if (this.closed) return { kind: "closed", events: [] };
       throw error;
     }

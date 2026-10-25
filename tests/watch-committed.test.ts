@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { PersistentBackend } from "../fs/persistent.js";
+import { nextReservation } from "../fs/file-identity.js";
+import { coldPublicationRoot, fixturePayloadHooks } from "./fixtures/publication-storage.js";
 import { MemFS } from "../fs/memory.js";
 import { WATCH_BYTES } from "../fs/watch-ring.js";
 import { SharedFilesystemState } from "../fs/shared.js";
@@ -434,3 +437,71 @@ for (const killed of [false, true])
       await f.close();
     }
   }, 10000);
+
+test("watch registration and idle delivery never hydrate cold persistent contents", async () => {
+  const payloads = new Map([["fixture-payload", new Uint8Array([65, 66, 67])]]);
+  let reads = 0;
+  const backend = await PersistentBackend.open(
+    {
+      ...fixturePayloadHooks(payloads),
+      async reserveIdentity() {
+        return nextReservation(undefined);
+      },
+      async load() {
+        return coldPublicationRoot();
+      },
+      async read() {
+        reads++;
+        throw new Error("watch hydrated file contents");
+      },
+      async readRange() {
+        reads++;
+        throw new Error("watch read a cold payload range");
+      },
+      async persist() {},
+      async flush() {},
+      async close() {},
+    },
+    { intervalMs: 0 },
+  );
+  const f = await fixture(backend);
+  try {
+    const watch = await f.page.watch(f.root, { recursive: true });
+    const path = await f.page.asyncCall("resolve", [f.root, "file"]);
+    const target = await f.page.watch(path.node);
+    const pending = watch.next();
+    await Bun.sleep(30);
+    expect(reads).toBe(0);
+    expect(f.page.shared.publication).toBeUndefined();
+    await watch.close();
+    expect((await pending).kind).toBe("closed");
+    await target.close();
+    expect(reads).toBe(0);
+  } finally {
+    await f.close();
+  }
+}, 10000);
+
+test("observed service revocation detaches the watch AbortSignal listener", async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  const remove = controller.signal.removeEventListener.bind(controller.signal);
+  let removed = 0;
+  controller.signal.removeEventListener = (
+    ...args: Parameters<AbortSignal["removeEventListener"]>
+  ) => {
+    removed++;
+    remove(...args);
+  };
+  try {
+    const watch = await f.guest.watch(f.guestRoot, { signal: controller.signal });
+    const pending = watch.next();
+    revokeFilesystem(f.guest.connection);
+    f.service.sweep();
+    await expect(pending).rejects.toMatchObject({ errno: 11 });
+    expect(removed).toBe(1);
+    expect((await watch.read()).kind).toBe("closed");
+  } finally {
+    await f.close();
+  }
+}, 10000);
