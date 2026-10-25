@@ -90,11 +90,15 @@ test("flush preserves data, metadata, hard links and renames; reload loads no pa
   const a = await first.client.asyncCall("resolve", [root, "dir/a"]);
   const b = await first.client.asyncCall("resolve", [root, "dir/b"]);
   expect(await first.client.asyncCall("link", [a, b])).toBe(0);
+  expect((await first.client.asyncCall("stat", [a.node])).nlink).toBe(2);
   expect(await first.client.asyncCall("setMtime", [a.node, 123456])).toBe(0);
   await first.client.asyncCall("move", ["/dir/a", "/dir/renamed"]);
   await first.client.asyncCall("flush");
   const second = await fixture(store);
   expect(store.reads).toBe(0);
+  const restoredRoot = await second.client.asyncCall("preopen", ["/"]);
+  const restored = await second.client.asyncCall("resolve", [restoredRoot, "dir/b"]);
+  expect((await second.client.asyncCall("stat", [restored.node])).nlink).toBe(2);
   const listing = await second.client.asyncCall("lookup", ["/dir"]);
   expect(listing.children.get("b").ino).toBe(listing.children.get("renamed").ino);
   expect(listing.children.get("renamed").mtime).toBe(123456);

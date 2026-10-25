@@ -39,7 +39,12 @@ function host(preopens: Record<string, string> = { "/": "/" }) {
   }
   function stat(name: string, follow: boolean, fd = 3) {
     const error = calls.path_filestat_get(fd, Number(follow), 256, path(name), 4096);
-    return { error, kind: view.getUint8(4112), ino: view.getBigUint64(4104, true) };
+    return {
+      error,
+      kind: view.getUint8(4112),
+      ino: view.getBigUint64(4104, true),
+      nlink: view.getBigUint64(4120, true),
+    };
   }
   function readlink(name: string, capacity = 1024, fd = 3) {
     bytes.fill(0xcc, 5000, 6024);
@@ -51,13 +56,17 @@ function host(preopens: Record<string, string> = { "/": "/" }) {
     const error = calls.path_open(fd, Number(follow), 256, path(name), 0, allRights, 0n, 0, 4096);
     return { error, fd: view.getUint32(4096, true) };
   }
+  function fstatLinks(fd: number) {
+    expect(calls.fd_filestat_get(fd, 4096)).toBe(0);
+    return view.getBigUint64(4120, true);
+  }
   function read(fd: number) {
     view.setUint32(0, 5000, true);
     view.setUint32(4, 1024, true);
     expect(calls.fd_read(fd, 0, 1, 4096)).toBe(0);
     return new TextDecoder().decode(bytes.slice(5000, 5000 + view.getUint32(4096, true)));
   }
-  return { fs, wasi, calls, path, symlink, stat, readlink, open, read };
+  return { fs, wasi, calls, path, symlink, stat, readlink, open, read, fstatLinks };
 }
 
 test("Preview1 creates a real relative workspace link and follows intermediate components", () => {
@@ -162,17 +171,21 @@ test("Preview1 existing readlink and lexical capability controls remain explicit
 test("Preview1 preserves hardlink rename unlink and open-description identity", () => {
   const h = host({ "/sandbox": "/sandbox" });
   const original = h.stat("packages/member/index.ts", true);
+  expect(original.nlink).toBe(1n);
   const opened = h.open("packages/member/index.ts");
   expect(opened.error).toBe(0);
   expect(
     h.calls.path_link(3, 0, 256, h.path("packages/member/index.ts"), 3, 2048, h.path("hard", 2048)),
   ).toBe(0);
   expect(h.stat("hard", false).ino).toBe(original.ino);
+  expect(h.stat("hard", false).nlink).toBe(2n);
   expect(h.calls.path_rename(3, 256, h.path("hard"), 3, 2048, h.path("moved", 2048))).toBe(0);
   expect(h.calls.path_unlink_file(3, 256, h.path("packages/member/index.ts"))).toBe(0);
   expect(h.stat("moved", false).ino).toBe(original.ino);
+  expect(h.stat("moved", false).nlink).toBe(1n);
   expect(h.calls.path_unlink_file(3, 256, h.path("moved"))).toBe(0);
   expect(h.read(opened.fd)).toBe("before");
+  expect(h.fstatLinks(opened.fd)).toBe(0n);
 });
 
 test("Preview1 bounds expansion count without rejecting an ordinary acyclic chain", () => {

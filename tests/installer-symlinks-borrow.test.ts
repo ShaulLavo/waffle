@@ -347,7 +347,7 @@ test("N5 direct explicit borrow spans rename, unlink and replacement without con
   expect(f.fs.symlink(replacement, "ordinary.txt")).toBe(0);
   const tree = snapshotNode(f.fs.root);
   expect(await b.call({ kind: "read" })).toBe(rawTarget);
-  expect(f.fs.stat(handle)).toEqual(stat);
+  expect(f.fs.stat(handle)).toEqual({ ...stat, nlink: 0 });
   expect(node(edge(f.fs.resolveAbsolute("/link")))).not.toBe(handle);
   await b.call({ kind: "release" });
   await b.call({ kind: "release" });

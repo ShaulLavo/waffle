@@ -108,7 +108,7 @@ test("shared stat and direct I/O carry permissions through unlink and slot reuse
 
 test("absent mode metadata is unsupported, not a fabricated default", () => {
   const state = new SharedFilesystemState();
-  state.register(42, { kind: "file", ino: 1, size: 0, mtime: 1 });
+  state.register(42, { kind: "file", ino: 1, nlink: 1, size: 0, mtime: 1 });
   expect(state.stat(42)?.mode).toBeUndefined();
 });
 

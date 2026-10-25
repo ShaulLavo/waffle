@@ -95,6 +95,13 @@
       "browser": "./fs/backend.ts",
       "default": "./fs/backend.ts"
     },
+    "./fs/watch": {
+      "types": "./fs/watch.ts",
+      "node": "./dist/fs/watch.js",
+      "bun": "./fs/watch.ts",
+      "browser": "./fs/watch.ts",
+      "default": "./fs/watch.ts"
+    },
     "./fs/client": {
       "types": "./fs/client.ts",
       "node": "./dist/fs/client.js",
@@ -227,6 +234,11 @@
       "bun": "./proc/registry.ts",
       "browser": "./proc/registry.ts",
       "default": "./proc/registry.ts"
+    },
+    "./proc/node-wasi": {
+      "types": "./proc/node-wasi.ts",
+      "node": "./dist/proc/node-wasi.js",
+      "bun": "./proc/node-wasi.ts"
     },
     "./proc/signals": {
       "types": "./proc/signals.ts",

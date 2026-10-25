@@ -30,6 +30,23 @@ test("load snapshots borrowed bytes before asynchronous hashing", async () => {
   expect(await cache.compile(empty())).toBe(await pending);
 });
 
+test("load takes one owned input snapshot for hashing and rewriting", async () => {
+  const Bytes = Uint8Array;
+  let snapshots = 0;
+  globalThis.Uint8Array = new Proxy(Bytes, {
+    construct(target, args) {
+      if (args[0] instanceof Bytes) snapshots++;
+      return Reflect.construct(target, args, target);
+    },
+  });
+  try {
+    await new InterruptModuleCache().compile(empty());
+    expect(snapshots).toBe(1);
+  } finally {
+    globalThis.Uint8Array = Bytes;
+  }
+});
+
 test("cache evicts old modules at its bounded capacity", async () => {
   const cache = new InterruptModuleCache(1);
   const original = await cache.compile(empty());

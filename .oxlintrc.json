@@ -44,7 +44,7 @@
   ],
   "overrides": [
     {
-      "files": ["interrupt/rewriter.ts"],
+      "files": ["interrupt/rewriter-internal.ts"],
       "rules": {
         "complexity": [
           "error",
@@ -191,7 +191,7 @@
         "fs/persistent.ts",
         "fs/service.ts",
         "fs/shared.ts",
-        "interrupt/rewriter.ts",
+        "interrupt/rewriter-internal.ts",
         "proc/worker-client.ts",
         "scripts/test-wasi-libc.ts",
         "site/scripts/performance.ts",
