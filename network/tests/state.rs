@@ -15,6 +15,9 @@ struct Host {
     incoming: VecDeque<u8>,
     blocked: Rc<Cell<bool>>,
     refusal: bool,
+    eof: bool,
+    shutdown_error: Option<ErrorKind>,
+    shutdowns: Rc<Cell<u32>>,
 }
 impl SocketHost for Host {
     fn open(&mut self, v6: bool) -> io::Result<u32> {
@@ -53,7 +56,11 @@ impl SocketHost for Host {
     }
     fn read(&mut self, _: u32, out: &mut [u8]) -> io::Result<usize> {
         if self.incoming.is_empty() {
-            return Err(ErrorKind::WouldBlock.into());
+            return if self.eof {
+                Ok(0)
+            } else {
+                Err(ErrorKind::WouldBlock.into())
+            };
         }
         let count = out.len().min(self.incoming.len());
         for byte in &mut out[..count] {
@@ -70,7 +77,8 @@ impl SocketHost for Host {
         Ok(count)
     }
     fn shutdown(&mut self, _: u32) -> io::Result<()> {
-        Ok(())
+        self.shutdowns.set(self.shutdowns.get() + 1);
+        self.shutdown_error.map_or(Ok(()), |kind| Err(kind.into()))
     }
     fn local_addr(&mut self, _: u32) -> io::Result<SocketAddr> {
         Ok("127.0.0.1:4000".parse().unwrap())
@@ -193,4 +201,58 @@ fn readiness_interests_follow_connect_queue_backpressure_and_shutdown() {
         tcp.interests(id).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
+}
+
+#[test]
+fn graceful_discard_ignores_full_receive_queue_without_guest_reads() {
+    let shutdowns = Rc::new(Cell::new(0));
+    let mut tcp = Tcp::new(Host {
+        incoming: vec![9; 2 << 20].into(),
+        eof: true,
+        shutdowns: shutdowns.clone(),
+        ..Host::default()
+    });
+    let listener = tcp.listen_default(0).unwrap();
+    let stream = tcp.accept(listener).unwrap();
+    for _ in 0..16 {
+        tcp.poll(stream).unwrap();
+    }
+    assert_eq!(tcp.interests(stream).unwrap(), 0);
+    tcp.close_graceful(stream).unwrap();
+    assert_eq!(tcp.close_status(stream).unwrap(), 1);
+    assert_eq!(tcp.interests(stream).unwrap(), 1);
+    for _ in 0..16 {
+        tcp.poll(stream).unwrap();
+    }
+    assert_eq!(tcp.close_status(stream).unwrap(), 3);
+    assert_eq!(tcp.interests(stream).unwrap(), 0);
+    assert_eq!(tcp.read(stream, &mut [0; 1]).unwrap(), 0);
+    tcp.close_graceful(stream).unwrap();
+    tcp.shutdown(stream).unwrap();
+    assert_eq!(shutdowns.get(), 1);
+}
+
+#[test]
+fn graceful_shutdown_failure_stays_terminal_and_is_not_reissued() {
+    let shutdowns = Rc::new(Cell::new(0));
+    let mut tcp = Tcp::new(Host {
+        shutdown_error: Some(ErrorKind::BrokenPipe),
+        shutdowns: shutdowns.clone(),
+        ..Host::default()
+    });
+    let listener = tcp.listen_default(0).unwrap();
+    let stream = tcp.accept(listener).unwrap();
+    assert_eq!(
+        tcp.close_graceful(stream).unwrap_err().kind(),
+        ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        tcp.close_status(stream).unwrap_err().kind(),
+        ErrorKind::BrokenPipe
+    );
+    assert_eq!(tcp.interests(stream).unwrap(), 4);
+    assert_eq!(tcp.poll(stream).unwrap_err().kind(), ErrorKind::BrokenPipe);
+    assert_eq!(shutdowns.get(), 1);
+    tcp.close(stream).unwrap();
+    assert!(tcp.poll(stream).is_err());
 }
