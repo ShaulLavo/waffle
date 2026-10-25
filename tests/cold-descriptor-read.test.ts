@@ -16,7 +16,7 @@ for (const reads of [
     { offset: PAGE - 2, length: 5 },
   ],
 ]) {
-  test(`exported cold descriptor reads ${JSON.stringify(reads)} without whole hydration`, async () => {
+  test(`instantiated Wasm cold descriptor reads ${JSON.stringify(reads)} without whole hydration`, async () => {
     const fixture = await coldDescriptorFixture();
     try {
       const before = fixture.backend.shared.resources().usedBytes;
