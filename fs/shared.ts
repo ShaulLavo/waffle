@@ -1,3 +1,4 @@
+import { WatchRing, WATCH_BYTES } from "./watch-ring.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { allocateStartupRoot } from "./root-memory-budget.js";
 import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
@@ -57,7 +58,8 @@ const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
 const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
 const TABLE_OWNER_OFFSET = PAGE_TABLE_OFFSET + MAX_FILES * MAX_SEGMENTS;
 const TABLE_DATA_OFFSET = TABLE_OWNER_OFFSET + TABLE_BLOCKS;
-const DATA_OFFSET = (TABLE_DATA_OFFSET + TABLE_BLOCKS * TABLE_ENTRIES) * 4;
+const WATCH_OFFSET = (TABLE_DATA_OFFSET + TABLE_BLOCKS * TABLE_ENTRIES) * 4;
+const DATA_OFFSET = WATCH_OFFSET + WATCH_BYTES;
 const BUFFER_SIZE = DATA_OFFSET + SEGMENT_BYTES;
 const GLOBAL_LOCK = 1;
 const SERVICE_OWNER = 0x7fffffff;
@@ -144,6 +146,7 @@ export class SharedFilesystemState {
   private fileOwnsGlobal = new Set<number>();
   private currentOwner: number | undefined;
   readonly publication?: PublicationDomain;
+  readonly watch: WatchRing;
   private readonly pageReaders?: Int32Array;
   onContention?: () => void;
   constructor(
@@ -167,6 +170,7 @@ export class SharedFilesystemState {
       if (publication) this.publication = new PublicationDomain(publication, lockOwner, section);
       if (publication?.pageReaders) this.pageReaders = new Int32Array(publication.pageReaders);
       this.cells = new Int32Array(buffer, 0, HEADER_WORDS);
+      this.watch = new WatchRing(buffer, WATCH_OFFSET);
       this.identities = new IdentityAllocator(new Int32Array(buffer, 16 * 4, 9));
       const initialized = Atomics.compareExchange(this.cells, 0, 0, MAGIC);
       if (initialized === 0) {
@@ -845,6 +849,7 @@ export class SharedFilesystemState {
     if (!revision) return;
     this.identities.copyFrom(revision.allocation);
     this.installIdentity(slot, revision.identity);
+    this.watch.change(revision.identity.id, this.slots[this.at(slot, MODE)]!);
   }
   private publicationFile(slot: number, revision: PlannedIdentityRevision | undefined) {
     const id = readIdentityWords(this.slots, this.at(slot, FILE_ID));

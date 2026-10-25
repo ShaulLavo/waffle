@@ -1,3 +1,4 @@
+import { FilesystemWatch, type WatchOptions } from "./watch.js";
 import { checkDirectoryPage } from "./directory-pages.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
@@ -529,11 +530,25 @@ export class FilesystemClient implements FileSystem {
       completion.release();
     }
   }
+  private readonly watchers = new SetConstructor<FilesystemWatch>();
+  async watch(handle: FileHandle, options: WatchOptions = {}): Promise<FilesystemWatch> {
+    if (options.signal?.aborted) throw new FilesystemError(11);
+    const id: number = await this.asyncCall("watchOpen", [handle, options.recursive ?? false]);
+    if (isRevoked(this.connection)) throw new FilesystemError(11);
+    const watcher = new FilesystemWatch(this, id, options.signal, (closed) =>
+      setDelete(this.watchers, closed),
+    );
+    if (!options.signal?.aborted) setAdd(this.watchers, watcher);
+    return watcher;
+  }
   dispose(): void {
     this.resident?.invalidate();
     this.beginWorkspaceStop();
     // The disposing agent is quiescent: no synchronous file operation can be active here.
     reapFilesystem(this.connection);
+    setForEach(this.watchers, (watcher) => {
+      void watcher.close();
+    });
     mapForEach(this.completions, (completion) => completion.cancel());
     mapClear(this.completions);
     mapClear(this.ioPreparations);

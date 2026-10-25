@@ -65,3 +65,5 @@ export {
   type ExportRefusal,
 } from "./workspace-export.js";
 export { WorkspaceArchiveError } from "./workspace-archive.js";
+
+export { FilesystemWatch, type WatchOptions, type WatchEvent, type WatchBatch } from "./watch.js";
