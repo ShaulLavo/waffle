@@ -2,11 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { withFileOffset } from "../core/open-file";
 import { DescriptorTable } from "../core/descriptors";
 import {
-  FilesystemClient,
-  FilesystemService,
-  MemoryBackend,
   connectFilesystemIdentity,
-  createFilesystemConnection,
   createProcessFilesystemIdentity,
   reapFilesystem,
   revokeFilesystem,
@@ -17,6 +13,7 @@ import {
   createFilesystemDescriptorCodec,
   isFilesystemDescriptorToken,
 } from "../proc/filesystem-codec";
+import { filesystemFileFixture } from "./fixtures/filesystem-file";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
 import type { OffsetEvent, OffsetRequest } from "./fixtures/file-offset-contention";
 
@@ -26,18 +23,7 @@ afterEach(() => {
 });
 
 async function fixture() {
-  const service = new FilesystemService(new MemoryBackend());
-  const connection = createFilesystemConnection();
-  service.connect(connection.server);
-  const client = new FilesystemClient(connection.client);
-  cleanups.push(() => {
-    client.dispose();
-    service.dispose();
-  });
-  await client.asyncCall("writeFile", ["/file"], new TextEncoder().encode("abcdef"));
-  const root = await client.asyncCall("preopen", ["/"]);
-  const { node: handle } = await client.asyncCall("resolve", [root, "file"]);
-  client.retain(handle);
+  const { service, client, handle } = await filesystemFileFixture(cleanups);
   const table = new DescriptorTable();
   const file = { kind: "file" as const, handle, offset: 0, append: false };
   const fd = table.open(file, 0x1fffffffn, 0n, () => client.release(handle));
