@@ -45,7 +45,7 @@ class ShortHost {
       case 11:
       case 12:
         new Uint8Array(memory.buffer, pointer, length).set(endpoint());
-        return 0;
+        return 32;
       case 13:
         this.closed.push(id);
         return 0;
@@ -86,6 +86,19 @@ class ShortHost {
 function dial(owner: NetworkModule): number {
   return owner.write("tcp_connect", 0, endpoint());
 }
+
+test("actual WASM returns native local and peer addresses through the public owner", async () => {
+  const host = new ShortHost();
+  const owner = (await loadNetworkModule()).create(host.io.bind(host));
+  try {
+    const id = dial(owner);
+    expect(owner.read("tcp_local_addr", id, 32)).toEqual(endpoint());
+    host.connected = true;
+    expect(owner.read("tcp_peer_addr", id, 32)).toEqual(endpoint());
+  } finally {
+    owner.dispose();
+  }
+});
 
 test("actual WASM preserves FIFO and copies buffers across two-byte host operations and WouldBlock", async () => {
   const host = new ShortHost();

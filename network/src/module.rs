@@ -165,7 +165,7 @@ pub extern "C" fn tcp_local_addr(socket: u32) -> i32 {
     run(|module| {
         module.buffer[..ADDRESS_SIZE]
             .copy_from_slice(&encode_address(module.tcp.local_addr(SocketId(socket))?));
-        Ok(0)
+        Ok(ADDRESS_SIZE as u32)
     })
 }
 #[unsafe(no_mangle)]
@@ -173,7 +173,7 @@ pub extern "C" fn tcp_peer_addr(socket: u32) -> i32 {
     run(|module| {
         module.buffer[..ADDRESS_SIZE]
             .copy_from_slice(&encode_address(module.tcp.peer_addr(SocketId(socket))?));
-        Ok(0)
+        Ok(ADDRESS_SIZE as u32)
     })
 }
 #[unsafe(no_mangle)]

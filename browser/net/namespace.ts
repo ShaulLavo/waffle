@@ -1,6 +1,7 @@
 import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
 import { AGAIN, ERROR, UNSUPPORTED, type PeerAddr } from "./protocol.js";
 import { loadNetworkModule, type NetworkModule } from "./module.js";
+import { tcpAddress } from "./address.js";
 
 // This module is reached by runtime.network(), never by the core or process entries.
 const compiled = await loadNetworkModule();
@@ -39,9 +40,9 @@ function kind(local: Omit<PeerAddr, "port">): number {
 }
 function target(host: string | undefined, local: PeerAddr): number {
   if (host === undefined) return local.family === "IPv4" ? 4 : 6;
-  if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") return 4;
-  if (host === "::" || host === "::1") return 6;
-  return 0;
+  const address = tcpAddress(host);
+  if (!address) return 0;
+  return address.family === "IPv4" ? 4 : 6;
 }
 function address(bytes: Uint8Array): PeerAddr {
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

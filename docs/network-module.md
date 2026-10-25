@@ -14,7 +14,7 @@ Addresses occupy 32 bytes. Little-endian `u32` fields hold family at offset 0 an
 
 ## Native operations
 
-`tcp_listen_default(port)` explicitly requests IPv6-any, dual-stack, with IPv4 fallback for unavailable IPv6. It does not select a browser or Bun default. `tcp_listen()` and `tcp_connect()` read a binary address from scratch. `tcp_accept(listener)` returns a new stream token. `tcp_local_addr(id)` and `tcp_peer_addr(id)` write an address to scratch.
+`tcp_listen_default(port)` explicitly requests IPv6-any, dual-stack, with IPv4 fallback for unavailable IPv6. It does not select a browser or Bun default. `tcp_listen()` and `tcp_connect()` read a binary address from scratch. `tcp_accept(listener)` returns a new stream token. `tcp_local_addr(id)` and `tcp_peer_addr(id)` write an address to scratch and return `32`, the number of bytes written; read those results through the loader's public `read(name, id, 32)` method. The `address()` helper remains reserved for browser virtual-network metadata.
 
 `tcp_read(id, length)` copies available bytes into scratch. `tcp_write(id, length)` accepts a prefix from scratch into a bounded queue. Neither count is a complete message. `tcp_shutdown(id)` schedules write shutdown after queued data drains. `tcp_close(id)` releases immediately. `tcp_dispose()` releases all resources.
 

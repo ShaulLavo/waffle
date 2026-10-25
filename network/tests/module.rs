@@ -82,8 +82,13 @@ impl Guest {
         let memory = self.instance.get_memory(&self.store, "memory").unwrap();
         &mut memory.data_mut(&mut self.store)[at..at + BUFFER_SIZE]
     }
-    fn address(&mut self, id: u32) -> SocketAddr {
-        assert_eq!(self.call("tcp_local_addr", id), 0);
+    fn address(&mut self, id: u32, peer: bool) -> SocketAddr {
+        let operation = if peer {
+            "tcp_peer_addr"
+        } else {
+            "tcp_local_addr"
+        };
+        assert_eq!(self.call(operation, id), ADDRESS_SIZE as i32);
         decode_address(&self.buffer()[..ADDRESS_SIZE]).unwrap()
     }
 }
@@ -117,7 +122,7 @@ fn compiled_module_binds_dual_stack_and_round_trips_real_bytes() {
     let mut guest = Guest::new();
     let listener = guest.call("tcp_listen_default", 0);
     assert!(listener > 0);
-    let address = guest.address(listener as u32);
+    let address = guest.address(listener as u32, false);
     let mut client =
         TcpStream::connect(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port())).unwrap();
     client
@@ -126,6 +131,12 @@ fn compiled_module_binds_dual_stack_and_round_trips_real_bytes() {
     let accepted = wait(|| guest.call("tcp_accept", listener as u32));
     assert!(accepted > 0);
     let accepted = accepted as u32;
+    let accepted_local = guest.address(accepted, false);
+    let accepted_peer = guest.address(accepted, true);
+    assert_eq!(accepted_local.port(), client.peer_addr().unwrap().port());
+    assert_eq!(accepted_peer.port(), client.local_addr().unwrap().port());
+    assert!(!accepted_local.ip().is_unspecified());
+    assert!(!accepted_peer.ip().is_unspecified());
     assert_eq!(guest.io("tcp_read", accepted, 4), -1);
     client.write_all(b"ping").unwrap();
     read_exact(&mut guest, accepted, b"ping");
@@ -145,7 +156,7 @@ fn compiled_module_binds_dual_stack_and_round_trips_real_bytes() {
 fn compiled_module_dials_and_disposes_its_resources() {
     let mut guest = Guest::new();
     let listener = guest.call("tcp_listen_default", 0) as u32;
-    let local = guest.address(listener);
+    let local = guest.address(listener, false);
     let address = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), local.port());
     guest.buffer()[..ADDRESS_SIZE].copy_from_slice(&encode_address(address));
     let client = guest.zero("tcp_connect") as u32;
@@ -166,7 +177,10 @@ fn compiled_module_dials_and_disposes_its_resources() {
 fn host_readiness_drives_accept_connect_and_data_without_sleep_polling() {
     let mut guest = Guest::new();
     let listener = guest.call("tcp_listen_default", 0) as u32;
-    let address = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), guest.address(listener).port());
+    let address = SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        guest.address(listener, false).port(),
+    );
     guest.buffer()[..ADDRESS_SIZE].copy_from_slice(&encode_address(address));
     let client = guest.zero("tcp_connect") as u32;
     let client_interests = guest.call("tcp_interests", client) as u32;
