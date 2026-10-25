@@ -129,7 +129,7 @@ test("WASI duplicates really share the seek cursor, append flags, and lifetime",
   expect(h.view.getBigUint64(1024, true)).toBe(6n);
 });
 test("core uses only the filesystem contract and accepts a zero-valued opaque handle", () => {
-  const record = { kind: "file", ino: 89, size: 4, mtime: 0 } as const;
+  const record = { kind: "file", ino: 89, nlink: 1, size: 4, mtime: 0 } as const;
   const unexpected = (): never => {
     throw new Error("unexpected filesystem call");
   };

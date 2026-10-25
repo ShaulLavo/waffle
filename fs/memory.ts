@@ -302,6 +302,14 @@ export class MemFS implements FileSystem {
     const parent = this.directoryParents.get(node) ?? node;
     return this.directoryPages(node).page(cookie, byteLength, node.ino, parent.ino);
   }
+  private linkCounts = new WeakMap<Node, number>();
+
+  linkCount(node: Node): number {
+    return this.linkCounts.get(node) ?? 0;
+  }
+  private changeLinkCount(node: Node, delta: 1 | -1): void {
+    this.linkCounts.set(node, this.linkCount(node) + delta);
+  }
 
   private handle(node: Node): FileHandle {
     // Capability identity follows the object, independently of names and links.
@@ -331,7 +339,10 @@ export class MemFS implements FileSystem {
     if (handle !== undefined && !this.references.has(handle)) this.handles.delete(handle);
     if (node.kind === "dir") {
       this.removedDirectories.add(node);
-      for (const child of node.children.values()) this.forget(child);
+      for (const child of node.children.values()) {
+        this.changeLinkCount(child, -1);
+        this.forget(child);
+      }
       // Recursive removal removes directory entries, not the bytes of separately open files.
       this.directoryPages(node).clear();
       node.children.clear();
@@ -455,6 +466,7 @@ export class MemFS implements FileSystem {
     return {
       kind: nodeKind(node),
       ino: node.ino,
+      nlink: this.linkCount(node),
       size: nodeSize(node),
       mtime: node.mtime,
       mode: node.mode,
@@ -557,6 +569,7 @@ export class MemFS implements FileSystem {
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, path.name, node);
     parent.children.set(path.name, node);
+    this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     parent.mtime = Date.now();
     this.changed(node);
@@ -575,6 +588,7 @@ export class MemFS implements FileSystem {
     this.directoryPages(parent).reserve(1);
     this.pageEntry(parent, to.name, node);
     parent.children.set(to.name, node);
+    this.changeLinkCount(node, 1);
     this.onLinkChange?.(node, 1);
     parent.mtime = Date.now();
     this.changed(parent);
@@ -592,6 +606,7 @@ export class MemFS implements FileSystem {
     if ((parent.mode & 0o300) !== 0o300) return 2;
     this.pageEntry(parent, path.name, undefined);
     parent.children.delete(path.name);
+    this.changeLinkCount(node, -1);
     this.onLinkChange?.(node, -1);
     parent.mtime = Date.now();
     this.changed(parent);
@@ -629,6 +644,7 @@ export class MemFS implements FileSystem {
     if (node.kind === "dir") this.directoryParents.set(node, parent);
     if (target) {
       this.forget(target);
+      this.changeLinkCount(target, -1);
       this.onLinkChange?.(target, -1);
     }
     if (target?.kind === "dir") this.removedDirectories.add(target);
@@ -900,6 +916,8 @@ export class MemFS implements FileSystem {
     const created = new Set(plan.created);
     for (const edge of plan.edits) {
       this.pageEntry(edge.parent, edge.name, edge.after);
+      if (edge.before) this.changeLinkCount(edge.before, -1);
+      if (edge.after) this.changeLinkCount(edge.after, 1);
       if (edge.after) edge.parent.children.set(edge.name, edge.after);
       else edge.parent.children.delete(edge.name);
       if (edge.after?.kind === "dir") this.directoryParents.set(edge.after, edge.parent);
@@ -926,21 +944,20 @@ export class MemFS implements FileSystem {
   private reconstructDirectory(directory: DirNode, pending: DirNode[]): void {
     this.directoryPages(directory);
     for (const child of directory.children.values()) {
+      this.changeLinkCount(child, 1);
       if (child.kind === "dir") pending.push(child);
     }
   }
 
   constructor(public root: DirNode = newDir()) {
     adoptInodes(root);
+    this.changeLinkCount(root, 1);
     const pending = [root];
     while (pending.length) this.reconstructDirectory(pending.pop()!, pending);
   }
 
   hasNode(target: Node): boolean {
-    const walk = (node: Node): boolean =>
-      node === target ||
-      (node.kind === "dir" && Array.from(node.children.values()).some((child) => walk(child)));
-    return walk(this.root);
+    return this.linkCount(target) > 0;
   }
 
   lookup(path: string): Exclude<Node, SymlinkNode> | undefined;
@@ -986,6 +1003,7 @@ export class MemFS implements FileSystem {
     this.pageEntry(parent, name, undefined);
     const removed = parent.children.delete(name);
     if (removed) {
+      this.changeLinkCount(node, -1);
       this.onLinkChange?.(node, -1);
       this.forget(node);
       parent.mtime = Date.now();

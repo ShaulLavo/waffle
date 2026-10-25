@@ -134,7 +134,12 @@ export class DirectoryPages {
       branch = branch.entry.cookie > cookie ? branch.left : branch.right;
     }
   }
-  private appendEntries(entries: Entry[], cookie: bigint, byteLength: number, size: number): number {
+  private appendEntries(
+    entries: Entry[],
+    cookie: bigint,
+    byteLength: number,
+    size: number,
+  ): number {
     for (const entry of this.entriesAfter(cookie)) {
       entries.push(entry);
       size += 24 + entry.bytes.length;

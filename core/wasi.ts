@@ -457,7 +457,7 @@ export class Wasi {
     view.setBigUint64(ptr, 0n, true); // dev
     view.setBigUint64(ptr + 8, BigInt(node?.ino ?? 0), true);
     view.setUint8(ptr + 16, node ? filetype(node.kind) : streamType);
-    view.setBigUint64(ptr + 24, 1n, true); // nlink
+    view.setBigUint64(ptr + 24, BigInt(node?.nlink ?? 1), true); // nlink
     view.setBigUint64(ptr + 32, BigInt(node?.size ?? 0), true);
     view.setBigUint64(ptr + 40, times, true);
     view.setBigUint64(ptr + 48, times, true);
