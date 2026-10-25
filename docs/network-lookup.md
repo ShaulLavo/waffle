@@ -1,6 +1,6 @@
 # Virtual name lookup
 
-`runtime.network()` exposes the runtime's virtual loopback lookup policy. The same JavaScript capability is available to browser bridges and native JavaScript embedders. The standalone Rust socket module has no resolver operation.
+`runtime.network()` exposes the runtime's virtual loopback lookup policy. The same JavaScript capability is available to browser bridges and native JavaScript embedders. Runtime creation requires a browser-compatible `Worker`; native Bun provides one, while plain Node must supply its own host adapter. The standalone Rust socket module has no resolver operation.
 
 ```ts
 const network = await runtime.network();

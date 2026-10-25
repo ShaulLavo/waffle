@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 
-test("native JavaScript embedders use lookup through prepared Node package exports", () => {
+test("native Bun embedders use lookup through prepared Node package exports", () => {
   const script = `
     import assert from "node:assert/strict";
     import { createRuntime, RuntimeNetworkLookupError } from "waffle";
+    assert.match(import.meta.resolve("waffle"), /\\/dist\\/index\\.js$/);
     const runtime = createRuntime({
       filesystem: { mode: "memory", workerURL: new URL("./dist/browser/fs-worker.js", import.meta.url) },
       processHost() { throw Error("Lookup activated processes"); },
@@ -21,7 +22,7 @@ test("native JavaScript embedders use lookup through prepared Node package expor
     console.log("prepared Node lookup, numeric families, structured errors and disposal passed");
   `;
   expect(
-    execFileSync("node", ["--input-type=module", "--eval", script], {
+    execFileSync(process.execPath, ["--eval", script], {
       cwd: resolve(import.meta.dir, ".."),
       encoding: "utf8",
       timeout: 10000,
