@@ -69,8 +69,9 @@ process modules, `browser/worker.ts`, guarded streams, terminal provenance, and
 checked or trusted; they do not silently escape an old file list.
 
 The page-only supervisor, table, registry, broker and lazy facade are named in
-`trustedModules`. `WorkerPipeBroker` alone is page-owned; the codec and endpoint
-adapters in the same file remain checked. The intrinsic module is a manually
+`trustedModules`. The Node WASI descriptor adapter is also trusted because it is an explicit
+Node embedding leaf and is not imported by the guest bootstrap. `WorkerPipeBroker` alone is
+page-owned; the codec and endpoint adapters in the same file remain checked. The intrinsic module is a manually
 reviewed capture-time trust root; its native-conversion arguments are also checked.
 Dedicated filesystem service/backends are not
 guest-realm implementations. The guest-memory view helper is payload-only, not

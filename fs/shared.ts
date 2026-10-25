@@ -4,6 +4,7 @@ import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-ad
 import {
   ReaderPagePressure,
   SharedPageVersion,
+  truncateBoundaryEnd,
   type RetainedSharedPage,
 } from "./shared-version-pages.js";
 import {
@@ -45,7 +46,8 @@ const MAX_FILE_PAGES = TOTAL_PAGES;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-export const SLOT_WORDS = 23;
+export const SLOT_WORDS = 24;
+const NLINK = 23;
 const FILE_ID = 13;
 const FILE_VERSION = 17;
 const DIRTY_SIZE = 21;
@@ -742,6 +744,19 @@ export class SharedFilesystemState {
       throw error;
     }
   }
+  private refreshRegistered(slot: number, stat: FileStat): boolean {
+    if (!this.slots[this.at(slot, 0)] || this.slots[this.at(slot, INO)] !== stat.ino) return false;
+    Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
+    if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
+      this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
+      this.changed(slot);
+    }
+    if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
+      this.setTimestamp(slot, stat.mtime);
+      this.changed(slot);
+    }
+    return true;
+  }
   register(
     handle: FileHandle,
     stat: FileStat,
@@ -756,17 +771,7 @@ export class SharedFilesystemState {
       this.lock(this.at(slot, FILE_LOCK));
       let pinned = false;
       try {
-        if (this.slots[this.at(slot, 0)] && this.slots[this.at(slot, INO)] === stat.ino) {
-          if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
-            this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
-            this.changed(slot);
-          }
-          if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
-            this.setTimestamp(slot, stat.mtime);
-            this.changed(slot);
-          }
-          return;
-        }
+        if (this.refreshRegistered(slot, stat)) return;
         this.dirtyAdmission.pin(1, this.residentBytes());
         pinned = true;
         const loaded = resident || stat.size === 0;
@@ -781,6 +786,7 @@ export class SharedFilesystemState {
         );
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
+        Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
         this.setTimestamp(slot, stat.mtime);
         Atomics.store(this.slots, this.at(slot, MODE), stat.mode ?? -1);
         const floor =
@@ -950,6 +956,7 @@ export class SharedFilesystemState {
       const stat: FileStat = {
         kind: "file",
         ino: this.slots[base + INO]!,
+        nlink: this.slots[base + NLINK]! >>> 0,
         size: this.slots[base + FILE_SIZE]!,
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
@@ -1039,6 +1046,7 @@ export class SharedFilesystemState {
       return {
         kind: "file",
         ino: Atomics.load(this.slots, this.at(slot, INO)),
+        nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: Atomics.load(this.slots, this.at(slot, FILE_SIZE)),
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
@@ -1065,12 +1073,24 @@ export class SharedFilesystemState {
       return {
         kind: kind === 1 ? "file" : kind === 3 ? "symlink" : "directory",
         ino: Atomics.load(this.slots, this.at(slot, INO)),
+        nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: kind !== 2 ? Atomics.load(this.slots, this.at(slot, FILE_SIZE)) : 0,
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
       };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
+    }
+  }
+  setNlink(handle: FileHandle, nlink: number): void {
+    const slot = this.findSlot(handle);
+    if (!slot) return;
+    this.lock(this.at(slot, FILE_LOCK));
+    try {
+      if (this.slots[this.at(slot, HANDLE)] === handle + 1)
+        Atomics.store(this.slots, this.at(slot, NLINK), nlink);
+    } finally {
+      this.unlock(this.at(slot, FILE_LOCK));
     }
   }
   private modeField(slot: number): Pick<FileStat, "mode"> {
@@ -1671,17 +1691,10 @@ export class SharedFilesystemState {
       const publication = admission
         ? this.prepareResize(slot, handle, size, truncate, next, mtime, identity, admission)
         : undefined;
-      if (resident && truncate && size < old) this.prepareVersionPages(slot, size, old, next);
+      if (resident && truncate && size < old)
+        this.prepareVersionPages(slot, size, truncateBoundaryEnd(size, old), next);
       if (truncate || next !== old) this.dirty(slot, next);
-      if (resident && truncate && size < old) {
-        let position = size;
-        while (position < old) {
-          const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
-          const count = Math.min(old - position, PAGE - (position % PAGE));
-          this.segmentFor(page).fill(0, position % PAGE, (position % PAGE) + count);
-          position += count;
-        }
-      }
+      if (resident && truncate && size < old) this.zeroTruncatedPages(slot, size, old);
       Atomics.store(this.slots, this.at(slot, FILE_SIZE), next);
       this.slots[this.at(slot, REVISION_STATE)]! |= RESIDENT;
       if (truncate) this.setTimestamp(slot, mtime);
@@ -1691,6 +1704,17 @@ export class SharedFilesystemState {
       return 0;
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
+    }
+  }
+  private zeroTruncatedPages(slot: number, size: number, old: number): void {
+    let position = size;
+    while (position < old) {
+      const page = Atomics.load(this.pages, this.pageAt(slot, Math.floor(position / PAGE))) - 1;
+      const count = Math.min(old - position, PAGE - (position % PAGE));
+      // Whole pinned pages leave the live mapping in reclaimLocked, unchanged for readers.
+      if (position % PAGE || !this.pageReaders?.[page])
+        this.segmentFor(page).fill(0, position % PAGE, (position % PAGE) + count);
+      position += count;
     }
   }
   private prepareResize(

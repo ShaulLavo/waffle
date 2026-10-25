@@ -185,6 +185,32 @@ function nextMessage(port: MessagePort): Promise<any> {
   });
 }
 
+test("socket transport delivers acceptance before synchronous connection finish", async () => {
+  const f = fixture();
+  f.router.register(8123, {
+    request: f.server.request,
+    connect(_port, sink) {
+      sink.end();
+      return { write() {}, close() {} };
+    },
+  });
+  const socket = new MessageChannel();
+  const messagesPromise = new Promise<unknown[]>((resolve) => {
+    const messages: unknown[] = [];
+    socket.port1.onmessage = (event) => {
+      messages.push(event.data);
+      if (messages.length === 2) resolve(messages);
+    };
+  });
+  try {
+    await f.worker.socket(8123, `${scope}8123/page`, socket.port2);
+    expect(await messagesPromise).toEqual([{ type: "accepted" }, { type: "end" }]);
+  } finally {
+    socket.port1.close();
+    socket.port2.close();
+  }
+});
+
 test("socket transport probes a server then forwards duplex bytes and closes", async () => {
   const f = fixture();
   const socket = new MessageChannel();

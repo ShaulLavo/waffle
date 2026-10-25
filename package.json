@@ -228,6 +228,11 @@
       "browser": "./proc/registry.ts",
       "default": "./proc/registry.ts"
     },
+    "./proc/node-wasi": {
+      "types": "./proc/node-wasi.ts",
+      "node": "./dist/proc/node-wasi.js",
+      "bun": "./proc/node-wasi.ts"
+    },
     "./proc/signals": {
       "types": "./proc/signals.ts",
       "node": "./dist/proc/signals.js",

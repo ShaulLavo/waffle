@@ -251,7 +251,7 @@ test("shared stat preserves an open unlinked identity through name reuse and rej
   await client.asyncCall("remove", ["/shared"]);
   await client.asyncCall("writeFile", ["/shared"], encode("new"));
   const replacement = await client.asyncCall("resolve", [root, "shared"]);
-  expect(client.stat(handle)).toEqual(original);
+  expect(client.stat(handle)).toEqual({ ...original, nlink: 0 });
   expect(client.stat(replacement.node)).toMatchObject({ size: 3 });
   expect(client.stat(replacement.node).ino).not.toBe(original.ino);
   client.release(handle);

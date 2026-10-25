@@ -118,6 +118,7 @@ export function residentGrant(value: unknown): ResidentGrant {
     stat: {
       kind: "file" as const,
       ino: integer(stat.ino),
+      nlink: integer(stat.nlink),
       size: integer(stat.size),
       mtime: integer(stat.mtime),
       mode: integer(stat.mode),
