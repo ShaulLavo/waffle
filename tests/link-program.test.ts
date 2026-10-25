@@ -24,13 +24,13 @@ const body = (ops: number[], locals: number[] = [0]) => {
 const global = (mutable: boolean, value: number) =>
   [0x7f, Number(mutable), 0x41].concat(u32(value), [0x0b]);
 
-function core(): Uint8Array {
+function core(options: { pages?: number; reserve?: number[] } = {}): Uint8Array {
   return binary(
     section(1, vector([type([]), type([0x7f, 0x7f], [0x7f]), type([0x7f], [0x7f])])),
     section(2, vector([imp("env", "check", [0, 0])])),
     section(3, vector([[1], [2], [0], [0], [2]])),
     section(4, [1, 0x70, 1, 1, 32]),
-    section(5, [1, 1, 2, 16]),
+    section(5, [1, 1].concat(u32(options.pages ?? 2), u32(128))),
     section(
       6,
       vector([
@@ -65,7 +65,7 @@ function core(): Uint8Array {
       vector([
         // Round core's bump up to align, advance by size, return the reserved pointer.
         body(
-          [
+          options.reserve ?? [
             0x23, 1, 0x20, 1, 0x6a, 0x41, 1, 0x6b, 0x20, 1, 0x41, 1, 0x6b, 0x41, 0x7f, 0x73, 0x71,
             0x22, 2, 0x20, 0, 0x6a, 0x24, 1, 0x20, 2,
           ],
@@ -79,21 +79,21 @@ function core(): Uint8Array {
     ),
   );
 }
-function side(got = "errno"): Uint8Array {
+function side(got = "errno", namespace = "GOT.mem", alignment = 4): Uint8Array {
   return binary(
-    section(0, text("dylink.0").concat([1, 4, 16, 4, 1, 0])),
+    section(0, text("dylink.0").concat([1, 4, 16, alignment, 1, 0])),
     section(1, vector([type([]), type([0x7f], [0x7f])])),
     section(
       2,
       vector([
         imp("env", "check", [0, 0]),
         imp("env", "add", [0, 1]),
-        imp("env", "memory", [2, 1, 1, 16]),
+        imp("env", "memory", [2, 1, 1].concat(u32(128))),
         imp("env", "__indirect_function_table", [1, 0x70, 1, 0, 32]),
         imp("env", "__memory_base", [3, 0x7f, 0]),
         imp("env", "__table_base", [3, 0x7f, 0]),
         imp("env", "__stack_pointer", [3, 0x7f, 1]),
-        imp("GOT.mem", got, [3, 0x7f, 1]),
+        imp(namespace, got, [3, 0x7f, 1]),
       ]),
     ),
     section(3, vector([[1], [0], [0]])),
@@ -345,3 +345,63 @@ for (const symbol of ["stdout", "_CLOCK_MONOTONIC", "errno"]) {
     }
   });
 }
+
+test("core reserves a real nonzero four-MiB aligned static range", async () => {
+  const input = source();
+  const plan = await prepareLinkPlan({
+    ...input,
+    core: { ...input.core, source: core({ pages: 128 }) },
+    libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.mem", 22) }],
+  });
+  const group = instantiateLinkPlan(plan, host());
+  try {
+    expect(group.libraries[0]!.memoryBase).toBe(4 * 1024 * 1024);
+    group.initialize();
+  } finally {
+    group.dispose();
+  }
+});
+
+for (const [pointer, message] of [
+  [0, "reservation failed"],
+  [1025, "unaligned"],
+  [1048576, "out of bounds"],
+] as const) {
+  test(`invalid core reservation ${pointer} fails before side initialization`, async () => {
+    const input = source();
+    const plan = await prepareLinkPlan({
+      ...input,
+      core: { ...input.core, source: core({ reserve: [0x41].concat(u32(pointer)) }) },
+    });
+    expect(() => instantiateLinkPlan(plan, host())).toThrow(message);
+  });
+}
+
+test("overlapping core reservations reject the second library and clear table slots", async () => {
+  const input = source();
+  const plan = await prepareLinkPlan({
+    ...input,
+    core: { ...input.core, source: core({ reserve: [0x41].concat(u32(1024)) }) },
+    libraries: input.libraries.concat([{ ...input.libraries[0]!, id: "second" }]),
+  });
+  expect(() => instantiateLinkPlan(plan, host())).toThrow("overlaps engine");
+});
+
+test("GOT.func and true Wasm start are rejected before any instance", async () => {
+  const input = source();
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.func") }],
+    }),
+  ).rejects.toThrow("unsupported GOT.func");
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      core: {
+        ...input.core,
+        source: new Uint8Array(Array.from(input.core.source).concat(section(8, [3]))),
+      },
+    }),
+  ).rejects.toThrow("true Wasm start");
+});

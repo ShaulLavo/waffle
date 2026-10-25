@@ -183,6 +183,15 @@ function linkLibrary(
   exportedFunction(instance, member.id, "__wasm_apply_data_relocs", 0)();
 }
 
+function initializeLibraries(
+  plan: PlanData,
+  libraries: readonly LinkedLibrary[],
+  host: LinkHost,
+): void {
+  for (let index = 0; index < libraries.length; index++)
+    initializeMember(plan.libraries[index]!, libraries[index]!.instance, host);
+}
+
 export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.checkActive();
   const core = instantiate(plan.core, host.coreImports ?? host.wasi.imports(plan.core.module));
@@ -228,8 +237,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
       lifecycle.state = "initializing";
       try {
         initializeMember(plan.core, core, host);
-        for (let index = 0; index < libraries.length; index++)
-          initializeMember(plan.libraries[index]!, libraries[index]!.instance, host);
+        initializeLibraries(plan, libraries, host);
         host.checkActive();
         if (lifecycle.state !== "initializing") throw new Error(`link group is ${lifecycle.state}`);
         lifecycle.state = "ready";
