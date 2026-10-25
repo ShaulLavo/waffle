@@ -19,7 +19,14 @@ try {
   parentPort!.postMessage({ ready: true });
   const errno = guest.io(request.operation, fd);
   const released = Atomics.load(new Int32Array(request.released), 0);
-  parentPort!.postMessage({ set, clear, flags, errno, count: guest.view.getUint32(264, true), released });
+  parentPort!.postMessage({
+    set,
+    clear,
+    flags,
+    errno,
+    count: guest.view.getUint32(264, true),
+    released,
+  });
 } finally {
   guest.wasi.descriptors.dispose();
   parentPort!.close();

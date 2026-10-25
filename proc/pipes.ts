@@ -1287,7 +1287,12 @@ export function attachPipeEndpoint(handle: PipeEndpointHandle): PipeEndpoint {
   if (!Number.isInteger(handle.slot) || handle.slot < 0 || handle.slot >= limit)
     throw new RangeError("invalid pipe slot");
   return new PipeEndpoint(
-    state, handle.pid, handle.mode, handle.slot, handle.lifetime, handle.fdflags,
+    state,
+    handle.pid,
+    handle.mode,
+    handle.slot,
+    handle.lifetime,
+    handle.fdflags,
   );
 }
 export function attachPipeController(

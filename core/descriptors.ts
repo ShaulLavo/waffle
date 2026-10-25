@@ -21,6 +21,8 @@ export interface Readiness {
  */
 export interface Stream {
   kind: "pipe" | "terminal";
+  /** Supported fdflags share open-description state across duplication and endpoint transfer. */
+  fdflags?: number;
   read(chunks: readonly Uint8Array[]): number;
   write(chunks: readonly Uint8Array[]): number;
   /** Explicit immediate operations for async guests; never fall back to blocking preview1 I/O. */

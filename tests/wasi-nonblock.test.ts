@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { PipeController, type PipeEndpoint } from "../proc/pipes.js";
+import { PipeController } from "../proc/pipes.js";
 import { nonblockGuest } from "./fixtures/wasi-nonblock.js";
 
 const encoder = new TextEncoder();
 function pipe() {
   const controller = new PipeController({ capacity: 8, relay: "manual" });
-  return { controller, reader: controller.retain(1, "read"), writer: controller.retain(2, "write") };
+  return {
+    controller,
+    reader: controller.retain(1, "read"),
+    writer: controller.retain(2, "write"),
+  };
 }
 function using(run: (p: ReturnType<typeof pipe>, g: ReturnType<typeof nonblockGuest>) => void) {
   const p = pipe();
@@ -51,13 +55,32 @@ interface IoResult {
   count: number;
   released: number;
 }
+function ioReply(worker: Worker, ready: () => void): Promise<IoResult> {
+  return new Promise<IoResult>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("WASI worker timed out")), 3000);
+    worker.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    worker.on("message", (message: IoResult | { ready: true }) => {
+      if ("ready" in message) return ready();
+      clearTimeout(timeout);
+      resolve(message);
+    });
+  });
+}
 async function blockedIo(operation: "fd_read" | "fd_write", clear: boolean): Promise<IoResult> {
   const p = pipe();
   const released = new SharedArrayBuffer(4);
   if (operation === "fd_write") expect(p.writer.tryWrite([encoder.encode("12345678")])).toBe(8);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const worker = new Worker(new URL("./fixtures/wasi-nonblock-worker.ts", import.meta.url), {
-    workerData: { endpoint: (operation === "fd_read" ? p.reader : p.writer).handle(), operation, clear, released },
+    workerData: {
+      endpoint: (operation === "fd_read" ? p.reader : p.writer).handle(),
+      operation,
+      clear,
+      released,
+    },
   });
   const release = () => {
     Atomics.store(new Int32Array(released), 0, 1);
@@ -65,14 +88,8 @@ async function blockedIo(operation: "fd_read" | "fd_write", clear: boolean): Pro
     else p.reader.tryRead([new Uint8Array(8)]);
   };
   try {
-    return await new Promise<IoResult>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("WASI worker timed out")), 3000);
-      worker.once("error", (error) => { clearTimeout(timeout); reject(error); });
-      worker.on("message", (message: IoResult | { ready: true }) => {
-        if ("ready" in message) { timer = setTimeout(release, 60); return; }
-        clearTimeout(timeout);
-        resolve(message);
-      });
+    return await ioReply(worker, () => {
+      timer = setTimeout(release, 60);
     });
   } finally {
     clearTimeout(timer);
@@ -84,10 +101,24 @@ async function blockedIo(operation: "fd_read" | "fd_write", clear: boolean): Pro
 }
 for (const operation of ["fd_read", "fd_write"] as const) {
   test(`public stdio NONBLOCK ${operation} returns AGAIN before peer release`, async () => {
-    expect(await blockedIo(operation, false)).toEqual({ set: 0, clear: null, flags: 4, errno: 6, count: 0xabcdef, released: 0 });
+    expect(await blockedIo(operation, false)).toEqual({
+      set: 0,
+      clear: null,
+      flags: 4,
+      errno: 6,
+      count: 0xabcdef,
+      released: 0,
+    });
   });
   test(`clearing NONBLOCK restores blocking ${operation} until peer release`, async () => {
-    expect(await blockedIo(operation, true)).toEqual({ set: 0, clear: 0, flags: 0, errno: 0, count: 1, released: 1 });
+    expect(await blockedIo(operation, true)).toEqual({
+      set: 0,
+      clear: 0,
+      flags: 0,
+      errno: 0,
+      count: 1,
+      released: 1,
+    });
   });
 }
 
@@ -131,7 +162,14 @@ test("stream flag validation preserves flags and rights precedence", () => {
 });
 
 test("terminal without shared flags or immediate input rejects NONBLOCK", () => {
-  const g = nonblockGuest({}, { stdin: () => { throw new Error("must not enter blocking stdin"); } });
+  const g = nonblockGuest(
+    {},
+    {
+      stdin: () => {
+        throw new Error("must not enter blocking stdin");
+      },
+    },
+  );
   try {
     expect(g.call("fd_fdstat_set_flags", 0, 4)).toBe(58);
     expect(g.call("fd_fdstat_set_flags", 1, 4)).toBe(58);
