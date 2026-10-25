@@ -37,6 +37,7 @@ export {
   objectKeys,
   arrayFrom,
   reflectGet,
+  reflectSet,
   ProxyConstructor,
   typedArrayByteLength,
   typedArraySet,

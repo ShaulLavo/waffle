@@ -78,9 +78,7 @@ test("guarded flags remain shared after actual Worker codec transfer and reject 
         token: createWorkerPipeCodec().export(source, 3),
       },
     });
-    expect(await once(worker, "message", { signal: AbortSignal.timeout(3000) })).toEqual([
-      "ready",
-    ]);
+    expect(await once(worker, "message", { signal: AbortSignal.timeout(3000) })).toEqual(["ready"]);
     expect(parent.call("fd_fdstat_set_flags", 0, 4)).toBe(0);
     const result = once(worker, "message", { signal: AbortSignal.timeout(3000) });
     worker.postMessage("read");
