@@ -34,25 +34,26 @@ export class PreviewRouter {
   }
 
   private connectSocket(port: number, reply: MessagePort): void {
-    const connection = this.servers.get(port)?.connect(port, {
-      data: (chunk) => reply.postMessage({ type: "data", chunk }, [chunk.buffer]),
-      end: () => {
-        reply.postMessage({ type: "end" });
-        reply.close();
-      },
-      error: () => {
-        reply.postMessage({ type: "error" });
-        reply.close();
-      },
-    });
-    if (!connection) {
-      reply.postMessage({ type: "error" });
-      reply.close();
-      return;
-    }
+    const pending: { message: PreviewReply; transfer: Transferable[] }[] = [];
+    let ready = false;
+    let finished = false;
+    let connection: PreviewConnection | null = null;
+    const send = (message: PreviewReply, transfer: Transferable[] = []) => {
+      if (finished) return;
+      if (!ready) {
+        pending.push({ message, transfer });
+        return;
+      }
+      reply.postMessage(message, transfer);
+    };
+    const finish = (message: PreviewReply) => {
+      send(message);
+      finished = true;
+      if (ready) reply.close();
+    };
     reply.onmessage = (event: MessageEvent<unknown>) => {
       const message = event.data;
-      if (!message || typeof message !== "object" || !("type" in message)) return;
+      if (!message || typeof message !== "object" || !("type" in message) || !connection) return;
       if (message.type === "data" && "chunk" in message && message.chunk instanceof Uint8Array)
         connection.write(message.chunk);
       if (message.type === "end") {
@@ -60,7 +61,22 @@ export class PreviewRouter {
         reply.close();
       }
     };
+    connection =
+      this.servers.get(port)?.connect(port, {
+        data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
+        end: () => finish({ type: "end" }),
+        error: (message) => finish({ type: "error", message }),
+      }) ?? null;
+    if (!connection) {
+      ready = true;
+      finish({ type: "error", message: "no server" });
+      return;
+    }
+    ready = true;
     reply.postMessage({ type: "accepted" });
+    for (const item of pending) reply.postMessage(item.message, item.transfer);
+    pending.length = 0;
+    if (finished) reply.close();
   }
 
   onMessage(event: Pick<MessageEvent<PreviewMessage>, "data" | "ports">): void {

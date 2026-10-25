@@ -210,7 +210,8 @@ export class MemoryBackend implements FilesystemBackend {
       this.shared.register(handle, stat, node.data, true, this.ensureIdentity(node));
     else if (
       this.directoryTimes.get(handle) !== stat.mtime ||
-      this.shared.stat(handle)?.mode !== stat.mode
+      this.shared.stat(handle)?.mode !== stat.mode ||
+      this.shared.stat(handle)?.nlink !== stat.nlink
     ) {
       this.shared.register(handle, stat, undefined, true, this.ensureIdentity(node));
       this.directoryTimes.set(handle, stat.mtime);
@@ -686,6 +687,15 @@ export class MemoryBackend implements FilesystemBackend {
   }
   private applyNamespace(action: NamespaceAction): void {
     this.fs.applyNamespace(action.plan);
+    const changed = new Set<Node>();
+    for (const edge of action.plan.edges) {
+      if (edge.before) changed.add(edge.before);
+      if (edge.after) changed.add(edge.after);
+    }
+    for (const node of changed) {
+      const handle = this.fs.existingHandle(node);
+      if (handle !== undefined) this.shared.setNlink(handle, this.fs.linkCount(node));
+    }
     for (const link of action.plan.links) {
       if (link.delta > 0) this.shared.relink(this.fs.handleForNode(link.node));
     }

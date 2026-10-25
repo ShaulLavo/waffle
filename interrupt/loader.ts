@@ -1,5 +1,5 @@
 import { ExecutableFormatError } from "../proc/start-failure.js";
-import { rewriteInterrupts } from "./rewriter.js";
+import { rewriteInterruptsOwned } from "./rewriter-internal.js";
 
 /** Content-addressed, process-independent modules. Instances always get fresh countdown globals.
  * The shared content cache is bounded. Active executable registries separately retain their
@@ -30,7 +30,7 @@ export class InterruptModuleCache {
     // Publish the promise before rewriting begins, so concurrent loads share all expensive work.
     pending = Promise.resolve().then(async () => {
       try {
-        return await WebAssembly.compile(rewriteInterrupts(bytes));
+        return await WebAssembly.compile(rewriteInterruptsOwned(bytes));
       } catch (error) {
         if (error instanceof WebAssembly.CompileError)
           throw new ExecutableFormatError(error.message, { cause: error });

@@ -1177,7 +1177,7 @@ test("facade initial browser graph keeps process services and interrupt compilat
   ).toBe(true);
   expect(
     Array.from(outputs.values()).some((output) =>
-      Object.keys(output.inputs).some((path) => path.endsWith("interrupt/rewriter.ts")),
+      Object.keys(output.inputs).some((path) => path.endsWith("interrupt/rewriter-internal.ts")),
     ),
   ).toBe(true);
 });
