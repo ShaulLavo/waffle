@@ -1,8 +1,9 @@
 # Metadata and directory enumeration
 
-Status: Approved. Lane r173 owns issues #115 and #118. Production FS edits await
-named-symbol grants. The coordinator granted only `core/wasi.ts::writeFilestat`
-and `fd_readdir` on October 25, 2026. No production changes are in this checkpoint.
+Status: Approved. All numbered metadata and directory-page source hunks below were
+granted on October 25, 2026. Implementation starts from main
+`cc885cd5f6fb0016b8ec61ff5a1a71a1a1ca3976`. Read preparation, watcher publication,
+revision, resize, protocol, and persistence formats remain outside this lane.
 
 ## Deliver independent fixes
 
@@ -24,7 +25,7 @@ reference. Open descriptions do not add links. The regular-file sequence is
 1, 2, 1, 0. Directory counts in this plan are namespace references, not the Unix
 2-plus-subdirectory convention.
 
-Request these exact edits:
+Granted exact edits:
 
 | File                 | Symbols and change                                                                                                                                                                                                                          |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -67,7 +68,7 @@ filesystem read permissions. The service still validates handle authority.
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `core/filesystem.ts`        | Add `FileSystem.readdirPage`.                                                                                                                          |
 | `core/wasi.ts`              | Replace only `fd_readdir` full-list materialization and slicing with a bounded-page call. Granted.                                                     |
-| New `fs/directory-pages.ts` | Directory entry index and dirent encoding. No external ownership or descriptor cache. Requires source grant before creation.                           |
+| New `fs/directory-pages.ts` | Directory entry index and dirent encoding. No external ownership or descriptor cache. Granted.                                                         |
 | `fs/memory.ts`              | Add `readdirPage`; initialize and update directory indexes at constructor and actual namespace edit points named above; clear removed-directory edges. |
 | `fs/backend.ts`             | Add only the `executeOperation` directory-page dispatch case.                                                                                          |
 | `fs/client.ts`              | Add only `readdirPage` using existing submit/wait/release; no cached full list or cold-read changes.                                                   |

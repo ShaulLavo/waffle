@@ -45,7 +45,8 @@ const MAX_FILE_PAGES = TOTAL_PAGES;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
-export const SLOT_WORDS = 23;
+export const SLOT_WORDS = 24;
+const NLINK = 23;
 const FILE_ID = 13;
 const FILE_VERSION = 17;
 const DIRTY_SIZE = 21;
@@ -757,6 +758,7 @@ export class SharedFilesystemState {
       let pinned = false;
       try {
         if (this.slots[this.at(slot, 0)] && this.slots[this.at(slot, INO)] === stat.ino) {
+          Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
           if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
             this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
             this.changed(slot);
@@ -781,6 +783,7 @@ export class SharedFilesystemState {
         );
         Atomics.store(this.slots, this.at(slot, FILE_SIZE), stat.size);
         Atomics.store(this.slots, this.at(slot, INO), stat.ino);
+        Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
         this.setTimestamp(slot, stat.mtime);
         Atomics.store(this.slots, this.at(slot, MODE), stat.mode ?? -1);
         const floor =
@@ -924,6 +927,7 @@ export class SharedFilesystemState {
       const stat: FileStat = {
         kind: "file",
         ino: this.slots[base + INO]!,
+        nlink: this.slots[base + NLINK]! >>> 0,
         size: this.slots[base + FILE_SIZE]!,
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
@@ -1013,6 +1017,7 @@ export class SharedFilesystemState {
       return {
         kind: "file",
         ino: Atomics.load(this.slots, this.at(slot, INO)),
+        nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: Atomics.load(this.slots, this.at(slot, FILE_SIZE)),
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
@@ -1039,12 +1044,24 @@ export class SharedFilesystemState {
       return {
         kind: kind === 1 ? "file" : kind === 3 ? "symlink" : "directory",
         ino: Atomics.load(this.slots, this.at(slot, INO)),
+        nlink: Atomics.load(this.slots, this.at(slot, NLINK)) >>> 0,
         size: kind !== 2 ? Atomics.load(this.slots, this.at(slot, FILE_SIZE)) : 0,
         mtime: this.getMtime(slot),
         ...this.modeField(slot),
       };
     } finally {
       this.unlock(this.at(slot, FILE_LOCK), owner);
+    }
+  }
+  setNlink(handle: FileHandle, nlink: number): void {
+    const slot = this.findSlot(handle);
+    if (!slot) return;
+    this.lock(this.at(slot, FILE_LOCK));
+    try {
+      if (this.slots[this.at(slot, HANDLE)] === handle + 1)
+        Atomics.store(this.slots, this.at(slot, NLINK), nlink);
+    } finally {
+      this.unlock(this.at(slot, FILE_LOCK));
     }
   }
   private modeField(slot: number): Pick<FileStat, "mode"> {

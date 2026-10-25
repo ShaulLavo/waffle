@@ -128,3 +128,74 @@ test("#115 flat WASI unlink uses identity bookkeeping rather than repeated root 
   console.log("unlink counter", { removed: count, directoryEntriesVisited: children.visits });
   expect(children.visits).toBeLessThanOrEqual(count * 2);
 });
+
+function resolved(fs: MemFS, path: string) {
+  const value = fs.resolveAbsolute(path);
+  if (typeof value === "number") throw new Error(`resolve failed ${value}`);
+  return value;
+}
+
+for (const planned of [false, true]) {
+  test(`#115 recursive removal preserves outside aliases and open data, planned=${planned}`, () => {
+    const backend = new MemoryBackend();
+    const fs = backend.fs;
+    fs.writeFile("/tree/sub/file", "retained data");
+    expect(fs.link(resolved(fs, "/tree/sub/file"), resolved(fs, "/alias"))).toBe(0);
+    const file = resolved(fs, "/alias").node!;
+    backend.retain(file);
+    try {
+      expect(fs.stat(file).nlink).toBe(2);
+      if (planned) backend.execute("remove", ["/tree"], new Uint8Array());
+      else fs.remove("/tree");
+      expect(fs.stat(file).nlink).toBe(1);
+      expect(fs.hasNode(fs.nodeForHandle(file))).toBe(true);
+      backend.execute("remove", ["/alias"], new Uint8Array());
+      expect(fs.stat(file).nlink).toBe(0);
+      expect(backend.shared.stat(file)?.nlink).toBe(0);
+      expect(fs.hasNode(fs.nodeForHandle(file))).toBe(false);
+      const bytes = backend.execute("read", [file, 32, 0], new Uint8Array());
+      expect(bytes).toBeInstanceOf(Uint8Array);
+      if (!(bytes instanceof Uint8Array)) throw new Error("expected file bytes");
+      expect(new TextDecoder().decode(bytes)).toBe("retained data");
+    } finally {
+      backend.release(file);
+    }
+  });
+}
+
+test("#115 symlink aliases count names and reconstruction preserves identity counts", () => {
+  const fs = new MemFS();
+  expect(fs.symlink(resolved(fs, "/link"), "missing-target")).toBe(0);
+  expect(fs.link(resolved(fs, "/link"), resolved(fs, "/alias"))).toBe(0);
+  const restored = new MemFS(fs.root);
+  const handle = resolved(restored, "/alias").node!;
+  restored.retain(handle);
+  try {
+    expect(restored.stat(handle).nlink).toBe(2);
+    expect(restored.removePath(resolved(restored, "/link"), false)).toBe(0);
+    expect(restored.stat(handle).nlink).toBe(1);
+    expect(restored.removePath(resolved(restored, "/alias"), false)).toBe(0);
+    expect(restored.stat(handle).nlink).toBe(0);
+    expect(restored.readlink(handle)).toBe("missing-target");
+  } finally {
+    restored.release(handle);
+  }
+});
+
+test("#115 count-only shared metadata updates neither require write access nor advance content revision", () => {
+  const backend = new MemoryBackend();
+  backend.fs.writeFile("/file", "data");
+  const handle = resolved(backend.fs, "/file").node!;
+  backend.fs.setMode(handle, 0o400);
+  backend.retain(handle);
+  try {
+    const revision = backend.shared.revision(handle);
+    backend.shared.setNlink(handle, 2);
+    expect(backend.shared.stat(handle)?.nlink).toBe(2);
+    expect(backend.shared.snapshot(handle)?.stat.nlink).toBe(2);
+    expect(backend.shared.info(handle)?.nlink).toBe(2);
+    expect(backend.shared.revision(handle)).toBe(revision);
+  } finally {
+    backend.release(handle);
+  }
+});

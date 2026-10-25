@@ -1,14 +1,9 @@
 import { FilesystemClient } from "../../fs/client.js";
 import type { FilesystemConnection } from "../../fs/protocol.js";
-import {
-  enumerateDirectory,
-  linkLifecycle,
-  metadataGuest,
-} from "./metadata-enumeration-r173-wasi.js";
+import { linkLifecycle, metadataGuest } from "./metadata-enumeration-r173-wasi.js";
 
 type Input = { connection: FilesystemConnection } & (
   | { scenario: "links"; root: string }
-  | { scenario: "directory"; count: number }
   | { scenario: "reload" }
   | { scenario: "delete"; count: number }
 );
@@ -42,10 +37,6 @@ function deleteFiles(fs: FilesystemClient, count: number) {
 self.onmessage = (event: MessageEvent<Input>) => {
   const fs = new FilesystemClient(event.data.connection);
   try {
-    if (event.data.scenario === "directory") {
-      self.postMessage(enumerateDirectory(fs, event.data.count));
-      return;
-    }
     if (event.data.scenario === "reload") {
       self.postMessage(reload(fs));
       return;
