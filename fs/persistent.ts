@@ -7,7 +7,7 @@ import {
   type CheckpointLimits,
   type CheckpointCost,
 } from "./checkpoint-pressure.js";
-import { FilesystemError } from "./protocol.js";
+import { FilesystemError, PAGE } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan } from "./backend.js";
 import {
@@ -317,6 +317,45 @@ export class PersistentBackend extends MemoryBackend {
     const size = this.readMetadata(node).size;
     const retention = this.storage.retainPayload(key, size, metadata);
     return { kind: "cold", key, size, storage: this.storage, retention };
+  }
+  prepareDescriptorRead(
+    handle: FileHandle,
+    offset: number,
+    length: number,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> | undefined {
+    this.assertAdmitting();
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0)
+      throw new FilesystemError(28);
+    if (cancelled()) throw new FilesystemError(11);
+    if (!(this.fs.permissions(handle).access & 4)) throw new FilesystemError(2);
+    const node = this.fs.nodeForHandle(handle);
+    if (node.kind !== "file") throw new FilesystemError(31);
+    this.sync(handle);
+    if (this.shared.isResident(handle)) return;
+    const count = Math.min(length, PAGE, Math.max(0, this.readMetadata(node).size - offset));
+    if (!count) return Promise.resolve(new Uint8Array());
+    const backing = this.selectReadBacking(node, offset, count);
+    if (backing.kind !== "cold") throw new FilesystemError(6);
+    const work = this.readDescriptorRange(backing, offset, count, cancelled);
+    this.ownWork(work.then(() => {}));
+    return work;
+  }
+  private async readDescriptorRange(
+    backing: Extract<ReadBacking, { kind: "cold" }>,
+    offset: number,
+    length: number,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> {
+    try {
+      if (cancelled() || this.stopped) throw new FilesystemError(11);
+      const bytes = await backing.storage.readRange(backing.key, { offset, length });
+      if (cancelled() || this.stopped) throw new FilesystemError(11);
+      if (bytes.length !== length) throw new Error("Short retained descriptor range");
+      return bytes;
+    } finally {
+      await backing.retention.release();
+    }
   }
   private evictClean(except?: FileHandle): void {
     // Registration is bounded independently of workspace size. Idle metadata and clean payload

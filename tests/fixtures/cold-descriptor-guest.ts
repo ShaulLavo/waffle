@@ -1,8 +1,13 @@
 import { FilesystemClient, type FilesystemConnection } from "../../fs";
-import { createFilesystemDescriptorCodec, type FilesystemDescriptorToken } from "../../proc/filesystem-codec";
+import {
+  createFilesystemDescriptorCodec,
+  type FilesystemDescriptorToken,
+} from "../../proc/filesystem-codec";
 import { atomicHost } from "./wasi-atomic-host";
 
-self.onmessage = ({ data }: MessageEvent<{
+self.onmessage = ({
+  data,
+}: MessageEvent<{
   connection: FilesystemConnection;
   token: FilesystemDescriptorToken;
   reads: readonly { offset: number; length: number }[];
@@ -11,7 +16,10 @@ self.onmessage = ({ data }: MessageEvent<{
   const host = atomicHost(client, {});
   try {
     const description = createFilesystemDescriptorCodec(client).import(data.token, 2);
-    const fd = host.wasi.descriptors.add(description, { rightsBase: 0x1fffffffn, rightsInheriting: 0n });
+    const fd = host.wasi.descriptors.add(description, {
+      rightsBase: 0x1fffffffn,
+      rightsInheriting: 0n,
+    });
     const results = data.reads.map(({ offset, length }) => {
       host.iovecs([new Uint8Array(length).fill(201)]);
       const error = host.calls.fd_pread!(fd, 0, 1, BigInt(offset), 1024);

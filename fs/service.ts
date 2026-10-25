@@ -776,6 +776,17 @@ export class FilesystemService {
     if (operation.startsWith("publicationRead"))
       return this.prepareRead(session, id, buffer, operation, args);
     if (operation === "dirtyWait" && prepared) return;
+    if (operation === "read") {
+      const read = this.backend.prepareDescriptorRead?.(
+        args[0],
+        args[2],
+        args[1],
+        () =>
+          isRevoked(session.connection) ||
+          Atomics.load(new Int32Array(buffer, 0, HEADER / 4), 6) !== 0,
+      );
+      if (read) return this.prepareDescriptorRead(session, id, buffer, operation, args, read);
+    }
     const preparation =
       operation === "dirtyWait"
         ? this.backend.waitForDirtyCapacity?.(
@@ -793,6 +804,22 @@ export class FilesystemService {
     const continuation = prepared ?? { handles: [] };
     this.checkRequest(session, operation, args, continuation.handles);
     this.joinPreparation(session, id, buffer, continuation, preparation);
+    return continuation;
+  }
+  private prepareDescriptorRead(
+    session: Session,
+    id: number,
+    buffer: SharedArrayBuffer,
+    operation: string,
+    args: unknown[],
+    read: Promise<Uint8Array>,
+  ): PreparedRequest {
+    const continuation: PreparedRequest = { handles: [] };
+    this.checkRequest(session, operation, args, continuation.handles);
+    const capture = read.then((value) => {
+      continuation.read = { value };
+    });
+    this.joinPreparation(session, id, buffer, continuation, capture);
     return continuation;
   }
   private prepareRead(

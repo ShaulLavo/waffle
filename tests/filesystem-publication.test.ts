@@ -890,9 +890,9 @@ test("real paused persistent load cannot hydrate after the production domain sto
   let loading: void | Promise<void> = undefined;
   try {
     const output = new Uint8Array(3).fill(42);
+    loading = fixture.backend.prepare("read", [fixture.handle]);
     expect(fixture.root.tryRead(fixture.handle, [output], 0)).toBe(-6);
     await fixture.reading;
-    loading = fixture.backend.prepare("read", [fixture.handle]);
     const domain = fixture.backend.shared.publication!;
     const before = domain.diagnostics();
     expect(fixture.reads()).toBe(1);
