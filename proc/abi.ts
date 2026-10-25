@@ -56,6 +56,8 @@ import {
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
  * module loading and guest startup happen elsewhere, never on this import's stack. */
 export interface ProcessService {
+  /** Directory services publish signals and process lifecycle through this same word. */
+  readonly wake?: Int32Array;
   spawn(parentPid: number, request: SpawnRequest): number;
   /** Consume one safely exited child; null means it is still pending. */
   wait(parentPid: number, pid: number): ProcessExit | null;
@@ -137,6 +139,15 @@ const decode = new TextDecoder("utf-8", { fatal: true });
 const pathDecode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const clock = performance.now.bind(performance);
 type Subscription = { kind: number; id: number; userdata: bigint };
+
+function sameWord(first: Int32Array | undefined, second: Int32Array): boolean {
+  return (
+    first !== undefined &&
+    typedArrayBuffer(first) === typedArrayBuffer(second) &&
+    typedArrayByteOffset(first) === typedArrayByteOffset(second) &&
+    typedArrayLength(first) === 1
+  );
+}
 
 /** Guest adapter for the runtime_proc WASM namespace. Only poll and blocking wait_job wait.
  * FileSystem must provide immediate I/O; worker-backed services supply nonblocking file I/O.
@@ -583,6 +594,41 @@ export class ProcessABI {
     }
     return resource.readiness();
   }
+  private registerPollWake(
+    sub: Subscription,
+    wake: Int32Array,
+    directory: boolean,
+    unregister: (() => void)[],
+    resources: Set<Stream>,
+    notified: Set<Stream>,
+  ): boolean {
+    // accessStart received this ABI's wake and publishes its result before notification.
+    if (sub.kind === 5) return true;
+    if (sub.kind === 2) return directory;
+    if (sub.kind === 3) return false;
+    if (sub.kind === 4 || sub.kind === 6) {
+      if (directory) return true;
+      const release =
+        sub.kind === 4
+          ? this.options.service.registerJobWake?.(this.options.pid, sub.id, wake)
+          : this.options.service.registerChildStartWake?.(this.options.pid, sub.id, wake);
+      if (!release) return false;
+      arrayAppend(unregister, release);
+      return true;
+    }
+    const resource = this.descriptor(sub.id, POLL).resource;
+    if (resource.kind === "file" || resource.kind === "directory") return false;
+    if (setHas(notified, resource)) return true;
+    if (setHas(resources, resource)) return false;
+    setAdd(resources, resource);
+    const stream: NonblockingStream = resource;
+    const shared = sameWord(stream.notification, wake);
+    const release = stream.registerWake?.(wake);
+    if (release) arrayAppend(unregister, release);
+    if (!shared && !release) return false;
+    setAdd(notified, resource);
+    return true;
+  }
   private poll(ptr: number, count: number, timeout: number, out: number): number {
     count >>>= 0;
     if (!Number.isInteger(timeout) || timeout < -1) return -ProcessErrno.INVAL;
@@ -604,30 +650,22 @@ export class ProcessABI {
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
     try {
+      let fullyNotified = false;
       if (wake) {
+        const directory = sameWord(this.options.service.wake, wake);
+        fullyNotified = directory;
         const resources = new SetConstructor<Stream>();
+        const notified = new SetConstructor<Stream>();
         for (const sub of subscriptions) {
-          if (sub.kind === 6) {
-            const release = this.options.service.registerChildStartWake?.(
-              this.options.pid,
-              sub.id,
-              wake,
-            );
-            if (release) arrayAppend(unregister, release);
-          }
-          if (sub.kind === 4) {
-            const release = this.options.service.registerJobWake?.(this.options.pid, sub.id, wake);
-            if (release) arrayAppend(unregister, release);
-          }
-          if (sub.kind > 1) continue;
-          const resource = this.descriptor(sub.id, POLL).resource;
-          if (resource.kind === "file" || resource.kind === "directory") continue;
-          if (!setHas(resources, resource)) {
-            setAdd(resources, resource);
-            const stream: NonblockingStream = resource;
-            const release = stream.registerWake?.(wake);
-            if (release) arrayAppend(unregister, release);
-          }
+          const covered = this.registerPollWake(
+            sub,
+            wake,
+            directory,
+            unregister,
+            resources,
+            notified,
+          );
+          if (!covered) fullyNotified = false;
         }
       }
       const deadline = timeout === -1 ? Infinity : this.now() + timeout;
@@ -656,10 +694,9 @@ export class ProcessABI {
         if (this.pending()) return 0;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
-        // Signals, local child exits and filesystem locks may publish on independent cells.
-        // Until every source guarantees this common wake, rescan within 10 ms even when pipe
-        // readiness uses it. Pipe publications still wake this wait immediately.
-        const milliseconds = Math.min(remaining, 10);
+        // Independent signal, child, filesystem and legacy stream cells still need a bounded
+        // rescan. A fully notified wait set can park until its actual deadline.
+        const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
         const expected = sequence;
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
         else controlWait(word, 0, expected, milliseconds);

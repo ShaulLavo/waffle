@@ -3,10 +3,14 @@ import { DescriptorTable, type Stream } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI } from "../proc/abi.js";
 import { PipeController } from "../proc/pipes.js";
+import { claimOutcome } from "../proc/outcome.js";
 import {
+  confirmWorkerProcessJob,
   createWorkerProcessTransport,
   WorkerProcessClient,
+  workerProcessState,
   type WorkerDescriptorCodec,
+  type WorkerProcessMessage,
 } from "../proc/worker-client.js";
 
 const ALL = (1n << 29n) - 1n;
@@ -25,11 +29,14 @@ function fixture() {
     },
     discard() {},
   };
+  const messages: WorkerProcessMessage[] = [];
   const service = new WorkerProcessClient({
     transport,
     descriptors,
     codec,
-    postMessage() {},
+    postMessage(message) {
+      messages.push(message);
+    },
   });
   const controller = new PipeController({ capacity: 8, wake: service.wake });
   const reader = descriptors.open(controller.retain(service.pid, "read"), ALL, ALL);
@@ -75,6 +82,7 @@ function fixture() {
     abi,
     descriptors,
     service,
+    messages,
     memory,
     reader,
     writer,
@@ -105,6 +113,30 @@ test("mixed directory subscriptions park once across multiple idle processes", (
     }
   } finally {
     for (const process of processes) process.close();
+  }
+});
+
+test("directory lifecycle publication wakes child, job and startup subscriptions", () => {
+  const process = fixture();
+  try {
+    const { child, job } = process.spawn();
+    const message = process.messages.at(-1);
+    if (message?.operation !== "spawn") throw new Error("spawn transport missing");
+    process.subscribe(0, 2, child);
+    process.subscribe(1, 4, job);
+    process.subscribe(2, 6, child);
+    process.act(() => {
+      expect(process.waits).toEqual([Infinity]);
+      const state = workerProcessState(message.transport);
+      claimOutcome(state.signals.outcome, { kind: "exited", code: 23 });
+      confirmWorkerProcessJob(message.transport);
+    });
+    expect(process.poll(3, -1)).toBe(3);
+    expect(process.waits).toEqual([Infinity]);
+    expect(process.abi.imports.wait!(child, 64)).toBe(0);
+    expect(new DataView(process.memory.buffer).getInt32(68, true)).toBe(23);
+  } finally {
+    process.close();
   }
 });
 
