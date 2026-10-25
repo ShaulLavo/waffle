@@ -854,6 +854,7 @@ export class MemoryBackend implements FilesystemBackend {
         this.identityChanged(node);
         this.shared.updateIdentity(handle, identity);
       }
+      this.shared.watch.effects(plan.changes);
     } finally {
       this.shared.identityGroup = false;
     }

@@ -95,6 +95,13 @@
       "browser": "./fs/backend.ts",
       "default": "./fs/backend.ts"
     },
+    "./fs/watch": {
+      "types": "./fs/watch.ts",
+      "node": "./dist/fs/watch.js",
+      "bun": "./fs/watch.ts",
+      "browser": "./fs/watch.ts",
+      "default": "./fs/watch.ts"
+    },
     "./fs/client": {
       "types": "./fs/client.ts",
       "node": "./dist/fs/client.js",
