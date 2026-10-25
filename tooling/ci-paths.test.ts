@@ -30,7 +30,7 @@ function selected(name: string, path: string): boolean {
 for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
-    expect(job.needs).toBe("changes");
+    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm"] : "changes");
     expect(job.if).toBe(
       `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true') }}`,
     );
@@ -174,7 +174,7 @@ test("package and site gates remain unconditional", () => {
   for (const name of ["package", "site"]) {
     const job = record(jobs[name]);
     expect(job.if).toBeUndefined();
-    expect(job.needs).toBeUndefined();
+    expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
   }
 });
 
@@ -192,4 +192,38 @@ test("package runs each test root once without repeating preparation", () => {
     1,
   );
   expect(commands).not.toContain("bun run prepare");
+});
+
+test("Rust network inputs select one release test/build lane and an exact WASM cache", () => {
+  for (const path of ["network/src/lib.rs", "Cargo.lock", "tooling/build-network.ts"])
+    expect(selected("browser", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "network/src/lib.rs",
+    "network/tests/module.rs",
+    "tooling/build-network.ts",
+    "browser/net/module.ts",
+    "tests/network-module.test.ts",
+  ])
+    expect(selected("network", path), path).toBe(true);
+  expect(selected("network", "docs/network.md")).toBe(false);
+  const steps = stepsFor("network-wasm");
+  expect(
+    steps.filter((step) => typeof step.run === "string" && step.run.includes("cargo test")),
+  ).toHaveLength(1);
+  const testStep = steps.find(
+    (step) => typeof step.run === "string" && step.run.includes("cargo test"),
+  );
+  expect(String(testStep?.run)).toContain("--release");
+  expect(String(testStep?.run)).toContain("--features module-tests");
+  expect(record(testStep?.env).WAFFLE_TCP_MODULE).toContain("network.wasm");
+  const cache = steps.find((step) => step.id === "network-artifact");
+  expect(record(cache?.with)["restore-keys"]).toBeUndefined();
+  for (const job of ["package", "browser"]) {
+    const restore = stepsFor(job).find((step) => step.id === "network-artifact");
+    expect(record(restore?.with).key).toBe(record(cache?.with).key);
+    expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  }
 });

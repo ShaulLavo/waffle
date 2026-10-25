@@ -104,3 +104,9 @@ through shared rings. Preview URL routing and service-worker scope remain consum
 The standalone gates run package install and `prepare`, TypeScript checking, unit tests, installed
 Node exports, generic browser storage/process acceptance, and the gzip core budget declared in
 `tooling/runtime-size.ts`. Generated `dist/` output is ignored and must never be committed.
+
+## Rust socket module lane
+
+Approved, in progress in draft PR105 from exact base `d9973ca6b892ecf4b8a210be5328eb2645207d0d`. The first module moves portable queues, nonblocking stream state, native dual-stack bind/fallback and browser virtual namespace rules into Rust. Waffle owns the reference `socket2` import adapter. Helpers retain the existing rings and guest contracts. The lazy boundary remains `runtime.network()`.
+
+Remaining consumer work belongs to the Bun parent lane: wire the explicit module/import bridge, update the exact Waffle pin, and rerun facade fixtures. Asynchronous bind completions, DNS, TLS and close-linger timers are not delivered by the immediate nonblocking host ABI. No native threads run in WASM.

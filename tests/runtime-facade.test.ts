@@ -1163,6 +1163,12 @@ test("facade initial browser graph keeps process services and interrupt compilat
       !/(?:^|\/)(identity|stub|outcome|signals|control|types|intrinsics)\.ts$/.test(path),
   );
   expect(processInputs).toEqual([]);
+  expect(inputs.filter((path) => /(?:^|\/)(?:network|native)\//.test(path))).toEqual([]);
+  expect(
+    inputs.filter((path) => /browser\/net\/(?:module|namespace|runtime)\.ts$/.test(path)),
+  ).toEqual([]);
+  const modules = Object.keys(result.metafile!.inputs);
+  expect(modules.some((path) => /network\.wasm|native\/|socket2/.test(path))).toBe(false);
   expect(inputs.filter((path) => /(?:^|\/)interrupt\//.test(path))).toEqual([]);
   expect(
     Array.from(outputs.values()).some((output) =>

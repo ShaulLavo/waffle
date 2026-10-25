@@ -72,6 +72,10 @@ export async function runNetworkBrowser(names: readonly string[] = ["chromium"])
           "Cross-Origin-Embedder-Policy": "require-corp",
           "Content-Type": path === "/" ? "text/html" : "text/javascript",
         };
+        if (path.endsWith("/network.wasm"))
+          return new Response(Bun.file(new URL("../browser/net/network.wasm", import.meta.url)), {
+            headers: { ...headers, "Content-Type": "application/wasm" },
+          });
         if (path === "/")
           return new Response("<!doctype html><title>Network workers</title>", { headers });
         return new Response(scripts.get(path) ?? "Not found", {

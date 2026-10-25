@@ -1,5 +1,5 @@
 // Source-first package: emit one Node module per source, preserving shared state.
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 function inside(root: string, path: string): boolean {
@@ -245,6 +245,8 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
 }
 
 export async function buildNodeModules(root = import.meta.dir): Promise<void> {
+  const { buildNetwork } = await import("./tooling/build-network");
+  await buildNetwork(root);
   const outdir = join(root, "dist");
   rmSync(outdir, { recursive: true, force: true });
   const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
@@ -268,6 +270,7 @@ export async function buildNodeModules(root = import.meta.dir): Promise<void> {
   }
   for (const directory of ["core", "fs", "proc", "interrupt", "browser"]) await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
+  copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));
 }
 
 if (import.meta.main) await buildNodeModules();

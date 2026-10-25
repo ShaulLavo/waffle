@@ -6,13 +6,15 @@ Waffle is a private, exact-commit Git dependency while its public API settles ([
 
 ## Set up
 
-You need [Bun](https://bun.sh). CI uses Bun 1.4.4. From the repository root:
+You need [Bun](https://bun.sh) and the Rust toolchain pinned in `rust-toolchain.toml`, including `wasm32-unknown-unknown`. CI uses Bun 1.4.4. From the repository root:
 
 ```sh
 bun install --frozen-lockfile
 bun install --cwd site --frozen-lockfile
 bun run prepare
 ```
+
+`bun run build:network` builds the separate Rust WASM asset. `bun run size:network` reports its independent budgets. Native and compiled-module tests run with `WAFFLE_TCP_MODULE=$PWD/browser/net/network.wasm bun run test:network:rust`.
 
 `bun run prepare` writes the Node entry points under `dist/`. `dist/` is ignored, and CI fails if `git ls-files dist` lists anything.
 

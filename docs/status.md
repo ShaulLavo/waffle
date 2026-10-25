@@ -54,10 +54,26 @@ Waffle's code and docs do not mention Wasm threads or other post-Preview 1 inter
 | Processes             | 1,024 simultaneously enrolled by default.                                                          | `proc/pipes.ts`, `proc/worker-client.ts` |
 | Pipes                 | 64 KiB capacity, 16 writers and 16 readers by default. Lifetime cells exhausted: `ENFILE`.         | [Architecture](architecture.md)          |
 | Signals               | Linux numbers 1 to 31 and 34 to 64. Stop signals 19 to 22 return `ENOTSUP`. No stopped state.      | [Architecture](architecture.md)          |
-| Network               | Virtual loopback only: `127.0.0.1`, `0.0.0.0`, `::1`, `::`. Port 0 picks from 49152 to 65535.      | [Networking](network.md)                 |
+| Browser network       | Virtual loopback only: `127.0.0.1`, `0.0.0.0`, `::1`, `::`. Port 0 picks from 49152 to 65535.      | [Networking](network.md)                 |
 | TCP buffering         | 1 MiB unread per direction. HTTP fetch bodies use a 512 KiB window.                                | [Networking](network.md)                 |
 | Permissions           | One virtual principal. Files `0600`, directories `0700`. No owners, groups or symlinks.            | [Permissions](permissions.md)            |
 | Host identity         | `runtime.hostIdentity` is `null` unless the embedder passes `uid`, `euid` and `hostname`.          | [Process identity](process-context.md)   |
+
+## Separate network module
+
+The lazy Rust `wasm32-unknown-unknown` module and Waffle-owned native `socket2` binding are implemented in draft PR105. This is a scoped Rust exception, recorded in [ADR 005](adr/005-lazy-rust-wasm-network.md). The runtime loads the module at `runtime.network()`, with one instance per runtime and no OS socket binding in browser hosts. Guest network calls, rings, JSON and handles are unchanged.
+
+Measured on 2026-10-25 with the pinned Rust toolchain and `bun run size:network`:
+
+| Artifact                     |  Bytes | Separate budget |
+| ---------------------------- | -----: | --------------: |
+| Network WASM                 | 80,998 |          85,000 |
+| Network WASM, gzip           | 26,293 |          28,000 |
+| Lazy JavaScript loader, gzip |    664 |             800 |
+
+The core measured 9,196 gzip bytes. Its existing 9,782-byte budget is unchanged. Source installation now needs the pinned Rust toolchain and WASM target. Generated assets are not checked in.
+
+Native tests cover real IPv4 and IPv6 connections, IPv6-only OS controls, disposable-child IPv4 fallback, partial host operations, backpressure, readiness, half-close and cleanup. The browser network matrix passes in Chromium, Firefox and WebKit and remains virtual-only. Bun consumer wiring, its matching dependency pin and facade fixtures are not delivered here. The host ABI supports immediate nonblocking bind and readiness-driven connect/I/O, not asynchronous bind completion, DNS, TLS or close-linger timers. The reference readiness wait is Unix-only. See [Network module ABI](network-module.md).
 
 ## Known gaps
 

@@ -20,9 +20,11 @@ source-only consumers and the generated Node exports working together.
 - Work in an exclusive worktree. Never edit, build or test the shared checkout. Each run
   owns teardown of its processes and scratch. The owner's machine paths are in
   `.internal/owner-machine.md`.
-- New code is TypeScript, except the native-only Rust TCP leaf in `native/tcp/`,
-  explicitly authorized for the Bun native host transport extraction. It must not
-  enter browser bundles or carry Bun API, JSON, error-shaping or handle policy.
+- New code is TypeScript, except the explicitly authorized Rust network module in
+  `network/` and its native socket2 adapter. Compile the portable module only to
+  wasm32-unknown-unknown, loaded at runtime.network(); native OS code never enters
+  browser bundles. Keep Bun APIs, JSON errors, public handles and engine policy in Bun.
+  The Rust exception and source-install toolchain are recorded in ADR 005.
   Do not check in compiled JavaScript, `dist/`, binaries,
   screenshots or test evidence: consumers clone this repository. The existing
   `core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.

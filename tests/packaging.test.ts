@@ -39,3 +39,13 @@ const pattern = /import('keep')/;`;
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("prepare emits the same network asset beside source and Node loaders", async () => {
+  const source = await Bun.file(
+    new URL("../browser/net/network.wasm", import.meta.url),
+  ).arrayBuffer();
+  const prepared = await Bun.file(
+    new URL("../dist/browser/net/network.wasm", import.meta.url),
+  ).arrayBuffer();
+  expect(new Uint8Array(prepared)).toEqual(new Uint8Array(source));
+});

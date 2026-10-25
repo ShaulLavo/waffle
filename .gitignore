@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .runtime-size/
+target/
+browser/net/network.wasm
+browser/net/network.input-hash
