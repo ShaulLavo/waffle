@@ -74,7 +74,7 @@ export class RingWriter extends RingBase {
 
   private async append(handle: number, kind: number, payload: Uint8Array): Promise<void> {
     const size = align4(RECORD_HEADER + payload.length);
-    while (!this.disposed && CAPACITY - this.used() < size) await this.waitForSpace();
+    while (!this.disposed && CAPACITY - this.used() < size) await this.waitForSpace(size);
     if (this.disposed) return;
     this.headerView.setInt32(0, handle, true);
     this.headerView.setInt32(4, kind, true);
@@ -95,8 +95,9 @@ export class RingWriter extends RingBase {
     if (first < bytes.length) this.data.set(bytes.subarray(first), 0);
   }
 
-  private async waitForSpace(): Promise<void> {
+  private async waitForSpace(size: number): Promise<void> {
     const seen = Atomics.load(this.cells, SPACE);
+    if (CAPACITY - this.used() >= size) return;
     // Atomics.waitAsync is missing in some engines; a short timer works everywhere.
     const waitAsync = (Atomics as unknown as { waitAsync?: WaitAsync }).waitAsync;
     if (waitAsync) {
