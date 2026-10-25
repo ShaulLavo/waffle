@@ -337,9 +337,13 @@ export class PersistentBackend extends MemoryBackend {
     if (!count) return Promise.resolve(new Uint8Array());
     const backing = this.selectReadBacking(node, offset, count);
     if (backing.kind !== "cold") throw new FilesystemError(6);
-    const work = this.readDescriptorRange(backing, offset, count, cancelled);
-    this.ownWork(work.then(() => {}));
-    return work;
+    const drained = Promise.withResolvers<void>();
+    this.ownWork(drained.promise);
+    return this.readDescriptorRange(backing, offset, count, cancelled).finally(() => {
+      const release = Promise.resolve().then(() => backing.retention.release());
+      void release.then(drained.resolve, drained.reject);
+      return release;
+    });
   }
   private async readDescriptorRange(
     backing: Extract<ReadBacking, { kind: "cold" }>,
@@ -347,15 +351,11 @@ export class PersistentBackend extends MemoryBackend {
     length: number,
     cancelled: () => boolean,
   ): Promise<Uint8Array> {
-    try {
-      if (cancelled() || this.stopped) throw new FilesystemError(11);
-      const bytes = await backing.storage.readRange(backing.key, { offset, length });
-      if (cancelled() || this.stopped) throw new FilesystemError(11);
-      if (bytes.length !== length) throw new Error("Short retained descriptor range");
-      return bytes;
-    } finally {
-      await backing.retention.release();
-    }
+    if (cancelled() || this.stopped) throw new FilesystemError(11);
+    const bytes = await backing.storage.readRange(backing.key, { offset, length });
+    if (cancelled() || this.stopped) throw new FilesystemError(11);
+    if (bytes.length !== length) throw new Error("Short retained descriptor range");
+    return bytes;
   }
   private evictClean(except?: FileHandle): void {
     // Registration is bounded independently of workspace size. Idle metadata and clean payload

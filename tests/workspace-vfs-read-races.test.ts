@@ -263,7 +263,7 @@ async function actualWriter(kind: Writer, value: WriterRoot, handle: number): Pr
     await value.client.asyncCall("writeFile", ["/replacement"], new Uint8Array([90]));
     return;
   }
-  await value.client.asyncCall("read", [handle, 1, 0]);
+  if (value.backend instanceof PersistentBackend) await value.backend.prepare("read", [handle]);
   const peer = new FilesystemClient(value.client.fork());
   try {
     const directory = await peer.asyncCall("preopen", ["/"]);

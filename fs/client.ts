@@ -1053,7 +1053,7 @@ export class FilesystemClient implements FileSystem {
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
-    if (pending?.kind === "read" && !writing)
+    if (pending?.kind === "read")
       return { readable: pending.completion.ready, writable: false, hangup: false };
     if (pending && !pending.completion.ready)
       return { readable: false, writable: false, hangup: false };
