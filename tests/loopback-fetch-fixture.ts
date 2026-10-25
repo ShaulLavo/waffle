@@ -10,7 +10,7 @@ afterEach(() => {
 });
 export const encode = (text: string) => new TextEncoder().encode(text);
 export const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-export function peer(
+function peer(
   namespace: NetNamespace,
   fetchRequest: NetFetch = async () => {
     throw Error("Outbound denied");
@@ -32,7 +32,12 @@ export function peer(
     if (data.kind === "error") call?.reject(Error(data.message));
     else call?.resolve(data.value);
   };
-  worker.onerror = (event) => ready.reject(Error(event.message));
+  worker.onerror = (event) => {
+    const failure = Error(event.message);
+    ready.reject(failure);
+    for (const call of pending.values()) call.reject(failure);
+    pending.clear();
+  };
   const close = () => {
     teardown.delete(close);
     worker.terminate();
@@ -58,7 +63,7 @@ export async function handle(peer: Peer, command: FetchCommand): Promise<number>
   if (typeof value !== "number") throw Error("Expected handle");
   return value;
 }
-export async function settled(peer: Peer, command: FetchCommand): Promise<unknown> {
+async function settled(peer: Peer, command: FetchCommand): Promise<unknown> {
   for (let i = 0; i < 1000; i++) {
     const value = await peer.call(command);
     if (value !== AGAIN) return value;

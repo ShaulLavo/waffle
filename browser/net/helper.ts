@@ -63,7 +63,7 @@ export interface ConnectionSink {
   error(message: string): void;
 }
 
-/** The application supplies its network policy (plain fetch, caching, authentication, etc.). */
+/** External network policy. Honor manual redirects and return already-decoded Fetch bodies. */
 export type NetFetch = (url: string, options: RequestInit) => Promise<Response>;
 
 export interface NetHelperHooks {
