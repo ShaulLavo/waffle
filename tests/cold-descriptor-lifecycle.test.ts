@@ -102,7 +102,9 @@ for (const cancel of [false, true]) {
       storageCloses++;
     };
     try {
-      const read = fixture.backend.prepareDescriptorRead(fixture.handle, 123, 1, () => cancelled)!;
+      const read = cancel
+        ? fixture.backend.prepareDescriptorRead(fixture.handle, 123, 1, () => cancelled)!
+        : fixture.client.asyncCall("read", [fixture.handle, 1, 123]);
       const result = read.then(
         () => 0,
         (error) => error.errno,
@@ -128,3 +130,41 @@ for (const cancel of [false, true]) {
     }
   });
 }
+
+test("failed retained-range release still prevents storage close", async () => {
+  const fixture = await coldDescriptorFixture();
+  const failure = new Error("retention release failed");
+  const retain = fixture.storage.retainPayload.bind(fixture.storage);
+  fixture.storage.retainPayload = (...args) => {
+    const retention = retain(...args);
+    return {
+      async release() {
+        await retention.release();
+        throw failure;
+      },
+    };
+  };
+  const gate = fixture.pauseRange();
+  let storageCloses = 0;
+  fixture.storage.close = async () => {
+    storageCloses++;
+  };
+  try {
+    const read = fixture.backend.prepareDescriptorRead(fixture.handle, 123, 1, () => false)!;
+    const result = read.catch((error: unknown) => error);
+    await gate.entered;
+    const closing = fixture.backend.close();
+    const closed = closing.catch((error: unknown) => error);
+    gate.release();
+    expect(await result).toBe(failure);
+    expect(await closed).toBe(failure);
+    expect(fixture.backend.close()).toBe(closing);
+    expect(storageCloses).toBe(0);
+    expect(fixture.counters.retained).toBe(0);
+  } finally {
+    gate.release();
+    await fixture.close().catch(() => {});
+    fixture.client.connection.port.close();
+    fixture.service.dispose();
+  }
+});
