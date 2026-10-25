@@ -24,13 +24,21 @@ export function linkedWorkerHooks(): Pick<
       const plan = await prepareLinkPlan(context.request.linkPlan);
       context.checkActive();
       if (finished) throw new Error("link executor finished during admission");
-      group = instantiateLinkPlan(plan, {
+      const linked = instantiateLinkPlan(plan, {
         wasi: context.wasi,
         coreImports: imports,
         checkActive: context.checkActive,
         bindMemory: context.bindMemory,
       });
-      return group.entry;
+      try {
+        context.checkActive();
+        if (finished) throw new Error("link executor finished during linking");
+        group = linked;
+        return linked.entry;
+      } catch (error) {
+        linked.dispose();
+        throw error;
+      }
     },
     initialize(context) {
       context.checkActive();

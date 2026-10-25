@@ -10,9 +10,12 @@ export interface FunctionSignature {
   readonly params: readonly number[];
   readonly results: readonly number[];
 }
+export interface FunctionExport extends FunctionSignature {
+  readonly index: number;
+}
 export interface ModuleProfile {
   readonly passiveData: boolean;
-  readonly functions: ReadonlyMap<string, FunctionSignature>;
+  readonly functions: ReadonlyMap<string, FunctionExport>;
   readonly memory: MemoryInfo | undefined;
   readonly globalImports: readonly string[];
   readonly immutableI32Exports: ReadonlySet<string>;
@@ -185,7 +188,7 @@ function functionExports(
   sections: Map<number, Reader>,
   imported: readonly number[],
   member: string,
-): ReadonlyMap<string, FunctionSignature> {
+): ReadonlyMap<string, FunctionExport> {
   const copy = (id: number) => new Reader(sections.get(id)?.bytes ?? new Uint8Array([0]), member);
   const types = copy(1),
     signatures: FunctionSignature[] = [];
@@ -202,7 +205,7 @@ function functionExports(
   const indices = imported.concat(Array.from({ length: size }, () => defined.u32()));
   defined.done();
   const exports = copy(7),
-    result = new Map<string, FunctionSignature>();
+    result = new Map<string, FunctionExport>();
   const exported = exports.u32();
   for (let index = 0; index < exported; index++) {
     const name = exports.name(),
@@ -211,7 +214,7 @@ function functionExports(
     if (kind !== 0) continue;
     const signature = signatures[indices[target] ?? -1];
     if (!signature) invalid(member, `invalid function export ${name}`);
-    result.set(name, signature);
+    result.set(name, { ...signature, index: target });
   }
   exports.done();
   return result;

@@ -1,8 +1,15 @@
 import { expect, test } from "bun:test";
 import { Wasi } from "../core/wasi.js";
 import { MemFS } from "../fs/memory.js";
-import { instantiateLinkPlan, prepareLinkPlan, type LinkPlanSource } from "../link/index.js";
+import {
+  instantiateLinkPlan,
+  linkedWorkerHooks,
+  prepareLinkPlan,
+  type LinkPlanSource,
+} from "../link/index.js";
 import { compileInterruptible } from "../interrupt/loader.js";
+import { bootstrap } from "../browser/worker.js";
+import { createFilesystemConnection } from "../fs/protocol.js";
 
 const u32 = (n: number): number[] =>
   n < 128 ? [n] : [(n % 128) + 128].concat(u32(Math.floor(n / 128)));
@@ -24,7 +31,9 @@ const body = (ops: number[], locals: number[] = [0]) => {
 const global = (mutable: boolean, value: number) =>
   [0x7f, Number(mutable), 0x41].concat(u32(value), [0x0b]);
 
-function core(options: { pages?: number; reserve?: number[] } = {}): Uint8Array {
+function core(
+  options: { pages?: number; reserve?: number[]; aliases?: readonly [string, number][] } = {},
+): Uint8Array {
   return binary(
     section(1, vector([type([]), type([0x7f, 0x7f], [0x7f]), type([0x7f], [0x7f])])),
     section(2, vector([imp("env", "check", [0, 0])])),
@@ -44,21 +53,23 @@ function core(options: { pages?: number; reserve?: number[] } = {}): Uint8Array 
     ),
     section(
       7,
-      vector([
-        exp("check", 0, 0),
-        exp("memory", 2, 0),
-        exp("__indirect_function_table", 1, 0),
-        exp("__stack_pointer", 3, 0),
-        exp("stdout", 3, 2),
-        exp("_CLOCK_MONOTONIC", 3, 3),
-        exp("errno", 3, 4),
-        exp("initialized", 3, 5),
-        exp("bun_core_alloc", 0, 1),
-        exp("add", 0, 2),
-        exp("_start", 0, 3),
-        exp("init", 0, 4),
-        exp("invoke", 0, 5),
-      ]),
+      vector(
+        [
+          exp("check", 0, 0),
+          exp("memory", 2, 0),
+          exp("__indirect_function_table", 1, 0),
+          exp("__stack_pointer", 3, 0),
+          exp("stdout", 3, 2),
+          exp("_CLOCK_MONOTONIC", 3, 3),
+          exp("errno", 3, 4),
+          exp("initialized", 3, 5),
+          exp("bun_core_alloc", 0, 1),
+          exp("add", 0, 2),
+          exp("_start", 0, 3),
+          exp("init", 0, 4),
+          exp("invoke", 0, 5),
+        ].concat((options.aliases ?? []).map(([name, index]) => exp(name, 0, index))),
+      ),
     ),
     section(
       10,
@@ -79,7 +90,12 @@ function core(options: { pages?: number; reserve?: number[] } = {}): Uint8Array 
     ),
   );
 }
-function side(got = "errno", namespace = "GOT.mem", alignment = 4): Uint8Array {
+function side(
+  got = "errno",
+  namespace = "GOT.mem",
+  alignment = 4,
+  options: { relocationCheck?: boolean; aliases?: readonly [string, number][] } = {},
+): Uint8Array {
   return binary(
     section(0, text("dylink.0").concat([1, 4, 16, alignment, 1, 0])),
     section(1, vector([type([]), type([0x7f], [0x7f])])),
@@ -99,13 +115,15 @@ function side(got = "errno", namespace = "GOT.mem", alignment = 4): Uint8Array {
     section(3, vector([[1], [0], [0]])),
     section(
       7,
-      vector([
-        exp("run", 0, 2),
-        exp("init", 0, 3),
-        exp("__wasm_apply_data_relocs", 0, 4),
-        exp("stack", 3, 2),
-        exp("got", 3, 3),
-      ]),
+      vector(
+        [
+          exp("run", 0, 2),
+          exp("init", 0, 3),
+          exp("__wasm_apply_data_relocs", 0, 4),
+          exp("stack", 3, 2),
+          exp("got", 3, 3),
+        ].concat((options.aliases ?? []).map(([name, index]) => exp(name, 0, index))),
+      ),
     ),
     section(9, [1, 0, 0x23, 1, 0x0b, 1, 2]),
     section(
@@ -116,7 +134,11 @@ function side(got = "errno", namespace = "GOT.mem", alignment = 4): Uint8Array {
           0x24, 2,
         ]),
         body([0x10, 0, 0x23, 0, 0x41, 4, 0x6a, 0x41, 0xe3, 0, 0x36, 2, 0]),
-        body([0x23, 0, 0x41, 8, 0x6a, 0x23, 1, 0x36, 2, 0]),
+        body(
+          (options.relocationCheck ? [0x10, 0] : []).concat([
+            0x23, 0, 0x41, 8, 0x6a, 0x23, 1, 0x36, 2, 0,
+          ]),
+        ),
       ]),
     ),
     section(11, [1, 0, 0x23, 0, 0x0b, 3, 1, 2, 3]),
@@ -404,4 +426,150 @@ test("GOT.func and true Wasm start are rejected before any instance", async () =
       },
     }),
   ).rejects.toThrow("true Wasm start");
+});
+
+for (const member of ["core", "engine"]) {
+  test(`duplicate ${member} initializers reject during preparation and readmission`, async () => {
+    const input = source();
+    const plan = await prepareLinkPlan(input);
+    const transfer = plan.toSource();
+    const target = member === "core" ? transfer.core : transfer.libraries[0]!;
+    const repeated = { ...target, initialize: ["init", "init"] };
+    const changed =
+      member === "core" ? { ...transfer, core: repeated } : { ...transfer, libraries: [repeated] };
+    await expect(prepareLinkPlan(changed)).rejects.toThrow("duplicate initializer");
+    await expect(prepareLinkPlan(structuredClone(changed))).rejects.toThrow(
+      "duplicate initializer",
+    );
+  });
+}
+
+for (const name of ["_start", "entry_alias"]) {
+  test(`command entry ${name} cannot be scheduled as an initializer`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        core: {
+          ...input.core,
+          source: core({ aliases: [["entry_alias", 3]] }),
+          initialize: [name],
+        },
+      }),
+    ).rejects.toThrow("command entry");
+  });
+}
+
+for (const name of ["__wasm_apply_data_relocs", "reloc_alias"]) {
+  test(`automatic relocation ${name} cannot be manually scheduled`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [
+          {
+            ...input.libraries[0]!,
+            source: side("errno", "GOT.mem", 4, { aliases: [["reloc_alias", 4]] }),
+            initialize: [name],
+          },
+        ],
+      }),
+    ).rejects.toThrow("automatic relocation");
+  });
+}
+
+test("constructor aliases cannot schedule the same function twice", async () => {
+  const input = source();
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      core: {
+        ...input.core,
+        source: core({ aliases: [["init_alias", 4]] }),
+        initialize: ["init", "init_alias"],
+      },
+    }),
+  ).rejects.toThrow("duplicate initializer");
+});
+
+test("finish reentered by the final relocation clears linked table slots", async () => {
+  const input = source();
+  const plan = await prepareLinkPlan({
+    ...input,
+    libraries: [
+      { ...input.libraries[0]!, source: side("errno", "GOT.mem", 4, { relocationCheck: true }) },
+    ],
+  });
+  const connection = createFilesystemConnection();
+  const hooks = linkedWorkerHooks();
+  const messages: unknown[] = [];
+  let table: WebAssembly.Table | undefined;
+  try {
+    await bootstrap(
+      {
+        module: plan.entryModule,
+        linkPlan: plan.toSource(),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
+      {
+        ...hooks,
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces(context) {
+          return {
+            env: {
+              check() {
+                context.finish({ code: 23 });
+              },
+            },
+          };
+        },
+        instantiate(imports, context) {
+          const original = context.wasi.imports.bind(context.wasi);
+          context.wasi.imports = (module, bindings) => {
+            const resolved = original(module, bindings);
+            const candidate = resolved.env?.__indirect_function_table;
+            if (candidate instanceof WebAssembly.Table) table = candidate;
+            return resolved;
+          };
+          return hooks.instantiate!(imports, context);
+        },
+        run() {
+          throw new Error("must not enter a finished group");
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    expect(messages).toContainEqual({
+      type: "exit",
+      code: 23,
+      signal: undefined,
+      sleep: "atomics",
+    });
+    expect(table).toBeInstanceOf(WebAssembly.Table);
+    expect(table?.get(1)).toBeNull();
+    expect(
+      messages.filter(
+        (message) =>
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "exit",
+      ),
+    ).toHaveLength(1);
+  } finally {
+    hooks.beforeFinish!();
+    connection.client.port.close();
+    connection.server.port.close();
+  }
 });

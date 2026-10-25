@@ -82,8 +82,25 @@ function snapshot(member: LinkMemberSource): LinkMemberSource {
   };
 }
 
+function validateInitializers(member: LinkMemberSource, profile: ModuleProfile): void {
+  const scheduled = new Set<number>();
+  const entry = profile.functions.get("_start");
+  const relocation = profile.functions.get("__wasm_apply_data_relocs");
+  for (const name of member.initialize) {
+    requireSignature(profile, member.id, name, [], []);
+    const fn = profile.functions.get(name)!;
+    if (fn.index === entry?.index)
+      invalid(member.id, `initializer ${name} is owned by command entry`);
+    if (fn.index === relocation?.index)
+      invalid(member.id, `initializer ${name} is owned by automatic relocation`);
+    if (scheduled.has(fn.index)) invalid(member.id, `duplicate initializer ${name}`);
+    scheduled.add(fn.index);
+  }
+}
+
 async function compile(member: LinkMemberSource, side: boolean): Promise<CompiledMember> {
   const profile = inspectProfile(member.source, member.id, side);
+  validateInitializers(member, profile);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new Uint8Array(member.source)),
   );
@@ -120,15 +137,6 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
     )
   )
     invalid(member.id, `checkpoint import ${checkpoint.module}.${checkpoint.name} is absent`);
-  for (const name of member.initialize) {
-    requireSignature(profile, member.id, name, [], []);
-    if (
-      !WebAssembly.Module.exports(module).some(
-        (entry) => entry.name === name && entry.kind === "function",
-      )
-    )
-      invalid(member.id, `initializer ${name} is absent`);
-  }
   if (profile.functions.has("__wasm_apply_data_relocs"))
     requireSignature(profile, member.id, "__wasm_apply_data_relocs", [], []);
   return { id: member.id, module, profile, initialize: member.initialize };

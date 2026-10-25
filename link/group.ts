@@ -222,6 +222,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   try {
     for (const member of plan.libraries)
       linkLibrary(member, plan, core, host, memory, table, libraries, ranges, got);
+    host.checkActive();
   } catch (error) {
     dispose();
     throw error;

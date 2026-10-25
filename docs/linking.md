@@ -77,6 +77,8 @@ members, rename the generic `__wasm_apply_data_relocs` export and list it after
 memory initialization. Waffle will not guess that order. For active-only
 members, an exported generic data-relocation function runs before constructors.
 Declared zero-argument initializers run once, core then libraries.
+Preparation rejects repeated function targets, including export aliases.
+Command entry and automatic relocation cannot also be explicit initializers.
 
 The observed `GOT.mem` names `stdout`, `_CLOCK_MONOTONIC`, and `errno` resolve
 only to immutable core i32 address exports inside the same memory. Libraries
