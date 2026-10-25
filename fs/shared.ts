@@ -743,6 +743,19 @@ export class SharedFilesystemState {
       throw error;
     }
   }
+  private refreshRegistered(slot: number, stat: FileStat): boolean {
+    if (!this.slots[this.at(slot, 0)] || this.slots[this.at(slot, INO)] !== stat.ino) return false;
+    Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
+    if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
+      this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
+      this.changed(slot);
+    }
+    if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
+      this.setTimestamp(slot, stat.mtime);
+      this.changed(slot);
+    }
+    return true;
+  }
   register(
     handle: FileHandle,
     stat: FileStat,
@@ -757,18 +770,7 @@ export class SharedFilesystemState {
       this.lock(this.at(slot, FILE_LOCK));
       let pinned = false;
       try {
-        if (this.slots[this.at(slot, 0)] && this.slots[this.at(slot, INO)] === stat.ino) {
-          Atomics.store(this.slots, this.at(slot, NLINK), stat.nlink);
-          if (this.slots[this.at(slot, MODE)] !== (stat.mode ?? -1)) {
-            this.slots[this.at(slot, MODE)] = stat.mode ?? -1;
-            this.changed(slot);
-          }
-          if (stat.kind === "directory" && this.getMtime(slot) !== stat.mtime) {
-            this.setTimestamp(slot, stat.mtime);
-            this.changed(slot);
-          }
-          return;
-        }
+        if (this.refreshRegistered(slot, stat)) return;
         this.dirtyAdmission.pin(1, this.residentBytes());
         pinned = true;
         const loaded = resident || stat.size === 0;
