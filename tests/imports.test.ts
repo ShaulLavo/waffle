@@ -63,3 +63,30 @@ test("namespace and import lookup ignore inherited object properties", () => {
   );
   expect(() => host().imports(guest("wasi_snapshot_preview1", "toString"))).toThrow("toString");
 });
+
+test("binding memory is idempotent and rejects replacement before mutating host views", () => {
+  const h = host();
+  const first = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+  const second = new WebAssembly.Memory({ initial: 1 });
+  h.bindMemory(first);
+  h.bindMemory(first);
+  expect(() => h.bindMemory(second)).toThrow("cannot replace");
+  const tick = h["functions"]().clock_time_get;
+  expect(tick(0, 0n, 0)).toBe(0);
+  expect(new DataView(first.buffer).getBigUint64(0, true)).toBeGreaterThan(0n);
+  expect(new DataView(second.buffer).getBigUint64(0, true)).toBe(0n);
+  first.grow(0);
+  expect(tick(0, 0n, 8)).toBe(0);
+  first.grow(1);
+  expect(tick(0, 0n, 65536)).toBe(0);
+});
+
+test("per-member env imports cannot supply missing process or WASI functions", () => {
+  const h = host();
+  expect(() => h.imports(guest("runtime_proc", "fake"), { env: { fake: () => 0 } })).toThrow(
+    "runtime_proc.fake",
+  );
+  expect(() =>
+    h.imports(guest("wasi_snapshot_preview1", "fake"), { env: { fake: () => 0 } }),
+  ).toThrow("fake");
+});

@@ -16,6 +16,7 @@ const required = [
   "dist/core/memory-views.js",
   "dist/fs/index.js",
   "dist/proc/index.js",
+  "dist/link/index.js",
 ];
 const missing = required.filter((path) => !existsSync(join(root, path)));
 if (missing.length)
