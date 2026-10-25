@@ -1,4 +1,4 @@
-import type { BrowserContext, Page, Request, Response } from "playwright";
+import type { Page, Request, Response } from "playwright";
 
 export interface StorageLockNavigationDiagnostic {
   phase: "new-page" | "navigation";
@@ -8,11 +8,13 @@ export interface StorageLockNavigationDiagnostic {
   events: string[];
 }
 
-export async function storageLockNavigate(
-  context: BrowserContext,
+type NavigationPage = Pick<Page, "on" | "off" | "goto" | "url" | "isClosed" | "close">;
+
+export async function storageLockNavigate<T extends NavigationPage>(
+  context: { newPage(): Promise<T> },
   target: string,
   report: (diagnostic: StorageLockNavigationDiagnostic) => void,
-): Promise<Page> {
+): Promise<T> {
   const events: string[] = [];
   const record = (event: string) => {
     if (events.length === 16) events.shift();
@@ -28,7 +30,7 @@ export async function storageLockNavigate(
   const dom = () => record("domcontentloaded");
   const crashed = () => record("crash");
   const errored = (error: Error) => record(`pageerror ${error.message}`);
-  let page: Page | undefined;
+  let page: T | undefined;
   let phase: StorageLockNavigationDiagnostic["phase"] = "new-page";
   try {
     page = await context.newPage();
