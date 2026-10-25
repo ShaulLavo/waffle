@@ -55,6 +55,18 @@ function parse(chunks: string[], isHead = false) {
   return { out, parser };
 }
 
+test("network notification accessor exposes only helper GEN0", async () => {
+  const { NetHost } = await import("../browser/net/host");
+  const host = new NetHost(createRing(), () => {});
+  try {
+    expect(host.notification.byteOffset).toBe(0);
+    expect(host.notification.length).toBe(1);
+    expect(host.poll(0)).toBe(0);
+  } finally {
+    host.dispose();
+  }
+});
+
 test("response parser: content-length, split anywhere", () => {
   const raw =
     "HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nX-A: 1\r\nX-A: 2\r\nContent-Length: 5\r\n\r\nhello";

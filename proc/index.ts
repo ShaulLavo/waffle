@@ -97,4 +97,9 @@ export type {
   WorkerPipeBrokerOptions,
 } from "./worker-pipes.js";
 export { ProcessABI, ProcessSignalExit } from "./abi.js";
-export type { ProcessService, ProcessABIOptions } from "./abi.js";
+export type {
+  PollSubscription,
+  PollWakeRegistration,
+  ProcessService,
+  ProcessABIOptions,
+} from "./abi.js";
