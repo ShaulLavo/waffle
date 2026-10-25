@@ -6,7 +6,6 @@ export type {
   RuntimeNetwork,
   RuntimeNetworkHelper,
   RuntimeNetworkLookupErrorCode,
-  RuntimeNetworkLookupFamily,
   RuntimeNetworkLookupOptions,
   RuntimeNetworkLookupResult,
   RuntimeFilesystem,

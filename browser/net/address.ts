@@ -2,7 +2,7 @@ import type { PeerAddr } from "./protocol.js";
 
 type TcpAddress = Omit<PeerAddr, "port">;
 
-export type RuntimeNetworkLookupFamily = 0 | 4 | 6;
+type RuntimeNetworkLookupFamily = 0 | 4 | 6;
 
 export interface RuntimeNetworkLookupOptions {
   readonly family?: RuntimeNetworkLookupFamily;

@@ -3,7 +3,6 @@ export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime
 export {
   RuntimeNetworkLookupError,
   type RuntimeNetworkLookupErrorCode,
-  type RuntimeNetworkLookupFamily,
   type RuntimeNetworkLookupOptions,
   type RuntimeNetworkLookupResult,
 } from "./browser/net/address.js";
