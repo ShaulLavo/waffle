@@ -14,7 +14,14 @@ import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
 import { Signal } from "../proc/types.js";
 
+type WakeRegisteringStream = Stream & {
+  registerWake(wake: Int32Array): (() => void) | void;
+};
+
 const ALL = (1n << 29n) - 1n;
+function openWakeStream(descriptors: DescriptorTable, stream: WakeRegisteringStream): number {
+  return descriptors.open(stream, ALL, ALL);
+}
 const encoder = new TextEncoder(),
   decoder = new TextDecoder();
 const cleanups: (() => void)[] = [];
@@ -1145,36 +1152,28 @@ test("public poll registration validates inputs, reports coverage and releases i
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = f.descriptors.open(
-    {
-      kind: "pipe",
-      notification: wake,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        log.push("register:first");
-        return () => log.push("release:first");
-      },
+  const first = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      log.push("register:first");
+      return () => log.push("release:first");
     },
-    ALL,
-    ALL,
-  );
-  const second = f.descriptors.open(
-    {
-      kind: "pipe",
-      notification: wake,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        log.push("register:second");
-        return () => log.push("release:second");
-      },
+  });
+  const second = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      log.push("register:second");
+      return () => log.push("release:second");
     },
-    ALL,
-    ALL,
-  );
+  });
   const registration = f.abi.registerPoll([
     { kind: 0, id: first },
     { kind: 0, id: second },
@@ -1194,34 +1193,26 @@ test("public poll registration unwinds partial registration and preserves the fi
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = f.descriptors.open(
-    {
-      kind: "pipe",
-      notification: wake,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        log.push("register:first");
-        return () => log.push("release:first");
-      },
+  const first = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      log.push("register:first");
+      return () => log.push("release:first");
     },
-    ALL,
-    ALL,
-  );
-  const second = f.descriptors.open(
-    {
-      kind: "pipe",
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        throw new Error("registration failed");
-      },
+  });
+  const second = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      throw new Error("registration failed");
     },
-    ALL,
-    ALL,
-  );
+  });
   expect(() =>
     f.abi.registerPoll([
       { kind: 0, id: first },
@@ -1237,39 +1228,31 @@ test("public poll disposal continues after cleanup errors and remains idempotent
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = f.descriptors.open(
-    {
-      kind: "pipe",
-      notification: wake,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        log.push("register:first");
-        return () => {
-          log.push("release:first");
-          throw new Error("first cleanup failed");
-        };
-      },
+  const first = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      log.push("register:first");
+      return () => {
+        log.push("release:first");
+        throw new Error("first cleanup failed");
+      };
     },
-    ALL,
-    ALL,
-  );
-  const second = f.descriptors.open(
-    {
-      kind: "pipe",
-      notification: wake,
-      read: () => 0,
-      write: () => 0,
-      readiness: () => ({ readable: false, writable: false, hangup: false }),
-      registerWake() {
-        log.push("register:second");
-        return () => log.push("release:second");
-      },
+  });
+  const second = openWakeStream(f.descriptors, {
+    kind: "pipe",
+    notification: wake,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake() {
+      log.push("register:second");
+      return () => log.push("release:second");
     },
-    ALL,
-    ALL,
-  );
+  });
   const registration = f.abi.registerPoll([
     { kind: 0, id: first },
     { kind: 0, id: second },
