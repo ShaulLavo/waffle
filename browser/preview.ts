@@ -61,11 +61,12 @@ export class PreviewRouter {
         reply.close();
       }
     };
-    connection = this.servers.get(port)?.connect(port, {
-      data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
-      end: () => finish({ type: "end" }),
-      error: (message) => finish({ type: "error", message }),
-    });
+    connection =
+      this.servers.get(port)?.connect(port, {
+        data: (chunk) => send({ type: "data", chunk }, [chunk.buffer]),
+        end: () => finish({ type: "end" }),
+        error: (message) => finish({ type: "error", message }),
+      }) ?? null;
     if (!connection) {
       ready = true;
       finish({ type: "error", message: "no server" });
