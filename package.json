@@ -462,6 +462,27 @@
       "bun": "./browser/net/module.ts",
       "browser": "./browser/net/module.ts",
       "default": "./browser/net/module.ts"
+    },
+    "./browser/notification-wait": {
+      "types": "./browser/notification-wait.ts",
+      "node": "./dist/browser/notification-wait.js",
+      "bun": "./browser/notification-wait.ts",
+      "browser": "./browser/notification-wait.ts",
+      "default": "./browser/notification-wait.ts"
+    },
+    "./browser/notification-worker": {
+      "types": "./browser/notification-worker.ts",
+      "node": "./dist/browser/notification-worker.js",
+      "bun": "./browser/notification-worker.ts",
+      "browser": "./browser/notification-worker.ts",
+      "default": "./browser/notification-worker.ts"
+    },
+    "./browser/notification-relay": {
+      "types": "./browser/notification-relay.ts",
+      "node": "./dist/browser/notification-relay.js",
+      "bun": "./browser/notification-relay.ts",
+      "browser": "./browser/notification-relay.ts",
+      "default": "./browser/notification-relay.ts"
     }
   },
   "scripts": {

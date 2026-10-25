@@ -140,6 +140,41 @@ const pathDecode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const clock = performance.now.bind(performance);
 type Subscription = { kind: number; id: number; userdata: bigint };
 
+export type PollSubscription = Readonly<Pick<Subscription, "kind" | "id">>;
+
+export interface PollWakeRegistration {
+  readonly wake: Int32Array | undefined;
+  readonly covered: boolean;
+  dispose(): void;
+}
+
+interface CleanupResult {
+  readonly failed: boolean;
+  readonly error: unknown;
+}
+
+function invokeCleanup(cleanup: () => void): CleanupResult {
+  try {
+    cleanup();
+    return { failed: false, error: undefined };
+  } catch (error) {
+    return { failed: true, error };
+  }
+}
+
+function releasePollWakes(unregister: (() => void)[]): CleanupResult {
+  let failed = false;
+  let firstError: unknown;
+  for (let index = unregister.length - 1; index >= 0; index--) {
+    const result = invokeCleanup(unregister[index]!);
+    if (!result.failed || failed) continue;
+    failed = true;
+    firstError = result.error;
+  }
+  unregister.length = 0;
+  return { failed, error: firstError };
+}
+
 function sameWord(first: Int32Array | undefined, second: Int32Array): boolean {
   return (
     first !== undefined &&
@@ -541,6 +576,57 @@ export class ProcessABI {
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     throw new ProcessSignalExit(winner.code);
   }
+  registerPoll(
+    subscriptions: readonly PollSubscription[],
+    ownership: "local" | "shared" = "local",
+  ): PollWakeRegistration {
+    for (const subscription of subscriptions) {
+      if (!Number.isInteger(subscription.kind) || subscription.kind < 0 || subscription.kind > 6)
+        throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription kind");
+      if (!Number.isInteger(subscription.id) || subscription.id < 0 || subscription.id > 0xffffffff)
+        throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription id");
+    }
+    if (ownership === "shared") return this.sharedPollRegistration(subscriptions);
+    const unregister: (() => void)[] = [];
+    let disposed = false;
+    try {
+      const covered = this.registerPollWakes(
+        subscriptions.map((subscription) => ({ ...subscription, userdata: 0n })),
+        this.options.wake,
+        unregister,
+      );
+      return {
+        wake: this.options.wake,
+        covered,
+        dispose: () => {
+          if (disposed) return;
+          disposed = true;
+          const cleanup = releasePollWakes(unregister);
+          if (cleanup.failed) throw cleanup.error;
+        },
+      };
+    } catch (error) {
+      releasePollWakes(unregister);
+      throw error;
+    }
+  }
+
+  private sharedPollRegistration(subscriptions: readonly PollSubscription[]): PollWakeRegistration {
+    const wake = this.options.wake;
+    let covered = !!wake && sameWord(this.options.service.wake, wake);
+    for (let index = 0; index < subscriptions.length; index++) {
+      if (!this.sharedPollSource(subscriptions[index]!, wake)) covered = false;
+    }
+    return { wake, covered, dispose() {} };
+  }
+  private sharedPollSource(sub: PollSubscription, wake: Int32Array | undefined): boolean {
+    if (!wake || sub.kind === 3 || sub.kind === 6) return false;
+    if (sub.kind === 5) return true;
+    if (sub.kind === 2 || sub.kind === 4) return sameWord(this.options.service.wake, wake);
+    const stream = this.descriptor(sub.id, POLL).resource;
+    if (stream.kind === "file" || stream.kind === "directory") return false;
+    return sameWord(stream.notification, wake);
+  }
   private readiness(sub: Subscription): Readiness | null {
     if (sub.kind === 6)
       return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN
@@ -595,7 +681,7 @@ export class ProcessABI {
     return resource.readiness();
   }
   private registerPollWake(
-    sub: Subscription,
+    sub: PollSubscription,
     wake: Int32Array,
     directory: boolean,
     unregister: (() => void)[],
@@ -631,7 +717,7 @@ export class ProcessABI {
     return true;
   }
   private registerPollWakes(
-    subscriptions: readonly Subscription[],
+    subscriptions: readonly PollSubscription[],
     wake: Int32Array | undefined,
     unregister: (() => void)[],
   ): boolean {

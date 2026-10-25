@@ -1,3 +1,5 @@
+import { NotificationWaitScope } from "./notification-wait.js";
+import type { NotificationConnection } from "./notification-relay.js";
 import {
   createProcessIdentity,
   type RuntimeHostIdentity,
@@ -30,6 +32,7 @@ import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
+import type { ProcessABI } from "../proc/abi.js";
 
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
 import { waitStatus } from "../proc/wait-status.js";
@@ -51,6 +54,7 @@ import {
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
+  notifications?: NotificationConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
   module: WebAssembly.Module;
@@ -114,6 +118,8 @@ export type RuntimeWorkerState = ReturnType<typeof workerProcessState>;
 
 export interface WorkerSetupContext<R extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   request: R;
+  readonly notifications?: NotificationWaitScope;
+  readonly signal: AbortSignal;
   fs: FilesystemClient;
   isolated: boolean;
   outcome: OutcomeWord | null;
@@ -134,6 +140,7 @@ export interface WorkerExecutionContext<
   R extends RuntimeWorkerRequest = RuntimeWorkerRequest,
 > extends WorkerBindingsContext<R> {
   instance: WebAssembly.Instance;
+  process?: ProcessABI;
 }
 
 /** Guest policy stays with the executor, without making its engine bindings, transports or
@@ -169,7 +176,7 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   diagnostic?(message: string): void;
   /** Runs after descriptors/filesystem have been released, before the exit acknowledgement. */
   complete?(code: number, signal?: number): ProcessExit;
-  instantiated?(context: WorkerExecutionContext<R>): void;
+  instantiated?(context: WorkerExecutionContext<R>): void | Promise<void>;
   run(context: WorkerExecutionContext<R>, exited: number | null): number | Promise<number>;
 }
 
@@ -220,6 +227,20 @@ function residentPreopens(filesystem: FilesystemConnection): Record<string, stri
   return filesystem.residentPublication?.kind === "file" ? {} : { "/": "/" };
 }
 
+function startupControl(connection: NotificationConnection | undefined, fs: FilesystemClient) {
+  const cancellation = new AbortController();
+  const notifications = connection ? new NotificationWaitScope(connection, fs) : undefined;
+  let cancelStartup!: () => void;
+  const startupCancelled = new Promise<void>((resolve) => {
+    cancelStartup = resolve;
+  });
+  void notifications?.closed.then(() => {
+    cancellation.abort();
+    cancelStartup();
+  });
+  return { cancellation, notifications, startupCancelled, cancelStartup };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -229,7 +250,12 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const { postToHost, addListener, removeListener } = captureWorkerHost(host);
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
+  const { cancellation, notifications, startupCancelled, cancelStartup } = startupControl(
+    req.notifications,
+    fs,
+  );
   let runtimeProcess: WorkerProcessClient | null = null;
+  let process: ProcessABI | undefined;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
   const sleepCell = createSleepCell(host);
   const isolated = sleepCell !== null;
@@ -282,7 +308,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const winner = outcome ? readOutcome(outcome) : localOutcome;
     if (winner?.kind === "signaled") defaultSignal(winner.code);
     if (winner) throw new WasiExit(waitStatus(winner));
-    if (revoked()) throw new WasiExit(1);
+    if (revoked() || cancellation.signal.aborted) throw new WasiExit(1);
   };
   // Only the synchronous host-authored diagnostic write may use still-owned I/O after its
   // terminal claim. Guest calls remain guarded, and revocation still retires that authority.
@@ -304,6 +330,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   const finish = (result: WorkerResult): void => {
     if (done) return;
     done = true;
+    cancellation.abort();
+    cancelStartup();
     pendingFinish = finishOwned(result);
   };
   const finishOwned = async (result: WorkerResult): Promise<void> => {
@@ -341,6 +369,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         return false;
       }
     };
+    attempt(() => notifications?.dispose());
     if (runtimeDiagnostic && "error" in result) {
       try {
         const bytes = new TextEncoder().encode(`${describeWorkerError(result.error)}\n`);
@@ -555,6 +584,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     const context: WorkerSetupContext<R> = {
       identity,
       request: req,
+      notifications,
+      signal: cancellation.signal,
       fs,
       isolated,
       outcome,
@@ -730,7 +761,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
       runtimeProcess.installBindings();
-      const abi = new ProcessABI({
+      process = new ProcessABI({
         memory: () => instance.exports.memory as WebAssembly.Memory,
         descriptors: wasi.descriptors,
         fs,
@@ -745,7 +776,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           checkActive();
         },
       });
-      const entries = objectEntries(abi.imports);
+      const entries = objectEntries(process.imports);
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index]!,
           name = entry[0],
@@ -781,8 +812,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
     postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
-    executor.instantiated?.({ ...context, wasi, instance });
+    const executionContext: WorkerExecutionContext<R> = { ...context, wasi, instance, process };
+    await Promise.race([executor.instantiated?.(executionContext), startupCancelled]);
     if (done) return;
+    checkActive();
     const exited = wasi.launch(instance, () => {
       checkActive();
       const committed = runtimeProcess
@@ -796,7 +829,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     });
     if (addListener) reflectApply(addListener, host, ["error", onError]);
     if (addListener) reflectApply(addListener, host, ["unhandledrejection", onRejection]);
-    const completion = executor.run({ ...context, wasi, instance }, exited);
+    const completion = executor.run(executionContext, exited);
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
   } catch (error) {
