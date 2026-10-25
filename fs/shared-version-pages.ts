@@ -2,6 +2,11 @@ import { FilesystemError, PAGE } from "./protocol.js";
 
 export class ReaderPagePressure extends Error {}
 
+/** Only the retained partial page needs replacement before a shrink. */
+export function truncateBoundaryEnd(size: number, old: number): number {
+  return size % PAGE ? Math.min(old, Math.ceil(size / PAGE) * PAGE) : size;
+}
+
 export interface RetainedSharedPage {
   readonly physical: number;
   readonly bytes: Uint8Array;

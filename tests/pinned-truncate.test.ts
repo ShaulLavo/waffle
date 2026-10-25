@@ -88,3 +88,47 @@ test("required partial-page COW failure preserves identity, publication and old 
     await value.close();
   }
 });
+
+test("shrinking an already partial last page preserves its lease and clears later extension", async () => {
+  const value = await residentReadFixture(PAGE + 9, 256 * PAGE);
+  const work = measureTruncatePages(value.backend.shared);
+  try {
+    const pin = await value.workspace.pin("/file");
+    if (pin.kind !== "ok") throw new Error(pin.kind);
+    await value.client.asyncCall("resize", [value.handle, PAGE + 1, true]);
+    expect(work.counts).toEqual({ reserved: 1, copied: 1 });
+    const old = await pin.value.read({ offset: PAGE, length: 9 });
+    expect(old.kind).toBe("ok");
+    if (old.kind === "ok") expect(old.value.bytes).toEqual(new Uint8Array(9).fill(65));
+    await pin.value.close();
+    await value.client.asyncCall("resize", [value.handle, PAGE + 9, true]);
+    expect(await value.client.asyncCall("read", [value.handle, 9, PAGE])).toEqual(
+      new Uint8Array([65, 0, 0, 0, 0, 0, 0, 0, 0]),
+    );
+  } finally {
+    work.restore();
+    await value.close();
+  }
+});
+
+test("writeFile replacement still clears preallocated bytes before later extension", async () => {
+  const value = await residentReadFixture(PAGE + 9, 256 * PAGE);
+  try {
+    const pin = await value.workspace.pin("/file");
+    if (pin.kind !== "ok") throw new Error(pin.kind);
+    await value.client.asyncCall("writeFile", ["/file"], new Uint8Array([91]));
+    const old = await pin.value.read({ offset: PAGE, length: 9 });
+    expect(old.kind).toBe("ok");
+    if (old.kind === "ok") expect(old.value.bytes).toEqual(new Uint8Array(9).fill(65));
+    await pin.value.close();
+    await value.client.asyncCall("resize", [value.handle, PAGE + 9, true]);
+    expect(await value.client.asyncCall("read", [value.handle, 9, 0])).toEqual(
+      new Uint8Array([91, 0, 0, 0, 0, 0, 0, 0, 0]),
+    );
+    expect(await value.client.asyncCall("read", [value.handle, 9, PAGE])).toEqual(
+      new Uint8Array(9),
+    );
+  } finally {
+    await value.close();
+  }
+});
