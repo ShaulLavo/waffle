@@ -203,3 +203,33 @@ test("closing a redirected fetch aborts the pending destination", async () => {
   await aborted.promise;
   expect(await client.call({ op: "head", handle: id })).toBe(-3);
 });
+
+test("POST redirect to external GET drops stale request length and content headers", async () => {
+  let destination: RequestInit | undefined;
+  const { server, client, listener, url } = await pair(async (_target, options) => {
+    destination = options;
+    return new Response("external done");
+  });
+  const serving = server.call({
+    op: "respond",
+    listener,
+    bytes: response(303, "Location: https://fixture.invalid/done\r\n"),
+  });
+  const id = await handle(client, {
+    op: "fetch",
+    url,
+    method: "POST",
+    body: encode("payload"),
+    headers: [
+      ["content-type", "text/plain"],
+      ["content-length", "7"],
+    ],
+  });
+  expect(await head(client, id)).toMatchObject({ status: 200, redirected: true });
+  expect(decode(await body(client, id))).toBe("external done");
+  expect(destination?.method).toBe("GET");
+  expect(destination?.body).toBeNull();
+  expect(new Headers(destination?.headers).has("content-type")).toBe(false);
+  expect(new Headers(destination?.headers).has("content-length")).toBe(false);
+  await serving;
+});

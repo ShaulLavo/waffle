@@ -774,7 +774,13 @@ function redirectRequest(req: FetchRequest, head: FetchHead, location: string): 
     ((head.status === 301 || head.status === 302) && req.method === "POST") ||
     (head.status === 303 && req.method !== "GET" && req.method !== "HEAD");
   if (!discardBody) return { ...req, url: url.href, headers: Array.from(headers) };
-  for (const name of ["content-encoding", "content-language", "content-location", "content-type"])
+  for (const name of [
+    "content-encoding",
+    "content-language",
+    "content-location",
+    "content-type",
+    "content-length",
+  ])
     headers.delete(name);
   return { ...req, url: url.href, method: "GET", body: null, headers: Array.from(headers) };
 }
