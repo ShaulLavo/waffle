@@ -35,6 +35,7 @@ const trustedModules: Readonly<Record<string, string>> = {
   "proc/registry.ts": "Page-owned process registry, not imported by the guest bootstrap.",
   "proc/stub.ts": "Page-only lazy process facade, not a guest Worker implementation.",
   "proc/worker-broker.ts": "Page-owned message broker, not imported by the guest bootstrap.",
+  "proc/node-wasi.ts": "Trusted Node embedding adapter, not imported by the guest bootstrap.",
   "fs/service.ts": "Filesystem service runs in its dedicated trusted Worker, not the guest realm.",
   "fs/backend.ts": "Backend used by the dedicated filesystem service.",
   "fs/persistent.ts": "Persistence backend used by the dedicated filesystem service.",
