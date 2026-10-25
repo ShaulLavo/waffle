@@ -69,6 +69,8 @@ export interface PipeEndpointHandle {
   mode: PipeMode;
   slot: number;
   lifetime: SharedArrayBuffer;
+  /** Shared by every inherited/duplicated reference to this open description. */
+  fdflags: SharedArrayBuffer;
   registry?: PipePublicationRegistryHandle;
 }
 
@@ -760,7 +762,7 @@ class PipeState {
     atomicsStore(this.control, 0, 1);
     this.signal();
   }
-  retain(pid: number, mode: PipeMode): PipeEndpoint {
+  retain(pid: number, mode: PipeMode, fdflags = new SharedArrayBufferConstructor(4)): PipeEndpoint {
     if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff || this.closed)
       throw new Error("invalid pipe process");
     if (
@@ -813,7 +815,7 @@ class PipeState {
       break;
     }
     if (selected < 0) throw new ProcessError(PipeErrno.NFILE, `pipe ${mode} process limit reached`);
-    const endpoint = new PipeEndpoint(this, pid, mode, selected, lifetime);
+    const endpoint = new PipeEndpoint(this, pid, mode, selected, lifetime, fdflags);
     try {
       // Both sides publish identity before checking the other side. Concurrent first reader
       // and writer reservations cannot both miss registering the direct consumer's lease.
@@ -866,15 +868,18 @@ export class PipeEndpoint implements Stream {
   readonly kind = "pipe" as const;
   readonly notification: Int32Array;
   private readonly lifetime: Int32Array;
+  private readonly flags: Int32Array;
   constructor(
     private readonly state: PipeState,
     readonly pid: number,
     readonly mode: PipeMode,
     readonly slot: number,
     lifetime: SharedArrayBuffer,
+    fdflags: SharedArrayBuffer,
   ) {
     this.notification = state.wake;
     this.lifetime = new Int32ArrayConstructor(lifetime);
+    this.flags = new Int32ArrayConstructor(fdflags, 0, 1);
   }
   private get ring(): Ring {
     return (this.mode === "write" ? this.state.writers : this.state.readers)[this.slot]!;
@@ -886,6 +891,12 @@ export class PipeEndpoint implements Stream {
       this.ring.references > 0 &&
       !this.state.registry?.isRevoked(this.pid)
     );
+  }
+  get fdflags(): number {
+    return atomicsLoad(this.flags, 0);
+  }
+  set fdflags(value: number) {
+    atomicsStore(this.flags, 0, value);
   }
   handle(): PipeEndpointHandle {
     return {
@@ -899,12 +910,15 @@ export class PipeEndpoint implements Stream {
       mode: this.mode,
       slot: this.slot,
       lifetime: typedArrayBuffer(this.lifetime) as SharedArrayBuffer,
+      fdflags: typedArrayBuffer(this.flags) as SharedArrayBuffer,
       registry: this.state.registry?.handle(),
     };
   }
   forProcess(pid: number): PipeEndpoint {
     if (!this.live) throw new Error("pipe endpoint is closed");
-    return pid === this.pid ? this : this.state.retain(pid, this.mode);
+    return pid === this.pid
+      ? this
+      : this.state.retain(pid, this.mode, typedArrayBuffer(this.flags) as SharedArrayBuffer);
   }
   inherit(pid: number): PipeEndpoint {
     return this.forProcess(pid);
@@ -1085,7 +1099,7 @@ export class PipeController {
     if (endpoint.handle().id !== this.state.id) throw new Error("endpoint belongs to another pipe");
     if (atomicsLoad(new Int32ArrayConstructor(endpoint.handle().lifetime), 0) !== 0)
       throw new Error("pipe endpoint is closed");
-    return this.state.retain(endpoint.pid, endpoint.mode);
+    return this.state.retain(endpoint.pid, endpoint.mode, endpoint.handle().fdflags);
   }
   revoke(pid: number): void {
     this.state.registry?.revoke(pid);
@@ -1272,7 +1286,14 @@ export function attachPipeEndpoint(handle: PipeEndpointHandle): PipeEndpoint {
   const limit = handle.mode === "write" ? state.maxWriters : state.maxReaders;
   if (!Number.isInteger(handle.slot) || handle.slot < 0 || handle.slot >= limit)
     throw new RangeError("invalid pipe slot");
-  return new PipeEndpoint(state, handle.pid, handle.mode, handle.slot, handle.lifetime);
+  return new PipeEndpoint(
+    state,
+    handle.pid,
+    handle.mode,
+    handle.slot,
+    handle.lifetime,
+    handle.fdflags,
+  );
 }
 export function attachPipeController(
   handle: PipeEndpointHandle,

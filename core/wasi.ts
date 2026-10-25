@@ -74,6 +74,7 @@ const O_DIRECTORY = 2;
 const O_EXCL = 4;
 const O_TRUNC = 8;
 const FDFLAG_APPEND = 1;
+const FDFLAG_NONBLOCK = 4;
 
 // wasi-libc's isatty(): character device without seek/tell rights.
 const RIGHTS_TTY = RIGHTS_ALL & ~(RIGHT_FD_SEEK | RIGHT_FD_TELL);
@@ -586,7 +587,9 @@ export class Wasi {
           entry.resource.kind === "file"
             ? ((entry.resource.fdflags ?? 0) & ~FDFLAG_APPEND) |
                 (entry.resource.append ? FDFLAG_APPEND : 0)
-            : 0,
+            : entry.resource.kind === "directory"
+              ? 0
+              : (entry.resource.fdflags ?? 0),
           true,
         );
         view.setBigUint64(ptr + 8, entry.rightsBase, true);
@@ -600,7 +603,13 @@ export class Wasi {
           if (resource.kind === "file") {
             resource.fdflags = flags;
             resource.append = (flags & FDFLAG_APPEND) !== 0;
+            return SUCCESS;
           }
+          if (resource.kind === "directory") return SUCCESS;
+          if (flags & ~FDFLAG_NONBLOCK) return ENOTSUP;
+          if (flags && (resource.fdflags === undefined || !resource.tryRead || !resource.tryWrite))
+            return ENOTSUP;
+          if (resource.fdflags !== undefined) resource.fdflags = flags;
           return SUCCESS;
         },
       ),
@@ -691,10 +700,13 @@ export class Wasi {
         (resource, iovs: number, count: number, nreadPtr: number) => {
           if (resource.kind === "directory") return EISDIR;
           const chunks = this.iovecs(iovs, count);
-          return this.writeResult(
-            resource.kind === "file" ? this.readIn(resource, chunks, null) : resource.read(chunks),
-            nreadPtr,
-          );
+          if (resource.kind === "file")
+            return this.writeResult(this.readIn(resource, chunks, null), nreadPtr);
+          const result =
+            (resource.fdflags ?? 0) & FDFLAG_NONBLOCK
+              ? (resource.tryRead?.(chunks) ?? -ENOTSUP)
+              : resource.read(chunks);
+          return this.writeResult(result, nreadPtr);
         },
       ),
       fd_readdir: this.descriptorCall(
@@ -753,12 +765,14 @@ export class Wasi {
         RIGHT_FD_WRITE,
         (resource, iovs: number, count: number, nwrittenPtr: number) => {
           if (resource.kind === "directory") return EISDIR;
-          return this.writeResult(
-            resource.kind === "file"
-              ? this.writeOut(resource, iovs, count, null)
-              : resource.write(this.iovecs(iovs, count)),
-            nwrittenPtr,
-          );
+          if (resource.kind === "file")
+            return this.writeResult(this.writeOut(resource, iovs, count, null), nwrittenPtr);
+          const chunks = this.iovecs(iovs, count);
+          const result =
+            (resource.fdflags ?? 0) & FDFLAG_NONBLOCK
+              ? (resource.tryWrite?.(chunks) ?? -ENOTSUP)
+              : resource.write(chunks);
+          return this.writeResult(result, nwrittenPtr);
         },
       ),
 

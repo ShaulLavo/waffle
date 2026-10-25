@@ -28,6 +28,7 @@ export const objectValues = Object.values;
 export const objectKeys = Object.keys;
 export const arrayFrom = Array.from;
 export const reflectGet = Reflect.get;
+export const reflectSet = Reflect.set;
 export const ProxyConstructor = Proxy;
 
 const prototype = objectGetPrototypeOf(Int32ArrayConstructor.prototype);
