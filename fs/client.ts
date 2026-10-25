@@ -1,3 +1,4 @@
+import { checkDirectoryPage } from "./directory-pages.js";
 import { DirtyCapacityError } from "./dirty-admission.js";
 import { ResidentAttachment, stopWorkspaceBridge } from "./publication-attachment.js";
 import { localPublication } from "./publication-internal.js";
@@ -1516,6 +1517,20 @@ export class FilesystemClient implements FileSystem {
       return this.call("sync", [handle]);
     } catch (error) {
       return errno(error);
+    }
+  }
+  readdirPage(handle: FileHandle, cookie: bigint, byteLength: number): Uint8Array {
+    checkDirectoryPage(cookie, byteLength);
+    const completion = this.submit(
+      "readdirPage",
+      [handle, cookie, byteLength],
+      undefined,
+      Math.min(byteLength, PAGE),
+    );
+    try {
+      return completion.wait();
+    } finally {
+      completion.release();
     }
   }
   readdir(handle: FileHandle): DirectoryEntry[] {
