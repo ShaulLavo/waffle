@@ -523,7 +523,12 @@ export class FilesystemService {
     if (operation === "watchOpen") {
       if (!(this.backend instanceof MemoryBackend)) throw new FilesystemError(58);
       this.watchService ??= new WatchService(this.backend);
-      return this.watchService.open(session.connection.owner, a, b);
+      return this.watchService.open(
+        session.connection.owner,
+        a,
+        b,
+        () => isRevoked(session.connection) || !this.sessions.has(session),
+      );
     }
     if (operation === "watchRead") {
       if (!this.watchService) throw new FilesystemError(8);
