@@ -140,3 +140,5 @@ export function instantiateLinkPlan(plan: PreparedLinkPlan, host: LinkHost): Lin
   if (!data) invalid("plan", "expected a local prepared plan, not a clone or manifest");
   return instantiateGroup(data, host);
 }
+
+export { linkedWorkerHooks, type LinkedWorkerRequest } from "./worker.js";

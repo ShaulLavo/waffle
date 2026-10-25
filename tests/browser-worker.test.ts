@@ -2347,3 +2347,92 @@ for (const action of [
       descriptors.dispose();
     }
   });
+
+test("async instantiate is cancelled promptly and late completion cannot bind released memory", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  const entered = Promise.withResolvers<void>();
+  const late = Promise.withResolvers<void>();
+  let attempted = false,
+    rejected = false,
+    initialized = false;
+  try {
+    const pending = bootstrap(
+      armingRequest(connection.client),
+      {
+        ...armingExecutor(() => {
+          throw Error("must not enter");
+        }),
+        async instantiate(_imports, context) {
+          entered.resolve();
+          context.finish({ code: 23 });
+          await late.promise;
+          attempted = true;
+          try {
+            context.bindMemory(new WebAssembly.Memory({ initial: 1 }));
+          } catch {
+            rejected = true;
+          }
+          return new WebAssembly.Instance(module);
+        },
+        initialize() {
+          initialized = true;
+        },
+        run() {
+          throw Error("must not run");
+        },
+      },
+      armingHost(messages),
+    );
+    await entered.promise;
+    await pending;
+    expect(attempted).toBe(false);
+    late.resolve();
+    await Bun.sleep(0);
+    expect(attempted).toBe(true);
+    expect(rejected).toBe(true);
+    expect(initialized).toBe(false);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([{ code: 23 }]);
+  } finally {
+    late.resolve();
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("instantiate binds ProcessABI before initialization and rejects replacement before WASI mutation", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  let initialized = false;
+  try {
+    await bootstrap(
+      armingRequest(connection.client, { runtimeProcess: createWorkerProcessTransport() }),
+      {
+        ...armingExecutor(() => {}),
+        instantiate(_imports, context) {
+          context.bindMemory(memory);
+          expect(() => context.bindMemory(new WebAssembly.Memory({ initial: 1 }))).toThrow(
+            "cannot replace",
+          );
+          // A proc ABI call accesses the early memory rather than an uninitialized instance closure.
+          new DataView(memory.buffer).setUint32(0, 0x12345678, true);
+          return new WebAssembly.Instance(module);
+        },
+        initialize() {
+          initialized = true;
+        },
+        run() {
+          throw Error("mismatched entry memory must not run");
+        },
+      },
+      armingHost(messages),
+    );
+    expect(initialized).toBe(false);
+    expect(messages.some((message) => message.type === "error")).toBe(true);
+    expect(new DataView(memory.buffer).getUint32(0, true)).toBe(0x12345678);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});

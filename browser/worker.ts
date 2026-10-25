@@ -165,6 +165,12 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
     imports: WebAssembly.Imports,
     context: WorkerBindingsContext<R>,
   ): WebAssembly.Imports | void;
+  /** Compose one process-local instance group; late work must call checkActive before publication. */
+  instantiate?(
+    imports: WebAssembly.Imports,
+    context: WorkerBindingsContext<R> & { bindMemory(memory: WebAssembly.Memory): void },
+  ): WebAssembly.Instance | Promise<WebAssembly.Instance>;
+  initialize?(context: WorkerExecutionContext<R>): void;
   /** Structured-cloneable child metadata; filesystem and pipeRegistry are reserved. */
   spawnData?(): Record<string, unknown>;
   /** Resolve inherited terminal provenance to a process-local stream. */
@@ -681,6 +687,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       namespaces: { ...namespaces, runtime_proc: processImports },
       trace: req.trace ? (line) => console.debug(`[wasi] ${line}`) : undefined,
     });
+    let boundMemory: WebAssembly.Memory | undefined;
+    const bindMemory = (memory: WebAssembly.Memory) => {
+      checkActive();
+      if (boundMemory && boundMemory !== memory)
+        throw new ExecutableFormatError("executor cannot replace bound process memory");
+      wasi!.bindMemory(memory);
+      boundMemory = memory;
+    };
     const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
       const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec.js");
@@ -762,7 +776,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       if (done) return;
       runtimeProcess.installBindings();
       process = new ProcessABI({
-        memory: () => instance.exports.memory as WebAssembly.Memory,
+        memory: () => {
+          checkActive();
+          if (!boundMemory) throw new ExecutableFormatError("process memory is not bound");
+          return boundMemory;
+        },
         descriptors: wasi.descriptors,
         fs,
         pid: runtimeProcess.pid,
@@ -806,14 +824,28 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (memories?.some((entry) => linked[entry.module]?.[entry.name] !== entry.memory)) {
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
-    const instance: WebAssembly.Instance = new WebAssembly.Instance(req.module, linked);
+    const instance = executor.instantiate
+      ? await Promise.race([
+          executor.instantiate(linked, { ...bindingsContext, bindMemory }),
+          startupCancelled.then(() => {
+            checkActive();
+            throw new Error("startup cancelled");
+          }),
+        ])
+      : new WebAssembly.Instance(req.module, linked);
+    if (done) return;
+    checkActive();
     if (typeof instance.exports._start !== "function")
       throw new ExecutableFormatError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
+    bindMemory(instance.exports.memory);
     postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     const executionContext: WorkerExecutionContext<R> = { ...context, wasi, instance, process };
     await Promise.race([executor.instantiated?.(executionContext), startupCancelled]);
+    if (done) return;
+    checkActive();
+    executor.initialize?.(executionContext);
     if (done) return;
     checkActive();
     const exited = wasi.launch(instance, () => {

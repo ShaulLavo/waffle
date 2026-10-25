@@ -260,3 +260,53 @@ test("structured-cloned exact source is re-admitted, not a cloned opaque prepare
   }
   expect(() => instantiateLinkPlan(structuredClone(plan), host())).toThrow("local prepared plan");
 });
+
+test("normal worker structured-clones exact source, re-admits it, links and executes", async () => {
+  const { Worker } = await import("node:worker_threads");
+  const plan = await prepareLinkPlan(source());
+  const url = (path: string) => JSON.stringify(new URL(path, import.meta.url).href);
+  const script = `const {parentPort,workerData}=require('node:worker_threads');
+(async()=>{
+ const {bootstrap}=await import(${url("../browser/worker.ts")});
+ const {linkedWorkerHooks}=await import(${url("../link/index.ts")});
+ const {createFilesystemConnection}=await import(${url("../fs/protocol.ts")});
+ const connection=createFilesystemConnection(), hooks=linkedWorkerHooks();
+ let initialized=false;
+ try {
+ await bootstrap({...workerData,filesystem:connection.client,args:[],env:{}},{...hooks,
+ setup({fs}){fs.preopen=()=>1;fs.retain=()=>{};fs.release=()=>{}},
+ namespaces(){return {env:{check(){}}}},
+ instantiated({instance}){if(instance.exports.initialized.value!==0)throw Error('eager initializer')},
+ initialize(context){hooks.initialize(context);initialized=true},
+ run({instance}){if(!initialized)throw Error('missing initializer');return instance.exports.invoke(5)}
+ },{crossOriginIsolated:true,postMessage:message=>parentPort.postMessage(message)});
+ } finally{connection.client.port.close();connection.server.port.close();parentPort.close()}
+})().catch(error=>{parentPort.postMessage({error:String(error)});parentPort.close()});`;
+  const worker = new Worker(script, {
+    eval: true,
+    workerData: { module: plan.entryModule, linkPlan: plan.toSource() },
+  });
+  const messages: unknown[] = [];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      worker.on("message", (message) => messages.push(message));
+      worker.once("error", reject);
+      worker.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`worker exit ${code}`)),
+      );
+    });
+    expect(messages).toContainEqual({
+      type: "exit",
+      code: 12,
+      signal: undefined,
+      sleep: "atomics",
+    });
+    expect(
+      messages.some(
+        (message) => typeof message === "object" && message !== null && "error" in message,
+      ),
+    ).toBe(false);
+  } finally {
+    await worker.terminate();
+  }
+});
