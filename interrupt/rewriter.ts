@@ -387,14 +387,21 @@ export function rewriteInterrupts(
   input: Uint8Array,
   options: InterruptRewriteOptions = {},
 ): Uint8Array<ArrayBuffer> {
+  // Own the bytes: parser and validators must see the same snapshot, including
+  // when the caller supplied a SharedArrayBuffer or a subarray of a larger file.
+  return rewriteInterruptsOwned(new Uint8Array(input), options);
+}
+
+/** Rewrite a private synchronous snapshot without copying it again. */
+export function rewriteInterruptsOwned(
+  bytes: Uint8Array,
+  options: InterruptRewriteOptions = {},
+): Uint8Array<ArrayBuffer> {
   const interval = options.interval ?? 4096;
   const policy = options.policy ?? "countdown";
   if (!Number.isInteger(interval) || interval < 1 || interval > 0x7fffffff)
     fail("interval must be a positive i32");
   if (policy !== "countdown" && policy !== "entry") fail("unknown checkpoint policy");
-  // Own the bytes: parser and validators must see the same snapshot, including
-  // when the caller supplied a SharedArrayBuffer or a subarray of a larger file.
-  const bytes = new Uint8Array(input);
   if (!WebAssembly.validate(bytes)) fail("original module is not valid WebAssembly");
   const reader = new Reader(bytes);
   const header = reader.take(8);
