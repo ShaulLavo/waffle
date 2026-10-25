@@ -256,39 +256,47 @@ extension state before a worker is actually spawned.
 
 ## Process-owned pipes
 
-`PipeController` owns a bounded pipe with one single-producer ring per writing process.
-`retain(pid, "read" | "write")` creates a process endpoint; dup aliases share that endpoint,
-while `forProcess(pid)` reserves an independent process lifetime before spawn returns.
-`tryRead`/`tryWrite` are nonblocking; the stream `read`/`write` methods wait on shared readiness
-notifications for preview1 hosts. Closing the last writer produces EOF after committed data
-is drained; closing the last reader produces EPIPE.
+`PipeController` owns one bounded ring per participating writing or reading process.
+`retain(pid, "read" | "write")` creates an endpoint. `forProcess(pid)` retains a child
+reference before spawn returns. `duplicate` retains another reference for the same process.
+Endpoint handles are opaque structured-cloneable capabilities. Consumers pass or store them,
+then call `attachPipeEndpoint`; raw buffers, cursor views, and slot layouts are not public APIs.
+Inherited and duplicated endpoints share their open description's `fdflags`. Read and write
+ends have independent descriptions.
 
-`PipePublicationRegistry` supplies canonical publication and read-lease cursors. Authorized host
-code marks a process revoked before freezing its linked cursors and exposing its exit. Cursor
-allocation links a new cell and then rechecks revocation before admitting the endpoint, so growth
-cannot escape a concurrent kill. Guest WASM never receives this control memory. A stopped
-producer cannot publish past that frozen watermark, and killed buffers are never recycled.
+`tryRead` and `tryWrite` never wait. The stream `read` and `write` methods wait on shared
+notifications. Closing the last writer produces EOF after committed bytes drain. Closing the
+last reader produces EPIPE. Closed or revoked endpoint I/O returns BADF even after its slot
+has a new occupant. Slots become reusable after their references end and queued bytes drain.
+Each supported shared mutation includes its captured incarnation in an atomic comparison;
+no guest-held lock or retained raw-view guarantee is involved.
 
-Registry cells are append-only, 16 bytes each, in a growable shared buffer. A simple same-process
-pipe uses four cells, or 64 bytes of lifetime metadata after its pipe buffers are released.
-Defaults allocate about 2 MiB initially and allow 16,777,216 cells (256 MiB plus the header),
-roughly 4,194,304 simple pipes per service; additional process endpoints consume more cells.
-The separate process directory supports 1,024 simultaneously enrolled processes; collected
-process rows can be reused. Exhausting either bound returns WASI ENFILE (41). `cellsPerProcess` is an initial-size hint, not a lifetime cap.
+A completed write precedes a write that starts later in another process. Writes of at most
+4 KiB remain contiguous across short reads. Smaller configured pipes use their capacity as
+the atomic-write bound. A single reader consumes source rings directly. Inherited readers
+switch the pipe permanently to a supervisor-owned relay. Readiness does not reserve bytes;
+unread deliveries can be recovered from an idle, closed, or killed reader.
 
-A completed write precedes any write that begins later in another process. Writes of at most
-4 KiB remain contiguous across short reads; deliberately tiny pipes use their capacity as the
-atomic-write bound. Bounded record metadata participates in publication and backpressure.
-A single reader consumes rings directly. Multiple reading processes use one supervisor-owned
-relay rather than contending on a guest-held shared lock. Readiness does not reserve bytes;
-unread deliveries can be recovered from an idle, closed or killed reader. Relay work yields
-between bounded batches so kill and exit messages cannot be starved by continuous traffic.
+`PipePublicationRegistry` gives the service canonical publication and consumption cursors.
+Authorized host code revokes an enrolled process before exposing its exit. Collection freezes
+its cursors and releases its process row, but mapped cells stay assigned until the owning ring
+releases them. Ring recycling or controller disposal releases cells for tagged reuse.
+This includes pipes created by a descendant before the page receives their announcement.
+Guest WASM never receives registry control memory.
 
-`WorkerPipeHost` creates pipes and composes endpoint transfer with other descriptor codecs.
-`WorkerPipeBroker` attaches each pipe once using its stable identity and retires its controller
-only after every endpoint lifetime is closed or revoked, including pending transfers. Readers
-may still drain data after writer EOF. Worker-created controllers use manual relay mode; only
-a responsive controller starts the automatic relay.
+Defaults retain 16 writer slots, 16 reader slots, and 65,536 payload bytes per ring.
+The experimental tagged representation allocates 4,982,576 bytes per pipe, compared with the previous
+2,622,760 bytes. This is fixed backing, not an append-only lifetime arena. It still has finite
+incarnation counters and concurrent admission limits. The tagged payload operations also
+have a measured throughput regression that blocks release. [Pipe lifetime and costs](pipe-lifetime.md)
+describes these bounds, exclusions, and the narrow measurements.
+
+`WorkerPipeHost` creates pipes and composes opaque endpoint transfer with descriptor codecs.
+`WorkerPipeBroker` attaches each pipe once by its stable identity. It retires the controller
+only after every reference or reservation closes or is revoked. Readers may still drain bytes
+after writer EOF. Worker-created controllers use manual relay mode; only a responsive host
+starts the automatic relay. Filesystem quiescence and physical worker-stop requirements are
+unchanged.
 
 ### Process admission diagnostics
 

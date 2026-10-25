@@ -35,7 +35,12 @@ import {
   outcomeWord,
   readOutcome,
 } from "../proc/outcome.js";
-import { PipeEndpoint, PipeErrno, PipePublicationRegistry } from "../proc/pipes.js";
+import {
+  attachPipeEndpoint,
+  PipeEndpoint,
+  PipeErrno,
+  PipePublicationRegistry,
+} from "../proc/pipes.js";
 import { WorkerPipeHost, type WorkerPipeBroker } from "../proc/worker-pipes.js";
 
 test("one browser process owner admits multiple roots with shared monotonically allocated identities", async () => {
@@ -2053,9 +2058,7 @@ for (const activation of ["lazy", "eager"] as const)
         const inherited = notice.transport.resources[0] as {
           endpoint: import("../proc/pipes.js").PipeEndpointHandle;
         };
-        const control = new Int32Array(inherited.endpoint.buffer, 0, 6),
-          generation = controlLoad(control, 5);
-        const lifetime = new Int32Array(inherited.endpoint.lifetime);
+        const inheritedEndpoint = attachPipeEndpoint(inherited.endpoint);
         const parentWorker = workers.get(parentPid)!;
         if (exitAt === "before-launch") {
           parentWorker.emit(notice);
@@ -2081,8 +2084,7 @@ for (const activation of ["lazy", "eager"] as const)
         expect(parentWorker.terminations).toBe(1);
         expect(reader.tryRead([new Uint8Array(1)])).toBe(-PipeErrno.AGAIN);
         expect(reader.readiness().hangup).toBe(false);
-        expect(controlLoad(control, 5)).toBe(generation);
-        expect(controlLoad(lifetime, 0)).toBe(0);
+        expect(inheritedEndpoint.tryWrite([])).toBe(0);
         expect(contexts.has(childPid)).toBe(false);
         await bounded(moduleRequested);
         releaseModule();
@@ -2100,8 +2102,7 @@ for (const activation of ["lazy", "eager"] as const)
         expect(reader.tryRead([bytes])).toBe(1);
         expect(bytes[0]).toBe(68);
         expect(reader.tryRead([bytes])).toBe(0);
-        expect(controlLoad(lifetime, 0)).toBe(1);
-        expect(controlLoad(control, 5)).toBe(generation);
+        expect(inheritedEndpoint.tryWrite([])).toBe(-PipeErrno.BADF);
         expect(diagnostics).toEqual([]);
       } finally {
         await cleanup();
@@ -3233,7 +3234,7 @@ async function admissionFixture(
   descriptors.close(writerFd);
   const token = message.transport
     .resources[0] as import("../proc/worker-pipes.js").WorkerPipeDescriptorToken;
-  const lifetime = new Int32Array(token.endpoint.lifetime);
+  const lifetime = attachPipeEndpoint(token.endpoint);
   const state = workerProcessState(message.transport);
   const group = findDirectoryJob(message.transport.directory, state.job)!;
   return {
@@ -3283,7 +3284,7 @@ function admissionObservation(fixture: Awaited<ReturnType<typeof admissionFixtur
   return {
     confirmed: controlLoad(fixture.state.confirmed, 0),
     pending: controlLoad(fixture.group.pending),
-    closed: controlLoad(fixture.lifetime, 0),
+    closed: Number(fixture.lifetime.tryWrite([]) === -PipeErrno.BADF),
     readiness: fixture.reader.readiness(),
     outcome: readOutcome(fixture.state.signals.outcome),
     launches: fixture.contexts.length,
@@ -3423,7 +3424,7 @@ for (const metadata of ["valid", "missing"] as const)
     fixture.broker.rejectRuntimeMessage(fixture.message, fixture.client.pid);
     await bounded(fixture.broker.dispose());
     await bounded(accepted);
-    expect(controlLoad(fixture.lifetime, 0)).toBe(1);
+    expect(Number(fixture.lifetime.tryWrite([]) === -PipeErrno.BADF)).toBe(1);
     expect(controlLoad(fixture.group.pending)).toBe(0);
     expect(fixture.contexts).toHaveLength(0);
     expect(fixture.reader.tryRead([new Uint8Array(1)])).toBe(0);
@@ -3506,7 +3507,7 @@ for (const path of ["queued", "external"] as const)
       disposed = true;
     });
     await bounded(started);
-    expect(controlLoad(fixture.lifetime, 0)).toBe(1);
+    expect(Number(fixture.lifetime.tryWrite([]) === -PipeErrno.BADF)).toBe(1);
     expect(controlLoad(fixture.group.pending)).toBe(1);
     expect(disposed).toBe(false);
     expect(fixture.contexts).toHaveLength(0);
@@ -3525,7 +3526,7 @@ test("queued duplicate delivery owns no second lifetime before supervisor admiss
     fixture.client.pid,
   );
   await expect(bounded(repeated)).rejects.toThrow("already registered");
-  expect(controlLoad(fixture.lifetime, 0)).toBe(0);
+  expect(Number(fixture.lifetime.tryWrite([]) === -PipeErrno.BADF)).toBe(0);
   await bounded(accepted);
   const supervisor = await bounded(fixture.broker.ready());
   await bounded(supervisor.start(fixture.pid));
@@ -3594,7 +3595,7 @@ async function nestedAdmissionFixture(
     client,
     state,
     group,
-    lifetime: new Int32Array(token.endpoint.lifetime),
+    lifetime: attachPipeEndpoint(token.endpoint),
   };
 }
 
@@ -3622,7 +3623,7 @@ test("admission review r1: malformed queued sender cannot strand a second accept
     confirmed: controlLoad(confirmed),
     pending: group ? controlLoad(group.pending) : "collected",
     jobConfirmed: controlLoad(jobConfirmed),
-    closed: controlLoad(child.lifetime, 0),
+    closed: Number(child.lifetime.tryWrite([]) === -PipeErrno.BADF),
     readiness: child.reader.readiness(),
     launches: parent.contexts.filter((context) => context.pid === child.message.transport.pid)
       .length,
@@ -3635,7 +3636,7 @@ test("admission review r1: malformed queued sender cannot strand a second accept
   ).not.toContain(child.message.transport.pid);
   expect(observed.readiness.hangup).toBe(true);
   expect(child.reader.tryRead([new Uint8Array(1)])).toBe(0);
-  expect(controlLoad(local.lifetime, 0)).toBe(0);
+  expect(Number(local.lifetime.tryWrite([]) === -PipeErrno.BADF)).toBe(0);
   expect(controlLoad(local.state.confirmed)).toBe(0);
   expect(controlLoad(local.group.pending)).toBe(1);
   expect(readOutcome(local.state.signals.outcome)).toBeNull();

@@ -1,3 +1,4 @@
+import { pipePrivateBuffers } from "./fixtures/pipe-private-buffers.ts";
 import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
 import {
   browserQuietStartFailure,
@@ -277,13 +278,9 @@ function exercisePrivatePipes(): IntrinsicsReport {
   const table = new DescriptorTable();
   const payload = new Uint8Array([65, 66, 67]),
     output = new Uint8Array(3);
-  const observer = poisonProcessIntrinsics([
-    arena,
-    readHandle.buffer,
-    readHandle.lifetime,
-    writeHandle.lifetime,
-    readHandle.wake.buffer as SharedArrayBuffer,
-  ]);
+  const observer = poisonProcessIntrinsics(
+    [arena].concat(pipePrivateBuffers(readHandle, writeHandle)),
+  );
   let report: IntrinsicsReport;
   let first: PipeController | undefined, second: PipeController | undefined;
   let firstReader: ReturnType<PipeController["retain"]> | undefined,
@@ -310,8 +307,8 @@ function exercisePrivatePipes(): IntrinsicsReport {
       duplicate = table.dup(fd);
     equal(attached.tryWrite([payload]), 3, "captured pipe write");
     equal(reader.tryRead([output]), 3, "captured pipe read");
-    // Force the growable canonical arena to expand under the replacements.
-    for (let index = 0; index < 12; index++) registry.allocate(2);
+    // Exercise supported reference retention while captured intrinsics are replaced.
+    for (let index = 0; index < 12; index++) first.duplicate(writer).close();
     table.close(fd);
     table.close(duplicate);
     registry.revoke(2);

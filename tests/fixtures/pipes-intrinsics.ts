@@ -9,7 +9,7 @@ const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
     .replace(/^import\b[^;]*;\n/gm, "")
     .replace(/^export /gm, "")
     .concat(
-      "\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry };\n",
+      "\nglobalThis.pipeExports = { attachPipeController, attachPipeEndpoint, attachPipePublicationRegistry, PipeController, PipeEndpoint, PipeErrno, PipePublicationRegistry, registryStorage, RegistryStorage };\n",
     ),
 );
 
@@ -59,5 +59,40 @@ export function isolatedPipes() {
   runInNewContext(source, context, {
     filename: new URL("../../proc/pipes.ts", import.meta.url).pathname,
   });
-  return { pipes: context.pipeExports, atomics, hooks };
+  const internals = context.pipeExports as typeof Pipes & {
+    registryStorage: symbol;
+    RegistryStorage: { prototype: { allocate(pid: number, initial?: bigint): number } };
+  };
+  function registryData(registry: Pipes.PipePublicationRegistry) {
+    return Reflect.apply(
+      Reflect.get(registry, Object.getOwnPropertySymbols(Object.getPrototypeOf(registry))[0]!),
+      registry,
+      [],
+    ) as {
+      allocate(pid: number, initial?: bigint): number;
+      canonical(index: number): BigInt64Array;
+    };
+  }
+  function endpointData(endpoint: Pipes.PipeEndpoint) {
+    return endpoint.handle() as unknown as {
+      id: string;
+      pid: number;
+      mode: "read" | "write";
+      buffer: SharedArrayBuffer;
+      capacity: number;
+      maxWriters: number;
+      maxReaders: number;
+      slot: number;
+      lifetime: SharedArrayBuffer;
+      registry?: Pipes.PipePublicationRegistryHandle;
+    };
+  }
+  return {
+    pipes: context.pipeExports,
+    atomics,
+    hooks,
+    registryData,
+    endpointData,
+    registryPrototype: internals.RegistryStorage.prototype,
+  };
 }

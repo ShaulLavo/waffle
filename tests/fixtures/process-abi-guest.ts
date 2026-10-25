@@ -37,7 +37,7 @@ const abi = new ProcessABI({
   pid,
   service,
   signals,
-  wake: endpoint.wake,
+  wake: attachPipeEndpoint(endpoint).notification,
   wait(milliseconds, word, expected) {
     parentPort!.postMessage({ phase: "blocked" });
     controlWait(word, 0, expected, milliseconds);
