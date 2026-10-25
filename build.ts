@@ -1,6 +1,7 @@
 // Source-first package: emit one Node module per source, preserving shared state.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { buildNetwork } from "./tooling/build-network";
 
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
@@ -244,9 +245,11 @@ export function rewriteNodeImports(code: string, source: string, root: string): 
   return code;
 }
 
-export async function buildNodeModules(root = import.meta.dir): Promise<void> {
-  const { buildNetwork } = await import("./tooling/build-network");
-  await buildNetwork(root);
+export async function buildNodeModules(
+  root = import.meta.dir,
+  prepareNetwork = buildNetwork,
+): Promise<void> {
+  await prepareNetwork(root);
   const outdir = join(root, "dist");
   rmSync(outdir, { recursive: true, force: true });
   const transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });

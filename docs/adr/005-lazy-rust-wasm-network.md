@@ -24,9 +24,9 @@ Waffle's reference native adapter is `network/src/native.rs`. Only that native t
 
 Source installation now requires the pinned Rust toolchain and `wasm32-unknown-unknown` target. `prepare` builds a missing or stale asset and copies it beside the prepared Node loader. Generated WASM stays ignored. Browser bundlers must serve `network.wasm` beside the emitted network code with `application/wasm`.
 
-CI builds the exact-input asset once. Package and browser jobs restore it and never invoke Cargo. Rust toolchain, Cargo downloads, and target artifacts are cached. Rust checks run when their path filter selects inputs, on manual dispatch, or when an exact artifact is absent.
+CI builds the exact-input asset once. Its input stamp and SHA-256 checksum travel with the ignored asset outside `dist/`. Package and browser jobs verify both before installation and forbid Cargo. Preparation verifies again before deleting `dist/`, then copies the asset beside the emitted loader. Rust toolchain, Cargo downloads, and target artifacts are cached. Rust checks run when their path filter selects inputs, on manual dispatch, or when an exact artifact is absent.
 
-`size:network` reports raw WASM, gzip WASM, and gzip loader bytes independently. The core budget is unchanged.
+`size:network` reports raw WASM, gzip WASM, and gzip loader bytes independently. The first measured sizes are 80,998 raw WASM bytes, 26,293 gzip WASM bytes, and 664 gzip loader bytes. The respective budgets are 85,000, 28,000, and 800 bytes. The core budget is unchanged.
 
 ## Deliberate limits
 

@@ -38,11 +38,19 @@ jobs:
               - "rust-toolchain.toml"
               - "network/**"
               - "tooling/build-network.ts"
+              - "tooling/check-network-rust.ts"
+              - "build.ts"
+              - "prepare.ts"
               - "tooling/network-size.ts"
               - "browser/net/module.ts"
               - "browser/net/namespace.ts"
               - "tests/network-module.test.ts"
               - "tests/network-size.test.ts"
+              - "tests/network-lazy.test.ts"
+              - "tests/packaging.test.ts"
+              - "tests/git-install.test.ts"
+              - "tests/node-exports.test.ts"
+              - "tests/runtime-size.test.ts"
             browser:
               - ".github/**"
               - "Cargo.toml"
@@ -50,6 +58,9 @@ jobs:
               - "rust-toolchain.toml"
               - "network/**"
               - "tooling/build-network.ts"
+              - "tooling/check-network-rust.ts"
+              - "build.ts"
+              - "prepare.ts"
               - "core/**"
               - "fs/**"
               - "proc/**"
@@ -98,6 +109,7 @@ jobs:
           path: |
             browser/net/network.wasm
             browser/net/network.input-hash
+            browser/net/network.sha256
           key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
       - name: Cache Rust toolchain and Cargo build inputs
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
@@ -123,6 +135,7 @@ jobs:
       - name: Rust native, state and actual WASM tests
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         run: |
+          bun tooling/check-network-rust.ts
           cargo fmt --all -- --check
           cargo clippy --release --all-targets --features module-tests --locked -- -D warnings
           cargo test --release -p waffle-tcp --features module-tests --locked -- --nocapture
@@ -133,6 +146,8 @@ jobs:
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
           echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
   package:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
     needs: network-wasm
     runs-on: ubuntu-latest
     steps:
@@ -146,8 +161,11 @@ jobs:
           path: |
             browser/net/network.wasm
             browser/net/network.input-hash
+            browser/net/network.sha256
           key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
           fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun tooling/build-network.ts --verify
       - name: Cache Bun package downloads
         uses: actions/cache@v4
         with:
@@ -216,6 +234,8 @@ jobs:
           WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
           WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
   browser:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
     needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
@@ -230,8 +250,11 @@ jobs:
           path: |
             browser/net/network.wasm
             browser/net/network.input-hash
+            browser/net/network.sha256
           key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
           fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun tooling/build-network.ts --verify
       - name: Restore Bun package downloads
         uses: actions/cache/restore@v4
         with:

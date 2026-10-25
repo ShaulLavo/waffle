@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { checkNetworkBudget, NETWORK_BUDGET, networkSize } from "../tooling/network-size.js";
 
 test("network WASM and loader have separate enforceable budgets", async () => {
+  expect(() => checkNetworkBudget(NETWORK_BUDGET)).not.toThrow();
   const size = await networkSize();
   expect(size.wasm).toBeGreaterThan(0);
   expect(size.wasmGzip).toBeLessThan(size.wasm);

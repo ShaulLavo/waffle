@@ -4,10 +4,22 @@ import { execFileSync } from "node:child_process";
 test("no module compilation before network(), and exactly one instance belongs to each runtime", () => {
   const root = new URL("../index.ts", import.meta.url).href;
   const ring = new URL("../browser/net/ring.ts", import.meta.url).href;
+  const moduleURL = new URL("../browser/net/module.ts", import.meta.url).href;
   const worker = new URL("../browser/fs-worker.ts", import.meta.url).href;
   const script = `
     import assert from "node:assert/strict";
-    let compiled = 0, instances = 0;
+    import { mock } from "bun:test";
+    let compiled = 0, instances = 0, loads = 0, disposals = 0;
+    const { loadNetworkModule: originalLoad } = await import(${JSON.stringify(moduleURL)});
+    function observeInstance(instance) {
+      return { ...instance, dispose() { disposals++; instance.dispose(); } };
+    }
+    async function observedLoad(...args) {
+      loads++;
+      const loaded = await originalLoad(...args);
+      return { create: (...args) => observeInstance(loaded.create(...args)) };
+    }
+    mock.module(${JSON.stringify(moduleURL)}, () => ({ loadNetworkModule: observedLoad }));
     const compile = WebAssembly.compile;
     const Instance = WebAssembly.Instance;
     WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
@@ -22,18 +34,26 @@ test("no module compilation before network(), and exactly one instance belongs t
         const unregisterAdapter = runtime.registerAdapter("unused", () => { throw Error("must stay inactive"); });
         const unregister = runtime.registerProgram("/unused", { adapter: "unused", source: new Uint8Array([0]) });
         unregister(); unregisterAdapter();
+        await runtime.processes();
+        assert.equal(loads, index ? 1 : 0);
         assert.equal(instances, index);
         assert.equal(compiled, index ? 1 : 0);
-        const network = await runtime.network();
+        const first = runtime.network();
+        const second = runtime.network();
+        assert.equal(first, second);
+        const [network, concurrent] = await Promise.all([first, second]);
+        assert.equal(network, concurrent);
+        assert.equal(loads, 1);
         assert.equal(instances, index + 1);
         assert.equal(await runtime.network(), network);
         network.createHelper({ ring: createRing(), fetch: async () => { throw Error("external fetch"); } });
         network.createHelper({ ring: createRing(), fetch: async () => { throw Error("external fetch"); } });
         assert.equal(instances, index + 1);
-      } finally { await runtime.dispose(); }
+      } finally { await runtime.dispose(); await runtime.dispose(); }
+      assert.equal(disposals, index + 1);
     }
     assert.equal(compiled, 1);
-    console.log("lazy network compile=1, instances=2, helpers=4");
+    console.log("lazy network compile=1, instances=2, helpers=4, loads=1, disposals=2");
   `;
   const output = execFileSync(process.execPath, ["--eval", script], {
     encoding: "utf8",

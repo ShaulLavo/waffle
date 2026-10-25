@@ -4,3 +4,4 @@ dist/
 target/
 browser/net/network.wasm
 browser/net/network.input-hash
+browser/net/network.sha256

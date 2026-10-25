@@ -129,3 +129,45 @@ test("Node process hosts expose fd_kind against their current descriptor binding
     }),
   ).not.toThrow();
 });
+
+for (const [command, entry] of [
+  [process.execPath, new URL("../browser/net/module.ts", import.meta.url).href],
+  ["node", "waffle/network"],
+] as const) {
+  test(`${command} standalone network import has no asset I/O and instances have independent ownership`, () => {
+    const script = `
+      import assert from "node:assert/strict";
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      let reads = 0, fetches = 0, compiled = 0, instances = 0;
+      const read = fs.readFile;
+      fs.readFile = (...args) => { if (String(args[0]).endsWith("network.wasm")) reads++; return read(...args); };
+      syncBuiltinESMExports();
+      ${command === "node" ? "" : 'const { mock } = await import("bun:test"); mock.module("node:fs/promises", () => ({ ...fs }));'}
+      globalThis.fetch = () => { fetches++; throw Error("unexpected fetch"); };
+      const compile = WebAssembly.compile;
+      const Instance = WebAssembly.Instance;
+      WebAssembly.compile = (...args) => { compiled++; return compile(...args); };
+      WebAssembly.Instance = class extends Instance { constructor(...args) { super(...args); instances++; } };
+      const { loadNetworkModule } = await import(${JSON.stringify(entry)});
+      assert.deepEqual([reads, fetches, compiled, instances], [0, 0, 0, 0]);
+      const loaded = await loadNetworkModule();
+      const first = loaded.create(), second = loaded.create();
+      try {
+        assert.deepEqual([reads, fetches, compiled, instances], [1, 0, 1, 2]);
+        assert.equal(first.call("net_listen", 40, 23456), 23456);
+        assert.equal(second.call("net_listen", 40, 23456), 23456);
+        first.dispose(); first.dispose();
+        assert.throws(() => first.call("net_listen", 40, 23457), /disposed/);
+        assert.equal(second.call("net_listen", 40, 23457), 23457);
+      } finally { first.dispose(); second.dispose(); }
+    `;
+    expect(() =>
+      execFileSync(command, ["--input-type=module", "--eval", script], {
+        cwd: resolve(import.meta.dir, ".."),
+        stdio: "pipe",
+        timeout: 10000,
+      }),
+    ).not.toThrow();
+  });
+}

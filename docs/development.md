@@ -16,6 +16,8 @@ bun run prepare
 
 `bun run build:network` builds the separate Rust WASM asset. `bun run size:network` reports its independent budgets. Native and compiled-module tests run with `WAFFLE_TCP_MODULE=$PWD/browser/net/network.wasm bun run test:network:rust`.
 
+`bun tooling/build-network.ts --verify` checks the artifact against the current Rust inputs and its SHA-256 checksum without running Cargo. CI restores this artifact outside `dist/` and sets `WAFFLE_NETWORK_PREBUILT=1`, so missing or corrupt bytes fail rather than building again.
+
 `bun run prepare` writes the Node entry points under `dist/`. `dist/` is ignored, and CI fails if `git ls-files dist` lists anything.
 
 ## Check your change
