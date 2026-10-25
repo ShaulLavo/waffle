@@ -1,11 +1,11 @@
 import {
-  DescriptorTable,
   OpenDescription,
   type Descriptor,
+  type DescriptorTable,
   type Resource,
 } from "../core/descriptors.js";
 import { memoryViews } from "../core/memory-views.js";
-import { WorkerProcessClient } from "./worker-client.js";
+import type { WorkerProcessClient } from "./worker-client.js";
 
 const READ = 1n << 1n;
 const WRITE = 1n << 6n;
@@ -27,6 +27,18 @@ function isNativeResource(resource: Resource): resource is NativeResource {
 export function nodeWasiDescriptor(entry: Descriptor | undefined): number | undefined {
   if (!entry || !isNativeResource(entry.resource)) return undefined;
   return entry.resource.nodeWasiFd;
+}
+
+function translateDescriptorArguments(
+  args: number[],
+  indices: readonly number[],
+  descriptors: DescriptorTable,
+): number | undefined {
+  for (const index of indices) {
+    const fd = nodeWasiDescriptor(descriptors.get(args[index]! >>> 0));
+    if (fd === undefined) return 8;
+    args[index] = fd;
+  }
 }
 
 /** One guest namespace owns both process capabilities and private Node WASI handles. Native
@@ -78,11 +90,8 @@ export function installNodeWasiDescriptors(
               : [];
     if (!indices.length) continue;
     wasi[name] = guard((...args) => {
-      for (const index of indices) {
-        const fd = nodeWasiDescriptor(descriptors.get(args[index]! >>> 0));
-        if (fd === undefined) return 8;
-        args[index] = fd;
-      }
+      const error = translateDescriptorArguments(args, indices, descriptors);
+      if (error !== undefined) return error;
       return call(...args);
     });
   }
@@ -220,6 +229,15 @@ function installPoll(
 ): void {
   type Subscription = { ptr: number; type: number; fd: number; userdata: bigint; deadline: number };
   type Views = ReturnType<typeof memoryViews>;
+  type PollEvent = {
+    error: number;
+    ready: boolean;
+    nbytes: bigint;
+    hangup: boolean;
+    remaining: number;
+    nativeError: number;
+  };
+  type PollState = { emitted: number; timeout: number };
   function pollNative(
     items: Subscription[],
     views: Views,
@@ -246,14 +264,7 @@ function installPoll(
     views: Views,
     at: number,
     result: number,
-  ): {
-    error: number;
-    ready: boolean;
-    nbytes: bigint;
-    hangup: boolean;
-    remaining: number;
-    nativeError: number;
-  } {
+  ): PollEvent {
     const event = {
       error: 0,
       ready: true,
@@ -297,6 +308,29 @@ function installPoll(
       nbytes: item.type === 1 ? BigInt(state.nbytes ?? 0) : 0n,
     };
   }
+  function emitPollEvent(item: Subscription, event: PollEvent, views: Views, ptr: number): void {
+    views.range(ptr, 32).fill(0);
+    const view = views.view();
+    view.setBigUint64(ptr, item.userdata, true);
+    view.setUint16(ptr + 8, event.error, true);
+    view.setUint8(ptr + 10, item.type);
+    view.setBigUint64(ptr + 16, BigInt(event.nbytes), true);
+    view.setUint16(ptr + 24, event.hangup ? 1 : 0, true);
+  }
+  function emitPollSubscription(
+    item: Subscription,
+    views: Views,
+    output: number,
+    result: number,
+    state: PollState,
+  ): number {
+    const event = pollSubscription(item, views, output + state.emitted * 32, result);
+    if (event.nativeError) return event.nativeError;
+    state.timeout = Math.min(state.timeout, event.remaining);
+    if (!event.ready) return 0;
+    emitPollEvent(item, event, views, output + state.emitted++ * 32);
+    return 0;
+  }
   wasi.poll_oneoff = guard((input, output, count, result) => {
     if (!count) return 28;
     if (isSignalPending()) return 27;
@@ -335,32 +369,16 @@ function installPoll(
       const expected = Atomics.load(client.wake, 0);
       guard(() => 0)();
       if (isSignalPending()) return 27;
-      let emitted = 0;
-      let timeout = Infinity;
+      const state = { emitted: 0, timeout: Infinity };
       for (const item of subscriptions) {
-        const { error, ready, nbytes, hangup, remaining, nativeError } = pollSubscription(
-          item,
-          views,
-          output! + emitted * 32,
-          result!,
-        );
+        const nativeError = emitPollSubscription(item, views, output!, result!, state);
         if (nativeError) return nativeError;
-        timeout = Math.min(timeout, remaining);
-        if (!ready) continue;
-        const ptr = output! + emitted++ * 32;
-        views.range(ptr, 32).fill(0);
-        const view = views.view();
-        view.setBigUint64(ptr, item.userdata, true);
-        view.setUint16(ptr + 8, error, true);
-        view.setUint8(ptr + 10, item.type);
-        view.setBigUint64(ptr + 16, BigInt(nbytes), true);
-        view.setUint16(ptr + 24, hangup ? 1 : 0, true);
       }
-      if (emitted) {
-        views.view().setUint32(result!, emitted, true);
+      if (state.emitted) {
+        views.view().setUint32(result!, state.emitted, true);
         return 0;
       }
-      Atomics.wait(client.wake, 0, expected, Math.max(0, Math.min(timeout, 10)));
+      Atomics.wait(client.wake, 0, expected, Math.max(0, Math.min(state.timeout, 10)));
     }
   });
 }
