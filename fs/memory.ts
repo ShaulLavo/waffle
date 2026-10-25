@@ -923,16 +923,17 @@ export class MemFS implements FileSystem {
     for (const node of plan.created) this.forget(node);
   }
 
+  private reconstructDirectory(directory: DirNode, pending: DirNode[]): void {
+    this.directoryPages(directory);
+    for (const child of directory.children.values()) {
+      if (child.kind === "dir") pending.push(child);
+    }
+  }
+
   constructor(public root: DirNode = newDir()) {
     adoptInodes(root);
     const pending = [root];
-    while (pending.length) {
-      const directory = pending.pop()!;
-      this.directoryPages(directory);
-      for (const child of directory.children.values()) {
-        if (child.kind === "dir") pending.push(child);
-      }
-    }
+    while (pending.length) this.reconstructDirectory(pending.pop()!, pending);
   }
 
   hasNode(target: Node): boolean {

@@ -134,30 +134,34 @@ export function directoryPage(
   return { used, entries, partialBytes: used - at };
 }
 
+function enumeratePages(h: ReturnType<typeof metadataGuest>, count: number, capacity: number) {
+  const names: string[] = [];
+  const cookies: bigint[] = [];
+  let cookie = 0n;
+  let calls = 0;
+  let partialPages = 0;
+  for (; calls < count + 3; calls++) {
+    const page = directoryPage(h, cookie, capacity);
+    if (!page.used) break;
+    if (!page.entries.length) throw new Error("no complete dirent in 4 KiB buffer");
+    if (page.partialBytes) partialPages++;
+    for (const entry of page.entries) {
+      names.push(entry.name);
+      cookies.push(entry.cookie);
+      cookie = entry.cookie;
+    }
+  }
+  if (calls === count + 3) throw new Error("directory enumeration did not reach EOF");
+  const eof = directoryPage(h, cookie).used;
+  const partial = directoryPage(h, 0n, 10);
+  const restart = directoryPage(h, 0n).entries.map((entry) => entry.name);
+  return { names, cookies, calls: calls + 1, partialPages, eof, partial: partial.used, restart };
+}
+
 export function enumerateDirectory(fs: FileSystem, count: number, capacity = 4096) {
   const h = metadataGuest(fs);
   try {
-    const names: string[] = [];
-    const cookies: bigint[] = [];
-    let cookie = 0n;
-    let calls = 0;
-    let partialPages = 0;
-    for (; calls < count + 3; calls++) {
-      const page = directoryPage(h, cookie, capacity);
-      if (!page.used) break;
-      if (!page.entries.length) throw new Error("no complete dirent in 4 KiB buffer");
-      if (page.partialBytes) partialPages++;
-      for (const entry of page.entries) {
-        names.push(entry.name);
-        cookies.push(entry.cookie);
-        cookie = entry.cookie;
-      }
-    }
-    if (calls === count + 3) throw new Error("directory enumeration did not reach EOF");
-    const eof = directoryPage(h, cookie).used;
-    const partial = directoryPage(h, 0n, 10);
-    const restart = directoryPage(h, 0n).entries.map((entry) => entry.name);
-    return { names, cookies, calls: calls + 1, partialPages, eof, partial: partial.used, restart };
+    return enumeratePages(h, count, capacity);
   } finally {
     h.wasi.descriptors.dispose();
   }

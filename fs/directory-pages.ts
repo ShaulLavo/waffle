@@ -134,6 +134,14 @@ export class DirectoryPages {
       branch = branch.entry.cookie > cookie ? branch.left : branch.right;
     }
   }
+  private appendEntries(entries: Entry[], cookie: bigint, byteLength: number, size: number): number {
+    for (const entry of this.entriesAfter(cookie)) {
+      entries.push(entry);
+      size += 24 + entry.bytes.length;
+      if (size >= byteLength) break;
+    }
+    return size;
+  }
   page(cookie: bigint, byteLength: number, ino: number, parent: number): Uint8Array {
     if (!byteLength) return new Uint8Array();
     const entries: Entry[] = [];
@@ -152,12 +160,7 @@ export class DirectoryPages {
         cookie: 2n,
         bytes: new Uint8Array([46, 46]),
       });
-    if (size < byteLength) {
-      for (const entry of this.entriesAfter(cookie)) {
-        append(entry);
-        if (size >= byteLength) break;
-      }
-    }
+    if (size < byteLength) size = this.appendEntries(entries, cookie, byteLength, size);
     const output = new Uint8Array(Math.min(byteLength, size));
     let used = 0;
     for (const entry of entries) used = encodeEntry(output, used, entry);
