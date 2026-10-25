@@ -704,11 +704,13 @@ async function coldStop(): Promise<void> {
   const f = await serviceFixture(true);
   try {
     const reading = response(f.owner.worker);
+    const loading = denied(f.observer.pin(f.handle, 0, 3), 11);
     const output = new Uint8Array(3).fill(42);
     equal(f.client.tryRead(f.handle, [output], 0), -6);
     equal(await reading, { reading: true });
     await denied(f.observer.stop(), 11);
     const state = await message(f.owner.worker, { control: "releaseLoad" });
+    await loading;
     equal(field(state, "hydrations"), 0);
     equal(field(state, "resident"), false);
     equal(field(field(state, "diagnostics"), "stopped"), true);

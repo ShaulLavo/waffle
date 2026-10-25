@@ -252,8 +252,18 @@ export class FilesystemClient implements FileSystem {
   // rechecks the slot's handle under its file lock.
   private fileSlots = new MapConstructor<number, number>();
   // Preparation owns no guest buffers and never writes file bytes. Only a successful try* retry
-  // commits I/O; preparation only hydrates data or reserves write capacity.
-  private ioPreparations = new MapConstructor<number, FilesystemCompletion>();
+  // commits I/O; preparation selects cold bytes or reserves write capacity.
+  private ioPreparations = new MapConstructor<
+    number,
+    | { kind: "prepare"; completion: FilesystemCompletion }
+    | {
+        kind: "read";
+        completion: FilesystemCompletion;
+        offset: number;
+        length: number;
+        revision: number | undefined;
+      }
+  >();
   private capabilityEntries = new MapConstructor<number, number>();
   private capabilities: Int32Array;
   private epoch: Int32Array;
@@ -687,14 +697,19 @@ export class FilesystemClient implements FileSystem {
     return errno(error);
   }
   private cancelIO(handle: FileHandle): void {
-    const completion = mapGet(this.ioPreparations, handle);
-    if (!completion) return;
+    const pending = mapGet(this.ioPreparations, handle);
+    if (!pending) return;
     mapDelete(this.ioPreparations, handle);
-    completion.release();
+    pending.completion.release();
   }
   private preparedIO(handle: FileHandle): boolean {
-    const completion = mapGet(this.ioPreparations, handle);
-    if (!completion) return true;
+    const pending = mapGet(this.ioPreparations, handle);
+    if (!pending) return true;
+    if (pending.kind === "read") {
+      this.cancelIO(handle);
+      return true;
+    }
+    const completion = pending.completion;
     if (!completion.ready) return false;
     mapDelete(this.ioPreparations, handle);
     // Inspect shared completion state even while poll owns the worker, before the port callback
@@ -702,16 +717,58 @@ export class FilesystemClient implements FileSystem {
     completion.releaseReady();
     return true;
   }
-  private prepareIO(
-    handle: FileHandle,
-    intent: { kind: "read" } | { kind: "grow"; size: number },
-  ): void {
+  private prepareIO(handle: FileHandle, intent: { kind: "grow"; size: number }): void {
     if (mapHas(this.ioPreparations, handle)) return;
-    const completion =
-      intent.kind === "read"
-        ? this.submit("read", [handle, 0, 0])
-        : this.submit("grow", [handle, intent.size]);
-    mapSet(this.ioPreparations, handle, completion);
+    const completion = this.submit("grow", [handle, intent.size]);
+    mapSet(this.ioPreparations, handle, { kind: "prepare", completion });
+  }
+  private prepareReadIO(handle: FileHandle, offset: number, length: number): void {
+    if (mapHas(this.ioPreparations, handle)) return;
+    const revision = this.shared.revision(handle, true, this.revoked, this.connection.owner);
+    const completion = this.submit("read", [handle, Math.min(PAGE, length), offset]);
+    mapSet(this.ioPreparations, handle, {
+      kind: "read",
+      completion,
+      offset,
+      length: Math.min(PAGE, length),
+      revision,
+    });
+  }
+  private preparedRead(
+    handle: FileHandle,
+    chunks: readonly Uint8Array[],
+    offset: number,
+  ): number | undefined {
+    const pending = mapGet(this.ioPreparations, handle);
+    if (pending?.kind !== "read") return;
+    const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (
+      pending.offset !== offset ||
+      pending.length < Math.min(PAGE, length) ||
+      pending.revision !== this.shared.revision(handle, true, this.revoked, this.connection.owner)
+    ) {
+      this.cancelIO(handle);
+      return;
+    }
+    const completion = pending.completion;
+    if (!completion.ready) return -6;
+    mapDelete(this.ioPreparations, handle);
+    completion.releaseReady();
+    const count = completion.cells[2]!;
+    if (completion.cells[0] !== State.Complete || !completion.cells[4] || count > pending.length)
+      throw new FilesystemError(29);
+    const bytes = new Uint8ArrayConstructor(completion.buffer, HEADER, Math.min(count, length));
+    return this.copyReadResult(chunks, bytes);
+  }
+  private copyReadResult(chunks: readonly Uint8Array[], bytes: Uint8Array): number {
+    let at = 0;
+    for (const chunk of chunks) {
+      const count = Math.min(chunk.length, bytes.length - at);
+      if (count <= 0) break;
+      typedArraySet(chunk, bytes.subarray(at, at + count));
+      at += count;
+    }
+    return at;
   }
   private residentIO<T>(action: () => T): T | number {
     try {
@@ -733,6 +790,8 @@ export class FilesystemClient implements FileSystem {
       return this.residentIO(() => this.resident?.client?.tryRead(handle, chunks, offset) ?? -6);
     if (!(offset >= 0)) return -28;
     try {
+      const prepared = this.preparedRead(handle, chunks, offset);
+      if (prepared !== undefined) return prepared;
       if (!this.preparedIO(handle)) return -6;
       const slot = this.directSlot(handle);
       if (!slot) return -8;
@@ -748,7 +807,11 @@ export class FilesystemClient implements FileSystem {
     } catch (error) {
       if (error instanceof MissingDataError || error instanceof MissingSegmentError) {
         try {
-          this.prepareIO(handle, { kind: "read" });
+          this.prepareReadIO(
+            handle,
+            offset,
+            chunks.reduce((sum, chunk) => sum + chunk.length, 0),
+          );
           return -6;
         } catch (failure) {
           return -errno(failure);
@@ -1006,8 +1069,15 @@ export class FilesystemClient implements FileSystem {
     // A failed preparation is ready too: retrying the syscall delivers its errno, rather than
     // leaving poll asleep forever. Preserve that completion until the syscall consumes it.
     if (this.revoked()) return { readable: true, writable: true, hangup: true };
-    if (pending && !pending.ready) return { readable: false, writable: false, hangup: false };
-    if (pending && (pending.cells[0] === State.Failed || pending.cells[0] === State.Cancelled))
+    if (pending?.kind === "read")
+      return { readable: pending.completion.ready, writable: false, hangup: false };
+    if (pending && !pending.completion.ready)
+      return { readable: false, writable: false, hangup: false };
+    if (
+      pending &&
+      (pending.completion.cells[0] === State.Failed ||
+        pending.completion.cells[0] === State.Cancelled)
+    )
       return { readable: true, writable: true, hangup: false };
     try {
       if (!this.preparedIO(handle)) return { readable: false, writable: false, hangup: false };
@@ -1020,10 +1090,9 @@ export class FilesystemClient implements FileSystem {
         this.revoked,
         this.connection.owner,
       );
-      // A cold file can be polled before its first read. Start hydration, but do not enqueue
-      // RPCs on ordinary hot-file lock contention.
-      if (ready === undefined)
-        this.prepareIO(handle, writing ? { kind: "grow", size: 0 } : { kind: "read" });
+      // Cold polling selects a bounded range. Only the next syscall consumes its bytes.
+      if (ready === undefined && writing) this.prepareIO(handle, { kind: "grow", size: 0 });
+      if (ready === undefined && !writing) this.prepareReadIO(handle, 0, PAGE);
       return {
         readable: !writing && ready === true,
         writable: writing && ready === true,
@@ -1212,14 +1281,12 @@ export class FilesystemClient implements FileSystem {
         try {
           let requested = 0;
           for (let i = 0; i < chunks.length; i++) requested += chunks[i]!.length;
-          const bytes = this.call("read", [handle, requested, offset]) as Uint8Array;
-          let at = 0;
-          for (const chunk of chunks) {
-            const count = Math.min(chunk.length, bytes.length - at);
-            if (count > 0) chunk.set(bytes.subarray(at, at + count));
-            at += count;
-          }
-          return bytes.length;
+          const bytes = this.call("read", [
+            handle,
+            Math.min(PAGE, requested),
+            offset,
+          ]) as Uint8Array;
+          return this.copyReadResult(chunks, bytes);
         } catch (failure) {
           return -errno(failure);
         }

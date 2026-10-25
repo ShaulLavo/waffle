@@ -7,7 +7,7 @@ import {
   type CheckpointLimits,
   type CheckpointCost,
 } from "./checkpoint-pressure.js";
-import { FilesystemError } from "./protocol.js";
+import { FilesystemError, PAGE } from "./protocol.js";
 import type { FileHandle } from "../core/index.js";
 import { MemoryBackend, type LocalMutationPlan } from "./backend.js";
 import {
@@ -317,6 +317,45 @@ export class PersistentBackend extends MemoryBackend {
     const size = this.readMetadata(node).size;
     const retention = this.storage.retainPayload(key, size, metadata);
     return { kind: "cold", key, size, storage: this.storage, retention };
+  }
+  prepareDescriptorRead(
+    handle: FileHandle,
+    offset: number,
+    length: number,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> | undefined {
+    this.assertAdmitting();
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0)
+      throw new FilesystemError(28);
+    if (cancelled()) throw new FilesystemError(11);
+    if (!(this.fs.permissions(handle).access & 4)) throw new FilesystemError(2);
+    const node = this.fs.nodeForHandle(handle);
+    if (node.kind !== "file") throw new FilesystemError(31);
+    this.sync(handle);
+    if (this.shared.isResident(handle)) return;
+    const count = Math.min(length, PAGE, Math.max(0, this.readMetadata(node).size - offset));
+    if (!count) return Promise.resolve(new Uint8Array());
+    const backing = this.selectReadBacking(node, offset, count);
+    if (backing.kind !== "cold") throw new FilesystemError(6);
+    const drained = Promise.withResolvers<void>();
+    this.ownWork(drained.promise);
+    return this.readDescriptorRange(backing, offset, count, cancelled).finally(() => {
+      const release = Promise.resolve().then(() => backing.retention.release());
+      void release.then(drained.resolve, drained.reject);
+      return release;
+    });
+  }
+  private async readDescriptorRange(
+    backing: Extract<ReadBacking, { kind: "cold" }>,
+    offset: number,
+    length: number,
+    cancelled: () => boolean,
+  ): Promise<Uint8Array> {
+    if (cancelled() || this.stopped) throw new FilesystemError(11);
+    const bytes = await backing.storage.readRange(backing.key, { offset, length });
+    if (cancelled() || this.stopped) throw new FilesystemError(11);
+    if (bytes.length !== length) throw new Error("Short retained descriptor range");
+    return bytes;
   }
   private evictClean(except?: FileHandle): void {
     // Registration is bounded independently of workspace size. Idle metadata and clean payload
@@ -653,6 +692,12 @@ export class PersistentBackend extends MemoryBackend {
     }
     return true;
   }
+  private invalidateCapturedState(): void {
+    this.keys = new Map(this.committedKeys);
+    // Cold baselines still identify retained durable bytes. Only resident captures need retry.
+    for (const handle of this.revisions.keys())
+      if (this.shared.isResident(handle)) this.revisions.delete(handle);
+  }
   private reserveCheckpoint(request: CheckpointRequest): Promise<void> {
     const cost = { ...this.captureCost(request) };
     this.shared.dirtyAdmission.reserveCopy(cost, this.shared.resources().usedBytes);
@@ -683,8 +728,7 @@ export class PersistentBackend extends MemoryBackend {
     } catch (error) {
       this.pressure.release(reservation);
       this.shared.dirtyAdmission.releaseCopy(cost);
-      this.keys = new Map(this.committedKeys);
-      this.revisions.clear();
+      this.invalidateCapturedState();
       throw error;
     }
   }
@@ -856,8 +900,7 @@ export class PersistentBackend extends MemoryBackend {
       // A later request may have linked an open inode back into the namespace while
       // this commit waited. Retry the current tree, not the failed checkpoint's removals.
       for (const ino of removes) if (!this.nodes.has(ino)) this.removed.add(ino);
-      this.keys = new Map(this.committedKeys);
-      this.revisions.clear();
+      this.invalidateCapturedState();
     });
     return commit.then(() => {
       this.assertOpen();

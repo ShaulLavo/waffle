@@ -22,7 +22,7 @@ export default {
         "tests/installer-symlinks-metadata-types.ts",
         "tests/fixtures/symlink-sizing-probe.ts",
         "scripts/browser-supervisor.ts",
-        "tests/{storage,storage-lock,process-recycling,network,publication,publication-cross-tab}-browser-runner.ts",
+        "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab}-browser-runner.ts",
         "tests/interrupt-browser.ts",
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",
         "tests/fixtures/filesystem-shutdown-{page,worker}.ts",

@@ -285,6 +285,16 @@ nor querying collects a startup or terminal result. Hosts publish the atomic sta
 before incrementing the common wake sequence, so publication racing a poll scan or
 its wait cannot be lost.
 
+Host adapters that compose a blocking wait can call
+`ProcessABI.registerPoll(subscriptions)` with readonly `{ kind, id }` pairs. It
+returns `{ wake, covered, dispose }`: `wake` is the process common word when one
+exists, `covered` is conservative and remains false for any source without an
+accepted common-wake route, and `dispose()` releases registrations in reverse order
+exactly once. Invalid kinds or IDs are rejected at this boundary. A registration
+failure unwinds earlier registrations before rethrowing. This wrapper does not alter
+`poll` readiness, publication, CHILD_START handling or the existing 10 ms fallback
+for uncovered sources.
+
 ### Host executable-entry boundary
 
 The browser bootstrap completes `WebAssembly.Instance` construction (including a
@@ -311,6 +321,13 @@ first guest instruction beats a racing kill. A later host failure cannot become
 START_FAILED after successful entry. `readOutcome` still returns no outcome for a
 started-but-running process, and terminal claiming still chooses exactly one
 immutable winner. Recycled record validity applies equally before and after entry.
+
+`WorkerExecutor.instantiated` may return a promise. Bootstrap awaits it
+inside the startup cleanup boundary before calling `wasi.launch`; a rejection,
+`finish()` during arming, filesystem revocation or a terminal outcome observed
+after arming prevents guest entry. The execution context exposes the already-created
+`ProcessABI` as optional `process`, and the same context object is passed to
+`run`; no second process ABI is created.
 
 A Node-style caller can therefore emit `spawn` once it observes zero, or `error`
 without `spawn` for startup failure, without waiting for output or exit (which
@@ -476,6 +493,72 @@ host diagnostic/cleanup path; descriptor and filesystem teardown still run and t
 original terminal outcome is published. A stalled stderr reader must not retain a
 dead child forever. This bounded policy applies only to runtime-authored diagnostics,
 not to ordinary guest I/O or application-selected blocking pipe semantics.
+
+## Mixed notification waits
+
+The browser broker can own one notification helper Worker per guest. Pass
+`notificationWorkerUrl` to `BrowserProcessBroker.launchWorker()`. Bundle the
+`waffle/browser/notification-worker` entry separately as a module Worker, just as
+an embedding bundles its guest Worker. Both Workers require shared memory and
+`Atomics.waitAsync`. The guest remains free to block synchronously.
+
+`bootstrap()` supplies `context.notifications: NotificationWaitScope | undefined`
+and `context.signal: AbortSignal`. Arm the scope in the awaited `instantiated`
+hook, before guest entry. Pass the guest's `NetHost`, `ProcessABI` and current
+process poll subscriptions to `await notifications.arm({ network, process,
+subscriptions })`. An arm failure prevents entry and disposes the scope.
+External revocation cancels an unresolved arm without waiting for the helper to
+reply. The signal also aborts on ordinary bootstrap completion.
+
+The returned `NotificationWaitSet` has these operations:
+
+```ts
+sample(): NotificationSample;
+wait(observed: NotificationSample, deadline: number):
+  "ok" | "not-equal" | "timed-out" | "closed";
+setProcessSubscriptions(subscriptions: readonly PollSubscription[]): void;
+dispose(): void;
+```
+
+Call `sample()` **before** reading readiness. If no operation is ready, call
+`wait(sample, deadline)`. The sample contains both the common sequence and the
+source generations, so a publication racing the readiness scan cannot be lost
+while the relay is catching up. `deadline` is one absolute value in the host's
+monotonic `performance.now()` domain, or `Infinity`. Keep that same deadline after
+unrelated wakes. Treat wakes as hints and repeat the normal readiness reads.
+The helper never drains a watch, reads a pipe or consumes network news.
+
+The helper observes the actual filesystem watch word at `cells[3]`, network ring
+GEN0 and process common wake. `NetHost.registerNotificationSink()` also forwards
+host-local news synchronously and returns a detach function. Forwarding does not
+clear `localNews`; `poll(0)` and normal network drains keep their existing behavior.
+`NetHost.notification` alone covers GEN0, not local news.
+
+`covered` is conservative. Process registration with `registerPoll(subscriptions,
+"shared")` owns no guest-local release callbacks and covers only sources already
+publishing to the process common word. Independent streams, terminal/resize
+sources and CHILD_START remain uncovered. Their presence caps each wait at the
+existing 10 ms fallback. Changing subscriptions recomputes coverage. Existing
+`runtime_proc.poll` and ordinary local `registerPoll()` behavior are unchanged.
+
+The broker installs external ownership before launch and revocation registration.
+It fences the common state and terminates the helper on revoke, startup failure
+and guest completion, and before physical guest termination. Broker disposal joins
+its physical stop operations before retiring ownership. On browsers,
+`Worker.terminate()` has no exit-event promise; on hosts returning a termination
+promise, disposal awaits it. No cleanup depends on running a guest closure after
+termination. A local scope dispose detaches local news forwarding, rejects an
+unresolved arm and wakes blocked waiters. Cleanup continues after release or send
+errors. Repeated disposal does not repeat releases; a scope reports its retained
+first cleanup error to the caller. Bootstrap includes that error in its cleanup
+diagnostics.
+
+Manual embeddings can use `createNotificationBridge(workerUrl)` from
+`waffle/browser/notification-relay`, transfer its `connection.port` with the
+connection to the guest, and construct `NotificationWaitScope(connection, fs)`.
+The external owner must call and await `bridge.dispose()` before terminating the
+guest or releasing its resources. The broker performs that ownership work for
+its launched Workers.
 
 ## Network and preview
 
