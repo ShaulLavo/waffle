@@ -38,6 +38,8 @@ export const Kind = {
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 
+/** Fetch Data records are already content-decoded; Content-Encoding describes the wire body.
+ * Consumers must not decode again from the header. No bodyEncoding marker is emitted. */
 export interface FetchHead {
   status: number;
   statusText: string;

@@ -1,3 +1,4 @@
+import { wakeFilesystemWatch } from "./watch-ring.js";
 import { FilesystemSection } from "./section.js";
 export { FilesystemSection, isRevoked } from "./section.js";
 import { workspacePublication, type WorkspaceConfiguration } from "./workspace-protocol.js";
@@ -231,11 +232,13 @@ export function createFilesystemConnection(
 /** The service lifetime is shared even by processes with independent parent lifetimes. */
 export function revokeFilesystemService(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.ownerStates), 0, 1);
+  wakeFilesystemWatch(connection.shared);
   wake(connection);
 }
 export function revokeFilesystem(connection: FilesystemIdentity): void {
   Atomics.compareExchange(new Int32Array(connection.revocations[0]!), 0, 0, 1);
   Atomics.compareExchange(new Int32Array(connection.ownerStates), connection.owner, 0, 1);
+  wakeFilesystemWatch(connection.shared);
   wake(connection);
 }
 /** Revokes synchronously, then waits without blocking the supervisor's event loop. Resolving
@@ -270,6 +273,7 @@ export async function waitForFilesystemQuiescence(connection: FilesystemIdentity
 export function reapFilesystem(connection: FilesystemIdentity): void {
   Atomics.store(new Int32Array(connection.revocations[0]!), 0, 2);
   Atomics.store(new Int32Array(connection.ownerStates), connection.owner, 2);
+  wakeFilesystemWatch(connection.shared);
   if (connection.publication)
     new PublicationDomain(connection.publication.buffers).retireSession(
       connection.publication.session,

@@ -1,5 +1,11 @@
 import type { RuntimeNetwork } from "./browser/net/runtime.js";
 export type { RuntimeNetwork, RuntimeNetworkHelper } from "./browser/net/runtime.js";
+export {
+  RuntimeNetworkLookupError,
+  type RuntimeNetworkLookupErrorCode,
+  type RuntimeNetworkLookupOptions,
+  type RuntimeNetworkLookupResult,
+} from "./browser/net/address.js";
 
 type RuntimeNetworkOwner = ReturnType<
   (typeof import("./browser/net/runtime.js"))["createRuntimeNetwork"]

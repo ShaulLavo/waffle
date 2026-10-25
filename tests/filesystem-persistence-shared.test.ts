@@ -5,7 +5,11 @@ import * as shared from "../fs/shared";
 
 function fixture() {
   const state = new shared.SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, size: 4, mtime: 1 }, new Uint8Array([65, 66, 67, 68]));
+  state.register(
+    0,
+    { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
+    new Uint8Array([65, 66, 67, 68]),
+  );
   return state;
 }
 
@@ -13,7 +17,7 @@ test("shared persistence snapshots own coherent content, metadata and revision",
   const state = fixture();
   const snapshot = state.snapshot(0)!;
   expect(snapshot).toEqual({
-    stat: { kind: "file", ino: 1, size: 4, mtime: 1 },
+    stat: { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
     data: new Uint8Array([65, 66, 67, 68]),
     revision: 1,
   });
@@ -22,7 +26,7 @@ test("shared persistence snapshots own coherent content, metadata and revision",
   expect(state.revision(0)).toBe(2);
   expect(state.snapshot(99)).toBeUndefined();
   expect(state.revision(99)).toBeUndefined();
-  state.register(1, { kind: "directory", ino: 2, size: 0, mtime: 1 });
+  state.register(1, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
   expect(state.snapshot(1)).toBeUndefined();
 });
 
@@ -86,7 +90,7 @@ test("eviction leaves connection-owner allocation and attachment probing untouch
   const identity = createFilesystemIdentity(undefined, PAGE * 256);
   const state = new shared.SharedFilesystemState(identity.shared, identity.maxBytes);
   Atomics.store(state.cells, 6, 123456);
-  state.register(0, { kind: "file", ino: 1, size: 1, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
   expect(state.evict(0, state.revision(0)!)).toBe(true);
   const child = createFilesystemIdentity(identity);
   expect(child.owner).toBe(identity.owner + 1);
@@ -135,7 +139,7 @@ test("snapshot retains matching bytes, metadata and revision when a writer follo
   }) as typeof Atomics.compareExchange;
   try {
     expect(state.snapshot(0)).toEqual({
-      stat: { kind: "file", ino: 1, size: 4, mtime: 1 },
+      stat: { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 },
       data: new Uint8Array([65, 66, 67, 68]),
       revision: 1,
     });
@@ -168,24 +172,24 @@ test("eviction zeroes and reuses pages and collision slots without resetting the
   const slot = state.fileSlot(0);
   const revision = state.revision(0)!;
   expect(state.evict(0, revision)).toBe(true);
-  state.register(4095, { kind: "file", ino: 2, size: 4, mtime: 2 });
+  state.register(4095, { kind: "file", ino: 2, nlink: 1, size: 4, mtime: 2 });
   expect(state.fileSlot(4095)).toBe(slot);
   expect(state.snapshot(4095)!.data).toEqual(new Uint8Array(4));
   expect(state.revision(4095)).toBeGreaterThan(revision);
   expect(state.evict(4095, revision)).toBe(false);
   expect(state.evict(4095, state.revision(4095)!)).toBe(true);
-  state.register(0, { kind: "file", ino: 1, size: 4, mtime: 1 });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 });
   expect(state.evict(0, revision)).toBe(false);
 });
 
 test("old snapshots cannot evict the same handle reincarnated in a different collision slot", () => {
   const state = new shared.SharedFilesystemState();
-  state.register(4095, { kind: "file", ino: 1, size: 1, mtime: 1 });
+  state.register(4095, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
   const oldSlot = state.fileSlot(4095);
   const oldRevision = state.revision(4095)!;
   expect(state.evict(4095, oldRevision)).toBe(true);
-  state.register(0, { kind: "file", ino: 2, size: 1, mtime: 1 });
-  state.register(4095, { kind: "file", ino: 1, size: 1, mtime: 1 });
+  state.register(0, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 });
+  state.register(4095, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
   expect(state.fileSlot(4095)).not.toBe(oldSlot);
   expect(state.revision(4095)).toBeGreaterThan(oldRevision);
   expect(state.evict(4095, oldRevision)).toBe(false);
@@ -193,7 +197,7 @@ test("old snapshots cannot evict the same handle reincarnated in a different col
 
 test("evicting a collision preserves lookup for the remaining files", () => {
   const state = fixture();
-  state.register(4095, { kind: "file", ino: 2, size: 1, mtime: 1 }, new Uint8Array([7]));
+  state.register(4095, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([7]));
   expect(state.evict(0, state.revision(0)!)).toBe(true);
   expect(state.snapshot(4095)!.data).toEqual(new Uint8Array([7]));
 });
@@ -234,7 +238,11 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
     if (!intercepted && args[0] === state.slots && args[1] === lock && args[2] === 0) {
       intercepted = true;
       expect(state.evict(0, 1)).toBe(true);
-      state.register(4095, { kind: "file", ino: 2, size: 1, mtime: 1 }, new Uint8Array([90]));
+      state.register(
+        4095,
+        { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 },
+        new Uint8Array([90]),
+      );
     }
     return Reflect.apply(compare, Atomics, args);
   }) as typeof Atomics.compareExchange;
@@ -249,7 +257,7 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
 
 test("unreferenced directory slots can also be evicted without losing collision lookups", () => {
   const state = fixture();
-  state.register(4095, { kind: "directory", ino: 2, size: 0, mtime: 1 });
+  state.register(4095, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
   const revision = state.revision(4095)!;
   state.setMtime(4095, 77);
   expect(state.evict(4095, revision)).toBe(false);
@@ -262,7 +270,7 @@ test("linked eviction supports a corpus larger than the identity table", () => {
   for (let handle = 0; handle < 10_000; handle++) {
     state.register(
       handle,
-      { kind: "file", ino: handle + 1, size: 1, mtime: 1 },
+      { kind: "file", ino: handle + 1, nlink: 1, size: 1, mtime: 1 },
       new Uint8Array([handle % 256]),
     );
     expect(state.evict(handle, state.revision(handle)!)).toBe(true);
@@ -272,7 +280,7 @@ test("linked eviction supports a corpus larger than the identity table", () => {
 
 test("metadata-only registration preserves stat without allocating or exposing zero content", () => {
   const state = new shared.SharedFilesystemState();
-  const stat = { kind: "file" as const, ino: 1, size: 4, mtime: 1 };
+  const stat = { kind: "file" as const, ino: 1, nlink: 1, size: 4, mtime: 1 };
   state.register(0, stat, undefined, false);
   expect(state.stat(0)).toEqual(stat);
   expect(state.isResident(0)).toBe(false);
@@ -346,10 +354,10 @@ test("clean pinned payloads can unload and hydrate without changing their cached
 
 test("empty files are resident and metadata-only slots can be evicted", () => {
   const state = new shared.SharedFilesystemState();
-  state.register(0, { kind: "file", ino: 1, size: 0, mtime: 1 }, undefined, false);
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: 0, mtime: 1 }, undefined, false);
   expect(state.isResident(0)).toBe(true);
   expect(state.snapshot(0)!.data).toHaveLength(0);
-  state.register(1, { kind: "file", ino: 2, size: PAGE, mtime: 1 }, undefined, false);
+  state.register(1, { kind: "file", ino: 2, nlink: 1, size: PAGE, mtime: 1 }, undefined, false);
   expect(state.evict(1, state.revision(1)!)).toBe(true);
   expect(state.registeredHandles()).toEqual([0]);
   expect(state.isResident(1)).toBe(false);

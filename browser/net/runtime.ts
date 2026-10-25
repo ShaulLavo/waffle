@@ -1,11 +1,17 @@
 import { NetHelper, NetNamespace, type NetFetch, type NetHelperHooks } from "./helper.js";
 import { CAPACITY } from "./ring.js";
+import {
+  lookupAddress,
+  type RuntimeNetworkLookupOptions,
+  type RuntimeNetworkLookupResult,
+} from "./address.js";
 
 export type RuntimeNetworkHelper = Pick<
   NetHelper,
   "handle" | "dispose" | "listenerFor" | "request" | "connect" | "notifyFileChanged" | "changeFile"
 >;
 export interface RuntimeNetwork {
+  lookup(hostname: string, options?: RuntimeNetworkLookupOptions): RuntimeNetworkLookupResult[];
   createHelper(options: {
     readonly ring: SharedArrayBuffer;
     readonly fetch: NetFetch;
@@ -104,6 +110,12 @@ export function createRuntimeNetwork(assertLive: () => void) {
       const capability = project(helper, assertLive, () => helpers.delete(helper));
       helpers.set(helper, capability);
       return capability;
+    },
+    lookup(hostname: string, options?: RuntimeNetworkLookupOptions) {
+      assertLive();
+      const results = lookupAddress(hostname, options);
+      assertLive();
+      return results;
     },
   });
   return {

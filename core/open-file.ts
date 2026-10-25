@@ -83,19 +83,9 @@ export function withFileOffset(
   try {
     section.enter();
     admitted = true;
-    for (;;) {
-      if (isRevoked(identity)) return -11;
-      const owner = Atomics.compareExchange(cells, 0, 0, identity.owner);
-      if (owner === 0) {
-        acquired = true;
-        break;
-      }
-      if (Atomics.load(new Int32Array(identity.ownerStates), owner) === 2) {
-        Atomics.compareExchange(cells, 0, owner, 0);
-        continue;
-      }
-      if (nonblocking) return -6;
-    }
+    const result = acquireFileOffset(state, nonblocking);
+    if (result < 0) return result;
+    acquired = true;
     if (isRevoked(identity)) return -11;
     return operation();
   } catch (error) {
@@ -107,5 +97,21 @@ export function withFileOffset(
       Atomics.notify(cells, 0);
     }
     if (admitted) section.exit();
+  }
+}
+
+function acquireFileOffset({ cells, identity }: SharedOffset, nonblocking: boolean): number {
+  for (;;) {
+    if (isRevoked(identity)) return -11;
+    const owner = Atomics.compareExchange(cells, 0, 0, identity.owner);
+    if (owner === 0) return 0;
+    if (Atomics.load(new Int32Array(identity.ownerStates), owner) === 2) {
+      Atomics.compareExchange(cells, 0, owner, 0);
+      continue;
+    }
+    if (nonblocking) return -6;
+    // Revocation and reaping notify the identity signal, not this lock word.
+    // Recheck both after a bounded park, even if the owner never unlocks.
+    Atomics.wait(cells, 0, owner, 10);
   }
 }

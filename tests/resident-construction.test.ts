@@ -199,8 +199,8 @@ test("resident retains all 83 allocation/reference records and two holding lease
   try {
     await owner.ready;
     expect(allocator.specs).toHaveLength(82);
-    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(23_018_424);
-    expect(budget.snapshot().allocated - before.allocated).toBe(23_018_936);
+    expect(budget.snapshot().backingBytes - before.backingBytes).toBe(23_182_280);
+    expect(budget.snapshot().allocated - before.allocated).toBe(23_182_792);
     expect(budget.snapshot().producerFree).toEqual({ allocations: 0, references: 0, leases: 0 });
     expect(budget.snapshot().obligations).toBe(0);
     const published = budget.snapshot();
