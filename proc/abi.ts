@@ -56,7 +56,7 @@ import {
 /** Synchronous control plane. Implementations reserve/retain before returning from spawn;
  * module loading and guest startup happen elsewhere, never on this import's stack. */
 export interface ProcessService {
-  /** Directory services publish signals and process lifecycle through this same word. */
+  /** Directory services notify signals and cleanup-confirmed child/job readiness here. */
   readonly wake?: Int32Array;
   spawn(parentPid: number, request: SpawnRequest): number;
   /** Consume one safely exited child; null means it is still pending. */
@@ -607,7 +607,8 @@ export class ProcessABI {
     if (sub.kind === 2) return directory;
     if (sub.kind === 3) return false;
     if (sub.kind === 4 || sub.kind === 6) {
-      if (directory) return true;
+      // Early directory startup failures can publish before the cleanup fence wakes this word.
+      if (directory) return sub.kind === 4;
       const release =
         sub.kind === 4
           ? this.options.service.registerJobWake?.(this.options.pid, sub.id, wake)
@@ -628,6 +629,22 @@ export class ProcessABI {
     if (!shared && !release) return false;
     setAdd(notified, resource);
     return true;
+  }
+  private registerPollWakes(
+    subscriptions: readonly Subscription[],
+    wake: Int32Array | undefined,
+    unregister: (() => void)[],
+  ): boolean {
+    if (!wake) return false;
+    const directory = sameWord(this.options.service.wake, wake);
+    let fullyNotified = directory;
+    const resources = new SetConstructor<Stream>();
+    const notified = new SetConstructor<Stream>();
+    for (const sub of subscriptions) {
+      const covered = this.registerPollWake(sub, wake, directory, unregister, resources, notified);
+      if (!covered) fullyNotified = false;
+    }
+    return fullyNotified;
   }
   private poll(ptr: number, count: number, timeout: number, out: number): number {
     count >>>= 0;
@@ -650,24 +667,7 @@ export class ProcessABI {
     const unregister: (() => void)[] = [];
     const wake = this.options.wake;
     try {
-      let fullyNotified = false;
-      if (wake) {
-        const directory = sameWord(this.options.service.wake, wake);
-        fullyNotified = directory;
-        const resources = new SetConstructor<Stream>();
-        const notified = new SetConstructor<Stream>();
-        for (const sub of subscriptions) {
-          const covered = this.registerPollWake(
-            sub,
-            wake,
-            directory,
-            unregister,
-            resources,
-            notified,
-          );
-          if (!covered) fullyNotified = false;
-        }
-      }
+      const fullyNotified = this.registerPollWakes(subscriptions, wake, unregister);
       const deadline = timeout === -1 ? Infinity : this.now() + timeout;
       for (;;) {
         // Observe sequence before state; publication racing scan makes Atomics.wait return immediately.
@@ -694,7 +694,7 @@ export class ProcessABI {
         if (this.pending()) return 0;
         const remaining = deadline - this.now();
         if (remaining <= 0) return 0;
-        // Independent signal, child, filesystem and legacy stream cells still need a bounded
+        // Independent signals, early child startup, filesystem and legacy streams need a bounded
         // rescan. A fully notified wait set can park until its actual deadline.
         const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
         const expected = sequence;
