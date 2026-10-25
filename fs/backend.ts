@@ -1,3 +1,4 @@
+import { truncateBoundaryEnd } from "./shared-version-pages.js";
 import type { ReaderMetadataBudget } from "./storage.js";
 import type { ReadBacking } from "./workspace-read.js";
 import type { MemoryBudget } from "./memory-budget.js";
@@ -408,7 +409,10 @@ export class MemoryBackend implements FilesystemBackend {
     if (action.kind !== "write" && action.kind !== "resize" && action.kind !== "writeFile") return;
     const old = this.shared.stat(action.handle)!.size;
     if (action.kind === "resize") {
-      const length = action.truncate && action.size < old ? old - action.size : 0;
+      const length =
+        action.truncate && action.size < old
+          ? truncateBoundaryEnd(action.size, old) - action.size
+          : 0;
       return this.shared.prepareVersionWrite(action.handle, action.size, length, action.size);
     }
     const length =
