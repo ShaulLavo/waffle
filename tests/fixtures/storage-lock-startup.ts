@@ -52,6 +52,7 @@ export async function storageLockNavigate<T extends NavigationPage>(
       closed: page?.isClosed() ?? true,
       events,
     });
+    await page?.close().catch(() => {});
     throw error;
   } finally {
     page?.off("request", requested);
