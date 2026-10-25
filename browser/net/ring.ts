@@ -1,3 +1,8 @@
+import {
+  Int32ArrayConstructor,
+  typedArrayBuffer,
+  typedArrayByteOffset,
+} from "../../proc/intrinsics.js";
 // A single-producer, single-consumer byte ring in a SharedArrayBuffer.
 // Producer: the helper (async; it waits for space without blocking its thread).
 // Consumer: the bun worker (sync; it drains on every host call and sleeps in `poll` with Atomics.wait).
@@ -125,7 +130,11 @@ export class RingReader extends RingBase {
 
   /** The shared word that changes when the helper publishes a ring record. */
   get notification(): Int32Array {
-    return this.cells.subarray(0, 1);
+    return new Int32ArrayConstructor(
+      typedArrayBuffer(this.cells),
+      typedArrayByteOffset(this.cells),
+      1,
+    );
   }
 
   /** The generation counter: changes whenever a record is written. */

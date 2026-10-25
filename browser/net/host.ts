@@ -1,3 +1,11 @@
+import {
+  atomicsAdd,
+  atomicsNotify,
+  SetConstructor,
+  setAdd,
+  setDelete,
+  setForEach,
+} from "../../proc/intrinsics.js";
 // Synchronous handle state for a guest networking bridge. Requests leave through the injected
 // sender; responses arrive through the shared ring. No guest-memory or engine bindings live here.
 
@@ -74,6 +82,7 @@ export class NetHost {
   private lastError: NetError | null = null;
   /** Something changed without a ring record (a local pipe write or close): `poll` must not sleep. */
   private localNews = false;
+  private readonly notificationSinks = new SetConstructor<Int32Array>();
   private fileWrite: { path: string; bytes: Uint8Array; offset: number } | null = null;
 
   constructor(
@@ -91,6 +100,19 @@ export class NetHost {
     return this.ring.notification;
   }
 
+  /** Synchronous local-news forwarding. Ring GEN remains independently observed. */
+  registerNotificationSink(wake: Int32Array): () => void {
+    if (this.disposed) throw new Error("network host is disposed");
+    setAdd(this.notificationSinks, wake);
+    if (this.localNews) {
+      atomicsAdd(wake, 0, 1);
+      atomicsNotify(wake, 0);
+    }
+    return () => {
+      setDelete(this.notificationSinks, wake);
+    };
+  }
+
   /** Register the nonblocking consumer's wake callback. Blocking consumers use poll instead. */
   onNews(cb: () => void): void {
     if (this.disposed) return;
@@ -103,6 +125,10 @@ export class NetHost {
   /** Something changed: wake a blocking `poll` (localNews) or the browser engine's loop. */
   private news(): void {
     this.localNews = true;
+    setForEach(this.notificationSinks, (wake) => {
+      atomicsAdd(wake, 0, 1);
+      atomicsNotify(wake, 0);
+    });
     if (this.newsCallback)
       queueMicrotask(() => {
         if (!this.disposed) this.newsCallback?.();
@@ -380,6 +406,7 @@ export class NetHost {
     if (this.disposed) return;
     this.disposed = true;
     this.newsCallback = null;
+    setForEach(this.notificationSinks, (wake) => setDelete(this.notificationSinks, wake));
     for (const handle of this.handles.keys()) this.close(handle);
     this.fileWrite = null;
     this.ring.wake();

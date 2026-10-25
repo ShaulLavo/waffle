@@ -1,3 +1,4 @@
+import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
@@ -98,13 +99,18 @@ export interface RuntimeRootOptions {
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   workerUrl: string;
-  request: Omit<T, "filesystem" | "runtimeProcess" | "startupStderr" | "hostIdentity">;
+  notificationWorkerUrl?: string;
+  request: Omit<
+    T,
+    "filesystem" | "runtimeProcess" | "startupStderr" | "hostIdentity" | "notifications"
+  >;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
   wake?(): void;
   executableName?(name: string): string;
 }
 interface RuntimeChild {
+  notifications?: NotificationBridge;
   filesystem: FilesystemIdentity;
   context: ProcessContext;
   worker?: Worker;
@@ -600,6 +606,7 @@ export class BrowserProcessBroker {
   }
   revokeRuntimeProcess(pid: number, directoryId?: string): void {
     this.accesses.revoke(pid, directoryId);
+    if (directoryId === undefined) this.disposeNotifications(this.children.get(pid));
     // A root directory owns its publication registry. Rejected foreign identities cannot
     // revoke an admitted or still-pending process that happens to use the same numeric PID.
     for (const [rootPid, transport] of this.roots) {
@@ -607,6 +614,7 @@ export class BrowserProcessBroker {
         continue;
       for (const state of directoryProcesses(transport.directory))
         if (state.pid === pid) {
+          this.disposeNotifications(this.children.get(pid));
           this.registries.get(rootPid)?.revoke(pid);
           return;
         }
@@ -838,10 +846,6 @@ export class BrowserProcessBroker {
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
     const filesystem = this.filesystem(transport);
-    context.registerRevocation(() => {
-      this.revokeRuntimeProcess(context.pid);
-      this.options.filesystem.revoke(filesystem);
-    });
     // Record cleanup ownership before either connection or Worker construction can throw.
     const child: RuntimeChild = {
       filesystem,
@@ -864,10 +868,17 @@ export class BrowserProcessBroker {
         child.startupStderr = this.pipes.attach(stderr.handle()).duplicate(stderr);
         context.registerRevocation(() => child.startupStderr!.close());
       }
+      if (options.notificationWorkerUrl)
+        child.notifications = createNotificationBridge(options.notificationWorkerUrl);
+      context.registerRevocation(() => {
+        this.revokeRuntimeProcess(context.pid);
+        this.options.filesystem.revoke(filesystem);
+      });
       connection = this.options.filesystem.connect(filesystem);
       worker = child.worker = new Worker(options.workerUrl, { type: "module" });
     } catch (error) {
       child.failed = true;
+      this.disposeNotifications(child);
       connection?.port.close();
       throw error;
     }
@@ -878,6 +889,7 @@ export class BrowserProcessBroker {
       runtimeProcess: transport,
       outcome: serializeOutcome(context.outcome),
       startupStderr: child.startupStderr?.handle(),
+      notifications: child.notifications?.connection,
     };
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
@@ -940,6 +952,7 @@ export class BrowserProcessBroker {
         options.onMessage?.(data, context);
         return;
       }
+      this.disposeNotifications(child);
       child.acknowledged = true;
       this.options.filesystem.reap(filesystem);
       if (data.cleanupErrors?.length)
@@ -969,9 +982,12 @@ export class BrowserProcessBroker {
       else context.fail(new Error(event.message));
     };
     try {
-      worker.postMessage(request, [request.filesystem.port]);
+      const ports = [request.filesystem.port];
+      if (request.notifications) ports.push(request.notifications.port);
+      worker.postMessage(request, ports);
     } catch (error) {
       child.failed = true;
+      this.disposeNotifications(child);
       request.filesystem.port.close();
       throw error;
     }
@@ -1082,26 +1098,26 @@ export class BrowserProcessBroker {
     if (child.acknowledged) return;
     return (child.quiescence ??= this.options.filesystem.quiesce(child.filesystem));
   }
+  private disposeNotifications(child: RuntimeChild | undefined): void {
+    void child?.notifications?.dispose().catch((error) => this.report(error));
+  }
   private stop(child: RuntimeChild): void | Promise<void> {
+    if (child.stopping) return child.stopping;
     if (child.stopped) return;
-    const stop = () => {
+    const stop = async () => {
       if (child.stopped) return;
       child.stopped = true;
-      child.worker?.terminate();
-      try {
-        child.cleanup?.();
-      } finally {
-        this.children.delete(child.context.pid);
-        this.retireChildController(child.context.pid);
-      }
+      const errors: unknown[] = [];
+      const notifications = child.notifications;
+      if (notifications) await settleStop(() => notifications.dispose(), errors);
+      await settleStop(() => child.worker?.terminate(), errors);
+      await settleStop(() => child.cleanup?.(), errors);
+      this.children.delete(child.context.pid);
+      this.retireChildController(child.context.pid);
+      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
     };
-    if (child.stopping) return child.stopping;
     const fence = this.quiesceProcess(child.context.pid);
-    if (!fence) {
-      stop();
-      return;
-    }
-    return (child.stopping = fence.then(stop));
+    return (child.stopping = fence ? fence.then(stop) : stop());
   }
   private retireChildController(pid: number): void {
     // Generic child controllers have no external root ancestry to retain. During disposal,
@@ -1401,5 +1417,13 @@ export class BrowserProcessBroker {
     } catch {
       /* Diagnostics must not interrupt consumer fencing or cleanup. */
     }
+  }
+}
+
+async function settleStop(stop: () => void | Promise<void>, errors: unknown[]): Promise<void> {
+  try {
+    await stop();
+  } catch (error) {
+    errors.push(error);
   }
 }

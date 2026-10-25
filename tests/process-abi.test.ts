@@ -1148,32 +1148,41 @@ test("repeated child readiness polling does not collect the later consuming wait
   expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-12);
 });
 
+function openRegistrationStream(
+  descriptors: DescriptorTable,
+  registerWake: WakeRegisteringStream["registerWake"],
+  notification?: Int32Array,
+): number {
+  return openWakeStream(descriptors, {
+    kind: "pipe",
+    notification,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: false, writable: false, hangup: false }),
+    registerWake,
+  });
+}
+
 test("public poll registration validates inputs, reports coverage and releases in reverse once", () => {
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    notification: wake,
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
+  const first = openRegistrationStream(
+    f.descriptors,
+    () => {
       log.push("register:first");
       return () => log.push("release:first");
     },
-  });
-  const second = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    notification: wake,
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
+    wake,
+  );
+  const second = openRegistrationStream(
+    f.descriptors,
+    () => {
       log.push("register:second");
       return () => log.push("release:second");
     },
-  });
+    wake,
+  );
   const registration = f.abi.registerPoll([
     { kind: 0, id: first },
     { kind: 0, id: second },
@@ -1193,25 +1202,16 @@ test("public poll registration unwinds partial registration and preserves the fi
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    notification: wake,
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
+  const first = openRegistrationStream(
+    f.descriptors,
+    () => {
       log.push("register:first");
       return () => log.push("release:first");
     },
-  });
-  const second = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
-      throw new Error("registration failed");
-    },
+    wake,
+  );
+  const second = openRegistrationStream(f.descriptors, () => {
+    throw new Error("registration failed");
   });
   expect(() =>
     f.abi.registerPoll([
@@ -1228,31 +1228,25 @@ test("public poll disposal continues after cleanup errors and remains idempotent
   const wake = new Int32Array(new SharedArrayBuffer(4));
   const f = fixture({ wake });
   const log: string[] = [];
-  const first = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    notification: wake,
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
+  const first = openRegistrationStream(
+    f.descriptors,
+    () => {
       log.push("register:first");
       return () => {
         log.push("release:first");
         throw new Error("first cleanup failed");
       };
     },
-  });
-  const second = openWakeStream(f.descriptors, {
-    kind: "pipe",
-    notification: wake,
-    read: () => 0,
-    write: () => 0,
-    readiness: () => ({ readable: false, writable: false, hangup: false }),
-    registerWake() {
+    wake,
+  );
+  const second = openRegistrationStream(
+    f.descriptors,
+    () => {
       log.push("register:second");
       return () => log.push("release:second");
     },
-  });
+    wake,
+  );
   const registration = f.abi.registerPoll([
     { kind: 0, id: first },
     { kind: 0, id: second },
@@ -1260,4 +1254,28 @@ test("public poll disposal continues after cleanup errors and remains idempotent
   expect(() => registration.dispose()).toThrow("first cleanup failed");
   expect(log).toEqual(["register:first", "register:second", "release:second", "release:first"]);
   expect(() => registration.dispose()).not.toThrow();
+});
+
+test("shared poll registration never retains guest-local callbacks and leaves uncovered sources explicit", () => {
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const f = fixture({ wake });
+  let registrations = 0;
+  const fd = openRegistrationStream(
+    f.descriptors,
+    () => {
+      registrations++;
+      return () => {
+        registrations--;
+      };
+    },
+    wake,
+  );
+  for (const kind of [0, 3, 6]) {
+    const registration = f.abi.registerPoll([{ kind, id: fd }], "shared");
+    expect(registration.covered).toBe(false);
+    expect(registration.wake).toBe(wake);
+    registration.dispose();
+    registration.dispose();
+  }
+  expect(registrations).toBe(0);
 });

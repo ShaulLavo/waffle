@@ -496,22 +496,69 @@ not to ordinary guest I/O or application-selected blocking pipe semantics.
 
 ## Mixed notification waits
 
-`createNotificationWaitSet(sources, options?)` is the small host-side composition
-helper for waits that combine independent filesystem, network and process hints. A
-covered source registers forwarding to the helper's private wake word; an uncovered
-source is explicit and forces `wait()` to use the existing 10 ms bounded rescan.
-Callers must `sample()` the helper word before readiness reads, then call `wait()`
-only when the readiness scan is still empty. `deadline` is one absolute value in the
-host monotonic `performance.now()` domain (or `Infinity`), so an early wake never
-resets the caller's timer. The helper forwards notifications only: it never drains
-filesystem watches or network state and never samples consuming readiness.
+The browser broker can own one notification helper Worker per guest. Pass
+`notificationWorkerUrl` to `BrowserProcessBroker.launchWorker()`. Bundle the
+`waffle/browser/notification-worker` entry separately as a module Worker, just as
+an embedding bundles its guest Worker. Both Workers require shared memory and
+`Atomics.waitAsync`. The guest remains free to block synchronously.
 
-`dispose()` wakes a blocked caller, detaches every source in reverse order, and is
-idempotent. Registration failure performs the same unwind before rethrowing; cleanup
-continues after a release error and reports the first error. This contract does not
-claim that every source is covered. In particular, `NetHost.notification` exposes
-only the helper ring's GEN0 word; host-local `localNews` remains outside that word
-and must still be observed through `poll(0)` and its normal drain.
+`bootstrap()` supplies `context.notifications: NotificationWaitScope | undefined`
+and `context.signal: AbortSignal`. Arm the scope in the awaited `instantiated`
+hook, before guest entry. Pass the guest's `NetHost`, `ProcessABI` and current
+process poll subscriptions to `await notifications.arm({ network, process,
+subscriptions })`. An arm failure prevents entry and disposes the scope.
+External revocation cancels an unresolved arm without waiting for the helper to
+reply. The signal also aborts on ordinary bootstrap completion.
+
+The returned `NotificationWaitSet` has these operations:
+
+```ts
+sample(): NotificationSample;
+wait(observed: NotificationSample, deadline: number):
+  "ok" | "not-equal" | "timed-out" | "closed";
+setProcessSubscriptions(subscriptions: readonly PollSubscription[]): void;
+dispose(): void;
+```
+
+Call `sample()` **before** reading readiness. If no operation is ready, call
+`wait(sample, deadline)`. The sample contains both the common sequence and the
+source generations, so a publication racing the readiness scan cannot be lost
+while the relay is catching up. `deadline` is one absolute value in the host's
+monotonic `performance.now()` domain, or `Infinity`. Keep that same deadline after
+unrelated wakes. Treat wakes as hints and repeat the normal readiness reads.
+The helper never drains a watch, reads a pipe or consumes network news.
+
+The helper observes the actual filesystem watch word at `cells[3]`, network ring
+GEN0 and process common wake. `NetHost.registerNotificationSink()` also forwards
+host-local news synchronously and returns a detach function. Forwarding does not
+clear `localNews`; `poll(0)` and normal network drains keep their existing behavior.
+`NetHost.notification` alone covers GEN0, not local news.
+
+`covered` is conservative. Process registration with `registerPoll(subscriptions,
+"shared")` owns no guest-local release callbacks and covers only sources already
+publishing to the process common word. Independent streams, terminal/resize
+sources and CHILD_START remain uncovered. Their presence caps each wait at the
+existing 10 ms fallback. Changing subscriptions recomputes coverage. Existing
+`runtime_proc.poll` and ordinary local `registerPoll()` behavior are unchanged.
+
+The broker installs external ownership before launch and revocation registration.
+It fences the common state and terminates the helper on revoke, startup failure
+and guest completion, and before physical guest termination. Broker disposal joins
+its physical stop operations before retiring ownership. On browsers,
+`Worker.terminate()` has no exit-event promise; on hosts returning a termination
+promise, disposal awaits it. No cleanup depends on running a guest closure after
+termination. A local scope dispose detaches local news forwarding, rejects an
+unresolved arm and wakes blocked waiters. Cleanup continues after release or send
+errors. Repeated disposal does not repeat releases; a scope reports its retained
+first cleanup error to the caller. Bootstrap includes that error in its cleanup
+diagnostics.
+
+Manual embeddings can use `createNotificationBridge(workerUrl)` from
+`waffle/browser/notification-relay`, transfer its `connection.port` with the
+connection to the guest, and construct `NotificationWaitScope(connection, fs)`.
+The external owner must call and await `bridge.dispose()` before terminating the
+guest or releasing its resources. The broker performs that ownership work for
+its launched Workers.
 
 ## Network and preview
 

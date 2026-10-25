@@ -37,6 +37,7 @@ export async function failFirstWorkerImport(
   const context = {
     ...processIntrinsics,
     performance,
+    AbortController,
     Error,
     SharedArrayBuffer,
     Int32Array,

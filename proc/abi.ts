@@ -576,13 +576,17 @@ export class ProcessABI {
     if (winner.kind !== "signaled") throw new WasiExit(waitStatus(winner));
     throw new ProcessSignalExit(winner.code);
   }
-  registerPoll(subscriptions: readonly PollSubscription[]): PollWakeRegistration {
+  registerPoll(
+    subscriptions: readonly PollSubscription[],
+    ownership: "local" | "shared" = "local",
+  ): PollWakeRegistration {
     for (const subscription of subscriptions) {
       if (!Number.isInteger(subscription.kind) || subscription.kind < 0 || subscription.kind > 6)
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription kind");
       if (!Number.isInteger(subscription.id) || subscription.id < 0 || subscription.id > 0xffffffff)
         throw new ProcessError(ProcessErrno.INVAL, "invalid poll subscription id");
     }
+    if (ownership === "shared") return this.sharedPollRegistration(subscriptions);
     const unregister: (() => void)[] = [];
     let disposed = false;
     try {
@@ -607,6 +611,22 @@ export class ProcessABI {
     }
   }
 
+  private sharedPollRegistration(subscriptions: readonly PollSubscription[]): PollWakeRegistration {
+    const wake = this.options.wake;
+    let covered = !!wake && sameWord(this.options.service.wake, wake);
+    for (let index = 0; index < subscriptions.length; index++) {
+      if (!this.sharedPollSource(subscriptions[index]!, wake)) covered = false;
+    }
+    return { wake, covered, dispose() {} };
+  }
+  private sharedPollSource(sub: PollSubscription, wake: Int32Array | undefined): boolean {
+    if (!wake || sub.kind === 3 || sub.kind === 6) return false;
+    if (sub.kind === 5) return true;
+    if (sub.kind === 2 || sub.kind === 4) return sameWord(this.options.service.wake, wake);
+    const stream = this.descriptor(sub.id, POLL).resource;
+    if (stream.kind === "file" || stream.kind === "directory") return false;
+    return sameWord(stream.notification, wake);
+  }
   private readiness(sub: Subscription): Readiness | null {
     if (sub.kind === 6)
       return this.options.service.startStatus(this.options.pid, sub.id) !== -ProcessErrno.AGAIN

@@ -1000,6 +1000,57 @@ test("executor hooks link extra namespaces after setup and before instantiation,
   expect((spawn.transport.data as Record<string, unknown>).pipeRegistry).toBeObject();
 });
 
+function armingRequest(
+  filesystem: RuntimeWorkerRequest["filesystem"],
+  extras: Pick<Partial<RuntimeWorkerRequest>, "runtimeProcess" | "outcome"> = {},
+): RuntimeWorkerRequest {
+  return {
+    module: guestModule({
+      namespace: "extension",
+      name: "start",
+      params: [],
+      startSection: false,
+      body: [16, 0, 26],
+    }),
+    args: [],
+    env: {},
+    filesystem,
+    ...extras,
+  };
+}
+
+function armingExecutor(
+  start: () => void,
+  release: () => void = () => {},
+): Pick<WorkerExecutor, "setup" | "namespaces"> {
+  return {
+    setup({ fs }) {
+      fs.preopen = () => 1;
+      fs.retain = () => {};
+      fs.release = release;
+    },
+    namespaces() {
+      return {
+        extension: {
+          start() {
+            start();
+            return 0;
+          },
+        },
+      };
+    },
+  };
+}
+
+function armingHost(messages: RuntimeWorkerMessage[]) {
+  return {
+    crossOriginIsolated: true,
+    postMessage(message: RuntimeWorkerMessage) {
+      messages.push(message);
+    },
+  };
+}
+
 test("awaited instantiated arming completes before entry and reuses ProcessABI context", async () => {
   const connection = createFilesystemConnection();
   const runtimeProcess = createWorkerProcessTransport();
@@ -1008,35 +1059,11 @@ test("awaited instantiated arming completes before entry and reuses ProcessABI c
   let instantiatedProcess: unknown;
   try {
     await bootstrap(
+      armingRequest(connection.client, { runtimeProcess }),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
+        ...armingExecutor(() => {
+          starts++;
         }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-        runtimeProcess,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {};
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
         async instantiated(context) {
           instantiatedProcess = context.process;
           await Promise.resolve();
@@ -1067,34 +1094,11 @@ test("awaited instantiated arming rejection prevents guest entry", async () => {
   let runs = 0;
   try {
     await bootstrap(
+      armingRequest(connection.client),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
+        ...armingExecutor(() => {
+          starts++;
         }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {};
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
         async instantiated() {
           await Promise.resolve();
           throw new Error("arm failed");
@@ -1104,12 +1108,7 @@ test("awaited instantiated arming rejection prevents guest entry", async () => {
           return 0;
         },
       },
-      {
-        crossOriginIsolated: true,
-        postMessage(message) {
-          messages.push(message);
-        },
-      },
+      armingHost(messages),
     );
     expect(starts).toBe(0);
     expect(runs).toBe(0);
@@ -1132,36 +1131,16 @@ test("finish during awaited instantiated arming prevents guest entry and cleans 
   let releases = 0;
   try {
     const pending = bootstrap(
+      armingRequest(connection.client),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
-        }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {
+        ...armingExecutor(
+          () => {
+            starts++;
+          },
+          () => {
             releases++;
-          };
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
+          },
+        ),
         async instantiated(context) {
           armStarted.resolve();
           context.finish({ code: 23 });
@@ -1172,12 +1151,7 @@ test("finish during awaited instantiated arming prevents guest entry and cleans 
           return 0;
         },
       },
-      {
-        crossOriginIsolated: true,
-        postMessage(message) {
-          messages.push(message);
-        },
-      },
+      armingHost(messages),
     );
     await armStarted.promise;
     releaseArm.resolve();
@@ -1201,34 +1175,11 @@ test("filesystem revoke during arming is caught before guest entry", async () =>
   let runs = 0;
   try {
     const pending = bootstrap(
+      armingRequest(connection.client),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
+        ...armingExecutor(() => {
+          starts++;
         }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {};
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
         async instantiated() {
           armStarted.resolve();
           await releaseArm.promise;
@@ -1238,12 +1189,7 @@ test("filesystem revoke during arming is caught before guest entry", async () =>
           return 0;
         },
       },
-      {
-        crossOriginIsolated: true,
-        postMessage(message) {
-          messages.push(message);
-        },
-      },
+      armingHost(messages),
     );
     await armStarted.promise;
     revokeFilesystem(connection.client);
@@ -1268,35 +1214,11 @@ test("external terminal outcome during arming prevents guest entry", async () =>
   let runs = 0;
   try {
     const pending = bootstrap(
+      armingRequest(connection.client, { outcome }),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
+        ...armingExecutor(() => {
+          starts++;
         }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-        outcome,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {};
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
         async instantiated() {
           armStarted.resolve();
           await releaseArm.promise;
@@ -1306,12 +1228,7 @@ test("external terminal outcome during arming prevents guest entry", async () =>
           return 0;
         },
       },
-      {
-        crossOriginIsolated: true,
-        postMessage(message) {
-          messages.push(message);
-        },
-      },
+      armingHost(messages),
     );
     await armStarted.promise;
     claimOutcome(outcomeWord(outcome), { kind: "signaled", code: 9 });
@@ -1336,35 +1253,11 @@ test("cancellation queued after arming still prevents guest entry", async () => 
   let runs = 0;
   try {
     await bootstrap(
+      armingRequest(connection.client, { outcome }),
       {
-        module: guestModule({
-          namespace: "extension",
-          name: "start",
-          params: [],
-          startSection: false,
-          body: [16, 0, 26],
+        ...armingExecutor(() => {
+          starts++;
         }),
-        args: [],
-        env: {},
-        filesystem: connection.client,
-        outcome,
-      },
-      {
-        setup({ fs }) {
-          fs.preopen = () => 1;
-          fs.retain = () => {};
-          fs.release = () => {};
-        },
-        namespaces() {
-          return {
-            extension: {
-              start() {
-                starts++;
-                return 0;
-              },
-            },
-          };
-        },
         async instantiated() {
           await Promise.resolve();
           queueMicrotask(() => claimOutcome(outcomeWord(outcome), { kind: "signaled", code: 9 }));
@@ -1374,12 +1267,7 @@ test("cancellation queued after arming still prevents guest entry", async () => 
           return 0;
         },
       },
-      {
-        crossOriginIsolated: true,
-        postMessage(message) {
-          messages.push(message);
-        },
-      },
+      armingHost(messages),
     );
     expect(starts).toBe(0);
     expect(runs).toBe(0);
