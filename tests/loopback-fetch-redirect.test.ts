@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { body, decode, handle, head, pair, response } from "./loopback-fetch-fixture.js";
+import { body, decode, encode, handle, head, pair, response } from "./loopback-fetch-fixture.js";
 
 test("shared Worker follows a relative loopback redirect before publishing the head", async () => {
   const { server, client, listener, url } = await pair();
@@ -68,7 +68,7 @@ test.each([
       op: "fetch",
       url,
       method: String(method),
-      body: new TextEncoder().encode("payload"),
+      body: encode("payload"),
       headers: [["content-type", "text/plain"]],
     });
     await first;
