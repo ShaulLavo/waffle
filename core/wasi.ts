@@ -153,6 +153,7 @@ export class Wasi {
   hostCall: ((slot: number, args: number[]) => number) | null = null;
   readonly descriptors = new DescriptorTable();
   private importedMemory?: WebAssembly.Memory;
+  private boundMemory?: WebAssembly.Memory;
   private args: Uint8Array[];
   private env: Uint8Array[];
 
@@ -300,6 +301,8 @@ export class Wasi {
       throw new TypeError("guest has no exported or supplied memory");
     const start = instance.exports._start;
     if (typeof start !== "function") throw new TypeError("guest has no _start entry point");
+    if (this.boundMemory && this.boundMemory !== memory)
+      throw new TypeError("cannot replace bound WASI memory");
     this.memory = memoryViews(memory);
     // Hosts commit entry after all fallible setup, with no user hook before the call.
     beforeStart?.();
@@ -312,8 +315,23 @@ export class Wasi {
     }
   }
 
+  /** Bind one process memory before reactors, side modules or host callbacks execute. */
+  bindMemory(memory: WebAssembly.Memory): void {
+    if (!(memory instanceof WebAssembly.Memory)) throw new TypeError("expected WebAssembly.Memory");
+    if (this.boundMemory && this.boundMemory !== memory)
+      throw new TypeError("cannot replace bound WASI memory");
+    this.boundMemory = memory;
+    this.memory = memoryViews(memory);
+  }
+
   /** Link preview1, inode permission queries and explicit adapter imports, including memory. */
-  imports(module: WebAssembly.Module): WebAssembly.Imports {
+  imports(
+    module: WebAssembly.Module,
+    bindings?: {
+      readonly env: WebAssembly.ModuleImports;
+      readonly "GOT.mem"?: WebAssembly.ModuleImports;
+    },
+  ): WebAssembly.Imports {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
     const filesystem: Record<string, (...args: never[]) => number> = {
       path_permissions_get: this.pathPermissions.bind(this),
@@ -323,9 +341,11 @@ export class Wasi {
     for (const imp of WebAssembly.Module.imports(module)) {
       const ns = (out[imp.module] ??= Object.create(null));
       const supplied =
-        this.opts.namespaces && Object.hasOwn(this.opts.namespaces, imp.module)
-          ? this.opts.namespaces[imp.module]
-          : undefined;
+        (imp.module === "env" || imp.module === "GOT.mem") && bindings
+          ? bindings[imp.module]
+          : this.opts.namespaces && Object.hasOwn(this.opts.namespaces, imp.module)
+            ? this.opts.namespaces[imp.module]
+            : undefined;
       const value =
         imp.module === "runtime_fs" && imp.kind === "function"
           ? Object.hasOwn(filesystem, imp.name)
@@ -345,8 +365,8 @@ export class Wasi {
           throw new TypeError(`import ${imp.module}.${imp.name} must be WebAssembly.Memory`);
         if (this.importedMemory && this.importedMemory !== value)
           throw new TypeError("multiple imported memories are unsupported");
+        this.bindMemory(value);
         this.importedMemory = value;
-        this.memory = memoryViews(value);
       }
       ns[imp.name] = value;
     }

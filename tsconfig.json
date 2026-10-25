@@ -20,6 +20,7 @@
     "fs",
     "proc",
     "interrupt",
+    "link",
     "browser",
     "tests/interrupt-browser-runner-control.ts",
     "tests/process-recycling-browser-runner.ts",

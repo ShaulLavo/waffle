@@ -483,6 +483,13 @@
       "bun": "./browser/notification-relay.ts",
       "browser": "./browser/notification-relay.ts",
       "default": "./browser/notification-relay.ts"
+    },
+    "./link": {
+      "types": "./link/index.ts",
+      "node": "./dist/link/index.js",
+      "bun": "./link/index.ts",
+      "browser": "./link/index.ts",
+      "default": "./link/index.ts"
     }
   },
   "scripts": {

@@ -65,3 +65,20 @@ for (const entry of ["core/index.ts", "proc/index.ts"]) {
     expect(build.outputs.some((output) => output.path.endsWith(".wasm"))).toBe(false);
   });
 }
+
+for (const entry of ["index.ts", "core/index.ts", "proc/index.ts", "browser/worker.ts"]) {
+  test(`${entry} does not load the optional linker`, async () => {
+    const root = resolve(import.meta.dir, "..");
+    const build = await Bun.build({
+      entrypoints: [resolve(root, entry)],
+      target: "browser",
+      format: "esm",
+      metafile: true,
+    });
+    expect(build.success).toBe(true);
+    if (!build.metafile) throw new Error("missing bundle metadata");
+    expect(
+      Object.keys(build.metafile.inputs).filter((path) => /(?:^|\/)link\//.test(path)),
+    ).toEqual([]);
+  });
+}
