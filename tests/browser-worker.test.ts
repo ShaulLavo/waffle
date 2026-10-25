@@ -12,6 +12,7 @@ import {
   FilesystemClient,
   FilesystemService,
   MemoryBackend,
+  revokeFilesystem,
 } from "../fs/index.js";
 import { collectDirectoryJob, confirmDirectoryProcess } from "../proc/directory.js";
 import { DescriptorTable } from "../core/descriptors.js";
@@ -997,6 +998,398 @@ test("executor hooks link extra namespaces after setup and before instantiation,
   expect(spawn.transport.data).toMatchObject({ metadata });
   expect((spawn.transport.data as Record<string, unknown>).filesystem).toBeObject();
   expect((spawn.transport.data as Record<string, unknown>).pipeRegistry).toBeObject();
+});
+
+test("awaited instantiated arming completes before entry and reuses ProcessABI context", async () => {
+  const connection = createFilesystemConnection();
+  const runtimeProcess = createWorkerProcessTransport();
+  let starts = 0;
+  let runProcess: unknown;
+  let instantiatedProcess: unknown;
+  try {
+    await bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        runtimeProcess,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated(context) {
+          instantiatedProcess = context.process;
+          await Promise.resolve();
+        },
+        run(context) {
+          runProcess = context.process;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage() {},
+      },
+    );
+    expect(starts).toBe(1);
+    expect(instantiatedProcess).toBeDefined();
+    expect(runProcess).toBe(instantiatedProcess);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("awaited instantiated arming rejection prevents guest entry", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  let starts = 0;
+  let runs = 0;
+  try {
+    await bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated() {
+          await Promise.resolve();
+          throw new Error("arm failed");
+        },
+        run() {
+          runs++;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    expect(starts).toBe(0);
+    expect(runs).toBe(0);
+    expect(messages.filter((message) => message.type === "error")).toMatchObject([
+      { code: 126, message: expect.stringContaining("arm failed") },
+    ]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("finish during awaited instantiated arming prevents guest entry and cleans up once", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  const armStarted = Promise.withResolvers<void>();
+  const releaseArm = Promise.withResolvers<void>();
+  let starts = 0;
+  let runs = 0;
+  let releases = 0;
+  try {
+    const pending = bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {
+            releases++;
+          };
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated(context) {
+          armStarted.resolve();
+          context.finish({ code: 23 });
+          await releaseArm.promise;
+        },
+        run() {
+          runs++;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    await armStarted.promise;
+    releaseArm.resolve();
+    await pending;
+    expect(starts).toBe(0);
+    expect(runs).toBe(0);
+    expect(releases).toBe(1);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([{ code: 23 }]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("filesystem revoke during arming is caught before guest entry", async () => {
+  const connection = createFilesystemConnection();
+  const messages: RuntimeWorkerMessage[] = [];
+  const armStarted = Promise.withResolvers<void>();
+  const releaseArm = Promise.withResolvers<void>();
+  let starts = 0;
+  let runs = 0;
+  try {
+    const pending = bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated() {
+          armStarted.resolve();
+          await releaseArm.promise;
+        },
+        run() {
+          runs++;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    await armStarted.promise;
+    revokeFilesystem(connection.client);
+    releaseArm.resolve();
+    await pending;
+    expect(starts).toBe(0);
+    expect(runs).toBe(0);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([{ code: 1 }]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("external terminal outcome during arming prevents guest entry", async () => {
+  const connection = createFilesystemConnection();
+  const outcome = new SharedArrayBuffer(8);
+  const messages: RuntimeWorkerMessage[] = [];
+  const armStarted = Promise.withResolvers<void>();
+  const releaseArm = Promise.withResolvers<void>();
+  let starts = 0;
+  let runs = 0;
+  try {
+    const pending = bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        outcome,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated() {
+          armStarted.resolve();
+          await releaseArm.promise;
+        },
+        run() {
+          runs++;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    await armStarted.promise;
+    claimOutcome(outcomeWord(outcome), { kind: "signaled", code: 9 });
+    releaseArm.resolve();
+    await pending;
+    expect(starts).toBe(0);
+    expect(runs).toBe(0);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([
+      { code: 137, signal: 9 },
+    ]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
+});
+
+test("cancellation queued after arming still prevents guest entry", async () => {
+  const connection = createFilesystemConnection();
+  const outcome = new SharedArrayBuffer(8);
+  const messages: RuntimeWorkerMessage[] = [];
+  let starts = 0;
+  let runs = 0;
+  try {
+    await bootstrap(
+      {
+        module: guestModule({
+          namespace: "extension",
+          name: "start",
+          params: [],
+          startSection: false,
+          body: [16, 0, 26],
+        }),
+        args: [],
+        env: {},
+        filesystem: connection.client,
+        outcome,
+      },
+      {
+        setup({ fs }) {
+          fs.preopen = () => 1;
+          fs.retain = () => {};
+          fs.release = () => {};
+        },
+        namespaces() {
+          return {
+            extension: {
+              start() {
+                starts++;
+                return 0;
+              },
+            },
+          };
+        },
+        async instantiated() {
+          await Promise.resolve();
+          queueMicrotask(() => claimOutcome(outcomeWord(outcome), { kind: "signaled", code: 9 }));
+        },
+        run() {
+          runs++;
+          return 0;
+        },
+      },
+      {
+        crossOriginIsolated: true,
+        postMessage(message) {
+          messages.push(message);
+        },
+      },
+    );
+    expect(starts).toBe(0);
+    expect(runs).toBe(0);
+    expect(messages.filter((message) => message.type === "exit")).toMatchObject([
+      { code: 137, signal: 9 },
+    ]);
+  } finally {
+    connection.client.port.close();
+    connection.server.port.close();
+  }
 });
 
 test("beforeBindings can release default stdio while fd3 inheritance preserves the root preopen", async () => {

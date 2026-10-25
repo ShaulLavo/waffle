@@ -285,6 +285,16 @@ nor querying collects a startup or terminal result. Hosts publish the atomic sta
 before incrementing the common wake sequence, so publication racing a poll scan or
 its wait cannot be lost.
 
+Host adapters that compose a blocking wait can call
+`ProcessABI.registerPoll(subscriptions)` with readonly `{ kind, id }` pairs. It
+returns `{ wake, covered, dispose }`: `wake` is the process common word when one
+exists, `covered` is conservative and remains false for any source without an
+accepted common-wake route, and `dispose()` releases registrations in reverse order
+exactly once. Invalid kinds or IDs are rejected at this boundary. A registration
+failure unwinds earlier registrations before rethrowing. This wrapper does not alter
+`poll` readiness, publication, CHILD_START handling or the existing 10 ms fallback
+for uncovered sources.
+
 ### Host executable-entry boundary
 
 The browser bootstrap completes `WebAssembly.Instance` construction (including a
@@ -311,6 +321,13 @@ first guest instruction beats a racing kill. A later host failure cannot become
 START_FAILED after successful entry. `readOutcome` still returns no outcome for a
 started-but-running process, and terminal claiming still chooses exactly one
 immutable winner. Recycled record validity applies equally before and after entry.
+
+`WorkerExecutor.instantiated` may return a promise. Bootstrap awaits it
+inside the startup cleanup boundary before calling `wasi.launch`; a rejection,
+`finish()` during arming, filesystem revocation or a terminal outcome observed
+after arming prevents guest entry. The execution context exposes the already-created
+`ProcessABI` as optional `process`, and the same context object is passed to
+`run`; no second process ABI is created.
 
 A Node-style caller can therefore emit `spawn` once it observes zero, or `error`
 without `spawn` for startup failure, without waiting for output or exit (which
@@ -476,6 +493,25 @@ host diagnostic/cleanup path; descriptor and filesystem teardown still run and t
 original terminal outcome is published. A stalled stderr reader must not retain a
 dead child forever. This bounded policy applies only to runtime-authored diagnostics,
 not to ordinary guest I/O or application-selected blocking pipe semantics.
+
+## Mixed notification waits
+
+`createNotificationWaitSet(sources, options?)` is the small host-side composition
+helper for waits that combine independent filesystem, network and process hints. A
+covered source registers forwarding to the helper's private wake word; an uncovered
+source is explicit and forces `wait()` to use the existing 10 ms bounded rescan.
+Callers must `sample()` the helper word before readiness reads, then call `wait()`
+only when the readiness scan is still empty. `deadline` is one absolute value in the
+host monotonic `performance.now()` domain (or `Infinity`), so an early wake never
+resets the caller's timer. The helper forwards notifications only: it never drains
+filesystem watches or network state and never samples consuming readiness.
+
+`dispose()` wakes a blocked caller, detaches every source in reverse order, and is
+idempotent. Registration failure performs the same unwind before rethrowing; cleanup
+continues after a release error and reports the first error. This contract does not
+claim that every source is covered. In particular, `NetHost.notification` exposes
+only the helper ring's GEN0 word; host-local `localNews` remains outside that word
+and must still be observed through `poll(0)` and its normal drain.
 
 ## Network and preview
 

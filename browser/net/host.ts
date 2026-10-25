@@ -86,6 +86,11 @@ export class NetHost {
     this.seenGeneration = this.ring.generation();
   }
 
+  /** The helper ring word. Local news remains outside this shared word and poll(0) still drains it. */
+  get notification(): Int32Array {
+    return this.ring.notification;
+  }
+
   /** Register the nonblocking consumer's wake callback. Blocking consumers use poll instead. */
   onNews(cb: () => void): void {
     if (this.disposed) return;

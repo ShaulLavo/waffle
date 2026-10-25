@@ -30,6 +30,7 @@ import { Wasi, WasiExit, type Stream } from "../core/index.js";
 import { guardedStream } from "./guarded-stream.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { withFileOffset } from "../core/open-file.js";
+import type { ProcessABI } from "../proc/abi.js";
 
 import { ExecutableFormatError, startFailure, type StartFailure } from "../proc/start-failure.js";
 import { waitStatus } from "../proc/wait-status.js";
@@ -134,6 +135,7 @@ export interface WorkerExecutionContext<
   R extends RuntimeWorkerRequest = RuntimeWorkerRequest,
 > extends WorkerBindingsContext<R> {
   instance: WebAssembly.Instance;
+  process?: ProcessABI;
 }
 
 /** Guest policy stays with the executor, without making its engine bindings, transports or
@@ -169,7 +171,7 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
   diagnostic?(message: string): void;
   /** Runs after descriptors/filesystem have been released, before the exit acknowledgement. */
   complete?(code: number, signal?: number): ProcessExit;
-  instantiated?(context: WorkerExecutionContext<R>): void;
+  instantiated?(context: WorkerExecutionContext<R>): void | Promise<void>;
   run(context: WorkerExecutionContext<R>, exited: number | null): number | Promise<number>;
 }
 
@@ -230,6 +232,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   postToHost({ type: "phase", name: "worker-start", duration: 0 });
   const fs = new FilesystemClient(req.filesystem);
   let runtimeProcess: WorkerProcessClient | null = null;
+  let process: ProcessABI | undefined;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
   const sleepCell = createSleepCell(host);
   const isolated = sleepCell !== null;
@@ -730,7 +733,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
       runtimeProcess.installBindings();
-      const abi = new ProcessABI({
+      process = new ProcessABI({
         memory: () => instance.exports.memory as WebAssembly.Memory,
         descriptors: wasi.descriptors,
         fs,
@@ -745,7 +748,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           checkActive();
         },
       });
-      const entries = objectEntries(abi.imports);
+      const entries = objectEntries(process.imports);
       for (let index = 0; index < entries.length; index++) {
         const entry = entries[index]!,
           name = entry[0],
@@ -781,8 +784,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
     postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
-    executor.instantiated?.({ ...context, wasi, instance });
+    const executionContext: WorkerExecutionContext<R> = { ...context, wasi, instance, process };
+    await executor.instantiated?.(executionContext);
     if (done) return;
+    checkActive();
     const exited = wasi.launch(instance, () => {
       checkActive();
       const committed = runtimeProcess
@@ -796,7 +801,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     });
     if (addListener) reflectApply(addListener, host, ["error", onError]);
     if (addListener) reflectApply(addListener, host, ["unhandledrejection", onRejection]);
-    const completion = executor.run({ ...context, wasi, instance }, exited);
+    const completion = executor.run(executionContext, exited);
     // Synchronous commands claim their result before guest-scheduled microtasks can run.
     finish({ code: typeof completion === "number" ? completion : await completion });
   } catch (error) {

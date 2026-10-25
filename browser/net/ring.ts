@@ -123,6 +123,11 @@ export class RingReader extends RingBase {
     this.view = new DataView(sab, HEADER_BYTES, CAPACITY);
   }
 
+  /** The shared word that changes when the helper publishes a ring record. */
+  get notification(): Int32Array {
+    return this.cells.subarray(0, 1);
+  }
+
   /** The generation counter: changes whenever a record is written. */
   generation(): number {
     return Atomics.load(this.cells, GEN);

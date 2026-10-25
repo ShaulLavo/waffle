@@ -1140,3 +1140,141 @@ test("repeated child readiness polling does not collect the later consuming wait
   expect(f.abi.imports.wait!(pid, 64)).toBe(-12);
   expect(f.abi.imports.poll!(256, 1, 0, 512)).toBe(-12);
 });
+
+test("public poll registration validates inputs, reports coverage and releases in reverse once", () => {
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const f = fixture({ wake });
+  const log: string[] = [];
+  const first = f.descriptors.open(
+    {
+      kind: "pipe",
+      notification: wake,
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        log.push("register:first");
+        return () => log.push("release:first");
+      },
+    },
+    ALL,
+    ALL,
+  );
+  const second = f.descriptors.open(
+    {
+      kind: "pipe",
+      notification: wake,
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        log.push("register:second");
+        return () => log.push("release:second");
+      },
+    },
+    ALL,
+    ALL,
+  );
+  const registration = f.abi.registerPoll([
+    { kind: 0, id: first },
+    { kind: 0, id: second },
+  ]);
+  expect(registration.wake).toBe(wake);
+  // The public boundary keeps the existing conservative process coverage: a
+  // per-stream registration is retained, but only a directory/common-wake set
+  // is declared fully covered.
+  expect(registration.covered).toBe(false);
+  expect(log).toEqual(["register:first", "register:second"]);
+  registration.dispose();
+  registration.dispose();
+  expect(log).toEqual(["register:first", "register:second", "release:second", "release:first"]);
+});
+
+test("public poll registration unwinds partial registration and preserves the first error", () => {
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const f = fixture({ wake });
+  const log: string[] = [];
+  const first = f.descriptors.open(
+    {
+      kind: "pipe",
+      notification: wake,
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        log.push("register:first");
+        return () => log.push("release:first");
+      },
+    },
+    ALL,
+    ALL,
+  );
+  const second = f.descriptors.open(
+    {
+      kind: "pipe",
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        throw new Error("registration failed");
+      },
+    },
+    ALL,
+    ALL,
+  );
+  expect(() =>
+    f.abi.registerPoll([
+      { kind: 0, id: first },
+      { kind: 0, id: second },
+    ]),
+  ).toThrow("registration failed");
+  expect(log).toEqual(["register:first", "release:first"]);
+  expect(() => f.abi.registerPoll([{ kind: 7, id: first }])).toThrow();
+  expect(() => f.abi.registerPoll([{ kind: 0, id: -1 }])).toThrow();
+});
+
+test("public poll disposal continues after cleanup errors and remains idempotent", () => {
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const f = fixture({ wake });
+  const log: string[] = [];
+  const first = f.descriptors.open(
+    {
+      kind: "pipe",
+      notification: wake,
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        log.push("register:first");
+        return () => {
+          log.push("release:first");
+          throw new Error("first cleanup failed");
+        };
+      },
+    },
+    ALL,
+    ALL,
+  );
+  const second = f.descriptors.open(
+    {
+      kind: "pipe",
+      notification: wake,
+      read: () => 0,
+      write: () => 0,
+      readiness: () => ({ readable: false, writable: false, hangup: false }),
+      registerWake() {
+        log.push("register:second");
+        return () => log.push("release:second");
+      },
+    },
+    ALL,
+    ALL,
+  );
+  const registration = f.abi.registerPoll([
+    { kind: 0, id: first },
+    { kind: 0, id: second },
+  ]);
+  expect(() => registration.dispose()).toThrow("first cleanup failed");
+  expect(log).toEqual(["register:first", "register:second", "release:second", "release:first"]);
+  expect(() => registration.dispose()).not.toThrow();
+});

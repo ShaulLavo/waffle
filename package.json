@@ -462,6 +462,13 @@
       "bun": "./browser/net/module.ts",
       "browser": "./browser/net/module.ts",
       "default": "./browser/net/module.ts"
+    },
+    "./browser/notification-wait": {
+      "types": "./browser/notification-wait.ts",
+      "node": "./dist/browser/notification-wait.js",
+      "bun": "./browser/notification-wait.ts",
+      "browser": "./browser/notification-wait.ts",
+      "default": "./browser/notification-wait.ts"
     }
   },
   "scripts": {
