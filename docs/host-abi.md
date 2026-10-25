@@ -514,3 +514,7 @@ access bits. Missing descriptor rights return `ENOTCAPABLE`, errno 76, not inode
 Unsupported adapter metadata returns `ENOTSUP`, errno 58. Invalid pointers return `EFAULT`,
 errno 21. Errors leave the output unchanged. This import does not extend or reinterpret the
 standard 64-byte Preview1 filestat record, perform open-based inference, or fetch payloads.
+
+## Internal network module
+
+The Rust socket module is not a guest import namespace. Guest network calls, numeric results, ring records, addresses, and JSON errors are unchanged. Trusted embedders use the separate [Network module ABI](network-module.md). Browser instances do not provide OS socket authority.

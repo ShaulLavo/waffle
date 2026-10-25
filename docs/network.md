@@ -116,3 +116,9 @@ workers, contexts, browser, server and scratch on completion or failure.
 The dedicated `tests/network-browser-runner.ts` also accepts engine names for the
 repository browser-matrix driver. Consumer framework packages are not part of
 this transport fixture and are not claimed as verified by it.
+
+## Portable socket implementation
+
+The existing lazy `runtime.network()` activation loads a separate Rust WASM module. Each runtime namespace owns one instance. Rust owns virtual ports, endpoint metadata, byte queues, credit, and half-close state. The TypeScript helper still owns rings, fetch, HTTP, preview callbacks, and cleanup ordering. Browser TCP remains virtual-only.
+
+Native embedders can load the same module explicitly and wire Waffle's native `socket2` adapter. IPv6-any listeners disable IPv6-only mode and fall back to IPv4 when IPv6 is unavailable. Bun retains its own JSON, handle table, JavaScript APIs, engine wiring, and policy. See [Network module ABI](network-module.md) and [ADR 005](adr/005-lazy-rust-wasm-network.md).

@@ -23,6 +23,7 @@ jobs:
     outputs:
       libc: ${{ steps.paths.outputs.libc }}
       browser: ${{ steps.paths.outputs.browser }}
+      network: ${{ steps.paths.outputs.network }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -30,8 +31,38 @@ jobs:
         with:
           base: ${{ github.ref }}
           filters: |
+            network:
+              - ".github/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "network/**"
+              - "tooling/build-network.ts"
+              - "tooling/check-network-rust.ts"
+              - "build.ts"
+              - "prepare.ts"
+              - "tooling/network-size.ts"
+              - "browser/net/module.ts"
+              - "browser/net/namespace.ts"
+              - "tests/network-module.test.ts"
+              - "tests/network-module-host.test.ts"
+              - "tests/network-wire.test.ts"
+              - "tests/network-size.test.ts"
+              - "tests/network-lazy.test.ts"
+              - "tests/packaging.test.ts"
+              - "tests/git-install.test.ts"
+              - "tests/node-exports.test.ts"
+              - "tests/runtime-size.test.ts"
             browser:
               - ".github/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - "network/**"
+              - "tooling/build-network.ts"
+              - "tooling/check-network-rust.ts"
+              - "build.ts"
+              - "prepare.ts"
               - "core/**"
               - "fs/**"
               - "proc/**"
@@ -63,13 +94,80 @@ jobs:
               - 'bun.lock'
               - 'tests/wasi-libc.test.ts'
               - 'tests/fixtures/**'
+  network-wasm:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache@v4
+        id: network-artifact
+        with:
+          path: |
+            browser/net/network.wasm
+            browser/net/network.input-hash
+            browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+      - name: Cache Rust toolchain and Cargo build inputs
+        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        uses: actions/cache@v4
+        id: rust-cache
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('network/**/*.rs') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+          components: clippy,rustfmt
+      - name: Build exact-input network artifact once
+        if: steps.network-artifact.outputs.cache-hit != 'true'
+        run: bun run build:network
+      - name: Rust native, state and actual WASM tests
+        if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
+        run: |
+          bun tooling/check-network-rust.ts
+          cargo fmt --all -- --check
+          cargo clippy --release --all-targets --features module-tests --locked -- -D warnings
+          cargo test --release -p waffle-tcp --features module-tests --locked -- --nocapture
+        env:
+          WAFFLE_TCP_MODULE: ${{ github.workspace }}/browser/net/network.wasm
+      - name: Report exact artifact and Rust cache hits
+        run: |
+          echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
+          echo "Rust cache-hit=${{ steps.rust-cache.outputs.cache-hit }}"
   package:
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: network-wasm
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            browser/net/network.wasm
+            browser/net/network.input-hash
+            browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun tooling/build-network.ts --verify
       - name: Cache Bun package downloads
         uses: actions/cache@v4
         with:
@@ -79,7 +177,7 @@ jobs:
       - run: bun install --cwd site --frozen-lockfile
       - run: bun run quality
       - run: bun run test && bun run test:ci
-      - run: bun run size
+      - run: bun run size && bun run size:network
       - run: test -z "$(git ls-files dist)"
   libc:
     needs: changes
@@ -138,7 +236,9 @@ jobs:
           WASI_LIBC_FIXTURE_CACHE: ${{ runner.temp }}/libc-fixtures
           WASI_LIBC_SYSROOT_CACHE: ${{ runner.temp }}/libc-sysroot
   browser:
-    needs: changes
+    env:
+      WAFFLE_NETWORK_PREBUILT: "1"
+    needs: [changes, network-wasm]
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.browser == 'true') }}
     runs-on: ubuntu-latest
     steps:
@@ -146,6 +246,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/cache/restore@v4
+        id: network-artifact
+        with:
+          path: |
+            browser/net/network.wasm
+            browser/net/network.input-hash
+            browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Verify exact-input network artifact before installation
+        run: bun tooling/build-network.ts --verify
       - name: Restore Bun package downloads
         uses: actions/cache/restore@v4
         with:

@@ -44,3 +44,24 @@ test("the full core keeps all exports without loading the process service", asyn
   const size = gzipSync(Buffer.from(await output.arrayBuffer()), { level: 9 }).length;
   expect(() => checkCoreBudget(size)).not.toThrow();
 });
+
+for (const entry of ["core/index.ts", "proc/index.ts"]) {
+  test(`${entry} excludes the network loader, native implementation and WASM assets`, async () => {
+    const root = resolve(import.meta.dir, "..");
+    const build = await Bun.build({
+      entrypoints: [resolve(root, entry)],
+      target: "browser",
+      format: "esm",
+      metafile: true,
+    });
+    expect(build.success).toBe(true);
+    if (!build.metafile) throw new Error("missing bundle metadata");
+    const inputs = Object.keys(build.metafile.inputs);
+    expect(
+      inputs.filter((path) =>
+        /browser\/net\/(?:module|namespace)\.ts$|network\/.*\.rs$|\.wasm$/.test(path),
+      ),
+    ).toEqual([]);
+    expect(build.outputs.some((output) => output.path.endsWith(".wasm"))).toBe(false);
+  });
+}

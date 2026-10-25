@@ -30,7 +30,7 @@ function selected(name: string, path: string): boolean {
 for (const name of ["browser", "libc"]) {
   test(`${name} waits for paths and runs on manual dispatch or filter failure`, () => {
     const job = record(jobs[name]);
-    expect(job.needs).toBe("changes");
+    expect(job.needs).toEqual(name === "browser" ? ["changes", "network-wasm"] : "changes");
     expect(job.if).toBe(
       `\${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.${name} == 'true') }}`,
     );
@@ -174,7 +174,7 @@ test("package and site gates remain unconditional", () => {
   for (const name of ["package", "site"]) {
     const job = record(jobs[name]);
     expect(job.if).toBeUndefined();
-    expect(job.needs).toBeUndefined();
+    expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
   }
 });
 
@@ -192,4 +192,89 @@ test("package runs each test root once without repeating preparation", () => {
     1,
   );
   expect(commands).not.toContain("bun run prepare");
+});
+
+test("Rust network inputs select one release test/build lane and an exact WASM cache", () => {
+  for (const path of ["network/src/lib.rs", "Cargo.lock", "tooling/build-network.ts"])
+    expect(selected("browser", path), path).toBe(true);
+  for (const path of [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "network/src/lib.rs",
+    "network/tests/module.rs",
+    "tooling/build-network.ts",
+    "browser/net/module.ts",
+    "tests/network-module.test.ts",
+    "tests/network-module-host.test.ts",
+    "tests/network-wire.test.ts",
+  ])
+    expect(selected("network", path), path).toBe(true);
+  expect(selected("network", "docs/network.md")).toBe(false);
+  const steps = stepsFor("network-wasm");
+  expect(
+    steps.filter((step) => typeof step.run === "string" && step.run.includes("cargo test")),
+  ).toHaveLength(1);
+  const testStep = steps.find(
+    (step) => typeof step.run === "string" && step.run.includes("cargo test"),
+  );
+  expect(String(testStep?.run)).toContain("--release");
+  expect(String(testStep?.run)).toContain("--features module-tests");
+  expect(record(testStep?.env).WAFFLE_TCP_MODULE).toContain("network.wasm");
+  const cache = steps.find((step) => step.id === "network-artifact");
+  expect(record(cache?.with)["restore-keys"]).toBeUndefined();
+  for (const job of ["package", "browser"]) {
+    const restore = stepsFor(job).find((step) => step.id === "network-artifact");
+    expect(record(restore?.with).key).toBe(record(cache?.with).key);
+    expect(record(restore?.with)["fail-on-cache-miss"]).toBe(true);
+  }
+});
+
+test("network consumers verify restored bytes before install and forbid Cargo", () => {
+  for (const name of ["package", "browser"]) {
+    const steps = stepsFor(name);
+    const restored = steps.findIndex((step) => step.id === "network-artifact");
+    const verified = steps.findIndex(
+      (step) => step.run === "bun tooling/build-network.ts --verify",
+    );
+    const installed = steps.findIndex(
+      (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
+    );
+    expect(verified).toBeGreaterThan(restored);
+    expect(verified).toBeLessThan(installed);
+    expect(record(record(jobs[name]).env).WAFFLE_NETWORK_PREBUILT).toBe("1");
+    expect(steps.some((step) => typeof step.run === "string" && /cargo\s/.test(step.run))).toBe(
+      false,
+    );
+    expect(String(record(steps[restored]?.with).path)).toContain("browser/net/network.sha256");
+  }
+});
+
+test("network producer checks Rust target ownership with lockfile-sensitive caches", () => {
+  const steps = stepsFor("network-wasm");
+  const cache = steps.find((step) => step.id === "rust-cache");
+  expect(String(record(cache?.with).key)).toContain(
+    "hashFiles('Cargo.lock', 'rust-toolchain.toml')",
+  );
+  expect(String(record(cache?.with).path)).toContain("~/.rustup/toolchains");
+  expect(String(record(cache?.with).path)).toContain("target");
+  const commands = steps.map((step) => step.run).join("\n");
+  expect(commands).toContain("bun tooling/check-network-rust.ts");
+});
+
+test("network packaging and acceptance inputs select the producer and browser consumer", () => {
+  for (const path of [
+    "build.ts",
+    "prepare.ts",
+    "tooling/check-network-rust.ts",
+    "tests/network-lazy.test.ts",
+    "tests/packaging.test.ts",
+    "tests/git-install.test.ts",
+    "tests/node-exports.test.ts",
+    "tests/runtime-size.test.ts",
+  ])
+    for (const name of ["network", "browser"])
+      expect(selected(name, path), `${name}: ${path}`).toBe(true);
+  for (const path of ["docs/development.md", "site/src/pages/index.astro", "site/bun.lock"])
+    expect(selected("network", path), path).toBe(false);
 });

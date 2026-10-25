@@ -109,7 +109,11 @@ export function createRuntimeNetwork(assertLive: () => void) {
   return {
     network,
     dispose() {
-      releaseHelpers(helpers);
+      try {
+        releaseHelpers(helpers);
+      } finally {
+        namespace.dispose();
+      }
     },
   };
 }

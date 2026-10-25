@@ -206,6 +206,28 @@ async function addressCases(server: Guest, client: Guest): Promise<void> {
     (await server.call({ op: "listen", host: "192.0.2.1", port: 32157 })) === -4,
     "Browser claimed an external bind",
   );
+  for (const host of ["192.0.2.1", "2001:db8::1", "example.invalid"]) {
+    check(
+      (await client.call({ op: "connect", host, port: 32157 })) === -4,
+      "Browser claimed external TCP",
+    );
+    check(
+      String(await client.call({ op: "error", handle: 0 })).includes("ENOTSUP"),
+      "External connect lost ENOTSUP",
+    );
+  }
+  const healthy = await pair(server, client, 32157);
+  check(
+    (await client.call({ op: "write", handle: healthy.conn, bytes: bytes("after denial") })) === 12,
+    "Loopback stopped after external rejection",
+  );
+  check(
+    text(await read(server, healthy.accepted)) === "after denial",
+    "Loopback lost bytes after external rejection",
+  );
+  await client.call({ op: "close", handle: healthy.conn });
+  await server.call({ op: "close", handle: healthy.accepted });
+  await server.call({ op: "close", handle: healthy.listener });
 }
 
 async function fetchAddressCases(server: Guest, client: Guest): Promise<void> {

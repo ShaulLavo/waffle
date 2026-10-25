@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -12,9 +20,14 @@ function command(
   return execFileSync(command, args, { ...options, encoding: "utf8", stdio: "pipe" }).trim();
 }
 
-test("a clean app can install Waffle from a local Git commit and import every Node export", () => {
+test("a clean Git consumer prepares the exact restored artifact without Cargo and imports every Node export", () => {
   const root = resolve(import.meta.dir, "..");
-  const scratch = mkdtempSync(join(tmpdir(), "waffle-git-install-"));
+  const scratch = mkdtempSync(
+    join(
+      process.env.TMPDIR ?? (existsSync("/work/tmp") ? "/work/tmp" : tmpdir()),
+      "waffle-git-install-",
+    ),
+  );
   try {
     const bare = join(scratch, "waffle.git");
     command("git", ["clone", "--bare", root, bare]);
@@ -46,8 +59,22 @@ test("a clean app can install Waffle from a local Git commit and import every No
       BUN_INSTALL_CACHE_DIR: cache,
       BUN_INSTALL_GLOBAL_DIR: global,
       BUN_CONFIG_DIR: config,
+      WAFFLE_NETWORK_PREBUILT: "1",
     };
-    execFileSync("bun", ["install", "--no-progress"], { cwd: app, env, stdio: "pipe" });
+    execFileSync("bun", ["install", "--no-progress", "--ignore-scripts"], {
+      cwd: app,
+      env,
+      stdio: "pipe",
+    });
+    const installed = join(app, "node_modules/waffle");
+    for (const name of ["network.wasm", "network.input-hash", "network.sha256"])
+      copyFileSync(join(root, "browser/net", name), join(installed, "browser/net", name));
+    execFileSync("bun", [join(installed, "tooling", "build-network.ts"), "--verify"], {
+      cwd: installed,
+      env,
+      stdio: "pipe",
+    });
+    execFileSync("bun", ["run", "prepare"], { cwd: installed, env, stdio: "pipe" });
     const metadata = JSON.parse(
       readFileSync(join(app, "node_modules/waffle/package.json"), "utf8"),
     ) as {
@@ -60,6 +87,10 @@ test("a clean app can install Waffle from a local Git commit and import every No
     const script = `
       import assert from 'node:assert/strict';
       for (const specifier of ${JSON.stringify(specifiers)}) await import(specifier);
+      const { loadNetworkModule } = await import('waffle/network');
+      const network = (await loadNetworkModule()).create();
+      try { assert.equal(network.call('net_listen', 40, 23456), 23456); }
+      finally { network.dispose(); }
       const { createRuntime } = await import('waffle');
       assert.equal(typeof createRuntime, 'function');
       const api = await import('waffle/fs');

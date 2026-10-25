@@ -17,6 +17,26 @@ async function until<T>(read: () => T, ready: (value: T) => boolean): Promise<T>
   }
   throw Error("Network progress timed out");
 }
+test("namespace canonicalizes expanded IPv6 connect targets", () => {
+  const namespace = new NetNamespace();
+  const owner = {};
+  try {
+    expect(
+      namespace.listen(32123, {
+        owner,
+        handle: 1,
+        local: { address: "::1", family: "IPv6", port: 32123 },
+        accept() {},
+      }),
+    ).toBe(32123);
+    const connected = namespace.connect(32123, { data() {}, end() {} }, "0:0:0:0:0:0:0:1");
+    if (typeof connected === "number") throw Error(`connect failed: ${connected}`);
+    connected.socket.close();
+  } finally {
+    namespace.dispose();
+  }
+});
+
 function fixture() {
   const namespace = new NetNamespace();
   const helpers: NetHelper[] = [];

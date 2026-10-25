@@ -508,3 +508,7 @@ Plain Node consumers that only need the JavaScript memory helper use
 `waffle/core/memory-views`, without loading the TypeScript WASI adapter. The repository's
 unbundled headless hosts import that JavaScript source relatively, so native CLI tests do not require
 installing playground dependencies.
+
+## Lazy network implementation
+
+`runtime.network()` owns one separate Rust WASM instance through its namespace. Core and process loading do not load this module. Browser helpers retain virtual-only transport and unchanged rings. Native embedders wire the Waffle-owned OS adapter explicitly. See [ADR 005](adr/005-lazy-rust-wasm-network.md).

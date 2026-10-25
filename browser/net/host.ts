@@ -14,7 +14,7 @@ import {
   type PeerAddr,
   UNSUPPORTED,
 } from "./protocol.js";
-import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./namespace.js";
+import { TCP_IN_USE, TCP_REFUSED, TCP_PIPE, TCP_INVALID } from "./tcp-status.js";
 import { RingReader } from "./ring.js";
 import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
 

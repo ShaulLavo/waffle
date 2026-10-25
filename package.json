@@ -443,6 +443,13 @@
       "types": "./tests/opfs-storage-browser.ts",
       "bun": "./tests/opfs-storage-browser.ts",
       "browser": "./tests/opfs-storage-browser.ts"
+    },
+    "./network": {
+      "types": "./browser/net/module.ts",
+      "node": "./dist/browser/net/module.js",
+      "bun": "./browser/net/module.ts",
+      "browser": "./browser/net/module.ts",
+      "default": "./browser/net/module.ts"
     }
   },
   "scripts": {
@@ -461,7 +468,10 @@
     "check:tooling": "tsc -p tsconfig.tooling.json",
     "unused": "knip --no-progress",
     "duplicates": "jscpd --fail-on-new-clones 0",
-    "quality": "bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:tooling && bun run --cwd site typecheck && bun run unused && bun run duplicates && bun tooling/quality-probes.ts"
+    "quality": "bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:tooling && bun run --cwd site typecheck && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
+    "build:network": "bun tooling/build-network.ts",
+    "size:network": "bun tooling/network-size.ts",
+    "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked"
   },
   "dependencies": {},
   "devDependencies": {
