@@ -312,8 +312,14 @@ export async function networkBrowserCases(): Promise<string[]> {
     },
   });
   const network = await runtime.network();
+  const localhost = network.lookup("localhost", { family: 0, hints: 0 });
+  check(
+    localhost.length === 1 && localhost[0]?.address === "127.0.0.1" && localhost[0].family === 4,
+    "Runtime lookup must preserve IPv4 localhost policy before any helper exists",
+  );
   const isolatedNamespace = new NetNamespace();
   const isolatedNetwork: RuntimeNetwork = {
+    lookup: network.lookup,
     createHelper: ({ ring, fetch, hooks }) => new NetHelper(ring, fetch, hooks, isolatedNamespace),
   };
   const router = new PreviewRouter({ baseURL: location.origin, prefix: "/_net" });
@@ -448,6 +454,7 @@ export async function networkBrowserCases(): Promise<string[]> {
     await networkFlowCases(flowServer, flowClient, 32137);
     await networkFlowCases(flowServer, flowServer, 32138);
     return [
+      "runtime-owned IPv4 localhost lookup before any helper or worker exists",
       "IPv6 wildcard, loopback, mapped addresses and HTTP destination families across real workers",
       "paused HTTP bounded credit, read wakeups, streaming EOF and cancellation across workers and within one worker",
       "throwing listening hook rolls back publication before a healthy worker retry",

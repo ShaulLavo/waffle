@@ -33,7 +33,7 @@ test("runtime lazily memoizes networking and projects only live helper capabilit
     const pending = runtime.network();
     expect(runtime.network()).toBe(pending);
     const network = await pending;
-    expect(Object.keys(network)).toEqual(["createHelper"]);
+    expect(Object.keys(network)).toEqual(["createHelper", "lookup"]);
     expect(Object.isFrozen(network)).toBe(true);
     const ring = createRing();
     const helper = network.createHelper({ ring, fetch: noFetch });

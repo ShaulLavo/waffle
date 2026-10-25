@@ -4,7 +4,7 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Stability
 
-- **Version:** `0.0.89` in `package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.90` in `package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** exact-commit Git dependency. No npm package, no tags, no GitHub releases.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
@@ -59,16 +59,22 @@ Waffle's code and docs do not mention Wasm threads or other post-Preview 1 inter
 | Permissions           | One virtual principal. Files `0600`, directories `0700`. No owners, groups or symlinks.            | [Permissions](permissions.md)            |
 | Host identity         | `runtime.hostIdentity` is `null` unless the embedder passes `uid`, `euid` and `hostname`.          | [Process identity](process-context.md)   |
 
+## Virtual name lookup
+
+`(await runtime.network()).lookup("localhost", { family: 0, hints: 0 })` returns a fresh array containing `{ address: "127.0.0.1", family: 4 }`. The call opens no listener or socket and makes no fetch or process request. It provides the runtime backing needed by Bun's DNS adapter for Vite's localhost startup check. Bun still owns callbacks, promises, sorting and `all`.
+
+Numeric `127.0.0.1` and `::1` also resolve. Unsupported names and nonzero hints throw `ENOTSUP`, not `ENOTFOUND`. This is virtual loopback policy, not OS DNS or external TCP. The [lookup contract](network-lookup.md) lists results, options, errors and lifetime rules.
+
 ## Separate network module
 
-The lazy Rust `wasm32-unknown-unknown` module and Waffle-owned native `socket2` binding are implemented in draft PR105. This is a scoped Rust exception, recorded in [ADR 005](adr/005-lazy-rust-wasm-network.md). The runtime loads the module at `runtime.network()`, with one instance per runtime and no OS socket binding in browser hosts. Guest network calls, rings, JSON and handles are unchanged.
+The lazy Rust `wasm32-unknown-unknown` module and Waffle-owned native `socket2` binding are implemented in PR105. This is a scoped Rust exception, recorded in [ADR 005](adr/005-lazy-rust-wasm-network.md). The runtime loads the module at `runtime.network()`, with one instance per runtime and no OS socket binding in browser hosts. Guest network calls, rings, JSON and handles are unchanged.
 
 Measured on 2026-10-25 with the pinned Rust toolchain and `bun run size:network`:
 
 | Artifact                     |  Bytes | Separate budget |
 | ---------------------------- | -----: | --------------: |
 | Network WASM                 | 85,060 |          88,000 |
-| Network WASM, gzip           | 26,853 |          28,000 |
+| Network WASM, gzip           | 26,856 |          28,000 |
 | Lazy JavaScript loader, gzip |    664 |             800 |
 
 The core measured 9,196 gzip bytes. Its existing 9,782-byte budget is unchanged. Source installation now needs the pinned Rust toolchain and WASM target. Generated assets are not checked in.

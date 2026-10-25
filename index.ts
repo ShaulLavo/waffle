@@ -1,9 +1,13 @@
 export { createRuntime } from "./runtime.js";
+export { RuntimeNetworkLookupError } from "./runtime.js";
 export type {
   Runtime,
   RuntimeOptions,
   RuntimeNetwork,
   RuntimeNetworkHelper,
+  RuntimeNetworkLookupErrorCode,
+  RuntimeNetworkLookupOptions,
+  RuntimeNetworkLookupResult,
   RuntimeFilesystem,
   RuntimeSupervisor,
   RuntimeConsumer,
