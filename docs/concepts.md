@@ -27,7 +27,7 @@ Disposal follows the same ownership. `Runtime.dispose()` first fences filesystem
 
 **Loopback network.** `await runtime.network()` creates it on first use. Listeners and sockets live in a virtual loopback owned by the runtime, so guests in different workers reach each other on `127.0.0.1` without leaving the page. There is no route to a real interface. [Networking](network.md) has the contract.
 
-**Interruption.** WebAssembly has no way to preempt a loop. For source bytes, Waffle's rewriter inserts checkpoints so a signal can stop a CPU-bound guest. A precompiled module skips that step and must declare `cooperative: true`.
+**Interruption.** WebAssembly has no way to preempt a loop. For source bytes, Waffle's rewriter inserts checkpoints, including through standard SIMD instructions, so a signal can stop a CPU-bound guest. A precompiled module skips that step and must declare `cooperative: true`.
 
 ## The life of a spawn
 

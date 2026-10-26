@@ -1,7 +1,7 @@
 /**
  * Fail-closed core-Wasm interrupt instrumentation. Supported features are MVP,
- * multi-value, sign extension, saturating conversions, bulk memory, untyped
- * reference tables, tail calls, and non-waiting threads instructions.
+ * SIMD, multi-value, sign extension, saturating conversions, bulk memory,
+ * untyped reference tables, tail calls, and non-waiting threads instructions.
  *
  * Every defined-function entry and loop header consumes one module-wide tick.
  * The host is called only when the countdown reaches zero. Resetting BEFORE the
@@ -140,11 +140,12 @@ function valueType(reader: Reader): void {
     case 0x7e:
     case 0x7d:
     case 0x7c: // numeric
+    case 0x7b: // v128
     case 0x70:
     case 0x6f: // untyped funcref/externref
       return;
     default:
-      fail("unsupported value type (SIMD, GC or typed reference)");
+      fail("unsupported value type (GC or typed reference)");
   }
 }
 function referenceType(reader: Reader): void {
@@ -153,8 +154,8 @@ function referenceType(reader: Reader): void {
 }
 function blockType(reader: Reader): void {
   const type = reader.signed(5);
-  if (type >= 0 || [-64, -1, -2, -3, -4, -16, -17].includes(type)) return;
-  fail("unsupported block type (SIMD, GC or typed reference)");
+  if (type >= 0 || [-64, -1, -2, -3, -4, -5, -16, -17].includes(type)) return;
+  fail("unsupported block type (GC or typed reference)");
 }
 function limits(reader: Reader, memory: boolean): void {
   const flags = reader.u32();
@@ -170,6 +171,71 @@ function memoryIndex(reader: Reader): void {
 function memoryArgument(reader: Reader): void {
   if (reader.u32() >= 64) fail("multi-memory or unknown memory argument flags");
   reader.u32();
+}
+
+// Standard SIMD encodings from WebAssembly's BinarySIMD table. Reserved holes stay
+// rejected instead of being treated as a broad 0xfd opcode range.
+const SIMD_MEMORY_OPCODES = new Set([
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x54, 0x55, 0x56, 0x57,
+  0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d,
+]);
+const SIMD_LANE_OPCODES = new Set([
+  0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22,
+]);
+const SIMD_NO_IMMEDIATE_RANGES = [
+  [0x0e, 0x14],
+  [0x23, 0x52],
+  [0x53, 0x53],
+  [0x5e, 0x5f],
+  [0x60, 0x7d],
+  [0x7e, 0x7f],
+  [0x80, 0x93],
+  [0x94, 0x99],
+  [0x9b, 0x9f],
+  [0xa0, 0xa1],
+  [0xa3, 0xa4],
+  [0xa7, 0xaa],
+  [0xab, 0xae],
+  [0xb1, 0xb1],
+  [0xb5, 0xba],
+  [0xbc, 0xbf],
+  [0xc0, 0xc1],
+  [0xc3, 0xc4],
+  [0xc7, 0xca],
+  [0xcb, 0xce],
+  [0xd1, 0xd1],
+  [0xd5, 0xdf],
+  [0xe0, 0xe1],
+  [0xe3, 0xeb],
+  [0xec, 0xed],
+  [0xef, 0xff],
+] as const;
+
+function inRanges(value: number, ranges: readonly (readonly [number, number])[]): boolean {
+  return ranges.some(([start, end]) => value >= start && value <= end);
+}
+function simdInstruction(reader: Reader, constant: boolean): void {
+  const opcode = reader.u32();
+  if (constant && opcode !== 0x0c) fail("unsupported constant-expression instruction");
+  if (SIMD_MEMORY_OPCODES.has(opcode)) {
+    memoryArgument(reader);
+    if (opcode >= 0x54 && opcode <= 0x5b) reader.byte();
+    return;
+  }
+  if (opcode === 0x0c) {
+    reader.take(16);
+    return;
+  }
+  if (opcode === 0x0d) {
+    reader.take(16);
+    return;
+  }
+  if (SIMD_LANE_OPCODES.has(opcode)) {
+    reader.byte();
+    return;
+  }
+  if (inRanges(opcode, SIMD_NO_IMMEDIATE_RANGES)) return;
+  fail(`unsupported SIMD opcode 0xfd:${opcode}`);
 }
 
 interface InstructionContext {
@@ -193,7 +259,7 @@ function instructions(
   for (;;) {
     const start = reader.position;
     const opcode = reader.byte();
-    if (constant && ![0x0b, 0x23, 0x41, 0x42, 0x43, 0x44, 0xd0, 0xd2].includes(opcode)) {
+    if (constant && ![0x0b, 0x23, 0x41, 0x42, 0x43, 0x44, 0xd0, 0xd2, 0xfd].includes(opcode)) {
       fail("unsupported constant-expression instruction");
     }
     switch (opcode) {
@@ -267,6 +333,9 @@ function instructions(
         break;
       case 0x44:
         reader.take(8);
+        break;
+      case 0xfd:
+        simdInstruction(reader, constant);
         break;
       case 0xd0: {
         // Unlike a table's reftype byte, ref.null carries signed LEB33.
