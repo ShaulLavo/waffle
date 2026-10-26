@@ -3,6 +3,7 @@ import {
   ExecutableRegistry,
   ProcessSupervisor,
   readOutcome,
+  claimOutcome,
   type ProcessContext,
   type ProcessHandle,
   type SpawnRequest,
@@ -220,3 +221,59 @@ test("safe logical exit never waits for the custom handle's physical stop promis
     supervisor.dispose();
   }
 });
+
+for (const selected of ["host-failure", "guest-exit", "signal"] as const)
+  test(`${selected} racing context.fail preserves outcome ownership and the filesystem fence`, async () => {
+    const fence = deferred<void>();
+    let child = 0,
+      stops = 0,
+      fences = 0,
+      acknowledged = false;
+    let context!: ProcessContext;
+    const supervisor = new ProcessSupervisor({
+      registry: registry(),
+      launch(value) {
+        context = value;
+        context.started();
+        return {
+          terminate: () => {
+            stops++;
+          },
+        };
+      },
+      canConfirmExit: () => acknowledged,
+      quiesce(pid) {
+        if (pid !== child) return;
+        fences++;
+        return fence.promise;
+      },
+    });
+    const root = supervisor.createRoot();
+    child = supervisor.reserveSpawn(root, request);
+    try {
+      await supervisor.start(child);
+      const record = supervisor.get(child)!;
+      if (selected === "guest-exit") claimOutcome(record.outcome, { kind: "exited", code: 42 });
+      if (selected === "signal") claimOutcome(record.outcome, { kind: "signaled", code: 9 });
+      context.fail(new TypeError("host callback rejected request"));
+      expect(record.result).toBeNull();
+      expect(stops).toBe(0);
+      expect(fences).toBe(selected === "guest-exit" ? 0 : 1);
+      expect(record.revoked).toBe(selected !== "guest-exit");
+      // A real guest exit still owns its queued output, even if host failure follows it.
+      if (selected === "guest-exit") {
+        acknowledged = true;
+        context.exit(42);
+      }
+      fence.resolve();
+      const result = await supervisor.waitForExit(root, child);
+      expect(result.status).toBe(
+        selected === "host-failure" ? 126 : selected === "signal" ? 137 : 42,
+      );
+      expect(fences).toBe(1);
+      expect(stops).toBe(1);
+    } finally {
+      fence.resolve();
+      supervisor.dispose();
+    }
+  });
