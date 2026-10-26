@@ -1,3 +1,4 @@
+import { startFixtureChild } from "./fixtures/browser-process-child.js";
 import { ProcessErrno } from "../proc/types.js";
 import { TaggedCells, controlLoad } from "../proc/control.js";
 import {
@@ -2114,6 +2115,7 @@ for (const completion of [
   "error",
   "cleanup-error",
   "worker-error",
+  "host-failure",
   "post-failure",
   "constructor-failure",
   "connect-failure",
@@ -2176,7 +2178,9 @@ for (const completion of [
           return client;
         },
         revoke() {},
-        reap() {},
+        reap() {
+          events.push("reap");
+        },
         quiesce: (identity) =>
           identity === controllerFilesystem ? controllerFilesystemFence : filesystemFence,
       },
@@ -2199,6 +2203,9 @@ for (const completion of [
           workerUrl: "http://localhost/fixture-worker.js",
           cleanup() {
             events.push("cleanup");
+          },
+          onMessage(_message, context) {
+            context.fail(new TypeError("host dispatch failed"));
           },
           request: { module: context.module, args: context.request.argv, env: context.request.env },
         });
@@ -2226,20 +2233,15 @@ for (const completion of [
     let disposing: Promise<void> | undefined;
     try {
       await broker.adoptRuntimeRoot(root);
-      const pid = client.spawn(client.pid, {
-        executable: "fixture",
-        argv: [],
-        env: {},
-        cwd: "/",
-        job: -1,
-        fds: [],
-      });
-      for (const message of messages) await broker.runtimeMessage(message, client.pid);
-      const supervisor = await broker.ready();
-      await supervisor.start(pid);
+      const { pid, supervisor } = await startFixtureChild({ broker, parent: client, messages });
       const transport = broker.transportFor(pid)!;
       const record = supervisor.get(pid)!;
-      if (completion === "worker-error")
+      function contextFailure() {
+        markStarted(record.outcome);
+        workers[0]!.emit({ type: "net" });
+      }
+      if (completion === "host-failure") contextFailure();
+      else if (completion === "worker-error")
         workers[0]!.onerror?.({ preventDefault() {}, message: "worker failed" } as ErrorEvent);
       else if (completion === "kill") await broker.kill(pid, 9);
       else if (completion === "dispose") disposing = broker.dispose();
@@ -2251,6 +2253,7 @@ for (const completion of [
         workers[0]!.emit({ type: completion, code: 7, message: "guest failed", cleanupErrors: [] });
       expect(events).toContain("revoke");
       expect(events).toContain("quiesce");
+      if (completion === "host-failure") expect(events).not.toContain("reap");
       releaseFilesystem();
       // Draining just the filesystem (or receiving an exit acknowledgement) does not
       // certify the adapter's critical section. Terminate-first would hang this fence.

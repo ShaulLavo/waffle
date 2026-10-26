@@ -84,7 +84,7 @@ export interface SupervisorOptions {
   startFailed?(pid: number, error: unknown, active: () => boolean): void | Promise<void>;
   table?: ProcessTable;
   /** Message-bearing hosts defer exits and startup failures until ordered output/error messages drain.
-   * Signals and explicit disposal never wait for this acknowledgement.
+   * Signals, host-selected executor failures and explicit disposal never wait for this acknowledgement.
    */
   canConfirmExit?(pid: number): boolean;
   /** Fence admitted filesystem and adapter work after revocation. Every exit confirmation
@@ -590,7 +590,7 @@ export class ProcessSupervisor {
         outcome: record.outcome,
         started: () => this.started(record.pid),
         exit: (code) => this.exit(record.pid, code),
-        fail: () => this.exit(record.pid, 126),
+        fail: () => this.finish(record.pid, { kind: "exited", code: 126 }, undefined, true),
         startFailed: (error) => this.failStart(record.pid, error),
         defaultSignal: (signal) => this.defaultSignal(record.pid, signal),
         registerRevocation: (hook) => this.registerRevocation(record.pid, hook),
@@ -843,7 +843,12 @@ export class ProcessSupervisor {
     this.jobListeners.clear();
     this.startListeners.clear();
   }
-  private finish(pid: number, result: Omit<ProcessExit, "status">, startError?: unknown): void {
+  private finish(
+    pid: number,
+    result: Omit<ProcessExit, "status">,
+    startError?: unknown,
+    failedExecutor = false,
+  ): void {
     const record = this.table.get(pid);
     if (!record || record.result || this.finishing.has(pid)) return;
     this.finishing.set(pid, record);
@@ -855,8 +860,7 @@ export class ProcessSupervisor {
     // A signal published after our last read still competes at this atomic decision, rather
     // than overriding one observer's already-final result after the fact.
     let winner: ProcessExit,
-      claimed = false,
-      failedExecutor = false;
+      claimed = false;
     const ownClaim = () => {
       claimed = true;
     };
@@ -878,9 +882,9 @@ export class ProcessSupervisor {
       failedExecutor = claimed;
     }
     this.notifyStart(pid);
-    // Check the immutable winner, not an earlier read: a worker may ordinary-exit while a
-    // signal observer is entering this function. Its queued output must still drain first.
-    if (winner.kind !== "signaled" && !failedExecutor && !this.disposed) {
+    // Only a host-owned terminal claim can abandon an executor that cannot acknowledge.
+    // If a worker exit wins instead, its queued output must still drain first.
+    if (winner.kind !== "signaled" && !(failedExecutor && claimed) && !this.disposed) {
       let canConfirm: boolean;
       try {
         canConfirm = this.options.canConfirmExit?.(pid) !== false;
