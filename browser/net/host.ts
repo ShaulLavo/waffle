@@ -331,6 +331,8 @@ export class NetHost {
       port = EPHEMERAL_BASE;
       while (inUse.has(port)) port++;
     }
+    if (port > 65535)
+      return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
     if (inUse.has(port)) {
       return this.fail({
         name: "Error",
