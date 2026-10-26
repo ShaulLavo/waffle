@@ -7,12 +7,27 @@ import {
   type BrowserResourceOwner,
   type ResourceCloseObserver,
 } from "./process-recycling-browser-runner-control.js";
+import {
+  navigationServerError,
+  storageNavigationResponse,
+  type NavigationServerEvent,
+} from "./storage-navigation-diagnostics.js";
 
 export const engines = { chromium, firefox, webkit };
 type Owner<T extends Browser | BrowserContext> = BrowserResourceOwner & {
   creation: Promise<T>;
   parent?: Owner<Browser>;
 };
+type NavigationServerObserver = (event: NavigationServerEvent) => void;
+function acquireNavigationObserver(
+  getObserver: () => NavigationServerObserver,
+): NavigationServerObserver {
+  try {
+    return getObserver();
+  } catch {
+    return () => {};
+  }
+}
 async function bounded<T>(operation: Promise<T>, phase: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -114,24 +129,24 @@ export class BrowserRunnerLifecycle {
       )
         this.directories.delete(pending);
   }
-  serve(routes: Record<string, Blob | string>, port = 0): string {
+  serve(
+    routes: Record<string, Blob | string>,
+    port = 0,
+    getObserver: () => NavigationServerObserver = () => () => {},
+  ): string {
     this.assertLive();
     if (this.server) throw new Error("Runner already owns a server");
     this.server = Bun.serve({
       hostname: "127.0.0.1",
       port,
       fetch(request) {
-        const path = new URL(request.url).pathname,
-          body = routes[path];
-        return new Response(body ?? "Not found", {
-          status: body === undefined ? 404 : 200,
-          headers: {
-            "Cross-Origin-Opener-Policy": "same-origin",
-            "Cross-Origin-Embedder-Policy": "require-corp",
-            "cache-control": "no-store",
-            "content-type": path.endsWith(".js") ? "text/javascript" : "text/html",
-          },
-        });
+        // Bind the case at request arrival so a later abort cannot enter another case.
+        return storageNavigationResponse(request, routes, acquireNavigationObserver(getObserver));
+      },
+      error(error) {
+        try {
+          acquireNavigationObserver(getObserver)(navigationServerError(error));
+        } catch {}
       },
     });
     return `http://127.0.0.1:${this.server.port}`;
