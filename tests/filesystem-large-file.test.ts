@@ -5,7 +5,7 @@ import {
   MemoryBackend,
   createFilesystemConnection,
 } from "../fs";
-import { DEFAULT_SHARED_MAX_BYTES, errno } from "../fs/protocol";
+import { CONNECTION_SHARED_BYTES, DEFAULT_SHARED_MAX_BYTES, errno } from "../fs/protocol";
 
 const MiB = 1024 * 1024;
 
@@ -32,7 +32,7 @@ test("shared files cross multiple 16 MiB segments and return their pages on remo
     await client.asyncCall("writeFile", ["/large"], bytes);
     await client.asyncCall("remove", ["/large"]);
     expect(backend.shared.resources().usedBytes).toBe(0);
-    expect(backend.shared.buffer.byteLength).toBeLessThanOrEqual(24 * MiB);
+    expect(backend.shared.buffer.byteLength).toBeLessThanOrEqual(CONNECTION_SHARED_BYTES);
   } finally {
     client.dispose();
     service.dispose();

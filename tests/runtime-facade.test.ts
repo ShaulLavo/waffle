@@ -7,7 +7,11 @@ import {
   type RuntimeConsumer,
 } from "../index.js";
 import { ProcessSupervisor } from "../proc/supervisor.js";
-import { FilesystemSection, type FilesystemConnection } from "../fs/protocol.js";
+import {
+  CONNECTION_SHARED_BYTES,
+  FilesystemSection,
+  type FilesystemConnection,
+} from "../fs/protocol.js";
 import { MemoryBackend } from "../fs/backend.js";
 import { FilesystemService } from "../fs/service.js";
 import type { ProcessContext } from "../proc/types.js";
@@ -150,7 +154,7 @@ test("filesystem connection setup failure never leaves an unowned worker", () =>
   try {
     globalThis.SharedArrayBuffer = new Proxy(original, {
       construct(target, args) {
-        if (args[0] === 24 * 1024 * 1024) throw new Error("connection allocation failed");
+        if (args[0] === CONNECTION_SHARED_BYTES) throw new Error("connection allocation failed");
         return Reflect.construct(target, args);
       },
     });

@@ -38,7 +38,9 @@ export { SHARED_SEGMENT_BYTES, DEFAULT_SHARED_MAX_BYTES } from "./protocol.js";
 
 const MAGIC = 0x42574653;
 const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
-const MAX_FILES = 4096;
+// Fixed metadata admits package trees plus their cache/staging copies without unbounded growth.
+// Keep the connection backing in protocol.ts large enough for this layout and its first segment.
+const MAX_FILES = 32768;
 const SEGMENT_PAGES = 256;
 const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
 const MAX_SEGMENTS = MAX_SHARED_SEGMENTS;

@@ -170,6 +170,48 @@ test("host writeFile exclusive creation reuses the atomic create path", async ()
   expect(decode(await client.asyncCall("readFile", ["/race"]))).toMatch(/^(first|second)$/);
 });
 
+test("host writes can register more than 4095 filesystem nodes", async () => {
+  const { client, sibling } = fixture();
+  for (let index = 0; index < 24000; index++)
+    await client.asyncCall("writeFile", [`/node-${index}`], new Uint8Array());
+  await client.asyncCall("writeFile", ["/node-23999"], encode("beyond the old node ceiling"));
+  expect(decode(await sibling.asyncCall("readFile", ["/node-23999"]))).toBe(
+    "beyond the old node ceiling",
+  );
+  expect(await client.asyncCall("lookup", ["/node-23999"])).toMatchObject({ kind: "file" });
+}, 30000);
+
+test("host writes keep a bounded node table and reuse released slots", async () => {
+  const backend = new MemoryBackend();
+  const { client } = fixture(backend);
+  let exhaustedAt = -1;
+  for (let index = 0; index < 40000; index++) {
+    try {
+      await client.asyncCall("writeFile", [`/bounded-${index}`], new Uint8Array());
+    } catch (error) {
+      expect(error).toMatchObject({ errno: 51 });
+      exhaustedAt = index;
+      break;
+    }
+  }
+  expect(exhaustedAt).toBe(32767);
+  expect(backend.shared.resources()).toMatchObject({
+    files: 32767,
+    usedBytes: 0,
+    maxBytes: 1024 * 1024 * 1024,
+  });
+  await client.asyncCall("remove", ["/bounded-0"]);
+  await client.asyncCall("writeFile", ["/bounded-reused"], encode("reused"));
+  expect(decode(await client.asyncCall("readFile", ["/bounded-reused"]))).toBe("reused");
+  expect(await client.asyncCall("lookup", ["/bounded-0"])).toBeUndefined();
+  await expectErrno(client.asyncCall("writeFile", ["/bounded-after-reuse"], new Uint8Array()), 51);
+  expect(await client.asyncCall("lookup", ["/bounded-after-reuse"])).toBeUndefined();
+  for (let index = 1; index < exhaustedAt; index++)
+    await client.asyncCall("remove", [`/bounded-${index}`]);
+  await client.asyncCall("remove", ["/bounded-reused"]);
+  expect(backend.shared.resources()).toMatchObject({ files: 0, usedBytes: 0 });
+}, 120000);
+
 test("persistent exclusive creation does not hydrate an existing cold file", async () => {
   let reads = 0;
   let flushed: readonly string[] | undefined;
