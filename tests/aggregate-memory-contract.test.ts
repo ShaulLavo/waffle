@@ -450,7 +450,7 @@ test("aggregate contract denies impossible startup before any shared allocator r
 
 test("aggregate contract startup pressure has no new allocation or reservation effect", async () => {
   const allocator = new StartupAllocator();
-  const memoryBudget = budget(32 * MiB, allocator);
+  const memoryBudget = budget(64 * MiB, allocator);
   const storage = new HeldStorage();
   const backend = await open(storage, memoryBudget);
   try {
@@ -513,7 +513,7 @@ test("aggregate contract never retroactively admits an imported shared backing",
 
 test("aggregate contract a published root survives later factory failure and remains charged", async () => {
   const allocator = new StartupAllocator();
-  const memoryBudget = budget(32 * MiB, allocator);
+  const memoryBudget = budget(64 * MiB, allocator);
   const storage = new HeldStorage();
   const before = memoryBudget.snapshot();
   let failure: unknown;

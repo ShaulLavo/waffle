@@ -172,34 +172,34 @@ test("eviction zeroes and reuses pages and collision slots without resetting the
   const slot = state.fileSlot(0);
   const revision = state.revision(0)!;
   expect(state.evict(0, revision)).toBe(true);
-  state.register(4095, { kind: "file", ino: 2, nlink: 1, size: 4, mtime: 2 });
-  expect(state.fileSlot(4095)).toBe(slot);
-  expect(state.snapshot(4095)!.data).toEqual(new Uint8Array(4));
-  expect(state.revision(4095)).toBeGreaterThan(revision);
-  expect(state.evict(4095, revision)).toBe(false);
-  expect(state.evict(4095, state.revision(4095)!)).toBe(true);
+  state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 4, mtime: 2 });
+  expect(state.fileSlot(32767)).toBe(slot);
+  expect(state.snapshot(32767)!.data).toEqual(new Uint8Array(4));
+  expect(state.revision(32767)).toBeGreaterThan(revision);
+  expect(state.evict(32767, revision)).toBe(false);
+  expect(state.evict(32767, state.revision(32767)!)).toBe(true);
   state.register(0, { kind: "file", ino: 1, nlink: 1, size: 4, mtime: 1 });
   expect(state.evict(0, revision)).toBe(false);
 });
 
 test("old snapshots cannot evict the same handle reincarnated in a different collision slot", () => {
   const state = new shared.SharedFilesystemState();
-  state.register(4095, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
-  const oldSlot = state.fileSlot(4095);
-  const oldRevision = state.revision(4095)!;
-  expect(state.evict(4095, oldRevision)).toBe(true);
+  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
+  const oldSlot = state.fileSlot(32767);
+  const oldRevision = state.revision(32767)!;
+  expect(state.evict(32767, oldRevision)).toBe(true);
   state.register(0, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 });
-  state.register(4095, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
-  expect(state.fileSlot(4095)).not.toBe(oldSlot);
-  expect(state.revision(4095)).toBeGreaterThan(oldRevision);
-  expect(state.evict(4095, oldRevision)).toBe(false);
+  state.register(32767, { kind: "file", ino: 1, nlink: 1, size: 1, mtime: 1 });
+  expect(state.fileSlot(32767)).not.toBe(oldSlot);
+  expect(state.revision(32767)).toBeGreaterThan(oldRevision);
+  expect(state.evict(32767, oldRevision)).toBe(false);
 });
 
 test("evicting a collision preserves lookup for the remaining files", () => {
   const state = fixture();
-  state.register(4095, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([7]));
+  state.register(32767, { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 }, new Uint8Array([7]));
   expect(state.evict(0, state.revision(0)!)).toBe(true);
-  expect(state.snapshot(4095)!.data).toEqual(new Uint8Array([7]));
+  expect(state.snapshot(32767)!.data).toEqual(new Uint8Array([7]));
 });
 
 test("eviction checks references and revision only after acquiring the file lock", () => {
@@ -239,7 +239,7 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
       intercepted = true;
       expect(state.evict(0, 1)).toBe(true);
       state.register(
-        4095,
+        32767,
         { kind: "file", ino: 2, nlink: 1, size: 1, mtime: 1 },
         new Uint8Array([90]),
       );
@@ -249,7 +249,7 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
   try {
     expect(state.snapshot(0)).toBeUndefined();
     expect(intercepted).toBe(true);
-    expect(state.snapshot(4095)!.data).toEqual(new Uint8Array([90]));
+    expect(state.snapshot(32767)!.data).toEqual(new Uint8Array([90]));
   } finally {
     Atomics.compareExchange = compare;
   }
@@ -257,11 +257,11 @@ test("snapshots reject a slot recycled between lookup and file lock acquisition"
 
 test("unreferenced directory slots can also be evicted without losing collision lookups", () => {
   const state = fixture();
-  state.register(4095, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
-  const revision = state.revision(4095)!;
-  state.setMtime(4095, 77);
-  expect(state.evict(4095, revision)).toBe(false);
-  expect(state.evict(4095, state.revision(4095)!)).toBe(true);
+  state.register(32767, { kind: "directory", ino: 2, nlink: 1, size: 0, mtime: 1 });
+  const revision = state.revision(32767)!;
+  state.setMtime(32767, 77);
+  expect(state.evict(32767, revision)).toBe(false);
+  expect(state.evict(32767, state.revision(32767)!)).toBe(true);
   expect(state.snapshot(0)!.data).toEqual(new Uint8Array([65, 66, 67, 68]));
 });
 

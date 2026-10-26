@@ -55,7 +55,7 @@ export const CAPABILITY_SLOTS = 4096;
 export const CAPABILITY_HEADER = 1;
 export const CAPABILITY_WORDS = 3;
 export const MAX_CONNECTION_OWNERS = 65536;
-export const CONNECTION_SHARED_BYTES = 24 * 1024 * 1024;
+export const CONNECTION_SHARED_BYTES = 64 * 1024 * 1024;
 export const CAPABILITY_LENGTH = CAPABILITY_HEADER + CAPABILITY_SLOTS * CAPABILITY_WORDS;
 export const enum State {
   Pending,
