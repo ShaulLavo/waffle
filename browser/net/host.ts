@@ -322,6 +322,8 @@ export class NetHost {
       };
       return UNSUPPORTED;
     }
+    if (!Number.isInteger(port) || port < 0 || port > 65535)
+      return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
     if (this.options.shared) return this.listenShared(host, port, address);
     const inUse = new Set<number>();
     for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.local.port);
@@ -329,8 +331,6 @@ export class NetHost {
       port = EPHEMERAL_BASE;
       while (inUse.has(port)) port++;
     }
-    if (port < 0 || port > 65535)
-      return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
     if (inUse.has(port)) {
       return this.fail({
         name: "Error",
