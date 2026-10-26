@@ -12,6 +12,6 @@ globalThis.onmessage = ({ data }: MessageEvent<RuntimeWorkerRequest>) => {
     undefined,
     { shared: true },
   );
-  host.listen("127.0.0.1", NaN);
+  host.listen("127.0.0.1", 3137);
   globalThis.postMessage({ type: "unexpected-return" });
 };

@@ -63,8 +63,8 @@ test("host callback failure confirms and physically closes a worker blocked in N
   function failHostMessage(message: unknown, context: ProcessContext) {
     request = message;
     try {
-      // An embedding host rejects the malformed request before answering its SAB.
-      throw new TypeError("invalid tcp-listen port");
+      // An embedding host handler can throw before answering even a valid request.
+      throw new TypeError("embedding host handler failed");
     } catch (error) {
       context.fail(error);
     }
@@ -124,7 +124,7 @@ test("host callback failure confirms and physically closes a worker blocked in N
     await bounded(hostFailure);
     expect(request).toMatchObject({
       type: "net",
-      req: { type: "tcp-listen", port: NaN, host: "127.0.0.1" },
+      req: { type: "tcp-listen", port: 3137, host: "127.0.0.1" },
     });
     const result = await bounded(supervisor.waitForExit(client.pid, pid));
     expect(result).toEqual({ kind: "exited", code: 126, status: 126 });
