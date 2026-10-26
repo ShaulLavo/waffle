@@ -35,6 +35,15 @@ function fixture(shared: boolean) {
   };
 }
 
+const invalidPorts = [
+  ["NaN", Number.NaN],
+  ["Infinity", Number.POSITIVE_INFINITY],
+  ["-Infinity", Number.NEGATIVE_INFINITY],
+  ["1.5", 1.5],
+  ["-1", -1],
+  ["65536", 65536],
+] as const;
+
 const bindings = [
   ["::", "::1", "IPv6", "::1", "IPv6"],
   ["::1", "::1", "IPv6", "::1", "IPv6"],
@@ -119,6 +128,20 @@ for (const shared of [false, true]) {
       f.close();
     }
   });
+
+  test.each(invalidPorts)(
+    `listen rejects invalid port %s without retention shared=${shared}`,
+    (_name, port) => {
+      const f = fixture(shared);
+      try {
+        const host = f.add().host;
+        expect(host.listen("127.0.0.1", port)).toBe(ERROR);
+        expect(host.connect("127.0.0.1", port)).toBe(ERROR);
+      } finally {
+        f.close();
+      }
+    },
+  );
 
   test(`preview peers use the virtual listener family shared=${shared}`, async () => {
     const f = fixture(shared);
