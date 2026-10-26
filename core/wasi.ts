@@ -132,6 +132,30 @@ const perfNow = performance.now.bind(performance);
 const timeOrigin = performance.timeOrigin;
 const getRandomValues = crypto.getRandomValues.bind(crypto);
 
+function writeUtf8Prefix(target: string, output: Uint8Array): number {
+  if (output.length === 0) return 0;
+  // Browser encodeInto rejects resizable backing buffers, including fixed-length views.
+  const scratch = new Uint8Array(Math.min(output.length, 1024));
+  let read = 0;
+  let written = 0;
+  while (read < target.length && written < output.length) {
+    const destination = scratch.subarray(0, output.length - written);
+    // One unit of lookahead keeps a surrogate pair intact at the chunk boundary.
+    const chunk = target.slice(read, read + destination.length + 1);
+    const encoded = encoder.encodeInto(chunk, destination);
+    output.set(destination.subarray(0, encoded.written), written);
+    read += encoded.read;
+    written += encoded.written;
+    if (encoded.read !== 0) continue;
+    // encodeInto stops before a partial character; readlink truncates by byte.
+    const tail = encoder.encode(target.slice(read, read + 2));
+    const count = Math.min(tail.length, output.length - written);
+    output.set(tail.subarray(0, count), written);
+    return written + count;
+  }
+  return written;
+}
+
 function nowNs(clock: number): bigint {
   if (clock === CLOCK_REALTIME) {
     const ms = timeOrigin + perfNow();
@@ -942,16 +966,7 @@ export class Wasi {
         }
         const output = this.memory.range(buf, capacity);
         const result = this.memory.range(used, 4);
-        const { read, written } = capacity
-          ? encoder.encodeInto(target, output)
-          : { read: 0, written: 0 };
-        let count = written;
-        if (read < target.length && written < capacity) {
-          // encodeInto stops before a partial UTF-8 character; readlink truncates by byte.
-          const tail = encoder.encode(target.slice(read, read + 2)).subarray(0, capacity - written);
-          output.set(tail, written);
-          count += tail.length;
-        }
+        const count = writeUtf8Prefix(target, output);
         new DataView(result.buffer, result.byteOffset, 4).setUint32(0, count, true);
         return SUCCESS;
       },
