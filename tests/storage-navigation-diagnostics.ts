@@ -99,7 +99,12 @@ const errorCategories = new Set([
 
 function navigationErrorCategory(error: unknown): string {
   if (!(error instanceof Error)) return "NonError";
-  return errorCategories.has(error.name) ? error.name : "Error";
+  try {
+    const category = error.name;
+    return errorCategories.has(category) ? category : "Error";
+  } catch {
+    return "Error";
+  }
 }
 
 function requestFailureCategory(request: PlaywrightRequest): string {

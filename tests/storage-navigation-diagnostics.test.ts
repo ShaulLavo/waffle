@@ -329,6 +329,78 @@ test("registered page callbacks record fixed categories instead of sensitive tex
   expect(report).toContain("page requestfailed / failed");
 });
 
+test("registered pageerror snapshots a mutable category once", async () => {
+  const marker = "SyntheticSensitiveMarker";
+  const fixture = navigationFixture();
+  const navigationError = new Error("original navigation failure");
+  const changing = new Error("sensitive error message");
+  const throwing = new Error("sensitive error message");
+  let changingReads = 0;
+  let throwingReads = 0;
+  Object.defineProperty(changing, "name", {
+    get() {
+      return ++changingReads === 1 ? "TypeError" : marker;
+    },
+  });
+  Object.defineProperty(throwing, "name", {
+    get() {
+      throwingReads++;
+      throw new Error("accessor failure");
+    },
+  });
+  fixture.page.goto.mockImplementation(async () => {
+    emitPageCallback(fixture, "pageerror", changing);
+    emitPageCallback(fixture, "pageerror", throwing);
+    throw navigationError;
+  });
+  let report = "";
+
+  const rejection = await rejectionOf(
+    storageNavigate({
+      diagnostics: new NavigationDiagnostics(),
+      page: fixture.page,
+      context: fixture.context,
+      browser: fixture.browser,
+      target: "http://127.0.0.1:33049/",
+      caseName: "accessor callback probe",
+      report: (text) => {
+        report = text;
+      },
+    }),
+  );
+
+  expect(rejection).toBe(navigationError);
+  expect(changingReads).toBe(1);
+  expect(throwingReads).toBe(1);
+  expect(report).not.toContain(marker);
+  expect(report).toContain("page pageerror TypeError");
+  expect(report).toContain("page pageerror Error");
+  expectListenersRemoved(fixture);
+});
+
+test("server errors snapshot mutable categories and contain accessor failures", () => {
+  const changing = new Error("secret message");
+  const throwing = new Error("secret message");
+  let changingReads = 0;
+  let throwingReads = 0;
+  Object.defineProperty(changing, "name", {
+    get() {
+      return ++changingReads === 1 ? "TypeError" : "SyntheticSensitiveMarker";
+    },
+  });
+  Object.defineProperty(throwing, "name", {
+    get() {
+      throwingReads++;
+      throw new Error("accessor failure");
+    },
+  });
+
+  expect(navigationServerError(changing)).toEqual({ kind: "server-error", name: "TypeError" });
+  expect(navigationServerError(throwing)).toEqual({ kind: "server-error", name: "Error" });
+  expect(changingReads).toBe(1);
+  expect(throwingReads).toBe(1);
+});
+
 test("server errors retain only their error category", () => {
   const synthetic = new TypeError("secret message");
   synthetic.name = "SensitiveCategoryProbe token=synthetic-test-token";
