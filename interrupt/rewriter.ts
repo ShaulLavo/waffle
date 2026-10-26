@@ -2,7 +2,7 @@ import { rewriteInterruptsOwned, type InterruptRewriteOptions } from "./rewriter
 
 export type { InterruptRewriteOptions } from "./rewriter-internal.ts";
 
-/** Instrument validated source bytes; compiled modules cannot be made safe here. */
+/** Instrument validated source bytes, including standard SIMD; compiled modules cannot be made safe here. */
 export function rewriteInterrupts(
   input: Uint8Array,
   options: InterruptRewriteOptions = {},

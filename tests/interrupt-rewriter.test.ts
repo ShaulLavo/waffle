@@ -40,6 +40,7 @@ const exports = (...items: [string, number, number][]) =>
   section(7, vec(items.map(([label, kind, index]) => name(label).concat([kind], u(index)))));
 const simple = (body: number[]) =>
   binary(types(type()), funcs(0), exports(["run", 0, 0]), code(body));
+const simdConst = (value: number) => [0xfd, 0x0c].concat(Array.from({ length: 16 }, () => value));
 function instance(
   bytes: Uint8Array<ArrayBuffer>,
   interrupted: () => number = () => 0,
@@ -375,17 +376,40 @@ test("supports nonwaiting atomics, but refuses atomic.wait32 and atomic.wait64",
   }
 });
 
-test("refuses SIMD, typed references, GC, exception handling and multi-memory", () => {
-  validRefused(
-    simple(
-      [0xfd, 12].concat(
-        Array.from({ length: 16 }, () => 0),
-        [0x1a, 0x0b],
+test("supports standard SIMD types, immediates, globals and loop instrumentation", () => {
+  const bytes = binary(
+    types(type([0x7b], [0x7b]), type(), type([0x7b], [0x7f])),
+    funcs(0, 1, 2),
+    section(5, [1, 0, 1]),
+    section(6, [1, 0x7b, 0].concat(simdConst(0), [0x0b])),
+    exports(["run", 0, 1]),
+    code(
+      [0x02, 0x7b].concat(
+        [0x20, 0, 0xfd, 0x0c].concat(Array(16).fill(0), [0x41, 1, 0x1c, 1, 0x7b, 0x0b, 0x0b]),
+      ),
+      [0x03, 0x40].concat(
+        [0x41, 0, 0xfd, 0x00, 4, 0, 0x1a],
+        simdConst(1),
+        simdConst(2),
+        [0xfd, 0x6e, 0x1a, 0x0c, 0, 0x0b, 0x0b],
+      ),
+      [0x20, 0].concat(
+        simdConst(1),
+        [0xfd, 0x0d].concat(
+          Array.from({ length: 16 }, (_, index) => index),
+          [0xfd, 0x15, 0x00, 0x0b],
+        ),
       ),
     ),
-    /SIMD|opcode/i,
   );
-  validRefused(binary(types([0x60, 1, 0x7b, 0]), funcs(0), code([0x0b])), /type|SIMD/i);
+  let calls = 0;
+  const guest = instance(rewriteInterrupts(bytes, { interval: 3 }), () => (++calls === 2 ? 15 : 0));
+  expect(() => run(guest)).toThrow(WebAssembly.RuntimeError);
+  expect(calls).toBe(2);
+});
+
+test("refuses GC, exception handling and multi-memory", () => {
+  validRefused(binary(types([0x60, 1, 0x63, 0x70, 0]), funcs(0), code([0x0b])), /type|GC/i);
   validRefused(binary(section(5, [2, 0, 1, 0, 1])), /memor/i);
   // Proposal availability varies by JS engine: rejection is required even when validation rejects first.
   const proposals = [
@@ -462,20 +486,16 @@ test("handles LEB index-width boundaries when an added import shifts function 12
   expect(run(instance(rewriteInterrupts(bytes)))).toBe(127);
 });
 
-test("checks every function body, including unreachable non-exported functions", () => {
+test("checks every function body, including unreachable non-exported SIMD functions", () => {
   const bytes = binary(
     types(type()),
     funcs(0, 0),
     exports(["run", 0, 0]),
-    code(
-      [0x0b],
-      [0xfd, 12].concat(
-        Array.from({ length: 16 }, () => 0),
-        [0x1a, 0x0b],
-      ),
-    ),
+    code([0x0b], simdConst(0).concat([0x1a, 0x0b])),
   );
-  validRefused(bytes, /SIMD|opcode/i);
+  const output = rewriteInterrupts(bytes);
+  expect(WebAssembly.validate(output)).toBe(true);
+  run(instance(output));
 });
 
 test("loop checks are stack-neutral for multi-value loop parameters", () => {
@@ -572,15 +592,15 @@ test("accepts imported table/memory limits, nonzero table indices and memory ope
 });
 
 test("refuses unsupported types even when only a local or block mentions them", () => {
-  validRefused(
+  refused(
     binary(
       types(type()),
       funcs(0),
-      section(10, vec([[1, 1, 0x7b, 0x0b]].map((body) => u(body.length).concat(body)))),
+      section(10, vec([[1, 1, 0x63, 0x70, 0x0b]].map((body) => u(body.length).concat(body)))),
     ),
-    /type|SIMD/i,
+    /valid|type|GC|wasm/i,
   );
-  validRefused(simple([0x02, 0x7b, 0x00, 0x0b, 0x1a, 0x0b]), /type|SIMD/i);
+  refused(simple([0x02, 0x63, 0x70, 0x00, 0x0b, 0x1a, 0x0b]), /valid|type|GC|wasm/i);
 });
 
 test("refuses extended constant expressions instead of assuming their instruction set", () => {

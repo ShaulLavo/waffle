@@ -122,7 +122,7 @@ root control; importing them must not pull in the service barrel. The bundle gat
 boundary and the approximately 1 KiB compressed first-spawn stub. Bun's existing pipe/slot transport
 is measured separately and remains available alongside the lazy generic process adapters.
 Source-backed program registrations compile through Waffle's interrupt rewriter, which inserts
-checkpoints for CPU-bound WebAssembly. Precompiled modules require `cooperative: true` from their
+checkpoints for CPU-bound WebAssembly, including standard SIMD guests. Precompiled modules require `cooperative: true` from their
 adapter instead. Handled signals dispatch during cooperative event-loop turns; unhandled default
 actions select their outcomes immediately. See [the host ABI](host-abi.md) for executable-entry
 and interrupt contracts.
