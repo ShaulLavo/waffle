@@ -60,8 +60,8 @@ export function storageNavigationResponse(
 ): Response {
   const path = new URL(request.url).pathname;
   const body = routes[path];
-  observe({ kind: "request", method: request.method, path });
-  const aborted = () => observe({ kind: "request-aborted", path });
+  emitNavigationEvent(observe, { kind: "request", method: request.method, path });
+  const aborted = () => emitNavigationEvent(observe, { kind: "request-aborted", path });
   if (request.signal.aborted) aborted();
   else request.signal.addEventListener("abort", aborted, { once: true });
   const response = new Response(body ?? "Not found", {
@@ -73,12 +73,51 @@ export function storageNavigationResponse(
       "content-type": path.endsWith(".js") ? "text/javascript" : "text/html",
     },
   });
-  observe({ kind: "response-constructed", path, status: response.status });
+  emitNavigationEvent(observe, { kind: "response-constructed", path, status: response.status });
   return response;
 }
 
+function emitNavigationEvent(
+  observe: (event: NavigationServerEvent) => void,
+  event: NavigationServerEvent,
+): void {
+  try {
+    observe(event);
+  } catch {}
+}
+
+const errorCategories = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
+function navigationErrorCategory(error: unknown): string {
+  if (!(error instanceof Error)) return "NonError";
+  return errorCategories.has(error.name) ? error.name : "Error";
+}
+
+function requestFailureCategory(request: PlaywrightRequest): string {
+  switch (request.failure()?.errorText) {
+    case "Load request cancelled":
+      return "cancelled";
+    case "net::ERR_ABORTED":
+    case "NS_BINDING_ABORTED":
+      return "aborted";
+    case undefined:
+      return "unknown";
+    default:
+      return "failed";
+  }
+}
+
 export function navigationServerError(error: unknown): NavigationServerEvent {
-  return { kind: "server-error", name: error instanceof Error ? error.name : "NonError" };
+  return { kind: "server-error", name: navigationErrorCategory(error) };
 }
 
 type PageEvents = Pick<Page, "on" | "off" | "mainFrame">;
@@ -98,7 +137,7 @@ function observeNavigation(
     diagnostics.record(`page response ${response.status()} ${new URL(response.url()).pathname}`);
   const failed = (request: PlaywrightRequest) =>
     diagnostics.record(
-      `page requestfailed ${new URL(request.url()).pathname} ${request.failure()?.errorText ?? "unknown"}`,
+      `page requestfailed ${new URL(request.url()).pathname} ${requestFailureCategory(request)}`,
     );
   const finished = (request: PlaywrightRequest) =>
     diagnostics.record(`page requestfinished ${new URL(request.url()).pathname}`);
@@ -110,7 +149,8 @@ function observeNavigation(
   const dom = () => diagnostics.record("page domcontentloaded");
   const crashed = () => diagnostics.record("page crash");
   const pageClosed = () => diagnostics.record("page close");
-  const errored = (error: Error) => diagnostics.record(`page pageerror ${error.name}`);
+  const errored = (error: Error) =>
+    diagnostics.record(`page pageerror ${navigationErrorCategory(error)}`);
   const contextClosed = () => diagnostics.record("context close");
   const disconnected = () => diagnostics.record("browser disconnected");
   page.on("request", requested);
@@ -167,7 +207,9 @@ export async function storageNavigate({
   try {
     await page.goto(target);
   } catch (error) {
-    report(diagnostics.report(caseName));
+    try {
+      report(diagnostics.report(caseName));
+    } catch {}
     throw error;
   } finally {
     stop();

@@ -18,6 +18,16 @@ type Owner<T extends Browser | BrowserContext> = BrowserResourceOwner & {
   creation: Promise<T>;
   parent?: Owner<Browser>;
 };
+type NavigationServerObserver = (event: NavigationServerEvent) => void;
+function acquireNavigationObserver(
+  getObserver: () => NavigationServerObserver,
+): NavigationServerObserver {
+  try {
+    return getObserver();
+  } catch {
+    return () => {};
+  }
+}
 async function bounded<T>(operation: Promise<T>, phase: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -122,7 +132,7 @@ export class BrowserRunnerLifecycle {
   serve(
     routes: Record<string, Blob | string>,
     port = 0,
-    getObserver: () => (event: NavigationServerEvent) => void = () => () => {},
+    getObserver: () => NavigationServerObserver = () => () => {},
   ): string {
     this.assertLive();
     if (this.server) throw new Error("Runner already owns a server");
@@ -131,10 +141,12 @@ export class BrowserRunnerLifecycle {
       port,
       fetch(request) {
         // Bind the case at request arrival so a later abort cannot enter another case.
-        return storageNavigationResponse(request, routes, getObserver());
+        return storageNavigationResponse(request, routes, acquireNavigationObserver(getObserver));
       },
       error(error) {
-        getObserver()(navigationServerError(error));
+        try {
+          acquireNavigationObserver(getObserver)(navigationServerError(error));
+        } catch {}
       },
     });
     return `http://127.0.0.1:${this.server.port}`;
