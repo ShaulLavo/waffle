@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
 import type { Browser, BrowserContext } from "playwright";
 import { BrowserRunnerLifecycle, browserBundle, engines } from "./browser-runner-lifecycle.js";
+import {
+  formatNavigationServerEvent,
+  NavigationDiagnostics,
+  storageNavigate,
+} from "./storage-navigation-diagnostics.js";
 
 type Backend = "indexeddb" | "opfs";
 type WorkerRequest = { kind: "list" } | { kind: "run"; backend: Backend; label: string };
@@ -68,12 +73,15 @@ function storageCases(listed: TestList) {
 }
 const lifecycle = new BrowserRunnerLifecycle();
 let origin = "",
+  activeDiagnostics: NavigationDiagnostics | undefined,
   persistentShutdownFailed = false;
 async function inWorker<T>(
   browser: Browser,
   request: WorkerRequest,
   persistent = false,
 ): Promise<T> {
+  const diagnostics = new NavigationDiagnostics();
+  activeDiagnostics = diagnostics;
   let context: BrowserContext | undefined, profile: string | undefined;
   try {
     if (persistent) {
@@ -81,9 +89,22 @@ async function inWorker<T>(
       context = await lifecycle.persistent("webkit", profile);
     } else context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(origin);
+    const caseName =
+      request.kind === "list"
+        ? `${browser.browserType().name()} list storage cases`
+        : `${browser.browserType().name()} ${request.backend}: ${request.label}`;
+    await storageNavigate({
+      diagnostics,
+      page,
+      context,
+      browser: context.browser() ?? browser,
+      target: origin,
+      caseName,
+      report: console.error,
+    });
     return await page.evaluate(storageCase<T>, request);
   } finally {
+    if (activeDiagnostics === diagnostics) activeDiagnostics = undefined;
     if (context) await closeStorageContext(context, persistent);
     if (profile) await lifecycle.removeDirectory(profile);
   }
@@ -196,6 +217,10 @@ try {
       "/worker.js": `(${storageWorker.toString()})();`,
     },
     Number(process.env.STORAGE_TEST_PORT ?? 0),
+    () => {
+      const diagnostics = activeDiagnostics;
+      return (event) => diagnostics?.record(formatNavigationServerEvent(event));
+    },
   );
   const failures: string[] = [];
   for (const name of process.argv.slice(2).length ? process.argv.slice(2) : ["chromium"])
