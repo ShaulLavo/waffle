@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { NetHelper, NetNamespace } from "../browser/net/helper.js";
 import { NetHost } from "../browser/net/host.js";
-import { AGAIN, CONN_BASE, ERROR, UNSUPPORTED } from "../browser/net/protocol.js";
+import { AGAIN, BADF, CONN_BASE, ERROR, UNSUPPORTED } from "../browser/net/protocol.js";
 import { createRing } from "../browser/net/ring.js";
 
 function fixture(shared: boolean) {
@@ -20,10 +20,19 @@ function fixture(shared: boolean) {
       {},
       namespace,
     );
-    const host = new NetHost(ring, helper.handle.bind(helper), undefined, { shared });
+    let requests = 0;
+    const host = new NetHost(
+      ring,
+      (request) => {
+        requests++;
+        helper.handle(request);
+      },
+      undefined,
+      { shared },
+    );
     helpers.push(helper);
     hosts.push(host);
-    return { host, helper };
+    return { host, helper, requestCount: () => requests };
   };
   return {
     add,
@@ -34,6 +43,15 @@ function fixture(shared: boolean) {
     },
   };
 }
+
+const invalidPorts = [
+  ["NaN", Number.NaN],
+  ["Infinity", Number.POSITIVE_INFINITY],
+  ["-Infinity", Number.NEGATIVE_INFINITY],
+  ["1.5", 1.5],
+  ["-1", -1],
+  ["65536", 65536],
+] as const;
 
 const bindings = [
   ["::", "::1", "IPv6", "::1", "IPv6"],
@@ -120,6 +138,40 @@ for (const shared of [false, true]) {
     }
   });
 
+  test.each(invalidPorts)(
+    `listen rejects invalid port %s without retention shared=${shared}`,
+    (_name, port) => {
+      const f = fixture(shared);
+      try {
+        const { host, requestCount } = f.add();
+        expect(host.listen("127.0.0.1", port)).toBe(ERROR);
+        expect(JSON.parse(String(host.error(0)))).toEqual({
+          name: "RangeError",
+          message: `port out of range: ${port}`,
+        });
+        expect(requestCount()).toBe(0);
+        expect(host.listen("127.0.0.1", 0)).toBe(1);
+        expect(host.connect("127.0.0.1", port)).toBe(ERROR);
+      } finally {
+        f.close();
+      }
+    },
+  );
+
+  test.each([1, 65535])(`listen accepts boundary port %s shared=${shared}`, (port) => {
+    const f = fixture(shared);
+    try {
+      const host = f.add().host;
+      const listener = host.listen("127.0.0.1", port);
+      expect(listener).toBeGreaterThan(0);
+      expect(host.localPort(listener)).toBe(port);
+      expect(host.listen("127.0.0.1", port)).toBe(ERROR);
+      expect(String(host.error(0))).toContain("EADDRINUSE");
+    } finally {
+      f.close();
+    }
+  });
+
   test(`preview peers use the virtual listener family shared=${shared}`, async () => {
     const f = fixture(shared);
     try {
@@ -144,6 +196,29 @@ for (const shared of [false, true]) {
     }
   });
 }
+
+test("standalone ephemeral exhaustion rejects allocation without retention", () => {
+  let requests = 0;
+  const host = new NetHost(createRing(), () => requests++);
+  try {
+    for (let port = 49152; port <= 65535; port++) {
+      const listener = host.listen("127.0.0.1", port);
+      expect(listener).toBeGreaterThan(0);
+    }
+    expect(host.listen("127.0.0.1", 0)).toBe(ERROR);
+    expect(JSON.parse(String(host.error(0)))).toEqual({
+      name: "RangeError",
+      message: "port out of range: 65536",
+    });
+    expect(requests).toBe(16384);
+    expect(host.localAddr(16385)).toBe(BADF);
+    expect(host.connect("127.0.0.1", 65536)).toBe(ERROR);
+    expect(requests).toBe(16384);
+    expect(host.listen("127.0.0.1", 1)).toBe(16385);
+  } finally {
+    host.dispose();
+  }
+});
 
 async function settleFetch(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
