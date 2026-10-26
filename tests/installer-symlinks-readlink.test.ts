@@ -51,12 +51,11 @@ function snapshotNode(node: Node): unknown {
     value: node.kind === "symlink" ? node.target : Array.from(node.data),
   };
 }
-function fixture(target = "../raw//é/雪/🙂") {
+function fixture(target = "../raw//é/雪/🙂", memory = new WebAssembly.Memory({ initial: 4 })) {
   const fs = new ObservedFS();
   fs.writeFile("/ordinary.txt", "unchanged text");
   fs.mkdirp("/directory");
   link(fs, "/link", target);
-  const memory = new WebAssembly.Memory({ initial: 4 });
   const diagnostics: string[] = [];
   const wasi = new Wasi({
     args: [],
@@ -138,8 +137,16 @@ test("D4 selects memory-error precedence even for a closed descriptor", () => {
   expect(f.fs.readlinks).toBe(0);
 });
 
-test("D4 copies raw UTF-8 byte prefixes with at most two units of scratch encoding", () => {
-  const f = fixture();
+function resizableMemory() {
+  const memory = new WebAssembly.Memory({ initial: 4, maximum: 8 });
+  if (!("toResizableBuffer" in memory) || typeof memory.toResizableBuffer !== "function")
+    throw new Error("resizable WebAssembly memory unavailable");
+  memory.toResizableBuffer();
+  return memory;
+}
+
+test("D4 copies resizable guest UTF-8 byte prefixes with bounded fixed scratch", () => {
+  const f = fixture(undefined, resizableMemory());
   const target = encoder.encode(f.target);
   const tree = snapshotNode(f.fs.root);
   for (let capacity = 0; capacity <= target.length + 2; capacity++) {
@@ -155,7 +162,16 @@ test("D4 copies raw UTF-8 byte prefixes with at most two units of scratch encodi
       expect(bytes.slice(512, 512 + count)).toEqual(target.slice(0, count));
       expect(bytes.slice(512 + count, 544)).toEqual(new Uint8Array(32 - count).fill(0xcc));
       expect(encoding.mock.calls.every(([input]) => (input?.length ?? 0) <= 2)).toBe(true);
-      expect(direct.mock.calls.length).toBe(capacity ? 1 : 0);
+      expect(direct.mock.calls.length > 0).toBe(capacity > 0);
+      expect(
+        direct.mock.calls.every(
+          ([input, output]) =>
+            input.length <= 1025 &&
+            output instanceof Uint8Array &&
+            output.byteLength <= 1024 &&
+            !("resizable" in output.buffer && output.buffer.resizable),
+        ),
+      ).toBe(true);
     } finally {
       encoding.mockRestore();
       direct.mockRestore();
@@ -166,12 +182,106 @@ test("D4 copies raw UTF-8 byte prefixes with at most two units of scratch encodi
   expect(f.diagnostics).toEqual([]);
 });
 
+test.each([
+  { name: "ASCII then pair", target: "a".repeat(1023) + "🙂é雪" + "z".repeat(2100) },
+  { name: "two-byte then pair", target: "é".repeat(511) + "🙂".repeat(900) },
+  { name: "three-byte then pair", target: "雪".repeat(341) + "🙂".repeat(1100) },
+  { name: "pair at lookahead", target: "a".repeat(1024) + "🙂".repeat(1100) },
+  { name: "unpaired surrogates", target: "a".repeat(1023) + "\ud800x\udc00" + "雪".repeat(1100) },
+])("D4 preserves raw bytes across scratch boundaries: $name", ({ target }) => {
+  const f = fixture(target, resizableMemory());
+  const expected = encoder.encode(target);
+  const encoding = spyOn(TextEncoder.prototype, "encode");
+  const direct = spyOn(TextEncoder.prototype, "encodeInto");
+  stops.push(
+    () => encoding.mockRestore(),
+    () => direct.mockRestore(),
+  );
+  const capacities = [
+    0,
+    1,
+    2,
+    3,
+    1022,
+    1023,
+    1024,
+    1025,
+    2047,
+    expected.length,
+    expected.length + 3,
+  ];
+  for (const capacity of capacities) {
+    const bytes = new Uint8Array(f.memory.buffer);
+    bytes.fill(0xcc, 4095, 4096 + capacity + 1);
+    expect(f.readlink(3, 128, 4, 4096, capacity, 256)).toBe(0);
+    const count = Math.min(capacity, expected.length);
+    expect(new DataView(f.memory.buffer).getUint32(256, true)).toBe(count);
+    expect(bytes.slice(4096, 4096 + count)).toEqual(expected.slice(0, count));
+    expect(bytes[4095]).toBe(0xcc);
+    expect(bytes.slice(4096 + count, 4096 + capacity + 1)).toEqual(
+      new Uint8Array(capacity - count + 1).fill(0xcc),
+    );
+  }
+  expect(encoding.mock.calls.every(([input]) => (input?.length ?? 0) <= 2)).toBe(true);
+  expect(
+    direct.mock.calls.every(([input, output]) => input.length <= 1025 && output.byteLength <= 1024),
+  ).toBe(true);
+  expect(f.diagnostics).toEqual([]);
+});
+
+test("D4 bounds encoding for a large target and tiny resizable output", () => {
+  const f = fixture("🙂é雪".repeat(20_000), resizableMemory());
+  const encoding = spyOn(TextEncoder.prototype, "encode");
+  const direct = spyOn(TextEncoder.prototype, "encodeInto");
+  stops.push(
+    () => encoding.mockRestore(),
+    () => direct.mockRestore(),
+  );
+  expect(f.readlink(3, 128, 4, 512, 3, 256)).toBe(0);
+  expect(new Uint8Array(f.memory.buffer).slice(512, 515)).toEqual(
+    new Uint8Array([0xf0, 0x9f, 0x99]),
+  );
+  expect(encoding.mock.calls.every(([input]) => (input?.length ?? 0) <= 2)).toBe(true);
+  expect(
+    direct.mock.calls.every(([input, output]) => input.length <= 4 && output.byteLength <= 3),
+  ).toBe(true);
+});
+
 test("D4 zero capacity accepts the exact memory end and still validates used", () => {
   const f = fixture();
   new Uint8Array(f.memory.buffer).fill(0xcc, 256, 260);
   expect(f.readlink(3, 128, 4, f.memory.buffer.byteLength, 0, 256)).toBe(0);
   expect(new DataView(f.memory.buffer).getUint32(256, true)).toBe(0);
   expect(f.fs.readlinks).toBe(1);
+});
+
+test("D4 memory faults precede rights denial on resizable guest memory", () => {
+  const f = fixture(undefined, resizableMemory());
+  const root = f.wasi.descriptors.get(3);
+  if (!root) throw new Error("missing preopen");
+  root.rightsBase &= ~RIGHT_PATH_READLINK;
+  const before = new Uint8Array(f.memory.buffer).slice();
+  expect(f.readlink(3, 128, 4, 512, 32, f.memory.buffer.byteLength)).toBe(21);
+  expect(f.readlink()).toBe(76);
+  expect(new Uint8Array(f.memory.buffer)).toEqual(before);
+  expect(f.fs.readlinks).toBe(0);
+});
+
+test("D4 reacquires resizable output after the host replaces its memory buffer", () => {
+  const f = fixture("raw é/雪/🙂 target", resizableMemory());
+  const before = f.memory.buffer;
+  f.fs.onReadlink = () => {
+    f.memory.grow(1);
+    if (!("toFixedLengthBuffer" in f.memory) || typeof f.memory.toFixedLengthBuffer !== "function")
+      throw new Error("fixed WebAssembly memory unavailable");
+    f.memory.toFixedLengthBuffer();
+  };
+  expect(f.readlink()).toBe(0);
+  expect(f.memory.buffer).not.toBe(before);
+  const expected = encoder.encode(f.target);
+  expect(new DataView(f.memory.buffer).getUint32(256, true)).toBe(expected.length);
+  expect(new Uint8Array(f.memory.buffer).slice(512, 512 + expected.length)).toEqual(expected);
+  expect(f.diagnostics).toEqual([]);
 });
 
 test("D4 acquires current output views after an ordinary host memory growth", () => {
