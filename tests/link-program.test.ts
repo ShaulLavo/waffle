@@ -10,6 +10,7 @@ import {
 import { compileInterruptible } from "../interrupt/loader.js";
 import { bootstrap } from "../browser/worker.js";
 import { createFilesystemConnection } from "../fs/protocol.js";
+import { inspectProfile } from "../link/metadata.js";
 
 const u32 = (n: number): number[] =>
   n < 128 ? [n] : [(n % 128) + 128].concat(u32(Math.floor(n / 128)));
@@ -32,10 +33,24 @@ const global = (mutable: boolean, value: number) =>
   [0x7f, Number(mutable), 0x41].concat(u32(value), [0x0b]);
 
 function core(
-  options: { pages?: number; reserve?: number[]; aliases?: readonly [string, number][] } = {},
-): Uint8Array {
+  options: {
+    pages?: number;
+    reserve?: number[];
+    aliases?: readonly [string, number][];
+    addParameter?: 0x7f | 0x7e;
+    addResult?: 0x7f | 0x7e;
+    stackMutable?: boolean;
+  } = {},
+): Uint8Array<ArrayBuffer> {
   return binary(
-    section(1, vector([type([]), type([0x7f, 0x7f], [0x7f]), type([0x7f], [0x7f])])),
+    section(
+      1,
+      vector([
+        type([]),
+        type([0x7f, 0x7f], [0x7f]),
+        type([options.addParameter ?? 0x7f], [options.addResult ?? 0x7f]),
+      ]),
+    ),
     section(2, vector([imp("env", "check", [0, 0])])),
     section(3, vector([[1], [2], [0], [0], [2]])),
     section(4, [1, 0x70, 1, 1, 32]),
@@ -43,7 +58,7 @@ function core(
     section(
       6,
       vector([
-        global(true, 65536),
+        global(options.stackMutable ?? true, 65536),
         global(true, 1024),
         global(false, 32),
         global(false, 40),
@@ -82,7 +97,13 @@ function core(
           ],
           [1, 1, 0x7f],
         ),
-        body([0x10, 0, 0x20, 0, 0x41, 7, 0x6a]),
+        body(
+          [0x10, 0, 0x20, 0].concat(
+            options.addParameter === 0x7e ? [0xa7] : [],
+            [0x41, 7, 0x6a],
+            options.addResult === 0x7e ? [0xac] : [],
+          ),
+        ),
         body([0x10, 0]),
         body([0x23, 5, 0x41, 1, 0x6a, 0x24, 5]),
         body([0x20, 0, 0x41, 1, 0x11, 2, 0]),
@@ -94,25 +115,38 @@ function side(
   got = "errno",
   namespace = "GOT.mem",
   alignment = 4,
-  options: { relocationCheck?: boolean; aliases?: readonly [string, number][] } = {},
-): Uint8Array {
+  options: {
+    relocationCheck?: boolean;
+    aliases?: readonly [string, number][];
+    dylink?: number[];
+    addName?: string;
+    addModule?: string;
+    gotDescriptor?: number[];
+    baseMutable?: boolean;
+    globalInitializer?: number[];
+    dataSegments?: number[][];
+  } = {},
+): Uint8Array<ArrayBuffer> {
   return binary(
-    section(0, text("dylink.0").concat([1, 4, 16, alignment, 1, 0])),
+    section(0, text("dylink.0").concat([1, 4, 16, alignment, 1, 0], options.dylink ?? [])),
     section(1, vector([type([]), type([0x7f], [0x7f])])),
     section(
       2,
       vector([
         imp("env", "check", [0, 0]),
-        imp("env", "add", [0, 1]),
+        imp(options.addModule ?? "env", options.addName ?? "add", [0, 1]),
         imp("env", "memory", [2, 1, 1].concat(u32(128))),
         imp("env", "__indirect_function_table", [1, 0x70, 1, 0, 32]),
-        imp("env", "__memory_base", [3, 0x7f, 0]),
+        imp("env", "__memory_base", [3, 0x7f, Number(options.baseMutable ?? false)]),
         imp("env", "__table_base", [3, 0x7f, 0]),
         imp("env", "__stack_pointer", [3, 0x7f, 1]),
-        imp(namespace, got, [3, 0x7f, 1]),
+        imp(namespace, got, options.gotDescriptor ?? [3, 0x7f, 1]),
       ]),
     ),
     section(3, vector([[1], [0], [0]])),
+    ...(options.globalInitializer
+      ? [section(6, vector([[0x7f, 0].concat(options.globalInitializer)]))]
+      : []),
     section(
       7,
       vector(
@@ -141,7 +175,7 @@ function side(
         ),
       ]),
     ),
-    section(11, [1, 0, 0x23, 0, 0x0b, 3, 1, 2, 3]),
+    section(11, vector(options.dataSegments ?? [[0, 0x23, 0, 0x0b, 3, 1, 2, 3]])),
   );
 }
 function source(): LinkPlanSource {
@@ -158,7 +192,7 @@ function source(): LinkPlanSource {
     reserve: "bun_core_alloc",
   };
 }
-function host(checkActive = () => {}) {
+function host(checkActive = () => {}, namespaces: WebAssembly.Imports = {}) {
   const wasi = new Wasi({
     args: [],
     env: {},
@@ -167,10 +201,208 @@ function host(checkActive = () => {}) {
     stdout() {},
     stderr() {},
     sleep() {},
-    namespaces: { env: { check: checkActive } },
+    namespaces: { env: { check: checkActive }, ...namespaces },
   });
   return { wasi, checkActive };
 }
+
+const importRecord = (module: string, field: string, flags = 0x11) =>
+  text(module).concat(text(field), u32(flags));
+const importInfo = (...records: number[][]) => section(4, vector(records));
+
+test("weak import metadata binds an exact real core provider and survives readmission", async () => {
+  const input = source();
+  const dylink = importInfo(importRecord("env", "add"));
+  const plan = await prepareLinkPlan({
+    ...input,
+    libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.mem", 4, { dylink }) }],
+  });
+  const group = instantiateLinkPlan(plan, host());
+  try {
+    expect(call(group.entry, "invoke", 5)).toBe(12);
+  } finally {
+    group.dispose();
+  }
+  const restored = await prepareLinkPlan(structuredClone(plan.toSource()));
+  const readmitted = instantiateLinkPlan(restored, host());
+  try {
+    expect(call(readmitted.entry, "invoke", 5)).toBe(12);
+  } finally {
+    readmitted.dispose();
+  }
+});
+
+for (const options of [{ addParameter: 0x7e }, { addResult: 0x7e }] satisfies Parameters<
+  typeof core
+>[0][]) {
+  test(`same-arity core providers with different Wasm types ${JSON.stringify(options)} fail preparation`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({ ...input, core: { ...input.core, source: core(options) } }),
+    ).rejects.toThrow("env.add has an incompatible core function signature");
+  });
+}
+
+for (const weak of [false, true]) {
+  test(`missing ${weak ? "weak direct" : "required"} provider fails preparation`, async () => {
+    const input = source();
+    const dylink = weak ? importInfo(importRecord("env", "absent")) : [];
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [
+          {
+            ...input.libraries[0]!,
+            source: side("errno", "GOT.mem", 4, { dylink, addName: "absent" }),
+          },
+        ],
+      }),
+    ).rejects.toThrow(`unresolved ${weak ? "weak direct" : "required"} function env.absent`);
+  });
+}
+
+test("profile retains qualified function bindings and complete global types", () => {
+  const profile = inspectProfile(
+    side("errno", "GOT.mem", 4, { dylink: importInfo(importRecord("env", "add")) }),
+    "engine",
+    true,
+  );
+  expect(profile.importInfo).toEqual([{ module: "env", name: "add", flags: 0x11 }]);
+  expect(profile.functionImports.find((entry) => entry.name === "add")).toEqual({
+    module: "env",
+    name: "add",
+    index: 1,
+    binding: "weak",
+    params: [0x7f],
+    results: [0x7f],
+  });
+  expect(profile.functionImports.find((entry) => entry.name === "check")?.binding).toBe("required");
+  expect(profile.globalImports.find((entry) => entry.module === "GOT.mem")).toEqual({
+    module: "GOT.mem",
+    name: "errno",
+    index: 3,
+    value: 0x7f,
+    mutable: true,
+  });
+  const owner = inspectProfile(core(), "core", false);
+  expect(owner.globalExports.get("__stack_pointer")).toEqual({ value: 0x7f, mutable: true });
+  expect(owner.globalExports.get("errno")).toEqual({ value: 0x7f, mutable: false });
+});
+
+for (const flags of [0, 1, 0x10, 0x12, 0x15, 0x31, 0x111, 0x80000011]) {
+  test(`unsupported import-info flags ${flags} fail closed`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [
+          {
+            ...input.libraries[0]!,
+            source: side("errno", "GOT.mem", 4, {
+              dylink: importInfo(importRecord("env", "add", flags)),
+            }),
+          },
+        ],
+      }),
+    ).rejects.toThrow("unsupported import-info flags");
+  });
+}
+
+for (const record of [
+  importRecord("env", "absent"),
+  importRecord("env", "__stack_pointer"),
+  importRecord("GOT.mem", "errno"),
+  importRecord("foreign", "add"),
+  importRecord("env.part", "add"),
+]) {
+  test(`unmatched or wrong-kind/module import-info ${record.join()} fails closed`, () => {
+    expect(() =>
+      inspectProfile(side("errno", "GOT.mem", 4, { dylink: importInfo(record) }), "engine", true),
+    ).toThrow("must name an imported env function");
+  });
+}
+
+for (const flags of [0x11, 0x10]) {
+  test(`duplicate/conflicting qualified import-info ${flags} fails closed`, () => {
+    const dylink = importInfo(importRecord("env", "add")).concat(
+      importInfo(importRecord("env", "add", flags)),
+    );
+    expect(() => inspectProfile(side("errno", "GOT.mem", 4, { dylink }), "engine", true)).toThrow(
+      "duplicate or conflicting import-info env.add",
+    );
+  });
+}
+
+const malformedInfo = [
+  { bytes: [1], error: "truncated binary" },
+  { bytes: [1, 3, 0x65], error: "truncated section" },
+  { bytes: [1].concat(text("env"), [1, 0xff, 0x11]), error: "invalid UTF-8" },
+  { bytes: [1, 2, 0xef, 0xbb].concat(text("add"), [0x11]), error: "invalid UTF-8" },
+  { bytes: [1].concat(text("env"), text("add"), [0x80]), error: "truncated binary" },
+  {
+    bytes: [1].concat(text("env"), text("add"), [0x80, 0x80, 0x80, 0x80, 0x10]),
+    error: "u32 overflow",
+  },
+  { bytes: vector([importRecord("env", "add")]).concat([0]), error: "unexpected trailing bytes" },
+  { bytes: [2].concat(importRecord("env", "add")), error: "truncated binary" },
+];
+for (const [index, fixture] of malformedInfo.entries()) {
+  test(`malformed import-info record ${index} fails within its payload`, () => {
+    expect(() =>
+      inspectProfile(
+        side("errno", "GOT.mem", 4, { dylink: section(4, fixture.bytes) }),
+        "engine",
+        true,
+      ),
+    ).toThrow(fixture.error);
+  });
+}
+
+test("wrong-kind function provider and immutable core stack fail preparation", async () => {
+  const input = source();
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      libraries: [
+        { ...input.libraries[0]!, source: side("errno", "GOT.mem", 4, { addName: "stdout" }) },
+      ],
+    }),
+  ).rejects.toThrow("core export env.stdout must be a function");
+  await expect(
+    prepareLinkPlan({ ...input, core: { ...input.core, source: core({ stackMutable: false }) } }),
+  ).rejects.toThrow("env.__stack_pointer requires");
+});
+
+test("GOT type and base/segment restrictions remain explicit", () => {
+  expect(() =>
+    inspectProfile(side("errno", "GOT.mem", 4, { gotDescriptor: [3, 0x7e, 1] }), "engine", true),
+  ).toThrow("only i32 global imports");
+  expect(() =>
+    inspectProfile(side("errno", "GOT.mem", 4, { gotDescriptor: [3, 0x7f, 0] }), "engine", true),
+  ).toThrow("GOT.mem requires mutable i32");
+  expect(() =>
+    inspectProfile(side("errno", "GOT.mem", 4, { baseMutable: true }), "engine", true),
+  ).toThrow("side bases must be immutable i32");
+  expect(() =>
+    inspectProfile(
+      side("errno", "GOT.mem", 4, { globalInitializer: [0x23, 0, 0x41, 1, 0x6a, 0x0b] }),
+      "engine",
+      true,
+    ),
+  ).toThrow("globals require constant i32 initializers");
+  expect(() =>
+    inspectProfile(
+      side("errno", "GOT.mem", 4, {
+        dataSegments: [
+          [0, 0x23, 0, 0x0b, 1, 1],
+          [0, 0x23, 0, 0x41, 8, 0x6a, 0x0b, 1, 2],
+        ],
+      }),
+      "engine",
+      true,
+    ),
+  ).toThrow("unsupported or overlapping side segments");
+});
 function call(instance: WebAssembly.Instance, name: string, ...args: number[]): number {
   const fn = instance.exports[name];
   if (typeof fn !== "function") throw new Error(`missing ${name}`);
@@ -573,3 +805,136 @@ test("finish reentered by the final relocation clears linked table slots", async
     connection.server.port.close();
   }
 });
+
+test("qualified bindings do not collide when module and field contain dots", () => {
+  const dylink = importInfo(importRecord("env", "part.add"));
+  expect(() =>
+    inspectProfile(
+      side("errno", "GOT.mem", 4, {
+        addModule: "env.part",
+        dylink,
+      }),
+      "engine",
+      true,
+    ),
+  ).toThrow("must name an imported env function");
+});
+
+test("foreign function imports retain their host namespace instead of binding to core", async () => {
+  const input = source();
+  const bytes = side("errno", "GOT.mem", 4, { addModule: "foreign" });
+  const profile = inspectProfile(bytes, "engine", true);
+  expect(profile.functionImports.find((entry) => entry.name === "add")?.module).toBe("foreign");
+  await prepareLinkPlan({ ...input, libraries: [{ ...input.libraries[0]!, source: bytes }] });
+});
+
+test("oversized import-info subsection cannot read the following sections", () => {
+  const dylink = [4].concat(u32(1000000), [1]);
+  expect(() => inspectProfile(side("errno", "GOT.mem", 4, { dylink }), "engine", true)).toThrow(
+    "truncated section",
+  );
+});
+
+test("weak binding never bypasses exact provider signature checks", async () => {
+  const input = source();
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      core: { ...input.core, source: core({ addParameter: 0x7e }) },
+      libraries: [
+        {
+          ...input.libraries[0]!,
+          source: side("errno", "GOT.mem", 4, {
+            dylink: importInfo(importRecord("env", "add")),
+          }),
+        },
+      ],
+    }),
+  ).rejects.toThrow("env.add has an incompatible core function signature");
+});
+
+for (const symbol of ["stderr", "_CLOCK_REALTIME", "__stack_low", "__stack_high"]) {
+  test(`new data/stack GOT symbol ${symbol} remains unsupported`, () => {
+    expect(() => inspectProfile(side(symbol), "engine", true)).toThrow(
+      `unsupported GOT.mem.${symbol}`,
+    );
+  });
+}
+
+for (const field of ["hostOnly", "\uFEFFhostOnly"]) {
+  test(`leading BOM in a foreign Wasm namespace/field stays exact: ${JSON.stringify(field)}`, async () => {
+    const input = source();
+    const namespace = "\uFEFFenv";
+    const bytes = side("errno", "GOT.mem", 4, { addModule: namespace, addName: field });
+    const actual = WebAssembly.Module.imports(new WebAssembly.Module(bytes)).find(
+      (entry) => entry.module === namespace && entry.name === field,
+    );
+    expect(actual).toEqual({ module: namespace, name: field, kind: "function" });
+    const plan = await prepareLinkPlan({
+      ...input,
+      libraries: [{ ...input.libraries[0]!, source: bytes }],
+    });
+    const profile = inspectProfile(bytes, "engine", true);
+    const imported = profile.functionImports.find((entry) => entry.name === field);
+    expect(imported?.module).toBe(actual?.module);
+    expect(imported?.name).toBe(actual?.name);
+    const group = instantiateLinkPlan(
+      plan,
+      host(undefined, {
+        [namespace]: { [field]: (value: number) => value + 11 },
+      }),
+    );
+    try {
+      expect(call(group.entry, "invoke", 7)).toBe(18);
+    } finally {
+      group.dispose();
+    }
+  });
+}
+
+for (const [module, field] of [
+  ["\uFEFFenv", "add"],
+  ["env", "\uFEFFadd"],
+] satisfies readonly [string, string][]) {
+  test(`weak metadata must preserve leading BOM identity: ${JSON.stringify([module, field])}`, () => {
+    const bytes = side("errno", "GOT.mem", 4, { dylink: importInfo(importRecord(module, field)) });
+    expect(WebAssembly.Module.imports(new WebAssembly.Module(bytes))).toContainEqual({
+      module: "env",
+      name: "add",
+      kind: "function",
+    });
+    expect(() => inspectProfile(bytes, "engine", true)).toThrow(
+      "must name an imported env function",
+    );
+  });
+}
+
+for (const field of ["add", "\uFEFFadd"]) {
+  test(`matching weak Wasm field and provider preserve every character: ${JSON.stringify(field)}`, async () => {
+    const input = source();
+    const owner = core({ aliases: field === "add" ? [] : [[field, 2]] });
+    const bytes = side("errno", "GOT.mem", 4, {
+      addName: field,
+      dylink: importInfo(importRecord("env", field)),
+    });
+    expect(WebAssembly.Module.exports(new WebAssembly.Module(owner))).toContainEqual({
+      name: field,
+      kind: "function",
+    });
+    const profile = inspectProfile(bytes, "engine", true);
+    expect(profile.functionImports.find((entry) => entry.name === field)?.binding).toBe("weak");
+    expect(profile.importInfo).toEqual([{ module: "env", name: field, flags: 0x11 }]);
+    expect(inspectProfile(owner, "core", false).functions.has(field)).toBe(true);
+    const plan = await prepareLinkPlan({
+      ...input,
+      core: { ...input.core, source: owner },
+      libraries: [{ ...input.libraries[0]!, source: bytes }],
+    });
+    const group = instantiateLinkPlan(plan, host());
+    try {
+      expect(call(group.entry, "invoke", 5)).toBe(12);
+    } finally {
+      group.dispose();
+    }
+  });
+}
