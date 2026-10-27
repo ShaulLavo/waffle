@@ -197,6 +197,51 @@ test("shebang execution substitutes the registered interpreter and preserves scr
   }
 });
 
+for (const suffix of ["   ", "\t\t", " \t \t"])
+  test(`shebang optional arguments trim trailing blanks (${JSON.stringify(suffix)})`, async () => {
+    const state = fixture();
+    try {
+      state.fs.writeFile("/usr/bin/env", new Uint8Array());
+      state.registry.register("/usr/bin/env", { adapter: "env-fixture", module });
+      state.fs.writeFile("/bin/script", `#!/usr/bin/env node${suffix}\n`);
+      const pid = state.supervisor.reserveSpawn(state.root, {
+        ...request("/bin/script"),
+        argv: ["/bin/script", "argument"],
+      });
+      await state.supervisor.start(pid);
+      expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+        kind: "exited",
+        code: 23,
+      });
+      expect(state.contexts[0]?.request.argv).toEqual([
+        "/usr/bin/env",
+        "node",
+        "/bin/script",
+        "argument",
+      ]);
+    } finally {
+      state.supervisor.dispose();
+    }
+  });
+
+test("shebang lines with only trailing blanks have no optional argument", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/interpreter", new Uint8Array());
+    state.registry.register("/bin/interpreter", { adapter: "interpreter", module });
+    state.fs.writeFile("/bin/script", "#!/bin/interpreter \t \t\n");
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/script"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "exited",
+      code: 23,
+    });
+    expect(state.contexts[0]?.request.argv).toEqual(["/bin/interpreter", "/bin/script"]);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
 test("shebang execution follows a package-bin symlink while retaining its caller path", async () => {
   const state = fixture();
   try {

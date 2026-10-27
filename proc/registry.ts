@@ -242,7 +242,7 @@ function parseShebang(bytes: Uint8Array): Shebang | undefined {
   } catch {
     return;
   }
-  const match = /^[ \t]*([^ \t]+)(?:[ \t]+([\s\S]*))?$/.exec(line);
+  const match = /^[ \t]*([^ \t]+)(?:[ \t]+([\s\S]*))?$/.exec(line.replace(/[ \t]+$/, ""));
   if (!match) return;
   const interpreter = match[1];
   if (!interpreter) return;
