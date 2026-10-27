@@ -8,7 +8,7 @@ test("equal module bytes share rewriting and compilation across concurrent loads
   const modules = await Promise.all([cache.compile(empty()), cache.compile(empty())]);
   expect(modules[0]).toBe(modules[1]);
   expect(WebAssembly.Module.imports(modules[0]!)).toEqual([
-    { module: "runtime_proc", name: "interrupted", kind: "function" },
+    { module: "runtime_proc", name: "__waffle_fatal", kind: "function" },
   ]);
   expect(await cache.compile(empty())).toBe(modules[0]);
 });

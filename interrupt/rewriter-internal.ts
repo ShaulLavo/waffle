@@ -24,6 +24,36 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const HEADER = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
 const SECTION_ORDER = [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 10, 11];
+const FATAL_IMPORT_NAME = "__waffle_fatal";
+
+interface FunctionSignature {
+  readonly params: readonly number[];
+  readonly results: readonly number[];
+}
+
+const runtimeProcSignatures = new Map<string, FunctionSignature>([
+  ["getpid", { params: [], results: [0x7f] }],
+  ["access_start", { params: [0x7f, 0x7f, 0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["access_take", { params: [0x7f], results: [0x7f] }],
+  ["access_cancel", { params: [0x7f], results: [0x7f] }],
+  ["spawn", { params: [0x7f, 0x7f], results: [0x7f] }],
+  ["job_of", { params: [0x7f], results: [0x7f] }],
+  ["pipe", { params: [0x7f], results: [0x7f] }],
+  ["dup", { params: [0x7f], results: [0x7f] }],
+  ["fd_kind", { params: [0x7f], results: [0x7f] }],
+  ["fd_reopen", { params: [0x7f, 0x7f, 0x7f, 0x7e, 0x7f], results: [0x7f] }],
+  ["read", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["write", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["wait", { params: [0x7f, 0x7f], results: [0x7f] }],
+  ["wait_job", { params: [0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["kill", { params: [0x7f, 0x7f], results: [0x7f] }],
+  ["kill_job", { params: [0x7f, 0x7f], results: [0x7f] }],
+  ["start_status", { params: [0x7f], results: [0x7f] }],
+  ["poll", { params: [0x7f, 0x7f, 0x7f, 0x7f], results: [0x7f] }],
+  ["interrupted", { params: [], results: [0x7f] }],
+  ["signal", { params: [0x7f, 0x7f], results: [0x7f] }],
+  ["default_signal", { params: [0x7f], results: [0x7f] }],
+]);
 
 function fail(reason: string): never {
   throw new WebAssembly.CompileError(`Cannot instrument WebAssembly: ${reason}`);
@@ -134,7 +164,7 @@ class Writer {
   }
 }
 
-function valueType(reader: Reader): void {
+function valueType(reader: Reader): number {
   switch (reader.byte()) {
     case 0x7f:
     case 0x7e:
@@ -143,10 +173,24 @@ function valueType(reader: Reader): void {
     case 0x7b: // v128
     case 0x70:
     case 0x6f: // untyped funcref/externref
-      return;
+      return reader.bytes[reader.position - 1]!;
     default:
       fail("unsupported value type (GC or typed reference)");
   }
+}
+
+function functionSignatureMatches(
+  signature: FunctionSignature | undefined,
+  expected: FunctionSignature,
+): boolean {
+  if (!signature) return false;
+  if (signature.params.length !== expected.params.length) return false;
+  if (signature.results.length !== expected.results.length) return false;
+  for (let index = 0; index < signature.params.length; index++)
+    if (signature.params[index] !== expected.params[index]) return false;
+  for (let index = 0; index < signature.results.length; index++)
+    if (signature.results[index] !== expected.results[index]) return false;
+  return true;
 }
 function referenceType(reader: Reader): void {
   const type = reader.byte();
@@ -493,12 +537,17 @@ export function rewriteInterruptsOwned(
   const typeReader = get(1);
   const typeCount = typeReader.u32();
   const typeStart = typeReader.position;
+  const functionTypes: FunctionSignature[] = [];
   for (let i = 0; i < typeCount; i++) {
     if (typeReader.byte() !== 0x60) fail("unsupported GC recursive/subtype definition");
+    const params: number[] = [];
+    const results: number[] = [];
     for (let vector = 0; vector < 2; vector++) {
       const count = typeReader.u32();
-      for (let j = 0; j < count; j++) valueType(typeReader);
+      const values = vector === 0 ? params : results;
+      for (let j = 0; j < count; j++) values.push(valueType(typeReader));
     }
+    functionTypes.push({ params, results });
   }
   typeReader.done();
   const typeWriter = new Writer();
@@ -512,11 +561,19 @@ export function rewriteInterruptsOwned(
   const importStart = importReader.position;
   for (let i = 0; i < importCount; i++) {
     const namespace = importReader.name();
-    importReader.name();
-    // Third-party guests cannot register handled signals: the injected check
-    // uses fatal outcomes only. Cooperative own guests bypass this rewriter.
-    if (namespace === "runtime_proc") fail("reserved import namespace runtime_proc");
-    switch (importReader.byte()) {
+    const name = importReader.name();
+    const kind = importReader.byte();
+    if (namespace === "runtime_proc") {
+      if (kind !== 0) fail(`runtime_proc.${name} must be a function import`);
+      const typeIndex = importReader.u32();
+      const expected = runtimeProcSignatures.get(name);
+      if (name === FATAL_IMPORT_NAME || !expected) fail(`unsupported runtime_proc import ${name}`);
+      if (!functionSignatureMatches(functionTypes[typeIndex], expected))
+        fail(`invalid runtime_proc.${name} signature`);
+      importedFunctions++;
+      continue;
+    }
+    switch (kind) {
       case 0:
         importReader.u32();
         importedFunctions++;
@@ -543,7 +600,7 @@ export function rewriteInterruptsOwned(
   importWriter.u32(importCount + 1);
   importWriter.bytes(importReader.bytes.subarray(importStart));
   importWriter.name("runtime_proc");
-  importWriter.name("interrupted");
+  importWriter.name(FATAL_IMPORT_NAME);
   importWriter.byte(0);
   importWriter.u32(typeCount);
   sections.set(2, importWriter.finish());
