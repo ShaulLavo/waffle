@@ -94,3 +94,9 @@ applications designed for that mount. Its service worker removes the mount and
 port before forwarding HTTP. The browser keeps that pathname. An unchanged SSR
 client router that owns `/` cannot hydrate under this mount. An HTML base element
 cannot change `window.location.pathname`.
+
+The authenticated HTTP dispatcher preserves validated wire header pairs directly
+through the shared raw connection and parser. It does not reconstruct a DOM Request
+or Response, so native Origin, Cookie, and repeated Set-Cookie fields survive a
+browser-owned relay. The public `relay.fetch` still uses ordinary DOM objects and
+their header guards. Native adapters must consume raw `head.headers` as pairs.

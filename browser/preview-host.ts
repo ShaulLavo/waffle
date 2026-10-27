@@ -112,16 +112,37 @@ function requestURL(input: string, origin: string): URL {
   return url;
 }
 
-function response(head: ResponseHead, body: ReadableStream<Uint8Array>, method: string): Response {
-  const headers = new Headers();
-  for (const [name, value] of head.headers) {
-    if (!FRAMING.has(name.toLowerCase())) headers.append(name, value);
-  }
-  return new Response(method === "HEAD" || BODYLESS.has(head.status) ? null : body, {
-    status: head.status,
-    statusText: head.statusText,
-    headers,
+interface RelayRequest {
+  url: string;
+  method: string;
+  headers: [string, string][];
+  body: Uint8Array | null;
+  signal: AbortSignal;
+}
+
+interface RelayResponse {
+  head: ResponseHead;
+  body: ReadableStream<Uint8Array<ArrayBuffer>> | null;
+}
+
+type ReadResponse = (authorization: unknown, request: RelayRequest) => Promise<RelayResponse>;
+
+function headerPairs(headers: readonly [string, string][]): [string, string][] {
+  if (!Array.isArray(headers)) throw new TypeError("Invalid preview HTTP headers");
+  return headers.map(([name, value]) => {
+    if (typeof name !== "string" || typeof value !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+        !/^[\t\x20-\x7e\x80-\xff]*$/.test(value))
+      throw new TypeError("Invalid preview HTTP header");
+    return [name, value];
   });
+}
+
+function responseHead(head: ResponseHead): ResponseHead {
+  if (head.status < 200 || head.status > 599 || !Number.isInteger(head.status) ||
+      !/^[\t\x20-\x7e\x80-\xff]*$/.test(head.statusText))
+    throw new TypeError("Invalid preview HTTP response status");
+  const headers = headerPairs(head.headers).filter(([name]) => !FRAMING.has(name.toLowerCase()));
+  return { status: head.status, statusText: head.statusText, headers };
 }
 
 /** The router calls this lazily; it opens only its existing virtual network connections. */
@@ -188,10 +209,22 @@ export function createPreviewHostRelay(
   }
 
   async function fetchResponse(input: unknown, request: Request): Promise<Response> {
-    const url = check(input, request.url);
+    check(input, request.url);
     request.signal.throwIfAborted();
     const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+    const result = await readResponse(input, {url:request.url, method:request.method,
+      headers:Array.from(request.headers), body, signal:request.signal});
+    return new Response(result.body, result.head);
+  }
+
+  function readResponse(input: unknown, request: RelayRequest): Promise<RelayResponse> {
+    const url = check(input, request.url);
     request.signal.throwIfAborted();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(request.method))
+      throw new TypeError("Invalid preview HTTP method");
+    if (["GET", "HEAD"].includes(request.method.toUpperCase()) && request.body !== null)
+      throw new TypeError("Preview GET/HEAD requests cannot have a body");
+    const headers = headerPairs(request.headers);
     return new Promise((resolve, reject) => {
       let connection: PreviewConnection | null = null;
       let controller: ReadableStreamDefaultController<Uint8Array>;
@@ -224,7 +257,8 @@ export function createPreviewHostRelay(
       });
       const parser = new ResponseParser(
         {
-          head: (head) => resolve(response(head, stream, request.method)),
+          head: (head) => resolve({head:responseHead(head),
+            body:request.method === "HEAD" || BODYLESS.has(head.status) ? null : stream}),
           data: (chunk) => {
             if (finished) return;
             controller.enqueue(chunk);
@@ -259,8 +293,8 @@ export function createPreviewHostRelay(
             {
               method: request.method,
               target: url.pathname + url.search,
-              headers: Array.from(request.headers),
-              body,
+              headers,
+              body:request.body,
             },
             url.host,
           ),
@@ -288,7 +322,7 @@ export function createPreviewHostRelay(
     fetch: fetchResponse,
     connect,
     close,
-    dispatch: (open, exchange) => dispatchPreviewHost(relay, open, exchange, lifetime.signal),
+    dispatch: (open, exchange) => dispatchPreviewHost(relay, open, exchange, lifetime.signal, readResponse),
   };
   return relay;
 }
@@ -298,6 +332,7 @@ async function dispatchPreviewHost(
   open: PreviewHostOpen,
   exchange: PreviewHostExchange,
   lifetime: AbortSignal,
+  readResponse: ReadResponse,
 ): Promise<void> {
   try {
     lifetime.throwIfAborted();
@@ -306,7 +341,7 @@ async function dispatchPreviewHost(
         await dispatchSocket(relay, open, exchange, lifetime);
         break;
       case "http":
-        await dispatchHTTP(relay, open, exchange, lifetime);
+        await dispatchHTTP(readResponse, open, exchange, lifetime);
         break;
       default: {
         const unexpected: never = open;
@@ -325,7 +360,7 @@ async function dispatchPreviewHost(
 }
 
 async function dispatchHTTP(
-  relay: PreviewHostRelay,
+  readResponse: ReadResponse,
   open: PreviewHostOpen & { type: "http" },
   exchange: PreviewHostExchange,
   lifetime: AbortSignal,
@@ -344,22 +379,17 @@ async function dispatchHTTP(
     else abort();
   };
   try {
-    const result = await relay.fetch(
-      open.authorization,
-      new Request(open.url, {
-        method: open.method,
-        headers: open.headers,
-        body: open.body,
-        signal: cancelled.signal,
-      }),
-    );
+    if (open.body !== null && !(open.body instanceof ArrayBuffer))
+      throw new TypeError("Invalid preview HTTP body");
+    const result = await readResponse(open.authorization, {
+      url:open.url, method:open.method, headers:open.headers,
+      body:open.body === null ? null : new Uint8Array(open.body), signal:cancelled.signal,
+    });
     cancelled.signal.throwIfAborted();
     exchange.postMessage({ type: "accepted" });
     exchange.postMessage({
       type: "head",
-      status: result.status,
-      statusText: result.statusText,
-      headers: Array.from(result.headers),
+      ...result.head,
     });
     reader = result.body?.getReader();
     await sendBody(reader, exchange, cancelled.signal, (ready) => {
