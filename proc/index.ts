@@ -25,7 +25,12 @@ export { ExecutableFormatError, startFailure } from "./start-failure.js";
 export type { StartFailure } from "./start-failure.js";
 export { waitStatus } from "./wait-status.js";
 export { ExecutableRegistry, ExecutableNotFound, ExecutableNotRunnable } from "./registry.js";
-export type { Executable, ResolvedExecutable, ExecutableLookup } from "./registry.js";
+export type {
+  Executable,
+  ResolvedExecutable,
+  ExecutableLookup,
+  ExecutableRead,
+} from "./registry.js";
 export { ProcessTable } from "./table.js";
 export type { ProcessRecord, ProcessJob } from "./table.js";
 export { ProcessSupervisor } from "./supervisor.js";

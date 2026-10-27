@@ -13,7 +13,9 @@ export function executableAccessResult(error: unknown): number {
       ? 2
       : code === "ENOTDIR"
         ? 54
-        : error instanceof ProcessError
-          ? error.errno
-          : errno(error));
+        : code === "ELOOP"
+          ? 32
+          : error instanceof ProcessError
+            ? error.errno
+            : errno(error));
 }

@@ -467,7 +467,10 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
           import("./proc/registry.js"),
           import("./proc/table.js"),
         ]);
-        registry = new ExecutableRegistry((path) => filesystem.resolvePath(path));
+        registry = new ExecutableRegistry(
+          (path) => filesystem.resolvePath(path),
+          (path) => filesystem.readFile(path),
+        );
         for (const [name, executable] of programs) registry.register(name, executable);
         const table = new ProcessTable(identities);
         const hostOptions: BrowserProcessBrokerOptions = {

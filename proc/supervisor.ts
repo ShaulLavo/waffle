@@ -568,6 +568,7 @@ export class ProcessSupervisor {
           if (record.result || record.revoked || readOutcome(record.outcome))
             throw new Error("process exited before executable admission completed");
         },
+        record.request!.argv,
       );
       if (record.result || record.revoked) return;
       const settled = readOutcome(record.outcome);
@@ -579,7 +580,10 @@ export class ProcessSupervisor {
         pid: record.pid,
         parentPid: record.parentPid,
         job: record.job,
-        request: record.request!,
+        request:
+          executable.argv === undefined
+            ? record.request!
+            : { ...record.request!, argv: executable.argv.slice() },
         module: executable.module,
         adapter: executable.adapter,
         interruptible: executable.interruptible,
