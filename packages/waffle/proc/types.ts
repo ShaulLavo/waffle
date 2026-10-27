@@ -51,6 +51,17 @@ export interface DescriptorBinding {
   child: number;
   parent: number;
 }
+/** Request metadata is UTF-8, absolute, NUL-free and preserved without normalization. */
+export function checkedProcessCwd(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.includes("\0") ||
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)
+  )
+    throw new ProcessError(ProcessErrno.INVAL, "invalid process cwd");
+  return value;
+}
 export interface SpawnRequest {
   executable: string;
   argv: string[];
