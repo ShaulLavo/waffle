@@ -143,6 +143,35 @@ test("spawn follows a symlink to the canonical registered executable", async () 
   }
 });
 
+test("spawn retains dangling and looping symlink errors", async () => {
+  const state = fixture();
+  try {
+    const loopA = state.fs.resolveAbsolute("/bin/loop-a");
+    const loopB = state.fs.resolveAbsolute("/bin/loop-b");
+    const dangling = state.fs.resolveAbsolute("/bin/dangling");
+    if (typeof loopA === "number" || typeof loopB === "number" || typeof dangling === "number")
+      throw new Error("missing symlink path");
+    expect(state.fs.symlink(loopA, "loop-b")).toBe(0);
+    expect(state.fs.symlink(loopB, "loop-a")).toBe(0);
+    expect(state.fs.symlink(dangling, "missing")).toBe(0);
+    for (const [executable, error, code] of [
+      ["/bin/loop-a", "ELOOP", 40],
+      ["/bin/dangling", "ENOENT", 2],
+    ] as const) {
+      const pid = state.supervisor.reserveSpawn(state.root, request(executable));
+      await state.supervisor.start(pid);
+      expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+        kind: "start-failed",
+        error,
+        code,
+      });
+    }
+    expect(state.loads).toBe(0);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
 for (const stateChange of ["missing", "deleted", "directory", "unregistered"] as const) {
   test(`spawn checks the live filesystem before loading a ${stateChange} executable`, async () => {
     const state = fixture();

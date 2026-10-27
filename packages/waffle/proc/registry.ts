@@ -16,6 +16,11 @@ export type ExecutableRead = (
 const MAX_SHEBANG_DEPTH = 4;
 const MAX_SHEBANG_BYTES = 256;
 
+function symlinkTarget(file: { readonly kind: "file" | "dir" | "symlink" }): string | undefined {
+  if (file.kind !== "symlink" || !("target" in file) || typeof file.target !== "string") return;
+  return file.target;
+}
+
 export interface Executable {
   /** The loader compiles asynchronously (normally in a compiler worker). Never instantiate here. */
   module: WebAssembly.Module | (() => WebAssembly.Module | Promise<WebAssembly.Module>);
@@ -191,11 +196,12 @@ export class ExecutableRegistry {
     assertActive();
     if (!file) throw new ExecutableNotFound(absolute);
     if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
-    if (file.kind === "symlink" && "target" in file && typeof file.target === "string") {
+    const target = symlinkTarget(file);
+    if (target) {
       if (seen.has(file.path)) throw new ExecutableNotRunnable(file.path, false, "ELOOP");
       seen.add(file.path);
       return this.admitScript(
-        file.target,
+        target,
         dirname(file.path),
         assertActive,
         argv,
