@@ -237,7 +237,8 @@ export class Wasi {
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
     for (const which of [0, 1, 2] as const) {
       if (opts.stdio?.[which] === null) continue;
-      this.descriptors.open(
+      this.descriptors.openAt(
+        which,
         opts.stdio?.[which] ?? {
           kind: "terminal",
           read: (chunks) => (which === 0 ? this.readStdin(chunks) : 0),

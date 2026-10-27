@@ -95,6 +95,13 @@ export class DescriptorTable {
   get(fd: number): Descriptor | undefined {
     return mapGet(this.entries, fd);
   }
+  hasResource(resource: Resource): boolean {
+    let found = false;
+    mapForEach(this.entries, (entry) => {
+      if (entry.resource === resource) found = true;
+    });
+    return found;
+  }
   /** The caller's live root capability, including any guest rights reductions. */
   rootPreopen(): Descriptor | undefined {
     let root: Descriptor | undefined;

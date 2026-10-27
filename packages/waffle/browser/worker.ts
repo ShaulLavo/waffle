@@ -271,14 +271,75 @@ function initialStdio(
   runtimeState: RuntimeWorkerState | null,
   ownedStdio: Partial<Record<0 | 1 | 2, Stream>> | undefined,
   checkIoActive: () => void,
-): Partial<Record<0 | 1 | 2, Stream | null>> | undefined {
-  if (runtimeState && runtimeState.parentPid !== 0) return { 0: null, 1: null, 2: null };
-  if (!ownedStdio) return;
+): {
+  stdio: Partial<Record<0 | 1 | 2, Stream | null>> | undefined;
+  discarded: Stream[];
+} {
+  if (runtimeState && runtimeState.parentPid !== 0)
+    return {
+      stdio: { 0: null, 1: null, 2: null },
+      discarded: [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
+        (stream): stream is Stream => stream !== undefined,
+      ),
+    };
+  if (!ownedStdio) return { stdio: undefined, discarded: [] };
   return {
-    ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
-    ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
-    ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
+    stdio: {
+      ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
+      ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
+      ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
+    },
+    discarded: [],
   };
+}
+
+function tableOwnedStdio(
+  descriptors: Wasi["descriptors"],
+  discarded: readonly Stream[],
+): Set<Stream> {
+  const tableOwned = new Set<Stream>();
+  for (const stream of discarded) {
+    if (descriptors.hasResource(stream)) tableOwned.add(stream);
+  }
+  return tableOwned;
+}
+
+function closeDiscardedStdio(discarded: readonly Stream[], tableOwned: ReadonlySet<Stream>): void {
+  const closed = new Set<Stream>();
+  const errors: unknown[] = [];
+  for (const stream of discarded) {
+    if (tableOwned.has(stream) || closed.has(stream)) continue;
+    closed.add(stream);
+    try {
+      stream.close?.();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, "stdio release failed");
+}
+
+function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): void {
+  const tableOwned = tableOwnedStdio(wasi.descriptors, discarded);
+  const errors: unknown[] = [];
+  try {
+    wasi.descriptors.dispose();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    closeDiscardedStdio(discarded, tableOwned);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length) throw new AggregateError(errors, "descriptor release failed");
+}
+
+function releaseDiscardedStdio(
+  descriptors: Wasi["descriptors"],
+  discarded: readonly Stream[],
+): void {
+  closeDiscardedStdio(discarded, tableOwnedStdio(descriptors, discarded));
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
@@ -297,6 +358,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   let runtimeProcess: WorkerProcessClient | null = null;
   let process: ProcessABI | undefined;
   let processSignalExit: typeof import("../proc/abi.js").ProcessSignalExit | undefined;
+  let discardedStdio: Stream[] = [];
   const sleepCell = createSleepCell(host);
   const isolated = sleepCell !== null;
   const sleepMode: SleepMode = sleepCell ? "atomics" : "busy-wait";
@@ -432,7 +494,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     const descriptorsReleased = attempt(() => {
       if (wasi) {
-        wasi.descriptors.dispose();
+        disposeProcessDescriptors(wasi, discardedStdio);
         return;
       }
       const errors: unknown[] = [];
@@ -551,7 +613,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
-    const stdio = initialStdio(runtimeState, ownedStdio, checkIoActive);
+    const initial = initialStdio(runtimeState, ownedStdio, checkIoActive);
+    const stdio = initial.stdio;
+    discardedStdio = initial.discarded;
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
@@ -848,6 +912,9 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    const unusedStdio = discardedStdio;
+    discardedStdio = [];
+    releaseDiscardedStdio(wasi.descriptors, unusedStdio);
     inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
     const imports = wasi.imports(req.module);
