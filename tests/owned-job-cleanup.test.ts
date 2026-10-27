@@ -316,6 +316,52 @@ test("owner fatal selection during export rolls back the unpublished owned reser
     f.root.job,
   ]);
 });
+test("reentrant export cannot rewrite the captured job selector or lifetime", async () => {
+  const request = spec(true);
+  const codec: WorkerDescriptorCodec = {
+    export() {
+      request.job = -1;
+      request.jobLifetime = "independent";
+      return {};
+    },
+    import: () => new OpenDescription({ kind: "directory", handle: 1 }),
+    discard() {},
+  };
+  const f = sharedFixture({}, codec);
+  const fd = f.root.options.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n);
+  request.fds = [{ parent: fd, child: 17 }];
+  const pid = f.root.spawn(f.root.pid, request);
+  const notice = f.messages[0];
+  if (notice?.operation !== "spawn") throw new Error("expected spawn");
+  expect(notice.request.job).toBe(0);
+  expect(notice.request.jobLifetime).toBe("caller-fatal");
+  await f.admit();
+  expect(f.s.job(f.s.jobOf(pid))).toMatchObject({
+    ownerPid: f.root.pid,
+    foreground: true,
+    jobLifetime: "caller-fatal",
+  });
+});
+test("guest JSON cannot supply another process as lifetime owner", () => {
+  const { supervisor: s, root } = fixture();
+  const other = s.createRoot();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bytes = new TextEncoder().encode(
+    JSON.stringify({ ...spec(true), ownerPid: other, parentPid: other }),
+  );
+  new Uint8Array(memory.buffer).set(bytes);
+  const abi = new ProcessABI({
+    memory,
+    descriptors: s.get(root)!.descriptors,
+    fs: new MemFS(),
+    service: s,
+    pid: root,
+    signals: s.get(root)!,
+  });
+  const pid = abi.imports.spawn!(0, bytes.length);
+  expect(pid).toBeGreaterThan(0);
+  expect(s.job(s.jobOf(pid))?.ownerPid).toBe(root);
+});
 test("late acquired handles keep physical retirement pending after ordinary process collection", async () => {
   const handle = Promise.withResolvers<{ terminate(): Promise<void> }>();
   const stop = Promise.withResolvers<void>();
@@ -460,6 +506,40 @@ test("shared CLEANUP reports physical-retirement error without collecting the jo
   expect(abi.imports.wait_job!(job, 2, 0)).toBe(-29);
   expect(findDirectoryJob(f.transport.directory, job)).toBeDefined();
   expect(f.root.jobEmpty(f.root.pid, job)).toBe(true);
+});
+test("a failed filesystem fence reports an error but never confirms or physically stops the child", async () => {
+  const failure = new Error("fence refused");
+  const errors: unknown[] = [];
+  let child = 0,
+    stopped = false;
+  const { supervisor: s, root } = fixture({
+    quiesce: (pid) => (pid === child ? Promise.reject(failure) : undefined),
+    launch: () => ({
+      terminate() {
+        stopped = true;
+      },
+    }),
+    onError: (error) => errors.push(error),
+  });
+  child = s.reserveSpawn(root, spec(true));
+  const job = s.jobOf(child);
+  await s.start(child);
+  s.exit(child, 0);
+  await turn();
+  const abi = new ProcessABI({
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    fs: new MemFS(),
+    descriptors: s.get(root)!.descriptors,
+    service: s,
+    pid: root,
+    signals: s.get(root)!,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+  });
+  expect(abi.imports.wait_job!(job, 2, 0)).toBe(-29);
+  expect(abi.imports.wait_job!(job, 1, 0)).toBe(-6);
+  expect(s.get(child)?.result).toBeNull();
+  expect(stopped).toBe(false);
+  expect(errors).toContain(failure);
 });
 test("a real filesystem section fences owner cleanup before physical retirement", async () => {
   const identity = createFilesystemIdentity();
