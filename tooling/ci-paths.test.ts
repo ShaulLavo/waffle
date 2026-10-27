@@ -107,6 +107,7 @@ test("browser failure retains structured recovery evidence before full protocol"
     (step) =>
       step.run === 'bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"',
   );
+  expect(record(browserTest?.env).DEBUG).toBeUndefined();
   expect(record(browserTest?.env).RECOVERY_R42_REPORT).toBe(recoveryReportPath);
   const recoveryUpload = artifactStep(steps, recoveryReportPath);
   const protocolUpload = artifactStep(steps, browserProtocolPath);
