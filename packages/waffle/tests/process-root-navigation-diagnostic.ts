@@ -610,6 +610,10 @@ export const historicalRunnerPath = new URL(
   "./fixtures/process-root-navigation-original-runner.txt",
   import.meta.url,
 ).pathname;
+export const historicalLockfilePath = new URL(
+  "./fixtures/process-root-navigation-approved-bun.lock",
+  import.meta.url,
+).pathname;
 
 export function assertSourceProvenance(lockfilePath: string, runnerPath: string): void {
   if (
@@ -652,7 +656,7 @@ function identity(): Record<string, string> {
   if (!browserRoot || !isAbsolute(browserRoot))
     throw new Error("Explicit installed browser root required");
   const executable = join(browserRoot, "webkit-2370", "pw_run.sh");
-  assertSourceProvenance(join(import.meta.dir, "../../..", "bun.lock"), historicalRunnerPath);
+  assertSourceProvenance(historicalLockfilePath, historicalRunnerPath);
   return {
     historicalRunnerSHA256: sha256(readFileSync(historicalRunnerPath)),
     playwright: String(JSON.parse(readFileSync(packagePath, "utf8")).version),

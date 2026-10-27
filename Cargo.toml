@@ -10,6 +10,22 @@ members = [
   "packages/grep",
   "packages/findutils",
 ]
+exclude = [
+  "packages/coreutils/vendor/uutils-env",
+  "packages/findutils/vendor/uutils-find",
+  "packages/findutils/vendor/uutils-xargs",
+]
+default-members = [
+  "packages/program-support",
+  "packages/process-consumer",
+  "packages/coreutils",
+  "packages/coreutils/crates/clear",
+  "packages/coreutils/crates/cut",
+  "packages/coreutils/crates/tr",
+  "packages/coreutils/crates/wc",
+  "packages/grep",
+  "packages/findutils",
+]
 resolver = "3"
 
 [workspace.package]
