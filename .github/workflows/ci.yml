@@ -276,7 +276,6 @@ jobs:
       - run: bun run test:browser 2>&1 | tee "$RUNNER_TEMP/waffle-browser-protocol.log"
         shell: bash
         env:
-          DEBUG: pw:protocol
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
