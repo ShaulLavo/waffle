@@ -75,7 +75,7 @@ disconnect. The host must restrict URLs to this grant before serializing upgrade
 bytes and must not interpret arbitrary browser input as a host-control message.
 
 The direct relay, wire dispatcher, and loopback reference host are implemented.
-`tests/preview-host-reference.ts` adapts HTTP requests through the wire protocol
+`packages/waffle/tests/preview-host-reference.ts` adapts HTTP requests through the wire protocol
 and keeps grants in the host. It is a test fixture, not a production hosting service.
 Native transport authentication, the production Bun adapter, and exact Bun app
 acceptance remain consumer work. Raw upgrade bytes are tested; a native WebSocket

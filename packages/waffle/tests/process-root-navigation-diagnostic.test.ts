@@ -252,7 +252,7 @@ test("refuses engine/version and approved executable identity mismatch", () => {
 });
 
 test("source provenance accepts the frozen historical reference and rejects wrong bytes", () => {
-  const lockfile = new URL("../bun.lock", import.meta.url).pathname;
+  const lockfile = new URL("../../../bun.lock", import.meta.url).pathname;
   const runner = historicalRunnerPath;
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"),

@@ -3,6 +3,7 @@ import { basename, join, relative } from "node:path";
 import { retireCommandGroup } from "../scripts/owned-command.ts";
 
 const root = join(import.meta.dir, "..");
+const repository = join(root, "../..");
 const stopped = new AbortController();
 const stop = () => stopped.abort();
 process.once("SIGINT", stop);
@@ -42,7 +43,7 @@ const directory = await mkdtemp(join(import.meta.dir, "quality-probe-"));
 const probe = join(directory, "probe.ts");
 const entry = join(root, "tests", `${basename(directory)}.test.ts`);
 const javascript = entry.replace(/\.ts$/, ".js");
-const site = join(root, "site", "scripts", `${basename(directory)}.ts`);
+const site = join(repository, "site", "scripts", `${basename(directory)}.ts`);
 try {
   await writeFile(probe, "var qualityProbe = 1;\nconsole.log(qualityProbe);\n");
   await mustFail("lint", ["lint"], "no-var");
@@ -58,7 +59,7 @@ try {
   await mustFail("authored JavaScript type check", ["check:tooling"], "TS2322");
   await rm(javascript);
   await writeFile(site, "export const qualityProbe: number = 'not a number';\n");
-  await mustFail("separate site package type check", ["--cwd", "site", "typecheck"], "2322");
+  await mustFail("separate site package type check", ["--cwd", "../../site", "typecheck"], "2322");
   await rm(site);
   await writeFile(probe, "export const qualityProbe={x:1}\n");
   await mustFail("formatter", ["format:check"], relative(root, probe));

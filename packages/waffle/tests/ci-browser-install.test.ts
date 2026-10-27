@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+const workflow = readFileSync(
+  new URL("../../../.github/workflows/ci.yml", import.meta.url),
+  "utf8",
+);
 const transportName = "Use Ubuntu HTTPS archives for browser dependencies";
 const installCommand = "bunx playwright install --with-deps chromium firefox webkit";
 const mirrorPath = "/etc/apt/apt-mirrors.txt";

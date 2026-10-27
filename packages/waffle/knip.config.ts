@@ -23,6 +23,7 @@ export default {
         "tests/fixtures/symlink-sizing-probe.ts",
         "tests/fixtures/interrupt-dom-consumer.ts",
         "scripts/browser-supervisor.ts",
+        "tooling/check-network-rust.ts",
         "tests/{storage,storage-lock,process-recycling,network,notification,publication,publication-cross-tab}-browser-runner.ts",
         "tests/interrupt-browser.ts",
         "tests/filesystem-{shutdown,ready-disposal}-browser-runner.ts",
@@ -48,10 +49,6 @@ export default {
         "tests/storage-open-worker.ts",
       ],
       project: ["*.ts", "{browser,core,fs,proc,interrupt,scripts,tooling,tests}/**/*.{ts,js}"],
-    },
-    site: {
-      entry: ["scripts/{extract-reference,performance,verify,visibility}.ts"],
-      project: ["**/*.{ts,astro}"],
     },
   },
 } satisfies KnipConfig;

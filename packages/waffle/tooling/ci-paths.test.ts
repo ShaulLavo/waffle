@@ -12,7 +12,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 const workflow = record(
-  YAML.parse(readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8")),
+  YAML.parse(readFileSync(new URL("../../../.github/workflows/ci.yml", import.meta.url), "utf8")),
 );
 const jobs = record(workflow.jobs);
 const changes = record(jobs.changes);
@@ -39,14 +39,14 @@ for (const name of ["browser", "libc"]) {
 
   test(`${name} selects runtime, dependency and workflow inputs`, () => {
     for (const path of [
-      "core/wasi.ts",
-      "core/memory-views.js",
-      "fs/persistent.ts",
-      "proc/abi.ts",
-      "interrupt/rewriter.ts",
-      "browser/net/host.ts",
-      "index.ts",
-      "runtime.ts",
+      "packages/waffle/core/wasi.ts",
+      "packages/waffle/core/memory-views.js",
+      "packages/waffle/fs/persistent.ts",
+      "packages/waffle/proc/abi.ts",
+      "packages/waffle/interrupt/rewriter.ts",
+      "packages/waffle/browser/net/host.ts",
+      "packages/waffle/index.ts",
+      "packages/waffle/runtime.ts",
       "package.json",
       "bun.lock",
       ".github/workflows/ci.yml",
@@ -70,16 +70,34 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
+test("release workflow publishes only the runtime tarball and checksum", () => {
+  const release = record(
+    YAML.parse(
+      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+    ),
+  );
+  expect(record(release.permissions).contents).toBe("write");
+  const steps = record(record(release.jobs).release).steps;
+  if (!Array.isArray(steps)) throw new Error("expected release steps");
+  const publish = steps
+    .map(record)
+    .find((step) => step.name === "Publish the GitHub release assets");
+  expect(publish).toBeDefined();
+  expect(String(publish?.run)).toContain("gh release create");
+  expect(String(publish?.run)).toContain(".sha256");
+  expect(String(publish?.run)).not.toContain("npm publish");
+});
+
 test("browser selects runners, shared controls and guest fixtures", () => {
   for (const path of [
-    "scripts/test-browser.ts",
-    "scripts/browser-command.ts",
-    "scripts/browser-supervisor.ts",
-    "scripts/owned-command.ts",
-    "tests/storage-browser-runner.ts",
-    "tests/publication-browser-runner.ts",
-    "tests/workspace-browser.ts",
-    "tests/fixtures/publication-guest.ts",
+    "packages/waffle/scripts/test-browser.ts",
+    "packages/waffle/scripts/browser-command.ts",
+    "packages/waffle/scripts/browser-supervisor.ts",
+    "packages/waffle/scripts/owned-command.ts",
+    "packages/waffle/tests/storage-browser-runner.ts",
+    "packages/waffle/tests/publication-browser-runner.ts",
+    "packages/waffle/tests/workspace-browser.ts",
+    "packages/waffle/tests/fixtures/publication-guest.ts",
   ])
     expect(selected("browser", path), path).toBe(true);
 });
@@ -179,6 +197,12 @@ test("package and site gates remain unconditional", () => {
   }
 });
 
+test("the package tarball smoke uses the runner temporary directory", () => {
+  const smoke = stepsFor("package").find((step) => step.run === "bun run pack:check");
+  expect(record(smoke?.env).TMPDIR).toBe("${{ runner.temp }}");
+  expect(smoke?.if).toBeUndefined();
+});
+
 test("package runs each test root once without repeating preparation", () => {
   const metadata = record(
     JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")),
@@ -196,19 +220,23 @@ test("package runs each test root once without repeating preparation", () => {
 });
 
 test("Rust network inputs select one release test/build lane and an exact WASM cache", () => {
-  for (const path of ["network/src/lib.rs", "Cargo.lock", "tooling/build-network.ts"])
+  for (const path of [
+    "packages/waffle/network/src/lib.rs",
+    "packages/waffle/Cargo.lock",
+    "packages/waffle/tooling/build-network.ts",
+  ])
     expect(selected("browser", path), path).toBe(true);
   for (const path of [
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "network/src/lib.rs",
-    "network/tests/module.rs",
-    "tooling/build-network.ts",
-    "browser/net/module.ts",
-    "tests/network-module.test.ts",
-    "tests/network-module-host.test.ts",
-    "tests/network-wire.test.ts",
+    "packages/waffle/Cargo.toml",
+    "packages/waffle/Cargo.lock",
+    "packages/waffle/rust-toolchain.toml",
+    "packages/waffle/network/src/lib.rs",
+    "packages/waffle/network/tests/module.rs",
+    "packages/waffle/tooling/build-network.ts",
+    "packages/waffle/browser/net/module.ts",
+    "packages/waffle/tests/network-module.test.ts",
+    "packages/waffle/tests/network-module-host.test.ts",
+    "packages/waffle/tests/network-wire.test.ts",
   ])
     expect(selected("network", path), path).toBe(true);
   expect(selected("network", "docs/network.md")).toBe(false);
@@ -236,7 +264,7 @@ test("network consumers verify restored bytes before install and forbid Cargo", 
     const steps = stepsFor(name);
     const restored = steps.findIndex((step) => step.id === "network-artifact");
     const verified = steps.findIndex(
-      (step) => step.run === "bun tooling/build-network.ts --verify",
+      (step) => step.run === "bun run --cwd packages/waffle tooling/build-network.ts --verify",
     );
     const installed = steps.findIndex(
       (step) => typeof step.run === "string" && step.run.startsWith("bun install"),
@@ -255,7 +283,7 @@ test("network producer checks Rust target ownership with lockfile-sensitive cach
   const steps = stepsFor("network-wasm");
   const cache = steps.find((step) => step.id === "rust-cache");
   expect(String(record(cache?.with).key)).toContain(
-    "hashFiles('Cargo.lock', 'rust-toolchain.toml')",
+    "hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml')",
   );
   expect(String(record(cache?.with).path)).toContain("~/.rustup/toolchains");
   expect(String(record(cache?.with).path)).toContain("target");
@@ -265,14 +293,14 @@ test("network producer checks Rust target ownership with lockfile-sensitive cach
 
 test("network packaging and acceptance inputs select the producer and browser consumer", () => {
   for (const path of [
-    "build.ts",
-    "prepare.ts",
-    "tooling/check-network-rust.ts",
-    "tests/network-lazy.test.ts",
-    "tests/packaging.test.ts",
-    "tests/git-install.test.ts",
-    "tests/node-exports.test.ts",
-    "tests/runtime-size.test.ts",
+    "packages/waffle/build.ts",
+    "packages/waffle/prepare.ts",
+    "packages/waffle/tooling/check-network-rust.ts",
+    "packages/waffle/tests/network-lazy.test.ts",
+    "packages/waffle/tests/packaging.test.ts",
+    "packages/waffle/tests/git-install.test.ts",
+    "packages/waffle/tests/node-exports.test.ts",
+    "packages/waffle/tests/runtime-size.test.ts",
   ])
     for (const name of ["network", "browser"])
       expect(selected(name, path), `${name}: ${path}`).toBe(true);
