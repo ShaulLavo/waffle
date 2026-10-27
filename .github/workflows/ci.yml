@@ -61,21 +61,27 @@ jobs:
               - "packages/waffle/tests/runtime-size.test.ts"
             coreutils:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/coreutils/**"
             sed:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/sed/**"
             findutils:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/findutils/**"
             grep:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/grep/**"
             ripgrep:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/ripgrep/**"
             base:
               - ".github/**"
+              - "packages/waffle/**"
               - "packages/base/**"
             browser:
               - ".github/**"
