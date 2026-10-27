@@ -27,6 +27,8 @@ async function run(): Promise<void> {
   const packedRoot = join(extractDirectory, "package");
   const required = [
     "package.json",
+    "LICENSE",
+    "LICENSES/Apache-2.0.txt",
     "index.ts",
     "dist/index.js",
     "browser/worker.ts",
@@ -36,6 +38,14 @@ async function run(): Promise<void> {
   for (const path of required) {
     if (!existsSync(join(packedRoot, path))) throw new Error(`archive is missing ${path}`);
   }
+  if (!(await readFile(join(packedRoot, "LICENSE"), "utf8")).startsWith("MIT License"))
+    throw new Error("archive has the wrong MIT license");
+  if (
+    !(await readFile(join(packedRoot, "LICENSES/Apache-2.0.txt"), "utf8")).includes(
+      "Apache License",
+    )
+  )
+    throw new Error("archive has the wrong upstream license notice");
   await writeFile(
     join(consumerDirectory, "package.json"),
     JSON.stringify({

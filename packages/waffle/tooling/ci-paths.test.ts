@@ -70,6 +70,19 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
+test("release workflow publishes only the runtime tarball and checksum", async () => {
+  const release = YAML.parse(
+    readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+  );
+  expect(release.permissions.contents).toBe("write");
+  const steps = release.jobs.release.steps as Array<Record<string, unknown>>;
+  const publish = steps.find((step) => step.name === "Publish the GitHub release assets");
+  expect(publish).toBeDefined();
+  expect(String(publish?.run)).toContain("gh release create");
+  expect(String(publish?.run)).toContain(".sha256");
+  expect(String(publish?.run)).not.toContain("npm publish");
+});
+
 test("browser selects runners, shared controls and guest fixtures", () => {
   for (const path of [
     "packages/waffle/scripts/test-browser.ts",

@@ -21,7 +21,9 @@
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "network"
+    "network",
+    "LICENSE",
+    "LICENSES"
   ],
   "type": "module",
   "exports": {
