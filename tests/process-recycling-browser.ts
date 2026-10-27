@@ -1,4 +1,5 @@
 import { browserStartupPool } from "./startup-pool-browser.js";
+import { nestedWasi } from "./fixtures/nested-wasi.js";
 import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
 import {
   browserQuietStartFailure,
@@ -802,6 +803,11 @@ const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap
     ),
 );
 const cases: BrowserCase[] = quietFailureCases.concat(
+  [false, true].map((shared) => ({
+    label: `nested native WASI: memory growth, I/O and context exit (shared=${shared})`,
+    standalone: true,
+    run: async () => nestedWasi(shared),
+  })),
   [
     {
       label: "startup pool: compiled modules, fresh processes and cancellation",
