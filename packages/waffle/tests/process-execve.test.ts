@@ -105,6 +105,44 @@ for (const [executable, cwd] of [
   });
 }
 
+test("spawn follows a symlink to the canonical registered executable", async () => {
+  const state = fixture();
+  try {
+    const link = state.fs.resolveAbsolute("/bin/test-link");
+    if (typeof link === "number") throw new Error("missing symlink path");
+    expect(state.fs.symlink(link, "test-guest")).toBe(0);
+    const descriptors = state.supervisor.get(state.root)?.descriptors;
+    if (!descriptors) throw new Error("missing root descriptors");
+    const parent = descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n);
+    const pid = state.supervisor.reserveSpawn(state.root, {
+      ...request("./test-link", "/bin"),
+      argv: ["./test-link", "argument"],
+      env: { MARKER: "preserved" },
+      fds: [{ parent, child: 9 }],
+    });
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "exited",
+      code: 23,
+    });
+    expect(state.contexts[0]).toMatchObject({
+      module,
+      adapter: "test",
+      interruptible: true,
+      request: {
+        executable: "./test-link",
+        argv: ["./test-link", "argument"],
+        env: { MARKER: "preserved" },
+        cwd: "/bin",
+        fds: [{ parent, child: 9 }],
+      },
+    });
+    expect(state.loads).toBe(1);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
 for (const stateChange of ["missing", "deleted", "directory", "unregistered"] as const) {
   test(`spawn checks the live filesystem before loading a ${stateChange} executable`, async () => {
     const state = fixture();

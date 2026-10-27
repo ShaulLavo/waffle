@@ -1,6 +1,6 @@
 import { objectFreeze } from "./intrinsics.ts";
 import { ExecutableFormatError } from "./start-failure.js";
-import { normalize } from "../core/path.js";
+import { dirname, normalize } from "../core/path.js";
 
 /** Metadata admission is separate from bounded script-prefix reads; neither owns a filesystem. */
 export type ExecutableLookup = (
@@ -161,6 +161,7 @@ export class ExecutableRegistry {
     mode: "access" | "execute",
     depth: number,
     seen: Set<string>,
+    scriptName = name,
   ): Promise<{
     readonly entry: Readonly<Required<Executable>>;
     readonly argv?: readonly string[];
@@ -190,6 +191,20 @@ export class ExecutableRegistry {
     assertActive();
     if (!file) throw new ExecutableNotFound(absolute);
     if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
+    if (file.kind === "symlink" && "target" in file && typeof file.target === "string") {
+      if (seen.has(file.path)) throw new ExecutableNotRunnable(file.path, false, "ELOOP");
+      seen.add(file.path);
+      return this.admitScript(
+        file.target,
+        dirname(file.path),
+        assertActive,
+        argv,
+        mode,
+        depth,
+        seen,
+        scriptName,
+      );
+    }
     if (registered && file.kind === "file" && file.path === predicted)
       return { entry: registered, ...(argv ? { argv } : {}) };
     if (!this.read) throw this.notRunnable(file.path, mode);
@@ -203,8 +218,8 @@ export class ExecutableRegistry {
     if (!shebang) throw this.notRunnable(file.path, mode, true);
     const nextArgv = argv
       ? shebang.argument
-        ? [shebang.interpreter, shebang.argument, name].concat(argv.slice(1))
-        : [shebang.interpreter, name].concat(argv.slice(1))
+        ? [shebang.interpreter, shebang.argument, scriptName].concat(argv.slice(1))
+        : [shebang.interpreter, scriptName].concat(argv.slice(1))
       : undefined;
     return this.admitScript(
       shebang.interpreter,
