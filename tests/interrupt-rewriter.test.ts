@@ -49,7 +49,7 @@ function instance(
   expect(WebAssembly.validate(bytes)).toBe(true);
   return new WebAssembly.Instance(new WebAssembly.Module(bytes), {
     ...imports,
-    runtime_proc: { interrupted },
+    runtime_proc: { interrupted: () => 0, __waffle_fatal: interrupted },
   });
 }
 function run(guest: WebAssembly.Instance, ...args: number[]) {
@@ -72,7 +72,7 @@ test("validates the original, preserves the input, and validates the output", ()
   expect(original).toEqual(saved);
   expect(WebAssembly.validate(output)).toBe(true);
   expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual([
-    { module: "runtime_proc", name: "interrupted", kind: "function" },
+    { module: "runtime_proc", name: "__waffle_fatal", kind: "function" },
   ]);
   refused(original.subarray(0, original.length - 1), /valid|truncat/i);
   refused(
@@ -89,7 +89,7 @@ test("runs under Node's native strip-only TypeScript and WebAssembly engine", ()
     let calls = 0;
     const output = rewriteInterrupts(bytes, { interval: 3 });
     const guest = new WebAssembly.Instance(new WebAssembly.Module(output), {
-      runtime_proc: { interrupted() { return ++calls === 2 ? 15 : 0; } },
+      runtime_proc: { __waffle_fatal() { return ++calls === 2 ? 15 : 0; } },
     });
     let trapped = false;
     try { guest.exports.run(); } catch (error) {
@@ -125,7 +125,7 @@ test("preserves leading BOM characters in length-delimited Wasm names", () => {
   const output = rewriteInterrupts(imported);
   expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual([
     { module: namespace, name: "run", kind: "function" },
-    { module: "runtime_proc", name: "interrupted", kind: "function" },
+    { module: "runtime_proc", name: "__waffle_fatal", kind: "function" },
   ]);
 });
 
@@ -425,20 +425,86 @@ test("refuses GC, exception handling and multi-memory", () => {
   for (const bytes of proposals) refused(bytes);
 });
 
-test("reserves the entire runtime_proc namespace, regardless of import kind or spelling", () => {
-  for (const field of ["interrupted", "signal", "spawn"]) {
-    validRefused(
-      binary(
-        types(type([], [0x7f])),
-        section(2, vec([name("runtime_proc").concat(name(field), [0, 0])])),
+test("admits exact runtime_proc imports and rejects forged or malformed imports", () => {
+  const imports = [
+    ["spawn", type([0x7f, 0x7f], [0x7f])],
+    ["job_of", type([0x7f], [0x7f])],
+    ["wait", type([0x7f, 0x7f], [0x7f])],
+    ["wait_job", type([0x7f, 0x7f, 0x7f], [0x7f])],
+    ["kill", type([0x7f, 0x7f], [0x7f])],
+    ["kill_job", type([0x7f, 0x7f], [0x7f])],
+    ["pipe", type([0x7f], [0x7f])],
+    ["dup", type([0x7f], [0x7f])],
+    ["read", type([0x7f, 0x7f, 0x7f], [0x7f])],
+    ["write", type([0x7f, 0x7f, 0x7f], [0x7f])],
+    ["poll", type([0x7f, 0x7f, 0x7f, 0x7f], [0x7f])],
+    ["interrupted", type([], [0x7f])],
+    ["signal", type([0x7f, 0x7f], [0x7f])],
+  ] as const;
+  const output = rewriteInterrupts(
+    binary(
+      types(...imports.map(([, signature]) => signature)),
+      section(
+        2,
+        vec(
+          imports.map(([field], index) => name("runtime_proc").concat(name(field), [0], u(index))),
+        ),
       ),
-      /reserv|runtime_proc/i,
-    );
-  }
+    ),
+  );
+  const expectedImports: { module: string; name: string; kind: "function" }[] = imports.map(
+    ([field]) => ({ module: "runtime_proc", name: field, kind: "function" }),
+  );
+  expectedImports.push({ module: "runtime_proc", name: "__waffle_fatal", kind: "function" });
+  expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual(expectedImports);
+  validRefused(
+    binary(
+      types(type([0x7f], [0x7f])),
+      section(2, vec([name("runtime_proc").concat(name("spawn"), [0, 0])])),
+    ),
+    /signature/i,
+  );
+  validRefused(
+    binary(
+      types(type([], [0x7f])),
+      section(2, vec([name("runtime_proc").concat(name("__waffle_fatal"), [0, 0])])),
+    ),
+    /unsupported|reserved/i,
+  );
   validRefused(
     binary(section(2, vec([name("runtime_proc").concat(name("memory"), [2, 0, 1])]))),
-    /reserv|runtime_proc/i,
+    /function|runtime_proc/i,
   );
+});
+
+test("existing handled interrupted stays separate from fatal checkpoints", () => {
+  const bytes = binary(
+    types(type([], [0x7f]), type()),
+    section(2, vec([name("runtime_proc").concat(name("interrupted"), [0, 0])])),
+    funcs(1),
+    exports(["run", 0, 1]),
+    code([0x10, 0, 0x1a, 0x03, 0x40, 0x0c, 0, 0x0b, 0x0b]),
+  );
+  let handled = 0;
+  let fatal = 0;
+  const guest = new WebAssembly.Instance(
+    new WebAssembly.Module(rewriteInterrupts(bytes, { interval: 2 })),
+    {
+      runtime_proc: {
+        interrupted: () => {
+          handled++;
+          return 0;
+        },
+        __waffle_fatal: () => {
+          fatal++;
+          return 15;
+        },
+      },
+    },
+  );
+  expect(() => (guest.exports.run as () => void)()).toThrow(WebAssembly.RuntimeError);
+  expect(handled).toBe(1);
+  expect(fatal).toBe(1);
 });
 
 test("drops all custom metadata, including names/debug offsets, and refuses linker metadata", () => {

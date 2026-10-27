@@ -31,7 +31,7 @@ scope.onmessage = ({ data }: MessageEvent<InterruptWorkerRequest>) => {
     try {
       const instance = new WebAssembly.Instance(data.module, {
         env: { memory: data.memory },
-        runtime_proc: { interrupted: () => fatalInterrupt(data.outcome) },
+        runtime_proc: { __waffle_fatal: () => fatalInterrupt(data.outcome) },
       });
       scope.postMessage({ kind: "running" });
       (instance.exports[data.shape] as () => void)();

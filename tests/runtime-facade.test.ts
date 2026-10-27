@@ -1630,7 +1630,7 @@ test("source registrations compile once across concurrent spawns and replace by 
   const runtime = create({ processHost: processHost() });
   runtime.registerAdapter("test", (context) => {
     modules.push(context.module);
-    new WebAssembly.Instance(context.module, { runtime_proc: { interrupted: () => 0 } });
+    new WebAssembly.Instance(context.module, { runtime_proc: { __waffle_fatal: () => 0 } });
     context.started();
     context.exit(0);
     return { terminate() {} };

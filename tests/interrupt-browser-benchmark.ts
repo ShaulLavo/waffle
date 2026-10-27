@@ -128,7 +128,7 @@ export async function runInterruptBenchmarks() {
   const instances = arms.map((arm) => ({
     name: arm.name,
     instance: new WebAssembly.Instance(new WebAssembly.Module(arm.rewrite(workload)), {
-      runtime_proc: { interrupted },
+      runtime_proc: { __waffle_fatal: interrupted },
       __interrupt: { interrupted },
     }),
   }));

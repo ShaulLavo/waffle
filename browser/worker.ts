@@ -645,8 +645,11 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         return wasi!.descriptors.kind(fd! >>> 0);
       },
       signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
-      interrupted: () =>
-        req.interruptible ? fatalInterrupt(outcome) : (executor.signal?.(0, 0) ?? 0),
+      // Guest-owned runtime_proc.interrupted remains the cooperative handled-signal probe.
+      // Instrumented source checkpoints use the private fatal import below so a pre-existing
+      // interrupted import is never rebound to immutable supervisor-outcome semantics.
+      interrupted: () => executor.signal?.(0, 0) ?? 0,
+      __waffle_fatal: () => fatalInterrupt(outcome),
       default_signal: (signal) => {
         try {
           defaultSignal(signal!);
@@ -822,8 +825,6 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         const entry = entries[index]!,
           name = entry[0],
           call = entry[1];
-        // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.
-        if (req.interruptible && name === "interrupted") continue;
         processImports[name] = (...args) => {
           checkActive();
           return call(...args);
