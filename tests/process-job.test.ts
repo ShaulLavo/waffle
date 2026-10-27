@@ -134,7 +134,7 @@ test("unknown jobs, invalid flags and output faults do not consume completed job
   const f = fixture();
   try {
     expect(f.abi.imports.wait_job!(999999, 1, 64)).toBe(-71);
-    expect(f.abi.imports.wait_job!(f.job, 2, 64)).toBe(-28);
+    expect(f.abi.imports.wait_job!(f.job, 3, 64)).toBe(-28);
     f.supervisor.exit(f.leader, 0);
     f.supervisor.exit(f.child, 0);
     expect(f.abi.imports.wait_job!(f.job, 1, 65535)).toBe(-21);

@@ -33,6 +33,8 @@ import {
   collectDirectoryProcess,
   collectDirectoryJob,
   wakeDirectory,
+  checkDirectoryJobAdmission,
+  settleDirectoryJobLifetimes,
 } from "./directory.js";
 import {
   DescriptorTable,
@@ -49,6 +51,8 @@ import {
   ProcessErrno,
   ProcessError,
   checkedSignal,
+  checkedJobLifetime,
+  type JobLifetime,
   checkedProcessCwd,
   type ProcessExit,
   type SpawnRequest,
@@ -126,10 +130,20 @@ function reserveRecord(
   jobOwner: number,
   jobSlot?: number,
   foreground = true,
+  jobLifetime: JobLifetime = "independent",
   cwd = "/",
 ): WorkerProcessTransport {
   return {
-    ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground),
+    ...reserveDirectoryProcess(
+      transport,
+      pid,
+      parentPid,
+      job,
+      jobOwner,
+      jobSlot,
+      foreground,
+      jobLifetime,
+    ),
     identity: transport.identity,
     bindings: [],
     resources: [],
@@ -169,7 +183,17 @@ export function createWorkerProcessTransport(
     resources: [],
     cwd,
   };
-  return reserveRecord(transport, pid, 0, job, pid, undefined, options.foreground ?? true, cwd);
+  return reserveRecord(
+    transport,
+    pid,
+    0,
+    job,
+    pid,
+    undefined,
+    options.foreground ?? true,
+    "independent",
+    cwd,
+  );
 }
 export function wakeWorkerProcess(transport: WorkerProcessTransport, _slot = transport.slot): void {
   wakeDirectory(transport.directory);
@@ -202,6 +226,22 @@ export interface WorkerProcessClientOptions {
   revokeProcess?(pid: number, transport: WorkerProcessTransport): void;
   createPipe?(): readonly [Stream, Stream];
   onError?(error: unknown): void;
+}
+function snapshotSpawnRequest(
+  request: SpawnRequest,
+  job: number,
+  jobLifetime: JobLifetime | undefined,
+  cwd: string,
+): SpawnRequest {
+  return {
+    executable: request.executable,
+    argv: request.argv.slice(),
+    env: { ...request.env },
+    cwd,
+    job,
+    ...(jobLifetime === undefined ? {} : { jobLifetime }),
+    fds: request.fds.map((binding) => ({ ...binding })),
+  };
 }
 /** Synchronous guest-side process service; only notifications cross the message boundary. */
 export class WorkerProcessClient {
@@ -337,15 +377,18 @@ export class WorkerProcessClient {
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
+    const selector = request.job;
+    const requestedLifetime = request.jobLifetime;
+    const jobLifetime = checkedJobLifetime(selector, requestedLifetime);
     const cwd = checkedProcessCwd(request.cwd);
     if (parentPid !== this.pid)
       throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const sources: Descriptor[] = this.spawnSources(request);
-    if (!Number.isInteger(request.job) || request.job < -1)
+    if (!Number.isInteger(selector) || selector < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
-    const job = request.job > 0 ? request.job : this.identities.job();
+    const job = selector > 0 ? selector : this.identities.job();
     const existingJob = findDirectoryJob(this.options.transport.directory, job);
-    if (request.job > 0 && !existingJob)
+    if (selector > 0 && !existingJob)
       throw new ProcessError(
         this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH,
         "unknown or collected job",
@@ -367,7 +410,8 @@ export class WorkerProcessClient {
         job,
         existingJob?.ownerPid ?? this.pid,
         existingJob?.slot,
-        request.job === 0,
+        selector === 0,
+        jobLifetime,
         cwd,
       );
       child.data = transfer?.data;
@@ -387,14 +431,10 @@ export class WorkerProcessClient {
         });
       }
       // The worker may immediately mutate the original request or close its source fds.
-      const snapshot: SpawnRequest = {
-        ...request,
-        cwd,
-        argv: request.argv.slice(),
-        env: { ...request.env },
-        fds: request.fds.map((binding) => ({ ...binding })),
-      };
+      const snapshot = snapshotSpawnRequest(request, selector, requestedLifetime, cwd);
       this.admit();
+      const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
+      checkDirectoryJobAdmission(child.directory, group);
       this.options.postMessage({
         type: "runtime-proc",
         operation: "spawn",
@@ -570,6 +610,12 @@ export class WorkerProcessClient {
   jobEmpty(callerPid: number, job: number): boolean {
     return this.jobIsEmpty(this.requireJob(callerPid, job));
   }
+  jobCleanupReady(callerPid: number, job: number): boolean {
+    const group = this.requireJob(callerPid, job);
+    const retired = controlLoad(group.retirement);
+    if (retired < 0) throw new ProcessError(-retired, "job retirement failed");
+    return this.jobIsEmpty(group) && retired === 1;
+  }
   waitJob(callerPid: number, job: number): ProcessExit | null {
     const group = this.requireJob(callerPid, job);
     if (!this.jobIsEmpty(group)) return null;
@@ -651,6 +697,7 @@ export class WorkerProcessClient {
         if (!collective || !isCollectedProcess(error)) throw error;
       }
     }
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     // Select every target before resource callbacks, then freeze all canonical cursors before
     // returning to the guest. A concurrently collected member cannot stop the remaining job.
     for (let index = 0; index < targets.length; index++) {
@@ -684,9 +731,11 @@ export class WorkerProcessClient {
       kind: "signaled",
       code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal,
     });
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.options.postMessage({
       type: "runtime-proc",
       operation: "exit",
@@ -696,6 +745,7 @@ export class WorkerProcessClient {
   }
   exit(code: number): void {
     claimOutcome(this.signals.outcome, { kind: "exited", code });
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
     wakeWorkerProcess(this.options.transport);
     this.options.postMessage({
