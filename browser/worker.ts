@@ -247,6 +247,26 @@ function startupControl(connection: NotificationConnection | undefined, fs: File
   return { cancellation, notifications, startupCancelled, cancelStartup };
 }
 
+/**
+ * The modules a runtime process needs, all requested at once: awaiting them one by one costs a
+ * fetch round trip each. Each group is still awaited where it is first used, so a failure keeps
+ * its original place in startup, and never surfaces as an unhandled rejection in the meantime.
+ */
+function loadProcessModules(runtimeProcess: unknown) {
+  if (!runtimeProcess) return null;
+  const client = import("../proc/worker-client.js");
+  const host = Promise.all([
+    import("../proc/filesystem-codec.js"),
+    import("../fs/protocol.js"),
+    import("../proc/worker-pipes.js"),
+    import("../proc/abi.js"),
+    import("./runtime-terminals.js"),
+  ]);
+  client.catch(() => {});
+  host.catch(() => {});
+  return { client, host };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -490,13 +510,14 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       ? directoryState(req.runtimeProcess).signals.outcome
       : (requestOutcome ?? executor.outcome);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    const processModules = loadProcessModules(req.runtimeProcess);
     if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
       const { attachPipeEndpoint } = await import("../proc/pipes.js");
       const endpoint = attachPipeEndpoint(req.startupStderr);
       releaseStartupStderr = () => endpoint.close();
     }
-    const runtime = req.runtimeProcess ? await import("../proc/worker-client.js") : null;
+    const runtime = processModules ? await processModules.client : null;
     const runtimeState = req.runtimeProcess
       ? runtime!.workerProcessState(req.runtimeProcess)
       : null;
@@ -697,11 +718,13 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     };
     const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
-      const { createFilesystemDescriptorCodec } = await import("../proc/filesystem-codec.js");
-      const { createProcessFilesystemIdentity } = await import("../fs/protocol.js");
-      const { WorkerPipeHost } = await import("../proc/worker-pipes.js");
-      const { ProcessABI, ProcessSignalExit } = await import("../proc/abi.js");
-      const { createRuntimeTerminalCodec } = await import("./runtime-terminals.js");
+      const [
+        { createFilesystemDescriptorCodec },
+        { createProcessFilesystemIdentity },
+        { WorkerPipeHost },
+        { ProcessABI, ProcessSignalExit },
+        { createRuntimeTerminalCodec },
+      ] = await processModules!.host;
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
