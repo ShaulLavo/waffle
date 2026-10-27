@@ -71,7 +71,32 @@ static bytes through core and grows the same table for aligned, nonzero ranges.
 a mutable stack global is the identical object, not a copied pointer value.
 WASI and `runtime_proc` imports retain their strict process-owned resolution.
 
-Active default-index segments use their imported base global. Passive data
+Preparation checks each side's `env` function against the core export's complete
+Wasm parameter and result types. Core preempts. When core has no export of that
+name, the import binds to the same side's own export only if that export is a
+defined function (not a re-exported import) of the identical type. wasm-ld emits
+this import/export pair for every visible definition in a shared library so the
+definition stays preemptible. Such imports go through a generated typed relay
+module: each relay export does `call_indirect` with the exact type through a
+target slot that Waffle reserves in the shared table and fills with the actual
+definition right after the side instantiates, before relocation or
+constructors. Target slots are distinct from the side's own element entries,
+which may hold the relay itself. No other library or JS object is searched. Supported `dylink.0` import-info records mark
+direct `env` functions weak and undefined (`0x11`). A present provider binds
+normally. A missing direct weak function remains an error; Waffle supplies no
+replacement callable. Imports without a record require a provider.
+Records must name an imported `env` function. Other flags, duplicate or
+conflicting records, unmatched names, and malformed payloads are rejected.
+Global imports retain their Wasm type and mutability. Core globals must match;
+the existing data GOT still requires immutable core i32 address exports.
+
+Defined side globals may use `i32.const` or the extended-const form
+`global.get <imported base> i32.const k i32.add` with `__memory_base` or
+`__table_base`. Relative globals must stay within that base's reservation,
+including its one-past address, and their final addresses must not overflow wasm32.
+Active default-index segments use their imported base global,
+optionally plus a constant, and must lie inside the `dylink.0` reservation
+without overlapping each other. Passive data
 requires explicit ordered memory initialization and relocation. For passive
 members, rename the generic `__wasm_apply_data_relocs` export and list it after
 memory initialization. Waffle will not guess that order. For active-only
@@ -80,12 +105,18 @@ Declared zero-argument initializers run once, core then libraries.
 Preparation rejects repeated function targets, including export aliases.
 Command entry and automatic relocation cannot also be explicit initializers.
 
-The observed `GOT.mem` names `stdout`, `_CLOCK_MONOTONIC`, and `errno` resolve
-only to immutable core i32 address exports inside the same memory. Libraries
-share mutable GOT cells initialized with those addresses. Waffle does not
-interpret the objects or substitute values. GOT.func, other GOT symbols, TLS,
-exception tags, true Wasm start sections, cycles, symbol searches, dlopen and
-unload are unsupported and rejected.
+`GOT.mem` names resolve only to immutable core i32 address exports inside the
+same memory: nonzero and below the memory size, except the linker stack bounds
+`__stack_low` and `__stack_high`, which may equal either edge. Libraries share
+mutable data GOT cells initialized with those addresses. Waffle does not
+interpret the objects or substitute values.
+
+`GOT.func` cells are per library. A core function provider uses its existing
+table slot when one holds that exact function, otherwise a new slot from the
+same table allocator; a same-side definition uses its target slot. Export aliases of the same definition
+share that slot. A core export of the wrong kind is an error. Other GOT
+namespaces, TLS, exception tags, true Wasm start sections, cycles, symbol
+searches, dlopen and unload are unsupported and rejected.
 
 ## Trust and cancellation
 

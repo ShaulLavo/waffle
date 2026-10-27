@@ -1,0 +1,562 @@
+{
+  "name": "waffle",
+  "version": "0.0.90",
+  "private": true,
+  "files": [
+    "dist",
+    "scripts",
+    "browser",
+    "core",
+    "fs",
+    "interrupt",
+    "link",
+    "proc",
+    "tests",
+    "tooling",
+    "index.ts",
+    "runtime.ts",
+    "build.ts",
+    "prepare.ts",
+    "package.json",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "network",
+    "LICENSE",
+    "LICENSES"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "node": "./dist/index.js",
+      "bun": "./index.ts",
+      "browser": "./index.ts",
+      "default": "./index.ts"
+    },
+    "./runtime": {
+      "types": "./runtime.ts",
+      "node": "./dist/runtime.js",
+      "bun": "./runtime.ts",
+      "browser": "./runtime.ts",
+      "default": "./runtime.ts"
+    },
+    "./core": {
+      "types": "./core/index.ts",
+      "node": "./dist/core/index.js",
+      "bun": "./core/index.ts",
+      "browser": "./core/index.ts",
+      "default": "./core/index.ts"
+    },
+    "./core/index": {
+      "types": "./core/index.ts",
+      "node": "./dist/core/index.js",
+      "bun": "./core/index.ts",
+      "browser": "./core/index.ts",
+      "default": "./core/index.ts"
+    },
+    "./core/descriptors": {
+      "types": "./core/descriptors.ts",
+      "node": "./dist/core/descriptors.js",
+      "bun": "./core/descriptors.ts",
+      "browser": "./core/descriptors.ts",
+      "default": "./core/descriptors.ts"
+    },
+    "./core/filesystem": {
+      "types": "./core/filesystem.ts",
+      "node": "./dist/core/filesystem.js",
+      "bun": "./core/filesystem.ts",
+      "browser": "./core/filesystem.ts",
+      "default": "./core/filesystem.ts"
+    },
+    "./core/memory-views": {
+      "types": "./core/memory-views.js",
+      "node": "./dist/core/memory-views.js",
+      "bun": "./core/memory-views.js",
+      "browser": "./core/memory-views.js",
+      "default": "./core/memory-views.js"
+    },
+    "./core/open-file": {
+      "types": "./core/open-file.ts",
+      "node": "./dist/core/open-file.js",
+      "bun": "./core/open-file.ts",
+      "browser": "./core/open-file.ts",
+      "default": "./core/open-file.ts"
+    },
+    "./core/path": {
+      "types": "./core/path.ts",
+      "node": "./dist/core/path.js",
+      "bun": "./core/path.ts",
+      "browser": "./core/path.ts",
+      "default": "./core/path.ts"
+    },
+    "./core/wasi": {
+      "types": "./core/wasi.ts",
+      "node": "./dist/core/wasi.js",
+      "bun": "./core/wasi.ts",
+      "browser": "./core/wasi.ts",
+      "default": "./core/wasi.ts"
+    },
+    "./fs": {
+      "types": "./fs/index.ts",
+      "node": "./dist/fs/index.js",
+      "bun": "./fs/index.ts",
+      "browser": "./fs/index.ts",
+      "default": "./fs/index.ts"
+    },
+    "./fs/index": {
+      "types": "./fs/index.ts",
+      "node": "./dist/fs/index.js",
+      "bun": "./fs/index.ts",
+      "browser": "./fs/index.ts",
+      "default": "./fs/index.ts"
+    },
+    "./fs/backend": {
+      "types": "./fs/backend.ts",
+      "node": "./dist/fs/backend.js",
+      "bun": "./fs/backend.ts",
+      "browser": "./fs/backend.ts",
+      "default": "./fs/backend.ts"
+    },
+    "./fs/watch": {
+      "types": "./fs/watch.ts",
+      "node": "./dist/fs/watch.js",
+      "bun": "./fs/watch.ts",
+      "browser": "./fs/watch.ts",
+      "default": "./fs/watch.ts"
+    },
+    "./fs/client": {
+      "types": "./fs/client.ts",
+      "node": "./dist/fs/client.js",
+      "bun": "./fs/client.ts",
+      "browser": "./fs/client.ts",
+      "default": "./fs/client.ts"
+    },
+    "./fs/indexeddb": {
+      "types": "./fs/indexeddb.ts",
+      "node": "./dist/fs/indexeddb.js",
+      "bun": "./fs/indexeddb.ts",
+      "browser": "./fs/indexeddb.ts",
+      "default": "./fs/indexeddb.ts"
+    },
+    "./fs/memory": {
+      "types": "./fs/memory.ts",
+      "node": "./dist/fs/memory.js",
+      "bun": "./fs/memory.ts",
+      "browser": "./fs/memory.ts",
+      "default": "./fs/memory.ts"
+    },
+    "./fs/opfs": {
+      "types": "./fs/opfs.ts",
+      "node": "./dist/fs/opfs.js",
+      "bun": "./fs/opfs.ts",
+      "browser": "./fs/opfs.ts",
+      "default": "./fs/opfs.ts"
+    },
+    "./fs/persistent": {
+      "types": "./fs/persistent.ts",
+      "node": "./dist/fs/persistent.js",
+      "bun": "./fs/persistent.ts",
+      "browser": "./fs/persistent.ts",
+      "default": "./fs/persistent.ts"
+    },
+    "./fs/protocol": {
+      "types": "./fs/protocol.ts",
+      "node": "./dist/fs/protocol.js",
+      "bun": "./fs/protocol.ts",
+      "browser": "./fs/protocol.ts",
+      "default": "./fs/protocol.ts"
+    },
+    "./fs/service": {
+      "types": "./fs/service.ts",
+      "node": "./dist/fs/service.js",
+      "bun": "./fs/service.ts",
+      "browser": "./fs/service.ts",
+      "default": "./fs/service.ts"
+    },
+    "./fs/shared": {
+      "types": "./fs/shared.ts",
+      "node": "./dist/fs/shared.js",
+      "bun": "./fs/shared.ts",
+      "browser": "./fs/shared.ts",
+      "default": "./fs/shared.ts"
+    },
+    "./fs/storage": {
+      "types": "./fs/storage.ts",
+      "node": "./dist/fs/storage.js",
+      "bun": "./fs/storage.ts",
+      "browser": "./fs/storage.ts",
+      "default": "./fs/storage.ts"
+    },
+    "./proc": {
+      "types": "./proc/index.ts",
+      "node": "./dist/proc/index.js",
+      "bun": "./proc/index.ts",
+      "browser": "./proc/index.ts",
+      "default": "./proc/index.ts"
+    },
+    "./proc/index": {
+      "types": "./proc/index.ts",
+      "node": "./dist/proc/index.js",
+      "bun": "./proc/index.ts",
+      "browser": "./proc/index.ts",
+      "default": "./proc/index.ts"
+    },
+    "./proc/control": {
+      "types": "./proc/control.ts",
+      "node": "./dist/proc/control.js",
+      "bun": "./proc/control.ts",
+      "browser": "./proc/control.ts",
+      "default": "./proc/control.ts"
+    },
+    "./proc/abi": {
+      "types": "./proc/abi.ts",
+      "node": "./dist/proc/abi.js",
+      "bun": "./proc/abi.ts",
+      "browser": "./proc/abi.ts",
+      "default": "./proc/abi.ts"
+    },
+    "./proc/filesystem-codec": {
+      "types": "./proc/filesystem-codec.ts",
+      "node": "./dist/proc/filesystem-codec.js",
+      "bun": "./proc/filesystem-codec.ts",
+      "browser": "./proc/filesystem-codec.ts",
+      "default": "./proc/filesystem-codec.ts"
+    },
+    "./proc/identity": {
+      "types": "./proc/identity.ts",
+      "node": "./dist/proc/identity.js",
+      "bun": "./proc/identity.ts",
+      "browser": "./proc/identity.ts",
+      "default": "./proc/identity.ts"
+    },
+    "./proc/outcome": {
+      "types": "./proc/outcome.ts",
+      "node": "./dist/proc/outcome.js",
+      "bun": "./proc/outcome.ts",
+      "browser": "./proc/outcome.ts",
+      "default": "./proc/outcome.ts"
+    },
+    "./proc/wait-status": {
+      "types": "./proc/wait-status.ts",
+      "node": "./dist/proc/wait-status.js",
+      "bun": "./proc/wait-status.ts",
+      "browser": "./proc/wait-status.ts",
+      "default": "./proc/wait-status.ts"
+    },
+    "./proc/pipes": {
+      "types": "./proc/pipes.ts",
+      "node": "./dist/proc/pipes.js",
+      "bun": "./proc/pipes.ts",
+      "browser": "./proc/pipes.ts",
+      "default": "./proc/pipes.ts"
+    },
+    "./proc/registry": {
+      "types": "./proc/registry.ts",
+      "node": "./dist/proc/registry.js",
+      "bun": "./proc/registry.ts",
+      "browser": "./proc/registry.ts",
+      "default": "./proc/registry.ts"
+    },
+    "./proc/node-wasi": {
+      "types": "./proc/node-wasi.ts",
+      "node": "./dist/proc/node-wasi.js",
+      "bun": "./proc/node-wasi.ts"
+    },
+    "./proc/signals": {
+      "types": "./proc/signals.ts",
+      "node": "./dist/proc/signals.js",
+      "bun": "./proc/signals.ts",
+      "browser": "./proc/signals.ts",
+      "default": "./proc/signals.ts"
+    },
+    "./proc/stub": {
+      "types": "./proc/stub.ts",
+      "node": "./dist/proc/stub.js",
+      "bun": "./proc/stub.ts",
+      "browser": "./proc/stub.ts",
+      "default": "./proc/stub.ts"
+    },
+    "./proc/supervisor": {
+      "types": "./proc/supervisor.ts",
+      "node": "./dist/proc/supervisor.js",
+      "bun": "./proc/supervisor.ts",
+      "browser": "./proc/supervisor.ts",
+      "default": "./proc/supervisor.ts"
+    },
+    "./proc/table": {
+      "types": "./proc/table.ts",
+      "node": "./dist/proc/table.js",
+      "bun": "./proc/table.ts",
+      "browser": "./proc/table.ts",
+      "default": "./proc/table.ts"
+    },
+    "./proc/types": {
+      "types": "./proc/types.ts",
+      "node": "./dist/proc/types.js",
+      "bun": "./proc/types.ts",
+      "browser": "./proc/types.ts",
+      "default": "./proc/types.ts"
+    },
+    "./proc/worker-broker": {
+      "types": "./proc/worker-broker.ts",
+      "node": "./dist/proc/worker-broker.js",
+      "bun": "./proc/worker-broker.ts",
+      "browser": "./proc/worker-broker.ts",
+      "default": "./proc/worker-broker.ts"
+    },
+    "./proc/worker-client": {
+      "types": "./proc/worker-client.ts",
+      "node": "./dist/proc/worker-client.js",
+      "bun": "./proc/worker-client.ts",
+      "browser": "./proc/worker-client.ts",
+      "default": "./proc/worker-client.ts"
+    },
+    "./proc/worker-pipes": {
+      "types": "./proc/worker-pipes.ts",
+      "node": "./dist/proc/worker-pipes.js",
+      "bun": "./proc/worker-pipes.ts",
+      "browser": "./proc/worker-pipes.ts",
+      "default": "./proc/worker-pipes.ts"
+    },
+    "./interrupt": {
+      "types": "./interrupt/index.ts",
+      "node": "./dist/interrupt/index.js",
+      "bun": "./interrupt/index.ts",
+      "browser": "./interrupt/index.ts",
+      "default": "./interrupt/index.ts"
+    },
+    "./interrupt/index": {
+      "types": "./interrupt/index.ts",
+      "node": "./dist/interrupt/index.js",
+      "bun": "./interrupt/index.ts",
+      "browser": "./interrupt/index.ts",
+      "default": "./interrupt/index.ts"
+    },
+    "./interrupt/check": {
+      "types": "./interrupt/check.ts",
+      "node": "./dist/interrupt/check.js",
+      "bun": "./interrupt/check.ts",
+      "browser": "./interrupt/check.ts",
+      "default": "./interrupt/check.ts"
+    },
+    "./interrupt/loader": {
+      "types": "./interrupt/loader.ts",
+      "node": "./dist/interrupt/loader.js",
+      "bun": "./interrupt/loader.ts",
+      "browser": "./interrupt/loader.ts",
+      "default": "./interrupt/loader.ts"
+    },
+    "./interrupt/rewriter": {
+      "types": "./interrupt/rewriter.ts",
+      "node": "./dist/interrupt/rewriter.js",
+      "bun": "./interrupt/rewriter.ts",
+      "browser": "./interrupt/rewriter.ts",
+      "default": "./interrupt/rewriter.ts"
+    },
+    "./browser/fs-worker": {
+      "types": "./browser/fs-worker.ts",
+      "bun": "./browser/fs-worker.ts",
+      "browser": "./browser/fs-worker.ts"
+    },
+    "./browser/net/helper": {
+      "types": "./browser/net/helper.ts",
+      "node": "./dist/browser/net/helper.js",
+      "bun": "./browser/net/helper.ts",
+      "browser": "./browser/net/helper.ts",
+      "default": "./browser/net/helper.ts"
+    },
+    "./browser/net/host": {
+      "types": "./browser/net/host.ts",
+      "node": "./dist/browser/net/host.js",
+      "bun": "./browser/net/host.ts",
+      "browser": "./browser/net/host.ts",
+      "default": "./browser/net/host.ts"
+    },
+    "./browser/net/http1": {
+      "types": "./browser/net/http1.ts",
+      "node": "./dist/browser/net/http1.js",
+      "bun": "./browser/net/http1.ts",
+      "browser": "./browser/net/http1.ts",
+      "default": "./browser/net/http1.ts"
+    },
+    "./browser/net/protocol": {
+      "types": "./browser/net/protocol.ts",
+      "node": "./dist/browser/net/protocol.js",
+      "bun": "./browser/net/protocol.ts",
+      "browser": "./browser/net/protocol.ts",
+      "default": "./browser/net/protocol.ts"
+    },
+    "./browser/net/ring": {
+      "types": "./browser/net/ring.ts",
+      "node": "./dist/browser/net/ring.js",
+      "bun": "./browser/net/ring.ts",
+      "browser": "./browser/net/ring.ts",
+      "default": "./browser/net/ring.ts"
+    },
+    "./browser/preview-protocol": {
+      "types": "./browser/preview-protocol.ts",
+      "node": "./dist/browser/preview-protocol.js",
+      "bun": "./browser/preview-protocol.ts",
+      "browser": "./browser/preview-protocol.ts",
+      "default": "./browser/preview-protocol.ts"
+    },
+    "./browser/diagnostic": {
+      "types": "./browser/diagnostic.ts",
+      "node": "./dist/browser/diagnostic.js",
+      "bun": "./browser/diagnostic.ts",
+      "browser": "./browser/diagnostic.ts",
+      "default": "./browser/diagnostic.ts"
+    },
+    "./browser/preview": {
+      "types": "./browser/preview.ts",
+      "node": "./dist/browser/preview.js",
+      "bun": "./browser/preview.ts",
+      "browser": "./browser/preview.ts",
+      "default": "./browser/preview.ts"
+    },
+    "./browser/preview1-worker": {
+      "types": "./browser/preview1-worker.ts",
+      "node": "./dist/browser/preview1-worker.js",
+      "bun": "./browser/preview1-worker.ts",
+      "browser": "./browser/preview1-worker.ts",
+      "default": "./browser/preview1-worker.ts"
+    },
+    "./browser/process-context": {
+      "types": "./browser/process-context.ts",
+      "node": "./dist/browser/process-context.js",
+      "bun": "./browser/process-context.ts",
+      "browser": "./browser/process-context.ts",
+      "default": "./browser/process-context.ts"
+    },
+    "./browser/process-broker": {
+      "types": "./browser/process-broker.ts",
+      "node": "./dist/browser/process-broker.js",
+      "bun": "./browser/process-broker.ts",
+      "browser": "./browser/process-broker.ts",
+      "default": "./browser/process-broker.ts"
+    },
+    "./browser/runtime-terminals": {
+      "types": "./browser/runtime-terminals.ts",
+      "node": "./dist/browser/runtime-terminals.js",
+      "bun": "./browser/runtime-terminals.ts",
+      "browser": "./browser/runtime-terminals.ts",
+      "default": "./browser/runtime-terminals.ts"
+    },
+    "./browser/service-worker": {
+      "types": "./browser/service-worker.ts",
+      "node": "./dist/browser/service-worker.js",
+      "bun": "./browser/service-worker.ts",
+      "browser": "./browser/service-worker.ts",
+      "default": "./browser/service-worker.ts"
+    },
+    "./browser/shared-fs": {
+      "types": "./browser/shared-fs.ts",
+      "node": "./dist/browser/shared-fs.js",
+      "bun": "./browser/shared-fs.ts",
+      "browser": "./browser/shared-fs.ts",
+      "default": "./browser/shared-fs.ts"
+    },
+    "./browser/worker": {
+      "types": "./browser/worker.ts",
+      "node": "./dist/browser/worker.js",
+      "bun": "./browser/worker.ts",
+      "browser": "./browser/worker.ts",
+      "default": "./browser/worker.ts"
+    },
+    "./testing/interrupt-browser-runner-control": {
+      "types": "./tests/interrupt-browser-runner-control.ts",
+      "bun": "./tests/interrupt-browser-runner-control.ts",
+      "browser": "./tests/interrupt-browser-runner-control.ts"
+    },
+    "./testing/storage-browser": {
+      "types": "./tests/storage-browser.ts",
+      "bun": "./tests/storage-browser.ts",
+      "browser": "./tests/storage-browser.ts"
+    },
+    "./testing/opfs-storage-browser": {
+      "types": "./tests/opfs-storage-browser.ts",
+      "bun": "./tests/opfs-storage-browser.ts",
+      "browser": "./tests/opfs-storage-browser.ts"
+    },
+    "./network": {
+      "types": "./browser/net/module.ts",
+      "node": "./dist/browser/net/module.js",
+      "bun": "./browser/net/module.ts",
+      "browser": "./browser/net/module.ts",
+      "default": "./browser/net/module.ts"
+    },
+    "./browser/notification-wait": {
+      "types": "./browser/notification-wait.ts",
+      "node": "./dist/browser/notification-wait.js",
+      "bun": "./browser/notification-wait.ts",
+      "browser": "./browser/notification-wait.ts",
+      "default": "./browser/notification-wait.ts"
+    },
+    "./browser/notification-worker": {
+      "types": "./browser/notification-worker.ts",
+      "node": "./dist/browser/notification-worker.js",
+      "bun": "./browser/notification-worker.ts",
+      "browser": "./browser/notification-worker.ts",
+      "default": "./browser/notification-worker.ts"
+    },
+    "./browser/notification-relay": {
+      "types": "./browser/notification-relay.ts",
+      "node": "./dist/browser/notification-relay.js",
+      "bun": "./browser/notification-relay.ts",
+      "browser": "./browser/notification-relay.ts",
+      "default": "./browser/notification-relay.ts"
+    },
+    "./link": {
+      "types": "./link/index.ts",
+      "node": "./dist/link/index.js",
+      "bun": "./link/index.ts",
+      "browser": "./link/index.ts",
+      "default": "./link/index.ts"
+    },
+    "./browser/preview-host": {
+      "types": "./browser/preview-host.ts",
+      "node": "./dist/browser/preview-host.js",
+      "bun": "./browser/preview-host.ts",
+      "browser": "./browser/preview-host.ts",
+      "default": "./browser/preview-host.ts"
+    }
+  },
+  "scripts": {
+    "build": "bun build.ts",
+    "prepare": "bun prepare.ts",
+    "test": "bun test ./tests",
+    "test:ci": "bun test ./tooling/ci-paths.test.ts",
+    "test:libc": "bun scripts/test-wasi-libc.ts",
+    "test:browser": "bun scripts/test-browser.ts",
+    "check": "tsc -p .",
+    "size": "bun tooling/runtime-size.ts",
+    "check:nodenext": "tsc -p tsconfig.nodenext.json",
+    "check:dom-consumer": "tsc -p tsconfig.dom-consumer.json",
+    "lint": "oxlint --deny-warnings --report-unused-disable-directives .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "check:tooling": "tsc -p tsconfig.tooling.json",
+    "unused": "knip --no-progress",
+    "duplicates": "jscpd --fail-on-new-clones 0",
+    "quality": "bun run lint && bun run format:check && bun run check && bun run check:nodenext && bun run check:dom-consumer && bun run check:tooling && bun run unused && bun run duplicates && bun tooling/quality-probes.ts",
+    "build:network": "bun tooling/build-network.ts",
+    "size:network": "bun tooling/network-size.ts",
+    "test:network:rust": "cargo test --release -p waffle-tcp --features module-tests --locked",
+    "pack": "bun pm pack --destination dist",
+    "pack:check": "bun tooling/tarball-smoke.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@astrojs/compiler-rs": "0.5.2",
+    "@types/bun": "^1.4.3",
+    "jscpd": "5.4.1",
+    "knip": "6.41.0",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "playwright": "^1.64.1",
+    "playwright-core": "1.64.1",
+    "typescript": "^7.0.2",
+    "vite": "8.3.4"
+  }
+}

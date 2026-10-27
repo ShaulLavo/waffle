@@ -10,7 +10,7 @@ The package exports the browser runtime at `waffle`, with separate `waffle/core`
 `waffle/proc` and lightweight `waffle/proc/stub` entries. Network and terminal adapters live under
 `waffle/browser/net/*` and `waffle/browser/runtime-terminals`; core imports none of them.
 See [network ownership and transports](network.md) for the network contract.
-The [package export map](../package.json) lists the supported entry points.
+The [package export map](../packages/waffle/package.json) lists the supported entry points.
 
 ## WASI adapter and filesystem contract
 
@@ -55,6 +55,11 @@ records. Its injected launcher starts one worker per process; the supervisor nev
 guest inline. `ExecutableRegistry` maps any executable name to a compiled module (or a cached
 asynchronous loader) and an opaque guest-adapter key. The Bun adapter uses its existing slots
 12–15, while the same worker bootstrap can execute an ordinary preview1 module.
+
+The borrowed process service's `isIdleWorker(worker)` reports whether an already-observed worker
+is still inert in that service's precreated pool. Membership ends before a worker is leased.
+The query exposes no worker references or termination controls; process ownership and cleanup
+checks apply after the worker receives its process request.
 
 `reserveSpawn` synchronously snapshots argv/env/cwd and retains descriptor bindings (including
 nonstandard fds); `start` asynchronously resolves the module and launches the worker. `spawn`
@@ -114,7 +119,8 @@ not proof of physical teardown: an exit acknowledgement or the filesystem's admi
 must prove host critical sections quiescent before reaping and physical termination.
 Each process has fresh interrupt/revocation/transport buffers;
 killed buffers are never assigned to another process. After the first worker launch, the broker
-precreates up to two unused workers across all worker URLs. Each worker runs at most one process;
+precreates up to two unused workers across all worker URLs. A consumer that launches its own root
+worker takes one from the same pool with `takeWorker(url)`. Each worker runs at most one process;
 used workers follow the existing quiescence and termination path. The registry already caches
 compiled modules per registration, and source registrations share a bounded content cache.
 Paired Chromium command timings for worker precreation remain pending.

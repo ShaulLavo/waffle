@@ -32,6 +32,38 @@ remain provided by Node and measure host process/thread time, not per-guest tota
 
 ## Process identity import
 
+### Initial process cwd
+
+`runtime_proc.cwd(buf_ptr: i32, buf_len: i32) -> i32` returns the caller's initial
+cwd as a full UTF-8 byte count, excluding any NUL terminator. It writes the bytes
+only when the count fits `buf_len`. A zero-capacity query or short buffer writes
+nothing; no prefix or terminator is copied. The guest can query, allocate, and call
+again. The path is preserved exactly, without normalization or filesystem lookup.
+
+Both arguments use unsigned i32 address/length semantics. Every call validates the
+whole supplied memory span, including zero-capacity queries and short buffers:
+`ptr == memory size, len == 0` is valid; a pointer past memory or a span extending
+past it returns `-EFAULT` (`-21`). Invalid non-i32 JavaScript arguments return
+`-EINVAL` (`-28`). Memory is reacquired after reading process metadata, and caller
+liveness is rechecked before copying. A dead, disposed, collected or foreign
+worker-process caller returns `-ESRCH` (`-71`). Other failures retain signed WASI
+errno. No output is written on failure. Existing fatal process guards may unwind
+before the import runs rather than resume a guest with a selected fatal outcome.
+
+The import reads only the authenticated caller's immutable process metadata. It
+does not read or change `env`, `PWD`, the filesystem, or libc's current directory.
+Spawn cwd must be absolute, NUL-free and representable as UTF-8. Direct roots set
+it with `createRoot({ cwd })` / `reserveRoot({ cwd })`; shared roots set it with
+`createWorkerProcessTransport({ cwd })`, and `adoptRuntimeRoot` retains that value
+through lazy supervisor activation. Only omitted root cwd defaults to `/`.
+Embedders with a real root cwd must pass it at root creation. Children snapshot
+`SpawnRequest.cwd` into their existing transport and supervisor record.
+
+This is a bootstrap query seam. The consuming guest must initialize its real libc
+cwd before running application code; this import alone does not initialize it.
+
+### PID
+
 `runtime_proc.getpid: () -> i32` returns the calling process's own positive runtime PID,
 not its parent PID or job ID. `ProcessABI` reads its already-bound `options.pid` directly;
 the call takes no arguments, reads no guest memory, never waits and sends no service or
@@ -174,13 +206,14 @@ Actual program exits 126 and 127 remain `{kind: 0, value: 126/127}`; signals use
 
 Host/browser `ProcessExit` keeps a named `error`, Linux-style `code`, and
 `status: null` for startup failures. The shared atomic startup tag remains 3;
-it is separate from guest WaitResult kind 2. These are the seven produced errors:
+it is separate from guest WaitResult kind 2. These are the eight produced errors:
 
 | Error   | Host code | Guest WASI value | Cause                                                                                                     |
 | ------- | --------: | ---------------: | --------------------------------------------------------------------------------------------------------- |
 | ENOENT  |         2 |               44 | Missing executable or missing path component                                                              |
 | EACCES  |        13 |                2 | Directory or existing file without its admitted executable registration                                   |
 | ENOTDIR |        20 |               54 | A file used as a directory, including a trailing slash on a file                                          |
+| ELOOP   |        40 |               32 | Bounded interpreter-script recursion or an interpreter cycle                                              |
 | ENOEXEC |         8 |               45 | Invalid/unsupported Wasm at rewrite/compile, or absent/noncallable `_start` or non-memory `memory` export |
 | ENOMEM  |        12 |               48 | Allocation failure during loading or host/Worker setup                                                    |
 | EAGAIN  |        11 |                6 | Process/setup resource capacity exhausted after reservation                                               |
@@ -441,6 +474,69 @@ reported by its individual wait and never replaces the leader result. Only consu
 makes a repeat return `-ECHILD`. Unknown job IDs return `-ESRCH` (`-71`). Spawn
 selectors are unchanged: `0` and `-1` create foreground/background jobs, and a
 positive selector joins an existing live job.
+
+### Caller-owned independent jobs
+
+Spawn JSON accepts optional `jobLifetime: "caller-fatal" | "independent"` only
+with a new-job selector (`0` or `-1`). Omission means `independent`; existing
+foreground/background and detached-job behavior is unchanged. Unknown values,
+null, and specifying a lifetime with a positive join selector return `-EINVAL`
+before reservation. Joins inherit the existing job's policy. The authenticated
+spawning process supplies the immutable lifetime owner; no JSON owner PID is used.
+
+When that owner's immutable outcome is `signaled`, the host seals its caller-fatal
+jobs, selects SIGKILL for their remaining members, and closes nested owned jobs.
+Independent jobs and unrelated siblings survive. Ordinary exit (including status 137) and startup failure disarm the relation without killing children. Original
+owner identity is separate from the mutable control ancestry used for wait authority.
+
+The host releases owner descriptors before awaiting child cleanup. Owner completion
+is withheld until owned members pass their existing filesystem/adapter fences,
+their physical stops (including late acquired launch handles) settle, and their
+jobs are collected through the existing incarnation-tagged consuming claims.
+Queued accepted spawns are included; cleanup never blocks their admission queue.
+Fence or physical-stop failure stays unconfirmed and diagnostic. No timeout,
+guest Drop, second collector, or replacement child outcome completes this barrier.
+
+### Signal-preserving cleanup wait
+
+`wait_job(job, 2, out)` is **CLEANUP**. It preserves pending handled signals while
+waiting for both safe resource confirmation and physical retirement, then writes
+the same typed eight-byte leader result and consumes the job. A prior individual
+child wait is optional. Flags `0` and `1` keep their existing semantics; `3` and
+other flags are invalid. CLEANUP does not send a signal: a live caller first kills
+the job if cancellation is required, then makes one cleanup wait.
+
+CLEANUP registers existing job/directory and caller-revocation notifications before
+scanning readiness and waits on their shared sequence without timer retries. A
+handled pending signal is neither consumed nor re-emitted. A fatal caller outcome
+uses the existing process-signal unwind; host lifetime cleanup continues after the
+guest can no longer run. The full output span is validated before collection and
+reacquired after callbacks or memory growth. Caller/job authority is unchanged;
+waiting on the caller's own member job returns `-EINVAL`. Hosts without a proven
+notification route return `-ENOTSUP` (`-58`). Failed physical retirement returns
+`-EIO` (`-29`) without consuming the job or fabricating its leader outcome.
+
+`ProcessService.jobCleanupReady(callerPid, job)` supplies the nonblocking predicate.
+Shared job rows carry lifetime and physical-retirement state in the existing
+directory, with current readers and writers using the same layout. Native hosts
+use `registerJobCleanupWake` and caller revocation alongside the existing wake;
+ordinary job/poll wake behavior is unchanged.
+
+Host adapters can provide `SupervisorOptions.retire(pid)` to join physical
+controller cleanup when loading or launch fails before returning a process handle.
+During whole-runtime disposal the existing broker first fences all consumers,
+starts their captured handle stops, and then settles controller stops. Handle-only
+completion is separate from final retirement so a parent's owned-child barrier
+cannot form a shutdown cycle. Coordination hooks remain on the owning supervisor;
+they are omitted from the borrowed `RuntimeSupervisor` capability.
+
+An externally executed `createRoot`/adopted root has no supervisor-owned launch
+handle to certify physical termination. CLEANUP on a job containing such a root
+returns `-ENOTSUP`; ordinary waits are unchanged. External roots cannot join a
+caller-fatal job through root adoption. They can own one: an adopted runtime root
+(a shell or Bun page root) spawns `caller-fatal` children and waits with CLEANUP.
+Spawned child reservations, including worker-transport children, carry the tracked
+launch/stop lifetime for this contract.
 
 Host control fields in `ProcessContext`, `SignalTransport`, `SpawnReservation`
 and `ProcessABIOptions.wait` use `ControlCells` (`Int32Array | TaggedCells`). Outcome
