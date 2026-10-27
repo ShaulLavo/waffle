@@ -1,23 +1,15 @@
 use super::{DescriptorBinding, Error, Outcome, Request, decode_host_result, validate_path};
 use std::io::Write;
 
-#[link(wasm_import_module = "shell_terminal")]
-unsafe extern "C" {
-    #[link_name = "inherited_fd"]
-    fn shell_inherited_fd(index: u32) -> i32;
-}
-
-/// Enumerate the delivered Shell worker's actual launch bindings, excluding private
-/// preopens. Requires `shell_terminal.inherited_fd`; generic Waffle workers do not
-/// provide that namespace. This enumerates bindings, never a guessed fd range.
-pub fn inherited_shell_descriptors() -> Result<Vec<DescriptorBinding>, Error> {
+/// Enumerate the process's launch descriptors, excluding preopens, through
+/// `runtime_proc.inherited_fd`. This enumerates bindings, never a guessed fd range.
+pub fn inherited_descriptors() -> Result<Vec<DescriptorBinding>, Error> {
     let mut bindings = Vec::new();
     for index in 0..=0x7fff_ffff {
-        let fd = unsafe { shell_inherited_fd(index) };
-        if fd == -1 {
-            return Ok(bindings);
-        }
-        let fd = u32::try_from(fd).map_err(|_| Error::InvalidRecord)?;
+        let fd = match decode_host_result("inherited_fd", unsafe { imports::inherited_fd(index) }) {
+            Err(Error::Host { errno: 44, .. }) => return Ok(bindings),
+            result => result?,
+        };
         bindings.push(DescriptorBinding::inherit(fd));
     }
     Err(Error::InvalidRecord)
@@ -35,6 +27,7 @@ mod imports {
         pub(super) fn poll(ptr: *const u8, count: usize, timeout: i32, output: *mut u8) -> i32;
         pub(super) fn interrupted() -> i32;
         pub(super) fn fd_kind(fd: u32) -> i32;
+        pub(super) fn inherited_fd(index: u32) -> i32;
         pub(super) fn access_start(
             path: *const u8,
             length: usize,
@@ -48,7 +41,6 @@ mod imports {
 }
 
 /// Preserve open stdio only. Extra descriptors require explicit bindings from the caller.
-/// P has no general inherited-descriptor enumeration import.
 pub fn inherited_stdio() -> Result<Vec<DescriptorBinding>, Error> {
     let mut bindings = Vec::new();
     for fd in 0..=2 {

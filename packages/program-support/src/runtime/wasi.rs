@@ -1,4 +1,4 @@
-//! WASI links for the neutral guest reactor without a Bash worker import.
+//! WASI links for the neutral guest reactor over Waffle's generic runtime_proc imports.
 use super::*;
 
 #[link(wasm_import_module = "runtime_proc")]
@@ -19,12 +19,8 @@ unsafe extern "C" {
     fn proc_interrupted() -> i32;
     #[link_name = "signal"]
     fn proc_signal(signal: i32, disposition: i32) -> i32;
-}
-
-// Provisional generic Waffle launch metadata, enabled only by cooperative-wasi.
-#[link(wasm_import_module = "waffle_program")]
-unsafe extern "C" {
-    fn inherited_fd(index: u32) -> i32;
+    #[link_name = "inherited_fd"]
+    fn proc_inherited_fd(index: u32) -> i32;
 }
 
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
@@ -61,6 +57,18 @@ fn result(value: i32) -> Result<u32, i32> {
     }
 }
 
+/// The launch descriptor list, ending at ENOENT. Never a probed fd range.
+fn inherited_fds() -> Result<Vec<u32>, i32> {
+    let mut inherited = Vec::new();
+    for index in 0..=i32::MAX as u32 {
+        match unsafe { proc_inherited_fd(index) } {
+            -44 => return Ok(inherited),
+            fd => inherited.push(result(fd)?),
+        }
+    }
+    Err(61)
+}
+
 pub struct WasiAbi {
     root: u32,
     inherited: Vec<u32>,
@@ -68,14 +76,7 @@ pub struct WasiAbi {
 
 impl WasiAbi {
     pub fn new() -> Result<Self, i32> {
-        let mut inherited = Vec::new();
-        for index in 0.. {
-            let fd = unsafe { inherited_fd(index) };
-            if fd < 0 {
-                break;
-            }
-            inherited.push(fd as u32);
-        }
+        let inherited = inherited_fds()?;
         let last = 3u32.checked_add(inherited.len() as u32).ok_or(28)?;
         for fd in 3..=last {
             let mut stat = [0; 8];

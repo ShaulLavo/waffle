@@ -1,5 +1,6 @@
 import type { Runtime, GuestLauncher, RuntimeSupervisor } from "waffle";
 import { DescriptorTable } from "waffle/core/descriptors";
+import { createRuntimeTerminalCodec } from "waffle/browser/runtime-terminals";
 import type { DescriptorBinding, ProcessExit } from "waffle/proc/types";
 import {
   createWorkerProcessTransport,
@@ -64,7 +65,7 @@ export interface FamilyAcceptanceSession {
   pipe(): ReturnType<WorkerPipeHost["createPipe"]>;
   resetOutput(): void;
   waitForOutput(text: string): Promise<void>;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 export interface FamilyAcceptanceOptions {
@@ -107,14 +108,22 @@ function base64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
 }
 
-function request(argv: string[], cwd = "/", fds: DescriptorBinding[] = []): LaunchRequest {
+function request(
+  argv: string[],
+  cwd = "/",
+  fds: DescriptorBinding[] = [],
+  closed: readonly number[] = [],
+): LaunchRequest {
   const program = required(argv[0], "argv[0]");
   return {
     executable: `/usr/bin/${program}`,
     argv,
     cwd,
     env: { PATH, PWD: cwd },
-    fds,
+    fds: [0, 1, 2]
+      .filter((fd) => !closed.includes(fd) && !fds.some((binding) => binding.child === fd))
+      .map((fd) => ({ child: fd, parent: fd }))
+      .concat(fds),
   };
 }
 
@@ -276,8 +285,8 @@ class Session implements FamilyAcceptanceSession {
     }
   }
 
-  dispose() {
-    for (const child of this.children) void this.service.kill(child, 9);
+  async dispose() {
+    await Promise.all(Array.from(this.children, (child) => this.service.kill(child, 9)));
     this.children.clear();
     this.descriptors.dispose();
   }
@@ -307,10 +316,24 @@ async function createSession(runtime: Runtime, launches: LaunchRecord[]): Promis
       transport,
       postMessage: (message) => notices.push(message),
     });
+    for (const fd of [0, 1, 2]) {
+      descriptors.openAt(
+        fd,
+        {
+          kind: "terminal",
+          read: () => 0,
+          write: () => 0,
+          readiness: () => ({ readable: true, writable: true, hangup: fd === 0 }),
+        },
+        fd === 0 ? PIPE_READ_RIGHTS : (1n << 6n) | (1n << 21n) | (1n << 27n),
+        0n,
+      );
+    }
+    const terminalCodec = createRuntimeTerminalCodec({ descriptors, fallback: pipes.codec() });
     const client = new WorkerProcessClient({
       transport,
       descriptors,
-      codec: pipes.codec(),
+      codec: terminalCodec,
       prepareSpawn: (child) => {
         pipes.registry.registerProcess(child);
         return {
@@ -386,7 +409,11 @@ export async function runFamilyAcceptance(options: FamilyAcceptanceOptions): Pro
   try {
     return await runCases(session, options.cases ?? familyAcceptanceCases);
   } finally {
-    session.dispose();
+    await session.dispose();
+    assert(
+      session.descriptors.inheritable().length === 0,
+      "Acceptance descriptors survived disposal",
+    );
     await installation.dispose();
   }
 }
@@ -444,7 +471,23 @@ async function ripgrep(session: FamilyAcceptanceSession) {
 async function envDescriptors(session: FamilyAcceptanceSession) {
   const seven = session.filledPipe("one\ntwo\n");
   const forwarded = request(["env", "grep", "tw", "/dev/fd/7"], "/", [{ child: 7, parent: seven }]);
-  expectExecution(await session.exec(forwarded), forwarded, 0, "two\n");
+  const forwardedResult = await session.exec(forwarded);
+  expectExecution(
+    { ...forwardedResult, launches: forwardedResult.launches.slice(0, 1) },
+    forwarded,
+    0,
+    "two\n",
+  );
+  expectLaunch(
+    { ...forwardedResult, launches: forwardedResult.launches.slice(1) },
+    {
+      executable: "/usr/bin/grep",
+      argv: ["grep", "tw", "/dev/fd/7"],
+      cwd: "/",
+      env: forwarded.env,
+      fds: [0, 1, 2, 7].map((fd) => ({ child: fd, parent: fd })),
+    },
+  );
   const unbound = request(["cat", "/dev/fd/5"]);
   const missing = await session.exec(unbound);
   expectExit(missing.exit, 1);
@@ -469,6 +512,9 @@ async function interruption(session: FamilyAcceptanceSession) {
 }
 
 export const familyAcceptanceCases: readonly FamilyAcceptanceCase[] = [
+  { name: "cat aliases, seq, tail and mkdir", family: "coreutils", run: ordinaryCooperative },
+  { name: "which uses live executable access", family: "coreutils", run: which },
+  { name: "explicitly closed stdout remains closed", family: "coreutils", run: closedStdout },
   { name: "coreutils cut cwd and shared filesystem", family: "coreutils", run: coreutils },
   { name: "find exact byte size", family: "findutils", run: find },
   { name: "xargs internal echo", family: "findutils", run: xargs },
@@ -482,3 +528,34 @@ export const familyAcceptanceCases: readonly FamilyAcceptanceCase[] = [
   },
   { name: "cat interrupted on an open pipe", family: "coreutils", run: interruption },
 ];
+
+async function ordinaryCooperative(session: FamilyAcceptanceSession) {
+  await session.filesystem.writeFile("/family-lines", "alpha\nbeta\n");
+  for (const executable of ["/usr/bin/cat", "/bin/cat"]) {
+    const launched = { ...request(["cat", "/family-lines"]), executable };
+    expectExecution(await session.exec(launched), launched, 0, "alpha\nbeta\n");
+  }
+  const seq = request(["seq", "3"]);
+  expectExecution(await session.exec(seq), seq, 0, "1\n2\n3\n");
+  const tail = request(["tail", "-n", "1", "/family-lines"]);
+  expectExecution(await session.exec(tail), tail, 0, "beta\n");
+  const mkdir = request(["mkdir", "-p", "/made/by/guest"]);
+  expectExecution(await session.exec(mkdir), mkdir, 0, "");
+  assert(
+    (await session.filesystem.lookup("/made/by/guest"))?.kind === "dir",
+    "mkdir did not create its directory",
+  );
+}
+
+async function which(session: FamilyAcceptanceSession) {
+  const launched = request(["which", "grep", "env"]);
+  expectExecution(await session.exec(launched), launched, 0, "/usr/bin/grep\n/usr/bin/env\n");
+}
+
+async function closedStdout(session: FamilyAcceptanceSession) {
+  const launched = request(["seq", "3"], "/", [], [1]);
+  const result = await session.exec(launched);
+  expectExit(result.exit, 1);
+  expectBytes(result.stdout, "", "closed stdout");
+  expectLaunch(result, launched);
+}

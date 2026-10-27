@@ -18,7 +18,7 @@
     "tr": { "path": "/usr/bin/tr", "aliases": ["/bin/tr"], "execution": "wasi", "crate": "crates/tr" },
     "uniq": { "path": "/usr/bin/uniq", "aliases": ["/bin/uniq"], "execution": "wasi" },
     "wc": { "path": "/usr/bin/wc", "aliases": ["/bin/wc"], "execution": "wasi-scalar", "crate": "crates/wc" },
-    "which": { "path": "/usr/bin/which", "aliases": ["/bin/which"], "execution": "wasi", "feature": "waffle-executable-query" },
+    "which": { "path": "/usr/bin/which", "aliases": ["/bin/which"], "execution": "wasi" },
     "clear": { "path": "/usr/bin/clear", "aliases": ["/bin/clear"], "execution": "wasi", "crate": "crates/clear" }
   }
 }

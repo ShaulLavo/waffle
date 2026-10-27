@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Provisional Waffle host import. Enable only with the landed generic host contract.
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list.
 cooperative-wasi = []
 
 [dependencies]

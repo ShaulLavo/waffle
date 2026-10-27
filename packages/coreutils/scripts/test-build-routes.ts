@@ -41,7 +41,7 @@ test("coreutils Cargo route uses the singular recipe and verifies every bin", ()
   const { calls, execute } = capture();
   const checks: { path: string; options: WasiGuestVerification }[] = [];
   buildFamilyPrograms(
-    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi,waffle-executable-query"],
+    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
     coreutilsPackageNames,
     { execute, environment, verifier: verifier(checks) },
   );

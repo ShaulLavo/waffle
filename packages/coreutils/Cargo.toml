@@ -8,9 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
-# Provisional generic Waffle imports; no Bash worker or Bash query namespace.
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list; no Bash namespace.
 cooperative-wasi = ["waffle-program-support/cooperative-wasi"]
-waffle-executable-query = []
 
 [dependencies]
 waffle-program-support = { path = "../program-support" }
@@ -54,7 +53,6 @@ required-features = ["cooperative-wasi"]
 [[bin]]
 name = "which"
 path = "src/bin/which.rs"
-required-features = ["waffle-executable-query"]
 
 [package.metadata.cargo-machete]
 ignored = [

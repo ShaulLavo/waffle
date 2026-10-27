@@ -117,7 +117,7 @@ where
 }
 
 /// Drive one guest over generic Waffle descriptor and filesystem imports.
-/// The inherited-fd import is provisional until Waffle's host API lands.
+/// Needs Waffle's runtime_proc.inherited_fd launch descriptor list.
 #[cfg(all(target_os = "wasi", feature = "cooperative-wasi"))]
 pub fn guest_main<F, Fut>(program: F) -> !
 where

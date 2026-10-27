@@ -1,6 +1,6 @@
-//! Lookup-only alias of Waffle's process query ABI. Ordinary admission reserves
-//! runtime_proc for its injected interrupt checks, so guests import this alias.
-#[link(wasm_import_module = "waffle_executable")]
+//! Lookup-only use of Waffle's executable access queries. Source admission accepts
+//! these runtime_proc imports; no candidate module is loaded.
+#[link(wasm_import_module = "runtime_proc")]
 unsafe extern "C" {
     fn access_start(
         path: *const u8,

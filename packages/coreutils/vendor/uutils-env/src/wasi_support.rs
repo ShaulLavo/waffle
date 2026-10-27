@@ -47,7 +47,7 @@ pub fn run_program(
     argv0: &std::ffi::OsStr,
     args: &[&std::ffi::OsStr],
 ) -> UResult<()> {
-    use waffle_process_consumer::{Request, inherited_shell_descriptors, resolve_executable, run};
+    use waffle_process_consumer::{Request, inherited_descriptors, resolve_executable, run};
     let program = text(program)?;
     if program.is_empty() {
         return Err(USimpleError::new(127, "'': No such file or directory"));
@@ -69,7 +69,7 @@ pub fn run_program(
         argv,
         env,
         cwd,
-        fds: inherited_shell_descriptors().map_err(process_error)?,
+        fds: inherited_descriptors().map_err(process_error)?,
     };
     let outcome = run(&request).map_err(process_error)?;
     let status = outcome.shell_status();

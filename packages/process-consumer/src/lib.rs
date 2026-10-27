@@ -11,9 +11,7 @@ use std::io::{self, Write};
 #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
 mod wasi;
 #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
-pub use wasi::{
-    Child, inherited_shell_descriptors, inherited_stdio, resolve_executable, run, spawn,
-};
+pub use wasi::{Child, inherited_descriptors, inherited_stdio, resolve_executable, run, spawn};
 
 /// Maximum encoded spawn JSON. Requests above this bound fail before spawning.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;

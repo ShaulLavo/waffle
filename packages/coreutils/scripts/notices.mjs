@@ -86,7 +86,8 @@ function historicalEnvSource(path, source) {
       .replace("../../../process-consumer", "../../shell/wasi-process");
   }
   if (path === "src/wasi_support.rs" || path === "wasi.patch") {
-    return source.replaceAll("waffle_process_consumer", "shell_wasi_process");
+    return source.replaceAll("waffle_process_consumer", "shell_wasi_process")
+      .replaceAll("inherited_descriptors", "inherited_shell_descriptors");
   }
   return source;
 }

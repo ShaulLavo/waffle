@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-# Provisional generic Waffle imports; no Bash worker or terminal namespace.
+# Needs Waffle's runtime_proc.inherited_fd launch descriptor list; no Bash namespace.
 cooperative-wasi = ["waffle-program-support/cooperative-wasi"]
 
 [dependencies]

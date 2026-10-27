@@ -569,14 +569,14 @@
       "newPath": "packages/process-consumer/src/lib.rs",
       "oldPath": "shell/wasi-process/src/lib.rs",
       "oldBlob": "165eb384b740c31f41659854e5042f52a6714a16",
-      "classification": "relocated-unchanged",
+      "classification": "relocated-adapted",
       "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
     },
     {
       "newPath": "packages/process-consumer/src/wasi.rs",
       "oldPath": "shell/wasi-process/src/wasi.rs",
       "oldBlob": "41a7b6584b2590a584255f4147da5e0bb59567c8",
-      "classification": "relocated-unchanged",
+      "classification": "relocated-adapted",
       "sourceRevision": "95827ca4ef80e367bf0eef7b548b6a58683c8719"
     },
     {

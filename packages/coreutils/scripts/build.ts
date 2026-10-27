@@ -15,7 +15,7 @@ if (artifacts) {
   );
   buildWc();
   buildFamilyPrograms(
-    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi,waffle-executable-query"],
+    ["-p", "waffle-coreutils", "--bins", "--features", "cooperative-wasi"],
     coreutilsPackageNames,
   );
 }
