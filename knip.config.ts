@@ -35,6 +35,7 @@ export default {
         "tests/workspace-vfs-read-browser.ts",
         "tests/fixtures/{diagnostic-public,start-failure-public}.ts",
         "tests/fixtures/private-authority-cases.ts",
+        "tests/fixtures/preview-wire-headers-page.ts",
         "tests/persistent-authority-browser-runner.ts",
         "tests/owner-freeze-browser-runner.ts",
         "tests/workspace-continuity-browser-runner.ts",

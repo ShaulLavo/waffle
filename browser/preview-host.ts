@@ -129,17 +129,28 @@ type ReadResponse = (authorization: unknown, request: RelayRequest) => Promise<R
 
 function headerPairs(headers: readonly [string, string][]): [string, string][] {
   if (!Array.isArray(headers)) throw new TypeError("Invalid preview HTTP headers");
-  return headers.map(([name, value]) => {
-    if (typeof name !== "string" || typeof value !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
-        !/^[\t\x20-\x7e\x80-\xff]*$/.test(value))
+  return headers.map((pair) => {
+    if (!Array.isArray(pair) || pair.length !== 2)
+      throw new TypeError("Invalid preview HTTP header pair");
+    const [name, value] = pair;
+    if (
+      typeof name !== "string" ||
+      typeof value !== "string" ||
+      !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+      !/^[\t\x20-\x7e\x80-\xff]*$/.test(value)
+    )
       throw new TypeError("Invalid preview HTTP header");
     return [name, value];
   });
 }
 
 function responseHead(head: ResponseHead): ResponseHead {
-  if (head.status < 200 || head.status > 599 || !Number.isInteger(head.status) ||
-      !/^[\t\x20-\x7e\x80-\xff]*$/.test(head.statusText))
+  if (
+    head.status < 200 ||
+    head.status > 599 ||
+    !Number.isInteger(head.status) ||
+    !/^[\t\x20-\x7e\x80-\xff]*$/.test(head.statusText)
+  )
     throw new TypeError("Invalid preview HTTP response status");
   const headers = headerPairs(head.headers).filter(([name]) => !FRAMING.has(name.toLowerCase()));
   return { status: head.status, statusText: head.statusText, headers };
@@ -212,8 +223,13 @@ export function createPreviewHostRelay(
     check(input, request.url);
     request.signal.throwIfAborted();
     const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
-    const result = await readResponse(input, {url:request.url, method:request.method,
-      headers:Array.from(request.headers), body, signal:request.signal});
+    const result = await readResponse(input, {
+      url: request.url,
+      method: request.method,
+      headers: Array.from(request.headers),
+      body,
+      signal: request.signal,
+    });
     return new Response(result.body, result.head);
   }
 
@@ -227,7 +243,7 @@ export function createPreviewHostRelay(
     const headers = headerPairs(request.headers);
     return new Promise((resolve, reject) => {
       let connection: PreviewConnection | null = null;
-      let controller: ReadableStreamDefaultController<Uint8Array>;
+      let controller: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>>;
       let finished = false;
       let credit: { promise: Promise<void>; release(): void } | undefined;
       const resume = () => {
@@ -248,7 +264,7 @@ export function createPreviewHostRelay(
       };
       const abort = () =>
         fail(new Error("Preview request aborted", { cause: request.signal.reason }));
-      const stream = new ReadableStream<Uint8Array>({
+      const stream = new ReadableStream<Uint8Array<ArrayBuffer>>({
         start(value) {
           controller = value;
         },
@@ -257,8 +273,11 @@ export function createPreviewHostRelay(
       });
       const parser = new ResponseParser(
         {
-          head: (head) => resolve({head:responseHead(head),
-            body:request.method === "HEAD" || BODYLESS.has(head.status) ? null : stream}),
+          head: (head) =>
+            resolve({
+              head: responseHead(head),
+              body: request.method === "HEAD" || BODYLESS.has(head.status) ? null : stream,
+            }),
           data: (chunk) => {
             if (finished) return;
             controller.enqueue(chunk);
@@ -294,7 +313,7 @@ export function createPreviewHostRelay(
               method: request.method,
               target: url.pathname + url.search,
               headers,
-              body:request.body,
+              body: request.body,
             },
             url.host,
           ),
@@ -322,7 +341,8 @@ export function createPreviewHostRelay(
     fetch: fetchResponse,
     connect,
     close,
-    dispatch: (open, exchange) => dispatchPreviewHost(relay, open, exchange, lifetime.signal, readResponse),
+    dispatch: (open, exchange) =>
+      dispatchPreviewHost(relay, open, exchange, lifetime.signal, readResponse),
   };
   return relay;
 }
@@ -382,8 +402,11 @@ async function dispatchHTTP(
     if (open.body !== null && !(open.body instanceof ArrayBuffer))
       throw new TypeError("Invalid preview HTTP body");
     const result = await readResponse(open.authorization, {
-      url:open.url, method:open.method, headers:open.headers,
-      body:open.body === null ? null : new Uint8Array(open.body), signal:cancelled.signal,
+      url: open.url,
+      method: open.method,
+      headers: open.headers,
+      body: open.body === null ? null : new Uint8Array(open.body),
+      signal: cancelled.signal,
     });
     cancelled.signal.throwIfAborted();
     exchange.postMessage({ type: "accepted" });

@@ -474,3 +474,94 @@ for (const protocol of ["http:", "https:"]) {
     }
   });
 }
+
+async function wireHTTP(
+  host: Awaited<ReturnType<PreviewRouter["bindHost"]>>,
+  headers: [string, string][],
+) {
+  const messages: import("../browser/preview-host").PreviewHostOutput[] = [];
+  const exchange: import("../browser/preview-host").PreviewHostExchange = {
+    onmessage: null,
+    close() {},
+    postMessage(message) {
+      messages.push(message);
+      if (message.type === "data") exchange.onmessage?.({ type: "pull" });
+    },
+  };
+  await host.dispatch(
+    {
+      type: "http",
+      authorization: host.authorization,
+      url: origin + "/headers",
+      method: "POST",
+      headers,
+      body: new ArrayBuffer(0),
+    },
+    exchange,
+  );
+  return messages;
+}
+
+test("authenticated wire headers preserve Origin, Cookie, duplicates and repeated native Set-Cookie", async () => {
+  const f = fixture(
+    "HTTP/1.1 201 Created\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie: second=2; Path=/\r\nX-Repeat: a\r\nX-Repeat: b\r\nContent-Length: 2\r\n\r\nok",
+  );
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const messages = await wireHTTP(host, [
+      ["Origin", origin],
+      ["Cookie", "fixture=1"],
+      ["X-Repeat", "a"],
+      ["X-Repeat", "b"],
+      ["Host", "foreign.test"],
+      ["Content-Length", "999"],
+    ]);
+    expect(f.received.includes(`Origin: ${origin}\r\n`)).toBe(true);
+    expect(f.received.includes("Cookie: fixture=1\r\n")).toBe(true);
+    expect(f.received.includes("X-Repeat: a\r\nX-Repeat: b\r\n")).toBe(true);
+    expect(f.received.includes("host: preview.example.test\r\n")).toBe(true);
+    expect(f.received.includes("content-length: 0\r\n")).toBe(true);
+    const head = messages.find((message) => message.type === "head");
+    expect(head?.status).toBe(201);
+    const cookies = head?.headers.filter(([name]) => name.toLowerCase() === "set-cookie") ?? [];
+    expect(cookies.length).toBe(2);
+    expect(head?.headers.filter(([name]) => name === "x-repeat").length).toBe(2);
+    const nativeResponse = new Response(null, { headers: head?.headers });
+    expect(nativeResponse.headers.getSetCookie().length).toBe(2);
+    expect(messages.at(-1)?.type).toBe("end");
+  } finally {
+    host.close();
+  }
+});
+
+test("wire header syntax validation rejects injection and non-HTTP bytes before connecting", async () => {
+  const f = fixture();
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    for (const headers of [
+      [["bad name", "value"]],
+      [["x-test", "line\r\ninjected: yes"]],
+      [["cookie", "bad\u0000value"]],
+      [["x-test", "wide\u0100"]],
+    ] satisfies [string, string][][]) {
+      const messages = await wireHTTP(host, headers);
+      expect(messages.map((message) => message.type)).toEqual(["error"]);
+    }
+    expect(f.opened).toBe(0);
+    expect(f.received).toBe("");
+  } finally {
+    host.close();
+  }
+});
+
+test("invalid raw response headers fail without exposing a wire head", async () => {
+  const f = fixture("HTTP/1.1 200 OK\r\nInvalid Name: value\r\nContent-Length: 0\r\n\r\n");
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const messages = await wireHTTP(host, []);
+    expect(messages.map((message) => message.type)).toEqual(["error"]);
+    expect(f.stopped).toBe(1);
+  } finally {
+    host.close();
+  }
+});
