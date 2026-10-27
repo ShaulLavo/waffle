@@ -49,6 +49,8 @@ async function run(): Promise<void> {
     "LICENSES/Apache-2.0.txt",
     "index.ts",
     "dist/index.js",
+    "link/relay.ts",
+    "dist/link/relay.js",
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
