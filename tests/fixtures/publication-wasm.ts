@@ -4,7 +4,7 @@ interface ImportSignature {
   readonly parameters: readonly ValueType[];
 }
 const encoder = new TextEncoder();
-function leb(value: number): number[] {
+export function leb(value: number): number[] {
   const bytes: number[] = [];
   do {
     bytes.push((value & 127) | (value > 127 ? 128 : 0));
@@ -12,11 +12,11 @@ function leb(value: number): number[] {
   } while (value);
   return bytes;
 }
-function text(value: string): number[] {
+export function text(value: string): number[] {
   const bytes = Array.from(encoder.encode(value));
   return leb(bytes.length).concat(bytes);
 }
-function section(id: number, payload: number[]): number[] {
+export function section(id: number, payload: number[]): number[] {
   return [id].concat(leb(payload.length), payload);
 }
 /** Original local fixture. Every exported function has a real Wasm body that calls the
