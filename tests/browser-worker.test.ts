@@ -175,6 +175,7 @@ async function fixture(
     runtimeProcess?: RuntimeWorkerRequest["runtimeProcess"];
     module?: WebAssembly.Module;
     interruptible?: boolean;
+    env?: Record<string, string>;
   } = {},
 ) {
   const connection = createFilesystemConnection();
@@ -185,7 +186,7 @@ async function fixture(
       {
         module: options.module ?? module,
         args: ["fixture"],
-        env: {},
+        env: options.env ?? {},
         filesystem: connection.client,
         runtimeProcess: options.runtimeProcess,
         interruptible: options.interruptible,
@@ -902,6 +903,53 @@ test("raw-source worker fatal checkpoints stop a CPU loop without consuming hand
     { code: 137, signal: 9 },
   ]);
 });
+
+function cwdSource(): Uint8Array<ArrayBuffer> {
+  const text = (value: string) =>
+    [value.length].concat(Array.from(new TextEncoder().encode(value)));
+  const section = (id: number, bytes: number[]) => [id, bytes.length].concat(bytes);
+  return Uint8Array.from(
+    [0, 97, 115, 109, 1, 0, 0, 0].concat(
+      section(1, [2, 96, 2, 127, 127, 1, 127, 96, 0, 0]),
+      section(2, [1].concat(text("runtime_proc"), text("cwd"), [0, 0])),
+      section(3, [2, 1, 0]),
+      section(5, [1, 0, 1]),
+      section(7, [3].concat(text("memory"), [2, 0], text("_start"), [0, 1], text("query"), [0, 2])),
+      section(10, [2, 2, 0, 11, 8, 0, 32, 0, 32, 1, 16, 0, 11]),
+    ),
+  );
+}
+for (const env of [{}, { PWD: "/different" }])
+  test(`raw-source cwd import reads root request independently of env ${JSON.stringify(env)}`, async () => {
+    const cwd = "/tmp/spec/🧇";
+    const bytes = new TextEncoder().encode(cwd);
+    const guest = await compileInterruptible(cwdSource());
+    let observed = "";
+    const result = await fixture(
+      {
+        run({ instance, request }) {
+          const query = instance.exports.query as (ptr: number, capacity: number) => number;
+          const memory = instance.exports.memory;
+          if (!(memory instanceof WebAssembly.Memory)) throw new Error("missing memory");
+          expect(query(0, 0)).toBe(bytes.length);
+          expect(query(16, bytes.length)).toBe(bytes.length);
+          observed = new TextDecoder().decode(new Uint8Array(memory.buffer, 16, bytes.length));
+          expect(request.env).toEqual(env);
+          return 0;
+        },
+      },
+      {
+        module: guest,
+        interruptible: true,
+        runtimeProcess: createWorkerProcessTransport({ cwd }),
+        env,
+      },
+    );
+    expect(observed).toBe(cwd);
+    expect(result.messages.filter((message) => message.type === "exit")).toMatchObject([
+      { code: 0 },
+    ]);
+  });
 
 test("synchronous executor completion selects its outcome before queued guest microtasks", async () => {
   const outcome = new SharedArrayBuffer(8);

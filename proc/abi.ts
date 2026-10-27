@@ -49,6 +49,7 @@ import {
   ProcessErrno,
   ProcessError,
   Signal,
+  checkedProcessCwd,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -58,6 +59,7 @@ import {
 export interface ProcessService {
   /** Directory services notify signals and cleanup-confirmed child/job readiness here. */
   readonly wake?: Int32Array;
+  cwd(pid: number): string;
   spawn(parentPid: number, request: SpawnRequest): number;
   /** Consume one safely exited child; null means it is still pending. */
   wait(parentPid: number, pid: number): ProcessExit | null;
@@ -200,6 +202,7 @@ export class ProcessABI {
     this.now = options.now ?? clock;
     this.imports = {
       getpid: () => options.pid,
+      cwd: (ptr, capacity) => this.result(() => this.cwd(ptr!, capacity!)),
       access_start: (ptr, length, cwdPtr, cwdLength, mode) =>
         this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
       access_take: (request) =>
@@ -251,6 +254,23 @@ export class ProcessABI {
       signal: (signal, mode) => this.signal(signal!, mode!),
       default_signal: (signal) => this.result(() => this.defaultSignal(signal!)),
     };
+  }
+  private cwd(ptr: number, capacity: number): number {
+    if (
+      !Number.isInteger(ptr) ||
+      !Number.isInteger(capacity) ||
+      ptr < -0x80000000 ||
+      ptr > 0xffffffff ||
+      capacity < -0x80000000 ||
+      capacity > 0xffffffff
+    )
+      return -ProcessErrno.INVAL;
+    const cwd = this.options.service.cwd(this.options.pid);
+    const bytes = new TextEncoder().encode(cwd);
+    const output = this.span(ptr, capacity);
+    this.options.service.cwd(this.options.pid);
+    if (bytes.length <= capacity >>> 0) output.set(bytes);
+    return bytes.length;
   }
   private reopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
     const view = this.view(out, 4);
@@ -355,6 +375,7 @@ export class ProcessABI {
     ) {
       throw new ProcessError(ProcessErrno.INVAL, "invalid spawn description");
     }
+    checkedProcessCwd(object.cwd);
     return object as SpawnRequest;
   }
   private pipe(ptr: number): number {

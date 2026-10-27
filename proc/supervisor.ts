@@ -40,6 +40,7 @@ import {
   ProcessError,
   Signal,
   checkedSignal,
+  checkedProcessCwd,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessExit,
@@ -95,6 +96,8 @@ export interface SupervisorOptions {
   onError?(error: unknown): void;
 }
 export interface RootProcessOptions extends SpawnReservation {
+  /** Initial root cwd; omitted roots explicitly start at /. */
+  cwd?: string;
   descriptors?: DescriptorTable;
   foreground?: boolean;
 }
@@ -156,6 +159,9 @@ export class ProcessSupervisor {
   }
   jobOf(pid: number): number {
     return this.table.require(pid).job;
+  }
+  cwd(pid: number): string {
+    return this.accessOwner(pid).cwd;
   }
   private accessOwner(pid: number): ProcessRecord {
     const record = this.table.get(pid);
@@ -349,6 +355,7 @@ export class ProcessSupervisor {
   }
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
+    const cwd = checkedProcessCwd(options.cwd === undefined ? "/" : options.cwd);
     const pid = options.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt),
@@ -377,6 +384,7 @@ export class ProcessSupervisor {
         pid,
         parentPid: 0,
         job: job.id,
+        cwd,
         descriptors: options.descriptors ?? new DescriptorTable(),
         interrupt,
         requestedSignal,
@@ -431,6 +439,7 @@ export class ProcessSupervisor {
     jobIdentity?: SharedJobIdentity,
   ): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
+    const cwd = checkedProcessCwd(spec.cwd);
     const parent = this.table.get(parentPid);
     // A separately selected job can be admitted after an ancestor reaped its exited parent.
     // Its worker already retained the capabilities and ancestry before that reap.
@@ -512,6 +521,7 @@ export class ProcessSupervisor {
           pid,
           parentPid,
           job,
+          cwd,
           descriptors,
           controlParent: reservation.controlParent,
           rootPid: reservation.rootPid,

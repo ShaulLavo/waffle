@@ -412,6 +412,8 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
+      if (transport.cwd !== request.cwd)
+        throw new ProcessError(ProcessErrno.INVAL, "spawn cwd conflicts with process transport");
       if (existing)
         throw new ProcessError(
           ProcessErrno.SRCH,
@@ -595,6 +597,7 @@ export class WorkerProcessBroker {
         pid: transport.pid,
         bindings: [],
         resources: [],
+        cwd: transport.cwd,
       };
       try {
         confirmDisposedProcess(

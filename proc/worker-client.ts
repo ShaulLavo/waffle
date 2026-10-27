@@ -49,6 +49,7 @@ import {
   ProcessErrno,
   ProcessError,
   checkedSignal,
+  checkedProcessCwd,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -80,6 +81,8 @@ export interface WorkerProcessTransport {
   pid: number;
   bindings: WorkerDescriptorBinding[];
   resources: unknown[];
+  /** Immutable initial request metadata, copied with the existing process transport. */
+  readonly cwd: string;
   /** Host adapter context, such as an independently reserved filesystem identity. */
   data?: unknown;
 }
@@ -123,12 +126,14 @@ function reserveRecord(
   jobOwner: number,
   jobSlot?: number,
   foreground = true,
+  cwd = "/",
 ): WorkerProcessTransport {
   return {
     ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground),
     identity: transport.identity,
     bindings: [],
     resources: [],
+    cwd,
   };
 }
 export function workerProcessDirectoryId(transport: WorkerProcessTransport): string {
@@ -142,11 +147,13 @@ export function createWorkerProcessTransport(
     identity?: SharedArrayBuffer;
     capacity?: number;
     foreground?: boolean;
+    cwd?: string;
   } = {},
 ): WorkerProcessTransport {
   const pid = options.pid ?? 1,
     job = options.job ?? 1,
     capacity = options.capacity ?? 1024;
+  const cwd = checkedProcessCwd(options.cwd === undefined ? "/" : options.cwd);
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > 65536)
     throw new RangeError("invalid process directory capacity");
   const identities = new ProcessIdentityAllocator(options.identity);
@@ -159,8 +166,9 @@ export function createWorkerProcessTransport(
     pid,
     bindings: [],
     resources: [],
+    cwd,
   };
-  return reserveRecord(transport, pid, 0, job, pid, undefined, options.foreground ?? true);
+  return reserveRecord(transport, pid, 0, job, pid, undefined, options.foreground ?? true, cwd);
 }
 export function wakeWorkerProcess(transport: WorkerProcessTransport, _slot = transport.slot): void {
   wakeDirectory(transport.directory);
@@ -201,6 +209,7 @@ export class WorkerProcessClient {
   readonly signals: SignalTransport;
   readonly wake: Int32Array;
   private readonly identities: ProcessIdentityAllocator;
+  private readonly initialCwd: string;
   private accesses?: Map<number, Int32Array>;
   private nextAccess = 1;
   constructor(readonly options: WorkerProcessClientOptions) {
@@ -210,6 +219,14 @@ export class WorkerProcessClient {
     this.signals = state.signals;
     this.wake = state.wake;
     this.identities = new ProcessIdentityAllocator(options.transport.identity);
+    this.initialCwd = checkedProcessCwd(options.transport.cwd);
+  }
+  cwd(pid: number): string {
+    this.admit();
+    if (pid !== this.pid) throw new ProcessError(ProcessErrno.SRCH, "invalid querying process");
+    // Recheck the captured incarnation as well as its terminal outcome.
+    workerProcessState(this.options.transport);
+    return this.initialCwd;
   }
   installBindings(): void {
     installWorkerBindings(this.options.transport, this.options.descriptors, this.options.codec);
@@ -319,6 +336,7 @@ export class WorkerProcessClient {
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
+    const cwd = checkedProcessCwd(request.cwd);
     if (parentPid !== this.pid)
       throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const sources: Descriptor[] = this.spawnSources(request);
@@ -349,6 +367,7 @@ export class WorkerProcessClient {
         existingJob?.ownerPid ?? this.pid,
         existingJob?.slot,
         request.job === 0,
+        cwd,
       );
       child.data = transfer?.data;
       for (let i = 0; i < sources.length; i++) {

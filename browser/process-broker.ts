@@ -16,6 +16,7 @@ import {
   type ProcessContext,
   type ProcessHandle,
   checkedSignal,
+  checkedProcessCwd,
   ProcessErrno,
   ProcessError,
 } from "../proc/types.js";
@@ -335,6 +336,7 @@ export class BrowserProcessBroker {
   /** Reserve an externally executed root without activating the optional supervisor. */
   reserveRoot(root: RootProcessOptions, controller: ProcessController = {}): number {
     if (this.suspended) throw new Error("Process broker is disposed");
+    const cwd = checkedProcessCwd(root.cwd === undefined ? "/" : root.cwd);
     const pid = root.pid ?? this.options.identities.pid(),
       job = root.job ?? this.options.identities.job();
     this.options.identities.observePid(pid);
@@ -349,6 +351,7 @@ export class BrowserProcessBroker {
       ...root,
       pid,
       job,
+      cwd,
       signalState: createSignalState(root.signalState),
       outcome: outcomeWord(root.outcome),
       interrupt: word(root.interrupt),
@@ -465,7 +468,10 @@ export class BrowserProcessBroker {
     registry.registerProcess(state.pid);
     this.registries.set(state.pid, registry);
     transport.data = { ...data, pipeRegistry: registry.handle() };
-    this.reserveRoot({ pid: state.pid, job: state.job, ...state.signals }, options);
+    this.reserveRoot(
+      { pid: state.pid, job: state.job, cwd: transport.cwd, ...state.signals },
+      options,
+    );
     if (this.activation) {
       const supervisor = await this.activation;
       if (this.suspended) throw new Error("Process broker is disposed");
@@ -478,7 +484,12 @@ export class BrowserProcessBroker {
   ): void {
     const state = workerProcessState(transport);
     if (!supervisor.get(state.pid))
-      supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+      supervisor.createRoot({
+        pid: state.pid,
+        job: state.job,
+        cwd: transport.cwd,
+        ...state.signals,
+      });
     supervisor.registerRevocation(state.pid, () => this.revokeRuntimeProcess(state.pid));
     installWorkerBindings(
       transport,

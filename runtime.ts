@@ -165,6 +165,7 @@ const supervisorCapabilities = {
   get: "method",
   job: "method",
   jobOf: "method",
+  cwd: "method",
   canSignal: "method",
   canSignalJob: "method",
   canWaitJob: "method",
