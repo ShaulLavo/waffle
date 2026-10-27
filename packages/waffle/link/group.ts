@@ -69,15 +69,93 @@ function reserveMemory(
   return base;
 }
 
-function reserveTable(table: WebAssembly.Table, member: CompiledMember): number {
-  const info = member.profile.memory;
-  if (!info) return invalid(member.id, "missing side layout");
-  const alignment = 2 ** info.tableAlignment;
+type Range = { base: number; size: number };
+
+/** The single table allocator: side elements, relay targets and new function addresses. */
+function reserveTable(
+  table: WebAssembly.Table,
+  member: string,
+  size: number,
+  alignmentExponent: number,
+  ranges: Range[],
+): number {
+  const alignment = 2 ** alignmentExponent;
   const base = Math.ceil(Math.max(1, table.length) / alignment) * alignment;
-  const end = base + Math.max(1, info.tableSize);
-  if (end > 4294967295) invalid(member.id, "table reservation overflows wasm32");
+  const end = base + Math.max(1, size);
+  if (end > 4294967295) invalid(member, "table reservation overflows wasm32");
   table.grow(end - table.length);
+  ranges.push({ base, size: Math.max(1, size) });
   return base;
+}
+
+/** Reuses an existing slot so the address matches the provider's own pointers. */
+function functionSlot(
+  table: WebAssembly.Table,
+  target: Function,
+  member: string,
+  ranges: Range[],
+): number {
+  for (let index = 0; index < table.length; index++) {
+    if (table.get(index) === target) return index;
+  }
+  const index = reserveTable(table, member, 1, 0, ranges);
+  table.set(index, target);
+  return index;
+}
+
+interface SelfSlots {
+  readonly base: number;
+  readonly relay: WebAssembly.Instance | undefined;
+}
+
+/** Reserves one target slot per same-side definition; slots stay empty until binding. */
+function reserveSelf(member: CompiledMember, table: WebAssembly.Table, ranges: Range[]): SelfSlots {
+  const { targets, relay } = member.self;
+  if (!relay) return { base: 0, relay: undefined };
+  const base = reserveTable(table, member.id, targets.length, 0, ranges);
+  const env = { table, base: new WebAssembly.Global({ value: "i32", mutable: false }, base) };
+  return { base, relay: new WebAssembly.Instance(relay, { env }) };
+}
+
+/** Fills target slots with the actual defined exports, before relocation or constructors. */
+function bindSelf(
+  member: CompiledMember,
+  instance: WebAssembly.Instance,
+  table: WebAssembly.Table,
+  slots: SelfSlots,
+): void {
+  member.self.targets.forEach((name, slot) => {
+    const target = instance.exports[name];
+    if (typeof target !== "function")
+      invalid(member.id, `same-side definition ${name} is not an exported function`);
+    table.set(slots.base + slot, target);
+  });
+}
+
+function functionCells(
+  core: WebAssembly.Instance,
+  member: CompiledMember,
+  table: WebAssembly.Table,
+  ranges: Range[],
+  slots: SelfSlots,
+): WebAssembly.ModuleImports {
+  const cells: WebAssembly.ModuleImports = Object.create(null);
+  for (const entry of WebAssembly.Module.imports(member.module)) {
+    if (entry.module !== "GOT.func" || Object.hasOwn(cells, entry.name)) continue;
+    const provider = core.exports[entry.name];
+    const address =
+      typeof provider === "function"
+        ? functionSlot(table, provider, member.id, ranges)
+        : slots.base + member.self.targetSlots.get(entry.name)!;
+    cells[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
+  }
+  return cells;
+}
+
+/** Data symbols are nonzero addresses; linker stack bounds may sit at either memory edge. */
+function dataAddress(name: string, address: number, memory: WebAssembly.Memory): boolean {
+  if (name === "__stack_low" || name === "__stack_high") return address <= memory.buffer.byteLength;
+  return address !== 0 && address < memory.buffer.byteLength;
 }
 
 function sideImports(
@@ -90,11 +168,14 @@ function sideImports(
   tableBase: number,
   got: WebAssembly.ModuleImports,
   immutableI32Exports: ReadonlySet<string>,
+  slots: SelfSlots,
+  ranges: Range[],
 ): WebAssembly.Imports {
   const env: WebAssembly.ModuleImports = Object.create(null);
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "env") continue;
     const value = core.exports[entry.name];
+    const slot = member.self.targetSlots.get(entry.name);
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
     else if (entry.name === "__memory_base")
@@ -102,6 +183,7 @@ function sideImports(
     else if (entry.name === "__table_base")
       env[entry.name] = new WebAssembly.Global({ value: "i32", mutable: false }, tableBase);
     else if (value !== undefined) env[entry.name] = value;
+    else if (slot !== undefined && slots.relay) env[entry.name] = slots.relay.exports[`f${slot}`]!;
     else invalid(member.id, `unresolved core export env.${entry.name}`);
   }
   for (const entry of WebAssembly.Module.imports(member.module)) {
@@ -112,11 +194,12 @@ function sideImports(
     if (!(symbol instanceof WebAssembly.Global) || typeof symbol.value !== "number")
       invalid(member.id, `GOT.mem.${entry.name} requires a core i32 address export`);
     const address = symbol.value >>> 0;
-    if (!address || address >= memory.buffer.byteLength)
+    if (!dataAddress(entry.name, address, memory))
       invalid(member.id, `GOT.mem.${entry.name} address is outside core memory`);
     got[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
   }
-  return host.wasi.imports(member.module, { env, "GOT.mem": got });
+  const func = functionCells(core, member, table, ranges, slots);
+  return host.wasi.imports(member.module, { env, "GOT.mem": got, "GOT.func": func });
 }
 
 function initializeMember(
@@ -130,10 +213,7 @@ function initializeMember(
   }
 }
 
-function clearTable(
-  table: WebAssembly.Table,
-  ranges: readonly { base: number; size: number }[],
-): void {
+function clearTable(table: WebAssembly.Table, ranges: readonly Range[]): void {
   for (const range of ranges) {
     for (let index = 0; index < range.size; index++) table.set(range.base + index, null);
   }
@@ -147,16 +227,21 @@ function linkLibrary(
   memory: WebAssembly.Memory,
   table: WebAssembly.Table,
   libraries: LinkedLibrary[],
-  ranges: { base: number; size: number }[],
+  ranges: Range[],
   got: WebAssembly.ModuleImports,
 ): void {
   host.checkActive();
   const memoryBase = reserveMemory(core, member, plan.reserve, memory, libraries);
   host.checkActive();
-  const tableBase = reserveTable(table, member);
   const layout = member.profile.memory!;
-  ranges.push({ base: tableBase, size: Math.max(1, layout.tableSize) });
+  const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
+  if (
+    memoryBase + member.profile.baseOffsets.memory > 4294967295 ||
+    tableBase + member.profile.baseOffsets.table > 4294967295
+  )
+    invalid(member.id, "relative global address overflows wasm32");
   new Uint8Array(memory.buffer, memoryBase, layout.memorySize).fill(0);
+  const slots = reserveSelf(member, table, ranges);
   const imports = sideImports(
     core,
     member,
@@ -167,9 +252,12 @@ function linkLibrary(
     tableBase,
     got,
     plan.core.profile.immutableI32Exports,
+    slots,
+    ranges,
   );
   host.checkActive();
   const instance = instantiate(member, imports);
+  bindSelf(member, instance, table, slots);
   libraries.push({
     id: member.id,
     instance,
@@ -206,7 +294,7 @@ export function instantiateGroup(plan: PlanData, host: LinkHost): LinkedGroup {
   host.bindMemory?.(memory);
   host.wasi.bindMemory(memory);
   const libraries: LinkedLibrary[] = [];
-  const ranges: { base: number; size: number }[] = [];
+  const ranges: Range[] = [];
   const got: WebAssembly.ModuleImports = Object.create(null);
   const lifecycle: { state: "linked" | "initializing" | "ready" | "poisoned" | "disposed" } = {
     state: "linked",

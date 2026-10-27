@@ -372,6 +372,7 @@ export class Wasi {
     bindings?: {
       readonly env: WebAssembly.ModuleImports;
       readonly "GOT.mem"?: WebAssembly.ModuleImports;
+      readonly "GOT.func"?: WebAssembly.ModuleImports;
     },
   ): WebAssembly.Imports {
     const impl: Record<string, (...args: never[]) => number | void> = this.functions();
@@ -383,7 +384,7 @@ export class Wasi {
     for (const imp of WebAssembly.Module.imports(module)) {
       const ns = (out[imp.module] ??= Object.create(null));
       const supplied =
-        (imp.module === "env" || imp.module === "GOT.mem") && bindings
+        (imp.module === "env" || imp.module === "GOT.mem" || imp.module === "GOT.func") && bindings
           ? bindings[imp.module]
           : this.opts.namespaces && Object.hasOwn(this.opts.namespaces, imp.module)
             ? this.opts.namespaces[imp.module]
