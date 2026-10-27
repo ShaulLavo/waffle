@@ -1,3 +1,4 @@
+import { browserStartupPool } from "./startup-pool-browser.js";
 import { fdReopenCases } from "./fixtures/fd-reopen-cases.js";
 import {
   browserQuietStartFailure,
@@ -801,6 +802,13 @@ const quietFailureCases: BrowserCase[] = (["pipe", "terminal"] as const).flatMap
     ),
 );
 const cases: BrowserCase[] = quietFailureCases.concat(
+  [
+    {
+      label: "startup pool: compiled modules, fresh processes and cancellation",
+      standalone: true,
+      run: browserStartupPool,
+    },
+  ],
   fdReopenCases().map(({ label, run }) => ({ label, standalone: true, run: async () => run() })),
   [
     {

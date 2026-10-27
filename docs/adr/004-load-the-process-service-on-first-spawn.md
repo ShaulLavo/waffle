@@ -14,7 +14,7 @@ The supervisor, registry and table are dynamically imported on the first spawn. 
 ## Alternatives considered
 
 - **Load everything with `createRuntime()`.** Every page pays for processes, including pages that never spawn. This is the simpler design and the one the size gates prevent.
-- **Keep a pool of idle workers.** The browser keeps pooling disabled. Measurements must justify enabling it per browser before it is added. That is a separate decision.
+- **Precreate workers before process use.** This would charge filesystem-only pages for process startup. After the first worker launch, the broker instead precreates at most two unused workers across all URLs. Workers are single-use; compiled modules retain the existing per-registration and bounded content caches. Paired Chromium command timings remain pending.
 
 ## Consequences
 

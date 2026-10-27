@@ -1,3 +1,4 @@
+import { ReadyWorkerPool } from "./worker-pool.js";
 import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
@@ -98,6 +99,7 @@ export interface RuntimeRootOptions {
   retired?(): void;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
+  /** Module entry stays inert until its first request; unused workers may be prestarted. */
   workerUrl: string;
   notificationWorkerUrl?: string;
   request: Omit<
@@ -132,6 +134,7 @@ export class BrowserProcessBroker {
   private activation?: Promise<ProcessSupervisor>;
   private supervisor?: ProcessSupervisor;
   private readonly pipes = new WorkerPipeBroker();
+  private readonly workers = new ReadyWorkerPool();
   private readonly roots = new Map<number, WorkerProcessTransport>();
   private readonly reservedRoots = new Map<
     number,
@@ -875,7 +878,7 @@ export class BrowserProcessBroker {
         this.options.filesystem.revoke(filesystem);
       });
       connection = this.options.filesystem.connect(filesystem);
-      worker = child.worker = new Worker(options.workerUrl, { type: "module" });
+      worker = child.worker = this.workers.take(options.workerUrl);
     } catch (error) {
       child.failed = true;
       this.disposeNotifications(child);
@@ -1284,6 +1287,7 @@ export class BrowserProcessBroker {
   suspend(): void {
     if (this.suspended) return;
     this.suspended = true;
+    this.workers.dispose();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
     // Publish every outcome before running user revocation callbacks.

@@ -1589,3 +1589,53 @@ test("an unrelated failed mutation cannot reject a later valid executable admiss
   await expect(runtime.filesystem.drain()).rejects.toThrow();
   await runtime.filesystem.drain();
 });
+
+test("source registrations compile once across concurrent spawns and replace by lease", async () => {
+  const modules: WebAssembly.Module[] = [];
+  let loads = 0;
+  const runtime = create({ processHost: processHost() });
+  runtime.registerAdapter("test", (context) => {
+    modules.push(context.module);
+    new WebAssembly.Instance(context.module, { runtime_proc: { interrupted: () => 0 } });
+    context.started();
+    context.exit(0);
+    return { terminate() {} };
+  });
+  const register = (source: Uint8Array) =>
+    runtime.registerProgram("/app", {
+      adapter: "test",
+      source: () => {
+        loads++;
+        return source;
+      },
+    });
+  const remove = register(bytes);
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const spawn = async () => {
+    const pid = supervisor.reserveSpawn(root, {
+      executable: "/app",
+      argv: [],
+      env: {},
+      cwd: "/",
+      job: -1,
+      fds: [],
+    });
+    await supervisor.start(pid);
+    expect(await supervisor.waitForExit(root, pid)).toMatchObject({ kind: "exited", code: 0 });
+  };
+  await Promise.all([spawn(), spawn()]);
+  await spawn();
+  expect(loads).toBe(1);
+  expect(modules[1]).toBe(modules[0]);
+  expect(modules[2]).toBe(modules[0]);
+  remove();
+  register(new Uint8Array(Array.from(bytes).concat([0, 2, 1, 120])));
+  await spawn();
+  expect(loads).toBe(2);
+  expect(modules[3]).not.toBe(modules[0]);
+  remove();
+  await spawn();
+  expect(loads).toBe(2);
+  expect(modules[4]).toBe(modules[3]);
+});
