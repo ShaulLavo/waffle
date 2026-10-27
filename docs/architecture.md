@@ -383,7 +383,7 @@ See [storage ownership and lifecycle](storage.md) for `whenBusy`, waiting, takeo
 `StorageBackend` separates index loading, immutable payload reads, batched commits and flushing
 from guest transport. `PersistentBackend.open(storage)` loads only the index. Payloads enter the
 shared pool on first read or modification; clean idle files can leave it again. The workspace
-may therefore exceed the 1 GiB resident pool, subject to browser storage quota. Dirty data cannot
+may therefore exceed the 1.5 GiB resident pool, subject to browser storage quota. Dirty data cannot
 be evicted before its checkpoint commits. Files may span segments and are limited by the configured shared pool.
 
 Ordinary writes acknowledge shared-memory completion, not durability. Background checkpoints
@@ -447,9 +447,17 @@ The service owns the page allocator and grows capacity geometrically in 64 KiB p
 before execution; only the service grows their backing storage. A synchronous guest therefore
 sees completed growth without returning to its event loop or receiving another port message.
 `createFilesystemIdentity(undefined, maxBytes)` configures
-the pool cap (1 GiB by default, rounded to whole segments); files can span segments up to the
-shared address space. A full pool reports WASI ENOSPC, while a request beyond the addressable
+the pool cap (1.5 GiB by default, rounded to whole segments); files can span segments up to the
+independent 1 GiB per-file ceiling. A full pool reports WASI ENOSPC, while a request beyond the addressable
 maximum reports WASI EFBIG.
+The 1.5 GiB ceiling leaves 512 MiB of headroom for sequential package installs beyond a
+retained 1 GiB tree. Smaller explicit caps still apply. It is a payload reservation limit,
+not an aggregate browser or process memory budget. The fixed allocator layout occupies
+59.45 MiB including its first 16 MiB data segment. Ordinary connections retain their
+64 MiB root allocation. Startup-admitted standalone roots charge the exact layout,
+65,664 bytes more than the former 1 GiB aggregate layout. Additional payload backing grows
+lazily in 16 MiB steps. Browser allocation failure can still return ENOSPC below the
+configured cap, and grown backing remains allocated until disposal.
 `resources()` reports allocated backing bytes, data-pool and metadata bytes (including private
 capability tables), used/free bytes, the configured cap, and registered identities. Zero-byte
 segment references do not count as allocated backing storage. Grown segments are retained

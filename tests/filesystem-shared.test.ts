@@ -1,6 +1,6 @@
 import { SLOT_WORDS } from "../fs/shared.js";
 import { expect, test } from "bun:test";
-import { PAGE } from "../fs/protocol";
+import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
 import { MemoryBackend, SharedFilesystemState } from "../fs";
 
 test("revoking a killed shared-page writer releases its file lock", () => {
@@ -145,7 +145,7 @@ test("resource snapshots include all allocated SAB bytes and the storage cap", (
   expect(resources.bytes).toBe(state.buffer.byteLength + PAGE * 256);
   expect(resources.metadataBytes! + resources.poolBytes!).toBe(resources.bytes);
   expect(resources.usedBytes! + resources.freeBytes!).toBe(resources.poolBytes);
-  expect(resources.maxBytes).toBe(1024 * 1024 * 1024);
+  expect(resources.maxBytes).toBe(DEFAULT_SHARED_MAX_BYTES);
 });
 
 test("link, unlink and cross-directory rename refresh both affected directory timestamps", () => {

@@ -50,7 +50,7 @@ Waffle's code and docs do not mention Wasm threads or other post-Preview 1 inter
 
 | Area                  | Limit                                                                                              | Source                                   |
 | --------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| Resident file pool    | 1 GiB by default, in 16 MiB segments of 64 KiB pages. A full pool returns `ENOSPC`.                | `fs/protocol.ts`                         |
+| Resident file pool    | 1.5 GiB by default, in 16 MiB segments of 64 KiB pages. A full pool returns `ENOSPC`.              | `fs/protocol.ts`                         |
 | Workspace size        | Can exceed the pool, because clean payloads leave memory. Browser storage quota applies.           | [Storage](storage.md)                    |
 | Checkpoint capture    | 512 MiB of payload copies, 8 MiB of metadata units, 64 pending operations. Over a limit: `EAGAIN`. | `fs/checkpoint-pressure.ts`              |
 | Dirty growth          | 2 GiB, twice the checkpoint metadata limit, 64 waiters, for persistent backends.                   | `fs/dirty-admission.ts`                  |

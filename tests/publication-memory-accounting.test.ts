@@ -34,7 +34,7 @@ type Fault =
 
 function sizes(observe: boolean): number[] {
   const fixed = [44, 32, 72, 640, 256, 24, 2048, 24, 128, 49_152];
-  return observe ? [65_536, 16].concat(fixed) : fixed;
+  return observe ? [98_304, 16].concat(fixed) : fixed;
 }
 function demand(observe: boolean) {
   const fields = sizes(observe);

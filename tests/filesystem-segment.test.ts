@@ -10,6 +10,7 @@ import {
   type FilesystemIdentity,
 } from "../fs";
 import { SHARED_SEGMENT_BYTES } from "../fs/shared";
+import { CONNECTION_SHARED_BYTES, PAGE } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -20,6 +21,31 @@ function segments(identity: FilesystemIdentity): SharedArrayBuffer[] {
   expect(Array.isArray(result)).toBe(true);
   return result;
 }
+
+test("the default pool admits an application budget beyond the exhausted GiB lazily", () => {
+  const applicationBytes = 1024 * 1024 * 1024 + SHARED_SEGMENT_BYTES;
+  const root = createFilesystemIdentity();
+  expect(root.maxBytes).toBeGreaterThanOrEqual(applicationBytes);
+  const identity = createFilesystemIdentity(undefined, applicationBytes);
+  expect(identity.maxBytes).toBe(applicationBytes);
+  const state = new SharedFilesystemState(
+    identity.shared,
+    identity.maxBytes,
+    undefined,
+    identity.segments,
+  );
+  expect(state.buffer.byteLength).toBe(CONNECTION_SHARED_BYTES);
+  expect(state.resources()).toMatchObject({
+    maxBytes: applicationBytes,
+    poolBytes: SHARED_SEGMENT_BYTES,
+    usedBytes: 0,
+  });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 6, mtime: 1 });
+  state.grow(0, 400384);
+  expect(state.info(0)?.capacity).toBe(PAGE * 12);
+  expect(state.resources().usedBytes).toBe(PAGE * 12);
+  expect(identity.segments.every((buffer) => buffer.byteLength === 0)).toBe(true);
+});
 
 test("root identities prepublish empty segment wrappers inherited by descendants", () => {
   const root = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES * 3);
@@ -35,7 +61,7 @@ test("root identities prepublish empty segment wrappers inherited by descendants
   expect(wrappers[1]!.byteLength).toBe(0);
 });
 
-test("the default cap reserves wrappers, not a gigabyte of backing storage", () => {
+test("the default cap reserves wrappers, not the whole pool's backing storage", () => {
   const identity = createFilesystemIdentity();
   const backend = new MemoryBackend();
   const service = new FilesystemService(backend);
@@ -46,12 +72,12 @@ test("the default cap reserves wrappers, not a gigabyte of backing storage", () 
     client.dispose();
     service.dispose();
   });
-  expect(segments(identity)).toHaveLength(63);
+  expect(segments(identity)).toHaveLength(identity.maxBytes / SHARED_SEGMENT_BYTES - 1);
   expect(segments(identity).every((buffer) => buffer.byteLength === 0)).toBe(true);
   expect(backend.shared.resources()).toMatchObject({
     poolBytes: SHARED_SEGMENT_BYTES,
     usedBytes: 0,
-    maxBytes: 1024 * 1024 * 1024,
+    maxBytes: identity.maxBytes,
   });
 });
 
@@ -104,7 +130,14 @@ test("prepublished segments preserve the real storage cap and report only grown 
   });
   await client.asyncCall("writeFile", ["/first"], new Uint8Array(SHARED_SEGMENT_BYTES));
   expect(backend.shared.resources().poolBytes).toBe(SHARED_SEGMENT_BYTES);
-  await client.asyncCall("writeFile", ["/second"], new Uint8Array(SHARED_SEGMENT_BYTES));
+  await client.asyncCall("writeFile", ["/second"], new Uint8Array(SHARED_SEGMENT_BYTES - PAGE));
+  expect(
+    await client
+      .asyncCall("writeFile", ["/overflow"], new Uint8Array(PAGE * 2))
+      .catch((error) => error),
+  ).toMatchObject({ errno: 51 });
+  expect(backend.shared.resources().usedBytes).toBe(SHARED_SEGMENT_BYTES * 2 - PAGE);
+  await client.asyncCall("writeFile", ["/last-page"], new Uint8Array(PAGE));
   expect(backend.shared.resources()).toMatchObject({
     poolBytes: SHARED_SEGMENT_BYTES * 2,
     usedBytes: SHARED_SEGMENT_BYTES * 2,
@@ -114,13 +147,21 @@ test("prepublished segments preserve the real storage cap and report only grown 
     await client.asyncCall("writeFile", ["/overflow"], new Uint8Array([1])).catch((error) => error),
   ).toMatchObject({ errno: 51 });
   expect(backend.shared.resources().usedBytes).toBe(SHARED_SEGMENT_BYTES * 2);
+  await client.asyncCall("remove", ["/first"]);
+  await client.asyncCall("writeFile", ["/overflow"], new Uint8Array([7]));
+  expect(await client.asyncCall("readFile", ["/overflow"])).toEqual(new Uint8Array([7]));
+  expect(backend.shared.resources()).toMatchObject({
+    poolBytes: SHARED_SEGMENT_BYTES * 2,
+    usedBytes: SHARED_SEGMENT_BYTES + PAGE,
+  });
 });
 
-test("root storage caps normalize to whole segments and never exceed one GiB", () => {
+test("root storage caps normalize to whole segments and stay bounded", () => {
   for (const [requested, expected] of [
     [0, SHARED_SEGMENT_BYTES],
     [SHARED_SEGMENT_BYTES * 2 + 1, SHARED_SEGMENT_BYTES * 2],
-    [Number.POSITIVE_INFINITY, 1024 * 1024 * 1024],
+    [1024 * 1024 * 1024, 1024 * 1024 * 1024],
+    [Number.POSITIVE_INFINITY, 1536 * 1024 * 1024],
   ]) {
     const identity = createFilesystemIdentity(undefined, requested);
     expect(identity.maxBytes).toBe(expected!);

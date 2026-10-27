@@ -1,4 +1,5 @@
 import { WatchRing, WATCH_BYTES } from "./watch-ring.js";
+import { MAX_SHARED_FILE_BYTES } from "./shared-capacity.js";
 import type { MemoryBudget } from "./memory-budget.js";
 import { allocateStartupRoot } from "./root-memory-budget.js";
 import { DirtyAdmission, DIRTY_HEADER_WORDS, DIRTY_NODE_UNITS } from "./dirty-admission.js";
@@ -43,9 +44,9 @@ const HEADER_WORDS = 32 + DIRTY_HEADER_WORDS;
 const MAX_FILES = 32768;
 const SEGMENT_PAGES = 256;
 const SEGMENT_BYTES = SEGMENT_PAGES * PAGE;
-const MAX_SEGMENTS = MAX_SHARED_SEGMENTS;
-const TOTAL_PAGES = SEGMENT_PAGES * MAX_SEGMENTS;
-const MAX_FILE_PAGES = TOTAL_PAGES;
+const MAX_FILE_SEGMENTS = MAX_SHARED_FILE_BYTES / SEGMENT_BYTES;
+const TOTAL_PAGES = SEGMENT_PAGES * MAX_SHARED_SEGMENTS;
+const MAX_FILE_PAGES = MAX_SHARED_FILE_BYTES / PAGE;
 const TABLE_ENTRIES = 256;
 // A partial table per file plus enough full tables to address every storage page.
 const TABLE_BLOCKS = MAX_FILES + Math.ceil(TOTAL_PAGES / TABLE_ENTRIES);
@@ -58,7 +59,7 @@ const DIRTY_MARK = 22;
 const PAGE_OWNER_OFFSET = HEADER_WORDS;
 const SLOT_OFFSET = PAGE_OWNER_OFFSET + TOTAL_PAGES;
 const PAGE_TABLE_OFFSET = SLOT_OFFSET + MAX_FILES * SLOT_WORDS;
-const TABLE_OWNER_OFFSET = PAGE_TABLE_OFFSET + MAX_FILES * MAX_SEGMENTS;
+const TABLE_OWNER_OFFSET = PAGE_TABLE_OFFSET + MAX_FILES * MAX_FILE_SEGMENTS;
 const TABLE_DATA_OFFSET = TABLE_OWNER_OFFSET + TABLE_BLOCKS;
 const WATCH_OFFSET = (TABLE_DATA_OFFSET + TABLE_BLOCKS * TABLE_ENTRIES) * 4;
 const DATA_OFFSET = WATCH_OFFSET + WATCH_BYTES;
@@ -184,7 +185,11 @@ export class SharedFilesystemState {
       }
       this.owners = new Int32Array(buffer, PAGE_OWNER_OFFSET * 4, TOTAL_PAGES);
       this.slots = new Int32Array(buffer, SLOT_OFFSET * 4, MAX_FILES * SLOT_WORDS);
-      this.pageTables = new Int32Array(buffer, PAGE_TABLE_OFFSET * 4, MAX_FILES * MAX_SEGMENTS);
+      this.pageTables = new Int32Array(
+        buffer,
+        PAGE_TABLE_OFFSET * 4,
+        MAX_FILES * MAX_FILE_SEGMENTS,
+      );
       this.tableOwners = new Int32Array(buffer, TABLE_OWNER_OFFSET * 4, TABLE_BLOCKS);
       this.pages = new Int32Array(buffer, TABLE_DATA_OFFSET * 4, TABLE_BLOCKS * TABLE_ENTRIES);
       this.firstBytes = new Uint8Array(buffer, DATA_OFFSET, SEGMENT_BYTES);
@@ -432,12 +437,15 @@ export class SharedFilesystemState {
   }
   private pageAt(slot: number, logical: number): number {
     const block =
-      Atomics.load(this.pageTables, slot * MAX_SEGMENTS + Math.floor(logical / TABLE_ENTRIES)) - 1;
+      Atomics.load(
+        this.pageTables,
+        slot * MAX_FILE_SEGMENTS + Math.floor(logical / TABLE_ENTRIES),
+      ) - 1;
     return block * TABLE_ENTRIES + (logical % TABLE_ENTRIES);
   }
   private reservePageTables(slot: number, needed: number): void {
     for (let table = 0; table < Math.ceil(needed / TABLE_ENTRIES); table++) {
-      const index = slot * MAX_SEGMENTS + table;
+      const index = slot * MAX_FILE_SEGMENTS + table;
       if (Atomics.load(this.pageTables, index)) continue;
       const block = this.tableOwners.indexOf(0);
       if (block < 0) throw new FilesystemError(51, "shared filesystem page tables exhausted");
@@ -446,8 +454,8 @@ export class SharedFilesystemState {
     }
   }
   private trimPageTables(slot: number, needed: number): void {
-    for (let table = Math.ceil(needed / TABLE_ENTRIES); table < MAX_SEGMENTS; table++) {
-      const block = Atomics.exchange(this.pageTables, slot * MAX_SEGMENTS + table, 0) - 1;
+    for (let table = Math.ceil(needed / TABLE_ENTRIES); table < MAX_FILE_SEGMENTS; table++) {
+      const block = Atomics.exchange(this.pageTables, slot * MAX_FILE_SEGMENTS + table, 0) - 1;
       if (block < 0) continue;
       this.pages.fill(0, block * TABLE_ENTRIES, (block + 1) * TABLE_ENTRIES);
       Atomics.store(this.tableOwners, block, 0);

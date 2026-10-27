@@ -5,7 +5,7 @@ import {
   MemoryBackend,
   createFilesystemConnection,
 } from "../fs";
-import { CONNECTION_SHARED_BYTES, DEFAULT_SHARED_MAX_BYTES, errno } from "../fs/protocol";
+import { CONNECTION_SHARED_BYTES, errno } from "../fs/protocol";
 
 const MiB = 1024 * 1024;
 
@@ -48,12 +48,12 @@ test("oversized growth reaches the caller as EFBIG and leaves the file usable", 
     await client.asyncCall("writeFile", ["/file"], new Uint8Array([7]));
     const root = await client.asyncCall("preopen", ["/"]);
     const path = await client.asyncCall("resolve", [root, "file"]);
-    expect(
-      await client
-        .asyncCall("grow", [path.node, DEFAULT_SHARED_MAX_BYTES + 1])
-        .catch((error) => error),
-    ).toMatchObject({ errno: 22 });
-    expect(await client.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([7]));
+    for (const size of [1024 * MiB + 1, 2048 * MiB]) {
+      expect(
+        await client.asyncCall("grow", [path.node, size]).catch((error) => error),
+      ).toMatchObject({ errno: 22 });
+      expect(await client.asyncCall("readFile", ["/file"])).toEqual(new Uint8Array([7]));
+    }
   } finally {
     client.dispose();
     service.dispose();

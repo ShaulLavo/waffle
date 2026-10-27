@@ -79,7 +79,7 @@ test("late selected checkpoint uses the real restored root and one canonical led
     expect(publication.buffers.history).toBe(saved.cut.history);
     expect(pair.root.connection.shared).toBe(rootBacking);
     expect(first.backend.shared.buffer).toBe(rootBacking);
-    expect(first.specs).toHaveLength(82);
+    expect(first.specs).toHaveLength(114);
     expect(first.specs.filter((spec) => spec.bytes > 1024 * 1024)).toHaveLength(1);
     expect(first.memory.snapshot().obligations).toBe(0);
     expect(first.memory.snapshot().producerFree.allocations).toBe(before.producerFree.allocations);
@@ -105,7 +105,7 @@ test("late selected checkpoint uses the real restored root and one canonical led
       expect(attached.root.connection.publication?.session.serial).toBeGreaterThan(
         publication.buffers.sessionLimit,
       );
-      expect(second.specs).toHaveLength(82);
+      expect(second.specs).toHaveLength(114);
     } finally {
       await second.close();
     }
