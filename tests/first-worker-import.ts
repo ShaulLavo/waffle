@@ -22,13 +22,21 @@ import type {
   WorkerExecutor,
 } from "../browser/worker.js";
 
-const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
-  readFileSync(new URL("../browser/worker.ts", import.meta.url), "utf8")
-    .replace(/^import\s+[\s\S]*?;\r?\n/gm, "")
-    .replace(/^export /gm, "")
-    .replace(/import\("\.\.\/proc\/worker-client\.js"\)/g, "loadRuntime()")
-    .concat("\nglobalThis.runBootstrap = bootstrap;\n"),
-);
+const workerSource = new URL("../browser/worker.ts", import.meta.url);
+// Only worker-client fails; the bootstrap's other lazy imports load the real modules. Rewriting
+// after transpiling leaves type-only import() references out of it.
+const source = new Bun.Transpiler({ loader: "ts" })
+  .transformSync(
+    readFileSync(workerSource, "utf8")
+      .replace(/^import\s+[\s\S]*?;\r?\n/gm, "")
+      .replace(/^export /gm, ""),
+  )
+  .replace(/import\("(\.\.?\/[^"]+)"\)/g, (_, specifier: string) =>
+    specifier === "../proc/worker-client.js"
+      ? "loadRuntime()"
+      : `loadModule(${JSON.stringify(specifier)})`,
+  )
+  .concat("\nglobalThis.runBootstrap = bootstrap;\n");
 
 export async function failFirstWorkerImport(
   request: RuntimeWorkerRequest,
@@ -67,6 +75,7 @@ export async function failFirstWorkerImport(
         request.filesystem.port.close();
       }
     },
+    loadModule: (specifier: string) => import(new URL(specifier, workerSource).href),
     loadRuntime: async () => {
       throw new Error("first worker-client import rejected");
     },
