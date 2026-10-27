@@ -215,7 +215,71 @@ test("standalone ephemeral exhaustion rejects allocation without retention", () 
     expect(host.connect("127.0.0.1", 65536)).toBe(ERROR);
     expect(requests).toBe(16384);
     expect(host.listen("127.0.0.1", 1)).toBe(16385);
+    host.close(16384);
+    const last = host.listen("::1", 0);
+    expect(host.localPort(last)).toBe(65535);
+    expect(host.listen("127.0.0.1", 0)).toBe(ERROR);
+    host.close(2);
+    expect(host.localPort(host.listen("::", 0))).toBe(49153);
+    expect(host.listen("127.0.0.1", 0)).toBe(ERROR);
   } finally {
+    host.dispose();
+  }
+});
+
+test("standalone ephemeral ports skip explicit binds and reuse the lowest closed listener", () => {
+  const host = new NetHost(createRing(), () => {});
+  const isolated = new NetHost(createRing(), () => {});
+  try {
+    const explicit = host.listen("::1", 49153);
+    host.listen("127.0.0.1", 1);
+    const first = host.listen("127.0.0.1", 0);
+    expect(host.localPort(first)).toBe(49152);
+    expect(host.localPort(host.listen("::", 0))).toBe(49154);
+    expect(host.listen("::1", 49152)).toBe(ERROR);
+    expect(String(host.error(0))).toContain("EADDRINUSE");
+    const isolatedListener = isolated.listen("::1", 0);
+    expect(isolated.localPort(isolatedListener)).toBe(49152);
+    const client = host.connect("127.0.0.1", 49152);
+    host.close(host.accept(first));
+    host.close(client);
+    expect(host.listen("::", 49152)).toBe(ERROR);
+    host.close(explicit);
+    expect(host.localPort(host.listen("127.0.0.1", 0))).toBe(49153);
+    host.close(first);
+    host.listen("::", 49152);
+    expect(host.close(first)).toBe(BADF);
+    expect(host.localPort(host.listen("::1", 0))).toBe(49155);
+  } finally {
+    host.dispose();
+    isolated.dispose();
+  }
+});
+
+test("standalone listener send failures release handles and ports", () => {
+  const failure = new Error("transport failed");
+  let failListen = true;
+  let failClose = true;
+  const host = new NetHost(createRing(), (request) => {
+    if (request.type === "listen" && failListen) throw failure;
+    if (request.type === "close" && failClose) throw failure;
+  });
+  try {
+    expect(() => host.listen("127.0.0.1", 0)).toThrow(failure);
+    expect(host.localAddr(1)).toBe(BADF);
+    failListen = false;
+    const listener = host.listen("::1", 0);
+    expect(host.localPort(listener)).toBe(49152);
+    expect(() => host.close(listener)).toThrow(failure);
+    expect(host.localAddr(listener)).toBe(BADF);
+    const replacement = host.listen("127.0.0.1", 0);
+    expect(host.localPort(replacement)).toBe(49152);
+    expect(host.close(listener)).toBe(BADF);
+    expect(host.listen("::", 49152)).toBe(ERROR);
+    expect(host.localPort(host.listen("::", 0))).toBe(49153);
+  } finally {
+    failListen = false;
+    failClose = false;
     host.dispose();
   }
 });

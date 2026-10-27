@@ -74,7 +74,8 @@ const decoder = new TextDecoder();
 export class NetHost {
   private ring: RingReader;
   private handles = new Map<number, Handle>();
-  private listenerPorts = new Set<number>();
+  private readonly listenerPorts = new Set<number>();
+  /** Lowest free standalone listener port, or 65536 when exhausted. */
   private nextEphemeralPort = EPHEMERAL_BASE;
   /** Connections announced by the helper but not accepted yet (their bytes buffer here meanwhile). */
   private unaccepted = new Map<number, ConnHandle>();
