@@ -77,7 +77,9 @@ class Reader {
   }
   name(): string {
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(this.take(this.u32()).bytes);
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        this.take(this.u32()).bytes,
+      );
     } catch (error) {
       if (error instanceof TypeError) invalid(this.member, "invalid UTF-8 name");
       throw error;

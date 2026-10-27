@@ -192,7 +192,7 @@ function source(): LinkPlanSource {
     reserve: "bun_core_alloc",
   };
 }
-function host(checkActive = () => {}) {
+function host(checkActive = () => {}, namespaces: WebAssembly.Imports = {}) {
   const wasi = new Wasi({
     args: [],
     env: {},
@@ -201,7 +201,7 @@ function host(checkActive = () => {}) {
     stdout() {},
     stderr() {},
     sleep() {},
-    namespaces: { env: { check: checkActive } },
+    namespaces: { env: { check: checkActive }, ...namespaces },
   });
   return { wasi, checkActive };
 }
@@ -337,6 +337,7 @@ const malformedInfo = [
   { bytes: [1], error: "truncated binary" },
   { bytes: [1, 3, 0x65], error: "truncated section" },
   { bytes: [1].concat(text("env"), [1, 0xff, 0x11]), error: "invalid UTF-8" },
+  { bytes: [1, 2, 0xef, 0xbb].concat(text("add"), [0x11]), error: "invalid UTF-8" },
   { bytes: [1].concat(text("env"), text("add"), [0x80]), error: "truncated binary" },
   {
     bytes: [1].concat(text("env"), text("add"), [0x80, 0x80, 0x80, 0x80, 0x10]),
@@ -857,5 +858,83 @@ for (const symbol of ["stderr", "_CLOCK_REALTIME", "__stack_low", "__stack_high"
     expect(() => inspectProfile(side(symbol), "engine", true)).toThrow(
       `unsupported GOT.mem.${symbol}`,
     );
+  });
+}
+
+for (const field of ["hostOnly", "\uFEFFhostOnly"]) {
+  test(`leading BOM in a foreign Wasm namespace/field stays exact: ${JSON.stringify(field)}`, async () => {
+    const input = source();
+    const namespace = "\uFEFFenv";
+    const bytes = side("errno", "GOT.mem", 4, { addModule: namespace, addName: field });
+    const actual = WebAssembly.Module.imports(new WebAssembly.Module(bytes)).find(
+      (entry) => entry.module === namespace && entry.name === field,
+    );
+    expect(actual).toEqual({ module: namespace, name: field, kind: "function" });
+    const plan = await prepareLinkPlan({
+      ...input,
+      libraries: [{ ...input.libraries[0]!, source: bytes }],
+    });
+    const profile = inspectProfile(bytes, "engine", true);
+    const imported = profile.functionImports.find((entry) => entry.name === field);
+    expect(imported?.module).toBe(actual?.module);
+    expect(imported?.name).toBe(actual?.name);
+    const group = instantiateLinkPlan(
+      plan,
+      host(undefined, {
+        [namespace]: { [field]: (value: number) => value + 11 },
+      }),
+    );
+    try {
+      expect(call(group.entry, "invoke", 7)).toBe(18);
+    } finally {
+      group.dispose();
+    }
+  });
+}
+
+for (const [module, field] of [
+  ["\uFEFFenv", "add"],
+  ["env", "\uFEFFadd"],
+] satisfies readonly [string, string][]) {
+  test(`weak metadata must preserve leading BOM identity: ${JSON.stringify([module, field])}`, () => {
+    const bytes = side("errno", "GOT.mem", 4, { dylink: importInfo(importRecord(module, field)) });
+    expect(WebAssembly.Module.imports(new WebAssembly.Module(bytes))).toContainEqual({
+      module: "env",
+      name: "add",
+      kind: "function",
+    });
+    expect(() => inspectProfile(bytes, "engine", true)).toThrow(
+      "must name an imported env function",
+    );
+  });
+}
+
+for (const field of ["add", "\uFEFFadd"]) {
+  test(`matching weak Wasm field and provider preserve every character: ${JSON.stringify(field)}`, async () => {
+    const input = source();
+    const owner = core({ aliases: field === "add" ? [] : [[field, 2]] });
+    const bytes = side("errno", "GOT.mem", 4, {
+      addName: field,
+      dylink: importInfo(importRecord("env", field)),
+    });
+    expect(WebAssembly.Module.exports(new WebAssembly.Module(owner))).toContainEqual({
+      name: field,
+      kind: "function",
+    });
+    const profile = inspectProfile(bytes, "engine", true);
+    expect(profile.functionImports.find((entry) => entry.name === field)?.binding).toBe("weak");
+    expect(profile.importInfo).toEqual([{ module: "env", name: field, flags: 0x11 }]);
+    expect(inspectProfile(owner, "core", false).functions.has(field)).toBe(true);
+    const plan = await prepareLinkPlan({
+      ...input,
+      core: { ...input.core, source: owner },
+      libraries: [{ ...input.libraries[0]!, source: bytes }],
+    });
+    const group = instantiateLinkPlan(plan, host());
+    try {
+      expect(call(group.entry, "invoke", 5)).toBe(12);
+    } finally {
+      group.dispose();
+    }
   });
 }
