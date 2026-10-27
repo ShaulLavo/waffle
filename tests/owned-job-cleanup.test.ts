@@ -914,3 +914,70 @@ for (const fatal of [false, true])
     expect(findDirectoryJob(shell.transport.directory, spawned.job)).toBeUndefined();
     expect(s.get(spawned.detached)?.result).toBeNull();
   });
+test("a legacy job reap keeps the late child handle in its fatal owner's cleanup barrier", async () => {
+  const handle = Promise.withResolvers<{ terminate(): void }>();
+  const entered = Promise.withResolvers<void>();
+  let terminated = false;
+  const { supervisor: s, root } = fixture({
+    launch() {
+      entered.resolve();
+      return handle.promise;
+    },
+  });
+  cleanups.push(() => handle.resolve({ terminate() {} }));
+  const owner = s.reserveSpawn(root, spec());
+  const child = s.reserveSpawn(owner, spec(true));
+  const job = s.jobOf(child);
+  const starting = s.start(child);
+  await entered.promise;
+  s.kill(child, 9);
+  await s.waitForExit(owner, child);
+  expect(s.waitJob(owner, job)).toMatchObject({ kind: "signaled", code: 9 });
+  s.kill(owner, 9);
+  await turn();
+  expect(s.get(owner)?.result).toBeNull();
+  handle.resolve({
+    terminate() {
+      terminated = true;
+    },
+  });
+  expect(await s.waitForExit(root, owner)).toMatchObject({ kind: "signaled", code: 9 });
+  expect(terminated).toBe(true);
+  await starting;
+});
+test("a shared legacy job collection keeps the late child handle in its fatal owner's barrier", async () => {
+  const handle = Promise.withResolvers<{ terminate(): void }>();
+  const entered = Promise.withResolvers<void>();
+  let terminated = false;
+  const f = sharedFixture({
+    launch() {
+      entered.resolve();
+      return handle.promise;
+    },
+  });
+  cleanups.push(() => handle.resolve({ terminate() {} }));
+  const child = f.root.spawn(f.root.pid, spec(true));
+  const notice = f.messages.shift()!;
+  await f.broker.handle(notice, f.root.pid);
+  const job = workerProcessState(notice.transport).job;
+  const starting = f.s.start(child);
+  await entered.promise;
+  f.root.kill(child, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  await f.s.waitForExit(f.root.pid, child);
+  expect(f.root.waitJob(f.root.pid, job)).toMatchObject({ kind: "signaled", code: 9 });
+  while (f.messages.length) await f.broker.handle(f.messages.shift()!, f.root.pid);
+  expect(f.s.job(job)).toBeUndefined();
+  f.root.kill(f.root.pid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  await turn();
+  expect(f.s.get(f.root.pid)?.result).toBeNull();
+  handle.resolve({
+    terminate() {
+      terminated = true;
+    },
+  });
+  expect(await f.s.waitForExit(0, f.root.pid)).toMatchObject({ kind: "signaled", code: 9 });
+  expect(terminated).toBe(true);
+  await starting;
+});

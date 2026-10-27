@@ -158,6 +158,9 @@ export class ProcessSupervisor {
   private readonly consumers = new Map<number, Set<ProcessRecord>>();
   private readonly retireListeners = new Set<(job: number) => void>();
   private readonly ownedClosures = new WeakMap<ProcessJob, Promise<void>>();
+  /** Caller-fatal jobs a legacy wait collected while their owner was undecided and a member's
+   * physical stop was still pending. Their captured debt stays in the owner's fatal barrier. */
+  private readonly collectedOwned = new Map<number, ProcessJob>();
   private readonly ownedCleanup = new Set<
     (pid: number, result: ProcessExit) => void | Promise<void>
   >();
@@ -884,12 +887,14 @@ export class ProcessSupervisor {
       this.retireJobMetadata(jobId);
   }
   private retireJobMetadata(jobId: number): void {
+    const job = this.table.job(jobId);
     for (const record of Array.from(this.table.values()))
       if (record.job === jobId) this.table.remove(record.pid);
     this.table.removeJob(jobId);
     for (const listener of Array.from(this.jobReapListeners)) this.safely(() => listener(jobId));
     this.jobListeners.delete(jobId);
     if (this.retirementSettled(jobId)) this.consumers.delete(jobId);
+    else if (job?.lifetimeState === "attached") this.collectedOwned.set(jobId, job);
   }
   waitForExit(parentPid: number, pid: number): Promise<ProcessExit> {
     const record = this.child(parentPid, pid);
@@ -1237,7 +1242,9 @@ export class ProcessSupervisor {
   private notifyRetirement(job: number): void {
     for (const listener of this.retireListeners) this.safely(() => listener(job));
     this.notifyCleanup(job);
-    if (!this.table.job(job) && this.retirementSettled(job)) this.consumers.delete(job);
+    if (this.table.job(job) || !this.retirementSettled(job)) return;
+    this.consumers.delete(job);
+    this.collectedOwned.delete(job);
   }
   private notifyCleanup(job: number): void {
     const listeners = this.cleanupListeners.get(job);
@@ -1261,6 +1268,15 @@ export class ProcessSupervisor {
         continue;
       job.lifetimeState = result.kind === "signaled" ? "closing" : "disarmed";
       if (job.lifetimeState === "closing") pending.push(this.ownedClosure(owner.pid, job));
+    }
+    for (const job of this.collectedOwned.values()) {
+      if (job.ownerPid !== owner.pid) continue;
+      if (result.kind !== "signaled") {
+        this.collectedOwned.delete(job.id);
+        continue;
+      }
+      job.lifetimeState = "closing";
+      pending.push(this.ownedClosure(owner.pid, job));
     }
     for (const cleanup of this.ownedCleanup) {
       const work = cleanup(owner.pid, result);
