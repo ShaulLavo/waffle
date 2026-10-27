@@ -40,6 +40,7 @@ import {
   ProcessError,
   Signal,
   checkedSignal,
+  checkedProcessCwd,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessExit,
@@ -95,6 +96,8 @@ export interface SupervisorOptions {
   onError?(error: unknown): void;
 }
 export interface RootProcessOptions extends SpawnReservation {
+  /** Initial root cwd; omitted roots explicitly start at /. */
+  cwd?: string;
   descriptors?: DescriptorTable;
   foreground?: boolean;
 }
@@ -120,7 +123,7 @@ function snapshot(spec: SpawnRequest): Readonly<SpawnRequest> {
     executable: spec.executable,
     argv: spec.argv.slice(),
     env: { ...spec.env },
-    cwd: spec.cwd,
+    cwd: checkedProcessCwd(spec.cwd),
     job: spec.job,
     fds: spec.fds.map((binding) => ({ ...binding })),
   };
@@ -156,6 +159,9 @@ export class ProcessSupervisor {
   }
   jobOf(pid: number): number {
     return this.table.require(pid).job;
+  }
+  cwd(pid: number): string {
+    return this.accessOwner(pid).cwd;
   }
   private accessOwner(pid: number): ProcessRecord {
     const record = this.table.get(pid);
@@ -349,6 +355,8 @@ export class ProcessSupervisor {
   }
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
+    const initialCwd = options.cwd;
+    const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
     const pid = options.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt),
@@ -377,6 +385,7 @@ export class ProcessSupervisor {
         pid,
         parentPid: 0,
         job: job.id,
+        cwd,
         descriptors: options.descriptors ?? new DescriptorTable(),
         interrupt,
         requestedSignal,
@@ -512,6 +521,7 @@ export class ProcessSupervisor {
           pid,
           parentPid,
           job,
+          cwd: request.cwd,
           descriptors,
           controlParent: reservation.controlParent,
           rootPid: reservation.rootPid,

@@ -21,6 +21,7 @@ const unused = (): never => {
 };
 // The parent's real local supervisor publishes this outcome without notifying the pipe wake.
 const service: ProcessService = {
+  cwd: unused,
   spawn: unused,
   startStatus: unused,
   waitJob: unused,
