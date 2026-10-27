@@ -59,6 +59,17 @@ export function checkedJobLifetime(job: number, value: unknown): JobLifetime {
   if (value === "independent" || value === "caller-fatal") return value;
   throw new ProcessError(ProcessErrno.INVAL, "invalid job lifetime");
 }
+/** Request metadata is UTF-8, absolute, NUL-free and preserved without normalization. */
+export function checkedProcessCwd(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value.startsWith("/") ||
+    value.includes("\0") ||
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)
+  )
+    throw new ProcessError(ProcessErrno.INVAL, "invalid process cwd");
+  return value;
+}
 export interface SpawnRequest {
   executable: string;
   argv: string[];

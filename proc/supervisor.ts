@@ -41,6 +41,7 @@ import {
   Signal,
   checkedSignal,
   checkedJobLifetime,
+  checkedProcessCwd,
   type ChildExitEvent,
   type ProcessContext,
   type ProcessExit,
@@ -98,6 +99,8 @@ export interface SupervisorOptions {
   onError?(error: unknown): void;
 }
 export interface RootProcessOptions extends SpawnReservation {
+  /** Initial root cwd; omitted roots explicitly start at /. */
+  cwd?: string;
   descriptors?: DescriptorTable;
   foreground?: boolean;
 }
@@ -126,7 +129,7 @@ function snapshot(
     executable: spec.executable,
     argv: spec.argv.slice(),
     env: { ...spec.env },
-    cwd: spec.cwd,
+    cwd: checkedProcessCwd(spec.cwd),
     job: selection.job,
     ...(selection.jobLifetime === undefined ? {} : { jobLifetime: selection.jobLifetime }),
     fds: spec.fds.map((binding) => ({ ...binding })),
@@ -218,6 +221,9 @@ export class ProcessSupervisor {
       if (!record.retirement) complete = false;
     }
     return complete;
+  }
+  cwd(pid: number): string {
+    return this.accessOwner(pid).cwd;
   }
   private accessOwner(pid: number): ProcessRecord {
     const record = this.table.get(pid);
@@ -419,6 +425,8 @@ export class ProcessSupervisor {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
     if (options.job !== undefined && this.table.job(options.job)?.jobLifetime === "caller-fatal")
       throw new ProcessError(ProcessErrno.NOTSUP, "external roots cannot join caller-fatal jobs");
+    const initialCwd = options.cwd;
+    const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
     const pid = options.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt),
@@ -447,6 +455,7 @@ export class ProcessSupervisor {
         pid,
         parentPid: 0,
         job: job.id,
+        cwd,
         descriptors: options.descriptors ?? new DescriptorTable(),
         interrupt,
         requestedSignal,
@@ -596,6 +605,7 @@ export class ProcessSupervisor {
           pid,
           parentPid,
           job,
+          cwd: request.cwd,
           descriptors,
           controlParent: reservation.controlParent,
           rootPid: reservation.rootPid,

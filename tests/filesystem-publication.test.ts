@@ -605,6 +605,7 @@ function unusedProcessService(): ProcessService {
     throw new Error("unexpected process service call");
   };
   return {
+    cwd: unused,
     spawn: unused,
     startStatus: unused,
     waitJob: unused,

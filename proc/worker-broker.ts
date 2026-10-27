@@ -28,7 +28,7 @@ import {
 } from "./admission.js";
 import { requestSignal } from "./signals.js";
 import type { ProcessSupervisor } from "./supervisor.js";
-import { ProcessErrno, ProcessError, checkedJobLifetime } from "./types.js";
+import { ProcessErrno, ProcessError, checkedJobLifetime, checkedProcessCwd } from "./types.js";
 import {
   confirmWorkerProcessJob,
   installWorkerBindings,
@@ -133,6 +133,7 @@ export class WorkerProcessBroker {
   });
   constructor(private readonly options: WorkerProcessBrokerOptions) {}
   adoptRoot(transport: WorkerProcessTransport): void {
+    checkedProcessCwd(transport.cwd);
     const state = workerProcessState(transport);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
     const existing = this.get(state.pid);
@@ -425,6 +426,8 @@ export class WorkerProcessBroker {
           ProcessErrno.INVAL,
           "job lifetime conflicts with shared reservation",
         );
+      if (transport.cwd !== request.cwd)
+        throw new ProcessError(ProcessErrno.INVAL, "spawn cwd conflicts with process transport");
       if (existing)
         throw new ProcessError(
           ProcessErrno.SRCH,
@@ -700,6 +703,7 @@ export class WorkerProcessBroker {
         pid: transport.pid,
         bindings: [],
         resources: [],
+        cwd: transport.cwd,
       };
       try {
         confirmDisposedProcess(

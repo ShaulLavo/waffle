@@ -19,6 +19,7 @@ const unused = (): never => {
   throw new Error("unexpected process service call");
 };
 const service: ProcessService = {
+  cwd: unused,
   spawn: unused,
   startStatus: unused,
   waitJob: unused,

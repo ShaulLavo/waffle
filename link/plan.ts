@@ -1,5 +1,11 @@
 import type { Wasi } from "../core/wasi.js";
-import { invalid, inspectProfile, requireSignature, type ModuleProfile } from "./metadata.js";
+import {
+  invalid,
+  inspectProfile,
+  requireSignature,
+  sameSignature,
+  type ModuleProfile,
+} from "./metadata.js";
 import { instantiateGroup, type LinkedGroup } from "./group.js";
 
 export type { LinkedGroup } from "./group.js";
@@ -56,9 +62,37 @@ export class PreparedLinkPlan {
     const core = compiled[0]!;
     requireSignature(core.profile, core.id, "_start", [], []);
     requireSignature(core.profile, core.id, reserve, [0x7f, 0x7f], [0x7f]);
+    for (const member of compiled.slice(1)) validateCoreImports(core, member);
     const plan = Object.freeze(new PreparedLinkPlan(core.module));
     plans.set(plan, { core, libraries: compiled.slice(1), reserve, source: owned });
     return plan;
+  }
+}
+
+function validateCoreImports(core: CompiledMember, member: CompiledMember): void {
+  const exports = WebAssembly.Module.exports(core.module);
+  for (const entry of member.profile.functionImports) {
+    if (entry.module !== "env") continue;
+    const provider = core.profile.functions.get(entry.name);
+    if (!provider && exports.some((value) => value.name === entry.name))
+      invalid(member.id, `core export env.${entry.name} must be a function`);
+    if (!provider)
+      invalid(
+        member.id,
+        `unresolved ${entry.binding === "weak" ? "weak direct" : "required"} function env.${entry.name}`,
+      );
+    if (!sameSignature(provider, entry))
+      invalid(member.id, `env.${entry.name} has an incompatible core function signature`);
+  }
+  for (const entry of member.profile.globalImports) {
+    if (entry.module === "env" && ["__memory_base", "__table_base"].includes(entry.name)) continue;
+    const provider = core.profile.globalExports.get(entry.name);
+    const mutable = entry.module === "GOT.mem" ? false : entry.mutable;
+    if (!provider || provider.value !== entry.value || provider.mutable !== mutable)
+      invalid(
+        member.id,
+        `${entry.module}.${entry.name} requires a core ${mutable ? "mutable" : "immutable"} i32 global export`,
+      );
   }
 }
 

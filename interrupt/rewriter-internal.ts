@@ -33,6 +33,7 @@ interface FunctionSignature {
 
 const runtimeProcSignatures = new Map<string, FunctionSignature>([
   ["getpid", { params: [], results: [0x7f] }],
+  ["cwd", { params: [0x7f, 0x7f], results: [0x7f] }],
   ["access_start", { params: [0x7f, 0x7f, 0x7f, 0x7f, 0x7f], results: [0x7f] }],
   ["access_take", { params: [0x7f], results: [0x7f] }],
   ["access_cancel", { params: [0x7f], results: [0x7f] }],

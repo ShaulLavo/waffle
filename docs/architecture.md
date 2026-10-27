@@ -114,7 +114,8 @@ not proof of physical teardown: an exit acknowledgement or the filesystem's admi
 must prove host critical sections quiescent before reaping and physical termination.
 Each process has fresh interrupt/revocation/transport buffers;
 killed buffers are never assigned to another process. After the first worker launch, the broker
-precreates up to two unused workers across all worker URLs. Each worker runs at most one process;
+precreates up to two unused workers across all worker URLs. A consumer that launches its own root
+worker takes one from the same pool with `takeWorker(url)`. Each worker runs at most one process;
 used workers follow the existing quiescence and termination path. The registry already caches
 compiled modules per registration, and source registrations share a bounded content cache.
 Paired Chromium command timings for worker precreation remain pending.

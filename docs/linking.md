@@ -71,6 +71,16 @@ static bytes through core and grows the same table for aligned, nonzero ranges.
 a mutable stack global is the identical object, not a copied pointer value.
 WASI and `runtime_proc` imports retain their strict process-owned resolution.
 
+Preparation checks each side's `env` function against the core export's complete
+Wasm parameter and result types. Supported `dylink.0` import-info records mark
+direct `env` functions weak and undefined (`0x11`). A present provider binds
+normally. A missing direct weak function remains an error; Waffle supplies no
+replacement callable. Imports without a record require a provider.
+Records must name an imported `env` function. Other flags, duplicate or
+conflicting records, unmatched names, and malformed payloads are rejected.
+Global imports retain their Wasm type and mutability. Core globals must match;
+the existing data GOT still requires immutable core i32 address exports.
+
 Active default-index segments use their imported base global. Passive data
 requires explicit ordered memory initialization and relocation. For passive
 members, rename the generic `__wasm_apply_data_relocs` export and list it after

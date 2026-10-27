@@ -25,6 +25,7 @@ export interface ProcessRecord {
   controlParent?: number;
   rootPid?: number;
   readonly job: number;
+  readonly cwd: string;
   readonly descriptors: DescriptorTable;
   readonly interrupt: ControlCells;
   readonly requestedSignal: ControlCells;
