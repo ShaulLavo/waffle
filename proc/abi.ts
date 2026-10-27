@@ -531,13 +531,16 @@ export class ProcessABI {
     )
       return -58;
     const releaseJob = this.options.service.registerJobCleanupWake?.(this.options.pid, job, wake);
-    const releaseOwner = this.options.service.registerRevocation?.(this.options.pid, () => {
-      // Registration is removed before this import returns; notification never consumes signals.
-      atomicsAdd(wake, 0, 1);
-      atomicsNotify(wake, 0);
-    });
+    let releaseOwner: (() => void) | undefined;
     try {
+      releaseOwner = this.options.service.registerRevocation?.(this.options.pid, () => {
+        atomicsAdd(wake, 0, 1);
+        atomicsNotify(wake, 0);
+      });
       return this.runCleanupWait(job, ptr, wake);
+    } catch (error) {
+      this.checkFatal();
+      throw error;
     } finally {
       releaseOwner?.();
       releaseJob?.();

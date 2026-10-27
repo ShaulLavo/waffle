@@ -443,6 +443,53 @@ makes a repeat return `-ECHILD`. Unknown job IDs return `-ESRCH` (`-71`). Spawn
 selectors are unchanged: `0` and `-1` create foreground/background jobs, and a
 positive selector joins an existing live job.
 
+### Caller-owned independent jobs
+
+Spawn JSON accepts optional `jobLifetime: "caller-fatal" | "independent"` only
+with a new-job selector (`0` or `-1`). Omission means `independent`; existing
+foreground/background and detached-job behavior is unchanged. Unknown values,
+null, and specifying a lifetime with a positive join selector return `-EINVAL`
+before reservation. Joins inherit the existing job's policy. The authenticated
+spawning process supplies the immutable lifetime owner; no JSON owner PID is used.
+
+When that owner's immutable outcome is `signaled`, the host seals its caller-fatal
+jobs, selects SIGKILL for their remaining members, and closes nested owned jobs.
+Independent jobs and unrelated siblings survive. Ordinary exit (including status 137) and startup failure disarm the relation without killing children. Original
+owner identity is separate from the mutable control ancestry used for wait authority.
+
+The host releases owner descriptors before awaiting child cleanup. Owner completion
+is withheld until owned members pass their existing filesystem/adapter fences,
+their physical stops (including late acquired launch handles) settle, and their
+jobs are collected through the existing incarnation-tagged consuming claims.
+Queued accepted spawns are included; cleanup never blocks their admission queue.
+Fence or physical-stop failure stays unconfirmed and diagnostic. No timeout,
+guest Drop, second collector, or replacement child outcome completes this barrier.
+
+### Signal-preserving cleanup wait
+
+`wait_job(job, 2, out)` is **CLEANUP**. It preserves pending handled signals while
+waiting for both safe resource confirmation and physical retirement, then writes
+the same typed eight-byte leader result and consumes the job. A prior individual
+child wait is optional. Flags `0` and `1` keep their existing semantics; `3` and
+other flags are invalid. CLEANUP does not send a signal: a live caller first kills
+the job if cancellation is required, then makes one cleanup wait.
+
+CLEANUP registers existing job/directory and caller-revocation notifications before
+scanning readiness and waits on their shared sequence without timer retries. A
+handled pending signal is neither consumed nor re-emitted. A fatal caller outcome
+uses the existing process-signal unwind; host lifetime cleanup continues after the
+guest can no longer run. The full output span is validated before collection and
+reacquired after callbacks or memory growth. Caller/job authority is unchanged;
+waiting on the caller's own member job returns `-EINVAL`. Hosts without a proven
+notification route return `-ENOTSUP` (`-58`). Failed physical retirement returns
+`-EIO` (`-29`) without consuming the job or fabricating its leader outcome.
+
+`ProcessService.jobCleanupReady(callerPid, job)` supplies the nonblocking predicate.
+Shared job rows carry lifetime and physical-retirement state in the existing
+directory, with current readers and writers using the same layout. Native hosts
+use `registerJobCleanupWake` and caller revocation alongside the existing wake;
+ordinary job/poll wake behavior is unchanged.
+
 Host control fields in `ProcessContext`, `SignalTransport`, `SpawnReservation`
 and `ProcessABIOptions.wait` use `ControlCells` (`Int32Array | TaggedCells`). Outcome
 fields use `OutcomeWord` (`BigInt64Array | OutcomeCell`). Import `ControlCells`,

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Worker } from "node:worker_threads";
-import { DescriptorTable } from "../core/descriptors.js";
+import { DescriptorTable, OpenDescription } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI, ProcessSignalExit } from "../proc/abi.js";
 import { ExecutableRegistry } from "../proc/registry.js";
@@ -16,14 +16,22 @@ import {
   workerProcessState,
   type WorkerProcessMessage,
   type WorkerProcessTransport,
+  type WorkerDescriptorCodec,
 } from "../proc/worker-client.js";
-import { findDirectoryJob } from "../proc/directory.js";
+import { findDirectoryJob, directoryGroups } from "../proc/directory.js";
 import {
   createFilesystemIdentity,
   FilesystemSection,
   revokeFilesystem,
   waitForFilesystemQuiescence,
+  createProcessFilesystemIdentity,
+  reapFilesystem,
 } from "../fs/protocol.js";
+import { filesystemFileFixture } from "./fixtures/filesystem-file.js";
+import {
+  createFilesystemDescriptorCodec,
+  isFilesystemDescriptorToken,
+} from "../proc/filesystem-codec.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -62,6 +70,10 @@ test("fatal caller closes only explicitly owned independent jobs and nested owne
   const detached = s.reserveSpawn(owner, spec());
   const background = s.reserveSpawn(owner, spec(false, -1));
   const sibling = s.reserveSpawn(root, spec());
+  s.registerRevocation(owner, () => {
+    expect(() => s.reserveSpawn(nested, spec())).toThrow(/parent process has exited/);
+    expect(() => s.reserveSpawn(grandchild, spec())).toThrow(/parent process has exited/);
+  });
   s.kill(owner, 9);
   await s.waitForExit(root, owner);
   expect(s.get(child)).toBeUndefined();
@@ -107,6 +119,8 @@ test("owner completion waits for sparse inherited FD release, filesystem fence a
   await s.start(child);
   s.kill(owner, 9);
   expect(s.get(owner)?.result).toBeNull();
+  expect(s.get(owner)?.descriptors.get(fd)).toBeUndefined();
+  await turn();
   expect(released).toBe(true);
   expect(stopped).toBe(false);
   fence.resolve();
@@ -173,7 +187,10 @@ test("CLEANUP wait preserves pending handled signals and validates output before
   expect(abi.imports.wait_job!(s.jobOf(root), 2, 64)).toBe(-28);
 });
 
-function sharedFixture(options: Partial<SupervisorOptions> = {}) {
+function sharedFixture(
+  options: Partial<SupervisorOptions> = {},
+  suppliedCodec?: WorkerDescriptorCodec,
+) {
   const transport = createWorkerProcessTransport({ capacity: 16 });
   const rootState = workerProcessState(transport);
   const registry = new ExecutableRegistry();
@@ -181,7 +198,7 @@ function sharedFixture(options: Partial<SupervisorOptions> = {}) {
   const s = new ProcessSupervisor({ registry, launch: () => ({ terminate() {} }), ...options });
   s.createRoot({ pid: rootState.pid, job: rootState.job, ...rootState.signals });
   const messages: WorkerProcessMessage[] = [];
-  const codec = {
+  const codec = suppliedCodec ?? {
     export(): never {
       throw new Error("unexpected descriptor export");
     },
@@ -237,6 +254,64 @@ test("shared fatal owner closes queued owned child and grandchild without blocki
   expect(f.s.get(childPid)).toBeUndefined();
   expect(f.s.get(grandchild)).toBeUndefined();
   expect(findDirectoryJob(f.transport.directory, child.job)).toBeUndefined();
+});
+test("shared owned closure retires active nested jobs while independent jobs survive", async () => {
+  const stopped: number[] = [];
+  const f = sharedFixture({
+    launch: (context) => ({
+      terminate() {
+        stopped.push(context.pid);
+      },
+    }),
+  });
+  const ownerPid = f.root.spawn(f.root.pid, spec());
+  const owner = f.client(await f.admit());
+  const childPid = owner.spawn(ownerPid, spec(true));
+  const child = f.client(await f.admit());
+  const grandchild = child.spawn(childPid, spec(false, child.job));
+  await f.admit();
+  const nested = child.spawn(childPid, spec(true));
+  await f.admit();
+  const detached = owner.spawn(ownerPid, spec());
+  await f.admit();
+  const background = owner.spawn(ownerPid, spec(false, -1));
+  await f.admit();
+  f.root.kill(ownerPid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  await f.s.waitForExit(f.root.pid, ownerPid);
+  for (const pid of [childPid, grandchild, nested]) {
+    expect(stopped).toContain(pid);
+    expect(f.s.get(pid)).toBeUndefined();
+  }
+  for (const pid of [detached, background]) {
+    expect(f.s.get(pid)?.state).toBe("running");
+    expect(stopped).not.toContain(pid);
+  }
+});
+test("owner fatal selection during export rolls back the unpublished owned reservation", async () => {
+  let discarded = 0;
+  const codec: WorkerDescriptorCodec = {
+    export() {
+      f.root.kill(f.root.pid, 9);
+      return {};
+    },
+    import: () => new OpenDescription({ kind: "directory", handle: 1 }),
+    discard() {
+      discarded++;
+    },
+  };
+  const f = sharedFixture({}, codec);
+  const fd = f.root.options.descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n);
+  expect(() =>
+    f.root.spawn(f.root.pid, { ...spec(true), fds: [{ parent: fd, child: 17 }] }),
+  ).toThrow();
+  expect(discarded).toBe(1);
+  expect(f.messages.some((message) => message.operation === "spawn")).toBe(false);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  await f.s.waitForExit(0, f.root.pid);
+  expect(Array.from(directoryGroups(f.transport.directory), (group) => group.id)).toEqual([
+    f.root.job,
+  ]);
 });
 test("late acquired handles keep physical retirement pending after ordinary process collection", async () => {
   const handle = Promise.withResolvers<{ terminate(): Promise<void> }>();
@@ -294,6 +369,81 @@ test("CLEANUP waits on a notification despite handled TERM, but fatal outcome un
   expect(() => abi.imports.wait_job!(s.jobOf(pid), 2, 64)).toThrow(ProcessSignalExit);
   expect(waits).toBe(1);
   expect(controlLoad(signals.signalState, 15) & SIGNAL_PENDING).toBe(SIGNAL_PENDING);
+});
+test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated collection", async () => {
+  const { supervisor: s, root } = fixture();
+  const pid = s.reserveSpawn(root, spec());
+  const job = s.jobOf(pid);
+  s.exit(pid, 0);
+  await turn();
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const signals = s.get(root)!;
+  const options = {
+    memory,
+    fs: new MemFS(),
+    descriptors: signals.descriptors,
+    service: s,
+    pid: root,
+    signals,
+  };
+  expect(new ProcessABI(options).imports.wait_job!(job, 2, 0)).toBe(-58);
+  const wake = new Int32Array(new SharedArrayBuffer(4));
+  const other = s.createRoot();
+  const stranger = new ProcessABI({ ...options, pid: other, signals: s.get(other)!, wake });
+  expect(stranger.imports.wait_job!(job, 2, 0)).toBe(-63);
+  const abi = new ProcessABI({ ...options, wake });
+  expect(abi.imports.wait_job!(9999, 2, 0)).toBe(-71);
+  expect(abi.imports.wait_job!(job, 2, 0)).toBe(0);
+  expect(abi.imports.wait_job!(job, 2, 0)).toBe(-12);
+});
+test("CLEANUP reacquires growing guest memory before consuming the job", async () => {
+  const { supervisor: s, root } = fixture();
+  const pid = s.reserveSpawn(root, spec());
+  const job = s.jobOf(pid);
+  s.exit(pid, 23);
+  await turn();
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+  let views = 0;
+  const abi = new ProcessABI({
+    memory: () => {
+      if (++views === 2) memory.grow(1);
+      return memory;
+    },
+    fs: new MemFS(),
+    descriptors: s.get(root)!.descriptors,
+    service: s,
+    pid: root,
+    signals: s.get(root)!,
+    wake: new Int32Array(new SharedArrayBuffer(4)),
+  });
+  expect(abi.imports.wait_job!(job, 2, 64)).toBe(0);
+  expect(memory.buffer.byteLength).toBe(131072);
+  expect(new DataView(memory.buffer).getInt32(68, true)).toBe(23);
+});
+test("shared CLEANUP reports physical-retirement error without collecting the job", async () => {
+  const failure = new Error("physical stop refused");
+  const f = sharedFixture({
+    launch: () => ({ terminate: () => Promise.reject(failure) }),
+    onError() {},
+  });
+  const pid = f.root.spawn(f.root.pid, spec());
+  const transport = await f.admit();
+  const job = workerProcessState(transport).job;
+  f.root.kill(pid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  await turn();
+  const abi = new ProcessABI({
+    memory: new WebAssembly.Memory({ initial: 1 }),
+    fs: new MemFS(),
+    descriptors: f.root.options.descriptors,
+    service: f.root,
+    pid: f.root.pid,
+    signals: f.root.signals,
+    wake: f.root.wake,
+  });
+  expect(abi.imports.wait_job!(job, 2, 0)).toBe(-29);
+  expect(findDirectoryJob(f.transport.directory, job)).toBeDefined();
+  expect(f.root.jobEmpty(f.root.pid, job)).toBe(true);
 });
 test("a real filesystem section fences owner cleanup before physical retirement", async () => {
   const identity = createFilesystemIdentity();
@@ -359,6 +509,71 @@ function cleanupWorker(f: ReturnType<typeof sharedFixture>, job: number) {
   });
   return { ready: ready.promise, finished: finished.promise, notices };
 }
+test("shared owned cleanup releases a real sparse filesystem token only through its section fence", async () => {
+  const filesystemCleanups: (() => void)[] = [];
+  cleanups.push(() => {
+    while (filesystemCleanups.length) filesystemCleanups.pop()!();
+  });
+  const fs = await filesystemFileFixture(filesystemCleanups);
+  const identity = createProcessFilesystemIdentity(fs.client.connection);
+  cleanups.push(() => {
+    revokeFilesystem(identity);
+    reapFilesystem(identity);
+  });
+  const exporter = createFilesystemDescriptorCodec(fs.client, identity);
+  const importer = createFilesystemDescriptorCodec(identity, undefined, () => fs.client.sweep());
+  const codec: WorkerDescriptorCodec = {
+    export: exporter.export,
+    import: importer.import,
+    discard: exporter.discard,
+  };
+  const section = new FilesystemSection(identity);
+  let child = 0,
+    stopped = false;
+  const f = sharedFixture(
+    {
+      quiesce: (pid) => (pid === child ? waitForFilesystemQuiescence(identity) : undefined),
+      launch(context) {
+        context.registerRevocation(() => revokeFilesystem(identity));
+        return {
+          terminate() {
+            expect(Atomics.load(new Int32Array(identity.sections), 0)).toBe(0);
+            stopped = true;
+          },
+        };
+      },
+    },
+    codec,
+  );
+  const fd = f.root.options.descriptors.open(
+    { kind: "file", handle: fs.handle, offset: 0, append: false },
+    127n,
+    0n,
+    () => fs.client.release(fs.handle),
+  );
+  child = f.root.spawn(f.root.pid, { ...spec(true), fds: [{ parent: fd, child: 1000000 }] });
+  const notice = f.messages[0];
+  if (notice?.operation !== "spawn") throw new Error("expected spawn");
+  const token = notice.transport.resources[0];
+  if (!isFilesystemDescriptorToken(token)) throw new Error("expected filesystem token");
+  f.root.options.descriptors.close(fd);
+  await f.admit();
+  expect(f.s.get(child)?.descriptors.get(1000000)?.resource.kind).toBe("file");
+  section.enter();
+  cleanups.push(() => section.exit());
+  f.root.kill(f.root.pid, 9);
+  await f.broker.handle(f.messages.shift()!, f.root.pid);
+  expect(f.s.get(f.root.pid)?.result).toBeNull();
+  expect(stopped).toBe(false);
+  section.exit();
+  cleanups.pop();
+  await f.s.waitForExit(0, f.root.pid);
+  expect(stopped).toBe(true);
+  expect(new Int32Array(identity.capabilities)[token.reservation.targetKey + 1]).toBe(0);
+  expect(await fs.client.asyncCall("readFile", ["/file"])).toEqual(
+    new TextEncoder().encode("abcdef"),
+  );
+});
 for (const fatal of [false, true])
   test(`actual blocked worker CLEANUP is notified by retirement and preserves fatal/handled signals (fatal=${fatal})`, async () => {
     const fence = Promise.withResolvers<void>();

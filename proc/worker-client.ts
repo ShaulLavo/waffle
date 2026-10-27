@@ -654,6 +654,7 @@ export class WorkerProcessClient {
         if (!collective || !isCollectedProcess(error)) throw error;
       }
     }
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     // Select every target before resource callbacks, then freeze all canonical cursors before
     // returning to the guest. A concurrently collected member cannot stop the remaining job.
     for (let index = 0; index < targets.length; index++) {
@@ -667,7 +668,6 @@ export class WorkerProcessClient {
     }
     // Every member and parent observes this one directory-wide sequence, not slot-local wakes.
     wakeWorkerProcess(this.options.transport);
-    settleDirectoryJobLifetimes(this.options.transport.directory);
     const pids: number[] = [];
     for (let index = 0; index < targets.length; index++) pids[index] = targets[index]!.pid;
     this.options.postMessage({
@@ -688,6 +688,7 @@ export class WorkerProcessClient {
       kind: "signaled",
       code: controlLoad(this.signals.requestedSignal, 0) === 9 ? 9 : signal,
     });
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);

@@ -517,6 +517,10 @@ export class WorkerProcessBroker {
     if (!supervisor) return;
     for (const root of this.directories.values()) {
       settleDirectoryJobLifetimes(root.directory);
+      for (const group of directoryGroups(root.directory)) {
+        const local = supervisor.job(group.id);
+        if (local) local.lifetimeState = sharedLifetimeState(controlLoad(group.lifetime));
+      }
       helpDirectoryJobs(root.directory);
     }
     for (const job of Array.from(supervisor.table.jobValues()))
@@ -588,6 +592,7 @@ export class WorkerProcessBroker {
     root: WorkerProcessTransport,
     group: NonNullable<ReturnType<typeof findDirectoryJob>>,
   ): Promise<void> {
+    await Promise.resolve();
     const wake = workerProcessState(root).wake;
     for (;;) {
       const expected = atomicsLoad(wake, 0);
@@ -735,6 +740,14 @@ export class WorkerProcessBroker {
       /* Diagnostics never own cleanup. */
     }
   }
+}
+
+function sharedLifetimeState(value: number): "independent" | "attached" | "disarmed" | "closing" {
+  if (value === 0) return "independent";
+  if (value === 1) return "attached";
+  if (value === 2) return "disarmed";
+  if (value === 3) return "closing";
+  throw new ProcessError(ProcessErrno.INVAL, "invalid shared job lifetime state");
 }
 
 /** No closure here retains the broker, descriptor tokens, or adapter payloads through a fence. */

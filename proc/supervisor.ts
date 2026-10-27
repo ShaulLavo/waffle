@@ -180,6 +180,7 @@ export class ProcessSupervisor {
     };
   }
   jobCleanupReady(callerPid: number, jobId: number): boolean {
+    this.accessOwner(callerPid);
     const job = this.requireWaitJob(callerPid, jobId);
     if (this.table.get(callerPid)?.job === jobId)
       throw new ProcessError(ProcessErrno.INVAL, "cannot cleanup-wait the caller's job");
@@ -386,6 +387,8 @@ export class ProcessSupervisor {
     return addWakeListener(this.jobListeners, jobId, wake);
   }
   registerJobCleanupWake(callerPid: number, jobId: number, wake: Int32Array): () => void {
+    if (!isSharedArrayBuffer(typedArrayBuffer(wake)) || typedArrayLength(wake) !== 1)
+      throw new TypeError("cleanup wake must be one shared int32");
     this.requireWaitJob(callerPid, jobId);
     return addWakeListener(this.cleanupListeners, jobId, wake);
   }
@@ -530,7 +533,7 @@ export class ProcessSupervisor {
       createdJob = true;
     }
     if (jobIdentity) this.table.adoptJobIdentity(job, jobIdentity);
-    this.checkJobAdmission(job);
+    this.checkJobAdmission(job, admitted);
     const descriptors = new DescriptorTable();
     const inherited = new Map<OpenDescription, Descriptor>();
     const revocations = new Set<() => void>();
@@ -591,7 +594,8 @@ export class ProcessSupervisor {
     }
     return pid;
   }
-  private checkJobAdmission(job: number): void {
+  private checkJobAdmission(job: number, admitted: boolean): void {
+    if (admitted) return;
     if (this.table.job(job)?.lifetimeState === "closing")
       throw new ProcessError(ProcessErrno.CHILD, "owned job is closing");
   }
@@ -1022,16 +1026,22 @@ export class ProcessSupervisor {
     const pid = record.pid;
     if (winner.kind === "signaled" && winner.code === Signal.SIGKILL) this.publishKill(record);
     record.revoked = true;
+    let owned: Promise<void> | undefined;
+    let fenceFailed = false;
+    try {
+      owned = this.closeOwnedJobs(record, winner);
+    } catch (error) {
+      fenceFailed = true;
+      this.report(error);
+    }
     const hooks = Array.from(record.revocations);
     record.revocations.clear();
     for (const hook of hooks) this.safely(hook);
     this.disposeDescriptors(record.descriptors);
-    const owned = this.closeOwnedJobs(record, winner);
     // Invoke the fence while broker child/identity records are still present. Every observer
     // must wait for admitted filesystem and adapter work (for example a terminal section),
     // independently of the physical worker's potentially delayed termination.
     let quiescence: void | Promise<void> = undefined;
-    let fenceFailed = false;
     try {
       quiescence = this.options.quiesce?.(pid);
       if (owned)
@@ -1084,9 +1094,13 @@ export class ProcessSupervisor {
         this.table.remove(pid);
     };
     const safe = () => {
-      const late = this.closeOwnedJobs(record, winner);
-      if (late) void late.then(publish, (error) => this.report(error));
-      else publish();
+      try {
+        const late = this.closeOwnedJobs(record, winner);
+        if (late) void late.then(publish, (error) => this.report(error));
+        else publish();
+      } catch (error) {
+        this.report(error);
+      }
     };
     if (!fenceFailed) {
       if (quiescence) void quiescence.then(safe, (error) => this.report(error));
@@ -1139,6 +1153,7 @@ export class ProcessSupervisor {
     return true;
   }
   private closeOwnedJobs(owner: ProcessRecord, result: ProcessExit): Promise<void> | undefined {
+    this.settleOwnedJobs();
     const pending: Promise<void>[] = [];
     for (const job of this.table.jobValues()) {
       if (
@@ -1155,9 +1170,31 @@ export class ProcessSupervisor {
       const work = cleanup(owner.pid, result);
       if (work) pending.push(work);
     }
+    this.settleOwnedJobs();
     return pending.length ? Promise.all(pending).then(() => {}) : undefined;
   }
+  private settleOwnedJobs(): void {
+    let changed: boolean;
+    do {
+      changed = false;
+      for (const job of this.table.jobValues()) changed = this.settleOwnedJob(job) || changed;
+    } while (changed);
+  }
+  private settleOwnedJob(job: ProcessJob): boolean {
+    if (job.shared || job.lifetimeState !== "attached") return false;
+    const owner = this.table.get(job.ownerPid) ?? this.finishing.get(job.ownerPid);
+    if (!owner) throw new ProcessError(ProcessErrno.SRCH, "owned job lost its owner");
+    const result = readOutcome(owner.outcome);
+    if (!result) return false;
+    job.lifetimeState = result.kind === "signaled" ? "closing" : "disarmed";
+    if (job.lifetimeState !== "closing") return true;
+    for (const pid of job.members) this.recordSignal(this.table.require(pid), Signal.SIGKILL);
+    return true;
+  }
   private async closeOwnedJob(owner: number, job: ProcessJob): Promise<void> {
+    // Seal the complete owner batch before member callbacks run; avoid recursive
+    // JS stacks when each dying member owns another independent job.
+    await Promise.resolve();
     this.killJob(job.id, Signal.SIGKILL);
     let complete!: () => void, failed!: (error: unknown) => void;
     const done = new Promise<void>((resolve, reject) => {

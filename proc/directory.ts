@@ -406,14 +406,15 @@ function settleJobLifetime(directory: SharedArrayBuffer, slot: number): boolean 
 }
 function signalDirectoryJob(directory: SharedArrayBuffer, job: number): void {
   const slots = directorySlots(directory);
-  for (let index = 0; index < slots.length; index++) {
-    try {
-      const slot = slots[index]!;
-      const state = directoryState({ directory, slot, pid: identity(row(directory, slot)) });
-      if (state.job === job) requestSignal(state.signals, 9);
-    } catch (error) {
-      if (!isCollectedProcess(error)) throw error;
-    }
+  for (let index = 0; index < slots.length; index++)
+    signalDirectoryMember(directory, slots[index]!, job);
+}
+function signalDirectoryMember(directory: SharedArrayBuffer, slot: number, job: number): void {
+  try {
+    const state = directoryState({ directory, slot, pid: identity(row(directory, slot)) });
+    if (state.job === job) requestSignal(state.signals, 9);
+  } catch (error) {
+    if (!isCollectedProcess(error)) throw error;
   }
 }
 /** Shared reservations must observe owner death even before their spawn notice is admitted. */
