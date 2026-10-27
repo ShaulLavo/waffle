@@ -15,6 +15,7 @@ import {
   type RunState,
   assertIdentity,
   assertSourceProvenance,
+  historicalRunnerPath,
   captureRecordsIntact,
   Failures,
   terminalEvidence,
@@ -250,13 +251,14 @@ test("refuses engine/version and approved executable identity mismatch", () => {
   expect(() => assertIdentity(identity, {})).toThrow();
 });
 
-test("source provenance accepts the declared diagnostic inputs and rejects wrong bytes", () => {
+test("source provenance accepts the frozen historical reference and rejects wrong bytes", () => {
   const lockfile = new URL("../bun.lock", import.meta.url).pathname;
-  const runner = new URL("./process-recycling-browser-runner.ts", import.meta.url).pathname;
+  const runner = historicalRunnerPath;
   const root = mkdtempSync(
     join(process.env.STORAGE_SCRATCH_ROOT ?? tmpdir(), "waffle-root-source-"),
   );
   try {
+    expect(readFileSync(runner)).toHaveLength(14_361);
     expect(() => assertSourceProvenance(lockfile, runner)).not.toThrow();
     const wrongLockfile = join(root, "bun.lock");
     writeFileSync(wrongLockfile, `${readFileSync(lockfile, "utf8")}\n`);

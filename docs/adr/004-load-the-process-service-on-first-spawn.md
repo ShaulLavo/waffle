@@ -14,11 +14,11 @@ The supervisor, registry and table are dynamically imported on the first spawn. 
 ## Alternatives considered
 
 - **Load everything with `createRuntime()`.** Every page pays for processes, including pages that never spawn. This is the simpler design and the one the size gates prevent.
-- **Keep a pool of idle workers.** The browser keeps pooling disabled. Measurements must justify enabling it per browser before it is added. That is a separate decision.
+- **Precreate workers before process use.** This would charge filesystem-only pages for process startup. After the first worker launch, the broker instead precreates at most two unused workers across all URLs. Workers are single-use; compiled modules retain the existing per-registration and bounded content caches. Paired Chromium command timings remain pending.
 
 ## Consequences
 
 - `runtime.processes()` is asynchronous, and registering a program or adapter does not activate the service.
 - Identity allocation lives in shared memory so a blocked guest can reserve a pid before activation.
-- The core bundle is 8,779 bytes gzipped against a 9,782-byte budget, measured with `bun run size` on Bun 1.4.4. `fs` is 81,918 and `proc` is 57,438 bytes in the same run.
+- The core bundle is 9,376 bytes gzipped against a 9,782-byte budget, measured with `bun run size` on Bun 1.4.4. `fs` is 96,840 and `proc` is 62,986 bytes in the same run.
 - Raising a budget needs the measured numbers in the same pull request.

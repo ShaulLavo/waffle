@@ -249,6 +249,12 @@ try {
   });
   if (!diagnosticWorkerBuild.success)
     throw new AggregateError(diagnosticWorkerBuild.logs, "Runtime diagnostic Worker bundle failed");
+  const startupPoolBuild = await Bun.build({
+    entrypoints: [resolve(import.meta.dir, "fixtures/startup-pool-worker.ts")],
+    target: "browser",
+  });
+  if (!startupPoolBuild.success)
+    throw new AggregateError(startupPoolBuild.logs, "Startup pool Worker bundle failed");
   const pipeFilestatBuild = await Bun.build({
     entrypoints: [resolve(import.meta.dir, "fixtures/pipe-filestat-worker.ts")],
     target: "browser",
@@ -269,6 +275,8 @@ try {
         "Cross-Origin-Embedder-Policy": "require-corp",
         "Content-Type": path === "/" ? "text/html" : "text/javascript",
       };
+      if (path === "/startup-pool-worker.js")
+        return new Response(startupPoolBuild.outputs[0]!, { headers });
       if (path === "/pipe-filestat-worker.js")
         return new Response(pipeFilestatBuild.outputs[0]!, { headers });
       if (path === "/start-failure-quiet-worker.js")

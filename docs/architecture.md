@@ -113,8 +113,11 @@ Revocation hooks connect logical process death to host capabilities. Filesystem 
 not proof of physical teardown: an exit acknowledgement or the filesystem's admission fence
 must prove host critical sections quiescent before reaping and physical termination.
 Each process has fresh interrupt/revocation/transport buffers;
-killed buffers are never assigned to another process. The browser keeps pooling disabled:
-measurements must justify enabling it per browser before adding idle workers.
+killed buffers are never assigned to another process. After the first worker launch, the broker
+precreates up to two unused workers across all worker URLs. Each worker runs at most one process;
+used workers follow the existing quiescence and termination path. The registry already caches
+compiled modules per registration, and source registrations share a bounded content cache.
+Paired Chromium command timings for worker precreation remain pending.
 
 The generic service's registry, process table and supervisor are dynamically imported on first
 spawn. Small identity, typed-outcome and signal-state leaves are available earlier for synchronous
