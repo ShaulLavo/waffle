@@ -1,6 +1,6 @@
 # Install program packages
 
-A program package (coreutils, sed, ripgrep, …) ships WASI programs and the paths they belong at. `installPrograms` from `waffle/programs` puts them on a runtime: it writes one small marker file per path and registers it. Nothing is fetched or compiled until a program first runs. This guide assumes the adapter from [Run a WASI program](run-a-wasi-program.md).
+A program package (coreutils, sed, ripgrep, python, …) ships WASI programs and the paths they belong at. `installPrograms` from `waffle/programs` puts them on a runtime: it writes one small marker file per path and registers it. Nothing is fetched, prepared or compiled until a program first runs. This guide assumes the launcher from [Run a WASI program](run-a-wasi-program.md).
 
 ## Describe a package
 
@@ -20,15 +20,25 @@ export const coreutils: ProgramPackage = {
 
 `path` is the canonical absolute path. Each alias is another regular file that runs the same program and shares its single download and compilation. Programs are WASI Preview 1 commands. They load as source bytes, so they get the same interrupt admission as any other `source` program.
 
+A program that needs more than a file download gives `source` instead of `wasm`: an async function called on its first exec (never at install, and again only after a failure) that can prepare files before returning the Wasm bytes. `argv0` replaces only `argv[0]` at launch; the rest of argv, the environment, cwd and descriptors pass through. A package's `dispose` hook releases what `source` prepared:
+
+```ts
+const python = createPythonProgram(runtime);
+const pkg: ProgramPackage = {
+  name: "python",
+  programs: [{ path: "/usr/bin/python", argv0: python.argv0, source: python.source }],
+  dispose: python.dispose,
+};
+```
+
 ## Install
 
-Register the adapter that should run the programs, then install one or more packages:
+Pass the launcher that starts a process, such as the preview1 launcher from the guide above. The installation registers its own adapters around it:
 
 ```ts
 import { installPrograms } from "waffle/programs";
 
-runtime.registerAdapter("preview1", launcher);
-const programs = await installPrograms(runtime, [coreutils, sed], { adapter: "preview1" });
+const programs = await installPrograms(runtime, [coreutils, sed], { launcher });
 const env = { PATH: programs.path.join(":") };
 ```
 
@@ -37,9 +47,9 @@ The runtime has no global `PATH`. `programs.path` lists the directories that now
 ## Failures
 
 - Two programs in one call that claim the same path: `ProgramConflictError`, before anything changes.
-- A path that is already registered on the runtime, or a file there that isn't this program's marker: the call fails and removes every registration and marker it made. A matching marker left by an earlier page on persistent storage is reused, and is never removed by this installation.
-- A download or compile failure fails only that exec (`EIO` for a failed fetch, `ENOEXEC` for bytes that aren't WebAssembly). The next exec tries again.
+- A path that is already registered on the runtime, or a file there that isn't this program's marker: the call fails, removes every registration and marker it made, and runs the packages' `dispose` hooks. A matching marker left by an earlier page on persistent storage is reused, and is never removed by this installation.
+- A download, `source` or compile failure fails only that exec (`EIO` for a failed fetch, `ENOEXEC` for bytes that aren't WebAssembly). The next exec tries again.
 
 ## Uninstall
 
-`programs.dispose()` unregisters every path, then removes the marker files it created that are still unchanged. Call it once the programs' processes have stopped. `runtime.dispose()` releases registrations on its own.
+`programs.dispose()` makes new execs fail at once: it removes the marker files it created that are still unchanged and refuses new loads. It then waits for running processes of these programs to stop physically (it doesn't stop them), runs each package's `dispose` hook once, and only then releases the paths. A reinstall of the same paths fails with "already registered" until that finishes. `runtime.dispose()` stops every process but runs no package hooks.
