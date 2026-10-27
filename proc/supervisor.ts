@@ -1190,7 +1190,7 @@ export class ProcessSupervisor {
     else stop();
     void retired.then(
       () => {
-        record.handle = undefined;
+        record.stopping!.consumer = undefined;
         record.retirement = record.request === null ? { kind: "external" } : { kind: "complete" };
         this.notifyRetirement(record.job);
       },
@@ -1212,7 +1212,10 @@ export class ProcessSupervisor {
     },
   ): void {
     try {
-      const pending = record.handle?.terminate();
+      const consumer = record.handle;
+      record.stopping!.consumer = consumer;
+      record.handle = undefined;
+      const pending = consumer?.terminate();
       void Promise.resolve(pending)
         .then(
           () => {
