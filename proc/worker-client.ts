@@ -153,7 +153,8 @@ export function createWorkerProcessTransport(
   const pid = options.pid ?? 1,
     job = options.job ?? 1,
     capacity = options.capacity ?? 1024;
-  const cwd = checkedProcessCwd(options.cwd === undefined ? "/" : options.cwd);
+  const initialCwd = options.cwd;
+  const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
   if (!Number.isInteger(capacity) || capacity < 1 || capacity > 65536)
     throw new RangeError("invalid process directory capacity");
   const identities = new ProcessIdentityAllocator(options.identity);
@@ -388,6 +389,7 @@ export class WorkerProcessClient {
       // The worker may immediately mutate the original request or close its source fds.
       const snapshot: SpawnRequest = {
         ...request,
+        cwd,
         argv: request.argv.slice(),
         env: { ...request.env },
         fds: request.fds.map((binding) => ({ ...binding })),

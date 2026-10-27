@@ -123,7 +123,7 @@ function snapshot(spec: SpawnRequest): Readonly<SpawnRequest> {
     executable: spec.executable,
     argv: spec.argv.slice(),
     env: { ...spec.env },
-    cwd: spec.cwd,
+    cwd: checkedProcessCwd(spec.cwd),
     job: spec.job,
     fds: spec.fds.map((binding) => ({ ...binding })),
   };
@@ -355,7 +355,8 @@ export class ProcessSupervisor {
   }
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
-    const cwd = checkedProcessCwd(options.cwd === undefined ? "/" : options.cwd);
+    const initialCwd = options.cwd;
+    const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
     const pid = options.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt),
@@ -439,7 +440,6 @@ export class ProcessSupervisor {
     jobIdentity?: SharedJobIdentity,
   ): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
-    const cwd = checkedProcessCwd(spec.cwd);
     const parent = this.table.get(parentPid);
     // A separately selected job can be admitted after an ancestor reaped its exited parent.
     // Its worker already retained the capabilities and ancestry before that reap.
@@ -521,7 +521,7 @@ export class ProcessSupervisor {
           pid,
           parentPid,
           job,
-          cwd,
+          cwd: request.cwd,
           descriptors,
           controlParent: reservation.controlParent,
           rootPid: reservation.rootPid,

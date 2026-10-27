@@ -150,9 +150,45 @@ test("shared worker root and spawned child retain their own cwd through broker a
   });
   expect(child.cwd(pid)).toBe("/worker/child");
   expect(f.supervisor.cwd(pid)).toBe("/worker/child");
+  const childABI = new ProcessABI({
+    memory: f.memory,
+    fs: new MemFS(),
+    descriptors,
+    service: child,
+    pid,
+    signals: child.signals,
+  });
+  expect(childABI.imports.cwd!(0, 32)).toBe(13);
+  expect(new TextDecoder().decode(new Uint8Array(f.memory.buffer, 0, 13))).toBe("/worker/child");
+  const foreignABI = new ProcessABI({
+    memory: f.memory,
+    fs: new MemFS(),
+    descriptors,
+    service: child,
+    pid: client.pid,
+    signals: child.signals,
+  });
+  expect(foreignABI.imports.cwd!(0, 0)).toBe(-71);
+  f.supervisor.exit(pid, 0);
+  await f.supervisor.waitForExit(client.pid, pid);
+  f.supervisor.reap(client.pid, pid);
+  const next = client.spawn(client.pid, request("/replacement"));
+  const replacementNotice = messages.shift()!;
+  if (replacementNotice.operation !== "spawn") throw new Error("expected spawn notice");
+  await broker.handle(replacementNotice, client.pid);
+  await f.supervisor.start(next);
+  expect(replacementNotice.transport.slot).toBe(notice.transport.slot);
+  const replacement = new WorkerProcessClient({
+    transport: replacementNotice.transport,
+    descriptors,
+    codec,
+    postMessage() {},
+  });
+  expect(replacement.cwd(next)).toBe("/replacement");
+  expect(childABI.imports.cwd!(0, 0)).toBe(-71);
   client.exit(0);
   expect(() => client.cwd(client.pid)).toThrow(/exited/);
-  expect(child.cwd(pid)).toBe("/worker/child");
+  expect(replacement.cwd(next)).toBe("/replacement");
 });
 
 test("browser root adoption preserves explicit cwd across lazy activation", async () => {

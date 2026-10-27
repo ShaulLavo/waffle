@@ -919,7 +919,8 @@ function cwdSource(): Uint8Array<ArrayBuffer> {
     ),
   );
 }
-for (const env of [{}, { PWD: "/different" }])
+const cwdEnvironments: Record<string, string>[] = [{}, { PWD: "/different" }];
+for (const env of cwdEnvironments)
   test(`raw-source cwd import reads root request independently of env ${JSON.stringify(env)}`, async () => {
     const cwd = "/tmp/spec/🧇";
     const bytes = new TextEncoder().encode(cwd);

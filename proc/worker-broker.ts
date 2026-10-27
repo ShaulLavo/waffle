@@ -27,7 +27,7 @@ import {
 } from "./admission.js";
 import { requestSignal } from "./signals.js";
 import type { ProcessSupervisor } from "./supervisor.js";
-import { ProcessErrno, ProcessError } from "./types.js";
+import { ProcessErrno, ProcessError, checkedProcessCwd } from "./types.js";
 import {
   confirmWorkerProcessJob,
   installWorkerBindings,
@@ -131,6 +131,7 @@ export class WorkerProcessBroker {
   });
   constructor(private readonly options: WorkerProcessBrokerOptions) {}
   adoptRoot(transport: WorkerProcessTransport): void {
+    checkedProcessCwd(transport.cwd);
     const state = workerProcessState(transport);
     if (state.parentPid !== 0) throw new TypeError("root process has a parent");
     const existing = this.get(state.pid);

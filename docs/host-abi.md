@@ -32,6 +32,38 @@ remain provided by Node and measure host process/thread time, not per-guest tota
 
 ## Process identity import
 
+### Initial process cwd
+
+`runtime_proc.cwd(buf_ptr: i32, buf_len: i32) -> i32` returns the caller's initial
+cwd as a full UTF-8 byte count, excluding any NUL terminator. It writes the bytes
+only when the count fits `buf_len`. A zero-capacity query or short buffer writes
+nothing; no prefix or terminator is copied. The guest can query, allocate, and call
+again. The path is preserved exactly, without normalization or filesystem lookup.
+
+Both arguments use unsigned i32 address/length semantics. Every call validates the
+whole supplied memory span, including zero-capacity queries and short buffers:
+`ptr == memory size, len == 0` is valid; a pointer past memory or a span extending
+past it returns `-EFAULT` (`-21`). Invalid non-i32 JavaScript arguments return
+`-EINVAL` (`-28`). Memory is reacquired after reading process metadata, and caller
+liveness is rechecked before copying. A dead, disposed, collected or foreign
+worker-process caller returns `-ESRCH` (`-71`). Other failures retain signed WASI
+errno. No output is written on failure. Existing fatal process guards may unwind
+before the import runs rather than resume a guest with a selected fatal outcome.
+
+The import reads only the authenticated caller's immutable process metadata. It
+does not read or change `env`, `PWD`, the filesystem, or libc's current directory.
+Spawn cwd must be absolute, NUL-free and representable as UTF-8. Direct roots set
+it with `createRoot({ cwd })` / `reserveRoot({ cwd })`; shared roots set it with
+`createWorkerProcessTransport({ cwd })`, and `adoptRuntimeRoot` retains that value
+through lazy supervisor activation. Only omitted root cwd defaults to `/`.
+Embedders with a real root cwd must pass it at root creation. Children snapshot
+`SpawnRequest.cwd` into their existing transport and supervisor record.
+
+This is a bootstrap query seam. The consuming guest must initialize its real libc
+cwd before running application code; this import alone does not initialize it.
+
+### PID
+
 `runtime_proc.getpid: () -> i32` returns the calling process's own positive runtime PID,
 not its parent PID or job ID. `ProcessABI` reads its already-bound `options.pid` directly;
 the call takes no arguments, reads no guest memory, never waits and sends no service or
