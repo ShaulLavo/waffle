@@ -33,6 +33,8 @@ import {
   collectDirectoryProcess,
   collectDirectoryJob,
   wakeDirectory,
+  checkDirectoryJobAdmission,
+  settleDirectoryJobLifetimes,
 } from "./directory.js";
 import {
   DescriptorTable,
@@ -49,6 +51,8 @@ import {
   ProcessErrno,
   ProcessError,
   checkedSignal,
+  checkedJobLifetime,
+  type JobLifetime,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -123,9 +127,10 @@ function reserveRecord(
   jobOwner: number,
   jobSlot?: number,
   foreground = true,
+  jobLifetime: JobLifetime = "independent",
 ): WorkerProcessTransport {
   return {
-    ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground),
+    ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground, jobLifetime),
     identity: transport.identity,
     bindings: [],
     resources: [],
@@ -319,6 +324,7 @@ export class WorkerProcessClient {
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
+    const jobLifetime = checkedJobLifetime(request.job, request.jobLifetime);
     if (parentPid !== this.pid)
       throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const sources: Descriptor[] = this.spawnSources(request);
@@ -349,6 +355,7 @@ export class WorkerProcessClient {
         existingJob?.ownerPid ?? this.pid,
         existingJob?.slot,
         request.job === 0,
+        jobLifetime,
       );
       child.data = transfer?.data;
       for (let i = 0; i < sources.length; i++) {
@@ -374,6 +381,8 @@ export class WorkerProcessClient {
         fds: request.fds.map((binding) => ({ ...binding })),
       };
       this.admit();
+      const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
+      checkDirectoryJobAdmission(child.directory, group);
       this.options.postMessage({
         type: "runtime-proc",
         operation: "spawn",
@@ -549,6 +558,12 @@ export class WorkerProcessClient {
   jobEmpty(callerPid: number, job: number): boolean {
     return this.jobIsEmpty(this.requireJob(callerPid, job));
   }
+  jobCleanupReady(callerPid: number, job: number): boolean {
+    const group = this.requireJob(callerPid, job);
+    const retired = controlLoad(group.retirement);
+    if (retired < 0) throw new ProcessError(-retired, "job retirement failed");
+    return this.jobIsEmpty(group) && retired === 1;
+  }
   waitJob(callerPid: number, job: number): ProcessExit | null {
     const group = this.requireJob(callerPid, job);
     if (!this.jobIsEmpty(group)) return null;
@@ -643,6 +658,7 @@ export class WorkerProcessClient {
     }
     // Every member and parent observes this one directory-wide sequence, not slot-local wakes.
     wakeWorkerProcess(this.options.transport);
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     const pids: number[] = [];
     for (let index = 0; index < targets.length; index++) pids[index] = targets[index]!.pid;
     this.options.postMessage({
@@ -675,6 +691,7 @@ export class WorkerProcessClient {
   }
   exit(code: number): void {
     claimOutcome(this.signals.outcome, { kind: "exited", code });
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.retireAccesses();
     wakeWorkerProcess(this.options.transport);
     this.options.postMessage({
