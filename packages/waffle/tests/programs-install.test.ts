@@ -261,27 +261,28 @@ test("a reinstall while disposing fails until cleanup ends, then keeps its marke
   await second.dispose();
 });
 
-// Red until the filesystem has an atomic conditional remove: the verify-then-remove sequence
-// deletes contents written between the check and the remove.
-test.failing("dispose never deletes a marker replaced after its check", async () => {
-  let pause: (() => Promise<void>) | undefined;
+// Another writer replaces a marker after disposal decided to remove it, just before the
+// remove reaches the real filesystem worker. The replacement must survive.
+test("dispose never deletes a marker replaced while it runs", async () => {
+  const replaced = new Set<string>();
   const filesystem = Object.create(runtime.filesystem, {
-    readFile: {
-      value: async (path: string) => {
-        const bytes = await runtime.filesystem.readFile(path);
-        await pause?.();
-        return bytes;
+    remove: {
+      value: async (...args: Parameters<Runtime["filesystem"]["remove"]>) => {
+        const [path] = args;
+        if (!replaced.has(path)) {
+          replaced.add(path);
+          await runtime.filesystem.writeFile(path, `replacement ${path}\n`);
+        }
+        return runtime.filesystem.remove(...args);
       },
     },
   });
   const gated: Runtime = Object.create(runtime, { filesystem: { value: filesystem } });
   const installation = await installPrograms(gated, [textutils], options);
-  pause = async () => {
-    pause = undefined;
-    await runtime.filesystem.writeFile("/bin/cat", "replacement\n");
-  };
   await installation.dispose();
-  expect(decode(await runtime.filesystem.readFile("/bin/cat"))).toBe("replacement\n");
+  expect(Array.from(replaced).sort()).toEqual(["/bin/cat", "/usr/bin/cat"]);
+  for (const path of replaced)
+    expect(decode(await runtime.filesystem.readFile(path))).toBe(`replacement ${path}\n`);
 });
 
 // A package that prepares a payload before its first run, like CPython's standard library.

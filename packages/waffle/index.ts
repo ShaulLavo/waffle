@@ -27,6 +27,7 @@ export type {
   SharedFilesystemState,
   SharedFilesystemStatus,
   SharedFilesystemStateObserver,
+  RemoveCondition,
 } from "./browser/shared-fs.js";
 
 export { getVfsDescriptor, VfsError } from "./fs/vfs.js";

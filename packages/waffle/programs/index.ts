@@ -260,12 +260,11 @@ async function isMarker(runtime: Runtime, entry: Entry): Promise<boolean> {
   return bytes?.length === entry.marker.length && bytes.every((b, i) => b === entry.marker[i]);
 }
 
-// TODO(r565): not atomic. A write landing between the read and the remove is deleted. Needs the
-// filesystem's conditional remove (expected bytes or version) evaluated in the service.
+// The filesystem compares and removes in one step, so a file replaced after the marker was
+// written survives.
 async function removeMarker(runtime: Runtime, entry: Entry): Promise<void> {
   if (runtime.disposed) return;
-  if ((await runtime.filesystem.lookup(entry.path))?.kind !== "file") return;
-  if (await isMarker(runtime, entry)) await runtime.filesystem.remove(entry.path);
+  await runtime.filesystem.remove(entry.path, { ifContent: entry.marker });
 }
 
 /** Shared by rollback and dispose. Paths stay registered until every step has finished. */

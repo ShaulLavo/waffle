@@ -52,4 +52,4 @@ The runtime has no global `PATH`. `programs.path` lists the directories that now
 
 ## Uninstall
 
-`programs.dispose()` makes new execs fail at once: it removes the marker files it created that are still unchanged and refuses new loads. It then waits for running processes of these programs to stop physically (it doesn't stop them), runs each package's `dispose` hook once, and only then releases the paths. A reinstall of the same paths fails with "already registered" until that finishes. `runtime.dispose()` stops every process but runs no package hooks.
+`programs.dispose()` makes new execs fail at once: it refuses new loads and removes the marker files it created, each only if its bytes are still unchanged (one atomic filesystem step, so a file written there meanwhile survives). It then waits for running processes of these programs to stop physically (it doesn't stop them), runs each package's `dispose` hook once, and only then releases the paths. A reinstall of the same paths fails with "already registered" until that finishes. `runtime.dispose()` stops every process but runs no package hooks.

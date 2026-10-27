@@ -36,6 +36,7 @@ export type {
   SharedFilesystemState,
   SharedFilesystemStatus,
   SharedFilesystemStateObserver,
+  RemoveCondition,
 } from "./browser/shared-fs.js";
 export { getVfsDescriptor, VfsError } from "./fs/vfs.js";
 export type { VfsMode, VfsDescriptor, VfsSelection, VfsWhenBusy, VfsErrorCode } from "./fs/vfs.js";

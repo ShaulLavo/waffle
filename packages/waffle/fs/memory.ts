@@ -865,12 +865,15 @@ export class MemFS implements FileSystem {
     created.push(child);
     return child;
   }
+  /** `accept` sees the entry the path names, without following a final symlink. Rejecting it
+   * plans nothing, so check and removal happen in this one synchronous planning step. */
   planRemove(
     path: string,
     bound: number,
+    accept?: (node: Node) => boolean,
   ): { readonly plan: NamespacePlan; readonly result: boolean } {
     const edge = this.removalEdge(path);
-    if (!edge) return { plan: namespacePlan(), result: false };
+    if (!edge || (accept && !accept(edge.node))) return { plan: namespacePlan(), result: false };
     const { parent, name, node } = edge;
     const plan = namespacePlan(
       [{ parent, name, before: node, after: undefined }],
