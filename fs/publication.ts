@@ -1,4 +1,5 @@
 import type { MemoryBudget } from "./memory-budget.js";
+import { MAX_SHARED_SEGMENTS, SHARED_SEGMENT_BYTES, PAGE } from "./shared-capacity.js";
 import { withPublicationMemory } from "./publication-memory-budget.js";
 import type { InodeMetadata } from "./workspace-types.js";
 import type { CheckpointPublication } from "./storage.js";
@@ -262,7 +263,12 @@ export interface PublicationBufferOptions {
 export function publicationBufferPlan(limits: PublicationLimits, observe = false) {
   limits = validatePublicationLimits(limits);
   const sizes = {
-    ...(observe ? { pageReaders: 16_384 * 4, readerLifetimes: limits.sessions * 8 } : {}),
+    ...(observe
+      ? {
+          pageReaders: (MAX_SHARED_SEGMENTS * SHARED_SEGMENT_BYTES * 4) / PAGE,
+          readerLifetimes: limits.sessions * 8,
+        }
+      : {}),
     control: CONTROL_WORDS * 4,
     sessions: limits.sessions * SESSION_WORDS * 4,
     operations: limits.operations * OP_WORDS * 4,

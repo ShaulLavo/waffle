@@ -12,7 +12,7 @@ import {
   connectFilesystemIdentity,
   reapFilesystem,
 } from "../fs";
-import { PAGE } from "../fs/protocol";
+import { DEFAULT_SHARED_MAX_BYTES, PAGE } from "../fs/protocol";
 import { atomicHost } from "./fixtures/wasi-atomic-host";
 
 const cleanups: (() => void)[] = [];
@@ -198,7 +198,7 @@ test("host writes keep a bounded node table and reuse released slots", async () 
   expect(backend.shared.resources()).toMatchObject({
     files: 32767,
     usedBytes: 0,
-    maxBytes: 1024 * 1024 * 1024,
+    maxBytes: DEFAULT_SHARED_MAX_BYTES,
   });
   await client.asyncCall("remove", ["/bounded-0"]);
   await client.asyncCall("writeFile", ["/bounded-reused"], encode("reused"));

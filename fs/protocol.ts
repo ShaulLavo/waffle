@@ -18,14 +18,22 @@ import {
 } from "./publication.js";
 import type { PublicationConfiguration, PublicationConnection } from "./publication-internal.js";
 import { FilesystemError } from "../core/filesystem.js";
+import {
+  DEFAULT_SHARED_MAX_BYTES,
+  SHARED_SEGMENT_BYTES,
+  MAX_SHARED_SEGMENTS,
+} from "./shared-capacity.js";
+export {
+  DEFAULT_SHARED_MAX_BYTES,
+  SHARED_SEGMENT_BYTES,
+  MAX_SHARED_SEGMENTS,
+  PAGE,
+} from "./shared-capacity.js";
 export { FilesystemError } from "../core/filesystem.js";
 // Original shared-memory protocol. Ports schedule work; request/response bytes and completion
 // state live in the SAB. The service never waits on a guest, including a terminated one.
 // Guest browser-engine polyfills replace MessageChannel; transport endpoints must stay native.
 const NativeMessageChannel = globalThis.MessageChannel;
-export const DEFAULT_SHARED_MAX_BYTES = 1024 * 1024 * 1024;
-export const SHARED_SEGMENT_BYTES = 16 * 1024 * 1024;
-export const MAX_SHARED_SEGMENTS = DEFAULT_SHARED_MAX_BYTES / SHARED_SEGMENT_BYTES;
 export type GrowableSharedSegment = SharedArrayBuffer & {
   readonly growable: boolean;
   readonly maxByteLength: number;
@@ -47,7 +55,6 @@ export function normalizeSharedMaxBytes(maxBytes: number): number {
   );
 }
 export const HEADER = 32;
-export const PAGE = 64 * 1024;
 export const TRANSIENT_HANDLES = 256;
 export const CAPABILITY_SLOTS = 4096;
 // One candidate-count word, then reusable [handle, open-reference count, transfer count] records. A negative
