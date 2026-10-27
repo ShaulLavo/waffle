@@ -264,3 +264,115 @@ test("two virtual ports have distinct root origins and cannot reuse each other's
     two.close();
   }
 });
+
+test("wire HTTP exchanges transfer bytes, wait for pulls, and reject foreign grants", async () => {
+  const f = fixture("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nyes");
+  const host = await f.router.bindHost({ port: 3137 });
+  const messages: import("../browser/preview-host").PreviewHostOutput[] = [];
+  let notify = () => {};
+  const data = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  const exchange: import("../browser/preview-host").PreviewHostExchange = {
+    onmessage: null,
+    postMessage(message, transfer) {
+      messages.push(structuredClone(message, { transfer }));
+      if (message.type === "data") notify();
+    },
+    close() {},
+  };
+  try {
+    const open = {
+      type: "http",
+      authorization: host.authorization,
+      url: origin + "/?value=wire",
+      method: "GET",
+      headers: [],
+      body: null,
+    } satisfies import("../browser/preview-host").PreviewHostOpen;
+    let done = false;
+    const completed = host.dispatch(open, exchange).then(() => {
+      done = true;
+    });
+    await data;
+    expect(done).toBe(false);
+    expect(messages.map((message) => message.type)).toEqual(["accepted", "head", "data"]);
+    exchange.onmessage?.({ type: "pull" });
+    await completed;
+    expect(messages.at(-1)?.type).toBe("end");
+    const body = messages.find((message) => message.type === "data");
+    expect(body?.type === "data" && decoder.decode(body.chunk)).toBe("yes");
+    messages.length = 0;
+    await host.dispatch(
+      { ...open, authorization: { ...host.authorization, owner: "foreign" } },
+      exchange,
+    );
+    expect(messages[0]?.type).toBe("error");
+    expect(f.opened).toBe(1);
+  } finally {
+    host.close();
+  }
+});
+
+test("revocation interrupts a wire response waiting for an HTTP body pull", async () => {
+  const f = fixture("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nyes");
+  const host = await f.router.bindHost({ port: 3137 });
+  let notify = () => {};
+  const data = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  const messages: string[] = [];
+  const exchange: import("../browser/preview-host").PreviewHostExchange = {
+    onmessage: null,
+    close() {},
+    postMessage(message) {
+      messages.push(message.type);
+      if (message.type === "data") notify();
+    },
+  };
+  const completed = host.dispatch(
+    {
+      type: "http",
+      authorization: host.authorization,
+      url: origin,
+      method: "GET",
+      headers: [],
+      body: null,
+    },
+    exchange,
+  );
+  await data;
+  host.close();
+  await completed;
+  expect(messages.at(-1)).toBe("error");
+  expect(exchange.onmessage).toBeNull();
+});
+
+test("wire socket acceptance precedes synchronous bytes and end", async () => {
+  const f = fixture();
+  f.router.register(3137, {
+    request: f.server.request,
+    connect(_port, sink) {
+      void sink.data(encoder.encode("upgrade"));
+      sink.end();
+      return { write() {}, close() {} };
+    },
+  });
+  const host = await f.router.bindHost({ port: 3137 });
+  const messages: string[] = [];
+  try {
+    await host.dispatch(
+      { type: "socket", authorization: host.authorization, url: origin + "/hmr" },
+      {
+        onmessage: null,
+        close() {},
+        postMessage(message) {
+          messages.push(message.type);
+        },
+      },
+    );
+    expect(messages).toEqual(["accepted", "data", "end"]);
+  } finally {
+    host.close();
+  }
+});

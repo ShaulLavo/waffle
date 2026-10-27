@@ -1,6 +1,6 @@
 # Preview URL contract
 
-## Draft host contract checkpoint
+## Root previews
 
 Root previews use a dedicated, preallocated HTTP(S) origin for each runtime owner
 and virtual port. Waffle provisions no DNS, TLS, host routes, or native proxy.
@@ -19,7 +19,11 @@ import type {
 
 const previews = new PreviewRouter({
   mode: "root",
-  originForPort: (port) => preallocatedOrigins.get(port)!,
+  originForPort: (port) => {
+    const origin = preallocatedOrigins.get(port);
+    if (!origin) throw new Error("No allocated preview origin");
+    return origin;
+  },
 });
 previews.register(port, existingPreviewServer);
 const relay = await previews.bindHost({ port, signal: ownerLifetime.signal });
@@ -49,22 +53,33 @@ The concrete direct relay API is:
   another request/socket origin fail before a virtual connection opens.
 
 `PreviewHostDispatcher.dispatch(open: PreviewHostOpen, exchange: PreviewHostExchange): Promise<void>`
-is the draft exchange endpoint contract. It will be returned on the same relay.
+is implemented by the same returned relay. The native transport adapts its
+framing to `PreviewHostExchange`; Waffle does not open a native listener.
 
 The exported wire shapes are `PreviewHostOpen`, `PreviewHostInput`,
 `PreviewHostOutput`, and `PreviewHostExchange`. Each HTTP open includes a URL,
 method, header pairs, and `ArrayBuffer | null` body. Socket opens include the URL.
 Both carry the private authorization on the authenticated owner connection.
-Outputs carry acceptance, response head, data, end, or error. Inputs carry pull,
+Outputs carry acceptance, response head, data, end, or error. HTTP acceptance
+precedes the response head; socket acceptance precedes all raw output.
+`dispatch` resolves when that exchange ends and clears/closes its exchange.
+An HTTP end input cancels its request. Host lifetime revocation also interrupts
+a response waiting for pull credit. Inputs carry pull,
 data, or end. One pull acknowledges one HTTP data chunk. Socket data is raw
 HTTP upgrade/TCP bytes, not decoded WebSocket messages. Body buffers can transfer
 ownership; native wire adapters must copy or encode bytes when transfer is not
 available. Request/Response/ReadableStream objects do not cross the wire.
+Request bodies are buffered; response chunks stream with pull credit. Raw sockets
+rely on the authenticated native transport to bound its send queue and propagate
+disconnect. The host must restrict URLs to this grant before serializing upgrade
+bytes and must not interpret arbitrary browser input as a host-control message.
 
-At this checkpoint, the direct relay and focused unit tests are implemented.
-The wire-exchange dispatcher and root-origin browser reference fixture are still
-being implemented. No Bun consumer, native host adapter, exact-app acceptance,
-or live deployment is wired or claimed complete at this head.
+The direct relay, wire dispatcher, and loopback reference host are implemented.
+`tests/preview-host-reference.ts` adapts HTTP requests through the wire protocol
+and keeps grants in the host. It is a test fixture, not a production hosting service.
+Native transport authentication, the production Bun adapter, and exact Bun app
+acceptance remain consumer work. Raw upgrade bytes are tested; a native WebSocket
+proxy and Vite HMR are not established by the HTTP hydration proof.
 
 The host maps initial navigation, nested routes, assets, and browser reload by
 origin to the same authenticated grant. It cannot depend on a previous clientId,

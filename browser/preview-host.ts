@@ -16,7 +16,7 @@ export interface PreviewHostAuthorization {
 }
 
 /** Host adapters authenticate their owner connection before installing this grant. */
-export interface PreviewHostRelay {
+export interface PreviewHostRelay extends PreviewHostDispatcher {
   readonly authorization: PreviewHostAuthorization;
   readonly origin: string;
   readonly closed: boolean;
@@ -58,7 +58,7 @@ export interface PreviewHostExchange {
   close(): void;
 }
 
-/** Draft exchange endpoint contract; direct relay construction is already implemented. */
+/** One exchange per HTTP request or raw upgraded connection. */
 export interface PreviewHostDispatcher {
   dispatch(open: PreviewHostOpen, exchange: PreviewHostExchange): Promise<void>;
 }
@@ -140,6 +140,7 @@ export function createPreviewHostRelay(
   });
   const active = new Set<ActiveConnection>();
   const signal = options.signal;
+  const lifetime = new AbortController();
   let closed = false;
 
   function check(input: unknown, url: string): URL {
@@ -271,11 +272,12 @@ export function createPreviewHostRelay(
   function close(): void {
     if (closed) return;
     closed = true;
+    lifetime.abort();
     signal?.removeEventListener("abort", close);
     for (const item of active) finish(item, "Preview host relay closed");
   }
   signal?.addEventListener("abort", close, { once: true });
-  return {
+  const relay: PreviewHostRelay = {
     authorization,
     origin,
     get closed() {
@@ -284,5 +286,169 @@ export function createPreviewHostRelay(
     fetch: fetchResponse,
     connect,
     close,
+    dispatch: (open, exchange) => dispatchPreviewHost(relay, open, exchange, lifetime.signal),
   };
+  return relay;
+}
+
+async function dispatchPreviewHost(
+  relay: PreviewHostRelay,
+  open: PreviewHostOpen,
+  exchange: PreviewHostExchange,
+  lifetime: AbortSignal,
+): Promise<void> {
+  try {
+    lifetime.throwIfAborted();
+    switch (open.type) {
+      case "socket":
+        await dispatchSocket(relay, open, exchange, lifetime);
+        break;
+      case "http":
+        await dispatchHTTP(relay, open, exchange, lifetime);
+        break;
+      default: {
+        const unexpected: never = open;
+        throw new TypeError(`Invalid preview relay open: ${String(unexpected)}`);
+      }
+    }
+  } catch (error) {
+    exchange.postMessage({
+      type: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    exchange.onmessage = null;
+    exchange.close();
+  }
+}
+
+async function dispatchHTTP(
+  relay: PreviewHostRelay,
+  open: PreviewHostOpen & { type: "http" },
+  exchange: PreviewHostExchange,
+  lifetime: AbortSignal,
+): Promise<void> {
+  const cancelled = new AbortController();
+  let acknowledge = () => {};
+  let reader: ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined;
+  const abort = () => {
+    cancelled.abort();
+    acknowledge();
+  };
+  lifetime.addEventListener("abort", abort, { once: true });
+  exchange.onmessage = (message) => {
+    if (message.type === "end") abort();
+    else if (message.type === "pull") acknowledge();
+    else abort();
+  };
+  try {
+    const result = await relay.fetch(
+      open.authorization,
+      new Request(open.url, {
+        method: open.method,
+        headers: open.headers,
+        body: open.body,
+        signal: cancelled.signal,
+      }),
+    );
+    cancelled.signal.throwIfAborted();
+    exchange.postMessage({ type: "accepted" });
+    exchange.postMessage({
+      type: "head",
+      status: result.status,
+      statusText: result.statusText,
+      headers: Array.from(result.headers),
+    });
+    reader = result.body?.getReader();
+    await sendBody(reader, exchange, cancelled.signal, (ready) => {
+      acknowledge = ready;
+    });
+    exchange.postMessage({ type: "end" });
+  } finally {
+    lifetime.removeEventListener("abort", abort);
+    await reader?.cancel();
+  }
+}
+
+async function sendBody(
+  reader: ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined,
+  exchange: PreviewHostExchange,
+  signal: AbortSignal,
+  ready: (acknowledge: () => void) => void,
+): Promise<void> {
+  if (!reader) return;
+  for (;;) {
+    signal.throwIfAborted();
+    const chunk = await reader.read();
+    if (chunk.done) return;
+    const pulled = new Promise<void>((resolve) => {
+      ready(resolve);
+    });
+    exchange.postMessage({ type: "data", chunk: chunk.value }, [chunk.value.buffer]);
+    await pulled;
+  }
+}
+
+function dispatchSocket(
+  relay: PreviewHostRelay,
+  open: PreviewHostOpen & { type: "socket" },
+  exchange: PreviewHostExchange,
+  lifetime: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let connection: PreviewConnection | null = null;
+    let ready = false;
+    let ended = false;
+    const pending: PreviewHostOutput[] = [];
+    const fail = (error: unknown) => {
+      ended = true;
+      lifetime.removeEventListener("abort", abort);
+      connection?.close();
+      reject(error);
+    };
+    const send = (message: PreviewHostOutput) => {
+      if (!ready) {
+        pending.push(message);
+        return;
+      }
+      try {
+        exchange.postMessage(message, message.type === "data" ? [message.chunk.buffer] : []);
+      } catch (error) {
+        fail(error);
+      }
+    };
+    const finish = (message: PreviewHostOutput) => {
+      if (ended) return;
+      ended = true;
+      lifetime.removeEventListener("abort", abort);
+      send(message);
+      connection?.close();
+      resolve();
+    };
+    const abort = () => finish({ type: "error", message: "Preview host relay closed" });
+    exchange.onmessage = (message) => {
+      if (ended) return;
+      if (message.type === "end") finish({ type: "end" });
+      else if (message.type === "data" && message.chunk instanceof Uint8Array)
+        connection?.write(message.chunk);
+      else finish({ type: "error", message: "Invalid preview socket input" });
+    };
+    lifetime.addEventListener("abort", abort, { once: true });
+    try {
+      connection = relay.connect(open.authorization, open.url, {
+        data: (bytes) => {
+          if (!ended) send({ type: "data", chunk: bytes.slice() });
+        },
+        end: () => finish({ type: "end" }),
+        error: (message) => finish({ type: "error", message }),
+      });
+      if (!connection) throw new Error("No preview server is listening");
+      ready = true;
+      exchange.postMessage({ type: "accepted" });
+      for (const message of pending) send(message);
+      if (ended) connection.close();
+    } catch (error) {
+      fail(error);
+    }
+  });
 }
