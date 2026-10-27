@@ -40,8 +40,10 @@ function core(
     addParameter?: 0x7f | 0x7e;
     addResult?: 0x7f | 0x7e;
     stackMutable?: boolean;
+    stackBounds?: readonly [number, number];
   } = {},
 ): Uint8Array<ArrayBuffer> {
+  const bounds = options.stackBounds ?? [0, 65536];
   return binary(
     section(
       1,
@@ -64,6 +66,8 @@ function core(
         global(false, 40),
         global(false, 48),
         global(true, 0),
+        global(false, bounds[0]),
+        global(false, bounds[1]),
       ]),
     ),
     section(
@@ -78,6 +82,8 @@ function core(
           exp("_CLOCK_MONOTONIC", 3, 3),
           exp("errno", 3, 4),
           exp("initialized", 3, 5),
+          exp("__stack_low", 3, 6),
+          exp("__stack_high", 3, 7),
           exp("bun_core_alloc", 0, 1),
           exp("add", 0, 2),
           exp("_start", 0, 3),
@@ -383,25 +389,31 @@ test("GOT type and base/segment restrictions remain explicit", () => {
   expect(() =>
     inspectProfile(side("errno", "GOT.mem", 4, { baseMutable: true }), "engine", true),
   ).toThrow("side bases must be immutable i32");
+  const profile = (options: Parameters<typeof side>[3]) =>
+    inspectProfile(side("errno", "GOT.mem", 4, options), "engine", true);
+  // Extended-const base plus offset, the form wasm-ld emits for PIC data and table addresses.
+  expect(() => profile({ globalInitializer: [0x23, 0, 0x41, 1, 0x6a, 0x0b] })).not.toThrow();
+  expect(() => profile({ globalInitializer: [0x23, 1, 0x41, 1, 0x6a, 0x0b] })).not.toThrow();
+  expect(() => profile({ globalInitializer: [0x23, 2, 0x41, 1, 0x6a, 0x0b] })).toThrow(
+    "imported-base relative initializers",
+  );
+  expect(() => profile({ globalInitializer: [0x23, 0, 0x41, 1, 0x6b, 0x0b] })).toThrow(
+    "imported-base relative initializers",
+  );
+  const segments = (...dataSegments: number[][]) => profile({ dataSegments });
   expect(() =>
-    inspectProfile(
-      side("errno", "GOT.mem", 4, { globalInitializer: [0x23, 0, 0x41, 1, 0x6a, 0x0b] }),
-      "engine",
-      true,
-    ),
-  ).toThrow("globals require constant i32 initializers");
+    segments([0, 0x23, 0, 0x0b, 1, 1], [0, 0x23, 0, 0x41, 8, 0x6a, 0x0b, 1, 2]),
+  ).not.toThrow();
   expect(() =>
-    inspectProfile(
-      side("errno", "GOT.mem", 4, {
-        dataSegments: [
-          [0, 0x23, 0, 0x0b, 1, 1],
-          [0, 0x23, 0, 0x41, 8, 0x6a, 0x0b, 1, 2],
-        ],
-      }),
-      "engine",
-      true,
-    ),
-  ).toThrow("unsupported or overlapping side segments");
+    segments([0, 0x23, 0, 0x0b, 4, 1, 2, 3, 4], [0, 0x23, 0, 0x41, 2, 0x6a, 0x0b, 1, 2]),
+  ).toThrow("overlapping active side segments");
+  expect(() => segments([0, 0x23, 0, 0x41, 15, 0x6a, 0x0b, 2, 1, 2])).toThrow(
+    "active segment exceeds dylink.0 reservation",
+  );
+  expect(() => segments([0, 0x23, 0, 0x41, 0x7f, 0x6a, 0x0b, 1, 1])).toThrow(
+    "active segment exceeds dylink.0 reservation",
+  );
+  expect(() => segments([0, 0x23, 2, 0x0b, 1, 1])).toThrow("imported base global");
 });
 function call(instance: WebAssembly.Instance, name: string, ...args: number[]): number {
   const fn = instance.exports[name];
@@ -486,7 +498,7 @@ test("cooperative trust, checkpoint import and narrow GOT admission fail closed"
   ).rejects.toThrow("checkpoint");
   await expect(
     prepareLinkPlan({ ...input, libraries: [{ ...input.libraries[0]!, source: side("other") }] }),
-  ).rejects.toThrow("unsupported GOT.mem.other");
+  ).rejects.toThrow("GOT.mem.other requires a core immutable i32 global export");
   await expect(compileInterruptible(side())).rejects.toThrow();
 });
 
@@ -641,14 +653,20 @@ test("overlapping core reservations reject the second library and clear table sl
   expect(() => instantiateLinkPlan(plan, host())).toThrow("overlaps engine");
 });
 
-test("GOT.func and true Wasm start are rejected before any instance", async () => {
+test("GOT.func without a function provider and true Wasm start fail before any instance", async () => {
   const input = source();
   await expect(
     prepareLinkPlan({
       ...input,
       libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.func") }],
     }),
-  ).rejects.toThrow("unsupported GOT.func");
+  ).rejects.toThrow("GOT.func.errno requires a core or same-side function export");
+  await expect(
+    prepareLinkPlan({
+      ...input,
+      libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.other") }],
+    }),
+  ).rejects.toThrow("unsupported GOT.other.errno");
   await expect(
     prepareLinkPlan({
       ...input,
@@ -853,11 +871,39 @@ test("weak binding never bypasses exact provider signature checks", async () => 
   ).rejects.toThrow("env.add has an incompatible core function signature");
 });
 
-for (const symbol of ["stderr", "_CLOCK_REALTIME", "__stack_low", "__stack_high"]) {
-  test(`new data/stack GOT symbol ${symbol} remains unsupported`, () => {
-    expect(() => inspectProfile(side(symbol), "engine", true)).toThrow(
-      `unsupported GOT.mem.${symbol}`,
-    );
+test("data GOT accepts any typed core address export; absent providers fail", async () => {
+  const input = source();
+  const prepare = (symbol: string) =>
+    prepareLinkPlan({ ...input, libraries: [{ ...input.libraries[0]!, source: side(symbol) }] });
+  await expect(prepare("stderr")).rejects.toThrow(
+    "GOT.mem.stderr requires a core immutable i32 global export",
+  );
+  await expect(prepare("initialized")).rejects.toThrow(
+    "GOT.mem.initialized requires a core immutable i32 global export",
+  );
+});
+
+for (const [symbol, bounds, ok] of [
+  ["__stack_low", [0, 65536], true],
+  ["__stack_high", [0, 131072], true],
+  ["__stack_high", [0, 131073], false],
+  ["stdout", [0, 65536], true],
+] as const) {
+  test(`stack bound GOT ${symbol} ${bounds.join("..")} may sit on a memory edge`, async () => {
+    const input = source();
+    const plan = await prepareLinkPlan({
+      ...input,
+      core: { ...input.core, source: core({ stackBounds: bounds }) },
+      libraries: [{ ...input.libraries[0]!, source: side(symbol) }],
+    });
+    if (!ok) {
+      expect(() => instantiateLinkPlan(plan, host())).toThrow("outside core memory");
+      return;
+    }
+    const group = instantiateLinkPlan(plan, host());
+    const expected = symbol === "stdout" ? 32 : symbol === "__stack_low" ? bounds[0] : bounds[1];
+    expect((group.libraries[0]!.instance.exports.got as WebAssembly.Global).value).toBe(expected);
+    group.dispose();
   });
 }
 
@@ -938,3 +984,139 @@ for (const field of ["add", "\uFEFFadd"]) {
     }
   });
 }
+
+// A side whose `env.<field>` import is also its own defined export, as wasm-ld emits for
+// preemptible definitions. Its element segment holds the imported (relayed) function.
+function selfSide(
+  options: {
+    field?: string;
+    increment?: number;
+    exportIndex?: number;
+    got?: boolean;
+  } = {},
+): Uint8Array<ArrayBuffer> {
+  const field = options.field ?? "f";
+  return binary(
+    section(0, text("dylink.0").concat([1, 4, 0, 0, 1, 0])),
+    section(1, vector([type([]), type([0x7f], [0x7f])])),
+    section(
+      2,
+      vector(
+        [
+          imp("env", "check", [0, 0]),
+          imp("env", field, [0, 1]),
+          imp("env", "memory", [2, 1, 1].concat(u32(128))),
+          imp("env", "__indirect_function_table", [1, 0x70, 1, 0, 32]),
+          imp("env", "__memory_base", [3, 0x7f, 0]),
+          imp("env", "__table_base", [3, 0x7f, 0]),
+          imp("env", "__stack_pointer", [3, 0x7f, 1]),
+        ].concat(options.got ? [imp("GOT.func", field, [3, 0x7f, 1])] : []),
+      ),
+    ),
+    section(3, vector([[1], [1], [0]])),
+    section(
+      7,
+      vector(
+        [exp(field, 0, options.exportIndex ?? 2), exp("entry", 0, 3), exp("init", 0, 4)].concat(
+          options.got ? [exp("got", 3, 3)] : [],
+        ),
+      ),
+    ),
+    section(9, [1, 0, 0x23, 1, 0x0b, 1, 1]),
+    section(
+      10,
+      vector([
+        body([0x20, 0, 0x41, options.increment ?? 1, 0x6a]),
+        body([0x20, 0, 0x10, 1]),
+        body([]),
+      ]),
+    ),
+  );
+}
+
+function selfSource(...libraries: Uint8Array[]): LinkPlanSource {
+  const input = source();
+  return {
+    ...input,
+    libraries: libraries.map((bytes, index) => ({
+      ...input.libraries[0]!,
+      id: `side${index}`,
+      source: bytes,
+    })),
+  };
+}
+
+test("a side binds its own defined export through a typed relay when core lacks it", async () => {
+  const group = instantiateLinkPlan(await prepareLinkPlan(selfSource(selfSide())), host());
+  try {
+    const lib = group.libraries[0]!;
+    expect(call(lib.instance, "entry", 7)).toBe(8);
+    // The emitted element holds the relayed import; the target slot holds the definition.
+    const relay = group.table.get(lib.tableBase);
+    expect(relay).not.toBe(lib.instance.exports.f);
+    const target = Array.from({ length: group.table.length }, (_, i) => group.table.get(i));
+    expect(target.indexOf(lib.instance.exports.f as Function)).toBeGreaterThan(lib.tableBase);
+    expect((relay as (value: number) => number)(1)).toBe(2);
+  } finally {
+    group.dispose();
+  }
+});
+
+test("core preempts a same-side definition of the same symbol", async () => {
+  const group = instantiateLinkPlan(
+    await prepareLinkPlan(selfSource(selfSide({ field: "add" }))),
+    host(),
+  );
+  try {
+    const lib = group.libraries[0]!;
+    expect(call(lib.instance, "entry", 7)).toBe(14);
+    expect(call(lib.instance, "add", 7)).toBe(8);
+  } finally {
+    group.dispose();
+  }
+});
+
+test("a same-side export of an import or of another type is not a definition", async () => {
+  await expect(prepareLinkPlan(selfSource(selfSide({ exportIndex: 1 })))).rejects.toThrow(
+    "env.f same-side export re-exports an import, not a definition",
+  );
+  await expect(prepareLinkPlan(selfSource(selfSide({ exportIndex: 4 })))).rejects.toThrow(
+    "env.f has an incompatible same-side function signature",
+  );
+  await expect(
+    prepareLinkPlan(selfSource(selfSide({ field: "add", exportIndex: 4 }))),
+  ).resolves.toBeDefined();
+});
+
+test("function GOT cells address the selected provider in the shared table", async () => {
+  const group = instantiateLinkPlan(
+    await prepareLinkPlan(
+      selfSource(selfSide({ got: true }), selfSide({ field: "add", got: true })),
+    ),
+    host(),
+  );
+  try {
+    const [own, preempted] = group.libraries;
+    const cell = (lib: typeof own) => (lib!.instance.exports.got as WebAssembly.Global).value;
+    expect(group.table.get(cell(own))).toBe(own!.instance.exports.f);
+    expect(group.table.get(cell(preempted))).toBe(group.entry.exports.add);
+  } finally {
+    group.dispose();
+  }
+});
+
+test("two sides keep independent same-side definitions and clear their slots", async () => {
+  const group = instantiateLinkPlan(
+    await prepareLinkPlan(
+      selfSource(selfSide({ got: true }), selfSide({ increment: 2, got: true })),
+    ),
+    host(),
+  );
+  const [a, b] = group.libraries;
+  const cells = [a, b].map((lib) => (lib!.instance.exports.got as WebAssembly.Global).value);
+  expect(call(a!.instance, "entry", 7)).toBe(8);
+  expect(call(b!.instance, "entry", 7)).toBe(9);
+  expect(cells[0]).not.toBe(cells[1]);
+  group.dispose();
+  for (const index of cells) expect(group.table.get(index)).toBeNull();
+});

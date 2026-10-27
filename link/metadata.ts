@@ -12,6 +12,8 @@ export interface FunctionSignature {
 }
 export interface FunctionExport extends FunctionSignature {
   readonly index: number;
+  /** False when the export re-exports one of the module's own function imports. */
+  readonly defined: boolean;
 }
 interface FunctionImport extends FunctionSignature {
   readonly module: string;
@@ -112,10 +114,10 @@ function importGlobal(
     invalid(reader.member, "side stack pointer must be mutable i32");
   if (namespace === "env" && ["__memory_base", "__table_base"].includes(name) && mutable !== 0)
     invalid(reader.member, "side bases must be immutable i32");
-  if (namespace === "GOT.mem" && mutable !== 1)
-    invalid(reader.member, "GOT.mem requires mutable i32 address globals");
-  if (side && namespace !== "env" && namespace !== "GOT.mem")
-    invalid(reader.member, "side globals must import env or supported GOT.mem");
+  if (namespace.startsWith("GOT.") && mutable !== 1)
+    invalid(reader.member, `${namespace} requires mutable i32 address globals`);
+  if (side && !["env", "GOT.mem", "GOT.func"].includes(namespace))
+    invalid(reader.member, "side globals must import env, GOT.mem or GOT.func");
   return { module: namespace, name, index, value: 0x7f, mutable: mutable === 1 };
 }
 
@@ -129,13 +131,9 @@ function imports(reader: Reader, side: boolean, types: readonly FunctionSignatur
     const namespace = reader.name(),
       name = reader.name(),
       kind = reader.byte();
-    if (namespace.startsWith("GOT.") && namespace !== "GOT.mem")
+    const got = namespace === "GOT.mem" || namespace === "GOT.func";
+    if (namespace.startsWith("GOT.") && (!got || !side || kind !== 3))
       invalid(reader.member, `unsupported ${namespace}.${name}`);
-    if (
-      namespace === "GOT.mem" &&
-      (!side || kind !== 3 || !["stdout", "_CLOCK_MONOTONIC", "errno"].includes(name))
-    )
-      invalid(reader.member, `unsupported GOT.mem.${name}`);
     if (kind === 0)
       functions.push({
         ...functionType(reader, types),
@@ -231,9 +229,37 @@ function dylink(reader: Reader): { memory: MemoryInfo; importInfo: readonly Impo
   return { memory: info, importInfo };
 }
 
-function segmentOffset(reader: Reader, global: number | undefined): void {
-  if (reader.byte() !== 0x23 || reader.u32() !== global || reader.byte() !== 0x0b)
-    invalid(reader.member, "side segment offset must be its imported base global");
+function signed32(reader: Reader): number {
+  let result = 0,
+    shift = 0,
+    byte: number;
+  do {
+    if (shift > 28) invalid(reader.member, "i32 constant overflow");
+    byte = reader.byte();
+    result |= (byte & 127) << shift;
+    shift += 7;
+  } while (byte >= 128);
+  return shift < 32 && byte & 64 ? result | (-1 << shift) : result;
+}
+
+/** Reads `global.get base` with an optional `i32.const k; i32.add` (extended-const). */
+function baseOffset(reader: Reader, bases: ReadonlySet<number>, message: string): number {
+  if (!bases.has(reader.u32())) invalid(reader.member, message);
+  let opcode = reader.byte(),
+    offset = 0;
+  if (opcode === 0x41) {
+    offset = signed32(reader);
+    if (reader.byte() !== 0x6a) invalid(reader.member, message);
+    opcode = reader.byte();
+  }
+  if (opcode !== 0x0b) invalid(reader.member, message);
+  return offset;
+}
+
+function segmentOffset(reader: Reader, global: number | undefined): number {
+  const message = "side segment offset must be its imported base global plus a constant";
+  if (global === undefined || reader.byte() !== 0x23) invalid(reader.member, message);
+  return baseOffset(reader, new Set([global]), message);
 }
 
 function segments(
@@ -243,24 +269,31 @@ function segments(
   data: boolean,
 ): boolean {
   const count = reader.u32();
+  const reservation = data ? profile.memorySize : profile.tableSize;
+  const active: [number, number][] = [];
   let passive = false,
-    active = false,
     total = 0;
   for (let index = 0; index < count; index++) {
     const flag = reader.u32();
+    let start: number | undefined;
     if (data && flag === 1) passive = true;
-    else if (flag === 0 && !active) {
-      segmentOffset(reader, global);
-      active = true;
-    } else invalid(reader.member, "unsupported or overlapping side segments");
+    else if (flag === 0) start = segmentOffset(reader, global);
+    else invalid(reader.member, "unsupported side segment kind");
     const size = reader.u32();
     total += size;
-    if (total > (data ? profile.memorySize : profile.tableSize))
-      invalid(reader.member, "segments exceed dylink.0 reservation");
+    if (total > reservation) invalid(reader.member, "segments exceed dylink.0 reservation");
+    if (start !== undefined && (start < 0 || start + size > reservation))
+      invalid(reader.member, "active segment exceeds dylink.0 reservation");
+    if (start !== undefined) active.push([start, start + size]);
     if (data) reader.take(size);
     else for (let item = 0; item < size; item++) reader.u32();
   }
   reader.done();
+  active.sort((left, right) => left[0] - right[0]);
+  for (let index = 1; index < active.length; index++) {
+    if (active[index]![0] < active[index - 1]![1])
+      invalid(reader.member, "overlapping active side segments");
+  }
   return passive;
 }
 
@@ -305,7 +338,7 @@ function functionExports(
     if (kind !== 0) continue;
     const signature = signatures[target];
     if (!signature) invalid(member, `invalid function export ${name}`);
-    result.set(name, { ...signature, index: target });
+    result.set(name, { ...signature, index: target, defined: target >= imported.length });
   }
   exports.done();
   return result;
@@ -327,7 +360,11 @@ export function sameSignature(left: FunctionSignature, right: FunctionSignature)
   return left.params.join() === right.params.join() && left.results.join() === right.results.join();
 }
 
-function definedGlobals(section: Reader | undefined, member: string): GlobalType[] {
+function definedGlobals(
+  section: Reader | undefined,
+  member: string,
+  bases: ReadonlySet<number>,
+): GlobalType[] {
   const globals = section ?? new Reader(new Uint8Array([0]), member);
   const result: GlobalType[] = [];
   const count = globals.u32();
@@ -336,11 +373,13 @@ function definedGlobals(section: Reader | undefined, member: string): GlobalType
       mutable = globals.byte();
     if (value !== 0x7f || mutable > 1) invalid(member, "only defined i32 globals are supported");
     result.push({ value, mutable: mutable === 1 });
-    if (globals.byte() !== 0x41) invalid(member, "globals require constant i32 initializers");
-    // Signed LEB values need not be interpreted to inspect the global's type.
-    let more = true;
-    while (more) more = globals.byte() >= 128;
-    if (globals.byte() !== 0x0b) invalid(member, "unsupported global initializer");
+    const opcode = globals.byte();
+    const message = "globals require i32.const or imported-base relative initializers";
+    if (opcode === 0x23) baseOffset(globals, bases, message);
+    else if (opcode !== 0x41) invalid(member, message);
+    else signed32(globals);
+    if (opcode === 0x41 && globals.byte() !== 0x0b)
+      invalid(member, "unsupported global initializer");
   }
   globals.done();
   return result;
@@ -413,7 +452,13 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   const globalImports = entries.globals;
   const functions = functionExports(sections, types, functionImports, member);
   const importedGlobals: readonly GlobalType[] = globalImports;
-  const globals = importedGlobals.concat(definedGlobals(sections.get(6), member));
+  const bases = new Set(
+    globalImports
+      .filter((entry) => entry.module === "env" && !entry.mutable)
+      .filter((entry) => entry.name === "__memory_base" || entry.name === "__table_base")
+      .map((entry) => entry.index),
+  );
+  const globals = importedGlobals.concat(definedGlobals(sections.get(6), member, bases));
   const exportedGlobals = globalExports(sections.get(7), globals, member);
   const immutableI32Exports = new Set<string>();
   for (const [name, type] of exportedGlobals) {
