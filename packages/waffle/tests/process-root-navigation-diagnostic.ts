@@ -652,7 +652,6 @@ function identity(): Record<string, string> {
   if (!browserRoot || !isAbsolute(browserRoot))
     throw new Error("Explicit installed browser root required");
   const executable = join(browserRoot, "webkit-2370", "pw_run.sh");
-  const root = dirname(import.meta.dir);
   assertSourceProvenance(join(import.meta.dir, "../../..", "bun.lock"), historicalRunnerPath);
   return {
     historicalRunnerSHA256: sha256(readFileSync(historicalRunnerPath)),

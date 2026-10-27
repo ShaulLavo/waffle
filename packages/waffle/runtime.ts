@@ -53,7 +53,10 @@ export interface RuntimeConsumer {
 
 /** Filesystem authority is borrowed. Only the page runtime can close its service. */
 export type RuntimeFilesystem = Omit<SharedFilesystem, "client" | "dispose">;
-export type RuntimeSupervisor = Omit<ProcessSupervisor, "dispose">;
+export type RuntimeSupervisor = Omit<
+  ProcessSupervisor,
+  "dispose" | "registerOwnedJobCleanup" | "onJobRetirement" | "jobRetired" | "retireFencedProcesses"
+>;
 export type ProcessService = Omit<
   BrowserProcessBroker,
   "dispose" | "suspend" | "quiesce" | "ready"
@@ -159,6 +162,7 @@ const processCapabilities = {
   releaseLegacyJob: "method",
   launchWorker: "method",
   takeWorker: "method",
+  isIdleWorker: "method",
   kill: "async",
   killJob: "async",
   rootExit: "async",
@@ -168,6 +172,7 @@ const supervisorCapabilities = {
   get: "method",
   job: "method",
   jobOf: "method",
+  cwd: "method",
   canSignal: "method",
   canSignalJob: "method",
   canWaitJob: "method",
@@ -176,11 +181,13 @@ const supervisorCapabilities = {
   accessCancel: "method",
   accessReady: "method",
   registerJobReadiness: "method",
+  jobCleanupReady: "method",
   registerJobReapClaim: "method",
   registerChildAccess: "method",
   onJobReap: "method",
   jobEmpty: "method",
   registerJobWake: "method",
+  registerJobCleanupWake: "method",
   createRoot: "method",
   reserveSpawn: "method",
   reserveAdmittedSpawn: "method",

@@ -22,7 +22,9 @@
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "network"
+    "network",
+    "LICENSE",
+    "LICENSES"
   ],
   "type": "module",
   "exports": {
@@ -512,6 +514,13 @@
       "bun": "./link/index.ts",
       "browser": "./link/index.ts",
       "default": "./link/index.ts"
+    },
+    "./browser/preview-host": {
+      "types": "./browser/preview-host.ts",
+      "node": "./dist/browser/preview-host.js",
+      "bun": "./browser/preview-host.ts",
+      "browser": "./browser/preview-host.ts",
+      "default": "./browser/preview-host.ts"
     },
     "./programs": {
       "types": "./programs/index.ts",

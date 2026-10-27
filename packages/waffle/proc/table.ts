@@ -16,6 +16,7 @@ import {
   type ProcessHandle,
   type SpawnRequest,
   type SharedJobIdentity,
+  type JobLifetime,
 } from "./types.js";
 
 export interface ProcessRecord {
@@ -24,6 +25,7 @@ export interface ProcessRecord {
   controlParent?: number;
   rootPid?: number;
   readonly job: number;
+  readonly cwd: string;
   readonly descriptors: DescriptorTable;
   readonly interrupt: ControlCells;
   readonly requestedSignal: ControlCells;
@@ -39,6 +41,13 @@ export interface ProcessRecord {
   revoked: boolean;
   handle?: ProcessHandle;
   starting?: Promise<void>;
+  acquiring?: Promise<void>;
+  stopping?: {
+    readonly handle: Promise<void>;
+    readonly complete: Promise<void>;
+    consumer?: ProcessHandle;
+  };
+  retirement?: { kind: "complete" } | { kind: "external" } | { kind: "failed"; error: unknown };
   revocations: Set<() => void>;
   waiters: Set<(result: ProcessExit) => void>;
 }
@@ -47,6 +56,9 @@ export interface ProcessJob {
   readonly ownerPid: number;
   controlParent: number;
   readonly foreground: boolean;
+  readonly jobLifetime: JobLifetime;
+  lifetimeState: "independent" | "attached" | "disarmed" | "closing";
+  readonly shared: boolean;
   /** The first member is the job leader; its outcome remains available after ordinary child reap. */
   readonly leaderPid: number | undefined;
   readonly leaderResult: ProcessExit | null;
@@ -130,6 +142,7 @@ export class ProcessTable {
     foreground: boolean,
     id = this.identities.job(),
     identity?: SharedJobIdentity,
+    jobLifetime: JobLifetime = "independent",
   ): ProcessJob {
     if (isInstance(identity?.outcome, OutcomeCell)) identity.outcome.check();
     const captured = isInstance(identity?.outcome, OutcomeCell);
@@ -141,6 +154,10 @@ export class ProcessTable {
       ownerPid,
       controlParent: identity?.controlParent ?? ownerPid,
       foreground,
+      jobLifetime: identity?.jobLifetime ?? jobLifetime,
+      lifetimeState:
+        (identity?.jobLifetime ?? jobLifetime) === "caller-fatal" ? "attached" : "independent",
+      shared: identity !== undefined,
       leaderPid: identity?.leaderPid,
       leaderResult: null,
       pendingMembers: 0,
@@ -174,6 +191,7 @@ export class ProcessTable {
     if (
       job.ownerPid !== identity.ownerPid ||
       job.foreground !== identity.foreground ||
+      job.jobLifetime !== (identity.jobLifetime ?? "independent") ||
       (job.leaderPid !== undefined && job.leaderPid !== identity.leaderPid) ||
       (previous && !rootSource && !sameOutcomeLocation(previous, outcome))
     ) {

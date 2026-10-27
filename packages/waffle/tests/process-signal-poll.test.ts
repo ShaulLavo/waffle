@@ -31,10 +31,12 @@ function fixture() {
     pid: 1,
     signals,
     service: {
+      cwd: unused,
       spawn: unused,
       startStatus: unused,
       waitJob: unused,
       jobEmpty: unused,
+      jobCleanupReady: unused,
       wait: unused,
       childExited: unused,
       kill: unused,

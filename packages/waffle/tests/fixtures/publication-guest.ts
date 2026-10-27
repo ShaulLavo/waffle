@@ -36,10 +36,12 @@ function unusedService(): ProcessService {
     throw new Error("unexpected fixture process call");
   };
   return {
+    cwd: unused,
     spawn: unused,
     startStatus: unused,
     waitJob: unused,
     jobEmpty: unused,
+    jobCleanupReady: unused,
     wait: unused,
     childExited: unused,
     kill: unused,

@@ -70,6 +70,24 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
+test("release workflow publishes only the runtime tarball and checksum", () => {
+  const release = record(
+    YAML.parse(
+      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+    ),
+  );
+  expect(record(release.permissions).contents).toBe("write");
+  const steps = record(record(release.jobs).release).steps;
+  if (!Array.isArray(steps)) throw new Error("expected release steps");
+  const publish = steps
+    .map(record)
+    .find((step) => step.name === "Publish the GitHub release assets");
+  expect(publish).toBeDefined();
+  expect(String(publish?.run)).toContain("gh release create");
+  expect(String(publish?.run)).toContain(".sha256");
+  expect(String(publish?.run)).not.toContain("npm publish");
+});
+
 test("browser selects runners, shared controls and guest fixtures", () => {
   for (const path of [
     "packages/waffle/scripts/test-browser.ts",
@@ -177,6 +195,12 @@ test("package and site gates remain unconditional", () => {
     expect(job.if).toBeUndefined();
     expect(job.needs).toBe(name === "package" ? "network-wasm" : undefined);
   }
+});
+
+test("the package tarball smoke uses the runner temporary directory", () => {
+  const smoke = stepsFor("package").find((step) => step.run === "bun run pack:check");
+  expect(record(smoke?.env).TMPDIR).toBe("${{ runner.temp }}");
+  expect(smoke?.if).toBeUndefined();
 });
 
 test("package runs each test root once without repeating preparation", () => {

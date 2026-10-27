@@ -16,6 +16,7 @@ import {
   type ProcessContext,
   type ProcessHandle,
   checkedSignal,
+  checkedProcessCwd,
   ProcessErrno,
   ProcessError,
 } from "../proc/types.js";
@@ -130,6 +131,7 @@ interface RuntimeChild {
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
+  private readonly retirementGate = Promise.withResolvers<void>();
   private disposing?: Promise<void>;
   private activation?: Promise<ProcessSupervisor>;
   private supervisor?: ProcessSupervisor;
@@ -167,6 +169,7 @@ export class BrowserProcessBroker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
+    void this.retirementGate.promise.catch(() => {});
     this.hostIdentity = snapshotHostIdentity(options.hostIdentity);
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(),
@@ -282,6 +285,7 @@ export class BrowserProcessBroker {
             );
           },
           quiesce: (pid) => this.quiesceProcess(pid),
+          retire: (pid) => this.retireProcess(pid),
           startFailed: (pid, error, active) => this.writeStartupDiagnostic(pid, error, active),
           onError: (error) => this.report(error),
         }));
@@ -335,6 +339,8 @@ export class BrowserProcessBroker {
   /** Reserve an externally executed root without activating the optional supervisor. */
   reserveRoot(root: RootProcessOptions, controller: ProcessController = {}): number {
     if (this.suspended) throw new Error("Process broker is disposed");
+    const initialCwd = root.cwd;
+    const cwd = checkedProcessCwd(initialCwd === undefined ? "/" : initialCwd);
     const pid = root.pid ?? this.options.identities.pid(),
       job = root.job ?? this.options.identities.job();
     this.options.identities.observePid(pid);
@@ -349,6 +355,7 @@ export class BrowserProcessBroker {
       ...root,
       pid,
       job,
+      cwd,
       signalState: createSignalState(root.signalState),
       outcome: outcomeWord(root.outcome),
       interrupt: word(root.interrupt),
@@ -448,6 +455,7 @@ export class BrowserProcessBroker {
     options: RuntimeRootOptions = {},
   ): Promise<void> {
     if (this.suspended) throw new Error("Process broker is disposed");
+    const cwd = checkedProcessCwd(transport.cwd);
     if (transport.identity !== this.options.identities.buffer)
       throw new TypeError("root must borrow the runtime identity allocator");
     this.filesystem(transport);
@@ -465,7 +473,7 @@ export class BrowserProcessBroker {
     registry.registerProcess(state.pid);
     this.registries.set(state.pid, registry);
     transport.data = { ...data, pipeRegistry: registry.handle() };
-    this.reserveRoot({ pid: state.pid, job: state.job, ...state.signals }, options);
+    this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
     if (this.activation) {
       const supervisor = await this.activation;
       if (this.suspended) throw new Error("Process broker is disposed");
@@ -478,7 +486,12 @@ export class BrowserProcessBroker {
   ): void {
     const state = workerProcessState(transport);
     if (!supervisor.get(state.pid))
-      supervisor.createRoot({ pid: state.pid, job: state.job, ...state.signals });
+      supervisor.createRoot({
+        pid: state.pid,
+        job: state.job,
+        cwd: transport.cwd,
+        ...state.signals,
+      });
     supervisor.registerRevocation(state.pid, () => this.revokeRuntimeProcess(state.pid));
     installWorkerBindings(
       transport,
@@ -850,6 +863,10 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     return this.workers.take(workerUrl);
   }
+  /** Whether this already-observed worker is still inert and owned by this broker's pool. */
+  isIdleWorker(worker: Worker): boolean {
+    return this.workers.isIdle(worker);
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
@@ -1162,6 +1179,16 @@ export class BrowserProcessBroker {
     (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
     return stopping;
   }
+  private async retireProcess(pid: number): Promise<void> {
+    await this.pendingLaunches?.get(pid)?.acquired;
+    if (this.suspended) {
+      await this.retirementGate.promise;
+      return;
+    }
+    const child = this.children.get(pid);
+    if (child) await this.stop(child);
+    else await this.stopController(pid);
+  }
   private stopSafely(child: RuntimeChild): void {
     try {
       const pending = this.stop(child);
@@ -1375,6 +1402,7 @@ export class BrowserProcessBroker {
       await Promise.all(
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.acquired),
       );
+      const physicalHandles = this.supervisor?.retireFencedProcesses();
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
       const stops = Array.from(this.children.values(), (child) =>
@@ -1389,6 +1417,7 @@ export class BrowserProcessBroker {
         Array.from(this.controllerStops?.values() ?? [], (stopping) => stopping.pending),
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.settled),
       );
+      if (physicalHandles) stops.push(physicalHandles);
       const errors: unknown[] = [];
       for (const result of await Promise.allSettled(stops))
         if (result.status === "rejected") errors.push(result.reason);
@@ -1404,6 +1433,12 @@ export class BrowserProcessBroker {
           errors.push(error);
         }
       }
+      if (errors.length) {
+        const failure = new AggregateError(errors, "Process broker cleanup failed");
+        this.retirementGate.reject(failure);
+        throw failure;
+      }
+      this.retirementGate.resolve();
       this.reservedRoots.clear();
       this.completedRoots.clear();
       this.rootLeases.clear();

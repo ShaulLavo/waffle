@@ -1,0 +1,76 @@
+name: Waffle runtime release
+
+on:
+  push:
+    tags:
+      - "waffle-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing waffle-v<version> tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      BUN_VERSION: "1.4.4"
+      WAFFLE_NETWORK_PREBUILT: "1"
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: wasm32-unknown-unknown
+      - name: Restore exact runtime network artifact
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
+          fail-on-cache-miss: true
+      - name: Cache release package dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/waffle/target
+          key: ${{ runner.os }}-${{ runner.arch }}-waffle-release-${{ hashFiles('bun.lock', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/**/*.rs') }}
+      - name: Verify the release tag and package version
+        run: |
+          version=$(bun -p 'JSON.parse(require("node:fs").readFileSync("packages/waffle/package.json", "utf8")).version')
+          test "$RELEASE_TAG" = "waffle-v$version"
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+      - run: bun install --frozen-lockfile
+      - name: Pack the prepared runtime package
+        run: bun run --cwd packages/waffle pack
+      - name: Write the archive checksum
+        id: archive
+        run: |
+          archive=$(find packages/waffle/dist -maxdepth 1 -type f -name '*.tgz' -print -quit)
+          test -n "$archive"
+          (cd packages/waffle/dist && sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256")
+          echo "path=$archive" >> "$GITHUB_OUTPUT"
+      - name: Publish the GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" "${{ steps.archive.outputs.path }}" "${{ steps.archive.outputs.path }}.sha256" \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes

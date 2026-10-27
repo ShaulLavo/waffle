@@ -33,10 +33,12 @@ self.onmessage = ({ data }: MessageEvent<{ connection: FilesystemConnection }>) 
       fs,
       pid: 1,
       service: {
+        cwd: unused,
         spawn: unused,
         startStatus: unused,
         waitJob: unused,
         jobEmpty: unused,
+        jobCleanupReady: unused,
         wait: unused,
         childExited: unused,
         kill: unused,

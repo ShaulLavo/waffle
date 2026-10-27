@@ -7,8 +7,8 @@ import {
   type CellValidity,
 } from "./control.js";
 import { OutcomeCell, claimOutcome, readOutcome } from "./outcome.js";
-import { ProcessErrno, ProcessError, type ProcessExit } from "./types.js";
-import type { SignalTransport } from "./signals.js";
+import { ProcessErrno, ProcessError, type ProcessExit, type JobLifetime } from "./types.js";
+import { requestSignal, type SignalTransport } from "./signals.js";
 import {
   arrayAppend,
   atomicsAdd,
@@ -39,7 +39,7 @@ import {
 
 const HEADER_BYTES = 32;
 const PROCESS_WORDS = 76;
-const JOB_WORDS = 8;
+const JOB_WORDS = 10;
 export interface DirectoryHandle {
   readonly directory: SharedArrayBuffer;
   readonly slot: number;
@@ -136,6 +136,9 @@ export function directoryJob(directory: SharedArrayBuffer, slot: number, expecte
     ownerPid: data.load(1),
     leaderPid,
     foreground: data.load(5) !== 0,
+    jobLifetime: data.load(8) === 0 ? ("independent" as const) : ("caller-fatal" as const),
+    lifetime: liveCells(raw, id, 8),
+    retirement: liveCells(raw, id, 9),
     controlParent: liveCells(raw, id, 6),
     rootPid: data.load(7),
     pending: liveCells(raw, id, 4),
@@ -164,6 +167,7 @@ export function directoryState(handle: DirectoryHandle, slot = handle.slot) {
     jobOwner: group.ownerPid,
     jobLeaderPid: group.leaderPid,
     jobForeground: group.foreground,
+    jobLifetime: group.jobLifetime,
     jobOutcome: group.outcome,
     jobControlParent: group.controlParent,
     jobPending: group.pending,
@@ -307,6 +311,7 @@ export function reserveDirectoryProcess(
   ownerPid: number,
   jobSlot?: number,
   foreground = true,
+  jobLifetime: JobLifetime = "independent",
 ): DirectoryHandle {
   let created: ReturnType<typeof allocate> | undefined;
   let reserved: ReturnType<typeof allocate> | undefined;
@@ -325,9 +330,11 @@ export function reserveDirectoryProcess(
       atomicsStore(raw, 5, packedControl(job, Number(foreground)));
       atomicsStore(raw, 6, packedControl(job, ownerPid));
       atomicsStore(raw, 7, packedControl(job, rootPid));
+      atomicsStore(raw, 8, packedControl(job, jobLifetime === "caller-fatal" ? 1 : 0));
       group = { slot: created.slot, rootPid };
     } else {
       const existing = directoryJob(handle.directory, jobSlot, job);
+      checkDirectoryJobAdmission(handle.directory, existing);
       for (;;) {
         const count = controlLoad(existing.pending);
         if (count <= 0)
@@ -378,6 +385,55 @@ function find(directory: SharedArrayBuffer, pid: number): DirectoryHandle | unde
   for (let slot = 0; slot < directoryCapacity(directory); slot++)
     if (identity(row(directory, slot)) === pid) return { directory, slot, pid };
   return undefined;
+}
+function settleJobLifetime(directory: SharedArrayBuffer, slot: number): boolean {
+  try {
+    const group = directoryJob(directory, slot);
+    if (controlLoad(group.lifetime) !== 1) return false;
+    const owner = find(directory, group.ownerPid);
+    if (!owner) throw new Error("owned job lost its owner identity");
+    const outcome = readOutcome(directoryState(owner).signals.outcome);
+    if (!outcome) return false;
+    const next = outcome.kind === "signaled" ? 3 : 2;
+    if (controlCas(group.lifetime, 0, 1, next) !== 1) return false;
+    if (next === 3) signalDirectoryJob(directory, group.id);
+    wakeDirectory(directory);
+    return true;
+  } catch (error) {
+    if (isCollectedProcess(error)) return false;
+    throw error;
+  }
+}
+function signalDirectoryJob(directory: SharedArrayBuffer, job: number): void {
+  const slots = directorySlots(directory);
+  for (let index = 0; index < slots.length; index++)
+    signalDirectoryMember(directory, slots[index]!, job);
+}
+function signalDirectoryMember(directory: SharedArrayBuffer, slot: number, job: number): void {
+  try {
+    const state = directoryState({ directory, slot, pid: identity(row(directory, slot)) });
+    if (state.job === job) requestSignal(state.signals, 9);
+  } catch (error) {
+    if (!isCollectedProcess(error)) throw error;
+  }
+}
+/** Shared reservations must observe owner death even before their spawn notice is admitted. */
+export function settleDirectoryJobLifetimes(directory: SharedArrayBuffer): void {
+  let changed: boolean;
+  do {
+    changed = false;
+    const jobs = directoryJobs(directory);
+    for (let index = 0; index < jobs.length; index++)
+      changed = settleJobLifetime(directory, jobs[index]!) || changed;
+  } while (changed);
+}
+export function checkDirectoryJobAdmission(
+  directory: SharedArrayBuffer,
+  group: ReturnType<typeof directoryJob>,
+): void {
+  settleDirectoryJobLifetimes(directory);
+  if (controlLoad(group.lifetime) === 3)
+    throw new ProcessError(ProcessErrno.CHILD, "owned job is closing");
 }
 /** A collector freezes its forwarding edge before moving descendants. A frozen edge is
  * a shared, helpable dependency: its parent cannot be freed until that collection finishes.
@@ -465,6 +521,7 @@ function finishCollectionStep(
 }
 
 export function collectDirectoryProcess(handle: DirectoryHandle): ProcessExit {
+  settleDirectoryJobLifetimes(handle.directory);
   // Individual collection can race an already-sealed job. Only this process's
   // captured identity and safety fences are needed; the job header may be retiring.
   const raw = row(handle.directory, handle.slot);

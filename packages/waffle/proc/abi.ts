@@ -1,6 +1,8 @@
 import { reopenDescriptor } from "../core/fd-reopen.js";
 import {
   arrayAppend,
+  atomicsAdd,
+  atomicsNotify,
   isSharedArrayBuffer,
   DataViewConstructor,
   Uint8ArrayConstructor,
@@ -49,6 +51,8 @@ import {
   ProcessErrno,
   ProcessError,
   Signal,
+  checkedJobLifetime,
+  checkedProcessCwd,
   type ProcessExit,
   type SpawnRequest,
 } from "./types.js";
@@ -58,6 +62,7 @@ import {
 export interface ProcessService {
   /** Directory services notify signals and cleanup-confirmed child/job readiness here. */
   readonly wake?: Int32Array;
+  cwd(pid: number): string;
   spawn(parentPid: number, request: SpawnRequest): number;
   /** Consume one safely exited child; null means it is still pending. */
   wait(parentPid: number, pid: number): ProcessExit | null;
@@ -67,7 +72,9 @@ export interface ProcessService {
   registerChildStartWake?(parentPid: number, pid: number, wake: Int32Array): () => void;
   waitJob(callerPid: number, job: number): ProcessExit | null;
   jobEmpty(callerPid: number, job: number): boolean;
+  jobCleanupReady(callerPid: number, job: number): boolean;
   registerJobWake?(callerPid: number, job: number, wake: Int32Array): () => void;
+  registerJobCleanupWake?(callerPid: number, job: number, wake: Int32Array): () => void;
   kill(pid: number, signal: number): void;
   killJob(job: number, signal: number): void;
   jobOf(pid: number): number;
@@ -200,6 +207,7 @@ export class ProcessABI {
     this.now = options.now ?? clock;
     this.imports = {
       getpid: () => options.pid,
+      cwd: (ptr, capacity) => this.result(() => this.cwd(ptr!, capacity!)),
       access_start: (ptr, length, cwdPtr, cwdLength, mode) =>
         this.result(() => this.accessStart(ptr!, length!, cwdPtr!, cwdLength!, mode!)),
       access_take: (request) =>
@@ -251,6 +259,23 @@ export class ProcessABI {
       signal: (signal, mode) => this.signal(signal!, mode!),
       default_signal: (signal) => this.result(() => this.defaultSignal(signal!)),
     };
+  }
+  private cwd(ptr: number, capacity: number): number {
+    if (
+      !Number.isInteger(ptr) ||
+      !Number.isInteger(capacity) ||
+      ptr < -0x80000000 ||
+      ptr > 0xffffffff ||
+      capacity < -0x80000000 ||
+      capacity > 0xffffffff
+    )
+      return -ProcessErrno.INVAL;
+    const cwd = this.options.service.cwd(this.options.pid);
+    const bytes = new TextEncoder().encode(cwd);
+    const output = this.span(ptr, capacity);
+    this.options.service.cwd(this.options.pid);
+    if (bytes.length <= capacity >>> 0) output.set(bytes);
+    return bytes.length;
   }
   private reopen(fd: number, oflags: number, fdflags: number, base: bigint, out: number): number {
     const view = this.view(out, 4);
@@ -355,6 +380,8 @@ export class ProcessABI {
     ) {
       throw new ProcessError(ProcessErrno.INVAL, "invalid spawn description");
     }
+    checkedJobLifetime(object.job!, object.jobLifetime);
+    checkedProcessCwd(object.cwd);
     return object as SpawnRequest;
   }
   private pipe(ptr: number): number {
@@ -483,7 +510,8 @@ export class ProcessABI {
     );
   }
   private waitJob(job: number, flags: number, ptr: number): number {
-    if (flags !== 0 && flags !== 1) return -ProcessErrno.INVAL;
+    if (flags !== 0 && flags !== 1 && flags !== 2) return -ProcessErrno.INVAL;
+    if (flags === 2) return this.cleanupWait(job, ptr);
     this.span(ptr, 8); // Faults must not consume a completed job.
     const wake = this.options.wake;
     const release = wake
@@ -511,6 +539,56 @@ export class ProcessABI {
     } finally {
       release?.();
     }
+  }
+  private cleanupWait(job: number, ptr: number): number {
+    this.span(ptr, 8);
+    const wake = this.options.wake;
+    if (this.options.service.jobOf(this.options.pid) === job) return -ProcessErrno.INVAL;
+    if (!wake) return -58;
+    const shared = sameWord(this.options.service.wake, wake);
+    if (
+      !shared &&
+      (!this.options.service.registerJobCleanupWake || !this.options.service.registerRevocation)
+    )
+      return -58;
+    const releaseJob = this.options.service.registerJobCleanupWake?.(this.options.pid, job, wake);
+    let releaseOwner: (() => void) | undefined;
+    try {
+      releaseOwner = this.options.service.registerRevocation?.(this.options.pid, () => {
+        atomicsAdd(wake, 0, 1);
+        atomicsNotify(wake, 0);
+      });
+      return this.runCleanupWait(job, ptr, wake);
+    } catch (error) {
+      this.checkFatal();
+      throw error;
+    } finally {
+      releaseOwner?.();
+      releaseJob?.();
+    }
+  }
+  private runCleanupWait(job: number, ptr: number, wake: Int32Array): number {
+    for (;;) {
+      const sequence = controlLoad(wake, 0);
+      this.checkFatal();
+      if (this.collectCleanup(job, ptr)) return 0;
+      if (this.options.wait) this.options.wait(Infinity, wake, sequence);
+      else controlWait(wake, 0, sequence);
+      this.checkFatal();
+    }
+  }
+  private collectCleanup(job: number, ptr: number): boolean {
+    if (!this.options.service.jobCleanupReady(this.options.pid, job)) return false;
+    this.span(ptr, 8);
+    this.checkFatal();
+    const result = this.options.service.waitJob(this.options.pid, job);
+    if (!result) return false;
+    this.writeWaitResult(ptr, result);
+    return true;
+  }
+  private checkFatal(): void {
+    const outcome = readOutcome(this.options.signals.outcome);
+    if (outcome?.kind === "signaled") throw new ProcessSignalExit(outcome.code);
   }
   private pending(): boolean {
     return signalPending(this.options.signals);

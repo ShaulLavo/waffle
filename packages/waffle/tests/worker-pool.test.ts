@@ -115,3 +115,23 @@ test("disposal cancels pending construction and initialization failures do not s
   await refill();
   expect(workers).toHaveLength(5);
 });
+
+test("idle ownership follows the exact worker through lease, discard and disposal", async () => {
+  const first = take("a");
+  expect(pool.isIdle(first)).toBe(false);
+  expect(pool.isIdle({})).toBe(false);
+  await refill();
+  const idle = workers[1]!;
+  const discarded = workers[2]!;
+  expect(pool.isIdle(idle)).toBe(true);
+  expect(pool.isIdle(discarded)).toBe(true);
+  expect(take("a")).toBe(idle);
+  expect(pool.isIdle(idle)).toBe(false);
+  discarded.onmessage!(new MessageEvent("message", { data: {} }));
+  expect(pool.isIdle(discarded)).toBe(false);
+  await refill();
+  const remaining = workers.at(-1)!;
+  expect(pool.isIdle(remaining)).toBe(true);
+  pool.dispose();
+  expect(pool.isIdle(remaining)).toBe(false);
+});

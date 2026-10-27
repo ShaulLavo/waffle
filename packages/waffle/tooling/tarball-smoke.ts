@@ -1,13 +1,31 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const packageRoot = resolve(import.meta.dir, "..");
-const scratch = await mkdtemp(join(process.env.TMPDIR ?? "/work/tmp", "waffle-tarball-"));
+const scratch = await mkdtemp(join(tmpdir(), "waffle-tarball-"));
 const archiveDirectory = join(scratch, "archive");
 const extractDirectory = join(scratch, "extract");
 const consumerDirectory = join(scratch, "consumer");
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("expected package mapping");
+  return value;
+}
+
+function verifyExportTargets(root: string, entry: Record<string, unknown>): void {
+  for (const target of Object.values(entry)) {
+    if (typeof target !== "string" || !target.startsWith("./"))
+      throw new Error("invalid export target");
+    if (!existsSync(join(root, target))) throw new Error(`archive is missing export ${target}`);
+  }
+}
 
 async function run(): Promise<void> {
   await Promise.all([
@@ -27,8 +45,12 @@ async function run(): Promise<void> {
   const packedRoot = join(extractDirectory, "package");
   const required = [
     "package.json",
+    "LICENSE",
+    "LICENSES/Apache-2.0.txt",
     "index.ts",
     "dist/index.js",
+    "link/relay.ts",
+    "dist/link/relay.js",
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
@@ -36,27 +58,43 @@ async function run(): Promise<void> {
   for (const path of required) {
     if (!existsSync(join(packedRoot, path))) throw new Error(`archive is missing ${path}`);
   }
+  if (!(await readFile(join(packedRoot, "LICENSE"), "utf8")).startsWith("MIT License"))
+    throw new Error("archive has the wrong MIT license");
+  if (
+    !(await readFile(join(packedRoot, "LICENSES/Apache-2.0.txt"), "utf8")).includes(
+      "Apache License",
+    )
+  )
+    throw new Error("archive has the wrong upstream license notice");
   await writeFile(
     join(consumerDirectory, "package.json"),
     JSON.stringify({
       name: "waffle-tarball-consumer",
       private: true,
       type: "module",
-      dependencies: { waffle: `file:${packedRoot}`, vite: "8.3.4" },
+      dependencies: { waffle: `file:${archive}`, vite: "8.3.4" },
     }) + "\n",
   );
   execFileSync("bun", ["install", "--no-progress", "--ignore-scripts"], {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
-  const metadata = JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")) as {
-    name: string;
-    exports: Record<string, { node?: string }>;
-  };
-  const nodeSpecifiers = Object.entries(metadata.exports)
-    .filter(([, target]) => target.node !== undefined)
-    .map(([key]) => (key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`));
-  const nodeScript = `for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);`;
+  const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
+  const exports = record(metadata.exports);
+  const nodeSpecifiers: string[] = [];
+  for (const [key, target] of Object.entries(exports)) {
+    const entry = record(target);
+    verifyExportTargets(packedRoot, entry);
+    if (typeof entry.node === "string")
+      nodeSpecifiers.push(key === "." ? "waffle" : `waffle${key.slice(1)}`);
+  }
+  const nodeScript = `
+    for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
+    const { loadNetworkModule } = await import("waffle/network");
+    const network = (await loadNetworkModule()).create();
+    try { if (network.call("net_listen", 40, 23456) !== 23456) throw new Error("packed network failed"); }
+    finally { network.dispose(); }
+  `;
   execFileSync("node", ["--input-type=module", "--eval", nodeScript], {
     cwd: consumerDirectory,
     stdio: "pipe",

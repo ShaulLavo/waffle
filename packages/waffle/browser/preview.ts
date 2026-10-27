@@ -1,6 +1,7 @@
 import type { ConnectionSink, PreviewConnection, PreviewSink } from "./net/helper.js";
 import type { PreviewRequest } from "./net/http1.js";
 import type { PreviewMessage, PreviewReply } from "./preview-protocol.js";
+import type { PreviewHostOptions, PreviewHostRelay } from "./preview-host.js";
 
 /** A server transport, independent of the guest engine or worker owning it. */
 export interface PreviewServer {
@@ -8,19 +9,56 @@ export interface PreviewServer {
   connect(port: number, sink: ConnectionSink): PreviewConnection | null;
 }
 
-export interface PreviewOptions {
+interface MountPreviewOptions {
   baseURL: string;
   /** Consumer-owned mount directory, relative to baseURL (without a trailing slash). */
   prefix: string;
 }
 
+export type PreviewOptions =
+  | MountPreviewOptions
+  | { mode: "root"; originForPort(port: number): string };
+
 /** Page-side request/socket routing. The consumer owns service-worker registration. */
 export class PreviewRouter {
   private servers = new Map<number, PreviewServer>();
+  private hosts = new Map<number, PreviewHostRelay>();
+  private owner: string | undefined;
   constructor(private options: PreviewOptions) {}
 
   url(port: number, path = "/"): string {
+    if ("mode" in this.options) {
+      const host = this.hosts.get(port);
+      if (!host || host.closed) throw new Error(`No authenticated preview host for port ${port}`);
+      const url = new URL(path, host.origin);
+      if (!path.startsWith("/") || path.startsWith("//") || url.origin !== host.origin)
+        throw new TypeError("Preview path must stay on its bound origin");
+      return url.href;
+    }
     return new URL(`${this.options.prefix}/${port}${path}`, this.options.baseURL).href;
+  }
+
+  /** Grant a private host adapter access to this owner's one virtual server. */
+  async bindHost(options: PreviewHostOptions): Promise<PreviewHostRelay> {
+    if (!("mode" in this.options)) throw new Error("Host bindings require root preview mode");
+    const binding = { ...options, origin: this.options.originForPort(options.port) };
+    const { createPreviewHostRelay } = await import("./preview-host.js");
+    if (!this.servers.has(binding.port))
+      throw new Error(`No preview server on port ${binding.port}`);
+    this.owner ??= crypto.randomUUID();
+    const host = createPreviewHostRelay(
+      { connect: (port, sink) => this.servers.get(port)?.connect(port, sink) ?? null },
+      this.owner,
+      binding,
+    );
+    for (const [port, other] of this.hosts) {
+      if (port === binding.port || other.closed || other.origin !== host.origin) continue;
+      host.close();
+      throw new Error("Preview origin is already bound to another virtual port");
+    }
+    this.hosts.get(binding.port)?.close();
+    this.hosts.set(binding.port, host);
+    return host;
   }
 
   serves(port: number): boolean {
@@ -30,7 +68,10 @@ export class PreviewRouter {
     this.servers.set(port, server);
   }
   unregister(port: number, server: PreviewServer): void {
-    if (this.servers.get(port) === server) this.servers.delete(port);
+    if (this.servers.get(port) !== server) return;
+    this.servers.delete(port);
+    this.hosts.get(port)?.close();
+    this.hosts.delete(port);
   }
 
   private connectSocket(port: number, reply: MessagePort): void {

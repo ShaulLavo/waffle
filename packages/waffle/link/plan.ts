@@ -7,6 +7,7 @@ import {
   type ModuleProfile,
 } from "./metadata.js";
 import { instantiateGroup, type LinkedGroup } from "./group.js";
+import { relayModule } from "./relay.js";
 
 export type { LinkedGroup } from "./group.js";
 export interface LinkMemberSource {
@@ -27,11 +28,21 @@ export interface LinkHost {
   checkActive(): void;
   bindMemory?(memory: WebAssembly.Memory): void;
 }
+/** Definitions a side binds to itself because core does not preempt them. */
+export interface SelfPlan {
+  /** Defined exports, in target-slot order. */
+  readonly targets: readonly string[];
+  /** Same-side symbol name -> target slot for its defined function identity. */
+  readonly targetSlots: ReadonlyMap<string, number>;
+  /** Relay with export `f<slot>` for every target; absent when nothing binds to self. */
+  readonly relay: WebAssembly.Module | undefined;
+}
 export interface CompiledMember {
   readonly id: string;
   readonly module: WebAssembly.Module;
   readonly profile: ModuleProfile;
   readonly initialize: readonly string[];
+  readonly self: SelfPlan;
 }
 export interface PlanData {
   readonly core: CompiledMember;
@@ -40,6 +51,7 @@ export interface PlanData {
   readonly source: LinkPlanSource;
 }
 const plans = new WeakMap<PreparedLinkPlan, PlanData>();
+const NO_SELF: SelfPlan = { targets: [], targetSlots: new Map(), relay: undefined };
 const code = new Map<string, Promise<WebAssembly.Module>>();
 
 export class PreparedLinkPlan {
@@ -62,30 +74,59 @@ export class PreparedLinkPlan {
     const core = compiled[0]!;
     requireSignature(core.profile, core.id, "_start", [], []);
     requireSignature(core.profile, core.id, reserve, [0x7f, 0x7f], [0x7f]);
-    for (const member of compiled.slice(1)) validateCoreImports(core, member);
+    const libraries: CompiledMember[] = [];
+    for (const member of compiled.slice(1))
+      libraries.push({ ...member, self: await selectProviders(core, member) });
     const plan = Object.freeze(new PreparedLinkPlan(core.module));
-    plans.set(plan, { core, libraries: compiled.slice(1), reserve, source: owned });
+    plans.set(plan, { core, libraries, reserve, source: owned });
     return plan;
   }
 }
 
-function validateCoreImports(core: CompiledMember, member: CompiledMember): void {
+function selfTarget(member: CompiledMember, name: string, kind: string): void {
+  const local = member.profile.functions.get(name);
+  if (local && !local.defined)
+    invalid(member.id, `${kind}.${name} same-side export re-exports an import, not a definition`);
+}
+
+/** Core preempts; otherwise only a defined same-member export of the exact type binds. */
+async function selectProviders(core: CompiledMember, member: CompiledMember): Promise<SelfPlan> {
   const exports = WebAssembly.Module.exports(core.module);
+  const targets: string[] = [];
+  const targetSlots = new Map<string, number>();
+  const target = (name: string) => {
+    const identity = member.profile.functions.get(name)!.index;
+    const known = targets.findIndex(
+      (targetName) => member.profile.functions.get(targetName)!.index === identity,
+    );
+    const slot = known >= 0 ? known : targets.push(name) - 1;
+    targetSlots.set(name, slot);
+    return slot;
+  };
   for (const entry of member.profile.functionImports) {
     if (entry.module !== "env") continue;
-    const provider = core.profile.functions.get(entry.name);
-    if (!provider && exports.some((value) => value.name === entry.name))
+    const coreProvider = core.profile.functions.get(entry.name);
+    if (!coreProvider && exports.some((value) => value.name === entry.name))
       invalid(member.id, `core export env.${entry.name} must be a function`);
+    // wasm-ld imports a shared library's visible definitions so they stay preemptible:
+    // the same member exports the definition under the import's name.
+    if (!coreProvider) selfTarget(member, entry.name, "env");
+    const provider = coreProvider ?? member.profile.functions.get(entry.name);
     if (!provider)
       invalid(
         member.id,
         `unresolved ${entry.binding === "weak" ? "weak direct" : "required"} function env.${entry.name}`,
       );
     if (!sameSignature(provider, entry))
-      invalid(member.id, `env.${entry.name} has an incompatible core function signature`);
+      invalid(
+        member.id,
+        `env.${entry.name} has an incompatible ${coreProvider ? "core" : "same-side"} function signature`,
+      );
+    if (!coreProvider) target(entry.name);
   }
   for (const entry of member.profile.globalImports) {
     if (entry.module === "env" && ["__memory_base", "__table_base"].includes(entry.name)) continue;
+    if (entry.module === "GOT.func") continue;
     const provider = core.profile.globalExports.get(entry.name);
     const mutable = entry.module === "GOT.mem" ? false : entry.mutable;
     if (!provider || provider.value !== entry.value || provider.mutable !== mutable)
@@ -94,6 +135,18 @@ function validateCoreImports(core: CompiledMember, member: CompiledMember): void
         `${entry.module}.${entry.name} requires a core ${mutable ? "mutable" : "immutable"} i32 global export`,
       );
   }
+  for (const entry of member.profile.globalImports) {
+    if (entry.module !== "GOT.func" || core.profile.functions.has(entry.name)) continue;
+    if (exports.some((value) => value.name === entry.name))
+      invalid(member.id, `core export GOT.func.${entry.name} must be a function`);
+    selfTarget(member, entry.name, "GOT.func");
+    if (!member.profile.functions.has(entry.name))
+      invalid(member.id, `GOT.func.${entry.name} requires a core or same-side function export`);
+    target(entry.name);
+  }
+  if (!targets.length) return NO_SELF;
+  const signatures = targets.map((name) => member.profile.functions.get(name)!);
+  return { targets, targetSlots, relay: await WebAssembly.compile(relayModule(signatures)) };
 }
 
 function snapshotPlan(source: LinkPlanSource): LinkPlanSource {
@@ -173,7 +226,7 @@ async function compile(member: LinkMemberSource, side: boolean): Promise<Compile
     invalid(member.id, `checkpoint import ${checkpoint.module}.${checkpoint.name} is absent`);
   if (profile.functions.has("__wasm_apply_data_relocs"))
     requireSignature(profile, member.id, "__wasm_apply_data_relocs", [], []);
-  return { id: member.id, module, profile, initialize: member.initialize };
+  return { id: member.id, module, profile, initialize: member.initialize, self: NO_SELF };
 }
 
 export const prepareLinkPlan = PreparedLinkPlan.prepare;
