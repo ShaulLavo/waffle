@@ -452,11 +452,11 @@ test("admits exact runtime_proc imports and rejects forged or malformed imports"
       ),
     ),
   );
-  expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual(
-    imports
-      .map(([field]) => ({ module: "runtime_proc", name: field, kind: "function" as const }))
-      .concat({ module: "runtime_proc", name: "__waffle_fatal", kind: "function" }),
+  const expectedImports: { module: string; name: string; kind: "function" }[] = imports.map(
+    ([field]) => ({ module: "runtime_proc", name: field, kind: "function" }),
   );
+  expectedImports.push({ module: "runtime_proc", name: "__waffle_fatal", kind: "function" });
+  expect(WebAssembly.Module.imports(new WebAssembly.Module(output))).toEqual(expectedImports);
   validRefused(
     binary(
       types(type([0x7f], [0x7f])),
