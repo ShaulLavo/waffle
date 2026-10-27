@@ -41,7 +41,7 @@ function core(
     addResult?: 0x7f | 0x7e;
     stackMutable?: boolean;
   } = {},
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   return binary(
     section(
       1,
@@ -126,7 +126,7 @@ function side(
     globalInitializer?: number[];
     dataSegments?: number[][];
   } = {},
-): Uint8Array {
+): Uint8Array<ArrayBuffer> {
   return binary(
     section(0, text("dylink.0").concat([1, 4, 16, alignment, 1, 0], options.dylink ?? [])),
     section(1, vector([type([]), type([0x7f], [0x7f])])),
