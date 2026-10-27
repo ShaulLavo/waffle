@@ -10,7 +10,7 @@ The package exports the browser runtime at `waffle`, with separate `waffle/core`
 `waffle/proc` and lightweight `waffle/proc/stub` entries. Network and terminal adapters live under
 `waffle/browser/net/*` and `waffle/browser/runtime-terminals`; core imports none of them.
 See [network ownership and transports](network.md) for the network contract.
-The [package export map](../package.json) lists the supported entry points.
+The [package export map](../packages/waffle/package.json) lists the supported entry points.
 
 ## WASI adapter and filesystem contract
 
