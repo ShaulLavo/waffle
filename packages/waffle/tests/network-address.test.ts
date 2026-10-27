@@ -284,6 +284,27 @@ test("standalone listener send failures release handles and ports", () => {
   }
 });
 
+test("standalone disposal clears later handles when a close send fails", () => {
+  const failure = new Error("dispose transport failed");
+  let failedHandle = 0;
+  const host = new NetHost(createRing(), (request) => {
+    if (request.type === "close" && request.id === failedHandle) throw failure;
+  });
+  try {
+    const first = host.listen("127.0.0.1", 49152);
+    const second = host.listen("::1", 49153);
+    failedHandle = first;
+    expect(() => host.dispose()).toThrow(failure);
+    expect(host.localAddr(first)).toBe(BADF);
+    expect(host.localAddr(second)).toBe(BADF);
+    expect(host.close(first)).toBe(BADF);
+    expect(host.close(second)).toBe(BADF);
+  } finally {
+    failedHandle = 0;
+    host.dispose();
+  }
+});
+
 async function settleFetch(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }

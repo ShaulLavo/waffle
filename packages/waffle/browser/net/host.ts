@@ -420,9 +420,23 @@ export class NetHost {
     this.disposed = true;
     this.newsCallback = null;
     setForEach(this.notificationSinks, (wake) => setDelete(this.notificationSinks, wake));
-    for (const handle of this.handles.keys()) this.close(handle);
+    const failures: unknown[] = [];
+    for (const handle of Array.from(this.handles.keys())) this.closeForDispose(handle, failures);
+    this.handles.clear();
+    this.unaccepted.clear();
+    this.listenerPorts.clear();
     this.fileWrite = null;
     this.ring.wake();
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Network host disposal failed");
+  }
+
+  private closeForDispose(handle: number, failures: unknown[]): void {
+    try {
+      this.close(handle);
+    } catch (error) {
+      failures.push(error);
+    }
   }
 
   private tcpError(status: number): NetError {
