@@ -233,10 +233,6 @@ function residentPreopens(filesystem: FilesystemConnection): Record<string, stri
   return filesystem.residentPublication?.kind === "file" ? {} : { "/": "/" };
 }
 
-function isInterruptImport(name: string): boolean {
-  return name === "interrupted" || name === "__waffle_fatal";
-}
-
 function startupControl(connection: NotificationConnection | undefined, fs: FilesystemClient) {
   const cancellation = new AbortController();
   const notifications = connection ? new NotificationWaitScope(connection, fs) : undefined;
@@ -829,8 +825,6 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         const entry = entries[index]!,
           name = entry[0],
           call = entry[1];
-        // Instrumentation never dequeues handled signals or replaces its trap with an ABI unwind.
-        if (req.interruptible && isInterruptImport(name)) continue;
         processImports[name] = (...args) => {
           checkActive();
           return call(...args);

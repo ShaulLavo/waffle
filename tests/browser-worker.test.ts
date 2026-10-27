@@ -1,4 +1,5 @@
 import { controlLoad, controlStore } from "../proc/control.js";
+import { compileInterruptible } from "../interrupt/loader.js";
 import { expect, spyOn, test } from "bun:test";
 import {
   bootstrap,
@@ -785,39 +786,46 @@ test("legacy lifecycle failures still attempt diagnostics, release and completio
 
 // Original wasm fixture exports its imported ABI functions so the test observes the real
 // bootstrap-selected imports without an unbounded guest loop or a second signal model.
-function signalModule(): WebAssembly.Module {
+function signalSource(): Uint8Array<ArrayBuffer> {
   const text = (value: string) =>
     [value.length].concat(Array.from(new TextEncoder().encode(value)));
   const section = (id: number, bytes: number[]) => [id, bytes.length].concat(bytes);
-  const imported = (name: string, type: number) =>
-    text("runtime_proc").concat(text(name), [0, type]);
+  const imported = (name: string, type: number, namespace = "runtime_proc") =>
+    text(namespace).concat(text(name), [0, type]);
   const exported = (name: string, kind: number, index: number) => text(name).concat([kind, index]);
-  return new WebAssembly.Module(
-    new Uint8Array(
-      [0, 97, 115, 109, 1, 0, 0, 0].concat(
-        section(1, [4, 96, 2, 127, 127, 1, 127, 96, 0, 1, 127, 96, 0, 0, 96, 1, 127, 1, 127]),
-        section(
-          2,
-          [3].concat(
-            imported("signal", 0),
-            imported("interrupted", 1),
-            imported("default_signal", 3),
-          ),
+  // The bound prevents a broken checkpoint from hanging the test: select fatal once,
+  // then execute 10,000 host-call-free loop iterations unless instrumentation traps.
+  const loop = [1, 1, 0x7f].concat(
+    [0x10, 3, 0x03, 0x40],
+    [0x20, 0, 0x41, 1, 0x6a, 0x22, 0],
+    [0x41, 0x90, 0xce, 0, 0x49, 0x0d, 0, 0x0b, 0x0b],
+  );
+  return new Uint8Array(
+    [0, 97, 115, 109, 1, 0, 0, 0].concat(
+      section(1, [4, 96, 2, 127, 127, 1, 127, 96, 0, 1, 127, 96, 0, 0, 96, 1, 127, 1, 127]),
+      section(
+        2,
+        [4].concat(
+          imported("signal", 0),
+          imported("interrupted", 1),
+          imported("default_signal", 3),
+          imported("selectFatal", 2, "checkpoint_fixture"),
         ),
-        section(3, [1, 2]),
-        section(5, [1, 0, 1]),
-        section(
-          7,
-          [5].concat(
-            exported("signal", 0, 0),
-            exported("interrupted", 0, 1),
-            exported("default_signal", 0, 2),
-            exported("memory", 2, 0),
-            exported("_start", 0, 3),
-          ),
-        ),
-        section(10, [1, 2, 0, 11]),
       ),
+      section(3, [2, 2, 2]),
+      section(5, [1, 0, 1]),
+      section(
+        7,
+        [6].concat(
+          exported("signal", 0, 0),
+          exported("interrupted", 0, 1),
+          exported("default_signal", 0, 2),
+          exported("memory", 2, 0),
+          exported("_start", 0, 4),
+          exported("fatalLoop", 0, 5),
+        ),
+      ),
+      section(10, [2, 2, 0, 11, loop.length].concat(loop)),
     ),
   );
 }
@@ -827,27 +835,73 @@ for (const interruptible of [false, true])
     const runtimeProcess = createWorkerProcessTransport();
     const state = workerProcessState(runtimeProcess);
     const deliveries: number[] = [];
+    const source = signalSource();
+    const guest = interruptible
+      ? await compileInterruptible(source)
+      : new WebAssembly.Module(source);
     const result = await fixture(
       {
+        namespaces: () => ({ checkpoint_fixture: { selectFatal: () => {} } }),
         run({ instance }) {
           const signal = instance.exports.signal as (signal: number, mode: number) => number;
           const interrupted = instance.exports.interrupted as () => number;
           expect(signal(15, 2)).toBe(0);
           expect(requestSignal(state.signals, 15).action).toBe("handled");
+          // Execute enough instrumented entries to call the fatal checkpoint while TERM
+          // is still pending. Checkpoints must neither trap nor dequeue that delivery.
+          const tick = instance.exports._start as () => void;
+          for (let index = 0; index < 4096; index++) tick();
+          expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(SIGNAL_PENDING);
           for (let i = 0; i < 3; i++) deliveries.push(interrupted());
-          expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(
-            interruptible ? SIGNAL_PENDING : 0,
-          );
+          expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(0);
           return 0;
         },
       },
-      { runtimeProcess, module: signalModule(), interruptible },
+      { runtimeProcess, module: guest, interruptible },
     );
-    expect(deliveries).toEqual(interruptible ? [0, 0, 0] : [15, 0, 0]);
+    expect(deliveries).toEqual([15, 0, 0]);
     expect(
       result.messages.filter((message) => message.type === "exit" || message.type === "error"),
     ).toMatchObject([{ type: "exit", code: 0 }]);
   });
+
+test("raw-source worker fatal checkpoints stop a CPU loop without consuming handled TERM", async () => {
+  const runtimeProcess = createWorkerProcessTransport();
+  const state = workerProcessState(runtimeProcess);
+  const guest = await compileInterruptible(signalSource());
+  let trapped = false;
+  const result = await fixture(
+    {
+      namespaces: () => ({
+        checkpoint_fixture: {
+          selectFatal() {
+            expect(requestSignal(state.signals, 9).action).toBe("default");
+          },
+        },
+      }),
+      run({ instance }) {
+        const signal = instance.exports.signal as (signal: number, mode: number) => number;
+        expect(signal(15, 2)).toBe(0);
+        expect(requestSignal(state.signals, 15).action).toBe("handled");
+        const loop = instance.exports.fatalLoop as () => void;
+        try {
+          loop();
+        } catch (error) {
+          expect(error).toBeInstanceOf(WebAssembly.RuntimeError);
+          trapped = true;
+        }
+        expect(controlLoad(state.signals.signalState, 15) & SIGNAL_PENDING).toBe(SIGNAL_PENDING);
+        return 0;
+      },
+    },
+    { runtimeProcess, module: guest, interruptible: true },
+  );
+  expect(trapped).toBe(true);
+  expect(readOutcome(state.signals.outcome)).toMatchObject({ kind: "signaled", code: 9 });
+  expect(result.messages.filter((message) => message.type === "exit")).toMatchObject([
+    { code: 137, signal: 9 },
+  ]);
+});
 
 test("synchronous executor completion selects its outcome before queued guest microtasks", async () => {
   const outcome = new SharedArrayBuffer(8);
@@ -1811,6 +1865,7 @@ for (const signal of [19, 20, 21, 22, 32, 33])
 test("generic runtime_proc default_signal validates with WASI errno and returns zero for ignored defaults", async () => {
   const result = await fixture(
     {
+      namespaces: () => ({ checkpoint_fixture: { selectFatal: () => {} } }),
       run({ instance }) {
         const applyDefault = instance.exports.default_signal as (signal: number) => number;
         for (const signal of [17, 18, 23, 28]) expect(applyDefault(signal)).toBe(0);
@@ -1821,7 +1876,7 @@ test("generic runtime_proc default_signal validates with WASI errno and returns 
         return 23;
       },
     },
-    { module: signalModule() },
+    { module: new WebAssembly.Module(signalSource()) },
   );
   expect(result.messages.find((message) => message.type === "exit")).toMatchObject({ code: 23 });
 });
