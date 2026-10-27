@@ -9,6 +9,7 @@ start with [Getting started](getting-started.md).
 The package exports the browser runtime at `waffle`, with separate `waffle/core`, `waffle/fs`,
 `waffle/proc` and lightweight `waffle/proc/stub` entries. Network and terminal adapters live under
 `waffle/browser/net/*` and `waffle/browser/runtime-terminals`; core imports none of them.
+`waffle/programs` installs program packages on a runtime's filesystem, loaded on first exec.
 See [network ownership and transports](network.md) for the network contract.
 The [package export map](../packages/waffle/package.json) lists the supported entry points.
 
@@ -240,6 +241,18 @@ sharing a transferred reference also share one open description; the resolver st
 `close` runs on that description's last release. Without a resolver, stdin remains EOF and
 output uses the host callbacks. The same resolver option is available directly on
 `createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
+
+`createTerminalInput()` provides the generic foreground input transport. The page keeps the
+returned producer and its `buffer`, and feeds bytes with `pushTerminalInput()`; the helper splits
+large pastes into bounded `TerminalDisplay.input()` turns and returns an accepted prefix alongside
+`AGAIN`, `CANCELED`, or `CLOSED` when a later chunk cannot be admitted. Callers retry only the
+unaccepted tail; the helper never silently slices or drops a chunk. An executor attaches the buffer with `attachTerminalInput()` and supplies
+`createTerminalInputPolicy()` to `attachTerminal()`. Raw turns deliver bytes as entered. Cooked
+turns hold partial lines, normalize CR and CRLF to LF across attachments, and treat Ctrl-D or a
+closed producer as EOF. A live empty read returns `AGAIN`, and cancellation returns `CANCELED`;
+neither is mistaken for EOF. Foreground selection and process-specific stream resolution still
+belong to the terminal session and codec, so background members cannot consume the selected job's
+input.
 
 `context.post("stdout" | "stderr", bytes)` writes through the **current** fd1 or fd2 after
 Wasi creation, not a startup snapshot. File writes preserve append and shared offsets;

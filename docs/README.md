@@ -12,6 +12,7 @@ Start with [Getting started](getting-started.md). It builds a page that runs a r
 
 - [Run a WASI program](guides/run-a-wasi-program.md): register a compiled program, spawn it, read its output and exit status.
 - [Persist the filesystem](guides/persist-the-filesystem.md): keep files between page loads and handle a second tab.
+- [Install program packages](guides/install-program-packages.md): put a package's programs on `PATH` and load each one on first run.
 
 ## Concepts
 

@@ -548,7 +548,9 @@ export class MemoryBackend implements FilesystemBackend {
         );
       }
       case "remove": {
-        const prepared = this.fs.planRemove(intent.path, this.effectBound);
+        if (!intent.ifContent && data.length) throw new FilesystemError(28);
+        const accept = intent.ifContent ? (node: Node) => this.hasContent(node, data) : undefined;
+        const prepared = this.fs.planRemove(intent.path, this.effectBound, accept);
         return this.planNamespace(
           prepared.plan,
           { kind: "boolean", value: prepared.result },
@@ -643,6 +645,19 @@ export class MemoryBackend implements FilesystemBackend {
     if (action.kind !== "namespace") return;
     for (const handle of action.registered) this.shared.unlink(handle);
     this.fs.discardNamespace(action.plan);
+  }
+  /** One file-lock snapshot while planning holds the global lock: a page or service write lands
+   * wholly before or after this check, and a guest write through an already open descriptor
+   * that lands later goes to the unlinked file, as it would after any remove. */
+  private hasContent(node: Node, expected: Uint8Array): boolean {
+    if (node.kind !== "file") return false;
+    const handle = this.fs.handleForNode(node);
+    this.sync(handle);
+    const snapshot = this.shared.snapshot(handle);
+    // Without resident bytes nothing can be compared; refuse rather than remove unchecked.
+    if (!snapshot) throw new FilesystemError(58, "conditional remove needs the file's bytes");
+    const bytes = snapshot.data;
+    return bytes.length === expected.length && bytes.every((byte, i) => byte === expected[i]);
   }
   private planPublicationHostWrite(
     intent: Extract<MutationIntent, { kind: "writeFile" }>,
