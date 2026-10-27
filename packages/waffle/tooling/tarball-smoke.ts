@@ -9,6 +9,23 @@ const archiveDirectory = join(scratch, "archive");
 const extractDirectory = join(scratch, "extract");
 const consumerDirectory = join(scratch, "consumer");
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("expected package mapping");
+  return value;
+}
+
+function verifyExportTargets(root: string, entry: Record<string, unknown>): void {
+  for (const target of Object.values(entry)) {
+    if (typeof target !== "string" || !target.startsWith("./"))
+      throw new Error("invalid export target");
+    if (!existsSync(join(root, target))) throw new Error(`archive is missing export ${target}`);
+  }
+}
+
 async function run(): Promise<void> {
   await Promise.all([
     Bun.$`mkdir -p ${archiveDirectory}`.quiet(),
@@ -52,21 +69,29 @@ async function run(): Promise<void> {
       name: "waffle-tarball-consumer",
       private: true,
       type: "module",
-      dependencies: { waffle: `file:${packedRoot}`, vite: "8.3.4" },
+      dependencies: { waffle: `file:${archive}`, vite: "8.3.4" },
     }) + "\n",
   );
   execFileSync("bun", ["install", "--no-progress", "--ignore-scripts"], {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
-  const metadata = JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")) as {
-    name: string;
-    exports: Record<string, { node?: string }>;
-  };
-  const nodeSpecifiers = Object.entries(metadata.exports)
-    .filter(([, target]) => target.node !== undefined)
-    .map(([key]) => (key === "." ? metadata.name : `${metadata.name}${key.slice(1)}`));
-  const nodeScript = `for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);`;
+  const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
+  const exports = record(metadata.exports);
+  const nodeSpecifiers: string[] = [];
+  for (const [key, target] of Object.entries(exports)) {
+    const entry = record(target);
+    verifyExportTargets(packedRoot, entry);
+    if (typeof entry.node === "string")
+      nodeSpecifiers.push(key === "." ? "waffle" : `waffle${key.slice(1)}`);
+  }
+  const nodeScript = `
+    for (const specifier of ${JSON.stringify(nodeSpecifiers)}) await import(specifier);
+    const { loadNetworkModule } = await import("waffle/network");
+    const network = (await loadNetworkModule()).create();
+    try { if (network.call("net_listen", 40, 23456) !== 23456) throw new Error("packed network failed"); }
+    finally { network.dispose(); }
+  `;
   execFileSync("node", ["--input-type=module", "--eval", nodeScript], {
     cwd: consumerDirectory,
     stdio: "pipe",

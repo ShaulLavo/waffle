@@ -70,13 +70,18 @@ for (const name of ["browser", "libc"]) {
   });
 }
 
-test("release workflow publishes only the runtime tarball and checksum", async () => {
-  const release = YAML.parse(
-    readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+test("release workflow publishes only the runtime tarball and checksum", () => {
+  const release = record(
+    YAML.parse(
+      readFileSync(new URL("../../../.github/workflows/release.yml", import.meta.url), "utf8"),
+    ),
   );
-  expect(release.permissions.contents).toBe("write");
-  const steps = release.jobs.release.steps as Array<Record<string, unknown>>;
-  const publish = steps.find((step) => step.name === "Publish the GitHub release assets");
+  expect(record(release.permissions).contents).toBe("write");
+  const steps = record(record(release.jobs).release).steps;
+  if (!Array.isArray(steps)) throw new Error("expected release steps");
+  const publish = steps
+    .map(record)
+    .find((step) => step.name === "Publish the GitHub release assets");
   expect(publish).toBeDefined();
   expect(String(publish?.run)).toContain("gh release create");
   expect(String(publish?.run)).toContain(".sha256");
