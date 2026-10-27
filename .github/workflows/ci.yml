@@ -24,6 +24,12 @@ jobs:
       libc: ${{ steps.paths.outputs.libc }}
       browser: ${{ steps.paths.outputs.browser }}
       network: ${{ steps.paths.outputs.network }}
+      coreutils: ${{ steps.paths.outputs.coreutils }}
+      sed: ${{ steps.paths.outputs.sed }}
+      findutils: ${{ steps.paths.outputs.findutils }}
+      grep: ${{ steps.paths.outputs.grep }}
+      ripgrep: ${{ steps.paths.outputs.ripgrep }}
+      base: ${{ steps.paths.outputs.base }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -33,73 +39,93 @@ jobs:
           filters: |
             network:
               - ".github/**"
-              - "Cargo.toml"
-              - "Cargo.lock"
-              - "rust-toolchain.toml"
-              - "network/**"
-              - "tooling/build-network.ts"
-              - "tooling/check-network-rust.ts"
-              - "build.ts"
-              - "prepare.ts"
-              - "tooling/network-size.ts"
-              - "browser/net/module.ts"
-              - "browser/net/namespace.ts"
-              - "tests/network-module.test.ts"
-              - "tests/network-module-host.test.ts"
-              - "tests/network-wire.test.ts"
-              - "tests/network-size.test.ts"
-              - "tests/network-lazy.test.ts"
-              - "tests/packaging.test.ts"
-              - "tests/git-install.test.ts"
-              - "tests/node-exports.test.ts"
-              - "tests/runtime-size.test.ts"
+              - "packages/waffle/Cargo.toml"
+              - "packages/waffle/Cargo.lock"
+              - "packages/waffle/rust-toolchain.toml"
+              - "packages/waffle/network/**"
+              - "packages/waffle/tooling/build-network.ts"
+              - "packages/waffle/tooling/check-network-rust.ts"
+              - "packages/waffle/build.ts"
+              - "packages/waffle/prepare.ts"
+              - "packages/waffle/tooling/network-size.ts"
+              - "packages/waffle/browser/net/module.ts"
+              - "packages/waffle/browser/net/namespace.ts"
+              - "packages/waffle/tests/network-module.test.ts"
+              - "packages/waffle/tests/network-module-host.test.ts"
+              - "packages/waffle/tests/network-wire.test.ts"
+              - "packages/waffle/tests/network-size.test.ts"
+              - "packages/waffle/tests/network-lazy.test.ts"
+              - "packages/waffle/tests/packaging.test.ts"
+              - "packages/waffle/tests/git-install.test.ts"
+              - "packages/waffle/tests/node-exports.test.ts"
+              - "packages/waffle/tests/runtime-size.test.ts"
+            coreutils:
+              - ".github/**"
+              - "packages/coreutils/**"
+            sed:
+              - ".github/**"
+              - "packages/sed/**"
+            findutils:
+              - ".github/**"
+              - "packages/findutils/**"
+            grep:
+              - ".github/**"
+              - "packages/grep/**"
+            ripgrep:
+              - ".github/**"
+              - "packages/ripgrep/**"
+            base:
+              - ".github/**"
+              - "packages/base/**"
             browser:
               - ".github/**"
-              - "Cargo.toml"
-              - "Cargo.lock"
-              - "rust-toolchain.toml"
-              - "network/**"
-              - "tooling/build-network.ts"
-              - "tooling/check-network-rust.ts"
-              - "build.ts"
-              - "prepare.ts"
-              - "core/**"
-              - "fs/**"
-              - "proc/**"
-              - "interrupt/**"
-              - "browser/**"
-              - "runtime.ts"
-              - "index.ts"
+              - "packages/waffle/Cargo.toml"
+              - "packages/waffle/Cargo.lock"
+              - "packages/waffle/rust-toolchain.toml"
+              - "packages/waffle/network/**"
+              - "packages/waffle/tooling/build-network.ts"
+              - "packages/waffle/tooling/check-network-rust.ts"
+              - "packages/waffle/build.ts"
+              - "packages/waffle/prepare.ts"
+              - "packages/waffle/core/**"
+              - "packages/waffle/fs/**"
+              - "packages/waffle/proc/**"
+              - "packages/waffle/interrupt/**"
+              - "packages/waffle/browser/**"
+              - "packages/waffle/runtime.ts"
+              - "packages/waffle/index.ts"
               - "package.json"
+              - "packages/waffle/package.json"
               - "bun.lock"
-              - "scripts/test-browser.ts"
-              - "scripts/browser-command.ts"
-              - "scripts/browser-supervisor.ts"
-              - "scripts/owned-command.ts"
-              - "tests/**"
+              - "packages/waffle/scripts/test-browser.ts"
+              - "packages/waffle/scripts/browser-command.ts"
+              - "packages/waffle/scripts/browser-supervisor.ts"
+              - "packages/waffle/scripts/owned-command.ts"
+              - "packages/waffle/tests/**"
             libc:
               - '.github/**'
-              - 'patches/**'
-              - 'scripts/build-wasi-libc.sh'
-              - 'scripts/test-wasi-libc.ts'
-              - 'scripts/owned-command.ts'
-              - 'core/**'
-              - 'fs/**'
-              - 'proc/**'
-              - 'interrupt/**'
-              - 'browser/**'
-              - 'runtime.ts'
-              - 'index.ts'
+              - 'packages/waffle/patches/**'
+              - 'packages/waffle/scripts/build-wasi-libc.sh'
+              - 'packages/waffle/scripts/test-wasi-libc.ts'
+              - 'packages/waffle/scripts/owned-command.ts'
+              - 'packages/waffle/core/**'
+              - 'packages/waffle/fs/**'
+              - 'packages/waffle/proc/**'
+              - 'packages/waffle/interrupt/**'
+              - 'packages/waffle/browser/**'
+              - 'packages/waffle/runtime.ts'
+              - 'packages/waffle/index.ts'
               - 'package.json'
+              - 'packages/waffle/package.json'
               - 'bun.lock'
-              - 'tests/wasi-libc.test.ts'
-              - 'tests/fixtures/**'
+              - 'packages/waffle/tests/wasi-libc.test.ts'
+              - 'packages/waffle/tests/fixtures/**'
   network-wasm:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/waffle/target
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -109,10 +135,10 @@ jobs:
         id: network-artifact
         with:
           path: |
-            browser/net/network.wasm
-            browser/net/network.input-hash
-            browser/net/network.sha256
-          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
       - name: Cache Rust toolchain and Cargo build inputs
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
@@ -122,9 +148,9 @@ jobs:
             ~/.rustup/toolchains
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('network/**/*.rs') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            packages/waffle/target
+          key: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-${{ hashFiles('packages/waffle/network/**/*.rs') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-network-rust-${{ hashFiles('packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml') }}-
       - uses: dtolnay/rust-toolchain@stable
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         with:
@@ -133,7 +159,7 @@ jobs:
           components: clippy,rustfmt
       - name: Build exact-input network artifact once
         if: steps.network-artifact.outputs.cache-hit != 'true'
-        run: bun run build:network
+        run: bun run --cwd packages/waffle build:network
       - name: Rust native, state and actual WASM tests
         if: steps.network-artifact.outputs.cache-hit != 'true' || needs.changes.outputs.network == 'true' || needs.changes.result != 'success' || github.event_name == 'workflow_dispatch'
         run: |
@@ -141,8 +167,9 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --release --all-targets --features module-tests --locked -- -D warnings
           cargo test --release -p waffle-tcp --features module-tests --locked -- --nocapture
+        working-directory: packages/waffle
         env:
-          WAFFLE_TCP_MODULE: ${{ github.workspace }}/browser/net/network.wasm
+          WAFFLE_TCP_MODULE: ${{ github.workspace }}/packages/waffle/browser/net/network.wasm
       - name: Report exact artifact and Rust cache hits
         run: |
           echo "network artifact cache-hit=${{ steps.network-artifact.outputs.cache-hit }}"
@@ -161,13 +188,13 @@ jobs:
         id: network-artifact
         with:
           path: |
-            browser/net/network.wasm
-            browser/net/network.input-hash
-            browser/net/network.sha256
-          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
           fail-on-cache-miss: true
       - name: Verify exact-input network artifact before installation
-        run: bun tooling/build-network.ts --verify
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
       - name: Cache Bun package downloads
         uses: actions/cache@v4
         with:
@@ -178,7 +205,15 @@ jobs:
       - run: bun run quality
       - run: bun run test && bun run test:ci
       - run: bun run size && bun run size:network
-      - run: test -z "$(git ls-files dist)"
+      - run: bun run pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waffle-runtime-tarball-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/waffle/dist/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+      - run: bun run pack:check
+      - run: test -z "$(git ls-files packages/waffle/dist)"
   libc:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.result != 'success' || needs.changes.outputs.libc == 'true') }}
@@ -208,12 +243,12 @@ jobs:
         id: fixtures
         with:
           path: ${{ runner.temp }}/libc-fixtures
-          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('scripts/build-wasi-libc.sh', 'scripts/test-wasi-libc.ts', 'scripts/owned-command.ts', 'patches/wasi-libc/**', 'tests/fixtures/preopen-guest.c', 'tests/fixtures/wasm-start-section.ts') }}
+          key: ${{ runner.os }}-libc-sdk34-bun${{ env.BUN_VERSION }}-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/scripts/test-wasi-libc.ts', 'packages/waffle/scripts/owned-command.ts', 'packages/waffle/patches/wasi-libc/**', 'packages/waffle/tests/fixtures/preopen-guest.c', 'packages/waffle/tests/fixtures/wasm-start-section.ts') }}
       - uses: actions/cache@v4
         if: steps.fixtures.outputs.cache-hit != 'true'
         with:
           path: ${{ runner.temp }}/libc-sysroot
-          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('scripts/build-wasi-libc.sh', 'patches/wasi-libc/**') }}
+          key: ${{ runner.os }}-libc-sysroot-sdk34-${{ hashFiles('packages/waffle/scripts/build-wasi-libc.sh', 'packages/waffle/patches/wasi-libc/**') }}
       - uses: actions/cache@v4
         if: steps.fixtures.outputs.cache-hit != 'true'
         id: sdk
@@ -250,13 +285,13 @@ jobs:
         id: network-artifact
         with:
           path: |
-            browser/net/network.wasm
-            browser/net/network.input-hash
-            browser/net/network.sha256
-          key: network-wasm-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'network/Cargo.toml', 'network/src/**', 'tooling/build-network.ts') }}
+            packages/waffle/browser/net/network.wasm
+            packages/waffle/browser/net/network.input-hash
+            packages/waffle/browser/net/network.sha256
+          key: network-wasm-v1-${{ hashFiles('packages/waffle/Cargo.toml', 'packages/waffle/Cargo.lock', 'packages/waffle/rust-toolchain.toml', 'packages/waffle/network/Cargo.toml', 'packages/waffle/network/src/**', 'packages/waffle/tooling/build-network.ts') }}
           fail-on-cache-miss: true
       - name: Verify exact-input network artifact before installation
-        run: bun tooling/build-network.ts --verify
+        run: bun run --cwd packages/waffle tooling/build-network.ts --verify
       - name: Restore Bun package downloads
         uses: actions/cache/restore@v4
         with:
@@ -279,7 +314,7 @@ jobs:
           RECOVERY_R42_REPORT: ${{ runner.temp }}/recovery-r42-report.json
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
           PROCESS_SCRATCH_ROOT: ${{ runner.temp }}
-      - run: bun tests/publication-browser-runner.ts --workspace chromium
+      - run: bun packages/waffle/tests/publication-browser-runner.ts --workspace chromium
         env:
           STORAGE_SCRATCH_ROOT: ${{ runner.temp }}
       - name: Retain recovery failure report
