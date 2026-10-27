@@ -1,0 +1,32 @@
+{
+  "name": "waffle-coreutils",
+  "private": true,
+  "description": "WASI core utilities for Waffle runtimes.",
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "test:build-routes": "node --test scripts/test-build-routes.ts",
+    "test:native": "cargo test --offline --locked -p waffle-program-support -p waffle-coreutils -p waffle-clear",
+    "verify:transfer": "node scripts/verify-transfer.mjs",
+    "pack": "bun pm pack --destination .build"
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "fixtures",
+    "scripts",
+    "provenance",
+    "vendor",
+    "crates",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "programs.provisional.json",
+    "sources.lock.json"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "type": "module",
+  "version": "0.0.0"
+}

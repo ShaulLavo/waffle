@@ -1,0 +1,190 @@
+--- a/src/env.rs
++++ b/src/env.rs
+@@ -11,6 +11,9 @@
+ pub mod string_expander;
+ pub mod string_parser;
+ pub mod variable_parser;
++
++#[cfg(target_os = "wasi")]
++mod wasi_support;
+ 
+ use clap::builder::ValueParser;
+ use clap::{Arg, ArgAction, Command};
+@@ -33,7 +36,7 @@
+ #[cfg(unix)]
+ use std::ffi::CString;
+ use std::ffi::{OsStr, OsString};
+-#[cfg(not(unix))]
++#[cfg(all(not(unix), not(target_os = "wasi")))]
+ use std::io;
+ use std::io::Write as _;
+ use std::io::stderr;
+@@ -43,7 +46,9 @@
+ use std::os::unix::ffi::OsStrExt;
+ 
+ use uucore::display::{Quotable, print_all_env_vars};
+-use uucore::error::{ExitCode, UError, UResult, USimpleError, UUsageError, strip_errno};
++#[cfg(not(target_os = "wasi"))]
++use uucore::error::{ExitCode, strip_errno};
++use uucore::error::{UError, UResult, USimpleError, UUsageError};
+ use uucore::line_ending::LineEnding;
+ #[cfg(all(unix, not(target_os = "fuchsia")))]
+ use uucore::signals::{
+@@ -567,6 +572,7 @@
+ impl EnvAppData {
+     #[cold]
+     #[inline(never)]
++    #[cfg(not(target_os = "wasi"))]
+     fn make_error_no_such_file_or_dir(&self, prog: &OsStr) -> Box<dyn UError> {
+         uucore::show_error!(
+             "{}",
+@@ -792,6 +798,11 @@
+             &signal_apply_all,
+         )?;
+ 
++        #[cfg(target_os = "wasi")]
++        if !opts.program.is_empty() {
++            wasi_support::initialize_cwd()?;
++        }
++
+         // NOTE: we manually set and unset the env vars below rather than using Command::env() to more
+         //       easily handle the case where no command is given
+ 
+@@ -843,7 +854,7 @@
+ 
+         let arg0 = match opts.argv0 {
+             None => prog.clone(),
+-            Some(argv0) if cfg!(unix) => {
++            Some(argv0) if cfg!(any(unix, target_os = "wasi")) => {
+                 let arg0 = Cow::Borrowed(argv0);
+                 if do_debug_printing {
+                     let _ = writeln!(stderr(), "argv0:     {}", arg0.quote());
+@@ -869,6 +880,9 @@
+                 let _ = writeln!(error, "{arg_prefix}[{}]= {}", i + 1, arg.quote());
+             }
+         }
++
++        #[cfg(target_os = "wasi")]
++        return wasi_support::run_program(&prog, &arg0, args);
+ 
+         #[cfg(unix)]
+         {
+@@ -913,7 +927,7 @@
+             }
+         }
+ 
+-        #[cfg(not(unix))]
++        #[cfg(all(not(unix), not(target_os = "wasi")))]
+         {
+             // Fallback to Command::status for non-Unix systems
+             let mut cmd = std::process::Command::new(&*prog);
+@@ -955,6 +969,9 @@
+     matches: &'a clap::ArgMatches,
+     #[cfg(all(unix, not(target_os = "fuchsia")))] signal_apply_all: &BTreeSet<&'static str>,
+ ) -> UResult<Options<'a>> {
++    #[cfg(target_os = "wasi")]
++    wasi_support::validate_options(matches)?;
++
+     let ignore_env = matches.get_flag("ignore-environment");
+     let line_ending = LineEnding::from_zero_flag(matches.get_flag("null"));
+     let running_directory = matches
+--- /dev/null
++++ b/src/wasi_support.rs
+@@ -0,0 +1,97 @@
++// Local WASI execution and restrictions for upstream env. See ../wasi.patch and provenance.json.
++use uucore::error::{UResult, USimpleError};
++
++pub fn validate_options(matches: &clap::ArgMatches) -> UResult<()> {
++    let signal_option = ["ignore-signal", "default-signal", "block-signal"]
++        .into_iter()
++        .any(|option| matches.contains_id(option));
++    if signal_option || matches.get_flag("list-signal-handling") {
++        return Err(USimpleError::new(
++            125,
++            "signal options are unsupported on WASI",
++        ));
++    }
++    Ok(())
++}
++
++#[link(wasm_import_module = "runtime_proc")]
++unsafe extern "C" {
++    fn cwd(output: *mut u8, capacity: usize) -> i32;
++}
++
++pub fn initialize_cwd() -> UResult<()> {
++    let mut bytes = vec![0; waffle_process_consumer::MAX_REQUEST_BYTES];
++    let length = waffle_process_consumer::decode_host_result("cwd", unsafe {
++        cwd(bytes.as_mut_ptr(), bytes.len())
++    })
++    .map_err(process_error)?;
++    let path = bytes
++        .get(..length as usize)
++        .ok_or_else(|| USimpleError::new(125, "invalid process cwd length"))?;
++    let path = std::str::from_utf8(path)
++        .map_err(|_| USimpleError::new(125, "non-UTF-8 process cwd is unsupported"))?;
++    std::env::set_current_dir(path)
++        .map_err(|error| USimpleError::new(125, format!("cannot initialize cwd: {error}")))?;
++    Ok(())
++}
++
++fn text(value: &std::ffi::OsStr) -> UResult<String> {
++    value
++        .to_str()
++        .map(str::to_owned)
++        .ok_or_else(|| USimpleError::new(125, "non-UTF-8 process strings are unsupported"))
++}
++
++pub fn run_program(
++    program: &std::ffi::OsStr,
++    argv0: &std::ffi::OsStr,
++    args: &[&std::ffi::OsStr],
++) -> UResult<()> {
++    use waffle_process_consumer::{Request, inherited_shell_descriptors, resolve_executable, run};
++    let program = text(program)?;
++    if program.is_empty() {
++        return Err(USimpleError::new(127, "'': No such file or directory"));
++    }
++    let cwd = std::env::current_dir()
++        .map_err(|error| USimpleError::new(125, format!("cannot read cwd: {error}")))?;
++    let cwd = text(cwd.as_os_str())?;
++    let env = std::env::vars_os()
++        .map(|(key, value)| Ok((text(&key)?, text(&value)?)))
++        .collect::<UResult<std::collections::BTreeMap<_, _>>>()?;
++    let executable = resolve_executable(&program, env.get("PATH").map(String::as_str), &cwd)
++        .map_err(process_error)?;
++    let mut argv = vec![text(argv0)?];
++    for arg in args {
++        argv.push(text(arg)?);
++    }
++    let request = Request {
++        executable,
++        argv,
++        env,
++        cwd,
++        fds: inherited_shell_descriptors().map_err(process_error)?,
++    };
++    let outcome = run(&request).map_err(process_error)?;
++    let status = outcome.shell_status();
++    if status == 0 {
++        return Ok(());
++    }
++    Err(status.into())
++}
++
++fn process_error(error: waffle_process_consumer::Error) -> Box<dyn uucore::error::UError> {
++    use waffle_process_consumer::Error;
++    let status = match error {
++        Error::Host {
++            operation: "access_take" | "spawn",
++            errno: 44,
++        } => 127,
++        Error::Host {
++            operation: "access_take" | "spawn",
++            ..
++        } => 126,
++        Error::Interrupted(signal) => 128 + i32::from(signal),
++        _ => 125,
++    };
++    USimpleError::new(status, error.to_string())
++}

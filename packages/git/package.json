@@ -1,0 +1,56 @@
+{
+  "name": "waffle-git",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local Git commands for Waffle runtimes, backed by isomorphic-git",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "third-party",
+    "LICENSE",
+    "README.md",
+    "provenance"
+  ],
+  "exports": {
+    ".": "./src/git.ts",
+    "./program": "./src/program.ts"
+  },
+  "scripts": {
+    "prepare": "node scripts/build-git.ts && node scripts/git-notices.ts",
+    "build": "node scripts/build-git.ts",
+    "notices": "node scripts/git-notices.ts",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test tests/git-local.unit.ts",
+    "test:browser": "bun scripts/test-git-six-browser.ts",
+    "test:browser:lookup": "bun scripts/test-git-six-browser.ts lookup",
+    "test:browser:dispose": "bun scripts/test-git-six-browser.ts dispose",
+    "pack": "bun pm pack --destination .build"
+  },
+  "dependencies": {
+    "buffer": "6.0.3",
+    "diff": "8.0.2",
+    "isomorphic-git": "1.44.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@types/node": "26.6.3",
+    "bun-wasm": "git+https://github.com/ShaulLavo/bun-wasm.git#59c88f03dc887fcafa9fa873fabcddca5e23cfa8",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "waffle": "workspace:*"
+  },
+  "peerDependencies": {
+    "waffle": "*"
+  },
+  "engines": {
+    "node": ">=26.12.1"
+  },
+  "trustedDependencies": [
+    "waffle",
+    "bun-wasm",
+    "esbuild"
+  ]
+}

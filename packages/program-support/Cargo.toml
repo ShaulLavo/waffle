@@ -1,0 +1,15 @@
+[package]
+name = "waffle-program-support"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Provisional Waffle host import. Enable only with the landed generic host contract.
+cooperative-wasi = []
+
+[dependencies]
+futures.workspace = true

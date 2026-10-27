@@ -1,0 +1,53 @@
+{
+  "backend": {
+    "package": "isomorphic-git",
+    "version": "1.44.5",
+    "repository": "https://github.com/isomorphic-git/isomorphic-git",
+    "revision": "dea0848b332e60945e3b588adbb368fe7daca110",
+    "tarball": "https://registry.npmjs.org/isomorphic-git/-/isomorphic-git-1.44.5.tgz",
+    "integrity": "sha512-AfyS9v44yZJA8g5hfsHVy54onuMyn97b4qJJCJiPh8KcJAIo/11hiKaANwQO4lu0Z3MKFGIe/9Kuf3sTRj4FBg==",
+    "pristineSha256": {
+      "index.js": "e4b1c6d807e8d7a8889385061f9d7b06e9f147c4da3f8393f98eb99f470e100e",
+      "index.cjs": "55f1a87544a75ba5970322ec7e3dcaa6f64b0d0e9f3d1d27f609b9463a63fdb8",
+      "managers/index.js": "780a4b5ea20e2df44e5dfe5aafc694ecba01b71eb62c73275daaba22465b20fb",
+      "managers/index.cjs": "2a282925897c59d23742b31f743735f877d00c6991348c265a9fc0c8c6c9229f",
+      "models/index.js": "861f4111e5fcf21d57f77e4197669302fceae4f701deeb88065057d795376514"
+    },
+    "patch": "scripts/patch-git-source.ts",
+    "changes": [
+      "Compare nanosecond timestamps and rehash the racy-index window in core and exported index manager",
+      "Import browser Buffer inside the ESM core, managers and filesystem model without a global assignment",
+      "Use HEAD as the local merge conflict marker label",
+      "Keep original bytes when abortMerge restores binary files, instead of decoding them as UTF-8",
+      "Complete nonconflicting index entries and remove clean deletions when mergeTree materializes a conflicted merge",
+      "Carry merged additions through abortMerge traversal so abort removes their worktree and index entries"
+    ],
+    "licenseSha256": "b916888fb16893c3a1df138543f994b96bb6892d74b6777c3a080d9cd2520c48"
+  },
+  "diff": {
+    "package": "diff",
+    "version": "8.0.2",
+    "repository": "https://github.com/kpdecker/jsdiff",
+    "integrity": "sha512-sSuxWU5j5SR9QQji/o2qMvqRNYRDOcBTgsJ/DeCf4iSN4gW+gNMXM7wFIP+fdXZxoNiAnHUTGjCr+TSWXdRDKg=="
+  },
+  "buffer": {
+    "package": "buffer",
+    "version": "6.0.3",
+    "repository": "https://github.com/feross/buffer"
+  },
+  "licenseExceptions": {
+    "clean-git-ref": {
+      "version": "2.0.1",
+      "revision": "bf3c8afc8032bcdc6a53634c18b601dc6df478fb",
+      "basis": "Published package.json declares Apache-2.0 and author Eli White; the npm archive/upstream tree omit a license file",
+      "license": "Apache-2.0.txt",
+      "source": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "diff3": {
+      "version": "0.0.3",
+      "revision": "4223f1d38a04a68d4f888f37e6b9ccd9ef201995",
+      "basis": "Complete MIT permission and copyright blocks embedded at start of diff3.js and onp.js; included by scripts/git-notices.ts"
+    }
+  }
+}

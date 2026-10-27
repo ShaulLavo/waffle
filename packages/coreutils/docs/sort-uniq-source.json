@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/uutils/coreutils",
+  "revision": "dc1efd89948a9ca4c78c3a4b9a6ac891019a8c69",
+  "license": "MIT",
+  "packages": [
+    {
+      "name": "uu_sort",
+      "version": "0.12.0",
+      "registry": "registry+https://github.com/rust-lang/crates.io-index",
+      "sha256": "45084032c01910cb5d0515acbcea8ee6377d07e46e6fc84afde79fbd9dc6c6f8",
+      "upstreamPath": "src/uu/sort"
+    },
+    {
+      "name": "uu_uniq",
+      "version": "0.12.0",
+      "registry": "registry+https://github.com/rust-lang/crates.io-index",
+      "sha256": "53c59563ff6419f674e2cd5b50cef9f3a0f0e73a06291dd635c006fc253ad268",
+      "upstreamPath": "src/uu/uniq"
+    }
+  ],
+  "adaptation": "Unmodified registry libraries, individual uucore::bin! wrappers, and PWD initialization for WASI libc. No multicall binary or local sort/uniq algorithm."
+}

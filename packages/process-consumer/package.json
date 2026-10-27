@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "name": "waffle-process-consumer",
+  "description": "WASI process consumer support for Waffle guests."
+}

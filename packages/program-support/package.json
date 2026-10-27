@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "name": "waffle-program-support",
+  "description": "Neutral Rust support for cooperative Waffle guests."
+}

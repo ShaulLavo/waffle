@@ -1,0 +1,339 @@
+{
+  "schema": 1,
+  "oracle": {
+    "bash": {
+      "version": "GNU bash, version 5.3.15(1)-release (x86_64-pc-linux-gnu)",
+      "sha256": "575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5"
+    },
+    "cut": {
+      "version": "cut (GNU coreutils) 9.12",
+      "sha256": "8c6f5f8f8c47ed43982033a1a78120a59c32b3010ca63f850e0fb0df8df131cd"
+    },
+    "tr": {
+      "version": "tr (GNU coreutils) 9.12",
+      "sha256": "88f5bf7637963cf5973872526423aee1785a2b9cca2de944a5738de5cb8254cd"
+    }
+  },
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/tmp/spec",
+    "LC_ALL": "C"
+  },
+  "cases": [
+    {
+      "name": "cut byte ranges",
+      "script": "printf 'abcdef\\nghijkl\\n' | cut -b 1,3-4,6-",
+      "status": 0,
+      "stdoutBase64": "YWNkZgpnaWpsCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut character ranges in C locale",
+      "script": "printf 'abcdef\\n' | cut -c 2-4",
+      "status": 0,
+      "stdoutBase64": "YmNkCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut open and overlapping ranges",
+      "script": "printf 'abcdef\\n' | cut -b -2,2-4,6-",
+      "status": 0,
+      "stdoutBase64": "YWJjZGYK",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut byte complements",
+      "script": "printf 'abcdef\\n' | cut -b 2-4 --complement",
+      "status": 0,
+      "stdoutBase64": "YWVmCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut field defaults",
+      "script": "printf 'a\\tb\\tc\\nx\\ty\\tz\\n' | cut -f 1,3",
+      "status": 0,
+      "stdoutBase64": "YQljCngJego=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut delimiter and output delimiter",
+      "script": "printf 'a:b:c\\nx:y:z\\n' | cut -d: -f2-3 --output-delimiter='|'",
+      "status": 0,
+      "stdoutBase64": "YnxjCnl8ego=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut suppress undelimited",
+      "script": "printf 'a:b:c\\nplain\\nx:y:z\\n' | cut -s -d: -f2",
+      "status": 0,
+      "stdoutBase64": "Ygp5Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut preserve undelimited",
+      "script": "printf 'a:b:c\\nplain\\n' | cut -d: -f2",
+      "status": 0,
+      "stdoutBase64": "YgpwbGFpbgo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut empty fields",
+      "script": "printf ':b::d:\\n' | cut -d: -f1,3,5 --output-delimiter='|'",
+      "status": 0,
+      "stdoutBase64": "fHwK",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut field complements",
+      "script": "printf 'a:b:c:d\\n' | cut --complement -d: -f2-3",
+      "status": 0,
+      "stdoutBase64": "YTpkCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut unterminated record",
+      "script": "printf 'abc:def' | cut -d: -f2",
+      "status": 0,
+      "stdoutBase64": "ZGVmCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut empty stdin",
+      "script": "printf '' | cut -b 1-",
+      "status": 0,
+      "stdoutBase64": "",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut binary stdin",
+      "script": "printf '\\000\\377ab\\000c\\n' | cut -b1-3,5-",
+      "status": 0,
+      "stdoutBase64": "AP9hAGMK",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut NUL records",
+      "script": "printf 'abc\\000def\\000ghi' | cut -z -b2-",
+      "status": 0,
+      "stdoutBase64": "YmMAZWYAaGkA",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut empty delimiter selects NUL",
+      "script": "printf 'a\\000b\\000c\\n' | cut -d '' -f2",
+      "status": 0,
+      "stdoutBase64": "Ygo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut relative file cwd",
+      "script": "printf 'a:b:c\\n' > cut-input; cut -d: -f2 cut-input",
+      "status": 0,
+      "stdoutBase64": "Ygo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut multiple files and stdin",
+      "script": "printf 'a:b:c\\n' > cut-input; printf 'x:y:z\\n' | cut -d: -f2 cut-input -",
+      "status": 0,
+      "stdoutBase64": "Ygp5Cg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut option terminator",
+      "script": "printf abc > ./-b; cut -b2 -- -b",
+      "status": 0,
+      "stdoutBase64": "Ygo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "cut continues after missing file",
+      "script": "printf 'a:b:c\\n' > cut-input; cut -d: -f2 missing-cut-input cut-input",
+      "status": 1,
+      "stdoutBase64": "Ygo=",
+      "stderrPresent": true
+    },
+    {
+      "name": "cut no selection",
+      "script": "cut",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "cut zero position",
+      "script": "cut -b0",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "cut descending range",
+      "script": "cut -b4-2",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "cut conflicting selections",
+      "script": "cut -b1 -f1",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "cut invalid delimiter",
+      "script": "cut -d:: -f1",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "tr translation",
+      "script": "printf 'aabbcc xyz\\n' | tr a-z A-Z",
+      "status": 0,
+      "stdoutBase64": "QUFCQkNDIFhZWgo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr character classes",
+      "script": "printf 'aA 09!\\n' | tr '[:lower:]' '[:upper:]'",
+      "status": 0,
+      "stdoutBase64": "QUEgMDkhCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr delete",
+      "script": "printf 'a0b1c2\\n' | tr -d 0-9",
+      "status": 0,
+      "stdoutBase64": "YWJjCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr squeeze",
+      "script": "printf 'aaabbbbccca\\n' | tr -s ab",
+      "status": 0,
+      "stdoutBase64": "YWJjY2NhCg==",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr translate then squeeze",
+      "script": "printf 'abccabba\\n' | tr -s abc xxx",
+      "status": 0,
+      "stdoutBase64": "eAo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr delete and squeeze",
+      "script": "printf 'a11aa22bb33b\\n' | tr -ds 0-9 ab",
+      "status": 0,
+      "stdoutBase64": "YWIK",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr complement delete",
+      "script": "printf 'ab 12CD!\\n' | tr -cd a-z",
+      "status": 0,
+      "stdoutBase64": "YWI=",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr complement translate",
+      "script": "printf 'ab 12CD!\\n' | tr -c a-z _",
+      "status": 0,
+      "stdoutBase64": "YWJfX19fX19f",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr short destination repeats",
+      "script": "printf abcabc | tr abc XY",
+      "status": 0,
+      "stdoutBase64": "WFlZWFlZ",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr truncate first set",
+      "script": "printf abcabc | tr -t abc XY",
+      "status": 0,
+      "stdoutBase64": "WFljWFlj",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr unterminated stdin",
+      "script": "printf abca | tr a-z A-Z",
+      "status": 0,
+      "stdoutBase64": "QUJDQQ==",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr empty stdin",
+      "script": "printf '' | tr a-z A-Z",
+      "status": 0,
+      "stdoutBase64": "",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr binary translation",
+      "script": "printf '\\000\\377aa\\000\\n' | tr '\\000' X",
+      "status": 0,
+      "stdoutBase64": "WP9hYVgK",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr binary complement",
+      "script": "printf '\\000\\377aa\\000\\n' | tr -cd '\\000\\377'",
+      "status": 0,
+      "stdoutBase64": "AP8A",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr repeated destination",
+      "script": "printf 'abca' | tr abc '[x*]'",
+      "status": 0,
+      "stdoutBase64": "eHh4eA==",
+      "stderrPresent": false
+    },
+    {
+      "name": "tr missing operand",
+      "script": "tr a",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "tr extra operand",
+      "script": "tr -d a b",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "tr empty destination",
+      "script": "printf abc | tr abc ''",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "tr unknown option",
+      "script": "tr --not-an-option",
+      "status": 1,
+      "stdoutBase64": "",
+      "stderrPresent": true
+    },
+    {
+      "name": "combined pipeline and redirect",
+      "script": "printf 'ab:one\\ncd:two\\n' | cut -d: -f2 | tr a-z A-Z > transformed; cut -b1-3 transformed",
+      "status": 0,
+      "stdoutBase64": "T05FClRXTwo=",
+      "stderrPresent": false
+    },
+    {
+      "name": "pipeline failure and recovery",
+      "script": "set -o pipefail; printf abc | cut -b0 | tr a-z A-Z; printf 'STATUS:%s\\n' \"$?\"; printf ok | tr a-z A-Z",
+      "status": 0,
+      "stdoutBase64": "U1RBVFVTOjEKT0s=",
+      "stderrPresent": true
+    }
+  ]
+}

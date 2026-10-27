@@ -1,0 +1,19 @@
+[package]
+name = "waffle-cut"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+uu_cut = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[[bin]]
+name = "cut"
+path = "src/main.rs"
+
+[package.metadata.cargo-machete]
+# Both crates are referenced through uucore::bin!, which cargo-machete does not expand.
+ignored = ["uu_cut", "uucore"]

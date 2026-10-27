@@ -1,0 +1,623 @@
+{
+  "schema": 1,
+  "bash": {
+    "path": "/work/tmp/bash-web-cut-tr-typecheck/oracle/bash",
+    "version": "GNU bash, version 5.3.15(1)-release (x86_64-pc-linux-gnu)",
+    "sha256": "575e03ac834b739349a4484de481abcd06a6f7193cefc795260a32a1943f20a5"
+  },
+  "coreutils": {
+    "touch": {
+      "path": "/usr/bin/touch",
+      "version": "touch (GNU coreutils) 9.12",
+      "sha256": "119b05ac5f9e58eb32fdea66b069989c741645fafddeb11693b8aacc0cf512bb"
+    },
+    "rm": {
+      "path": "/usr/bin/rm",
+      "version": "rm (GNU coreutils) 9.12",
+      "sha256": "1631d459e41a085f49eeb96a69dac08929de5e8beadbcab1477b54680d243466"
+    },
+    "cp": {
+      "path": "/usr/bin/cp",
+      "version": "cp (GNU coreutils) 9.12",
+      "sha256": "3a597f7c21f2922e97bc1607f111ee15d2ed71998570d8a152d1e40aedfa2035"
+    },
+    "mv": {
+      "path": "/usr/bin/mv",
+      "version": "mv (GNU coreutils) 9.12",
+      "sha256": "9c56da09ec48fe2a99436d3128d2e19d542ece9ecbea4b7ec58fa07219848bda"
+    }
+  },
+  "cases": [
+    {
+      "name": "touch creates empty files in the working directory",
+      "script": "touch new nested/new",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "nested/new": [],
+          "new": [],
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "touch keeps existing bytes",
+      "script": "touch input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "touch no-create leaves missing operands absent",
+      "script": "touch -c missing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "touch accepts an option terminator",
+      "script": "touch -- -new",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-new": [],
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "touch reports a missing parent",
+      "script": "touch absent/new",
+      "diagnosticBytes": [
+        116, 111, 117, 99, 104, 58, 32, 99, 97, 110, 110, 111, 116, 32, 116, 111, 117, 99, 104, 32,
+        39, 97, 98, 115, 101, 110, 116, 47, 110, 101, 119, 39, 58, 32, 78, 111, 32, 115, 117, 99,
+        104, 32, 102, 105, 108, 101, 32, 111, 114, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121,
+        10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm removes files",
+      "script": "rm input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm force accepts missing files",
+      "script": "rm -f missing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm rejects directories without recursive mode",
+      "script": "rm source",
+      "diagnosticBytes": [
+        114, 109, 58, 32, 99, 97, 110, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 39, 115,
+        111, 117, 114, 99, 101, 39, 58, 32, 73, 115, 32, 97, 32, 100, 105, 114, 101, 99, 116, 111,
+        114, 121, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm removes a nested tree",
+      "script": "rm -r source",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm reports missing files but removes later operands",
+      "script": "rm missing input",
+      "diagnosticBytes": [
+        114, 109, 58, 32, 99, 97, 110, 110, 111, 116, 32, 114, 101, 109, 111, 118, 101, 32, 39, 109,
+        105, 115, 115, 105, 110, 103, 39, 58, 32, 78, 111, 32, 115, 117, 99, 104, 32, 102, 105, 108,
+        101, 32, 111, 114, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "rm accepts an option terminator",
+      "script": "rm -- -odd",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp copies binary bytes",
+      "script": "cp input copy",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "copy": [0, 255, 13, 10, 195, 169],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp overwrites bytes",
+      "script": "cp input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [0, 255, 13, 10, 195, 169],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp no-clobber keeps the destination",
+      "script": "cp -n input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp copies into a directory",
+      "script": "cp input target",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null,
+          "target/input": [0, 255, 13, 10, 195, 169]
+        }
+      }
+    },
+    {
+      "name": "cp recursively copies a tree",
+      "script": "cp -R source copied",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "copied": null,
+          "copied/sub": null,
+          "copied/sub/data": [0, 255, 13, 10, 195, 169],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp rejects a directory without recursive mode",
+      "script": "cp source copied",
+      "diagnosticBytes": [
+        99, 112, 58, 32, 45, 114, 32, 110, 111, 116, 32, 115, 112, 101, 99, 105, 102, 105, 101, 100,
+        59, 32, 111, 109, 105, 116, 116, 105, 110, 103, 32, 100, 105, 114, 101, 99, 116, 111, 114,
+        121, 32, 39, 115, 111, 117, 114, 99, 101, 39, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp rejects missing sources",
+      "script": "cp missing copied",
+      "diagnosticBytes": [
+        99, 112, 58, 32, 99, 97, 110, 110, 111, 116, 32, 115, 116, 97, 116, 32, 39, 109, 105, 115,
+        115, 105, 110, 103, 39, 58, 32, 78, 111, 32, 115, 117, 99, 104, 32, 102, 105, 108, 101, 32,
+        111, 114, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp rejects copying a file onto itself",
+      "script": "cp input input",
+      "diagnosticBytes": [
+        99, 112, 58, 32, 39, 105, 110, 112, 117, 116, 39, 32, 97, 110, 100, 32, 39, 105, 110, 112,
+        117, 116, 39, 32, 97, 114, 101, 32, 116, 104, 101, 32, 115, 97, 109, 101, 32, 102, 105, 108,
+        101, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "cp accepts an option terminator",
+      "script": "cp -- -odd copied",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "copied": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv renames binary files",
+      "script": "mv input renamed",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "nested": null,
+          "renamed": [0, 255, 13, 10, 195, 169],
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv force replaces the destination",
+      "script": "mv -f input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv no-clobber keeps both files",
+      "script": "mv -n input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv moves into a directory",
+      "script": "mv input target",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null,
+          "target/input": [0, 255, 13, 10, 195, 169]
+        }
+      }
+    },
+    {
+      "name": "mv renames directories",
+      "script": "mv source renamed",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "renamed": null,
+          "renamed/sub": null,
+          "renamed/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv rejects missing sources",
+      "script": "mv missing renamed",
+      "diagnosticBytes": [
+        109, 118, 58, 32, 99, 97, 110, 110, 111, 116, 32, 115, 116, 97, 116, 32, 39, 109, 105, 115,
+        115, 105, 110, 103, 39, 58, 32, 78, 111, 32, 115, 117, 99, 104, 32, 102, 105, 108, 101, 32,
+        111, 114, 32, 100, 105, 114, 101, 99, 116, 111, 114, 121, 10
+      ],
+      "result": {
+        "status": 1,
+        "stdout": [],
+        "stderr": true,
+        "tree": {
+          "-odd": [120],
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    },
+    {
+      "name": "mv accepts an option terminator",
+      "script": "mv -- -odd renamed",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "existing": [111, 108, 100],
+          "input": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "renamed": [120],
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    }
+  ],
+  "runtimeGaps": [
+    {
+      "name": "mv sees synthetic destination permissions as read-only",
+      "script": "mv input existing",
+      "diagnosticBytes": [],
+      "result": {
+        "status": 0,
+        "stdout": [],
+        "stderr": false,
+        "tree": {
+          "-odd": [120],
+          "existing": [0, 255, 13, 10, 195, 169],
+          "nested": null,
+          "source": null,
+          "source/sub": null,
+          "source/sub/data": [0, 255, 13, 10, 195, 169],
+          "target": null
+        }
+      }
+    }
+  ]
+}

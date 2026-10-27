@@ -1,0 +1,17 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "coreutils",
+  "sourceCheckout": "/work/tmp/waffle-programs-coreutils-20261027",
+  "sourceCommit": "93bb85b58679674db1b020d6f0cc53bd071f37e5",
+  "sourcePaths": [
+    "packages/coreutils",
+    "packages/program-support",
+    "packages/process-consumer"
+  ],
+  "targetPaths": [
+    "packages/coreutils",
+    "packages/program-support",
+    "packages/process-consumer"
+  ],
+  "installerContract": "waffle/programs ProgramPackage; supplied by Waffle runtime PR163"
+}

@@ -1,0 +1,170 @@
+// An abstraction for output files created on entry and flushed on exit
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Diomidis Spinellis
+//
+// This file is part of the uutils sed package.
+// It is licensed under the MIT License.
+// For the full copyright and license information, please view the LICENSE
+// file that was distributed with this source code.
+
+use crate::sed::error_handling::{ScriptLocation, runtime_error};
+
+use std::cell::RefCell;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use uucore::display::Quotable;
+use uucore::error::UResult;
+
+thread_local! {
+    /// Global list of all writers that should be flushed at shutdown
+    static FLUSH_LIST: RefCell<Vec<Rc<RefCell<NamedWriter>>>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Debug)]
+/// Writer that tracks its file name for better error messages
+pub struct NamedWriter {
+    pub path: PathBuf,
+    writer: Option<BufWriter<File>>,
+    location: ScriptLocation,
+}
+
+impl NamedWriter {
+    /// Create a new writer, truncate the file, and register it for flushing.
+    pub fn new(path: PathBuf, location: ScriptLocation) -> UResult<Rc<RefCell<Self>>> {
+        let mut pending = NamedWriter {
+            path,
+            writer: None,
+            location,
+        };
+        if !cfg!(target_os = "wasi") {
+            pending.open()?;
+        }
+        let writer = Rc::new(RefCell::new(pending));
+
+        FLUSH_LIST.with(|list| list.borrow_mut().push(Rc::clone(&writer)));
+        Ok(writer)
+    }
+
+    fn open(&mut self) -> UResult<()> {
+        if self.writer.is_some() {
+            return Ok(());
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&self.path)
+            .map_err(|e| {
+                runtime_error::<()>(
+                    &self.location,
+                    format!("creating file {}: {e}", self.path.quote()),
+                )
+                .unwrap_err()
+            })?;
+        self.writer = Some(BufWriter::new(file));
+        Ok(())
+    }
+
+    /// Write String to the file, possibly with a newline, returning errors.
+    pub fn write_line(&mut self, line: &str, newline: bool) -> UResult<()> {
+        self.write_line_bytes(line.as_bytes(), newline)
+    }
+
+    /// Write bytes to the file, possibly with a newline, returning errors.
+    pub fn write_line_bytes(&mut self, line: &[u8], newline: bool) -> UResult<()> {
+        self.open()?;
+        let writer = self.writer.as_mut().expect("writer opened above");
+        writer
+            .write_all(line)
+            .and_then(|()| {
+                if newline {
+                    writer.write_all(b"\n")
+                } else {
+                    Ok(())
+                }
+            })
+            .map_err(|e| {
+                runtime_error::<()>(
+                    &self.location,
+                    format!("writing to file {}: {e}", self.path.quote()),
+                )
+                .unwrap_err()
+            })
+    }
+
+    /// Flush the writer, returning a descriptive error.
+    pub fn flush(&mut self) -> UResult<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Ok(());
+        };
+        writer.flush().map_err(|e| {
+            runtime_error::<()>(
+                &self.location,
+                format!("writing to file {}: {}", self.path.quote(), e),
+            )
+            .unwrap_err()
+        })
+    }
+}
+
+/// Open outputs only after the complete WASI script has passed compilation.
+pub fn open_all() -> UResult<()> {
+    FLUSH_LIST.with(|cell| {
+        for handle in cell.borrow().iter() {
+            handle.borrow_mut().open()?;
+        }
+        Ok(())
+    })
+}
+
+/// Flush buffered content to the file, returning descriptive errors.
+pub fn flush_all() -> UResult<()> {
+    FLUSH_LIST.with(|cell| {
+        for handle in cell.borrow().iter() {
+            handle.borrow_mut().flush()?;
+        }
+
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_write_line_bytes_appends_newline() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
+        let writer = NamedWriter::new(path.clone(), ScriptLocation::default()).unwrap();
+
+        writer
+            .borrow_mut()
+            .write_line_bytes(b"a\xE9", true)
+            .unwrap();
+        writer.borrow_mut().flush().unwrap();
+
+        assert_eq!(fs::read(path).unwrap(), b"a\xE9\n");
+    }
+
+    #[test]
+    fn test_write_line_bytes_appends_no_newline() {
+        let file = NamedTempFile::new().unwrap();
+        let path = file.path().to_path_buf();
+        let writer = NamedWriter::new(path.clone(), ScriptLocation::default()).unwrap();
+
+        writer
+            .borrow_mut()
+            .write_line_bytes(b"a\xE9", false)
+            .unwrap();
+        writer.borrow_mut().flush().unwrap();
+
+        assert_eq!(fs::read(path).unwrap(), b"a\xE9");
+    }
+}

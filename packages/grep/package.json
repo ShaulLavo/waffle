@@ -1,0 +1,28 @@
+{
+  "name": "waffle-grep",
+  "private": true,
+  "description": "WASI grep for Waffle runtimes.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-grep.ts",
+    "test:build-route": "node --test scripts/test-build-route.ts",
+    "test:native": "cargo test --offline --locked -p waffle-grep",
+    "pack": "bun pm pack --destination .build"
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "provenance",
+    "licenses",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "programs.provisional.json"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "version": "0.0.0"
+}

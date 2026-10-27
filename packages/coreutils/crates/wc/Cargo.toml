@@ -1,0 +1,15 @@
+[package]
+name = "waffle-wc"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+uu_wc = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+uucore = { git = "https://github.com/uutils/coreutils", rev = "07763857f6b9a547742a994b58aef0ccd036198b" }
+
+[package.metadata.cargo-machete]
+# Both crates are referenced through uucore::bin!, which cargo-machete does not expand.
+ignored = ["uu_wc", "uucore"]

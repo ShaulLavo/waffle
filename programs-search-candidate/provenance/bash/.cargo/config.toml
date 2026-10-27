@@ -1,0 +1,4 @@
+[target.wasm32-wasip1]
+# scripts/wasi-build.ts supplies the final clang/sysroot recipe and memory cap.
+# Never let Rust silently select its bundled, unpatched libc.
+rustflags = ["-C", "link-self-contained=no", "-C", "link-arg=--max-memory=268435456"]

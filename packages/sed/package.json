@@ -1,0 +1,29 @@
+{
+  "name": "waffle-sed",
+  "private": true,
+  "description": "WASI sed for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "provenance",
+    "third-party",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "manifest.json",
+    "build-recipe.json"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-sed.ts",
+    "test:build-routes": "node --test ../../tools/test-family-build-routes.ts",
+    "test:source": "node --test scripts/test-sed-source.ts",
+    "pack": "bun pm pack --destination .build"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "version": "0.0.0"
+}

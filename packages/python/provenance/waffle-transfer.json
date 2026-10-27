@@ -1,0 +1,9 @@
+{
+  "schema": "waffle-program-transfer/v1",
+  "family": "python",
+  "sourceCheckout": "/work/worktrees/waffle-programs-python-20261027/build-callers",
+  "sourceCommit": "0144d3feadbf20aa39ba03641e1bde531409ef06",
+  "sourcePaths": ["."],
+  "targetPaths": ["packages/python"],
+  "installerContract": "waffle/programs ProgramPackage; createPythonPackage adapts the approved payload"
+}

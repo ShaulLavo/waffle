@@ -1,0 +1,30 @@
+{
+  "name": "waffle-ripgrep",
+  "private": true,
+  "description": "WASI ripgrep for Waffle runtimes.",
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "provenance",
+    "patches",
+    "tests",
+    "README.md",
+    "LICENSE.integration",
+    "manifest.json",
+    "build-recipe.json"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-rg.ts",
+    "test:build-routes": "node --test ../../tools/test-family-build-routes.ts",
+    "test:source": "node --test scripts/test-rg-source.ts",
+    "test:wasi": "node scripts/test-rg-wasi.ts",
+    "pack": "bun pm pack --destination .build"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "version": "0.0.0"
+}

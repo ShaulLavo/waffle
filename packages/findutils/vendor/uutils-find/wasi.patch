@@ -1,0 +1,279 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,26 +1,18 @@
+ [package]
+ name = "findutils"
+ version = "0.11.0"
+-homepage = "https://github.com/uutils/findutils"
+-repository = "https://github.com/uutils/findutils"
+ edition = "2021"
+ rust-version = "1.88.0"
+ license = "MIT"
+-readme = "README.md"
+-description = "Rust implementation of GNU findutils"
++publish = false
++autobins = false
+ 
+-[package.metadata.binstall]
+-pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }{ archive-suffix }"
+-bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+-pkg-fmt = "txz"
+-
+-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+-pkg-fmt = "zip"
++[lib]
++path = "src/lib.rs"
+ 
+ [dependencies]
+ argmax = "0.4.0"
+ chrono = "0.4.45"
+-clap = { version = "4.6", features = ["env"] }
+ faccess = "0.2.4"
+ nix = { version = "0.31", features = ["fs", "user"] }
+ onig = { version = "6.5", default-features = false }
+@@ -31,104 +23,7 @@
+ itertools = "0.15.0"
+ thiserror = "2.0.12"
+ 
+-# uucore depends on rustix without its `std` feature, which leaves
+-# `uucore::fs` unable to build for WASI. Turn it on through feature
+-# unification until uucore does it itself.
+ [target.'cfg(target_os = "wasi")'.dependencies]
+ rustix = { version = "1.1.4", default-features = false, features = ["std"] }
+ 
+-[dev-dependencies]
+-criterion = { version = "4.7.0", package = "codspeed-criterion-compat" }
+-assert_cmd = "2"
+-ctor = "1.0"
+-filetime = "0.2"
+-nix = { version = "0.31", features = ["fs"] }
+-rstest = "0.28.0"
+-tempfile = "3"
+-uutests = "0.12.0"
+-
+-[[bench]]
+-name = "find_bench"
+-harness = false
+-
+-[[bench]]
+-name = "xargs_bench"
+-harness = false
+-
+-[[bench]]
+-name = "updatedb_bench"
+-harness = false
+-
+-[[bench]]
+-name = "locate_bench"
+-harness = false
+-
+-[[bin]]
+-name = "find"
+-path = "src/find/main.rs"
+-
+-[[bin]]
+-name = "locate"
+-path = "src/locate/main.rs"
+-
+-[[bin]]
+-name = "updatedb"
+-path = "src/updatedb/main.rs"
+-
+-[[bin]]
+-name = "xargs"
+-path = "src/xargs/main.rs"
+-
+-[[bin]]
+-name = "testing-commandline"
+-path = "src/testing/commandline/main.rs"
+-
+-[profile.release]
+-lto = "fat"
+-codegen-units = 1
+-panic = "abort"
+-
+-# The profile that 'dist' (cargo-dist) builds release artifacts with.
+-[profile.dist]
+-inherits = "release"
+-
+-[lints.clippy]
+-all = { level = "warn", priority = -1 }
+-cargo = { level = "warn", priority = -1 }
+-pedantic = { level = "warn", priority = -1 }
+-use_self = "warn" # nursery lint
+-
+-# Group-level allows for lints that are too noisy or not worth enforcing for now.
+-multiple_crate_versions = "allow"
+-cargo_common_metadata = "allow"
+-uninlined_format_args = "allow"
+-missing_errors_doc = "allow"
+-missing_panics_doc = "allow"
+-must_use_candidate = "allow"
+-match_same_arms = "allow"
+-cast_possible_truncation = "allow"
+-too_many_lines = "allow"
+-cast_possible_wrap = "allow"
+-cast_sign_loss = "allow"
+-struct_excessive_bools = "allow"
+-cast_precision_loss = "allow"
+-cast_lossless = "allow"
+-ignored_unit_patterns = "allow"
+-similar_names = "allow"
+-float_cmp = "allow"
+-return_self_not_must_use = "allow"
+-inline_always = "allow"
+-fn_params_excessive_bools = "allow"
+-used_underscore_items = "allow"
+-should_panic_without_expect = "allow"
+-doc_markdown = "allow"
+-unused_self = "allow"
+-enum_glob_use = "allow"
+-unnested_or_patterns = "allow"
+-implicit_hasher = "allow"
+-doc_link_with_quotes = "allow"
+-format_push_string = "allow"
+-flat_map_option = "allow"
+-large_types_passed_by_value = "allow"
+-# Disable for now, we have a few occurrences
+-# panic = "warn"
++[workspace]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -5,9 +5,6 @@
+ // https://opensource.org/licenses/MIT.
+ 
+ pub mod find;
+-pub mod locate;
+-pub mod updatedb;
+-pub mod xargs;
+ 
+ use std::ffi::OsStr;
+ use std::path::PathBuf;
+--- a/src/find/mod.rs
++++ b/src/find/mod.rs
+@@ -166,6 +166,7 @@
+ /// <https://www.gnu.org/software/findutils/manual/html_node/find_html/Starting-points.html>
+ struct Files0Paths {
+     reader: Box<dyn BufRead>,
++    finished: bool,
+ }
+ 
+ impl Files0Paths {
+@@ -178,7 +179,10 @@
+                 .map_err(|e| format!("cannot open '{}' for reading: {}", name, e))?;
+             Box::new(BufReader::new(file))
+         };
+-        Ok(Self { reader })
++        Ok(Self {
++            reader,
++            finished: false,
++        })
+     }
+ }
+ 
+@@ -186,25 +190,25 @@
+     type Item = Result<String, Box<dyn Error>>;
+ 
+     fn next(&mut self) -> Option<Self::Item> {
+-        loop {
+-            let mut buffer = Vec::new();
+-            match self.reader.read_until(0, &mut buffer) {
+-                Err(e) => return Some(Err(e.into())),
+-                Ok(0) => return None,
+-                Ok(_) => {}
++        if self.finished {
++            return None;
++        }
++        let mut buffer = Vec::new();
++        match self.reader.read_until(0, &mut buffer) {
++            Err(e) => {
++                self.finished = true;
++                return Some(Err(e.into()));
+             }
+-            // A trailing separator terminates the name; without one we are at
+-            // EOF and the bytes read are still a name.
+-            if buffer.last() == Some(&0) {
+-                buffer.pop();
+-            }
+-            if buffer.is_empty() {
+-                // Skip it so as to avoid a file not found error.
+-                eprintln!("{}: invalid zero-length file name", program_name());
+-                continue;
+-            }
+-            return Some(String::from_utf8(buffer).map_err(Into::into));
+-        }
++            Ok(0) => return None,
++            Ok(_) => {}
++        }
++        if buffer.last() == Some(&0) {
++            buffer.pop();
++        }
++        if buffer.is_empty() {
++            return Some(Err("invalid zero-length file name".into()));
++        }
++        Some(String::from_utf8(buffer).map_err(Into::into))
+     }
+ }
+ 
+@@ -359,6 +363,17 @@
+     ret
+ }
+ 
++fn starting_path(result: Result<String, Box<dyn Error>>, status: &mut i32) -> Option<String> {
++    match result {
++        Ok(path) => Some(path),
++        Err(error) => {
++            eprintln!("{}: {error}", program_name());
++            *status = 1;
++            None
++        }
++    }
++}
++
+ fn do_find(args: &[&str], deps: &dyn Dependencies) -> Result<i32, Box<dyn Error>> {
+     let paths_and_matcher = parse_args(args)?;
+     if paths_and_matcher.config.help_requested {
+@@ -379,7 +394,9 @@
+     let mut ret = 0;
+     let mut quit = false;
+     for path in paths {
+-        let path = path?;
++        let Some(path) = starting_path(path, &mut ret) else {
++            continue;
++        };
+         let dir_ret = process_dir(
+             &path,
+             &paths_and_matcher.config,
+--- a/src/find/matchers/mod.rs
++++ b/src/find/matchers/mod.rs
+@@ -619,6 +619,18 @@
+         .map_or(Predicate::Other, |&(_, predicate)| predicate)
+ }
+ 
++#[cfg(target_os = "wasi")]
++fn validate_wasi_predicate(
++    predicate: Predicate,
++    arg: &str,
++    index: usize,
++) -> Result<(), ParseError> {
++    if matches!(predicate, Predicate::Exec | Predicate::Prompt) {
++        return Err(ParseError::new(format!("{arg} is unsupported on WASI")).at(index));
++    }
++    Ok(())
++}
++
+ /// Turns one of the `logical_matchers` "binary operator with nothing before it"
+ /// errors into a diagnostic pointing at the operator.
+ fn binary_operator_error(err: &dyn Error, arg_index: usize) -> ParseError {
+@@ -676,7 +688,10 @@
+     let mut i = arg_index;
+     let mut invert_next_matcher = false;
+     while i < args.len() {
+-        let possible_submatcher = match lookup_predicate(args[i]) {
++        let predicate = lookup_predicate(args[i]);
++        #[cfg(target_os = "wasi")]
++        validate_wasi_predicate(predicate, args[i], i)?;
++        let possible_submatcher = match predicate {
+             Predicate::Print => Some(
+                 Printer::new(PrintDelimiter::Newline, None)
+                     .with_stdout_errors(config.stdout_errors.clone())

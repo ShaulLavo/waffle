@@ -1,0 +1,35 @@
+[workspace]
+members = [
+  "parser",
+  "engine",
+  "utilities",
+  "compat-fixtures",
+  "sed",
+  "wc",
+  "cut",
+  "tr",
+  "xargs",
+  "clear",
+  "wasi-process",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+thiserror = "2"
+futures = { version = "0.3.31", default-features = false, features = ["std", "async-await"] }
+
+[patch.crates-io]
+bytecount = { path = "wc/vendor/bytecount" }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
