@@ -565,3 +565,60 @@ test("invalid raw response headers fail without exposing a wire head", async () 
     host.close();
   }
 });
+
+for (const malformed of ["Broken", "X-Test : value"]) {
+  test(`raw response rejects ${malformed.includes(":") ? "whitespace before colon" : "missing colon"} before exposing a head`, async () => {
+    const f = fixture(`HTTP/1.1 200 OK\r\n${malformed}\r\nContent-Length: 0\r\n\r\n`);
+    const host = await f.router.bindHost({ port: 3137 });
+    try {
+      const messages = await wireHTTP(host, []);
+      expect(messages.map((message) => message.type)).toEqual(["error"]);
+      expect(f.stopped).toBe(1);
+    } finally {
+      host.close();
+    }
+  });
+}
+
+test("valid response OWS and duplicate fields survive raw header validation", async () => {
+  const f = fixture(
+    "HTTP/1.1 200 OK\r\nX-Test:\t value \t\r\nSet-Cookie: first=1; Path=/\r\nSet-Cookie:\tsecond=2; Path=/ \t\r\nContent-Length: 0\r\n\r\n",
+  );
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const messages = await wireHTTP(host, []);
+    const head = messages.find((message) => message.type === "head");
+    expect(head?.headers.find(([name]) => name === "x-test")?.[1] === "value").toBe(true);
+    expect(head?.headers.filter(([name]) => name === "set-cookie").length).toBe(2);
+    expect(messages.at(-1)?.type).toBe("end");
+    expect(f.stopped).toBe(1);
+  } finally {
+    host.close();
+  }
+});
+
+test("raw response controls cannot disappear through value trimming", async () => {
+  const f = fixture("HTTP/1.1 200 OK\r\nX-Test: \vvalue\v\r\nContent-Length: 0\r\n\r\n");
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const messages = await wireHTTP(host, []);
+    expect(messages.map((message) => message.type)).toEqual(["error"]);
+    expect(f.stopped).toBe(1);
+  } finally {
+    host.close();
+  }
+});
+
+test("malformed interim response fields fail before a final response head", async () => {
+  const f = fixture(
+    "HTTP/1.1 100 Continue\r\nBroken\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+  );
+  const host = await f.router.bindHost({ port: 3137 });
+  try {
+    const messages = await wireHTTP(host, []);
+    expect(messages.map((message) => message.type)).toEqual(["error"]);
+    expect(f.stopped).toBe(1);
+  } finally {
+    host.close();
+  }
+});

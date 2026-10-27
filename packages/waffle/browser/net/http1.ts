@@ -140,14 +140,21 @@ export class ResponseParser {
     if (!match)
       throw new Error(`malformed status line: ${JSON.stringify(statusLine.slice(0, 80))}`);
     const status = Number(match[1]);
-    // Interim responses (100 Continue, 103 Early Hints) precede the real one.
-    if (status >= 100 && status < 200 && status !== 101) return true;
     const headers: [string, string][] = [];
     for (const line of headerLines) {
       const colon = line.indexOf(":");
-      if (colon <= 0) continue;
-      headers.push([line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim()]);
+      const name = line.slice(0, colon);
+      const value = line.slice(colon + 1);
+      if (
+        colon <= 0 ||
+        !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+        !/^[\t\x20-\x7e\u0080-\u{10ffff}]*$/u.test(value)
+      )
+        throw new Error("malformed response header");
+      headers.push([name.toLowerCase(), value.replace(/^[ \t]+|[ \t]+$/g, "")]);
     }
+    // Interim responses (100 Continue, 103 Early Hints) precede the real one.
+    if (status >= 100 && status < 200 && status !== 101) return true;
     this.sink.head({ status, statusText: match[2] ?? "", headers });
     this.state = this.bodyFraming(status, headers);
     if (this.state === "done") this.sink.end();
