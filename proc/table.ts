@@ -42,6 +42,7 @@ export interface ProcessRecord {
   starting?: Promise<void>;
   acquiring?: Promise<void>;
   stopping?: Promise<void>;
+  retirement?: { kind: "complete" } | { kind: "failed"; error: unknown };
   revocations: Set<() => void>;
   waiters: Set<(result: ProcessExit) => void>;
 }
@@ -149,7 +150,8 @@ export class ProcessTable {
       controlParent: identity?.controlParent ?? ownerPid,
       foreground,
       jobLifetime: identity?.jobLifetime ?? jobLifetime,
-      lifetimeState: (identity?.jobLifetime ?? jobLifetime) === "caller-fatal" ? "attached" : "independent",
+      lifetimeState:
+        (identity?.jobLifetime ?? jobLifetime) === "caller-fatal" ? "attached" : "independent",
       shared: identity !== undefined,
       leaderPid: identity?.leaderPid,
       leaderResult: null,

@@ -16,6 +16,7 @@ import {
   findDirectoryJob,
   helpDirectoryJobs,
   isCollectedProcess,
+  settleDirectoryJobLifetimes,
 } from "./directory.js";
 import { controlLoad, controlStore } from "./control.js";
 import { DescriptorTable, type Resource } from "../core/descriptors.js";
@@ -27,7 +28,7 @@ import {
 } from "./admission.js";
 import { requestSignal } from "./signals.js";
 import type { ProcessSupervisor } from "./supervisor.js";
-import { ProcessErrno, ProcessError } from "./types.js";
+import { ProcessErrno, ProcessError, checkedJobLifetime } from "./types.js";
 import {
   confirmWorkerProcessJob,
   installWorkerBindings,
@@ -70,6 +71,7 @@ export class WorkerProcessBroker {
     number,
     { resourcesReleased: boolean; fenced: boolean }
   >();
+  private readonly ownedJobs = new Map<string, Promise<void>>();
   private acknowledgingJob?: number;
   private supervisor?: ProcessSupervisor;
   private activation?: Promise<ProcessSupervisor>;
@@ -214,6 +216,8 @@ export class WorkerProcessBroker {
   private ready(): Promise<ProcessSupervisor> {
     return (this.activation ??= this.options.supervisor().then((supervisor) => {
       this.supervisor = supervisor;
+      supervisor.registerOwnedJobCleanup((pid) => this.closeOwnedJobs(pid));
+      supervisor.onJobRetirement((job) => this.publishRetirement(job));
       if (!this.disposed) {
         const stopQuiescent = supervisor.onProcessQuiescent((event) => {
           if (this.disposed) return;
@@ -412,6 +416,15 @@ export class WorkerProcessBroker {
     let reason: ProcessAdmissionEvent["reason"] = "admission-failed";
     try {
       codec = this.codec(transport);
+      if (
+        request.job <= 0 &&
+        (checkedJobLifetime(request.job, request.jobLifetime) !== state.jobLifetime ||
+          state.jobOwner !== state.parentPid)
+      )
+        throw new ProcessError(
+          ProcessErrno.INVAL,
+          "job lifetime conflicts with shared reservation",
+        );
       if (existing)
         throw new ProcessError(
           ProcessErrno.SRCH,
@@ -457,6 +470,7 @@ export class WorkerProcessBroker {
           leaderPid: state.jobLeaderPid,
           outcome: state.jobOutcome,
           foreground: state.jobForeground,
+          jobLifetime: state.jobLifetime,
         },
       );
       admitted = true;
@@ -501,7 +515,10 @@ export class WorkerProcessBroker {
     this.options.pumpPipes?.();
     const supervisor = this.supervisor;
     if (!supervisor) return;
-    for (const root of this.directories.values()) helpDirectoryJobs(root.directory);
+    for (const root of this.directories.values()) {
+      settleDirectoryJobLifetimes(root.directory);
+      helpDirectoryJobs(root.directory);
+    }
     for (const job of Array.from(supervisor.table.jobValues()))
       supervisor.reconcileCollectedJob(job.id);
     for (const [pid, transport] of this.transports) {
@@ -527,6 +544,63 @@ export class WorkerProcessBroker {
         }
       }
     }
+  }
+  private publishRetirement(job: number): void {
+    const shared = this.sharedJob(job);
+    if (shared && controlLoad(shared.group.pending) === 0) {
+      let state = 0;
+      try {
+        if (!this.supervisor || this.supervisor.jobRetired(job)) state = 1;
+      } catch {
+        state = -29;
+      }
+      if (state) controlStore(shared.group.retirement, 0, state);
+    }
+    for (const root of this.directories.values()) wakeWorkerProcess(root);
+  }
+  private closeOwnedJobs(owner: number): Promise<void> | undefined {
+    const pending: Promise<void>[] = [];
+    for (const root of this.directories.values()) {
+      settleDirectoryJobLifetimes(root.directory);
+      pending.push(...this.closeDirectoryJobs(root, owner));
+    }
+    return pending.length ? Promise.all(pending).then(() => {}) : undefined;
+  }
+  private closeDirectoryJobs(root: WorkerProcessTransport, owner: number): Promise<void>[] {
+    const pending: Promise<void>[] = [];
+    for (const group of directoryGroups(root.directory)) {
+      if (group.ownerPid !== owner || controlLoad(group.lifetime) !== 3) continue;
+      const key = `${workerProcessDirectoryId(root)}:${group.id}`;
+      let work = this.ownedJobs.get(key);
+      if (!work) {
+        work = this.closeSharedJob(root, group);
+        this.ownedJobs.set(key, work);
+        void work.then(
+          () => this.ownedJobs.delete(key),
+          () => {},
+        );
+      }
+      pending.push(work);
+    }
+    return pending;
+  }
+  private async closeSharedJob(
+    root: WorkerProcessTransport,
+    group: NonNullable<ReturnType<typeof findDirectoryJob>>,
+  ): Promise<void> {
+    const wake = workerProcessState(root).wake;
+    for (;;) {
+      const expected = atomicsLoad(wake, 0);
+      this.pump();
+      const retired = this.supervisor!.jobRetired(group.id);
+      if (retired && !group.outcome.valid()) return;
+      if (retired && controlLoad(group.pending) === 0) break;
+      await atomicsWaitAsync(wake, 0, expected).value;
+    }
+    controlStore(group.retirement, 0, 1);
+    const job = this.supervisor!.job(group.id);
+    if (job) this.supervisor!.reapJob(job.controlParent, job.id);
+    else collectDirectoryJob(root.directory, group.slot, group.id);
   }
   private async rejectSpawn(
     transport: WorkerProcessTransport,
@@ -558,6 +632,7 @@ export class WorkerProcessBroker {
       this.rejectedCleanup.delete(state.pid);
     }
     confirmRejectedProcess(transport, cleanup);
+    this.publishRetirement(state.job);
   }
   private discardResources(
     transport: WorkerProcessTransport,

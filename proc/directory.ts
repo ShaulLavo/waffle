@@ -136,7 +136,7 @@ export function directoryJob(directory: SharedArrayBuffer, slot: number, expecte
     ownerPid: data.load(1),
     leaderPid,
     foreground: data.load(5) !== 0,
-    jobLifetime: data.load(8) === 0 ? "independent" as const : "caller-fatal" as const,
+    jobLifetime: data.load(8) === 0 ? ("independent" as const) : ("caller-fatal" as const),
     lifetime: liveCells(raw, id, 8),
     retirement: liveCells(raw, id, 9),
     controlParent: liveCells(raw, id, 6),

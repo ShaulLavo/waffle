@@ -25,6 +25,7 @@ const service: ProcessService = {
   startStatus: unused,
   waitJob: unused,
   jobEmpty: unused,
+  jobCleanupReady: unused,
   wait: () => readOutcome(childOutcome),
   childExited: () => readOutcome(childOutcome) !== null,
   kill: unused,

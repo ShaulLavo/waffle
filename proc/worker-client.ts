@@ -130,7 +130,16 @@ function reserveRecord(
   jobLifetime: JobLifetime = "independent",
 ): WorkerProcessTransport {
   return {
-    ...reserveDirectoryProcess(transport, pid, parentPid, job, jobOwner, jobSlot, foreground, jobLifetime),
+    ...reserveDirectoryProcess(
+      transport,
+      pid,
+      parentPid,
+      job,
+      jobOwner,
+      jobSlot,
+      foreground,
+      jobLifetime,
+    ),
     identity: transport.identity,
     bindings: [],
     resources: [],
@@ -682,6 +691,7 @@ export class WorkerProcessClient {
     this.retireAccesses();
     if (winner.kind === "signaled") this.options.revokeProcess?.(pid, this.options.transport);
     wakeWorkerProcess(this.options.transport);
+    settleDirectoryJobLifetimes(this.options.transport.directory);
     this.options.postMessage({
       type: "runtime-proc",
       operation: "exit",
