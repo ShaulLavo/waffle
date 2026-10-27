@@ -42,7 +42,7 @@ export interface ProcessRecord {
   starting?: Promise<void>;
   acquiring?: Promise<void>;
   stopping?: Promise<void>;
-  retirement?: { kind: "complete" } | { kind: "failed"; error: unknown };
+  retirement?: { kind: "complete" } | { kind: "external" } | { kind: "failed"; error: unknown };
   revocations: Set<() => void>;
   waiters: Set<(result: ProcessExit) => void>;
 }

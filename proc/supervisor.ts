@@ -190,6 +190,11 @@ export class ProcessSupervisor {
     const consumers = this.consumers.get(jobId);
     if (!consumers) return true;
     for (const record of consumers) {
+      if (record.request === null)
+        throw new ProcessError(
+          ProcessErrno.NOTSUP,
+          "external root has no supervised physical-stop handle",
+        );
       if (record.retirement?.kind === "failed")
         throw new ProcessError(29, "process physical retirement failed");
       if (!record.retirement) return false;
@@ -394,6 +399,8 @@ export class ProcessSupervisor {
   }
   createRoot(options: RootProcessOptions = {}): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
+    if (options.job !== undefined && this.table.job(options.job)?.jobLifetime === "caller-fatal")
+      throw new ProcessError(ProcessErrno.NOTSUP, "external roots cannot join caller-fatal jobs");
     const pid = options.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, options.outcome);
     const interrupt = signalWord(options.interrupt),
@@ -438,6 +445,7 @@ export class ProcessSupervisor {
       },
       isInstance(options.outcome, OutcomeCell),
     );
+    this.trackConsumer(this.table.require(pid));
     return pid;
   }
   reserveSpawn(parentPid: number, spec: SpawnRequest, reservation: SpawnReservation = {}): number {
@@ -850,7 +858,7 @@ export class ProcessSupervisor {
     this.table.removeJob(jobId);
     for (const listener of Array.from(this.jobReapListeners)) this.safely(() => listener(jobId));
     this.jobListeners.delete(jobId);
-    if (this.retirementComplete(jobId)) this.consumers.delete(jobId);
+    if (this.retirementSettled(jobId)) this.consumers.delete(jobId);
   }
   waitForExit(parentPid: number, pid: number): Promise<ProcessExit> {
     const record = this.child(parentPid, pid);
@@ -1128,7 +1136,7 @@ export class ProcessSupervisor {
     else stop();
     void record.stopping.then(
       () => {
-        record.retirement = { kind: "complete" };
+        record.retirement = record.request === null ? { kind: "external" } : { kind: "complete" };
         this.notifyRetirement(record.job);
       },
       (error) => {
@@ -1141,15 +1149,15 @@ export class ProcessSupervisor {
   private notifyRetirement(job: number): void {
     for (const listener of this.retireListeners) this.safely(() => listener(job));
     this.notifyCleanup(job);
-    if (!this.table.job(job) && this.retirementComplete(job)) this.consumers.delete(job);
+    if (!this.table.job(job) && this.retirementSettled(job)) this.consumers.delete(job);
   }
   private notifyCleanup(job: number): void {
     const listeners = this.cleanupListeners.get(job);
     if (listeners) for (const listener of Array.from(listeners)) this.safely(listener);
   }
-  private retirementComplete(job: number): boolean {
+  private retirementSettled(job: number): boolean {
     for (const record of this.consumers.get(job) ?? [])
-      if (record.retirement?.kind !== "complete") return false;
+      if (!record.retirement || record.retirement.kind === "failed") return false;
     return true;
   }
   private closeOwnedJobs(owner: ProcessRecord, result: ProcessExit): Promise<void> | undefined {

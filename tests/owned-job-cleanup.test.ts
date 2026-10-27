@@ -396,6 +396,19 @@ test("CLEANUP rejects unsupported notification routes, foreign jobs and repeated
   expect(abi.imports.wait_job!(job, 2, 0)).toBe(0);
   expect(abi.imports.wait_job!(job, 2, 0)).toBe(-12);
 });
+test("external roots cannot promise physical retirement or enter caller-fatal jobs", async () => {
+  const { supervisor: s, root } = fixture();
+  const child = s.reserveSpawn(root, spec(true));
+  expect(() => s.createRoot({ job: s.jobOf(child) })).toThrow(/external roots/);
+  const independent = s.reserveSpawn(root, spec());
+  const job = s.jobOf(independent);
+  const external = s.createRoot({ job });
+  s.exit(independent, 0);
+  s.exit(external, 0);
+  await turn();
+  expect(() => s.jobCleanupReady(root, job)).toThrow(/external root/);
+  expect(s.waitJob(root, job)).toMatchObject({ kind: "exited", code: 0 });
+});
 test("CLEANUP reacquires growing guest memory before consuming the job", async () => {
   const { supervisor: s, root } = fixture();
   const pid = s.reserveSpawn(root, spec());

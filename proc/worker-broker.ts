@@ -555,8 +555,8 @@ export class WorkerProcessBroker {
       let state = 0;
       try {
         if (!this.supervisor || this.supervisor.jobRetired(job)) state = 1;
-      } catch {
-        state = -29;
+      } catch (error) {
+        state = error instanceof ProcessError ? -error.errno : -29;
       }
       if (state) controlStore(shared.group.retirement, 0, state);
     }
