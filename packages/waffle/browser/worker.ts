@@ -51,6 +51,9 @@ import {
   atomicsWait,
   objectEntries,
   reflectApply,
+  SetConstructor,
+  setHas,
+  setAdd,
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
@@ -297,19 +300,21 @@ function tableOwnedStdio(
   descriptors: Wasi["descriptors"],
   discarded: readonly Stream[],
 ): Set<Stream> {
-  const tableOwned = new Set<Stream>();
-  for (const stream of discarded) {
-    if (descriptors.hasResource(stream)) tableOwned.add(stream);
+  const tableOwned = new SetConstructor<Stream>();
+  for (let index = 0; index < discarded.length; index++) {
+    const stream = discarded[index]!;
+    if (descriptors.hasResource(stream)) setAdd(tableOwned, stream);
   }
   return tableOwned;
 }
 
 function closeDiscardedStdio(discarded: readonly Stream[], tableOwned: ReadonlySet<Stream>): void {
-  const closed = new Set<Stream>();
+  const closed = new SetConstructor<Stream>();
   const errors: unknown[] = [];
-  for (const stream of discarded) {
-    if (tableOwned.has(stream) || closed.has(stream)) continue;
-    closed.add(stream);
+  for (let index = 0; index < discarded.length; index++) {
+    const stream = discarded[index]!;
+    if (setHas(tableOwned, stream) || setHas(closed, stream)) continue;
+    setAdd(closed, stream);
     try {
       stream.close?.();
     } catch (error) {
@@ -335,11 +340,20 @@ function disposeProcessDescriptors(wasi: Wasi, discarded: readonly Stream[]): vo
   if (errors.length) throw new AggregateError(errors, "descriptor release failed");
 }
 
-function releaseDiscardedStdio(
-  descriptors: Wasi["descriptors"],
-  discarded: readonly Stream[],
-): void {
-  closeDiscardedStdio(discarded, tableOwnedStdio(descriptors, discarded));
+function transferStdio(stream: Stream, discarded: Stream[]): Stream {
+  for (let index = discarded.length - 1; index >= 0; index--) {
+    if (discarded[index] !== stream) continue;
+    discarded[index] = discarded[discarded.length - 1]!;
+    discarded.length--;
+  }
+  return stream;
+}
+
+function adoptStdio(descriptors: Wasi["descriptors"], discarded: Stream[]): void {
+  for (let index = discarded.length - 1; index >= 0; index--) {
+    const stream = discarded[index]!;
+    if (descriptors.hasResource(stream)) transferStdio(stream, discarded);
+  }
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
@@ -497,15 +511,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         disposeProcessDescriptors(wasi, discardedStdio);
         return;
       }
-      const errors: unknown[] = [];
-      for (const fd of [0, 1, 2] as const) {
-        try {
-          ownedStdio?.[fd]?.close?.();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
-      if (errors.length) throw new AggregateError(errors, "stdio release failed");
+      const streams = [ownedStdio?.[0], ownedStdio?.[1], ownedStdio?.[2]].filter(
+        (stream): stream is Stream => stream !== undefined,
+      );
+      closeDiscardedStdio(streams, new SetConstructor());
     });
     let filesystemReleased = attempt(() => fs.dispose());
     if (req.filesystem.residentPublication && descriptorsReleased && filesystemReleased) {
@@ -826,7 +835,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           fallback: pipes.codec(),
           descriptors: wasi.descriptors,
           resolveTerminal: executor.resolveTerminal
-            ? (...args) => executor.resolveTerminal!(...args)
+            ? (...args) => transferStdio(executor.resolveTerminal!(...args), discardedStdio)
             : undefined,
           output: (fd, data) => {
             output(fd === 2 ? "stderr" : "stdout", data);
@@ -878,6 +887,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       // Record original default-terminal destinations before the hook moves/closes any fd.
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
+      adoptStdio(wasi.descriptors, discardedStdio);
       runtimeProcess.installBindings();
       process = new ProcessABI({
         memory: () => {
@@ -912,9 +922,6 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
-    const unusedStdio = discardedStdio;
-    discardedStdio = [];
-    releaseDiscardedStdio(wasi.descriptors, unusedStdio);
     inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
     const imports = wasi.imports(req.module);
