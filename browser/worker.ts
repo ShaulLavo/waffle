@@ -249,21 +249,22 @@ function startupControl(connection: NotificationConnection | undefined, fs: File
 
 /**
  * The modules a runtime process needs, all requested at once: awaiting them one by one costs a
- * fetch round trip each. A failed import surfaces where it is awaited, not as an unhandled
- * rejection in the meantime.
+ * fetch round trip each. Each group is still awaited where it is first used, so a failure keeps
+ * its original place in startup, and never surfaces as an unhandled rejection in the meantime.
  */
 function loadProcessModules(runtimeProcess: unknown) {
   if (!runtimeProcess) return null;
-  const modules = Promise.all([
-    import("../proc/worker-client.js"),
+  const client = import("../proc/worker-client.js");
+  const host = Promise.all([
     import("../proc/filesystem-codec.js"),
     import("../fs/protocol.js"),
     import("../proc/worker-pipes.js"),
     import("../proc/abi.js"),
     import("./runtime-terminals.js"),
-  ]).then(([client, ...host]) => ({ client, host }));
-  modules.catch(() => {});
-  return modules;
+  ]);
+  client.catch(() => {});
+  host.catch(() => {});
+  return { client, host };
 }
 
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
@@ -516,7 +517,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       const endpoint = attachPipeEndpoint(req.startupStderr);
       releaseStartupStderr = () => endpoint.close();
     }
-    const runtime = processModules ? (await processModules).client : null;
+    const runtime = processModules ? await processModules.client : null;
     const runtimeState = req.runtimeProcess
       ? runtime!.workerProcessState(req.runtimeProcess)
       : null;
@@ -723,7 +724,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         { WorkerPipeHost },
         { ProcessABI, ProcessSignalExit },
         { createRuntimeTerminalCodec },
-      ] = (await processModules!).host;
+      ] = await processModules!.host;
       processSignalExit = ProcessSignalExit;
       const postMessage = (message: WorkerProcessMessage) => postToHost(message);
       const pipes = new WorkerPipeHost({
