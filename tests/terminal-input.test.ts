@@ -245,6 +245,63 @@ test("pending CRLF suppression survives foreground handoff", () => {
   }
 });
 
+test("raw consumption clears pending CRLF while zero-capacity reads preserve it", () => {
+  const root = createWorkerProcessTransport({ capacity: 8 });
+  const input = createTerminalInput({ capacity: 8 });
+  const display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
+  const policy = createTerminalInputPolicy({ input });
+  const attachment = attachTerminal({
+    context: display.inherit(),
+    process: root,
+    checkActive() {},
+    policy,
+  });
+  const authority = must(
+    claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }),
+  );
+  const cooked = must(authority.createGroup({ initialMode: "cooked" }));
+  must(authority.admitExisting({ group: cooked, pid: root.pid }));
+  let lease = must(authority.acquire({ group: cooked, expected: null }));
+  const stream = attachment.resolve(0);
+  try {
+    expect(input.push(new Uint8Array([65, 13]))).toBe(2);
+    expect(stream.tryRead?.([new Uint8Array(2)])).toBe(2);
+    must(authority.release({ lease, restore: null }));
+    const raw = must(authority.createGroup({ initialMode: "raw" }));
+    must(authority.admitExisting({ group: raw, pid: root.pid }));
+    lease = must(authority.acquire({ group: raw, expected: null }));
+    expect(input.push(new Uint8Array([88]))).toBe(1);
+    expect(stream.tryRead?.([new Uint8Array(0), new Uint8Array(1)])).toBe(1);
+    must(authority.release({ lease, restore: null }));
+    const cookedAgain = must(authority.createGroup({ initialMode: "cooked" }));
+    must(authority.admitExisting({ group: cookedAgain, pid: root.pid }));
+    lease = must(authority.acquire({ group: cookedAgain, expected: null }));
+    expect(input.push(new Uint8Array([10]))).toBe(1);
+    expect(stream.tryRead?.([new Uint8Array(1)])).toBe(1);
+    must(authority.release({ lease, restore: null }));
+
+    const cookedPending = must(authority.createGroup({ initialMode: "cooked" }));
+    must(authority.admitExisting({ group: cookedPending, pid: root.pid }));
+    lease = must(authority.acquire({ group: cookedPending, expected: null }));
+    expect(input.push(new Uint8Array([65, 13]))).toBe(2);
+    expect(stream.tryRead?.([new Uint8Array(2)])).toBe(2);
+    must(authority.release({ lease, restore: null }));
+    const rawEmpty = must(authority.createGroup({ initialMode: "raw" }));
+    must(authority.admitExisting({ group: rawEmpty, pid: root.pid }));
+    lease = must(authority.acquire({ group: rawEmpty, expected: null }));
+    expect(stream.tryRead?.([new Uint8Array(0)])).toBe(0);
+    must(authority.release({ lease, restore: null }));
+    const cookedEmpty = must(authority.createGroup({ initialMode: "cooked" }));
+    must(authority.admitExisting({ group: cookedEmpty, pid: root.pid }));
+    lease = must(authority.acquire({ group: cookedEmpty, expected: null }));
+    expect(input.push(new Uint8Array([10]))).toBe(1);
+    expect(stream.tryRead?.([new Uint8Array(1)])).toBe(-6);
+  } finally {
+    attachment.dispose();
+    display.close("disposed");
+  }
+});
+
 test("generic input policy plugs into a foreground terminal endpoint", () => {
   const root = createWorkerProcessTransport({ capacity: 8 });
   const input = createTerminalInput({ capacity: 8 });

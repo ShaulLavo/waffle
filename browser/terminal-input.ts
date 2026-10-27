@@ -173,6 +173,7 @@ class InputBuffer implements TerminalInput {
       remaining -= length;
     }
     atomicsStore(this.state, H.read, read + offset);
+    if (offset > 0) atomicsStore(this.state, H.skipLineFeed, 0);
     this.signal();
     return offset;
   }
