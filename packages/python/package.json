@@ -11,12 +11,15 @@
     "third-party",
     "README.md",
     "LICENSE",
-    "provenance"
+    "provenance",
+    "package-artifacts.json"
   ],
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./payload": "./src/python-payload.ts"
+    "./payload": "./src/python-payload.ts",
+    "./install": "./src/install.ts",
+    "./launcher": "./src/launcher.ts"
   },
   "scripts": {
     "build": "node scripts/build-python.ts",
@@ -25,18 +28,22 @@
     "test:unit": "node --test tests/*.unit.ts",
     "test:node": "node test/runtime.ts",
     "typecheck": "tsc -p .",
-    "pack": "bun pm pack --destination .build"
+    "pack": "node ../../tools/program-package.ts pack",
+    "test:composition": "node --test scripts/test-waffle-source.ts tests/python-launcher.test.ts",
+    "prepack": "node ../../tools/program-package.ts check",
+    "prepare:package": "node scripts/stage-assets.ts"
+  },
+  "dependencies": {
+    "waffle": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "waffle": "workspace:*"
   },
   "peerDependencies": {
     "waffle": "*"
   },
   "engines": {
     "node": ">=26.7.0"
-  },
-  "dependencies": {
-    "waffle": "workspace:*"
-  },
-  "devDependencies": {
-    "waffle": "workspace:*"
   }
 }

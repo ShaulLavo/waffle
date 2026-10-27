@@ -86,12 +86,13 @@ jobs:
               - "packages/base/**"
             programs:
               - ".github/**"
+              - "package.json"
+              - "bun.lock"
               - "Cargo.toml"
               - "Cargo.lock"
               - "rust-toolchain.toml"
-              - "tools/program-build-tools.ts"
-              - "tools/program-build-tools.test.ts"
-              - "tools/program-build-tools-verifier.test.ts"
+              - "tools/**"
+              - "packages/waffle/**"
               - "packages/program-support/**"
               - "packages/process-consumer/**"
               - "packages/coreutils/**"
@@ -403,5 +404,8 @@ jobs:
       - run: bun run programs:tools
       - run: bun run programs:routes
       - run: bun run programs:source
+      - run: bun run --cwd packages/python test:composition
+      - run: bun run --cwd packages/python test:build
+      - run: bun run --cwd packages/python test:unit
       - run: cargo fmt --all -- --check
       - run: cargo test --locked -p waffle-program-support -p waffle-process-consumer -p waffle-coreutils -p waffle-clear -p waffle-cut -p waffle-tr -p waffle-wc -p waffle-grep -p waffle-findutils-source

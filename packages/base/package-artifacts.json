@@ -1,0 +1,4 @@
+{
+  "files": [],
+  "dependencies": ["coreutils", "grep", "findutils", "sed", "ripgrep"]
+}

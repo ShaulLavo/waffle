@@ -4,7 +4,6 @@
   "private": true,
   "description": "Local Git commands for Waffle runtimes, backed by isomorphic-git",
   "license": "MIT",
-  "type": "module",
   "files": [
     "dist",
     "src",
@@ -12,14 +11,15 @@
     "third-party",
     "LICENSE",
     "README.md",
-    "provenance"
+    "provenance",
+    "package-artifacts.json"
   ],
+  "type": "module",
   "exports": {
     ".": "./src/git.ts",
     "./program": "./src/program.ts"
   },
   "scripts": {
-    "prepare": "node scripts/build-git.ts && node scripts/git-notices.ts",
     "build": "node scripts/build-git.ts",
     "notices": "node scripts/git-notices.ts",
     "typecheck": "tsc --noEmit",
@@ -27,7 +27,9 @@
     "test:browser": "bun scripts/test-git-six-browser.ts",
     "test:browser:lookup": "bun scripts/test-git-six-browser.ts lookup",
     "test:browser:dispose": "bun scripts/test-git-six-browser.ts dispose",
-    "pack": "bun pm pack --destination .build"
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check",
+    "prepare:package": "node scripts/build-git.ts && node scripts/git-notices.ts"
   },
   "dependencies": {
     "buffer": "6.0.3",

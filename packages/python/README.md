@@ -11,7 +11,7 @@ node scripts/stage-assets.ts /path/to/qualified-python-artifact
 ```ts
 import { createPythonPackage } from "@waffle/python";
 const python = createPythonPackage(runtime);
-// Pass `python` to Waffle's generic installPrograms operation.
+// Install with pythonLauncher(launcher); see the package integration guide.
 ```
 
 [Runtime contract](docs/python.md) · [Build and provenance](docs/python-build.md) · [Package integration](docs/package-integration.md)

@@ -13,3 +13,26 @@ Waffle step 2 must provide the generic package operation that:
 5. Preserves cwd independently of `PWD`, environment, descriptors, process supervision and the caller's single runtime.
 
 The family package then needs only a thin `installPython` wrapper around that real API. No family worker, runtime adapter, Bash import or compatibility branch belongs here. The Node and Chromium harnesses register these pieces explicitly to test current Waffle; they are not production installation code.
+
+## Monorepo installation
+
+Use `installPython` from `@waffle/python/install` with the page's existing `Runtime` and
+preview1 launcher. It passes `createPythonPackage` to `waffle/programs` and wraps only
+that installation's launcher with `pythonLauncher`. The qualified CPython startup patch
+calls `chdir(getenv("PWD"))`, so the wrapper sets `PWD` to `context.request.cwd` before
+calling the supplied launcher. Other environment entries, argv, descriptor bindings and
+process context are preserved. This also handles callers that omit PWD or pass a stale one.
+
+```ts
+import { installPython } from "@waffle/python/install";
+const installed = await installPython(runtime, { launcher });
+```
+
+Callers composing `createPythonPackage` directly must use `pythonLauncher` from
+`@waffle/python/launcher` for that installation. It creates no worker or runtime.
+
+The producer's `dist/` is an intermediate artifact directory. Run
+`bun run --cwd packages/python prepare:package /path/to/qualified-artifact` to verify and
+stage the qualified interpreter, payload, receipt and notices into the public `assets/`
+directory before packing. Packing checks these files and every manifest payload hash;
+it does not run the producer or download assets.

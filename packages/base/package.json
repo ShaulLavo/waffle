@@ -3,18 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "description": "The everyday Waffle program families.",
-  "type": "module",
   "files": [
     "src",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "package-artifacts.json"
   ],
+  "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "pack": "bun pm pack --destination .build"
+    "pack": "node ../../tools/program-package.ts pack",
+    "prepack": "node ../../tools/program-package.ts check"
   },
   "dependencies": {
     "waffle": "workspace:*",

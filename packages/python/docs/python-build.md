@@ -17,3 +17,9 @@ To qualify an existing artifact on the currently prepared runtime, run `node scr
 Build scratch lives in a fresh owned subdirectory of `.build/python/`, or the parent passed with `--work`. The command removes that scratch on success and failure. The patched libc remains in the existing validated cache, prepared through the singular repository `tools/program-build-tools.ts` recipe with explicit monorepo and `packages/waffle` roots. `node --test scripts/test-python-build.ts` runs only bounded tooling checks with synthetic fixtures; it does not build or qualify CPython. Use `--qualify` for the separate existing-artifact qualification flow. These checks do not replace browser acceptance.
 
 CI has one Python producer. `scripts/python-ci.ts` filters compilation by the contents of the listed Python source, patch, recipe, verifier, SDK setup, and installed Waffle libc build inputs, plus SDK and compiler versions. Unrelated feature paths and dependency changes leave that cache key unchanged. Only a missing exact cache entry compiles CPython. The browser job stages the shared artifact after the demo build, runs `npm run prepare:python:browser` with `BASH_WEB_PYTHON_SHELL_WASM` pointing to its shared shell guest, then includes Python in the existing blocking browser gate. For a local Python-only browser run after staging the assets and workers, use `npm run test:python:browser -- --project=chromium`.
+
+Current monorepo qualifications identify the actual committed `packages/waffle` sibling
+by repository commit and runtime subtree Git ID, plus its package version. The audit
+rejects uncommitted runtime changes before starting production or qualification, bundles
+that sibling's WASI/filesystem entries directly, and records the same identity in the
+receipt. Historical producer receipts keep their original external runtime identity.

@@ -15,6 +15,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { gzipSync } from "node:zlib";
+import { auditWaffleSource } from "./waffle-source.ts";
 import {
   preparePythonSource,
   pythonNotices,
@@ -39,7 +40,6 @@ export const familyRecipe = {
   waffle: waffleSourceRoot,
 } satisfies WasiBuildRecipe;
 const buildPrefix = "cross-build/wasm32-wasip1";
-const waffleRevision = "c312af63a554602906b462a2b49c7d5e14a97c5b";
 
 export function pythonBuildRecipe(
   sdk: string,
@@ -237,22 +237,12 @@ export function stagePythonArtifact(source: string, output: string, sdk?: string
 }
 
 async function auditWaffle(work: string, output: string) {
-  const pkg = object(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")));
-  assert.equal(
-    object(pkg.devDependencies).waffle,
-    `git+https://github.com/ShaulLavo/waffle.git#${waffleRevision}`,
-  );
-  assert.equal(
-    object(JSON.parse(readFileSync(resolve(root, "node_modules/waffle/package.json"), "utf8")))
-      .version,
-    "0.0.90",
-  );
+  const runtimeIdentity = auditWaffleSource(repositoryRoot);
   const api = resolve(work, "waffle-api.mjs");
   await build({
     absWorkingDir: root,
     stdin: {
-      contents:
-        'export { Wasi } from "waffle/core/wasi"; export { MemFS } from "waffle/fs/memory";',
+      contents: `export { Wasi } from ${JSON.stringify(resolve(waffleSourceRoot, "core/wasi.ts"))}; export { MemFS } from ${JSON.stringify(resolve(waffleSourceRoot, "fs/memory.ts"))};`,
       resolveDir: root,
     },
     bundle: true,
@@ -299,7 +289,7 @@ function run(fixture) {
 }
 const qualification=${JSON.stringify(pythonUsageCases())}.map(run);
 assert.equal(new TextDecoder().decode(fs.readFile("/home/guest/result.txt")),"PAYLOAD INPUT\\n");
-console.log(JSON.stringify({imports:WebAssembly.Module.imports(module),exports:WebAssembly.Module.exports(module),nameSectionBytes:WebAssembly.Module.customSections(module,"name").map(section=>section.byteLength),preopens:{"/":"/"},waffle:${JSON.stringify(waffleRevision)},qualification}));
+console.log(JSON.stringify({imports:WebAssembly.Module.imports(module),exports:WebAssembly.Module.exports(module),nameSectionBytes:WebAssembly.Module.customSections(module,"name").map(section=>section.byteLength),preopens:{"/":"/"},waffle:${JSON.stringify(runtimeIdentity)},qualification}));
 `;
   return object(
     JSON.parse(
@@ -442,6 +432,7 @@ async function buildPython(output: string, parent: string) {
 }
 
 async function runPythonBuild(output: string, work: string) {
+  auditWaffleSource(repositoryRoot);
   assert.ok(
     !existsSync(resolve(output, "python-stdlib.json")),
     "Use a fresh output directory or --stage an artifact",
@@ -497,6 +488,7 @@ async function runPythonBuild(output: string, work: string) {
 }
 
 async function qualifyPythonArtifact(output: string, work: string, nativeOracle: unknown = null) {
+  auditWaffleSource(repositoryRoot);
   const config = wasiBuildConfiguration(familyRecipe);
   const recipe = pythonBuildRecipe(config.sdk, config.sysroot);
   verifyWasiGuest(resolve(output, "python.wasm"), { sdk: config.sdk });
@@ -512,7 +504,7 @@ async function qualifyPythonArtifact(output: string, work: string, nativeOracle:
     cpython: pythonSource.revision,
     source: pythonSource,
     sourcePatch: pythonSource.patch,
-    waffle: waffleRevision,
+    waffle: audit.waffle,
     sdk: readFileSync(resolve(config.sdk, "VERSION"), "utf8"),
     sysrootRecipe: config.identity,
     recipe: recipe.map((step) => ({

@@ -48,3 +48,23 @@ test("family identities and program names are stable", () => {
     ],
   );
 });
+
+test("artifact admission lists every exported family guest and its notices", async () => {
+  for (const family of families) {
+    const recipe: unknown = await Bun.file(
+      new URL(`../packages/${family.name}/package-artifacts.json`, import.meta.url),
+    ).json();
+    assert.ok(
+      recipe && typeof recipe === "object" && "files" in recipe && Array.isArray(recipe.files),
+    );
+    const files: unknown[] = recipe.files;
+    assert.deepEqual(
+      files.filter((file) => typeof file === "string" && file.endsWith(".wasm")).sort(),
+      family.programs.map((program) => `dist/${program.path.split("/").at(-1)}.wasm`).sort(),
+    );
+    assert.equal(
+      files.filter((file) => typeof file === "string" && /NOTICES\.txt$/.test(file)).length,
+      1,
+    );
+  }
+});

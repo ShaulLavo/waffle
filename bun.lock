@@ -65,6 +65,7 @@
         "waffle": "workspace:*",
       },
       "devDependencies": {
+        "esbuild": "0.28.2",
         "waffle": "workspace:*",
       },
       "peerDependencies": {
