@@ -410,3 +410,67 @@ test("revocation after a pending body read resolves cannot strand an exchange aw
   await completed;
   expect(messages).toEqual(["accepted", "head", "error"]);
 });
+
+for (const protocol of ["http:", "https:"]) {
+  test(`${protocol} relay fetch rejects a matching-origin blob before connecting`, async () => {
+    const f = fixture("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    const boundOrigin = `${protocol}//preview.example.test`;
+    f.origins.set(3137, boundOrigin);
+    const host = await f.router.bindHost({ port: 3137 });
+    try {
+      await expect(
+        host.fetch(host.authorization, new Request(`blob:${boundOrigin}/another`)),
+      ).rejects.toThrow("protocol");
+      expect(f.opened).toBe(0);
+      expect(f.received).toBe("");
+    } finally {
+      host.close();
+    }
+  });
+
+  test(`${protocol} relay socket rejects a matching-origin blob before connecting`, async () => {
+    const f = fixture();
+    const boundOrigin = `${protocol}//preview.example.test`;
+    f.origins.set(3137, boundOrigin);
+    const host = await f.router.bindHost({ port: 3137 });
+    try {
+      expect(() =>
+        host.connect(host.authorization, `blob:${boundOrigin}/another`, {
+          data() {},
+          end() {},
+          error() {},
+        }),
+      ).toThrow("protocol");
+      expect(f.opened).toBe(0);
+      expect(f.received).toBe("");
+    } finally {
+      host.close();
+    }
+  });
+
+  test(`${protocol} relay preserves HTTP and corresponding WebSocket URLs`, async () => {
+    const f = fixture("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    const boundOrigin = `${protocol}//preview.example.test`;
+    f.origins.set(3137, boundOrigin);
+    const host = await f.router.bindHost({ port: 3137 });
+    try {
+      const response = await host.fetch(
+        host.authorization,
+        new Request(`${boundOrigin}/route?q=1`),
+      );
+      expect(response.status).toBe(200);
+      expect(f.received).toStartWith("GET /route?q=1 HTTP/1.1\r\nhost: preview.example.test\r\n");
+      const socketURL = boundOrigin.replace(/^http/, "ws") + "/hmr?q=2";
+      const connection = host.connect(host.authorization, socketURL, {
+        data() {},
+        end() {},
+        error() {},
+      });
+      expect(connection).not.toBeNull();
+      connection?.close();
+      expect(f.opened).toBe(2);
+    } finally {
+      host.close();
+    }
+  });
+}

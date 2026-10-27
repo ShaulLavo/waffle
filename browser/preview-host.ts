@@ -105,6 +105,8 @@ function requestURL(input: string, origin: string): URL {
   const url = new URL(input);
   if (url.protocol === "ws:") url.protocol = "http:";
   if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new TypeError("Preview request requires an HTTP(S) protocol");
   if (url.origin !== origin || url.username || url.password)
     throw new TypeError("Preview request does not match its bound origin");
   return url;
