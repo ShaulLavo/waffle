@@ -453,7 +453,7 @@ function hostCheck(hostFunction: number): Uint8Array {
 
 /** Rewrite a private synchronous snapshot without copying it again. */
 export function rewriteInterruptsOwned(
-  bytes: Uint8Array,
+  bytes: Uint8Array<ArrayBuffer>,
   options: InterruptRewriteOptions = {},
 ): Uint8Array<ArrayBuffer> {
   const interval = options.interval ?? 4096;
