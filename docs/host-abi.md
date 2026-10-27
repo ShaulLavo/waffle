@@ -21,6 +21,15 @@ The operation is shared by memory, IndexedDB and OPFS backends.
 
 `BrowserProcessBroker` reserves identities and descriptor bindings synchronously, then activates the lazy supervisor. Worker bootstrap receives a compiled module, argv, environment, filesystem connection and optional process transport. Source bytes must pass interruption admission; a precompiled module is accepted only with explicit cooperative execution.
 
+## WASI clocks
+
+The browser WASI adapter supports REALTIME (0) and MONOTONIC (1). Both clock getters
+return `EINVAL` (28) for process/thread CPU clocks (2/3) and unknown clock IDs,
+without changing the output. Browsers expose no CPU-time clock. Invalid output
+spans return `EFAULT` (21). Poll clock subscriptions use the same supported IDs;
+unsupported clocks produce events with `EINVAL`. Native Node WASI clock getters
+remain provided by Node and measure host process/thread time, not per-guest totals.
+
 ## Process identity import
 
 `runtime_proc.getpid: () -> i32` returns the calling process's own positive runtime PID,

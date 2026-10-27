@@ -49,6 +49,7 @@ import { memoryViews, type MemoryViews } from "./memory-views.js";
 const SUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
+const EFAULT = 21;
 const EINTR = 27;
 const EINVAL = 28;
 const EIO = 29;
@@ -80,6 +81,11 @@ const FDFLAG_NONBLOCK = 4;
 const RIGHTS_TTY = RIGHTS_ALL & ~(RIGHT_FD_SEEK | RIGHT_FD_TELL);
 
 const CLOCK_REALTIME = 0;
+const CLOCK_MONOTONIC = 1;
+type SupportedClock = typeof CLOCK_REALTIME | typeof CLOCK_MONOTONIC;
+function isSupportedClock(id: number): id is SupportedClock {
+  return id === CLOCK_REALTIME || id === CLOCK_MONOTONIC;
+}
 const SUBCLOCK_ABSTIME = 1;
 const EVENTTYPE_CLOCK = 0;
 const EVENTTYPE_FD_READ = 1;
@@ -156,7 +162,7 @@ function writeUtf8Prefix(target: string, output: Uint8Array): number {
   return written;
 }
 
-function nowNs(clock: number): bigint {
+function nowNs(clock: SupportedClock): bigint {
   if (clock === CLOCK_REALTIME) {
     const ms = timeOrigin + perfNow();
     return BigInt(Math.floor(ms)) * 1_000_000n + BigInt(Math.round((ms % 1) * 1e6));
@@ -166,6 +172,18 @@ function nowNs(clock: number): bigint {
 
 function msToNs(ms: number): bigint {
   return BigInt(Math.floor(ms)) * 1_000_000n;
+}
+
+function pollMemoryError(
+  byteLength: number,
+  input: number,
+  output: number,
+  count: number,
+  events: number,
+): number {
+  if (count === 0 || count * 48 > byteLength - input) return EINVAL;
+  if (output + count * 32 > byteLength || events + 4 > byteLength) return EFAULT;
+  return SUCCESS;
 }
 
 export class Wasi {
@@ -592,12 +610,17 @@ export class Wasi {
       environ_sizes_get: (countPtr: number, sizePtr: number) => sizes(this.env, countPtr, sizePtr),
       environ_get: (environ: number, buf: number) => fill(this.env, environ, buf),
 
-      clock_res_get: (_id: number, ptr: number) => {
+      clock_res_get: (id: number, ptr: number) => {
+        if (!isSupportedClock(id)) return EINVAL;
+        ptr >>>= 0;
+        if (ptr + 8 > this.bytes().length) return EFAULT;
         this.view().setBigUint64(ptr, 1000n, true);
         return SUCCESS;
       },
       clock_time_get: (id: number, _precision: bigint, ptr: number) => {
-        if (id > 3) return EINVAL;
+        if (!isSupportedClock(id)) return EINVAL;
+        ptr >>>= 0;
+        if (ptr + 8 > this.bytes().length) return EFAULT;
         this.view().setBigUint64(ptr, nowNs(id), true);
         return SUCCESS;
       },
@@ -1009,8 +1032,11 @@ export class Wasi {
       poll_oneoff: (inPtr: number, outPtr: number, nsubs: number, neventsPtr: number) => {
         nsubs >>>= 0;
         inPtr >>>= 0;
+        outPtr >>>= 0;
+        neventsPtr >>>= 0;
         const view = this.view();
-        if (nsubs === 0 || nsubs * 48 > view.byteLength - inPtr) return EINVAL;
+        const memoryError = pollMemoryError(view.byteLength, inPtr, outPtr, nsubs, neventsPtr);
+        if (memoryError) return memoryError;
         type Event = {
           userdata: bigint;
           type: number;
@@ -1019,7 +1045,7 @@ export class Wasi {
           flags: number;
         };
         const ready: Event[] = [];
-        const clocks: { userdata: bigint; deadline: bigint; clock: number }[] = [];
+        const clocks: { userdata: bigint; deadline: bigint; clock: SupportedClock }[] = [];
         const subscriptions: { userdata: bigint; type: number; fd: number }[] = [];
         for (let i = 0; i < nsubs; i++) {
           const sub = inPtr + i * 48;
@@ -1027,7 +1053,7 @@ export class Wasi {
           const type = view.getUint8(sub + 8);
           if (type === EVENTTYPE_CLOCK) {
             const clock = view.getUint32(sub + 16, true);
-            if (clock > 3) {
+            if (!isSupportedClock(clock)) {
               ready.push({ userdata, type, error: EINVAL, nbytes: 0n, flags: 0 });
               continue;
             }
