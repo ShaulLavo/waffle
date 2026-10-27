@@ -6,7 +6,9 @@ import {
   type RuntimeSupervisor,
 } from "../index.js";
 import { installPrograms, ProgramConflictError, type ProgramPackage } from "../programs/index.js";
-import { DescriptorTable } from "../core/descriptors.js";
+import { DescriptorTable, type Stream } from "../core/descriptors.js";
+import { createRuntimeTerminalCodec } from "../browser/runtime-terminals.js";
+import { createWorkerPipeCodec } from "../proc/worker-pipes.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -91,15 +93,28 @@ async function root() {
     output: (_fd, bytes) => output.push(new TextDecoder().decode(bytes)),
   });
   const notices: WorkerProcessMessage[] = [];
+  // The root's own terminal at fd 1 and 2. Children get stdio only through explicit bindings;
+  // the terminal codec transfers it, and child writes come back through the root's output.
   const descriptors = new DescriptorTable();
   tables.push(descriptors);
-  const unused = (): never => {
-    throw new Error("unexpected descriptor transfer");
+  const write = (chunks: readonly Uint8Array[]) => {
+    for (const chunk of chunks) output.push(new TextDecoder().decode(chunk));
+    return chunks.reduce((total, chunk) => total + chunk.length, 0);
   };
+  const terminal: Stream = {
+    kind: "terminal",
+    read: () => 0,
+    write,
+    tryWrite: write,
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+  };
+  descriptors.openAt(1, terminal, 64n, 0n);
+  descriptors.inherit(2, descriptors.get(1)!);
+  const codec = createRuntimeTerminalCodec({ descriptors, fallback: createWorkerPipeCodec() });
   const client = new WorkerProcessClient({
     transport,
     descriptors,
-    codec: { export: unused, import: unused, discard() {} },
+    codec,
     prepareSpawn: () => ({ data: { filesystem: runtime.filesystem.createIdentity() } }),
     postMessage: (message) => notices.push(message),
   });
@@ -113,8 +128,16 @@ async function root() {
       while (!supervisor.accessReady(pid, id)) await Bun.sleep(1);
       return supervisor.accessTake(pid, id);
     },
-    async spawn(executable: string, argv: string[], env: Record<string, string> = {}) {
-      const child = client.spawn(pid, { executable, argv, env, cwd: "/", job: -1, fds: [] });
+    async spawn(
+      executable: string,
+      argv: string[],
+      env: Record<string, string> = {},
+      fds = [
+        { parent: 1, child: 1 },
+        { parent: 2, child: 2 },
+      ],
+    ) {
+      const child = client.spawn(pid, { executable, argv, env, cwd: "/", job: -1, fds });
       while (notices.length) await service.runtimeMessage(notices.shift()!, pid);
       await supervisor.start(child);
       return {
@@ -165,6 +188,18 @@ test("first exec runs the real program; aliases and concurrent execs share one l
   expect(shell.output.join("")).toBe("hello from waffle\n".repeat(2));
   expect(await shell.exec("/bin/cat", ["cat", "/etc/missing"])).toMatchObject({ code: 1 });
   expect(requests.get("/cat.wasm")).toBe(1);
+}, 20_000);
+
+test("a child spawned without stdio bindings has fd 1 closed", async () => {
+  await installPrograms(runtime, [textutils], options);
+  await runtime.filesystem.writeFile("/etc/motd", "hello from waffle\n");
+  const shell = await root();
+  // cat exits 1 when fd_write fails; with no binding fd 1 is closed (EBADF), not the root's output.
+  const unbound = await shell.spawn("/usr/bin/cat", ["cat", "/etc/motd"], {}, []);
+  expect(await unbound.exit).toMatchObject({ kind: "exited", code: 1 });
+  expect(shell.output).toEqual([]);
+  expect(await shell.exec("/usr/bin/cat", ["cat", "/etc/motd"])).toMatchObject({ code: 0 });
+  expect(shell.output.join("")).toBe("hello from waffle\n");
 }, 20_000);
 
 test("a failed load fails that exec only and the next exec fetches again", async () => {
