@@ -126,7 +126,9 @@ test("only public roots allocate page-reader counters, fork shares without obser
   const fork = createFilesystemIdentity(publicRoot);
   expect(privateRoot.publication!.buffers.pageReaders).toBeUndefined();
   expect(privateRoot.publication!.buffers.readerLifetimes).toBeUndefined();
-  expect(publicRoot.publication!.buffers.pageReaders!.byteLength).toBe(65536);
+  expect(publicRoot.publication!.buffers.pageReaders!.byteLength).toBe(
+    (publicRoot.maxBytes / PAGE) * Int32Array.BYTES_PER_ELEMENT,
+  );
   expect(fork.publication!.buffers.pageReaders).toBe(publicRoot.publication!.buffers.pageReaders);
   expect(publicRoot.publication!.buffers.readerLifetimes!.byteLength).toBe(64 * 8);
   expect(fork.publication!.buffers.readerLifetimes).toBe(
