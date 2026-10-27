@@ -107,6 +107,19 @@ the browser's signal-only worker namespace also exposes it without activating th
 process service. The descriptor number itself (including stdio 0, 1 and 2) never
 determines its kind.
 
+## Inherited descriptor list
+
+`runtime_proc.inherited_fd(index: u32) -> i32` returns the `index`th descriptor the process
+started with, in ascending numeric order, or `-ENOENT` (`-44`) past the end. The list is a
+snapshot taken in the worker after launch bindings are installed (and after an executor's
+`beforeBindings` hook) and before instantiation: open stdio and every `runtime_proc` binding at
+its child number, excluding preopened directories. Later `dup`, open or close calls do not
+change it. It reports numbers only; use `fd_kind` for the kind and `dup` to take a reference.
+Programs that forward descriptors to a child or resolve `/dev/fd/N` use this list instead of
+probing a descriptor range. Sparse bindings cost one entry each. Runtime child workers start
+with stdio closed unless a binding targets fd 0, 1 or 2; a page-root worker retains its default
+stdio terminals.
+
 ## Reopen an existing descriptor
 
 `runtime_proc.fd_reopen(fd: u32, oflags: u32, fdflags: u32, rights_base: u64, out_fd_ptr: u32) -> errno`
