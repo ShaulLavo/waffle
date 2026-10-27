@@ -192,6 +192,57 @@ function functionSignatureMatches(
     if (signature.results[index] !== expected.results[index]) return false;
   return true;
 }
+interface ImportSummary {
+  readonly importedFunctions: number;
+  readonly memories: number;
+  readonly globals: number;
+}
+function validateImports(
+  reader: Reader,
+  count: number,
+  functionTypes: readonly FunctionSignature[],
+): ImportSummary {
+  let importedFunctions = 0;
+  let memories = 0;
+  let globals = 0;
+  for (let i = 0; i < count; i++) {
+    const namespace = reader.name();
+    const name = reader.name();
+    const kind = reader.byte();
+    if (namespace === "runtime_proc") {
+      if (kind !== 0) fail(`runtime_proc.${name} must be a function import`);
+      const typeIndex = reader.u32();
+      const expected = runtimeProcSignatures.get(name);
+      if (name === FATAL_IMPORT_NAME || !expected) fail(`unsupported runtime_proc import ${name}`);
+      if (!functionSignatureMatches(functionTypes[typeIndex], expected))
+        fail(`invalid runtime_proc.${name} signature`);
+      importedFunctions++;
+      continue;
+    }
+    switch (kind) {
+      case 0:
+        reader.u32();
+        importedFunctions++;
+        break;
+      case 1:
+        referenceType(reader);
+        limits(reader, false);
+        break;
+      case 2:
+        limits(reader, true);
+        memories++;
+        break;
+      case 3:
+        valueType(reader);
+        if (reader.byte() > 1) fail("unsupported global mutability");
+        globals++;
+        break;
+      default:
+        fail("unsupported import kind (tags or unknown proposal)");
+    }
+  }
+  return { importedFunctions, memories, globals };
+}
 function referenceType(reader: Reader): void {
   const type = reader.byte();
   if (type !== 0x70 && type !== 0x6f) fail("unsupported typed reference or GC heap type");
@@ -559,42 +610,10 @@ export function rewriteInterruptsOwned(
   const importReader = get(2);
   const importCount = importReader.u32();
   const importStart = importReader.position;
-  for (let i = 0; i < importCount; i++) {
-    const namespace = importReader.name();
-    const name = importReader.name();
-    const kind = importReader.byte();
-    if (namespace === "runtime_proc") {
-      if (kind !== 0) fail(`runtime_proc.${name} must be a function import`);
-      const typeIndex = importReader.u32();
-      const expected = runtimeProcSignatures.get(name);
-      if (name === FATAL_IMPORT_NAME || !expected) fail(`unsupported runtime_proc import ${name}`);
-      if (!functionSignatureMatches(functionTypes[typeIndex], expected))
-        fail(`invalid runtime_proc.${name} signature`);
-      importedFunctions++;
-      continue;
-    }
-    switch (kind) {
-      case 0:
-        importReader.u32();
-        importedFunctions++;
-        break;
-      case 1:
-        referenceType(importReader);
-        limits(importReader, false);
-        break;
-      case 2:
-        limits(importReader, true);
-        memories++;
-        break;
-      case 3:
-        valueType(importReader);
-        if (importReader.byte() > 1) fail("unsupported global mutability");
-        globals++;
-        break;
-      default:
-        fail("unsupported import kind (tags or unknown proposal)");
-    }
-  }
+  const importSummary = validateImports(importReader, importCount, functionTypes);
+  importedFunctions = importSummary.importedFunctions;
+  memories += importSummary.memories;
+  globals += importSummary.globals;
   importReader.done();
   const importWriter = new Writer();
   importWriter.u32(importCount + 1);
