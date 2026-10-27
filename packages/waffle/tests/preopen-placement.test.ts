@@ -105,6 +105,39 @@ for (const target of [3, -1, 1.5, NaN, Infinity, 0x80000000])
     expect(released).toBe(1);
   });
 
+test("inherited descriptors are a numeric snapshot without preopens", () => {
+  const wasi = new Wasi({
+    ...options(),
+    stdio: { 0: null, 1: null, 2: null },
+    reservedFds: [3, 7],
+  });
+  const stream = {
+    kind: "pipe" as const,
+    read: () => 0,
+    write: () => 0,
+    readiness: () => ({ readable: true, writable: true, hangup: false }),
+  };
+  wasi.descriptors.openAt(7, stream, all, all);
+  const snapshot = wasi.descriptors.inheritable();
+  expect(snapshot).toEqual([7]);
+  wasi.descriptors.close(7);
+  wasi.descriptors.openAt(2, stream, all, all);
+  expect(snapshot).toEqual([7]);
+  expect(wasi.descriptors.inheritable()).toEqual([2]);
+  wasi.descriptors.dispose();
+});
+
+test("closed stdio does not acquire callback terminals", () => {
+  const wasi = new Wasi({ ...options(), stdio: { 0: null, 1: null, 2: null } });
+  expect([0, 1, 2].map((fd) => wasi.descriptors.get(fd))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(wasi.descriptors.get(3)?.preopen).toBe("/");
+  wasi.descriptors.dispose();
+});
+
 test("moved preopens preserve names, rights and lifetime while inherited files share offsets", () => {
   const fs = new MemFS();
   fs.writeFile("/file", "abcd");
