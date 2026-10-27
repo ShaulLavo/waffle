@@ -10,7 +10,7 @@ Waffle is pre-1.0 and experimental. This page lists what the code does today, wi
 
 ## Stability
 
-- **Version:** `0.0.90` in `package.json`, with `private: true`. Only patch versions change.
+- **Version:** `0.0.91` in `package.json`, with `private: true`. Only patch versions change.
 - **Distribution:** exact-commit Git dependency. No npm package, no tags, no GitHub releases.
 - **API compatibility:** none promised between revisions. Consumers move their pin, lockfile and code together.
 - **Changelog:** none. Read the commit history between two pins.
