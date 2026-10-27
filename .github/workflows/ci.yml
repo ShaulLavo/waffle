@@ -219,6 +219,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - run: bun run pack:check
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: test -z "$(git ls-files packages/waffle/dist)"
   libc:
     needs: changes

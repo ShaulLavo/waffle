@@ -197,6 +197,12 @@ test("package and site gates remain unconditional", () => {
   }
 });
 
+test("the package tarball smoke uses the runner temporary directory", () => {
+  const smoke = stepsFor("package").find((step) => step.run === "bun run pack:check");
+  expect(record(smoke?.env).TMPDIR).toBe("${{ runner.temp }}");
+  expect(smoke?.if).toBeUndefined();
+});
+
 test("package runs each test root once without repeating preparation", () => {
   const metadata = record(
     JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")),

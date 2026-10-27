@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const packageRoot = resolve(import.meta.dir, "..");
-const scratch = await mkdtemp(join(process.env.TMPDIR ?? "/work/tmp", "waffle-tarball-"));
+const scratch = await mkdtemp(join(tmpdir(), "waffle-tarball-"));
 const archiveDirectory = join(scratch, "archive");
 const extractDirectory = join(scratch, "extract");
 const consumerDirectory = join(scratch, "consumer");
