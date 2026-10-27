@@ -99,7 +99,13 @@ export async function bootstrapNotificationCase(
 
 function controlTermination(helperUrl: string, fail: boolean) {
   const NativeWorker = globalThis.Worker;
-  const order: { worker: string; fenced: boolean }[] = [];
+  const workers: { id: number; helper: boolean; requests: number; terminations: number }[] = [];
+  const order: {
+    id: number;
+    worker: "helper" | "guest" | "unused";
+    requests: number;
+    fenced: boolean;
+  }[] = [];
   let fence: Int32Array | undefined;
   let release!: () => void;
   let began!: () => void;
@@ -110,18 +116,35 @@ function controlTermination(helperUrl: string, fail: boolean) {
     began = resolve;
   });
   globalThis.Worker = class extends NativeWorker {
-    private readonly helper: boolean;
+    private readonly observed: (typeof workers)[number];
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
-      this.helper = String(url) === helperUrl;
+      this.observed = {
+        id: workers.length,
+        helper: String(url) === helperUrl,
+        requests: 0,
+        terminations: 0,
+      };
+      workers.push(this.observed);
+    }
+    postMessage(message: unknown, transfer?: Transferable[] | StructuredSerializeOptions): void {
+      this.observed.requests++;
+      if (Array.isArray(transfer)) {
+        super.postMessage(message, transfer);
+        return;
+      }
+      super.postMessage(message, transfer);
     }
     terminate(): Promise<void> {
+      this.observed.terminations++;
       order.push({
-        worker: this.helper ? "helper" : "guest",
+        id: this.observed.id,
+        worker: this.observed.helper ? "helper" : this.observed.requests ? "guest" : "unused",
+        requests: this.observed.requests,
         fenced: !!fence && Atomics.load(fence, 1) === 1,
       });
       const physical = super.terminate();
-      if (!this.helper) return Promise.resolve(physical);
+      if (!this.observed.helper) return Promise.resolve(physical);
       began();
       return Promise.resolve(physical)
         .then(() => gate)
@@ -131,6 +154,7 @@ function controlTermination(helperUrl: string, fail: boolean) {
     }
   };
   return {
+    workers,
     order,
     started,
     release,
@@ -233,6 +257,12 @@ export async function brokerNotificationCase(
       "real Worker did not expose its external test fence",
     );
     termination.fence = parked.state;
+    const borrowers = termination.workers.filter((worker) => !worker.helper && worker.requests);
+    check(
+      borrowers.length === 1 && borrowers[0]?.requests === 1,
+      "expected one single-request borrower",
+    );
+    const borrower = borrowers[0]!;
     if (revoke) {
       broker.revokeRuntimeProcess(pid);
       await notices.wait("notification-fenced");
@@ -246,8 +276,13 @@ export async function brokerNotificationCase(
     await termination.started;
     await new Promise((resolve) => setTimeout(resolve, 20));
     check(
-      !termination.order.some((event) => event.worker === "guest"),
+      !termination.order.some((event) => event.id === borrower.id),
       "guest termination began before relay disposal settled",
+    );
+    const unused = termination.workers.filter((worker) => !worker.helper && worker.requests === 0);
+    check(
+      unused.length === 2 && unused.every((worker) => worker.terminations === 1),
+      "unused idle workers were not disposed exactly once independently of the relay",
     );
     termination.release();
     const failure = await settled;
@@ -262,11 +297,16 @@ export async function brokerNotificationCase(
       "physical termination relied on guest entry/cleanup",
     );
     check(relayFailure || diagnostics.length === 0, `broker cleanup diagnostics: ${diagnostics}`);
+    const processOrder = termination.order.filter((event) => event.worker !== "unused");
     check(
-      termination.order.length === 2 &&
-        termination.order[0]?.worker === "helper" &&
-        termination.order[1]?.worker === "guest" &&
-        termination.order.every((event) => event.fenced),
+      termination.workers.every((worker) => worker.terminations === 1),
+      "a native Worker was leaked or terminated more than once",
+    );
+    check(
+      processOrder.length === 2 &&
+        processOrder[0]?.worker === "helper" &&
+        processOrder[1]?.id === borrower.id &&
+        processOrder.every((event) => event.fenced),
       `native Worker termination was not externally fenced: ${JSON.stringify(termination.order)}`,
     );
     return {
