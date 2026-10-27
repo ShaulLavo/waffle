@@ -10,6 +10,7 @@ import {
   type FilesystemIdentity,
 } from "../fs";
 import { SHARED_SEGMENT_BYTES } from "../fs/shared";
+import { CONNECTION_SHARED_BYTES, PAGE } from "../fs/protocol";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -20,6 +21,31 @@ function segments(identity: FilesystemIdentity): SharedArrayBuffer[] {
   expect(Array.isArray(result)).toBe(true);
   return result;
 }
+
+test("the default pool admits an application budget beyond the exhausted GiB lazily", () => {
+  const applicationBytes = 1024 * 1024 * 1024 + SHARED_SEGMENT_BYTES;
+  const root = createFilesystemIdentity();
+  expect(root.maxBytes).toBeGreaterThanOrEqual(applicationBytes);
+  const identity = createFilesystemIdentity(undefined, applicationBytes);
+  expect(identity.maxBytes).toBe(applicationBytes);
+  const state = new SharedFilesystemState(
+    identity.shared,
+    identity.maxBytes,
+    undefined,
+    identity.segments,
+  );
+  expect(state.buffer.byteLength).toBe(CONNECTION_SHARED_BYTES);
+  expect(state.resources()).toMatchObject({
+    maxBytes: applicationBytes,
+    poolBytes: SHARED_SEGMENT_BYTES,
+    usedBytes: 0,
+  });
+  state.register(0, { kind: "file", ino: 1, nlink: 1, size: PAGE * 6, mtime: 1 });
+  state.grow(0, 400384);
+  expect(state.info(0)?.capacity).toBe(PAGE * 12);
+  expect(state.resources().usedBytes).toBe(PAGE * 12);
+  expect(identity.segments.every((buffer) => buffer.byteLength === 0)).toBe(true);
+});
 
 test("root identities prepublish empty segment wrappers inherited by descendants", () => {
   const root = createFilesystemIdentity(undefined, SHARED_SEGMENT_BYTES * 3);
