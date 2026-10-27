@@ -117,15 +117,18 @@ function signalWord(source?: ControlCells | SharedArrayBuffer): ControlCells {
 function validFd(fd: number): boolean {
   return Number.isInteger(fd) && fd >= 0 && fd <= MAX_DESCRIPTOR;
 }
-function snapshot(spec: SpawnRequest): Readonly<SpawnRequest> {
+function snapshot(
+  spec: SpawnRequest,
+  selection: Pick<SpawnRequest, "job" | "jobLifetime">,
+): Readonly<SpawnRequest> {
   // Own all mutable request data before returning to the guest's synchronous spawn call.
   return {
     executable: spec.executable,
     argv: spec.argv.slice(),
     env: { ...spec.env },
     cwd: spec.cwd,
-    job: spec.job,
-    ...(spec.jobLifetime === undefined ? {} : { jobLifetime: spec.jobLifetime }),
+    job: selection.job,
+    ...(selection.jobLifetime === undefined ? {} : { jobLifetime: selection.jobLifetime }),
     fds: spec.fds.map((binding) => ({ ...binding })),
   };
 }
@@ -186,24 +189,24 @@ export class ProcessSupervisor {
   retireFencedProcesses(): Promise<void> {
     if (!this.disposed) throw new ProcessError(ProcessErrno.INVAL, "process service is still live");
     const handles: Promise<void>[] = [];
-    for (const records of this.consumers.values()) handles.push(...this.fencedHandles(records));
+    for (const records of this.consumers.values()) this.addFencedHandles(records, handles);
     return Promise.all(handles).then(() => {});
   }
-  private fencedHandles(records: ReadonlySet<ProcessRecord>): Promise<void>[] {
-    const handles: Promise<void>[] = [];
+  private addFencedHandles(records: ReadonlySet<ProcessRecord>, handles: Promise<void>[]): void {
     for (const record of records) if (record.revoked) handles.push(this.stopHandle(record).handle);
-    return handles;
   }
   jobCleanupReady(callerPid: number, jobId: number): boolean {
     this.accessOwner(callerPid);
     const job = this.requireWaitJob(callerPid, jobId);
     if (this.table.get(callerPid)?.job === jobId)
       throw new ProcessError(ProcessErrno.INVAL, "cannot cleanup-wait the caller's job");
-    return this.jobIsEmpty(job) && this.jobRetired(jobId);
+    const retired = this.jobRetired(jobId);
+    return this.jobIsEmpty(job) && retired;
   }
   jobRetired(jobId: number): boolean {
     const consumers = this.consumers.get(jobId);
     if (!consumers) return true;
+    let complete = true;
     for (const record of consumers) {
       if (record.request === null)
         throw new ProcessError(
@@ -212,9 +215,9 @@ export class ProcessSupervisor {
         );
       if (record.retirement?.kind === "failed")
         throw new ProcessError(29, "process physical retirement failed");
-      if (!record.retirement) return false;
+      if (!record.retirement) complete = false;
     }
-    return true;
+    return complete;
   }
   private accessOwner(pid: number): ProcessRecord {
     const record = this.table.get(pid);
@@ -499,7 +502,9 @@ export class ProcessSupervisor {
     jobIdentity?: SharedJobIdentity,
   ): number {
     if (this.disposed) throw new ProcessError(ProcessErrno.SRCH, "supervisor is disposed");
-    const jobLifetime = checkedJobLifetime(spec.job, spec.jobLifetime);
+    const selector = spec.job;
+    const requestedLifetime = spec.jobLifetime;
+    const jobLifetime = checkedJobLifetime(selector, requestedLifetime);
     const parent = this.table.get(parentPid);
     // A separately selected job can be admitted after an ancestor reaped its exited parent.
     // Its worker already retained the capabilities and ancestry before that reap.
@@ -511,7 +516,7 @@ export class ProcessSupervisor {
     )
       throw new ProcessError(ProcessErrno.SRCH, "parent process has exited or is being killed");
     const parentDescriptors = retainedDescriptors ?? parent!.descriptors;
-    if (!Number.isInteger(spec.job) || spec.job < -1)
+    if (!Number.isInteger(selector) || selector < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
     const bindings = new Set<number>();
     for (const binding of spec.fds) {
@@ -526,17 +531,17 @@ export class ProcessSupervisor {
       requestedSignal = signalWord(reservation.requestedSignal),
       outcome = outcomeWord(reservation.outcome),
       signalState = createSignalState(reservation.signalState);
-    const request = snapshot(spec);
+    const request = snapshot(spec, { job: selector, jobLifetime: requestedLifetime });
     const pid = reservation.pid ?? this.table.identities.pid();
     this.table.checkPid(pid, admitted ? reservation.outcome : undefined);
-    let job = reservation.job ?? (spec.job > 0 ? spec.job : undefined);
+    let job = reservation.job ?? (selector > 0 ? selector : undefined);
     let createdJob = false;
     if (job !== undefined && !this.table.job(job)) {
       if (reservation.job === undefined)
         throw new ProcessError(ProcessErrno.SRCH, `unknown job ${job}`);
       this.table.createJob(
         jobIdentity?.ownerPid ?? parentPid,
-        jobIdentity?.foreground ?? spec.job === 0,
+        jobIdentity?.foreground ?? selector === 0,
         job,
         jobIdentity,
         jobLifetime,
@@ -546,7 +551,7 @@ export class ProcessSupervisor {
     if (job === undefined) {
       const group = this.table.createJob(
         parentPid,
-        spec.job === 0,
+        selector === 0,
         undefined,
         undefined,
         jobLifetime,
@@ -1074,7 +1079,7 @@ export class ProcessSupervisor {
       owned = this.closeOwnedJobs(record, winner);
     } catch (error) {
       fenceFailed = true;
-      this.report(error);
+      this.failRetirementFence(record, error);
     }
     const hooks = Array.from(record.revocations);
     record.revocations.clear();
@@ -1092,7 +1097,7 @@ export class ProcessSupervisor {
         );
     } catch (error) {
       fenceFailed = true;
-      this.report(error);
+      this.failRetirementFence(record, error);
     }
     const publish = () => {
       const event = objectFreeze({
@@ -1138,16 +1143,22 @@ export class ProcessSupervisor {
     const safe = () => {
       try {
         const late = this.closeOwnedJobs(record, winner);
-        if (late) void late.then(publish, (error) => this.report(error));
+        if (late) void late.then(publish, (error) => this.failRetirementFence(record, error));
         else publish();
       } catch (error) {
-        this.report(error);
+        this.failRetirementFence(record, error);
       }
     };
     if (!fenceFailed) {
-      if (quiescence) void quiescence.then(safe, (error) => this.report(error));
+      if (quiescence)
+        void quiescence.then(safe, (error) => this.failRetirementFence(record, error));
       else safe();
     }
+  }
+  private failRetirementFence(record: ProcessRecord, error: unknown): void {
+    record.retirement = { kind: "failed", error };
+    this.report(error);
+    this.notifyRetirement(record.job);
   }
   private stopHandle(record: ProcessRecord): NonNullable<ProcessRecord["stopping"]> {
     if (record.stopping) return record.stopping;

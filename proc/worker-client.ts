@@ -208,6 +208,21 @@ export interface WorkerProcessClientOptions {
   createPipe?(): readonly [Stream, Stream];
   onError?(error: unknown): void;
 }
+function snapshotSpawnRequest(
+  request: SpawnRequest,
+  job: number,
+  jobLifetime: JobLifetime | undefined,
+): SpawnRequest {
+  return {
+    executable: request.executable,
+    argv: request.argv.slice(),
+    env: { ...request.env },
+    cwd: request.cwd,
+    job,
+    ...(jobLifetime === undefined ? {} : { jobLifetime }),
+    fds: request.fds.map((binding) => ({ ...binding })),
+  };
+}
 /** Synchronous guest-side process service; only notifications cross the message boundary. */
 export class WorkerProcessClient {
   readonly pid: number;
@@ -333,15 +348,17 @@ export class WorkerProcessClient {
   }
   private reserveSpawn(parentPid: number, request: SpawnRequest): number {
     this.admit();
-    const jobLifetime = checkedJobLifetime(request.job, request.jobLifetime);
+    const selector = request.job;
+    const requestedLifetime = request.jobLifetime;
+    const jobLifetime = checkedJobLifetime(selector, requestedLifetime);
     if (parentPid !== this.pid)
       throw new ProcessError(ProcessErrno.SRCH, "invalid spawning process");
     const sources: Descriptor[] = this.spawnSources(request);
-    if (!Number.isInteger(request.job) || request.job < -1)
+    if (!Number.isInteger(selector) || selector < -1)
       throw new ProcessError(ProcessErrno.INVAL, "invalid job selection");
-    const job = request.job > 0 ? request.job : this.identities.job();
+    const job = selector > 0 ? selector : this.identities.job();
     const existingJob = findDirectoryJob(this.options.transport.directory, job);
-    if (request.job > 0 && !existingJob)
+    if (selector > 0 && !existingJob)
       throw new ProcessError(
         this.identities.hasJob(job) ? ProcessErrno.CHILD : ProcessErrno.SRCH,
         "unknown or collected job",
@@ -363,7 +380,7 @@ export class WorkerProcessClient {
         job,
         existingJob?.ownerPid ?? this.pid,
         existingJob?.slot,
-        request.job === 0,
+        selector === 0,
         jobLifetime,
       );
       child.data = transfer?.data;
@@ -383,12 +400,7 @@ export class WorkerProcessClient {
         });
       }
       // The worker may immediately mutate the original request or close its source fds.
-      const snapshot: SpawnRequest = {
-        ...request,
-        argv: request.argv.slice(),
-        env: { ...request.env },
-        fds: request.fds.map((binding) => ({ ...binding })),
-      };
+      const snapshot = snapshotSpawnRequest(request, selector, requestedLifetime);
       this.admit();
       const group = directoryJob(child.directory, workerProcessState(child).jobSlot);
       checkDirectoryJobAdmission(child.directory, group);

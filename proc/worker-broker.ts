@@ -551,10 +551,14 @@ export class WorkerProcessBroker {
   }
   private publishRetirement(job: number): void {
     const shared = this.sharedJob(job);
-    if (shared && controlLoad(shared.group.pending) === 0) {
+    if (shared) {
       let state = 0;
       try {
-        if (!this.supervisor || this.supervisor.jobRetired(job)) state = 1;
+        if (
+          (!this.supervisor || this.supervisor.jobRetired(job)) &&
+          controlLoad(shared.group.pending) === 0
+        )
+          state = 1;
       } catch (error) {
         state = error instanceof ProcessError ? -error.errno : -29;
       }
@@ -566,17 +570,19 @@ export class WorkerProcessBroker {
     const pending: Promise<void>[] = [];
     for (const root of this.directories.values()) {
       settleDirectoryJobLifetimes(root.directory);
-      pending.push(...this.closeDirectoryJobs(root, owner));
+      this.closeDirectoryJobs(root, owner, pending);
     }
     return pending.length ? Promise.all(pending).then(() => {}) : undefined;
   }
-  private closeDirectoryJobs(root: WorkerProcessTransport, owner: number): Promise<void>[] {
-    const pending: Promise<void>[] = [];
+  private closeDirectoryJobs(
+    root: WorkerProcessTransport,
+    owner: number,
+    pending: Promise<void>[],
+  ): void {
     for (const group of directoryGroups(root.directory)) {
       if (group.ownerPid !== owner || controlLoad(group.lifetime) !== 3) continue;
       pending.push(this.ownedJobWork(root, group));
     }
-    return pending;
   }
   private ownedJobWork(
     root: WorkerProcessTransport,
