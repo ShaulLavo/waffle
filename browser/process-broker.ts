@@ -841,6 +841,15 @@ export class BrowserProcessBroker {
       return;
     this.supervisor?.reapJob(record.ownerPid, job);
   }
+  /**
+   * A single-use module worker for a root the consumer launches itself, from the same precreated
+   * pool as broker-launched children. It stays inert until the consumer posts its request; the
+   * consumer owns its termination. Idle pool workers stop when the broker is disposed.
+   */
+  takeWorker(workerUrl: string): Worker {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    return this.workers.take(workerUrl);
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,

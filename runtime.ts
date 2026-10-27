@@ -156,6 +156,7 @@ const processCapabilities = {
   transportFor: "method",
   releaseLegacyJob: "method",
   launchWorker: "method",
+  takeWorker: "method",
   kill: "async",
   killJob: "async",
   rootExit: "async",

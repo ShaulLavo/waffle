@@ -3885,3 +3885,52 @@ for (const path of ["external", "incoming"] as const)
     expect(calls).toEqual({ revoke: 1, quiesce: 1 });
     await bounded(local.broker.dispose());
   });
+
+test("consumer roots take single-use workers from the broker's precreated pool", async () => {
+  const original = globalThis.Worker;
+  const created: { url: string; stopped: number }[] = [];
+  globalThis.Worker = class {
+    onmessage = null;
+    onerror = null;
+    readonly entry: { url: string; stopped: number };
+    constructor(url: string) {
+      this.entry = { url, stopped: 0 };
+      created.push(this.entry);
+    }
+    terminate() {
+      this.entry.stopped++;
+    }
+  } as unknown as typeof Worker;
+  try {
+    const identities = new ProcessIdentityAllocator();
+    const broker = new BrowserProcessBroker({
+      identities,
+      table: new ProcessTable(identities),
+      registry: new ExecutableRegistry(),
+      filesystem: {
+        connect() {
+          throw new Error("unused");
+        },
+        revoke() {},
+        reap() {},
+        async quiesce() {},
+      },
+      launch() {
+        throw new Error("unused");
+      },
+    });
+    const first = broker.takeWorker("root.js") as unknown as { entry: (typeof created)[number] };
+    expect(created).toHaveLength(1);
+    await Bun.sleep(10);
+    expect(created.map((entry) => entry.url)).toEqual(["root.js", "root.js", "root.js"]);
+    const second = broker.takeWorker("root.js") as unknown as { entry: (typeof created)[number] };
+    expect(second.entry).toBe(created[1]!);
+    expect(second.entry).not.toBe(first.entry);
+    await broker.dispose();
+    // The leased roots belong to the consumer; the one idle worker stops and no refill starts.
+    expect(created.map((entry) => entry.stopped)).toEqual([0, 0, 1]);
+    expect(() => broker.takeWorker("root.js")).toThrow(/disposed/);
+  } finally {
+    globalThis.Worker = original;
+  }
+});
