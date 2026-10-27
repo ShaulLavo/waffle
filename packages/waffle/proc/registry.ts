@@ -15,10 +15,19 @@ export type ExecutableRead = (
 
 const MAX_SHEBANG_DEPTH = 4;
 const MAX_SHEBANG_BYTES = 256;
+const MAX_SYMLINK_EXPANSIONS = 40;
 
 function symlinkTarget(file: { readonly kind: "file" | "dir" | "symlink" }): string | undefined {
   if (file.kind !== "symlink" || !("target" in file) || typeof file.target !== "string") return;
   return file.target;
+}
+
+function symlinkExpansionBlocked(
+  path: string,
+  seen: ReadonlySet<string>,
+  expansions: number,
+): boolean {
+  return seen.has(path) || expansions >= MAX_SYMLINK_EXPANSIONS;
 }
 
 export interface Executable {
@@ -155,7 +164,7 @@ export class ExecutableRegistry {
     readonly argv?: readonly string[];
   }> {
     const seen = new Set<string>();
-    return this.admitScript(name, cwd, assertActive, argv, mode, 0, seen);
+    return this.admitScript(name, cwd, assertActive, argv, mode, 0, seen, 0);
   }
 
   private async admitScript(
@@ -166,6 +175,7 @@ export class ExecutableRegistry {
     mode: "access" | "execute",
     depth: number,
     seen: Set<string>,
+    symlinks: number,
     scriptName = name,
   ): Promise<{
     readonly entry: Readonly<Required<Executable>>;
@@ -198,21 +208,23 @@ export class ExecutableRegistry {
     if (file.kind === "dir") throw new ExecutableNotRunnable(file.path, true);
     const target = symlinkTarget(file);
     if (target) {
-      if (seen.has(file.path)) throw new ExecutableNotRunnable(file.path, false, "ELOOP");
+      if (symlinkExpansionBlocked(file.path, seen, symlinks))
+        throw new ExecutableNotRunnable(file.path, false, "ELOOP");
       seen.add(file.path);
       return this.admitScript(
-        target,
-        dirname(file.path),
+        target.startsWith("/") ? target : `${dirname(file.path)}/${target}`,
+        cwd,
         assertActive,
         argv,
         mode,
         depth,
         seen,
+        symlinks + 1,
         scriptName,
       );
     }
-    if (registered && file.kind === "file" && file.path === predicted)
-      return { entry: registered, ...(argv ? { argv } : {}) };
+    const resolved = file.path === predicted ? registered : this.entries.get(file.path);
+    if (resolved && file.kind === "file") return { entry: resolved, ...(argv ? { argv } : {}) };
     if (!this.read) throw this.notRunnable(file.path, mode);
     if (seen.has(file.path) || depth >= MAX_SHEBANG_DEPTH)
       throw new ExecutableNotRunnable(file.path, false, "ELOOP");
@@ -235,6 +247,7 @@ export class ExecutableRegistry {
       mode,
       depth + 1,
       seen,
+      symlinks,
     );
   }
 
