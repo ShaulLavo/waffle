@@ -376,3 +376,37 @@ test("wire socket acceptance precedes synchronous bytes and end", async () => {
     host.close();
   }
 });
+
+test("revocation after a pending body read resolves cannot strand an exchange awaiting credit", async () => {
+  const f = fixture();
+  const host = await f.router.bindHost({ port: 3137 });
+  let notify = () => {};
+  const head = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  const messages: string[] = [];
+  const completed = host.dispatch(
+    {
+      type: "http",
+      authorization: host.authorization,
+      url: origin,
+      method: "GET",
+      headers: [],
+      body: null,
+    },
+    {
+      onmessage: null,
+      close() {},
+      postMessage(message) {
+        messages.push(message.type);
+        if (message.type === "head") notify();
+      },
+    },
+  );
+  void f.peer?.data(encoder.encode("HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n"));
+  await head;
+  void f.peer?.data(encoder.encode("yes"));
+  host.close();
+  await completed;
+  expect(messages).toEqual(["accepted", "head", "error"]);
+});

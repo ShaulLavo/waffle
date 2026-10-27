@@ -380,6 +380,7 @@ async function sendBody(
   for (;;) {
     signal.throwIfAborted();
     const chunk = await reader.read();
+    signal.throwIfAborted();
     if (chunk.done) return;
     const pulled = new Promise<void>((resolve) => {
       ready(resolve);
