@@ -267,6 +267,20 @@ function loadProcessModules(runtimeProcess: unknown) {
   return { client, host };
 }
 
+function initialStdio(
+  runtimeState: RuntimeWorkerState | null,
+  ownedStdio: Partial<Record<0 | 1 | 2, Stream>> | undefined,
+  checkIoActive: () => void,
+): Partial<Record<0 | 1 | 2, Stream | null>> | undefined {
+  if (runtimeState && runtimeState.parentPid !== 0) return { 0: null, 1: null, 2: null };
+  if (!ownedStdio) return;
+  return {
+    ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
+    ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
+    ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
+  };
+}
+
 /** Instantiate one process using explicit capabilities; never creates a page runtime. */
 export async function bootstrap<R extends RuntimeWorkerRequest>(
   req: R,
@@ -537,13 +551,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       outcome = runtimeState.signals.outcome;
       requestedSignal = runtimeState.signals.requestedSignal;
     }
-    const stdio = ownedStdio
-      ? {
-          ...(ownedStdio[0] ? { 0: guardedStream(ownedStdio[0], checkIoActive) } : {}),
-          ...(ownedStdio[1] ? { 1: guardedStream(ownedStdio[1], checkIoActive) } : {}),
-          ...(ownedStdio[2] ? { 2: guardedStream(ownedStdio[2], checkIoActive) } : {}),
-        }
-      : undefined;
+    const stdio = initialStdio(runtimeState, ownedStdio, checkIoActive);
     // Default terminal descriptions must post directly: routing their callbacks back through
     // the live fd would recurse, or send an inherited terminal into a redirected file.
     const output = (type: "stdout" | "stderr", data: Uint8Array) => {
@@ -629,6 +637,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (done) return;
     const namespaces = executor.namespaces?.(context);
     if (done) return;
+    // Launch descriptors, snapshotted after bindings and before the guest can open its own.
+    let inherited: readonly number[] = [];
     const processImports: Record<string, (...args: number[]) => number | void> = {
       fd_reopen: (
         fd: number,
@@ -643,6 +653,10 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       fd_kind: (fd) => {
         checkActive();
         return wasi!.descriptors.kind(fd! >>> 0);
+      },
+      inherited_fd: (index) => {
+        checkActive();
+        return inherited[index! >>> 0] ?? -44; // WASI ENOENT ends the list
       },
       signal: (signal, mode) => executor.signal?.(signal!, mode!) ?? -52,
       // Guest-owned runtime_proc.interrupted remains the cooperative handled-signal probe.
@@ -834,6 +848,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       executor.beforeBindings?.(bindingsContext);
       if (done) return;
     }
+    inherited = wasi.descriptors.inheritable();
     const instantiating = perfNow();
     const imports = wasi.imports(req.module);
     // Linking binds WASI views for a real Wasm start section, which runs inside instantiation.

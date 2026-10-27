@@ -112,7 +112,7 @@ export interface WasiOptions {
   /** Optional blocking stdin for subprocess pipes; absent means EOF. */
   stdin?(cap: number): Uint8Array | number;
   /** Bound endpoints replace the default terminal descriptions (for example child pipes). */
-  stdio?: Partial<Record<0 | 1 | 2, Stream>>;
+  stdio?: Partial<Record<0 | 1 | 2, Stream | null>>;
   stdout(data: Uint8Array): void;
   stderr(data: Uint8Array): void;
   /** Host diagnostics may follow live stderr independently of a terminal destination callback. */
@@ -236,6 +236,7 @@ export class Wasi {
     this.args = opts.args.map((a) => encoder.encode(`${a}\0`));
     this.env = Object.entries(opts.env).map(([k, v]) => encoder.encode(`${k}=${v}\0`));
     for (const which of [0, 1, 2] as const) {
+      if (opts.stdio?.[which] === null) continue;
       this.descriptors.open(
         opts.stdio?.[which] ?? {
           kind: "terminal",

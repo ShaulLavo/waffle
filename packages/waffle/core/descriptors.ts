@@ -103,6 +103,16 @@ export class DescriptorTable {
     });
     return root;
   }
+  /** Open descriptor numbers in ascending order, excluding preopened directories. */
+  inheritable(): number[] {
+    const fds: number[] = [];
+    mapForEach(this.entries, (entry, fd) => {
+      if (entry.preopen !== undefined) return;
+      arrayAppend(fds, fd);
+    });
+    fds.sort((left, right) => left - right);
+    return fds;
+  }
   /** Non-consuming runtime_proc classification; independent of rights and preview1 filetype. */
   kind(fd: number): number {
     const entry = mapGet(this.entries, fd);
