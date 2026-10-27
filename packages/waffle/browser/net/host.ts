@@ -74,6 +74,8 @@ const decoder = new TextDecoder();
 export class NetHost {
   private ring: RingReader;
   private handles = new Map<number, Handle>();
+  private listenerPorts = new Set<number>();
+  private nextEphemeralPort = EPHEMERAL_BASE;
   /** Connections announced by the helper but not accepted yet (their bytes buffer here meanwhile). */
   private unaccepted = new Map<number, ConnHandle>();
   private nextHandle = 1;
@@ -298,6 +300,7 @@ export class NetHost {
     if (!h) return BADF;
     this.handles.delete(handle);
     if (h.kind === "listener") {
+      if (!this.options.shared) this.releasePort(h.local.port);
       for (const conn of h.pending) this.closeUnaccepted(conn);
     }
     if (h.kind === "conn" && h.pipe !== null) {
@@ -325,15 +328,10 @@ export class NetHost {
     if (!Number.isInteger(port) || port < 0 || port > 65535)
       return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
     if (this.options.shared) return this.listenShared(host, port, address);
-    const inUse = new Set<number>();
-    for (const h of this.handles.values()) if (h.kind === "listener") inUse.add(h.local.port);
-    if (port === 0) {
-      port = EPHEMERAL_BASE;
-      while (inUse.has(port)) port++;
-    }
+    if (port === 0) port = this.nextEphemeralPort;
     if (port > 65535)
       return this.fail({ name: "RangeError", message: `port out of range: ${port}` });
-    if (inUse.has(port)) {
+    if (this.listenerPorts.has(port)) {
       return this.fail({
         name: "Error",
         message: `Failed to start server. Is port ${port} in use?`,
@@ -347,8 +345,20 @@ export class NetHost {
       pending: [],
       error: null,
     });
-    this.send({ type: "listen", id, port, host });
+    this.listenerPorts.add(port);
+    while (this.listenerPorts.has(this.nextEphemeralPort)) this.nextEphemeralPort++;
+    try {
+      this.send({ type: "listen", id, port, host });
+    } catch (error) {
+      if (this.handles.delete(id)) this.releasePort(port);
+      throw error;
+    }
     return id;
+  }
+
+  private releasePort(port: number): void {
+    this.listenerPorts.delete(port);
+    if (port >= EPHEMERAL_BASE) this.nextEphemeralPort = Math.min(this.nextEphemeralPort, port);
   }
 
   /**
