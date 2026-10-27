@@ -76,6 +76,10 @@ Wasm parameter and result types. Supported `dylink.0` import-info records mark
 direct `env` functions weak and undefined (`0x11`). A present provider binds
 normally. A missing direct weak function remains an error; Waffle supplies no
 replacement callable. Imports without a record require a provider.
+Records must name an imported `env` function. Other flags, duplicate or
+conflicting records, unmatched names, and malformed payloads are rejected.
+Global imports retain their Wasm type and mutability. Core globals must match;
+the existing data GOT still requires immutable core i32 address exports.
 
 Active default-index segments use their imported base global. Passive data
 requires explicit ordered memory initialization and relocation. For passive
