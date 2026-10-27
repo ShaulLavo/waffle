@@ -237,8 +237,9 @@ output uses the host callbacks. The same resolver option is available directly o
 
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the
 returned producer and its `buffer`, and feeds bytes with `pushTerminalInput()`; the helper splits
-large pastes into bounded `TerminalDisplay.input()` turns and never silently slices or drops a
-chunk. An executor attaches the buffer with `attachTerminalInput()` and supplies
+large pastes into bounded `TerminalDisplay.input()` turns and returns an accepted prefix alongside
+`AGAIN`, `CANCELED`, or `CLOSED` when a later chunk cannot be admitted. Callers retry only the
+unaccepted tail; the helper never silently slices or drops a chunk. An executor attaches the buffer with `attachTerminalInput()` and supplies
 `createTerminalInputPolicy()` to `attachTerminal()`. Raw turns deliver bytes as entered. Cooked
 turns hold partial lines, normalize CR and CRLF to LF across attachments, and treat Ctrl-D or a
 closed producer as EOF. A live empty read returns `AGAIN`, and cancellation returns `CANCELED`;

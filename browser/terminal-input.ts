@@ -2,6 +2,7 @@ import type { Readiness } from "../core/descriptors.js";
 import {
   TERMINAL_SESSION_LIMITS,
   type TerminalDisplay,
+  type TerminalFailure,
   type TerminalPolicy,
   type TerminalResult,
   type TerminalTurn,
@@ -57,6 +58,10 @@ export interface TerminalInputPolicyOptions {
   readonly tryWrite?: (target: 1 | 2, chunks: readonly Uint8Array[]) => number;
   readonly outputReadiness?: (target: 1 | 2) => Pick<Readiness, "writable">;
 }
+
+export type TerminalInputPushResult =
+  | { readonly kind: "ok"; readonly value: number }
+  | { readonly kind: "error"; readonly code: TerminalFailure; readonly accepted: number };
 
 interface CookedRecord {
   readonly end: number;
@@ -150,18 +155,22 @@ class InputBuffer implements TerminalInput {
     atomicsStore(this.state, H.cookedReady, 0);
     atomicsStore(this.state, H.cookedEnd, atomicsLoad(this.state, H.read));
     atomicsStore(this.state, H.cookedOutputEnd, atomicsLoad(this.state, H.read));
-    atomicsStore(this.state, H.skipLineFeed, 0);
+  }
+  resetModeRecord(): void {
+    this.resetCooked();
   }
   private readRaw(chunks: readonly Uint8Array[]): number {
     const read = atomicsLoad(this.state, H.read);
-    const count = Math.min(this.available(), byteLength(chunks));
-    if (!count) return atomicsLoad(this.state, H.closed) !== 0 ? 0 : AGAIN;
+    let remaining = this.available();
+    if (!remaining) return atomicsLoad(this.state, H.closed) !== 0 ? 0 : AGAIN;
     let offset = 0;
     for (const chunk of chunks) {
-      const length = Math.min(chunk.length, count - offset);
+      if (!chunk.length) continue;
+      const length = Math.min(chunk.length, remaining);
       if (!length) break;
       chunk.set(copyFrom(this.ring, read + offset, length));
       offset += length;
+      remaining -= length;
     }
     atomicsStore(this.state, H.read, read + offset);
     this.signal();
@@ -282,12 +291,6 @@ class InputBuffer implements TerminalInput {
   }
 }
 
-function byteLength(chunks: readonly Uint8Array[]): number {
-  let total = 0;
-  for (const chunk of chunks) total += chunk.length;
-  return total;
-}
-
 function inputBuffer(input: TerminalInput | SharedArrayBuffer): InputBuffer {
   if (input instanceof InputBuffer) return input;
   const buffer = input instanceof SharedArrayBuffer ? input : input.buffer;
@@ -304,18 +307,31 @@ export function attachTerminalInput(buffer: SharedArrayBuffer): TerminalInput {
   return new InputBuffer(buffer);
 }
 
+function pushFailure(code: number): TerminalFailure {
+  if (code === AGAIN) return "AGAIN";
+  if (code === CANCELED) return "CANCELED";
+  if (code === BADF) return "CLOSED";
+  return "INVALID";
+}
+
 export function pushTerminalInput(
   display: TerminalDisplay,
   input: TerminalInput,
   bytes: Uint8Array,
-): TerminalResult<number> {
+): TerminalInputPushResult {
   let offset = 0;
   while (offset < bytes.length) {
     const end = Math.min(offset + TERMINAL_SESSION_LIMITS.inputBytesPerTurn, bytes.length);
-    const result = display.input(() => input.push(bytes.subarray(offset, end)));
-    if (result.kind === "error") return result;
-    if (result.value !== end - offset) return { kind: "error", code: "INVALID" };
-    offset = end;
+    const length = end - offset;
+    let pushed = 0;
+    const result = display.input(() => {
+      pushed = input.push(bytes.subarray(offset, end));
+      return pushed >= 0 ? pushed : 0;
+    });
+    if (pushed < 0) return { kind: "error", code: pushFailure(pushed), accepted: offset };
+    offset += pushed;
+    if (result.kind === "error") return { kind: "error", code: result.code, accepted: offset };
+    if (pushed !== length) return { kind: "error", code: "INVALID", accepted: offset };
   }
   return { kind: "ok", value: offset };
 }
@@ -331,7 +347,7 @@ export function createTerminalInputPolicy(options: TerminalInputPolicyOptions): 
       return { readable: input.inputReady(turn.mode === "cooked"), nbytes: available };
     },
     transition(_turn, change): TerminalResult<void> {
-      if (change.kind === "mode" || change.kind === "selection") input.resetCooked();
+      if (change.kind === "mode") input.resetModeRecord();
       return { kind: "ok", value: undefined };
     },
     tryWrite(target, chunks): number {

@@ -125,7 +125,11 @@ export {
   pushTerminalInput,
   createTerminalInputPolicy,
 } from "./terminal-input.js";
-export type { TerminalInput, TerminalInputPolicyOptions } from "./terminal-input.js";
+export type {
+  TerminalInput,
+  TerminalInputPolicyOptions,
+  TerminalInputPushResult,
+} from "./terminal-input.js";
 export {
   createTerminalSession,
   claimTerminalAuthority,

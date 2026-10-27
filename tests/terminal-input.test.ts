@@ -43,6 +43,10 @@ test("generic terminal input keeps live empty reads pending and delivers raw byt
     expect(input.push(new Uint8Array([65, 66, 67]))).toBe(3);
     expect(read(display, policy, [destination], "raw")).toBe(3);
     expect(Array.from(destination)).toEqual([65, 66, 67]);
+    expect(input.push(new Uint8Array([68]))).toBe(1);
+    const scattered = new Uint8Array(1);
+    expect(read(display, policy, [new Uint8Array(0), scattered], "raw")).toBe(1);
+    expect(scattered[0]).toBe(68);
     expect(input.push(new Uint8Array([13, 10]))).toBe(2);
     const lineEnd = new Uint8Array(2);
     expect(read(display, policy, [lineEnd], "raw")).toBe(2);
@@ -155,17 +159,88 @@ test("cooked CRLF state is shared across attachments", () => {
 });
 
 test("large display input uses bounded turns without invalidating the session", () => {
-  const input = createTerminalInput({ capacity: 8192 });
+  const input = createTerminalInput({ capacity: 4096 });
   const display = createTerminalSession({
     controller: createWorkerProcessTransport({ capacity: 4 }),
     geometry: { columns: 80, rows: 24 },
   });
   try {
     const bytes = new Uint8Array(4097).fill(65);
-    expect(pushTerminalInput(display, input, bytes)).toEqual({ kind: "ok", value: 4097 });
-    expect(input.available()).toBe(4097);
+    expect(pushTerminalInput(display, input, bytes)).toEqual({
+      kind: "error",
+      code: "AGAIN",
+      accepted: 4096,
+    });
+    expect(input.available()).toBe(4096);
+    const policy = createTerminalInputPolicy({ input });
+    const drained = new Uint8Array(1);
+    expect(read(display, policy, [drained], "raw")).toBe(1);
+    expect(pushTerminalInput(display, input, bytes.subarray(4096))).toEqual({
+      kind: "ok",
+      value: 1,
+    });
+    expect(input.available()).toBe(4096);
     expect(display.snapshot().kind).toBe("ok");
   } finally {
+    display.close("disposed");
+  }
+});
+
+test("canceled paste preserves the display and resumes with the unaccepted tail", () => {
+  const input = createTerminalInput({ capacity: 8 });
+  const display = createTerminalSession({
+    controller: createWorkerProcessTransport({ capacity: 4 }),
+    geometry: { columns: 80, rows: 24 },
+  });
+  try {
+    input.cancel();
+    expect(pushTerminalInput(display, input, new Uint8Array([65]))).toEqual({
+      kind: "error",
+      code: "CANCELED",
+      accepted: 0,
+    });
+    expect(display.snapshot().kind).toBe("ok");
+    input.resume();
+    expect(pushTerminalInput(display, input, new Uint8Array([65]))).toEqual({
+      kind: "ok",
+      value: 1,
+    });
+    input.close();
+    expect(display.snapshot().kind).toBe("ok");
+  } finally {
+    display.close("disposed");
+  }
+});
+
+test("pending CRLF suppression survives foreground handoff", () => {
+  const root = createWorkerProcessTransport({ capacity: 8 });
+  const input = createTerminalInput({ capacity: 8 });
+  const display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
+  const policy = createTerminalInputPolicy({ input });
+  const attachment = attachTerminal({
+    context: display.inherit(),
+    process: root,
+    checkActive() {},
+    policy,
+  });
+  const authority = must(
+    claimTerminalAuthority({ identity: display.identity, process: root, checkActive() {}, policy }),
+  );
+  const first = must(authority.createGroup({ initialMode: "cooked" }));
+  must(authority.admitExisting({ group: first, pid: root.pid }));
+  const lease = must(authority.acquire({ group: first, expected: null }));
+  const stream = attachment.resolve(0);
+  try {
+    expect(input.push(new Uint8Array([65, 13]))).toBe(2);
+    expect(stream.tryRead?.([new Uint8Array(2)])).toBe(2);
+    expect(authority.release({ lease, restore: null }).kind).toBe("ok");
+    const second = must(authority.createGroup({ initialMode: "cooked" }));
+    must(authority.admitExisting({ group: second, pid: root.pid }));
+    must(authority.acquire({ group: second, expected: null }));
+    expect(input.push(new Uint8Array([10]))).toBe(1);
+    expect(stream.tryRead?.([new Uint8Array(1)])).toBe(-6);
+  } finally {
+    attachment.dispose();
     display.close("disposed");
   }
 });
