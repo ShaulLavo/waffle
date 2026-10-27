@@ -37,6 +37,7 @@ interface ImportInfo {
 }
 export interface ModuleProfile {
   readonly passiveData: boolean;
+  readonly baseOffsets: { readonly memory: number; readonly table: number };
   readonly functions: ReadonlyMap<string, FunctionExport>;
   readonly memory: MemoryInfo | undefined;
   readonly functionImports: readonly FunctionImport[];
@@ -243,8 +244,9 @@ function signed32(reader: Reader): number {
 }
 
 /** Reads `global.get base` with an optional `i32.const k; i32.add` (extended-const). */
-function baseOffset(reader: Reader, bases: ReadonlySet<number>, message: string): number {
-  if (!bases.has(reader.u32())) invalid(reader.member, message);
+function baseOffset(reader: Reader, bases: ReadonlySet<number>, message: string) {
+  const base = reader.u32();
+  if (!bases.has(base)) invalid(reader.member, message);
   let opcode = reader.byte(),
     offset = 0;
   if (opcode === 0x41) {
@@ -253,13 +255,13 @@ function baseOffset(reader: Reader, bases: ReadonlySet<number>, message: string)
     opcode = reader.byte();
   }
   if (opcode !== 0x0b) invalid(reader.member, message);
-  return offset;
+  return { base, offset };
 }
 
 function segmentOffset(reader: Reader, global: number | undefined): number {
   const message = "side segment offset must be its imported base global plus a constant";
   if (global === undefined || reader.byte() !== 0x23) invalid(reader.member, message);
-  return baseOffset(reader, new Set([global]), message);
+  return baseOffset(reader, new Set([global]), message).offset;
 }
 
 function segments(
@@ -360,13 +362,32 @@ export function sameSignature(left: FunctionSignature, right: FunctionSignature)
   return left.params.join() === right.params.join() && left.results.join() === right.results.join();
 }
 
+interface BaseInfo {
+  readonly kind: "memory" | "table";
+  readonly size: number;
+}
+
+function relativeGlobal(
+  reader: Reader,
+  bases: ReadonlyMap<number, BaseInfo>,
+  offsets: Record<"memory" | "table", number>,
+  message: string,
+): void {
+  const { base, offset } = baseOffset(reader, new Set(bases.keys()), message);
+  const info = bases.get(base)!;
+  if (offset < 0 || offset > info.size)
+    invalid(reader.member, "relative global exceeds dylink.0 reservation");
+  offsets[info.kind] = Math.max(offsets[info.kind], offset);
+}
+
 function definedGlobals(
   section: Reader | undefined,
   member: string,
-  bases: ReadonlySet<number>,
-): GlobalType[] {
+  bases: ReadonlyMap<number, BaseInfo>,
+) {
   const globals = section ?? new Reader(new Uint8Array([0]), member);
   const result: GlobalType[] = [];
+  const offsets = { memory: 0, table: 0 };
   const count = globals.u32();
   for (let index = 0; index < count; index++) {
     const value = globals.byte(),
@@ -375,14 +396,14 @@ function definedGlobals(
     result.push({ value, mutable: mutable === 1 });
     const opcode = globals.byte();
     const message = "globals require i32.const or imported-base relative initializers";
-    if (opcode === 0x23) baseOffset(globals, bases, message);
+    if (opcode === 0x23) relativeGlobal(globals, bases, offsets, message);
     else if (opcode !== 0x41) invalid(member, message);
     else signed32(globals);
     if (opcode === 0x41 && globals.byte() !== 0x0b)
       invalid(member, "unsupported global initializer");
   }
   globals.done();
-  return result;
+  return { globals: result, offsets };
 }
 
 function coreLayout(sections: Map<number, Reader>, member: string): void {
@@ -416,6 +437,19 @@ function globalExports(
   }
   exports.done();
   return result;
+}
+
+function importedBases(imports: readonly GlobalImport[], memory: MemoryInfo | undefined) {
+  const bases = new Map<number, BaseInfo>();
+  if (!memory) return bases;
+  for (const entry of imports) {
+    if (entry.module !== "env" || entry.mutable) continue;
+    if (entry.name === "__memory_base")
+      bases.set(entry.index, { kind: "memory", size: memory.memorySize });
+    if (entry.name === "__table_base")
+      bases.set(entry.index, { kind: "table", size: memory.tableSize });
+  }
+  return bases;
 }
 
 export function inspectProfile(bytes: Uint8Array, member: string, side: boolean): ModuleProfile {
@@ -452,19 +486,16 @@ export function inspectProfile(bytes: Uint8Array, member: string, side: boolean)
   const globalImports = entries.globals;
   const functions = functionExports(sections, types, functionImports, member);
   const importedGlobals: readonly GlobalType[] = globalImports;
-  const bases = new Set(
-    globalImports
-      .filter((entry) => entry.module === "env" && !entry.mutable)
-      .filter((entry) => entry.name === "__memory_base" || entry.name === "__table_base")
-      .map((entry) => entry.index),
-  );
-  const globals = importedGlobals.concat(definedGlobals(sections.get(6), member, bases));
+  const bases = importedBases(globalImports, memory);
+  const defined = definedGlobals(sections.get(6), member, bases);
+  const globals = importedGlobals.concat(defined.globals);
   const exportedGlobals = globalExports(sections.get(7), globals, member);
   const immutableI32Exports = new Set<string>();
   for (const [name, type] of exportedGlobals) {
     if (!type.mutable) immutableI32Exports.add(name);
   }
   const profile = {
+    baseOffsets: defined.offsets,
     functions,
     functionImports,
     memory,

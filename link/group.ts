@@ -146,7 +146,7 @@ function functionCells(
     const address =
       typeof provider === "function"
         ? functionSlot(table, provider, member.id, ranges)
-        : slots.base + member.self.targets.indexOf(entry.name);
+        : slots.base + member.self.targetSlots.get(entry.name)!;
     cells[entry.name] = new WebAssembly.Global({ value: "i32", mutable: true }, address);
   }
   return cells;
@@ -175,7 +175,7 @@ function sideImports(
   for (const entry of WebAssembly.Module.imports(member.module)) {
     if (entry.module !== "env") continue;
     const value = core.exports[entry.name];
-    const slot = member.self.relayed.get(entry.name);
+    const slot = member.self.targetSlots.get(entry.name);
     if (entry.name === "memory") env[entry.name] = memory;
     else if (entry.name === "__indirect_function_table") env[entry.name] = table;
     else if (entry.name === "__memory_base")
@@ -235,6 +235,11 @@ function linkLibrary(
   host.checkActive();
   const layout = member.profile.memory!;
   const tableBase = reserveTable(table, member.id, layout.tableSize, layout.tableAlignment, ranges);
+  if (
+    memoryBase + member.profile.baseOffsets.memory > 4294967295 ||
+    tableBase + member.profile.baseOffsets.table > 4294967295
+  )
+    invalid(member.id, "relative global address overflows wasm32");
   new Uint8Array(memory.buffer, memoryBase, layout.memorySize).fill(0);
   const slots = reserveSelf(member, table, ranges);
   const imports = sideImports(

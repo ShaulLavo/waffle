@@ -32,8 +32,8 @@ export interface LinkHost {
 export interface SelfPlan {
   /** Defined exports, in target-slot order. */
   readonly targets: readonly string[];
-  /** `env` import name -> target slot reached through the typed relay. */
-  readonly relayed: ReadonlyMap<string, number>;
+  /** Same-side symbol name -> target slot for its defined function identity. */
+  readonly targetSlots: ReadonlyMap<string, number>;
   /** Relay with export `f<slot>` for every target; absent when nothing binds to self. */
   readonly relay: WebAssembly.Module | undefined;
 }
@@ -51,7 +51,7 @@ export interface PlanData {
   readonly source: LinkPlanSource;
 }
 const plans = new WeakMap<PreparedLinkPlan, PlanData>();
-const NO_SELF: SelfPlan = { targets: [], relayed: new Map(), relay: undefined };
+const NO_SELF: SelfPlan = { targets: [], targetSlots: new Map(), relay: undefined };
 const code = new Map<string, Promise<WebAssembly.Module>>();
 
 export class PreparedLinkPlan {
@@ -93,10 +93,15 @@ function selfTarget(member: CompiledMember, name: string, kind: string): void {
 async function selectProviders(core: CompiledMember, member: CompiledMember): Promise<SelfPlan> {
   const exports = WebAssembly.Module.exports(core.module);
   const targets: string[] = [];
-  const relayed = new Map<string, number>();
+  const targetSlots = new Map<string, number>();
   const target = (name: string) => {
-    const known = targets.indexOf(name);
-    return known >= 0 ? known : targets.push(name) - 1;
+    const identity = member.profile.functions.get(name)!.index;
+    const known = targets.findIndex(
+      (targetName) => member.profile.functions.get(targetName)!.index === identity,
+    );
+    const slot = known >= 0 ? known : targets.push(name) - 1;
+    targetSlots.set(name, slot);
+    return slot;
   };
   for (const entry of member.profile.functionImports) {
     if (entry.module !== "env") continue;
@@ -117,18 +122,11 @@ async function selectProviders(core: CompiledMember, member: CompiledMember): Pr
         member.id,
         `env.${entry.name} has an incompatible ${coreProvider ? "core" : "same-side"} function signature`,
       );
-    if (!coreProvider) relayed.set(entry.name, target(entry.name));
+    if (!coreProvider) target(entry.name);
   }
   for (const entry of member.profile.globalImports) {
     if (entry.module === "env" && ["__memory_base", "__table_base"].includes(entry.name)) continue;
-    if (entry.module === "GOT.func") {
-      if (core.profile.functions.has(entry.name)) continue;
-      selfTarget(member, entry.name, "GOT.func");
-      if (!member.profile.functions.has(entry.name))
-        invalid(member.id, `GOT.func.${entry.name} requires a core or same-side function export`);
-      target(entry.name);
-      continue;
-    }
+    if (entry.module === "GOT.func") continue;
     const provider = core.profile.globalExports.get(entry.name);
     const mutable = entry.module === "GOT.mem" ? false : entry.mutable;
     if (!provider || provider.value !== entry.value || provider.mutable !== mutable)
@@ -137,9 +135,18 @@ async function selectProviders(core: CompiledMember, member: CompiledMember): Pr
         `${entry.module}.${entry.name} requires a core ${mutable ? "mutable" : "immutable"} i32 global export`,
       );
   }
+  for (const entry of member.profile.globalImports) {
+    if (entry.module !== "GOT.func" || core.profile.functions.has(entry.name)) continue;
+    if (exports.some((value) => value.name === entry.name))
+      invalid(member.id, `core export GOT.func.${entry.name} must be a function`);
+    selfTarget(member, entry.name, "GOT.func");
+    if (!member.profile.functions.has(entry.name))
+      invalid(member.id, `GOT.func.${entry.name} requires a core or same-side function export`);
+    target(entry.name);
+  }
   if (!targets.length) return NO_SELF;
   const signatures = targets.map((name) => member.profile.functions.get(name)!);
-  return { targets, relayed, relay: await WebAssembly.compile(relayModule(signatures)) };
+  return { targets, targetSlots, relay: await WebAssembly.compile(relayModule(signatures)) };
 }
 
 function snapshotPlan(source: LinkPlanSource): LinkPlanSource {

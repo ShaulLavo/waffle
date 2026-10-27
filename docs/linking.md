@@ -92,7 +92,9 @@ the existing data GOT still requires immutable core i32 address exports.
 
 Defined side globals may use `i32.const` or the extended-const form
 `global.get <imported base> i32.const k i32.add` with `__memory_base` or
-`__table_base`. Active default-index segments use their imported base global,
+`__table_base`. Relative globals must stay within that base's reservation,
+including its one-past address, and their final addresses must not overflow wasm32.
+Active default-index segments use their imported base global,
 optionally plus a constant, and must lie inside the `dylink.0` reservation
 without overlapping each other. Passive data
 requires explicit ordered memory initialization and relocation. For passive
@@ -111,7 +113,8 @@ interpret the objects or substitute values.
 
 `GOT.func` cells are per library. A core function provider uses its existing
 table slot when one holds that exact function, otherwise a new slot from the
-same table allocator; a same-side definition uses its target slot. Other GOT
+same table allocator; a same-side definition uses its target slot. Export aliases of the same definition
+share that slot. A core export of the wrong kind is an error. Other GOT
 namespaces, TLS, exception tags, true Wasm start sections, cycles, symbol
 searches, dlopen and unload are unsupported and rejected.
 

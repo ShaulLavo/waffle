@@ -660,7 +660,7 @@ test("GOT.func without a function provider and true Wasm start fail before any i
       ...input,
       libraries: [{ ...input.libraries[0]!, source: side("errno", "GOT.func") }],
     }),
-  ).rejects.toThrow("GOT.func.errno requires a core or same-side function export");
+  ).rejects.toThrow("core export GOT.func.errno must be a function");
   await expect(
     prepareLinkPlan({
       ...input,
@@ -993,6 +993,7 @@ function selfSide(
     increment?: number;
     exportIndex?: number;
     got?: boolean;
+    alias?: string;
   } = {},
 ): Uint8Array<ArrayBuffer> {
   const field = options.field ?? "f";
@@ -1010,7 +1011,10 @@ function selfSide(
           imp("env", "__memory_base", [3, 0x7f, 0]),
           imp("env", "__table_base", [3, 0x7f, 0]),
           imp("env", "__stack_pointer", [3, 0x7f, 1]),
-        ].concat(options.got ? [imp("GOT.func", field, [3, 0x7f, 1])] : []),
+        ].concat(
+          options.got ? [imp("GOT.func", field, [3, 0x7f, 1])] : [],
+          options.alias ? [imp("GOT.func", options.alias, [3, 0x7f, 1])] : [],
+        ),
       ),
     ),
     section(3, vector([[1], [1], [0]])),
@@ -1019,6 +1023,7 @@ function selfSide(
       vector(
         [exp(field, 0, options.exportIndex ?? 2), exp("entry", 0, 3), exp("init", 0, 4)].concat(
           options.got ? [exp("got", 3, 3)] : [],
+          options.alias ? [exp(options.alias, 0, 2), exp("aliasGot", 3, options.got ? 4 : 3)] : [],
         ),
       ),
     ),
@@ -1120,3 +1125,48 @@ test("two sides keep independent same-side definitions and clear their slots", a
   group.dispose();
   for (const index of cells) expect(group.table.get(index)).toBeNull();
 });
+
+test("same-side function aliases have the same GOT address", async () => {
+  const group = instantiateLinkPlan(
+    await prepareLinkPlan(selfSource(selfSide({ got: true, alias: "g" }))),
+    host(),
+  );
+  try {
+    const lib = group.libraries[0]!;
+    expect(lib.instance.exports.f).toBe(lib.instance.exports.g);
+    const original = lib.instance.exports.got as WebAssembly.Global;
+    const alias = lib.instance.exports.aliasGot as WebAssembly.Global;
+    expect(alias.value).toBe(original.value);
+  } finally {
+    group.dispose();
+  }
+});
+
+test("a wrong-kind core GOT provider cannot fall back to a same-side definition", async () => {
+  await expect(prepareLinkPlan(selfSource(selfSide({ alias: "errno" })))).rejects.toThrow(
+    "core export GOT.func.errno must be a function",
+  );
+});
+
+for (const [base, offset, encoded] of [
+  [0, -1, [0x7f]],
+  [0, 17, [17]],
+  [1, 2, [2]],
+] as const) {
+  test(`relative global ${base} + ${offset} stays in its reservation`, async () => {
+    const input = source();
+    await expect(
+      prepareLinkPlan({
+        ...input,
+        libraries: [
+          {
+            ...input.libraries[0]!,
+            source: side("errno", "GOT.mem", 4, {
+              globalInitializer: [0x23, base, 0x41].concat(Array.from(encoded), [0x6a, 0x0b]),
+            }),
+          },
+        ],
+      }),
+    ).rejects.toThrow("relative global exceeds dylink.0 reservation");
+  });
+}
