@@ -3,6 +3,7 @@ import { MemoryBackend } from "../fs/backend";
 import {
   ExecutableNotFound,
   ExecutableNotRunnable,
+  ExecutableFormatError,
   ExecutableRegistry,
   ProcessSupervisor,
   Signal,
@@ -29,12 +30,15 @@ function fixture() {
   const lookups: string[] = [],
     contexts: ProcessContext[] = [],
     failures: unknown[] = [];
-  const registry = new ExecutableRegistry((path) => {
-    lookups.push(path);
-    return backend.execute("resolvePath", [path], new Uint8Array()) as
-      | { path: string; kind: "file" | "dir" }
-      | undefined;
-  });
+  const registry = new ExecutableRegistry(
+    (path) => {
+      lookups.push(path);
+      return backend.execute("resolvePath", [path], new Uint8Array()) as
+        | { path: string; kind: "file" | "dir" }
+        | undefined;
+    },
+    (path) => backend.execute("readFile", [path], new Uint8Array()) as Uint8Array | undefined,
+  );
   registry.register("/bin/test-guest", {
     adapter: "test",
     module: () => {
@@ -114,17 +118,20 @@ for (const stateChange of ["missing", "deleted", "directory", "unregistered"] as
       await state.supervisor.start(pid);
       const result = await state.supervisor.waitForExit(state.root, pid);
       const missing = stateChange === "missing" || stateChange === "deleted";
+      const invalid = stateChange === "unregistered";
       expect(result).toEqual({
         kind: "start-failed",
-        code: missing ? 2 : 13,
-        error: missing ? "ENOENT" : "EACCES",
+        code: invalid ? 8 : missing ? 2 : 13,
+        error: invalid ? "ENOEXEC" : missing ? "ENOENT" : "EACCES",
         status: null,
       });
-      expect(waitStatus(result)).toBe(missing ? 127 : 126);
-      expect(state.failures[0]).toBeInstanceOf(
-        missing ? ExecutableNotFound : ExecutableNotRunnable,
-      );
-      expect(state.failures[0]).toMatchObject({ code: missing ? "ENOENT" : "EACCES" });
+      expect(waitStatus(result)).toBe(invalid ? 126 : missing ? 127 : 126);
+      if (invalid) expect(state.failures[0]).toBeInstanceOf(ExecutableFormatError);
+      else if (missing) expect(state.failures[0]).toBeInstanceOf(ExecutableNotFound);
+      else expect(state.failures[0]).toBeInstanceOf(ExecutableNotRunnable);
+      expect(state.failures[0]).toMatchObject({
+        code: invalid ? "ENOEXEC" : missing ? "ENOENT" : "EACCES",
+      });
       if (stateChange === "directory") expect(String(state.failures[0])).toContain("directory");
       expect(state.contexts).toEqual([]);
       expect(state.loads).toBe(0);
@@ -150,6 +157,137 @@ test("cached modules still require a live file for every spawn", async () => {
     expect(waitStatus(await state.supervisor.waitForExit(state.root, third))).toBe(126);
     expect(state.loads).toBe(1);
     expect(state.contexts).toHaveLength(1);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("shebang execution substitutes the registered interpreter and preserves script argv", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/interpreter", new Uint8Array());
+    state.registry.register("/bin/interpreter", {
+      adapter: "interpreter",
+      module,
+    });
+    state.fs.writeFile("/bin/script", "#! /bin/interpreter -x y\nignored body");
+    expect(await state.registry.check("./script", "/bin")).toMatchObject({
+      adapter: "interpreter",
+    });
+    const pid = state.supervisor.reserveSpawn(state.root, {
+      ...request("./script", "/bin"),
+      argv: ["./script", "first", "second"],
+    });
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toEqual({
+      kind: "exited",
+      code: 23,
+      status: 23,
+    });
+    expect(state.contexts[0]).toMatchObject({
+      adapter: "interpreter",
+      request: {
+        executable: "./script",
+        cwd: "/bin",
+        argv: ["/bin/interpreter", "-x y", "./script", "first", "second"],
+      },
+    });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("shebang execution follows a package-bin symlink while retaining its caller path", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/interpreter", new Uint8Array());
+    state.registry.register("/bin/interpreter", { adapter: "interpreter", module });
+    state.fs.mkdirp("/project/node_modules/.bin");
+    state.fs.writeFile("/project/vite.js", "#!/bin/interpreter\n");
+    const link = state.fs.resolveAbsolute("/project/node_modules/.bin/vite");
+    if (typeof link === "number") throw new Error("missing symlink path");
+    expect(state.fs.symlink(link, "../../vite.js")).toBe(0);
+    const pid = state.supervisor.reserveSpawn(state.root, {
+      ...request("./node_modules/.bin/vite", "/project"),
+      argv: ["./node_modules/.bin/vite", "--version"],
+    });
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "exited",
+      code: 23,
+    });
+    expect(state.contexts[0]?.request.argv).toEqual([
+      "/bin/interpreter",
+      "./node_modules/.bin/vite",
+      "--version",
+    ]);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("missing shebang interpreters fail access and spawn with ENOENT", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/script", "#!/bin/missing\n");
+    await expect(state.registry.check("/bin/script")).rejects.toMatchObject({ code: "ENOENT" });
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/script"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "start-failed",
+      error: "ENOENT",
+      code: 2,
+    });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("shebang recursion is bounded and cycles report ELOOP", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/a", "#!/bin/b\n");
+    state.fs.writeFile("/bin/b", "#!/bin/a\n");
+    await expect(state.registry.check("/bin/a")).rejects.toMatchObject({ code: "ELOOP" });
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/a"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "start-failed",
+      error: "ELOOP",
+      code: 40,
+    });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("registered executables keep priority over file contents", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/test-guest", "#!/bin/missing\n");
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/test-guest"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "exited",
+      code: 23,
+    });
+    expect(state.contexts[0]?.request.argv).toEqual(["/bin/test-guest"]);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("malformed shebangs retain ENOEXEC instead of guessing a shell", async () => {
+  const state = fixture();
+  try {
+    state.fs.writeFile("/bin/malformed", "#!\nplain text");
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/malformed"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "start-failed",
+      error: "ENOEXEC",
+      code: 8,
+    });
   } finally {
     state.supervisor.dispose();
   }

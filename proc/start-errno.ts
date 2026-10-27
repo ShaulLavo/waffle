@@ -4,6 +4,7 @@ export const failures = {
   ENOENT: { code: 2, wasi: 44 },
   EACCES: { code: 13, wasi: 2 },
   ENOTDIR: { code: 20, wasi: 54 },
+  ELOOP: { code: 40, wasi: 32 },
   ENOEXEC: { code: 8, wasi: 45 },
   ENOMEM: { code: 12, wasi: 48 },
   EAGAIN: { code: 11, wasi: 6 },

@@ -165,13 +165,14 @@ Actual program exits 126 and 127 remain `{kind: 0, value: 126/127}`; signals use
 
 Host/browser `ProcessExit` keeps a named `error`, Linux-style `code`, and
 `status: null` for startup failures. The shared atomic startup tag remains 3;
-it is separate from guest WaitResult kind 2. These are the seven produced errors:
+it is separate from guest WaitResult kind 2. These are the eight produced errors:
 
 | Error   | Host code | Guest WASI value | Cause                                                                                                     |
 | ------- | --------: | ---------------: | --------------------------------------------------------------------------------------------------------- |
 | ENOENT  |         2 |               44 | Missing executable or missing path component                                                              |
 | EACCES  |        13 |                2 | Directory or existing file without its admitted executable registration                                   |
 | ENOTDIR |        20 |               54 | A file used as a directory, including a trailing slash on a file                                          |
+| ELOOP   |        40 |               32 | Bounded interpreter-script recursion or an interpreter cycle                                              |
 | ENOEXEC |         8 |               45 | Invalid/unsupported Wasm at rewrite/compile, or absent/noncallable `_start` or non-memory `memory` export |
 | ENOMEM  |        12 |               48 | Allocation failure during loading or host/Worker setup                                                    |
 | EAGAIN  |        11 |                6 | Process/setup resource capacity exhausted after reservation                                               |

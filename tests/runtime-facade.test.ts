@@ -1496,12 +1496,46 @@ test("runtime spawn and PATH metadata agree on live canonical executable files",
   await runtime.filesystem.writeFile("/bin/unregistered", "not executable");
   expect(await spawn("/bin/unregistered")).toEqual({
     kind: "start-failed",
-    code: 13,
-    error: "EACCES",
+    code: 8,
+    error: "ENOEXEC",
     status: null,
   });
   expect(launches).toBe(2);
   expect(loads).toBe(1);
+});
+
+test("runtime launch executes a shebang file through its registered interpreter", async () => {
+  const runtime = create({ processHost: processHost() });
+  let argv: string[] | undefined;
+  runtime.registerAdapter("interpreter", (context) => {
+    argv = context.request.argv;
+    context.exit(19);
+    return { terminate() {} };
+  });
+  await runtime.filesystem.writeFile("/bin/interpreter", "registered interpreter");
+  await runtime.filesystem.writeFile("/bin/script", "#!/bin/interpreter -x y\nscript body");
+  runtime.registerProgram("/bin/interpreter", {
+    adapter: "interpreter",
+    module: emptyModule,
+    cooperative: true,
+  });
+  const supervisor = await (await runtime.processes()).ready();
+  const root = supervisor.createRoot();
+  const pid = supervisor.reserveSpawn(root, {
+    executable: "./script",
+    argv: ["./script", "argument"],
+    env: { TEST: "yes" },
+    cwd: "/bin",
+    job: 0,
+    fds: [],
+  });
+  await supervisor.start(pid);
+  expect(await supervisor.waitForExit(root, pid)).toEqual({
+    kind: "exited",
+    code: 19,
+    status: 19,
+  });
+  expect(argv).toEqual(["/bin/interpreter", "-x y", "./script", "argument"]);
 });
 
 for (const [executable, error, code] of [
