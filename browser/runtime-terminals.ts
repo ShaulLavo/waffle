@@ -122,6 +122,7 @@ export function createRuntimeTerminalCodec(
 export {
   createTerminalInput,
   attachTerminalInput,
+  pushTerminalInput,
   createTerminalInputPolicy,
 } from "./terminal-input.js";
 export type { TerminalInput, TerminalInputPolicyOptions } from "./terminal-input.js";

@@ -236,13 +236,15 @@ output uses the host callbacks. The same resolver option is available directly o
 `createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
 
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the
-returned producer and its `buffer`, and feeds bytes through the terminal display's `input()` turn;
-an executor attaches the buffer with `attachTerminalInput()` and supplies
+returned producer and its `buffer`, and feeds bytes with `pushTerminalInput()`; the helper splits
+large pastes into bounded `TerminalDisplay.input()` turns and never silently slices or drops a
+chunk. An executor attaches the buffer with `attachTerminalInput()` and supplies
 `createTerminalInputPolicy()` to `attachTerminal()`. Raw turns deliver bytes as entered. Cooked
-turns normalize CR and CRLF to LF, preserve a split line ending, and treat Ctrl-D or a closed
-producer as EOF. A live empty read returns `AGAIN`, and cancellation returns `CANCELED`; neither
-is mistaken for EOF. Foreground selection and process-specific stream resolution still belong to
-the terminal session and codec, so background members cannot consume the selected job's input.
+turns hold partial lines, normalize CR and CRLF to LF across attachments, and treat Ctrl-D or a
+closed producer as EOF. A live empty read returns `AGAIN`, and cancellation returns `CANCELED`;
+neither is mistaken for EOF. Foreground selection and process-specific stream resolution still
+belong to the terminal session and codec, so background members cannot consume the selected job's
+input.
 
 `context.post("stdout" | "stderr", bytes)` writes through the **current** fd1 or fd2 after
 Wasi creation, not a startup snapshot. File writes preserve append and shared offsets;

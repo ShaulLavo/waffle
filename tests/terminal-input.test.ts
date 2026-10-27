@@ -7,6 +7,7 @@ import {
   createTerminalInput,
   createTerminalInputPolicy,
   createTerminalSession,
+  pushTerminalInput,
 } from "../browser/runtime-terminals";
 
 function must<T>(result: { kind: "ok"; value: T } | { kind: "error"; code: string }): T {
@@ -42,6 +43,10 @@ test("generic terminal input keeps live empty reads pending and delivers raw byt
     expect(input.push(new Uint8Array([65, 66, 67]))).toBe(3);
     expect(read(display, policy, [destination], "raw")).toBe(3);
     expect(Array.from(destination)).toEqual([65, 66, 67]);
+    expect(input.push(new Uint8Array([13, 10]))).toBe(2);
+    const lineEnd = new Uint8Array(2);
+    expect(read(display, policy, [lineEnd], "raw")).toBe(2);
+    expect(Array.from(lineEnd)).toEqual([13, 10]);
     expect(read(display, policy, [new Uint8Array(1)], "raw")).toBe(-6);
   } finally {
     display.close("disposed");
@@ -56,12 +61,16 @@ test("generic terminal input normalizes cooked CRLF without dropping a split lin
   });
   const policy = createTerminalInputPolicy({ input });
   try {
-    expect(input.push(new Uint8Array([65, 13]))).toBe(2);
+    expect(input.push(new Uint8Array([65]))).toBe(1);
     const first = new Uint8Array(2);
+    expect(read(display, policy, [first])).toBe(-6);
+    expect(input.push(new Uint8Array([13]))).toBe(1);
     expect(read(display, policy, [first])).toBe(2);
     expect(Array.from(first)).toEqual([65, 10]);
     expect(input.push(new Uint8Array([10, 66]))).toBe(2);
     const second = new Uint8Array(1);
+    expect(read(display, policy, [second])).toBe(-6);
+    input.close();
     expect(read(display, policy, [second])).toBe(1);
     expect(second[0]).toBe(66);
   } finally {
@@ -84,7 +93,7 @@ test("generic terminal input exposes Ctrl-D and closure as EOF while raw mode pr
     const prefix = new Uint8Array(2);
     expect(read(display, policy, [prefix])).toBe(1);
     expect(prefix[0]).toBe(65);
-    expect(read(display, policy, [new Uint8Array(1)])).toBe(0);
+    expect(read(display, policy, [new Uint8Array(1)])).toBe(-6);
     expect(input.push(new Uint8Array([4]))).toBe(1);
     expect(read(display, policy, [new Uint8Array(1)], "raw")).toBe(1);
     input.close();
@@ -107,6 +116,58 @@ test("generic terminal input producer reports bounded capacity and wakes readers
   const canceled = createTerminalInput({ capacity: 2 });
   canceled.cancel();
   expect(canceled.push(new Uint8Array([3]))).toBe(-11);
+});
+
+test("cancellation is readable and returns CANCELED instead of pending AGAIN", () => {
+  const input = createTerminalInput({ capacity: 8 });
+  const display = createTerminalSession({
+    controller: createWorkerProcessTransport({ capacity: 4 }),
+    geometry: { columns: 80, rows: 24 },
+  });
+  const policy = createTerminalInputPolicy({ input });
+  try {
+    input.cancel();
+    expect(read(display, policy, [new Uint8Array(1)])).toBe(-11);
+  } finally {
+    display.close("disposed");
+  }
+});
+
+test("cooked CRLF state is shared across attachments", () => {
+  const input = createTerminalInput({ capacity: 8 });
+  const display = createTerminalSession({
+    controller: createWorkerProcessTransport({ capacity: 4 }),
+    geometry: { columns: 80, rows: 24 },
+  });
+  const first = createTerminalInputPolicy({ input });
+  const second = createTerminalInputPolicy({ input });
+  try {
+    expect(input.push(new Uint8Array([65, 13]))).toBe(2);
+    const cooked = new Uint8Array(2);
+    expect(read(display, first, [cooked])).toBe(2);
+    expect(Array.from(cooked)).toEqual([65, 10]);
+    expect(read(display, second, [new Uint8Array(2)])).toBe(-6);
+    expect(input.push(new Uint8Array([10]))).toBe(1);
+    expect(read(display, second, [new Uint8Array(1)])).toBe(-6);
+  } finally {
+    display.close("disposed");
+  }
+});
+
+test("large display input uses bounded turns without invalidating the session", () => {
+  const input = createTerminalInput({ capacity: 8192 });
+  const display = createTerminalSession({
+    controller: createWorkerProcessTransport({ capacity: 4 }),
+    geometry: { columns: 80, rows: 24 },
+  });
+  try {
+    const bytes = new Uint8Array(4097).fill(65);
+    expect(pushTerminalInput(display, input, bytes)).toEqual({ kind: "ok", value: 4097 });
+    expect(input.available()).toBe(4097);
+    expect(display.snapshot().kind).toBe("ok");
+  } finally {
+    display.close("disposed");
+  }
 });
 
 test("generic input policy plugs into a foreground terminal endpoint", () => {
