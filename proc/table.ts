@@ -41,7 +41,7 @@ export interface ProcessRecord {
   handle?: ProcessHandle;
   starting?: Promise<void>;
   acquiring?: Promise<void>;
-  stopping?: Promise<void>;
+  stopping?: { readonly handle: Promise<void>; readonly complete: Promise<void> };
   retirement?: { kind: "complete" } | { kind: "external" } | { kind: "failed"; error: unknown };
   revocations: Set<() => void>;
   waiters: Set<(result: ProcessExit) => void>;

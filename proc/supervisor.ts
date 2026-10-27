@@ -92,6 +92,8 @@ export interface SupervisorOptions {
    * waits for this hook, but never for physical worker termination.
    */
   quiesce?(pid: number): void | Promise<void>;
+  /** Join physical adapter ownership not represented by a successfully returned launch handle. */
+  retire?(pid: number): void | Promise<void>;
   /** Cleanup failures are diagnostics, never a reason to leave peers blocked or skip teardown. */
   onError?(error: unknown): void;
 }
@@ -178,6 +180,19 @@ export class ProcessSupervisor {
     return () => {
       this.retireListeners.delete(listener);
     };
+  }
+  /** Page-owner shutdown hook. The caller has already fenced every consumer's filesystem
+   * and adapter work. Start physical stops without waiting for parent result publication. */
+  retireFencedProcesses(): Promise<void> {
+    if (!this.disposed) throw new ProcessError(ProcessErrno.INVAL, "process service is still live");
+    const handles: Promise<void>[] = [];
+    for (const records of this.consumers.values()) handles.push(...this.fencedHandles(records));
+    return Promise.all(handles).then(() => {});
+  }
+  private fencedHandles(records: ReadonlySet<ProcessRecord>): Promise<void>[] {
+    const handles: Promise<void>[] = [];
+    for (const record of records) if (record.revoked) handles.push(this.stopHandle(record).handle);
+    return handles;
   }
   jobCleanupReady(callerPid: number, jobId: number): boolean {
     this.accessOwner(callerPid);
@@ -911,15 +926,29 @@ export class ProcessSupervisor {
     this.disposed = true;
     for (const cancel of Array.from(this.startupDrains.values())) cancel();
     const records = Array.from(this.table.values());
+    const retained = Array.from(this.table.jobValues()).some(
+      (job) => job.jobLifetime === "caller-fatal",
+    );
+    const drained = retained ? records.map((record) => this.waitRecordRetirement(record)) : [];
     for (const record of records) this.recordSignal(record, Signal.SIGKILL);
     for (const record of records) {
       if (this.table.get(record.pid) === record) {
         this.finish(record.pid, { kind: "signaled", code: Signal.SIGKILL });
-        this.table.remove(record.pid);
-        this.table.removeJob(record.job);
+        if (!retained) {
+          this.table.remove(record.pid);
+          this.table.removeJob(record.job);
+        }
       }
     }
-    this.table.clearJobs();
+    if (!retained) this.table.clearJobs();
+    else
+      void Promise.all(drained).then(
+        () => {
+          for (const record of records) this.table.remove(record.pid);
+          this.table.clearJobs();
+        },
+        (error) => this.report(error),
+      );
     this.listeners.clear();
     this.jobReadiness.clear();
     this.jobReapListeners.clear();
@@ -928,6 +957,11 @@ export class ProcessSupervisor {
     this.quiescentListeners.clear();
     this.jobListeners.clear();
     this.startListeners.clear();
+  }
+  private async waitRecordRetirement(record: ProcessRecord): Promise<void> {
+    if (!record.result) await new Promise<void>((resolve) => record.waiters.add(() => resolve()));
+    await Promise.resolve();
+    await record.stopping?.complete;
   }
   private finish(
     pid: number,
@@ -1115,27 +1149,27 @@ export class ProcessSupervisor {
       else safe();
     }
   }
-  private stopHandle(record: ProcessRecord): void {
-    if (record.stopping) return;
+  private stopHandle(record: ProcessRecord): NonNullable<ProcessRecord["stopping"]> {
+    if (record.stopping) return record.stopping;
     let complete!: () => void, failed!: (error: unknown) => void;
-    record.stopping = new Promise<void>((resolve, reject) => {
+    const retired = new Promise<void>((resolve, reject) => {
       complete = resolve;
       failed = reject;
     });
-    const stop = () => {
-      const handle = record.handle;
-      record.handle = undefined;
-      try {
-        const pending = handle?.terminate();
-        void Promise.resolve(pending).then(complete, failed);
-      } catch (error) {
-        failed(error);
-      }
-    };
+    let handleDone!: () => void, handleFailed!: (error: unknown) => void;
+    const handleStop = new Promise<void>((resolve, reject) => {
+      handleDone = resolve;
+      handleFailed = reject;
+    });
+    void handleStop.catch(() => {});
+    record.stopping = { handle: handleStop, complete: retired };
+    const stop = () =>
+      this.invokePhysicalStop(record, { handleDone, handleFailed, complete, failed });
     if (record.acquiring) void record.acquiring.then(stop, failed);
     else stop();
-    void record.stopping.then(
+    void retired.then(
       () => {
+        record.handle = undefined;
         record.retirement = record.request === null ? { kind: "external" } : { kind: "complete" };
         this.notifyRetirement(record.job);
       },
@@ -1145,6 +1179,35 @@ export class ProcessSupervisor {
         this.notifyRetirement(record.job);
       },
     );
+    return record.stopping;
+  }
+  private invokePhysicalStop(
+    record: ProcessRecord,
+    completion: {
+      handleDone(): void;
+      handleFailed(error: unknown): void;
+      complete(): void;
+      failed(error: unknown): void;
+    },
+  ): void {
+    try {
+      const pending = record.handle?.terminate();
+      void Promise.resolve(pending)
+        .then(
+          () => {
+            completion.handleDone();
+            return this.options.retire?.(record.pid);
+          },
+          (error) => {
+            completion.handleFailed(error);
+            throw error;
+          },
+        )
+        .then(completion.complete, completion.failed);
+    } catch (error) {
+      completion.handleFailed(error);
+      completion.failed(error);
+    }
   }
   private notifyRetirement(job: number): void {
     for (const listener of this.retireListeners) this.safely(() => listener(job));
@@ -1203,18 +1266,21 @@ export class ProcessSupervisor {
     // Seal the complete owner batch before member callbacks run; avoid recursive
     // JS stacks when each dying member owns another independent job.
     await Promise.resolve();
-    this.killJob(job.id, Signal.SIGKILL);
+    if (this.table.job(job.id) === job) this.killJob(job.id, Signal.SIGKILL);
     let complete!: () => void, failed!: (error: unknown) => void;
     const done = new Promise<void>((resolve, reject) => {
       complete = resolve;
       failed = reject;
     });
     const ready = () => {
+      let retired: boolean;
       try {
-        if (job.pendingMembers === 0 && this.jobRetired(job.id)) complete();
+        retired = job.pendingMembers === 0 && this.jobRetired(job.id);
       } catch (error) {
         failed(error);
+        return;
       }
+      if (retired) complete();
     };
     let listeners = this.jobListeners.get(job.id);
     if (!listeners) this.jobListeners.set(job.id, (listeners = new Set()));

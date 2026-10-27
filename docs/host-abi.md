@@ -490,6 +490,14 @@ directory, with current readers and writers using the same layout. Native hosts
 use `registerJobCleanupWake` and caller revocation alongside the existing wake;
 ordinary job/poll wake behavior is unchanged.
 
+Host adapters can provide `SupervisorOptions.retire(pid)` to join physical
+controller cleanup when loading or launch fails before returning a process handle.
+During whole-runtime disposal the existing broker first fences all consumers,
+starts their captured handle stops, and then settles controller stops. Handle-only
+completion is separate from final retirement so a parent's owned-child barrier
+cannot form a shutdown cycle. Coordination hooks remain on the owning supervisor;
+they are omitted from the borrowed `RuntimeSupervisor` capability.
+
 An externally executed `createRoot`/adopted root has no supervisor-owned launch
 handle to certify physical termination. CLEANUP on a job containing such a root
 returns `-ENOTSUP`; ordinary waits are unchanged. External roots cannot join a

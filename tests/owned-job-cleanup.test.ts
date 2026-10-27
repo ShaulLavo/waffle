@@ -3,6 +3,9 @@ import { Worker } from "node:worker_threads";
 import { DescriptorTable, OpenDescription } from "../core/descriptors.js";
 import { MemFS } from "../fs/memory.js";
 import { ProcessABI, ProcessSignalExit } from "../proc/abi.js";
+import { BrowserProcessBroker } from "../browser/process-broker.js";
+import { ProcessIdentityAllocator } from "../proc/identity.js";
+import { ProcessTable } from "../proc/table.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { ProcessSupervisor, type SupervisorOptions } from "../proc/supervisor.js";
 import { controlLoad } from "../proc/control.js";
@@ -586,6 +589,106 @@ test("shared owned cleanup releases a real sparse filesystem token only through 
   expect(await fs.client.asyncCall("readFile", ["/file"])).toEqual(
     new TextEncoder().encode("abcdef"),
   );
+});
+test("global shutdown retains shared owned dependencies until fences and physical stops settle", async () => {
+  const fence = Promise.withResolvers<void>();
+  const physical = Promise.withResolvers<void>();
+  let child = 0;
+  const f = sharedFixture({
+    quiesce: (pid) => (pid === child ? fence.promise : undefined),
+    launch: () => ({ terminate: () => physical.promise }),
+  });
+  cleanups.push(() => {
+    fence.resolve();
+    physical.resolve();
+  });
+  child = f.root.spawn(f.root.pid, spec(true));
+  const transport = await f.admit();
+  const job = workerProcessState(transport).job;
+  const done = f.s.waitForExit(0, f.root.pid);
+  f.broker.dispose();
+  f.s.dispose();
+  expect(f.s.get(f.root.pid)?.result).toBeNull();
+  fence.resolve();
+  await turn();
+  expect(f.s.get(f.root.pid)?.result).toBeNull();
+  physical.resolve();
+  expect(await done).toMatchObject({ kind: "signaled", code: 9 });
+  await turn();
+  expect(findDirectoryJob(f.transport.directory, job)).toBeUndefined();
+  expect(Array.from(f.s.table.values())).toEqual([]);
+});
+test("browser global shutdown joins failed-launch controller stops and parent handles without a cleanup cycle", async () => {
+  const identities = new ProcessIdentityAllocator();
+  const registry = new ExecutableRegistry();
+  registry.register("owner", { module, adapter: "fixture" });
+  registry.register("reject", {
+    adapter: "fixture",
+    module: () => {
+      throw new Error("module rejected");
+    },
+  });
+  const fence = Promise.withResolvers<void>();
+  const childStop = Promise.withResolvers<void>();
+  const ownerStop = Promise.withResolvers<void>();
+  let parentStopping = false,
+    childStopping = false;
+  const broker = new BrowserProcessBroker({
+    identities,
+    table: new ProcessTable(identities),
+    registry,
+    onError() {},
+    filesystem: {
+      connect(): never {
+        throw new Error("unused");
+      },
+      revoke() {},
+      reap() {},
+      async quiesce() {},
+    },
+    launch: () => ({
+      terminate() {
+        parentStopping = true;
+        return ownerStop.promise;
+      },
+    }),
+  });
+  cleanups.push(async () => {
+    fence.resolve();
+    childStop.resolve();
+    ownerStop.resolve();
+    await broker.dispose();
+  });
+  const root = await broker.adoptRoot({});
+  const s = await broker.ready();
+  const owner = s.reserveSpawn(root, { ...spec(), executable: "owner" });
+  await s.start(owner);
+  const child = s.reserveSpawn(owner, { ...spec(true), executable: "reject" });
+  broker.registerController(child, {
+    quiesce: () => fence.promise,
+    stop() {
+      childStopping = true;
+      return childStop.promise;
+    },
+  });
+  await s.start(child);
+  const done = s.waitForExit(root, owner);
+  let disposed = false;
+  const disposal = broker.dispose().then(() => {
+    disposed = true;
+  });
+  expect(parentStopping).toBe(false);
+  fence.resolve();
+  await turn();
+  expect(parentStopping).toBe(true);
+  expect(childStopping).toBe(true);
+  expect(s.get(owner)?.result).toBeNull();
+  childStop.resolve();
+  await turn();
+  expect(disposed).toBe(false);
+  ownerStop.resolve();
+  await disposal;
+  expect(await done).toMatchObject({ kind: "signaled", code: 9 });
 });
 for (const fatal of [false, true])
   test(`actual blocked worker CLEANUP is notified by retirement and preserves fatal/handled signals (fatal=${fatal})`, async () => {

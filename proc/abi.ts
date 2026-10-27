@@ -522,8 +522,8 @@ export class ProcessABI {
   private cleanupWait(job: number, ptr: number): number {
     this.span(ptr, 8);
     const wake = this.options.wake;
-    if (!wake) return -58;
     if (this.options.service.jobOf(this.options.pid) === job) return -ProcessErrno.INVAL;
+    if (!wake) return -58;
     const shared = sameWord(this.options.service.wake, wake);
     if (
       !shared &&

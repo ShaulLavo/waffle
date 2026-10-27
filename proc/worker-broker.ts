@@ -574,26 +574,49 @@ export class WorkerProcessBroker {
     const pending: Promise<void>[] = [];
     for (const group of directoryGroups(root.directory)) {
       if (group.ownerPid !== owner || controlLoad(group.lifetime) !== 3) continue;
-      const key = `${workerProcessDirectoryId(root)}:${group.id}`;
-      let work = this.ownedJobs.get(key);
-      if (!work) {
-        work = this.closeSharedJob(root, group);
-        this.ownedJobs.set(key, work);
-        void work.then(
-          () => this.ownedJobs.delete(key),
-          () => {},
-        );
-      }
-      pending.push(work);
+      pending.push(this.ownedJobWork(root, group));
     }
     return pending;
+  }
+  private ownedJobWork(
+    root: WorkerProcessTransport,
+    group: NonNullable<ReturnType<typeof findDirectoryJob>>,
+  ): Promise<void> {
+    const key = `${workerProcessDirectoryId(root)}:${group.id}`;
+    const previous = this.ownedJobs.get(key);
+    if (previous) return previous;
+    const work = this.closeSharedJob(root, group);
+    this.ownedJobs.set(key, work);
+    void work.then(
+      () => this.ownedJobs.delete(key),
+      () => {},
+    );
+    return work;
   }
   private async closeSharedJob(
     root: WorkerProcessTransport,
     group: NonNullable<ReturnType<typeof findDirectoryJob>>,
   ): Promise<void> {
     await Promise.resolve();
-    const wake = workerProcessState(root).wake;
+    const stop = this.supervisor!.onJobRetirement((job) => {
+      if (job === group.id) wakeWorkerProcess(root);
+    });
+    try {
+      await this.waitSharedRetirement(root, group);
+    } finally {
+      stop();
+    }
+    if (!group.outcome.valid()) return;
+    controlStore(group.retirement, 0, 1);
+    const job = this.supervisor!.job(group.id);
+    if (job) this.supervisor!.reapJob(job.controlParent, job.id);
+    if (group.outcome.valid()) collectDirectoryJob(root.directory, group.slot, group.id);
+  }
+  private async waitSharedRetirement(
+    root: WorkerProcessTransport,
+    group: NonNullable<ReturnType<typeof findDirectoryJob>>,
+  ): Promise<void> {
+    const wake = new Int32ArrayConstructor(root.directory, 4, 1);
     for (;;) {
       const expected = atomicsLoad(wake, 0);
       this.pump();
@@ -602,10 +625,6 @@ export class WorkerProcessBroker {
       if (retired && controlLoad(group.pending) === 0) break;
       await atomicsWaitAsync(wake, 0, expected).value;
     }
-    controlStore(group.retirement, 0, 1);
-    const job = this.supervisor!.job(group.id);
-    if (job) this.supervisor!.reapJob(job.controlParent, job.id);
-    else collectDirectoryJob(root.directory, group.slot, group.id);
   }
   private async rejectSpawn(
     transport: WorkerProcessTransport,
