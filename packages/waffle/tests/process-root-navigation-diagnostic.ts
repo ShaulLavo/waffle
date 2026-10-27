@@ -614,7 +614,7 @@ export const historicalRunnerPath = new URL(
 export function assertSourceProvenance(lockfilePath: string, runnerPath: string): void {
   if (
     sha256(readFileSync(lockfilePath)) !==
-    "511031108aa6f8dc745f22cacdf25f25f3070c5fb9e48e229c20d4dca3f94bcd"
+    "e25a3afea9940c3b270bb48d3803bc1830b1ee41b4496d6a442c3ca51ed20722"
   )
     throw new Error("Lockfile does not match approved diagnostic inputs");
   if (
@@ -652,8 +652,7 @@ function identity(): Record<string, string> {
   if (!browserRoot || !isAbsolute(browserRoot))
     throw new Error("Explicit installed browser root required");
   const executable = join(browserRoot, "webkit-2370", "pw_run.sh");
-  const root = dirname(import.meta.dir);
-  assertSourceProvenance(join(root, "bun.lock"), historicalRunnerPath);
+  assertSourceProvenance(join(import.meta.dir, "../../..", "bun.lock"), historicalRunnerPath);
   return {
     historicalRunnerSHA256: sha256(readFileSync(historicalRunnerPath)),
     playwright: String(JSON.parse(readFileSync(packagePath, "utf8")).version),

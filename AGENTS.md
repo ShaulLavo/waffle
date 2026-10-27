@@ -21,16 +21,16 @@ source-only consumers and the generated Node exports working together.
   owns teardown of its processes and scratch. The owner's machine paths are in
   `.internal/owner-machine.md`.
 - New code is TypeScript, except the explicitly authorized Rust network module in
-  `network/` and its native socket2 adapter. Compile the portable module only to
+  `packages/waffle/network/` and its native socket2 adapter. Compile the portable module only to
   wasm32-unknown-unknown, loaded at runtime.network(); native OS code never enters
   browser bundles. Keep Bun APIs, JSON errors, public handles and engine policy in Bun.
   The Rust exception and source-install toolchain are recorded in ADR 005.
   Do not check in compiled JavaScript, `dist/`, binaries,
   screenshots or test evidence: consumers clone this repository. The existing
-  `core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.
+  `packages/waffle/core/memory-views.js` source exception is recorded in `docs/bun-patches.md`.
 - Preserve pay-for-use loading: do not load the process implementation before the
   first spawn. Keep bundle-size gates and the core gzip budget in
-  `tooling/runtime-size.ts`.
+  `packages/waffle/tooling/runtime-size.ts`.
 - Size budgets catch accidental growth. When a change needs more, raise the budget in the
   same PR and note the measured numbers. Do not contort the design to fit.
 - Every new or changed copied or adapted upstream implementation needs a classified
@@ -51,16 +51,16 @@ Run from the exclusive worktree:
 ```sh
 bun install --frozen-lockfile
 bun install --cwd site --frozen-lockfile
-bun run prepare
+bun run prepare:package
 bun run quality
-bun test ./tests
+bun run test
 bun run size
 ```
 
 `bun run format` fixes Markdown formatting in `docs/`. `README.md` and `AGENTS.md` are not
 formatter inputs.
 
-The browser storage matrix is `bun tests/storage-browser-runner.ts chromium firefox webkit`.
+The browser storage matrix is `bun packages/waffle/tests/storage-browser-runner.ts chromium firefox webkit`.
 It requires Playwright's three browser engines. Set `STORAGE_SCRATCH_ROOT` to a
 verified data-drive scratch directory; the runner owns its browser and profile cleanup.
 Do not duplicate another agent's substantial browser workload without coordinating.

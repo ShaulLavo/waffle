@@ -4,6 +4,13 @@ export class ReadyWorkerPool {
   private pending?: ReturnType<typeof setTimeout>;
   private disposed = false;
 
+  isIdle(worker: object): boolean {
+    for (let index = 0; index < this.idle.length; index++) {
+      if (this.idle[index]?.worker === worker) return true;
+    }
+    return false;
+  }
+
   take(url: string): Worker {
     if (this.disposed) throw new Error("Worker pool is disposed");
     const index = this.idle.findIndex((entry) => entry.url === url);

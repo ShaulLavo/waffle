@@ -160,6 +160,7 @@ const processCapabilities = {
   releaseLegacyJob: "method",
   launchWorker: "method",
   takeWorker: "method",
+  isIdleWorker: "method",
   kill: "async",
   killJob: "async",
   rootExit: "async",

@@ -863,6 +863,10 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     return this.workers.take(workerUrl);
   }
+  /** Whether this already-observed worker is still inert and owned by this broker's pool. */
+  isIdleWorker(worker: Worker): boolean {
+    return this.workers.isIdle(worker);
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,

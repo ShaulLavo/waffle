@@ -1673,3 +1673,33 @@ test("source registrations compile once across concurrent spawns and replace by 
   expect(loads).toBe(2);
   expect(modules[4]).toBe(modules[3]);
 });
+
+test("the borrowed process service queries exact idle ownership without exposing the pool", async () => {
+  const BaseWorker = globalThis.Worker;
+  const observed: Worker[] = [];
+  globalThis.Worker = class extends BaseWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      observed.push(this);
+    }
+  };
+  const runtime = create();
+  const service = await runtime.processes();
+  const first = service.takeWorker("https://example.test/process.js");
+  let leased: Worker | undefined;
+  try {
+    expect(service.isIdleWorker(first)).toBe(false);
+    await Bun.sleep(10);
+    const idle = observed[2]!;
+    expect(service.isIdleWorker(idle)).toBe(true);
+    expect(Reflect.get(service, "workers")).toBeUndefined();
+    leased = service.takeWorker("https://example.test/process.js");
+    expect(leased).toBe(idle);
+    expect(service.isIdleWorker(leased)).toBe(false);
+    await runtime.dispose();
+    expect(() => service.isIdleWorker(idle)).toThrow("disposed");
+  } finally {
+    first.terminate();
+    leased?.terminate();
+  }
+});
