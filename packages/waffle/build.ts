@@ -271,7 +271,7 @@ export async function buildNodeModules(
       else await emit(path);
     }
   }
-  for (const directory of ["core", "fs", "proc", "interrupt", "browser", "link"])
+  for (const directory of ["core", "fs", "proc", "interrupt", "browser", "link", "programs"])
     await visit(directory);
   for (const file of ["index.ts", "runtime.ts"]) if (existsSync(join(root, file))) await emit(file);
   copyFileSync(join(root, "browser/net/network.wasm"), join(outdir, "browser/net/network.wasm"));

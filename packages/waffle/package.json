@@ -11,6 +11,7 @@
     "interrupt",
     "link",
     "proc",
+    "programs",
     "tests",
     "tooling",
     "index.ts",
@@ -511,6 +512,13 @@
       "bun": "./link/index.ts",
       "browser": "./link/index.ts",
       "default": "./link/index.ts"
+    },
+    "./programs": {
+      "types": "./programs/index.ts",
+      "node": "./dist/programs/index.js",
+      "bun": "./programs/index.ts",
+      "browser": "./programs/index.ts",
+      "default": "./programs/index.ts"
     }
   },
   "scripts": {
