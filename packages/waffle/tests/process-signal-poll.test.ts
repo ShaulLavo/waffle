@@ -36,6 +36,7 @@ function fixture() {
       startStatus: unused,
       waitJob: unused,
       jobEmpty: unused,
+      jobCleanupReady: unused,
       wait: unused,
       childExited: unused,
       kill: unused,

@@ -51,6 +51,14 @@ export interface DescriptorBinding {
   child: number;
   parent: number;
 }
+export type JobLifetime = "independent" | "caller-fatal";
+export function checkedJobLifetime(job: number, value: unknown): JobLifetime {
+  if (value === undefined) return "independent";
+  if (job !== 0 && job !== -1)
+    throw new ProcessError(ProcessErrno.INVAL, "job lifetime requires a new job");
+  if (value === "independent" || value === "caller-fatal") return value;
+  throw new ProcessError(ProcessErrno.INVAL, "invalid job lifetime");
+}
 /** Request metadata is UTF-8, absolute, NUL-free and preserved without normalization. */
 export function checkedProcessCwd(value: unknown): string {
   if (
@@ -69,6 +77,8 @@ export interface SpawnRequest {
   cwd: string;
   /** 0 creates a foreground job, -1 a background job; positive ids join a job. */
   job: number;
+  /** New jobs only; omission preserves independent foreground/background jobs. */
+  jobLifetime?: JobLifetime;
   fds: DescriptorBinding[];
 }
 /** Immutable shared-directory job identity, independent of controller message order. */
@@ -78,6 +88,7 @@ export interface SharedJobIdentity {
   readonly leaderPid: number;
   readonly outcome: OutcomeWord;
   readonly foreground: boolean;
+  readonly jobLifetime?: JobLifetime;
 }
 export interface SpawnReservation {
   controlParent?: number;

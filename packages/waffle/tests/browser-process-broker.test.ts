@@ -2448,10 +2448,12 @@ test("a controller registered before module rejection fences and settles physica
     release();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(supervisor.get(pid)!.result?.kind).toBe("start-failed");
+    expect(supervisor.jobCleanupReady(root, supervisor.jobOf(pid))).toBe(false);
     expect(events).toEqual(["revoke", "fence", "stop"]);
     expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(true);
     releaseStop();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(supervisor.jobCleanupReady(root, supervisor.jobOf(pid))).toBe(true);
     expect(events).toEqual(["revoke", "fence", "stop", "retired"]);
     expect((Reflect.get(broker, "controllers") as Map<number, unknown>).has(pid)).toBe(false);
     expect((Reflect.get(broker, "fences") as Map<number, unknown>).has(pid)).toBe(false);

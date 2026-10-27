@@ -131,6 +131,7 @@ interface RuntimeChild {
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
+  private readonly retirementGate = Promise.withResolvers<void>();
   private disposing?: Promise<void>;
   private activation?: Promise<ProcessSupervisor>;
   private supervisor?: ProcessSupervisor;
@@ -168,6 +169,7 @@ export class BrowserProcessBroker {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private readonly transport: WorkerProcessBroker;
   constructor(private readonly options: BrowserProcessBrokerOptions) {
+    void this.retirementGate.promise.catch(() => {});
     this.hostIdentity = snapshotHostIdentity(options.hostIdentity);
     this.transport = new WorkerProcessBroker({
       supervisor: () => this.ready(),
@@ -283,6 +285,7 @@ export class BrowserProcessBroker {
             );
           },
           quiesce: (pid) => this.quiesceProcess(pid),
+          retire: (pid) => this.retireProcess(pid),
           startFailed: (pid, error, active) => this.writeStartupDiagnostic(pid, error, active),
           onError: (error) => this.report(error),
         }));
@@ -1172,6 +1175,16 @@ export class BrowserProcessBroker {
     (this.controllerStops ??= new Map()).set(pid, { pending: stopping, controllerStop: true });
     return stopping;
   }
+  private async retireProcess(pid: number): Promise<void> {
+    await this.pendingLaunches?.get(pid)?.acquired;
+    if (this.suspended) {
+      await this.retirementGate.promise;
+      return;
+    }
+    const child = this.children.get(pid);
+    if (child) await this.stop(child);
+    else await this.stopController(pid);
+  }
   private stopSafely(child: RuntimeChild): void {
     try {
       const pending = this.stop(child);
@@ -1385,6 +1398,7 @@ export class BrowserProcessBroker {
       await Promise.all(
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.acquired),
       );
+      const physicalHandles = this.supervisor?.retireFencedProcesses();
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
       const stops = Array.from(this.children.values(), (child) =>
@@ -1399,6 +1413,7 @@ export class BrowserProcessBroker {
         Array.from(this.controllerStops?.values() ?? [], (stopping) => stopping.pending),
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.settled),
       );
+      if (physicalHandles) stops.push(physicalHandles);
       const errors: unknown[] = [];
       for (const result of await Promise.allSettled(stops))
         if (result.status === "rejected") errors.push(result.reason);
@@ -1414,6 +1429,12 @@ export class BrowserProcessBroker {
           errors.push(error);
         }
       }
+      if (errors.length) {
+        const failure = new AggregateError(errors, "Process broker cleanup failed");
+        this.retirementGate.reject(failure);
+        throw failure;
+      }
+      this.retirementGate.resolve();
       this.reservedRoots.clear();
       this.completedRoots.clear();
       this.rootLeases.clear();

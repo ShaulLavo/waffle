@@ -500,6 +500,7 @@ test("poll timeout, invalid subscriptions and filesystem completion do not corru
     startStatus: f.supervisor.startStatus.bind(f.supervisor),
     waitJob: f.supervisor.waitJob.bind(f.supervisor),
     jobEmpty: f.supervisor.jobEmpty.bind(f.supervisor),
+    jobCleanupReady: f.supervisor.jobCleanupReady.bind(f.supervisor),
     spawn: f.supervisor.spawn.bind(f.supervisor),
     wait: f.supervisor.wait.bind(f.supervisor),
     childExited: f.supervisor.childExited.bind(f.supervisor),
