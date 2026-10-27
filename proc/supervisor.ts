@@ -157,6 +157,7 @@ export class ProcessSupervisor {
   private readonly startupDrains = new Map<ProcessRecord, () => void>();
   private readonly consumers = new Map<number, Set<ProcessRecord>>();
   private readonly retireListeners = new Set<(job: number) => void>();
+  private readonly ownedClosures = new WeakMap<ProcessJob, Promise<void>>();
   private readonly ownedCleanup = new Set<
     (pid: number, result: ProcessExit) => void | Promise<void>
   >();
@@ -1259,7 +1260,7 @@ export class ProcessSupervisor {
       )
         continue;
       job.lifetimeState = result.kind === "signaled" ? "closing" : "disarmed";
-      if (job.lifetimeState === "closing") pending.push(this.closeOwnedJob(owner.pid, job));
+      if (job.lifetimeState === "closing") pending.push(this.ownedClosure(owner.pid, job));
     }
     for (const cleanup of this.ownedCleanup) {
       const work = cleanup(owner.pid, result);
@@ -1285,6 +1286,12 @@ export class ProcessSupervisor {
     if (job.lifetimeState !== "closing") return true;
     for (const pid of job.members) this.recordSignal(this.table.require(pid), Signal.SIGKILL);
     return true;
+  }
+  /** Completion rescans for late-adopted jobs; each captured job keeps one closure barrier. */
+  private ownedClosure(owner: number, job: ProcessJob): Promise<void> {
+    let closure = this.ownedClosures.get(job);
+    if (!closure) this.ownedClosures.set(job, (closure = this.closeOwnedJob(owner, job)));
+    return closure;
   }
   private async closeOwnedJob(owner: number, job: ProcessJob): Promise<void> {
     // Seal the complete owner batch before member callbacks run; avoid recursive

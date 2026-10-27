@@ -806,3 +806,111 @@ for (const fatal of [false, true])
     await Promise.all(worker.notices);
     expect(f.s.job(job)).toBeUndefined();
   });
+
+function adoptedShellRoot(fatal: boolean) {
+  const identities = new ProcessIdentityAllocator();
+  const registry = new ExecutableRegistry();
+  registry.register("fixture", { module, adapter: "fixture" });
+  const stopped: string[] = [];
+  const children = new Map<number, Worker>();
+  const broker = new BrowserProcessBroker({
+    identities,
+    table: new ProcessTable(identities),
+    registry,
+    onError() {},
+    filesystem: {
+      connect(): never {
+        throw new Error("unused");
+      },
+      revoke() {},
+      reap() {},
+      async quiesce() {},
+    },
+    launch(context) {
+      const child = new Worker("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);", {
+        eval: true,
+      });
+      children.set(context.pid, child);
+      return {
+        async terminate() {
+          await child.terminate();
+          stopped.push(`child ${context.pid}`);
+        },
+      };
+    },
+  });
+  const transport = createWorkerProcessTransport({
+    pid: identities.pid(),
+    job: identities.job(),
+    identity: identities.buffer,
+  });
+  transport.data = { filesystem: createFilesystemIdentity() };
+  const rootPid = workerProcessState(transport).pid;
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  const events: { kind: string; [key: string]: unknown }[] = [];
+  let arrived: (() => void) | undefined;
+  const notices: Promise<void>[] = [];
+  const worker = new Worker(new URL("./fixtures/owned-job-root-worker.ts", import.meta.url), {
+    workerData: { transport, gate, fatal },
+  });
+  worker.on("message", (message: WorkerProcessMessage | { kind: string }) => {
+    if ("type" in message) notices.push(broker.runtimeMessage(message, rootPid));
+    else events.push(message);
+    arrived?.();
+  });
+  worker.on("error", (error) => events.push({ kind: "error", error }));
+  cleanups.push(async () => {
+    Atomics.store(gate, 0, 1);
+    Atomics.notify(gate, 0);
+    await worker.terminate();
+    for (const child of children.values()) await child.terminate();
+    await broker.dispose();
+  });
+  async function next(kind: string) {
+    for (;;) {
+      const index = events.findIndex((event) => event.kind === kind || event.kind === "error");
+      if (index >= 0) return events.splice(index, 1)[0]!;
+      await new Promise<void>((resolve) => (arrived = resolve));
+    }
+  }
+  return { broker, transport, rootPid, gate, stopped, next, notices };
+}
+for (const fatal of [false, true])
+  test(`adopted shell root keeps handled TERM through owned-job CLEANUP and real worker retirement (fatal=${fatal})`, async () => {
+    const shell = adoptedShellRoot(fatal);
+    await shell.broker.adoptRuntimeRoot(shell.transport, { stop() {} });
+    const spawned = (await shell.next("spawned")) as {
+      kind: string;
+      owned: number;
+      job: number;
+      detached: number;
+    };
+    await Promise.all(shell.notices);
+    const s = await shell.broker.ready();
+    await Promise.all([s.start(spawned.owned), s.start(spawned.detached)]);
+    expect(s.job(spawned.job)?.jobLifetime).toBe("caller-fatal");
+    await shell.broker.kill(shell.rootPid, 15);
+    Atomics.store(shell.gate, 0, 1);
+    Atomics.notify(shell.gate, 0);
+    await shell.next("waiting");
+    await shell.broker.kill(shell.rootPid, 15);
+    if (fatal) {
+      await shell.broker.kill(shell.rootPid, 9);
+      expect(await shell.next("fatal")).toMatchObject({ signal: 9 });
+      await s.waitForExit(0, shell.rootPid);
+      expect(shell.stopped).toEqual([`child ${spawned.owned}`]);
+    } else {
+      expect(await shell.next("complete")).toMatchObject({
+        result: 0,
+        pending: SIGNAL_PENDING,
+        first: 15,
+        second: 0,
+        outcome: [1, 9],
+      });
+      expect(shell.stopped).toEqual([`child ${spawned.owned}`]);
+    }
+    await Promise.all(shell.notices);
+    expect(s.job(spawned.job)).toBeUndefined();
+    expect(findDirectoryJob(shell.transport.directory, spawned.job)).toBeUndefined();
+    expect(s.get(spawned.detached)?.result).toBeNull();
+  });

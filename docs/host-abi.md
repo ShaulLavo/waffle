@@ -533,8 +533,10 @@ they are omitted from the borrowed `RuntimeSupervisor` capability.
 An externally executed `createRoot`/adopted root has no supervisor-owned launch
 handle to certify physical termination. CLEANUP on a job containing such a root
 returns `-ENOTSUP`; ordinary waits are unchanged. External roots cannot join a
-caller-fatal job through root adoption. Spawned child reservations, including
-worker-transport children, carry the tracked launch/stop lifetime for this contract.
+caller-fatal job through root adoption. They can own one: an adopted runtime root
+(a shell or Bun page root) spawns `caller-fatal` children and waits with CLEANUP.
+Spawned child reservations, including worker-transport children, carry the tracked
+launch/stop lifetime for this contract.
 
 Host control fields in `ProcessContext`, `SignalTransport`, `SpawnReservation`
 and `ProcessABIOptions.wait` use `ControlCells` (`Int32Array | TaggedCells`). Outcome
