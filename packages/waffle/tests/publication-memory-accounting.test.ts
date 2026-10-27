@@ -339,7 +339,7 @@ function exerciseAliases(buffers: PublicationBuffers): void {
   const admitted = writer.admit(
     session,
     id,
-    { kind: "remove", path: "/tiny" },
+    { kind: "remove", path: "/tiny", ifContent: true },
     new Uint8Array([7]),
   );
   if (admitted.kind !== "admitted") throw new Error("expected new publication");

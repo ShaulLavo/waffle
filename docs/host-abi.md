@@ -17,6 +17,19 @@ winner. Missing parent directories retain the host API's existing `mkdirp` behav
 exclusive modes cannot be combined; ordinary writes continue to replace existing file contents.
 The operation is shared by memory, IndexedDB and OPFS backends.
 
+`SharedFilesystem.remove(path)` removes the entry at `path` without following a final
+symlink, recursively for a directory, and resolves `false` when nothing exists there.
+`remove(path, { ifContent })` removes only a regular file whose bytes equal `ifContent`. The
+expected bytes are copied when the call is made. The service compares and removes in one
+planning step under the global mutation lock, reading the file under its own lock, so a host
+write lands wholly before the check (and the remove is skipped) or after it. A guest writing
+through a descriptor it already has open writes to the unlinked file, as after any remove. A
+missing path, a directory, a symlink or different bytes resolve `false` and change nothing.
+A non-`Uint8Array` condition rejects with `TypeError`, and a malformed condition at the service
+boundary fails with `EINVAL` (28). Persistent backends load a cold file's bytes before
+comparing. If the bytes still aren't resident, the call fails with `ENOTSUP` (58) rather than
+removing unchecked.
+
 ## Process admission
 
 `BrowserProcessBroker` reserves identities and descriptor bindings synchronously, then activates the lazy supervisor. Worker bootstrap receives a compiled module, argv, environment, filesystem connection and optional process transport. Source bytes must pass interruption admission; a precompiled module is accepted only with explicit cooperative execution.

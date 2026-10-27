@@ -9,6 +9,7 @@ start with [Getting started](getting-started.md).
 The package exports the browser runtime at `waffle`, with separate `waffle/core`, `waffle/fs`,
 `waffle/proc` and lightweight `waffle/proc/stub` entries. Network and terminal adapters live under
 `waffle/browser/net/*` and `waffle/browser/runtime-terminals`; core imports none of them.
+`waffle/programs` installs program packages on a runtime's filesystem, loaded on first exec.
 See [network ownership and transports](network.md) for the network contract.
 The [package export map](../packages/waffle/package.json) lists the supported entry points.
 

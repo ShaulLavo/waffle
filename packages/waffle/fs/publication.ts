@@ -52,7 +52,9 @@ export type MutationIntent =
     }
   | { readonly kind: "setMode"; readonly handle: number; readonly mode: number }
   | { readonly kind: "setMtime"; readonly handle: number; readonly mtime: number }
-  | { readonly kind: "preopen" | "mkdirp" | "remove"; readonly path: string }
+  | { readonly kind: "preopen" | "mkdirp"; readonly path: string }
+  /** With ifContent, the mutation input holds the expected bytes. */
+  | { readonly kind: "remove"; readonly path: string; readonly ifContent: boolean }
   | {
       readonly kind: "writeFile";
       readonly path: string;
@@ -1651,8 +1653,10 @@ export function mutationIntent(
       return { kind: "setMtime", handle: integer(a), mtime: integer(b) };
     case "preopen":
     case "mkdirp":
-    case "remove":
       return { kind: operation, path: text(a) };
+    case "remove":
+      if (b !== undefined && typeof b !== "boolean") throw new FilesystemError(28);
+      return { kind: "remove", path: text(a), ifContent: b === true };
     case "writeFile":
       return { kind: "writeFile", path: text(a), append: b === true, exclusive: c === true };
     case "move":
