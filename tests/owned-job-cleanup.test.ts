@@ -235,6 +235,22 @@ function sharedFixture(
   }
   return { s, transport, broker, client, root: client(transport), messages, admit };
 }
+async function sharedRetirementFixture() {
+  const fence = Promise.withResolvers<void>();
+  const physical = Promise.withResolvers<void>();
+  let child = 0;
+  const f = sharedFixture({
+    quiesce: (pid) => (pid === child ? fence.promise : undefined),
+    launch: () => ({ terminate: () => physical.promise }),
+  });
+  cleanups.push(() => {
+    fence.resolve();
+    physical.resolve();
+  });
+  child = f.root.spawn(f.root.pid, spec(true));
+  const transport = await f.admit();
+  return { f, fence, physical, job: workerProcessState(transport).job };
+}
 test("shared fatal owner closes queued owned child and grandchild without blocking admission", async () => {
   const f = sharedFixture();
   const ownerPid = f.root.spawn(f.root.pid, spec());
@@ -671,20 +687,7 @@ test("shared owned cleanup releases a real sparse filesystem token only through 
   );
 });
 test("global shutdown retains shared owned dependencies until fences and physical stops settle", async () => {
-  const fence = Promise.withResolvers<void>();
-  const physical = Promise.withResolvers<void>();
-  let child = 0;
-  const f = sharedFixture({
-    quiesce: (pid) => (pid === child ? fence.promise : undefined),
-    launch: () => ({ terminate: () => physical.promise }),
-  });
-  cleanups.push(() => {
-    fence.resolve();
-    physical.resolve();
-  });
-  child = f.root.spawn(f.root.pid, spec(true));
-  const transport = await f.admit();
-  const job = workerProcessState(transport).job;
+  const { f, fence, physical, job } = await sharedRetirementFixture();
   const done = f.s.waitForExit(0, f.root.pid);
   f.broker.dispose();
   f.s.dispose();
@@ -772,20 +775,7 @@ test("browser global shutdown joins failed-launch controller stops and parent ha
 });
 for (const fatal of [false, true])
   test(`actual blocked worker CLEANUP is notified by retirement and preserves fatal/handled signals (fatal=${fatal})`, async () => {
-    const fence = Promise.withResolvers<void>();
-    const physical = Promise.withResolvers<void>();
-    let child = 0;
-    const f = sharedFixture({
-      quiesce: (pid) => (pid === child ? fence.promise : undefined),
-      launch: () => ({ terminate: () => physical.promise }),
-    });
-    cleanups.push(() => {
-      fence.resolve();
-      physical.resolve();
-    });
-    child = f.root.spawn(f.root.pid, spec(true));
-    const childTransport = await f.admit();
-    const job = workerProcessState(childTransport).job;
+    const { f, fence, physical, job } = await sharedRetirementFixture();
     f.root.killJob(job, 9);
     await f.broker.handle(f.messages.shift()!, f.root.pid);
     setSignalDisposition(f.root.signals.signalState, 15, 2, f.root.signals.interrupt);
