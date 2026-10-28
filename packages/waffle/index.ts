@@ -12,6 +12,8 @@ export type {
   RuntimeSupervisor,
   RuntimeConsumer,
   ProcessService,
+  RootDescendantPreparation,
+  RootPreparationCompletion,
   WorkerMemoryObservation,
   ProgramDefinition,
   GuestLauncher,

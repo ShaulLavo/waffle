@@ -684,3 +684,8 @@ export function createRuntime(options: RuntimeOptions = {}): Runtime {
   };
   return Object.freeze(runtime);
 }
+
+export type {
+  RootDescendantPreparation,
+  RootPreparationCompletion,
+} from "./browser/process-broker.js";

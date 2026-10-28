@@ -15,7 +15,7 @@ export const atomicsWaitAsync = (
       array: Int32Array,
       index: number,
       value: number,
-    ): { async: boolean; value: string | Promise<string> };
+    ): { async: false; value: string } | { async: true; value: Promise<string> };
   }
 ).waitAsync;
 
@@ -212,3 +212,40 @@ export function wasmMemoryByteLength(memory: WebAssembly.Memory): number {
 }
 
 export const wasmModuleImports = WebAssembly.Module.imports;
+
+export const PromiseConstructor = Promise;
+const abortedGetter = descriptor(AbortSignal.prototype, "aborted")!.get!;
+const eventAdd = EventTarget.prototype.addEventListener;
+const eventRemove = EventTarget.prototype.removeEventListener;
+export function abortSignalAborted(signal: AbortSignal): boolean {
+  return apply(abortedGetter, signal, []);
+}
+export function listenAbort(signal: AbortSignal, listener: () => void): void {
+  apply(eventAdd, signal, ["abort", listener]);
+}
+export function unlistenAbort(signal: AbortSignal, listener: () => void): void {
+  apply(eventRemove, signal, ["abort", listener]);
+}
+
+const promiseThenMethod = Promise.prototype.then;
+export function observeRejectedPromise(promise: Promise<unknown>): void {
+  apply(promiseThenMethod, promise, [() => {}, () => {}]);
+}
+
+export const atomicsWaitAsyncBigInt = (
+  Atomics as unknown as {
+    waitAsync(
+      array: BigInt64Array,
+      index: number,
+      value: bigint,
+    ): { async: false; value: string } | { async: true; value: Promise<string> };
+  }
+).waitAsync;
+
+export function afterNativePromise<T>(
+  promise: Promise<T>,
+  fulfilled: (value: T) => void,
+  rejected: (cause: unknown) => void,
+): void {
+  apply(promiseThenMethod, promise, [fulfilled, rejected]);
+}

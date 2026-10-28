@@ -1,3 +1,10 @@
+import {
+  assertTerminalWaitAllowed,
+  terminalTurnActive,
+  terminalPolicyActive,
+  withTerminalControl,
+  withTerminalPolicy,
+} from "../proc/terminal-turn.js";
 import type { Readiness, Resource, Stream } from "../core/descriptors.js";
 
 const identityBrand = Symbol();
@@ -117,7 +124,45 @@ export interface TerminalMemberUpdate {
   readonly lease: TerminalLease | null;
 }
 
+export type TerminalGroupStatus = "active" | "retired" | "stale" | "unknown";
+export type TerminalMemberStatus = "bound" | "pending" | "removed" | "stale" | "unknown";
+export type TerminalControlState =
+  | { readonly kind: "closed"; readonly code: TerminalFailure }
+  | {
+      readonly kind: "open";
+      readonly snapshot: TerminalSnapshot;
+      readonly selection: {
+        readonly group: TerminalGroup;
+        readonly lease: TerminalLease;
+        readonly rootMember: TerminalMember | null;
+      } | null;
+    };
+export interface TerminalControlReceipt {
+  readonly phase: "not-entered" | "rolled-back" | "committed";
+  /** Authoritative bounded snapshot at completion; null if no turn was acquired. */
+  readonly state: TerminalControlState | null;
+  group(handle: TerminalGroup): TerminalGroupStatus;
+  member(handle: TerminalMember | TerminalMemberPlan): TerminalMemberStatus;
+  lease(handle: TerminalLease): boolean | "unknown";
+}
+export type TerminalControlResult<T> = TerminalResult<T> & {
+  readonly receipt: TerminalControlReceipt;
+};
+export interface TerminalControlTurn {
+  /** Publish local bookkeeping only after commit. No terminal calls; use receipt-issued state. */
+  publish(operation: (receipt: TerminalControlReceipt) => undefined): void;
+}
+export interface TerminalControlOptions {
+  readonly signal?: AbortSignal;
+  /** Once before promise settlement, including rollback, cancellation or a thrown callback. */
+  readonly settled?: (receipt: TerminalControlReceipt) => undefined;
+}
 export interface TerminalAuthority {
+  /** Wait for the page control lane, then execute synchronous work exactly once. */
+  control<T>(
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    options?: TerminalControlOptions,
+  ): Promise<TerminalControlResult<T>>;
   createGroup(options: { readonly initialMode: TerminalMode }): TerminalResult<TerminalGroup>;
   planMember(options: {
     readonly group: TerminalGroup;
@@ -220,6 +265,13 @@ import {
   WeakMapConstructor,
   weakMapGet,
   weakMapSet,
+  PromiseConstructor,
+  abortSignalAborted,
+  listenAbort,
+  unlistenAbort,
+  observeRejectedPromise,
+  mapGet,
+  mapClear,
 } from "../proc/intrinsics.ts";
 import { enterTerminalSection, leaveTerminalSection } from "../proc/terminal-lifetime.js";
 import {
@@ -249,7 +301,6 @@ export const TERMINAL_SESSION_LIMITS = objectFreeze({
   maximumGeneration: 2147483647,
 } as const);
 const integer = Number.isInteger;
-const PromiseConstructor = Promise;
 const generatorNext = (function* () {})().next;
 const controlKey = Symbol("terminal controls");
 const H = objectFreeze({
@@ -271,6 +322,7 @@ const H = objectFreeze({
   gate: 16,
   inputNonce: 18,
   inputToken: 20,
+  pageWaiting: 22,
 });
 const GROUPS = 64,
   MEMBERS = GROUPS + 64 * 16;
@@ -312,10 +364,12 @@ interface ContextRecord extends TerminalContext {
   readonly memberGeneration: number;
 }
 function ok<T>(value: T): TerminalResult<T> {
-  return { kind: "ok", value };
+  const result = { __proto__: null, kind: "ok" as const, value };
+  return result;
 }
 function error(code: TerminalFailure): { kind: "error"; code: TerminalFailure } {
-  return { kind: "error", code };
+  const result = { __proto__: null, kind: "error" as const, code };
+  return result;
 }
 function captureGeometry(geometry: TerminalGeometry): TerminalGeometry {
   return { columns: geometry.columns, rows: geometry.rows };
@@ -419,6 +473,71 @@ function modeWord(value: TerminalMode): number {
   return value === "raw" ? 1 : 0;
 }
 
+interface Publication {
+  readonly operation: (receipt: TerminalControlReceipt) => undefined;
+  next?: Publication;
+}
+interface ControlFrame {
+  readonly session: Session;
+  readonly owner: ProcessState;
+  readonly writes: Map<number, number>;
+  state: "executing" | "committed" | "aborted";
+  firstPublication?: Publication;
+  lastPublication?: Publication;
+  signalSelected?: boolean;
+}
+let activeControl: ControlFrame | undefined;
+interface ControlRequest {
+  previous?: ControlRequest;
+  next?: ControlRequest;
+  done: boolean;
+  executing: boolean;
+  receipt: TerminalControlReceipt;
+  execute(): Promise<void>;
+}
+type ControlAttempt<T> = { kind: "busy" } | { kind: "done"; result: TerminalResult<T> };
+
+function rollbackControl(frame: ControlFrame): void {
+  // Only provisional handles/allocations are invalidated; no shared word is rewound.
+  frame.state = "aborted";
+}
+function commitControl(frame: ControlFrame, authority: Authority): void {
+  mapForEach(frame.writes, (value, index) => atomicsStore(frame.session.words, index, value));
+  frame.state = "committed";
+  if (frame.signalSelected) frame.session.signalSelected();
+  const receipt = new ControlReceipt(authority, "committed");
+  for (let publication = frame.firstPublication; publication; publication = publication.next)
+    syncNotification(publication.operation(receipt), "terminal publication");
+}
+function controlTurn(frame: ControlFrame): TerminalControlTurn {
+  return objectFreeze({
+    publish(operation: (receipt: TerminalControlReceipt) => undefined) {
+      if (activeControl !== frame || frame.state !== "executing")
+        throw new TypeError("terminal control turn expired");
+      const publication: Publication = { operation };
+      if (frame.lastPublication) frame.lastPublication.next = publication;
+      else frame.firstPublication = publication;
+      frame.lastPublication = publication;
+    },
+  });
+}
+function syncNotification(result: unknown, name: string): void {
+  if (result === undefined) return;
+  if (isInstance(result, PromiseConstructor)) observeRejectedPromise(result);
+  throw new TypeError(`${name} must return undefined synchronously`);
+}
+function syncControlResult<T>(result: TerminalResult<T>): TerminalResult<T> {
+  if (typeof result !== "object" || result === null)
+    throw new TypeError("terminal control must return a synchronous TerminalResult");
+  if ("then" in result && typeof result.then === "function") {
+    if (isInstance(result, PromiseConstructor)) observeRejectedPromise(result);
+    throw new TypeError("terminal control must return a synchronous TerminalResult");
+  }
+  if (result.kind === "ok") return ok(result.value);
+  if (result.kind === "error") return error(result.code);
+  throw new TypeError("terminal control must return a synchronous TerminalResult");
+}
+
 class Session {
   private dirty = false;
   readonly words: Int32Array;
@@ -432,10 +551,20 @@ class Session {
     this.commonWake = new Int32ArrayConstructor(identity.directory, 4, 1);
   }
   get(index: number): number {
+    const frame = activeControl;
+    if (frame?.session.identity.buffer === this.identity.buffer && frame.state === "executing") {
+      const staged = mapGet(frame.writes, index);
+      if (staged !== undefined) return staged;
+    }
     return atomicsLoad(this.words, index);
   }
   put(index: number, value: number): void {
-    if (atomicsLoad(this.words, index) !== value) this.dirty = true;
+    if (this.get(index) !== value) this.dirty = true;
+    const frame = activeControl;
+    if (frame?.session.identity.buffer === this.identity.buffer && frame.state === "executing") {
+      mapSet(frame.writes, index, value);
+      return;
+    }
     atomicsStore(this.words, index, value);
   }
   closed(): boolean {
@@ -463,6 +592,20 @@ class Session {
       this.close();
       return error("PROCESS_GONE");
     }
+    if (activeControl) {
+      if (
+        terminalPolicyActive() ||
+        activeControl.state !== "executing" ||
+        activeControl.session.identity.buffer !== this.identity.buffer
+      )
+        return error("INVALID");
+      if (
+        typeof owner !== "bigint" &&
+        (owner.pid !== activeControl.owner.pid || owner.slot !== activeControl.owner.slot)
+      )
+        return error("DENIED");
+      return operation();
+    }
     if (typeof owner === "bigint") return this.lock(owner, operation);
     if (!enterTerminalSection(owner)) return error("CANCELED");
     try {
@@ -472,6 +615,7 @@ class Session {
     }
   }
   private lock<T>(owner: bigint, operation: () => TerminalResult<T>): TerminalResult<T> {
+    if (this.get(H.pageWaiting) !== 0) return this.contend(true);
     if (atomicsCompareExchange(this.gate, 0, 0n, owner) !== 0n) return this.contend();
     this.dirty = false;
     try {
@@ -483,12 +627,109 @@ class Session {
       if (this.dirty || contended !== 0) this.notify();
     }
   }
-  private contend(): TerminalResult<never> {
+  private contend(reserved = false): TerminalResult<never> {
     atomicsStore(this.words, H.contended, 1);
     // Either the holder sees our hint after unlocking, or it already released and we wake
     // the scan ourselves. A fully notified poll observed its sequence before losing this CAS.
-    if (atomicsLoad(this.gate, 0) === 0n) this.notify();
+    if (!reserved && atomicsLoad(this.gate, 0) === 0n) this.notify();
     return error("AGAIN");
+  }
+  control<T>(
+    state: ProcessState,
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    signal: AbortSignal | undefined,
+    check: (() => TerminalFailure | undefined) | undefined,
+    authority: Authority,
+    receipt: (value: TerminalControlReceipt) => void,
+  ): ControlAttempt<T> {
+    if (signal && abortSignalAborted(signal)) return { kind: "done", result: error("CANCELED") };
+    if (this.closed()) return { kind: "done", result: error("CLOSED") };
+    if (!this.rootLive()) return { kind: "done", result: error("PROCESS_GONE") };
+    if (!enterTerminalSection(state)) return { kind: "done", result: error("CANCELED") };
+    try {
+      return this.controlLock(state, work, signal, check, authority, receipt);
+    } finally {
+      leaveTerminalSection(state, this.identity.directory);
+    }
+  }
+  private controlLock<T>(
+    state: ProcessState,
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    signal: AbortSignal | undefined,
+    check: (() => TerminalFailure | undefined) | undefined,
+    authority: Authority,
+    receipt: (value: TerminalControlReceipt) => void,
+  ): ControlAttempt<T> {
+    if (atomicsCompareExchange(this.gate, 0, 0n, BigIntConstructor(state.pid)) !== 0n) {
+      this.contend();
+      return { kind: "busy" };
+    }
+    this.dirty = false;
+    try {
+      return {
+        kind: "done",
+        result: this.runControl(state, work, signal, check, authority, receipt),
+      };
+    } finally {
+      atomicsStore(this.gate, 0, 0n);
+      atomicsExchange(this.words, H.contended, 0);
+      this.notify();
+    }
+  }
+  private runControl<T>(
+    state: ProcessState,
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    signal: AbortSignal | undefined,
+    check: (() => TerminalFailure | undefined) | undefined,
+    authority: Authority,
+    receipt: (value: TerminalControlReceipt) => void,
+  ): TerminalResult<T> {
+    const frame: ControlFrame = {
+      session: this,
+      owner: state,
+      writes: new MapConstructor(),
+      state: "executing",
+    };
+    activeControl = frame;
+    try {
+      return withTerminalControl(() => this.completeControl(frame, work, signal, check, authority));
+    } finally {
+      activeControl = undefined;
+      receipt(
+        new ControlReceipt(authority, frame.state === "committed" ? "committed" : "rolled-back"),
+      );
+      mapClear(frame.writes);
+      frame.firstPublication = undefined;
+      frame.lastPublication = undefined;
+    }
+  }
+  private completeControl<T>(
+    frame: ControlFrame,
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    signal: AbortSignal | undefined,
+    check: (() => TerminalFailure | undefined) | undefined,
+    authority: Authority,
+  ): TerminalResult<T> {
+    try {
+      const denied = check?.();
+      if (denied) {
+        rollbackControl(frame);
+        return error(denied);
+      }
+      const result = syncControlResult(work(controlTurn(frame)));
+      const failure = (signal && abortSignalAborted(signal) ? "CANCELED" : undefined) ?? check?.();
+      if (result.kind === "error" || failure || !this.rootLive() || this.closed())
+        rollbackControl(frame);
+      if (failure) return error(failure);
+      if (!this.rootLive()) return error("PROCESS_GONE");
+      if (this.closed() && result.kind === "ok") return error("CLOSED");
+      if (result.kind === "ok") commitControl(frame, authority);
+      return result;
+    } catch (cause) {
+      if (frame.state === "committed") this.close();
+      else rollbackControl(frame);
+      throw cause;
+    }
   }
   next(index: number): TerminalResult<number> {
     const previous = this.get(index);
@@ -536,7 +777,7 @@ class Session {
     });
     weakMapSet(turns, turn, this);
     try {
-      return callback(turn);
+      return withTerminalPolicy(() => callback(turn));
     } catch (cause) {
       this.close();
       throw cause;
@@ -551,6 +792,11 @@ class Session {
     return error("CLOSED");
   }
   signalSelected(): void {
+    const frame = activeControl;
+    if (frame?.session.identity.buffer === this.identity.buffer && frame.state === "executing") {
+      frame.signalSelected = true;
+      return;
+    }
     const selected = this.get(H.selected) - 1;
     if (selected < 0) return;
     for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++)
@@ -699,6 +945,7 @@ class Group implements TerminalGroup {
     readonly owner: Authority,
     readonly row: number,
     readonly generation: number,
+    readonly controlFrame?: ControlFrame,
   ) {}
 }
 class Member implements TerminalMember {
@@ -708,6 +955,7 @@ class Member implements TerminalMember {
     readonly owner: Authority,
     readonly row: number,
     readonly generation: number,
+    readonly controlFrame?: ControlFrame,
   ) {}
 }
 class Plan implements TerminalMemberPlan {
@@ -717,6 +965,7 @@ class Plan implements TerminalMemberPlan {
     readonly owner: Authority,
     readonly row: number,
     readonly generation: number,
+    readonly controlFrame?: ControlFrame,
   ) {}
 }
 class Lease implements TerminalLease {
@@ -726,6 +975,7 @@ class Lease implements TerminalLease {
     readonly owner: Authority,
     readonly group: Group,
     readonly generation: number,
+    readonly controlFrame?: ControlFrame,
   ) {}
 }
 
@@ -753,6 +1003,10 @@ export function claimTerminalAuthority(options: {
   });
 }
 class Authority implements TerminalAuthority {
+  private readonly generations = new MapConstructor<number, number>();
+  private first?: ControlRequest;
+  private last?: ControlRequest;
+  private pumping = false;
   readonly local = () => {};
   constructor(
     readonly session: Session,
@@ -760,6 +1014,126 @@ class Authority implements TerminalAuthority {
     private readonly checkActive: () => void,
     private readonly policy: TerminalPolicy,
   ) {}
+  control<T>(
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    options: TerminalControlOptions = {},
+  ): Promise<TerminalControlResult<T>> {
+    assertTerminalWaitAllowed();
+    return this.submit(work, options, (result) => result);
+  }
+  prepare<T>(
+    work: (turn: TerminalControlTurn) => TerminalResult<void>,
+    options: TerminalControlOptions,
+    finish: (result: TerminalResult<void>, receipt: TerminalControlReceipt) => T,
+    check: () => TerminalFailure | undefined,
+  ): Promise<TerminalControlResult<T>> {
+    return this.submit(work, options, (result, receipt) => ok(finish(result, receipt)), check);
+  }
+  matches(process: WorkerProcessTransport): boolean {
+    const state = workerProcessState(process);
+    return (
+      workerProcessDirectoryId(process) === this.session.identity.directoryId &&
+      state.pid === this.session.identity.rootPid &&
+      state.slot === this.session.identity.rootSlot
+    );
+  }
+  private submit<T, U>(
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    options: TerminalControlOptions,
+    finish: (result: TerminalResult<T>, receipt: TerminalControlReceipt) => TerminalResult<U>,
+    check?: () => TerminalFailure | undefined,
+  ): Promise<TerminalControlResult<U>> {
+    return new PromiseConstructor((resolve, reject) => {
+      if (terminalTurnActive()) {
+        reject(new ProcessError(ProcessErrno.NOTSUP, "recursive terminal control wait"));
+        return;
+      }
+      const signal = options.signal;
+      const settle = (result: TerminalResult<U> | undefined, cause?: unknown) => {
+        if (request.done) return;
+        request.done = true;
+        this.unlink(request);
+        atomicsAdd(this.session.words, H.pageWaiting, -1);
+        if (signal) unlistenAbort(signal, cancel);
+        this.session.notify();
+        try {
+          syncNotification(options.settled?.(request.receipt), "terminal settlement");
+        } catch (notificationError) {
+          reject(notificationError);
+          return;
+        }
+        if (result) resolve(controlResponse(result, request.receipt));
+        else reject(cause);
+      };
+      const cancel = () => {
+        if (!request.executing && request.receipt.phase !== "committed") settle(error("CANCELED"));
+        this.session.notify();
+      };
+      const request: ControlRequest = {
+        done: false,
+        executing: false,
+        receipt: new ControlReceipt(this, "not-entered"),
+        execute: async () => {
+          try {
+            const result = await this.executeControl(work, signal, request, finish, check);
+            settle(result);
+          } catch (cause) {
+            settle(undefined, cause);
+          }
+        },
+      };
+      request.previous = this.last;
+      if (this.last) this.last.next = request;
+      else this.first = request;
+      this.last = request;
+      atomicsAdd(this.session.words, H.pageWaiting, 1);
+      if (signal) listenAbort(signal, cancel);
+      if (signal && abortSignalAborted(signal)) cancel();
+      this.session.notify();
+      if (!this.pumping) void this.pump();
+    });
+  }
+  private unlink(request: ControlRequest): void {
+    if (request.previous) request.previous.next = request.next;
+    else this.first = request.next;
+    if (request.next) request.next.previous = request.previous;
+    else this.last = request.previous;
+    request.previous = undefined;
+    request.next = undefined;
+  }
+  private async pump(): Promise<void> {
+    this.pumping = true;
+    try {
+      while (this.first) await this.first.execute();
+    } finally {
+      this.pumping = false;
+    }
+  }
+  private async executeControl<T, U>(
+    work: (turn: TerminalControlTurn) => TerminalResult<T>,
+    signal: AbortSignal | undefined,
+    request: ControlRequest,
+    finish: (result: TerminalResult<T>, receipt: TerminalControlReceipt) => TerminalResult<U>,
+    check?: () => TerminalFailure | undefined,
+  ): Promise<TerminalResult<U>> {
+    for (;;) {
+      const seen = atomicsLoad(this.session.commonWake, 0);
+      if (request.done) return error("CANCELED");
+      this.checkActive();
+      request.executing = true;
+      let result: ControlAttempt<T>;
+      try {
+        result = this.session.control(this.state, work, signal, check, this, (receipt) => {
+          request.receipt = receipt;
+        });
+      } finally {
+        request.executing = false;
+      }
+      if (result.kind === "done") return finish(result.result, request.receipt);
+      const waiting = atomicsWaitAsync(this.session.commonWake, 0, seen);
+      if (waiting.async) await waiting.value;
+    }
+  }
   private run<T>(operation: () => TerminalResult<T>): TerminalResult<T> {
     this.checkActive();
     return this.session.transact(this.state, () => {
@@ -779,7 +1153,12 @@ class Authority implements TerminalAuthority {
     return error("CLOSED");
   }
   private group(value: TerminalGroup): Group | undefined {
-    if (!isInstance(value, Group) || value.owner !== this) return undefined;
+    if (
+      !isInstance(value, Group) ||
+      value.owner !== this ||
+      value.controlFrame?.state === "aborted"
+    )
+      return undefined;
     return this.session.get(value.row) === value.generation ? value : undefined;
   }
   private activeGroup(value: TerminalGroup): Group | undefined {
@@ -787,15 +1166,26 @@ class Authority implements TerminalAuthority {
     return group && this.session.get(group.row + 1) !== RETIRED ? group : undefined;
   }
   private member(value: TerminalMember): Member | undefined {
-    if (!isInstance(value, Member) || value.owner !== this) return undefined;
+    if (
+      !isInstance(value, Member) ||
+      value.owner !== this ||
+      value.controlFrame?.state === "aborted"
+    )
+      return undefined;
     return this.session.get(value.row) === value.generation ? value : undefined;
   }
   private plan(value: TerminalMemberPlan): Plan | undefined {
-    if (!isInstance(value, Plan) || value.owner !== this) return undefined;
+    if (!isInstance(value, Plan) || value.owner !== this || value.controlFrame?.state === "aborted")
+      return undefined;
     return this.session.get(value.row) === value.generation ? value : undefined;
   }
   private lease(value: TerminalLease): Lease | undefined {
-    if (!isInstance(value, Lease) || value.owner !== this) return undefined;
+    if (
+      !isInstance(value, Lease) ||
+      value.owner !== this ||
+      value.controlFrame?.state === "aborted"
+    )
+      return undefined;
     if (
       !this.activeGroup(value.group) ||
       this.session.get(H.selected) !== (value.group.row - GROUPS) / 16 + 1
@@ -803,12 +1193,23 @@ class Authority implements TerminalAuthority {
       return undefined;
     return this.session.get(H.selection) === value.generation ? value : undefined;
   }
+  private reserveGeneration(index: number): TerminalResult<number> {
+    let previous = this.session.get(index);
+    const reserved = mapGet(this.generations, index);
+    if (reserved !== undefined && reserved > previous) previous = reserved;
+    if (previous >= TERMINAL_SESSION_LIMITS.maximumGeneration) {
+      this.session.close();
+      return error("EXHAUSTED");
+    }
+    mapSet(this.generations, index, previous + 1);
+    return ok(previous + 1);
+  }
   private allocate(start: number, count: number): TerminalResult<number> {
     for (let slot = 0; slot < count; slot++) {
       const row = start + slot * 16,
         state = this.session.get(row + 1);
       if (state !== FREE && state !== RETIRED) continue;
-      const next = this.session.next(row);
+      const next = this.reserveGeneration(row);
       if (next.kind === "error") return next;
       return ok(row);
     }
@@ -821,12 +1222,12 @@ class Authority implements TerminalAuthority {
       const allocated = this.allocate(GROUPS, TERMINAL_SESSION_LIMITS.groups);
       if (allocated.kind === "error") return allocated;
       const row = allocated.value,
-        generation = this.session.get(row) + 1;
+        generation = mapGet(this.generations, row)!;
       this.session.put(row, generation);
       this.session.put(row + 1, PREPARING);
       this.session.put(row + 2, modeWord(initialMode));
       this.session.put(row + 3, 0);
-      return ok(new Group(this, row, generation));
+      return ok(new Group(this, row, generation, activeControl));
     });
   }
   planMember(options: {
@@ -849,7 +1250,7 @@ class Authority implements TerminalAuthority {
     const allocation = this.allocate(MEMBERS, TERMINAL_SESSION_LIMITS.memberships);
     if (allocation.kind === "error") return allocation;
     const row = allocation.value,
-      generation = s.get(row) + 1;
+      generation = mapGet(this.generations, row)!;
     s.put(row, generation);
     s.put(row + 1, PENDING);
     s.put(row + 2, (group.row - GROUPS) / 16);
@@ -859,7 +1260,7 @@ class Authority implements TerminalAuthority {
     s.put(row + 6, s.get(parent.row + 4));
     s.put(row + 7, s.get(parent.row + 5));
     return ok({
-      member: new Plan(this, row, generation),
+      member: new Plan(this, row, generation, activeControl),
       context: context(s.identity, (row - MEMBERS) / 16, generation),
     });
   }
@@ -949,7 +1350,7 @@ class Authority implements TerminalAuthority {
     );
     if (changed.kind === "error") return changed;
     const row = allocation.value;
-    s.put(row, s.get(row) + 1);
+    s.put(row, mapGet(this.generations, row)!);
     s.put(row + 1, BOUND);
     s.put(row + 2, (group.row - GROUPS) / 16);
     s.put(row + 3, group.generation);
@@ -972,12 +1373,20 @@ class Authority implements TerminalAuthority {
   }
   private currentLease(group: Group): TerminalLease | null {
     if (this.session.get(H.selected) !== (group.row - GROUPS) / 16 + 1) return null;
-    return new Lease(this, group, this.session.get(H.selection));
+    const generation = this.session.get(H.selection);
+    const provisional =
+      generation !== atomicsLoad(this.session.words, H.selection) ? activeControl : undefined;
+    return new Lease(this, group, generation, provisional);
   }
   private admitted(row: number): TerminalAdmittedMember {
     const group = this.rowGroup(row)!;
+    const provisional =
+      this.session.get(row) !== atomicsLoad(this.session.words, row) ||
+      this.session.get(row + 1) !== atomicsLoad(this.session.words, row + 1)
+        ? activeControl
+        : undefined;
     return {
-      member: new Member(this, row, this.session.get(row)),
+      member: new Member(this, row, this.session.get(row), provisional),
       context: context(this.session.identity, (row - MEMBERS) / 16, this.session.get(row)),
       lease: this.currentLease(group),
     };
@@ -986,7 +1395,8 @@ class Authority implements TerminalAuthority {
     const s = this.session,
       roster = s.next(group.row + 3);
     if (roster.kind === "error") return roster;
-    const selection = this.currentLease(group) === null ? ok(null) : s.next(H.selection);
+    const selection =
+      this.currentLease(group) === null ? ok(null) : this.reserveGeneration(H.selection);
     if (selection.kind === "error") return selection;
     if (selection.value !== null) {
       const changed = s.transition(this.policy, {
@@ -1063,7 +1473,7 @@ class Authority implements TerminalAuthority {
       s = this.session;
     if (!group) return error("STALE");
     if (!this.membersLive(group)) return error("PROCESS_GONE");
-    const next = s.next(H.selection),
+    const next = this.reserveGeneration(H.selection),
       revision = s.next(H.modeRevision);
     if (next.kind === "error") return next;
     if (revision.kind === "error") return revision;
@@ -1082,7 +1492,7 @@ class Authority implements TerminalAuthority {
     s.put(H.mode, s.get(group.row + 2));
     s.put(H.modeRevision, revision.value);
     s.signalSelected();
-    return ok(new Lease(this, group, next.value));
+    return ok(new Lease(this, group, next.value, activeControl));
   }
   private saveMode(): void {
     const selected = this.session.get(H.selected) - 1;
@@ -1106,7 +1516,7 @@ class Authority implements TerminalAuthority {
     return this.run(() => {
       if (!this.lease(lease)) return error("STALE");
       if (restore !== null) return this.select(restore);
-      const next = this.session.next(H.selection);
+      const next = this.reserveGeneration(H.selection);
       if (next.kind === "error") return next;
       const changed = this.session.transition(this.policy, {
         kind: "selection",
@@ -1237,6 +1647,7 @@ class Attachment implements TerminalAttachment {
       if (denied) return error(denied);
       const result = this.session.transact(this.state, () => this.startup());
       if (result.kind !== "error" || result.code !== "AGAIN") return result;
+      assertTerminalWaitAllowed();
       atomicsWait(this.session.wake, 0, seen, 10);
     }
   }
@@ -1331,6 +1742,7 @@ class Endpoint implements Stream {
       if (signalPending(this.state.signals)) return -27;
       const result = this.tryRead(chunks);
       if (result !== -ProcessErrno.AGAIN) return result;
+      assertTerminalWaitAllowed();
       atomicsWait(this.attachment.session.wake, 0, seen, 10);
     }
   }
@@ -1339,9 +1751,10 @@ class Endpoint implements Stream {
     if (denied) return errno(denied);
     if (!byteCapacity(chunks)) return 0;
     if (this.target === 0) return -ProcessErrno.BADF;
+    const target = this.target;
     let count: number;
     try {
-      count = this.attachment.policy.tryWrite(this.target, chunks);
+      count = withTerminalPolicy(() => this.attachment.policy.tryWrite(target, chunks));
     } catch (cause) {
       this.attachment.session.close();
       throw cause;
@@ -1355,6 +1768,7 @@ class Endpoint implements Stream {
       if (signalPending(this.state.signals)) return -27;
       const result = this.tryWrite(chunks);
       if (result !== -ProcessErrno.AGAIN) return result;
+      assertTerminalWaitAllowed();
       atomicsWait(this.attachment.session.wake, 0, seen, 10);
     }
   }
@@ -1374,8 +1788,9 @@ class Endpoint implements Stream {
   }
   private outputReady(): boolean {
     if (this.target === 0) return false;
+    const target = this.target;
     try {
-      return this.attachment.policy.outputReadiness(this.target).writable;
+      return withTerminalPolicy(() => this.attachment.policy.outputReadiness(target).writable);
     } catch (cause) {
       this.attachment.session.close();
       throw cause;
@@ -1479,7 +1894,11 @@ class GeometryCursor implements TerminalGeometrySubscription {
     return this.endpoint.run(() => {
       const geometry = this.endpoint.attachment.session.geometry();
       if (geometry.revision === this.revision) return ok(null);
-      this.revision = geometry.revision;
+      if (activeControl?.state === "executing")
+        controlTurn(activeControl).publish(() => {
+          this.revision = geometry.revision;
+        });
+      else this.revision = geometry.revision;
       return ok(geometry);
     });
   }
@@ -1513,4 +1932,150 @@ export function terminalControls(resource: Resource | undefined): TerminalContro
   if (!resource || resource.kind !== "terminal") return;
   const controls = reflectGet(resource, controlKey);
   return isInstance(controls, Controls) ? controls : undefined;
+}
+
+/** Broker integration: finish runs after gate release in the same continuation. */
+export function prepareTerminalDescendant<T>(options: {
+  terminal: TerminalAuthority;
+  root: WorkerProcessTransport;
+  signal: AbortSignal;
+  work(turn: TerminalControlTurn): TerminalResult<void>;
+  finish(result: TerminalResult<void>, receipt: TerminalControlReceipt): T;
+  settled(receipt: TerminalControlReceipt): undefined;
+  check(): TerminalFailure | undefined;
+}): Promise<TerminalControlResult<T>> {
+  if (!isInstance(options.terminal, Authority) || !options.terminal.matches(options.root))
+    throw new ProcessError(
+      ProcessErrno.NOTSUP,
+      "terminal preparation must borrow its exact root authority",
+    );
+  return options.terminal.prepare(
+    options.work,
+    { signal: options.signal, settled: options.settled },
+    options.finish,
+    options.check,
+  );
+}
+
+function controlResponse<T>(
+  result: TerminalResult<T>,
+  receipt: TerminalControlReceipt,
+): TerminalControlResult<T> {
+  if (result.kind === "ok") {
+    const response = { __proto__: null, kind: "ok" as const, value: result.value, receipt };
+    return response;
+  }
+  const response = { __proto__: null, kind: "error" as const, code: result.code, receipt };
+  return response;
+}
+class ControlReceipt implements TerminalControlReceipt {
+  readonly state: TerminalControlState | null;
+  private readonly words?: Int32Array;
+  constructor(
+    private readonly authority: Authority,
+    readonly phase: TerminalControlReceipt["phase"],
+  ) {
+    if (phase === "not-entered") {
+      this.state = null;
+      return;
+    }
+    const session = authority.session;
+    const words = new Int32ArrayConstructor(TERMINAL_SESSION_LIMITS.controlBytes / 4);
+    for (let index = 0; index < typedArrayLength(words); index++)
+      words[index] = atomicsLoad(session.words, index);
+    this.words = words;
+    this.state = this.captureState();
+  }
+  private captureState(): TerminalControlState {
+    const words = this.words!;
+    if (words[H.closed] !== 0 || !this.authority.session.rootLive())
+      return objectFreeze({
+        kind: "closed" as const,
+        code: words[H.closed] !== 0 ? "CLOSED" : "PROCESS_GONE",
+      });
+    const snapshot: TerminalSnapshot = objectFreeze({
+      mode: mode(words[H.mode]!),
+      modeRevision: words[H.modeRevision]!,
+      geometry: objectFreeze({
+        columns: words[H.columns]!,
+        rows: words[H.rows]!,
+        revision: words[H.geometry]!,
+      }),
+      selection: words[H.selected] === 0 ? null : (words[H.selection] as TerminalSelection),
+    });
+    const slot = words[H.selected]! - 1;
+    if (slot < 0) return objectFreeze({ kind: "open" as const, snapshot, selection: null });
+    const row = GROUPS + slot * 16;
+    const group = new Group(this.authority, row, words[row]!);
+    const lease = new Lease(this.authority, group, words[H.selection]!);
+    const rootMember = this.rootMember(slot);
+    return objectFreeze({
+      kind: "open" as const,
+      snapshot,
+      selection: objectFreeze({ group, lease, rootMember }),
+    });
+  }
+  private rootMember(group: number): TerminalMember | null {
+    const words = this.words!;
+    for (let slot = 0; slot < TERMINAL_SESSION_LIMITS.memberships; slot++) {
+      const row = MEMBERS + slot * 16;
+      if (
+        words[row + 1] === BOUND &&
+        words[row + 2] === group &&
+        words[row + 5] === this.authority.session.identity.rootPid
+      )
+        return new Member(this.authority, row, words[row]!);
+    }
+    return null;
+  }
+  group(handle: TerminalGroup): TerminalGroupStatus {
+    if (!this.words) return "unknown";
+    if (this.state?.kind === "closed") return "stale";
+    if (
+      !isInstance(handle, Group) ||
+      handle.owner !== this.authority ||
+      handle.controlFrame?.state === "aborted" ||
+      this.words[handle.row] !== handle.generation
+    )
+      return "stale";
+    return this.words[handle.row + 1] === RETIRED ? "retired" : "active";
+  }
+  member(handle: TerminalMember | TerminalMemberPlan): TerminalMemberStatus {
+    if (!this.words) return "unknown";
+    if (this.state?.kind === "closed") return "stale";
+    if (
+      (!isInstance(handle, Member) && !isInstance(handle, Plan)) ||
+      handle.owner !== this.authority ||
+      handle.controlFrame?.state === "aborted" ||
+      this.words[handle.row] !== handle.generation
+    )
+      return "stale";
+    const state = this.words[handle.row + 1];
+    return state === BOUND ? "bound" : state === PENDING ? "pending" : "removed";
+  }
+  lease(handle: TerminalLease): boolean | "unknown" {
+    if (!this.words) return "unknown";
+    if (this.state?.kind === "closed") return false;
+    return (
+      isInstance(handle, Lease) &&
+      handle.owner === this.authority &&
+      handle.controlFrame?.state !== "aborted" &&
+      this.group(handle.group) === "active" &&
+      this.words[H.selected] === (handle.group.row - GROUPS) / 16 + 1 &&
+      this.words[H.selection] === handle.generation
+    );
+  }
+}
+
+/** Initial completion marker, with no shared-state reconciliation before acquisition. */
+export function terminalPreparationReceipt(
+  terminal: TerminalAuthority,
+  root: WorkerProcessTransport,
+): TerminalControlReceipt {
+  if (!isInstance(terminal, Authority) || !terminal.matches(root))
+    throw new ProcessError(
+      ProcessErrno.NOTSUP,
+      "terminal preparation must borrow its exact root authority",
+    );
+  return new ControlReceipt(terminal, "not-entered");
 }

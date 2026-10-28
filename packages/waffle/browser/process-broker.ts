@@ -1,9 +1,29 @@
+import {
+  prepareTerminalDescendant,
+  terminalPreparationReceipt,
+  type TerminalAuthority,
+  type TerminalControlTurn,
+  type TerminalControlReceipt,
+  type TerminalResult,
+  type TerminalFailure,
+} from "./terminal-session.js";
+import {
+  atomicsWaitAsync,
+  observeRejectedPromise,
+  isInstance,
+  PromiseConstructor,
+} from "../proc/intrinsics.js";
 import { ReadyWorkerPool } from "./worker-pool.js";
 import { createNotificationBridge, type NotificationBridge } from "./notification-relay.js";
 import { snapshotHostIdentity, type RuntimeHostIdentity } from "./process-context.js";
 import { drainDiagnostic } from "./diagnostic.js";
 import { WorkerExecutableAccess, rejectWorkerAccess } from "../proc/worker-access.js";
-import { directoryGroups, directoryProcesses, isCollectedProcess } from "../proc/directory.js";
+import {
+  directoryGroups,
+  directoryProcesses,
+  isCollectedProcess,
+  wakeDirectory,
+} from "../proc/directory.js";
 import { type ControlCells, TaggedCells, controlLoad, controlStore } from "../proc/control.js";
 import { type FilesystemConnection, type FilesystemIdentity, isRevoked } from "../fs/protocol.js";
 
@@ -110,6 +130,20 @@ export interface RuntimeDescendant {
    * and `pipeRegistry` fields. Inherited fields are the parent's claims, not membership. */
   readonly data: Readonly<Record<string, unknown>>;
 }
+export type RootPreparationCompletion =
+  | { readonly kind: "rolled-back"; readonly receipt: TerminalControlReceipt }
+  | {
+      readonly kind: "committed";
+      readonly entry: "not-entered" | "adapter-invoked";
+      readonly receipt: TerminalControlReceipt;
+    };
+export interface RootDescendantPreparation {
+  readonly terminal: TerminalAuthority;
+  /** Synchronous, once under a granted root turn; publish local maps with turn.publish. */
+  run(descendant: RuntimeDescendant, turn: TerminalControlTurn): TerminalResult<void>;
+  /** Once before onChildExit/retirement can run. Committed means exit cleanup owns membership. */
+  settled?(descendant: RuntimeDescendant, completion: RootPreparationCompletion): undefined;
+}
 export interface RuntimeRootOptions {
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
@@ -125,12 +159,9 @@ export interface RuntimeRootOptions {
   stop?(): void | Promise<void>;
   wake?(): void;
   retired?(): void;
-  /** Called synchronously, once, for every transport-backed descendant of this root, after the
-   * runtime admits its reservation and immediately before its adapter launcher runs. The guest
-   * cannot enter first. Must return `undefined`: a returned value or promise, or a throw, fails
-   * the descendant's start. Captured when the root is adopted. The process may still be killed
-   * from another worker after the call; the guest's entry commit then fails as usual. */
-  prepareDescendant?(descendant: RuntimeDescendant): undefined;
+  /** The kernel waits for this exact root authority before invoking run once, then enters
+   * the adapter in the same continuation. Promises from run are invalid. */
+  prepareDescendant?: RootDescendantPreparation;
 }
 export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWorkerRequest> {
   /** Module entry stays inert until its first request; unused workers may be prestarted. */
@@ -153,8 +184,16 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
 }
 interface DescendantHook {
   readonly prepare: NonNullable<RuntimeRootOptions["prepareDescendant"]>;
-  readonly receiver: RuntimeRootOptions;
   readonly directory: string;
+}
+interface PendingPreparation {
+  readonly rootPid: number;
+  readonly controller: AbortController;
+  readonly settled: Promise<void>;
+  phase: "preparing" | "handed-off" | "settling" | "settled";
+  receipt: TerminalControlReceipt;
+  entry: "not-entered" | "adapter-invoked";
+  finish(): void;
 }
 const reservedDescendantData = ["filesystem", "pipeRegistry"];
 /** Latest sampled linear-memory bytes, retained until successful physical cleanup. */
@@ -189,6 +228,7 @@ interface RuntimeChild {
 export class BrowserProcessBroker {
   private readonly hostIdentity: RuntimeHostIdentity | null;
   private suspended = false;
+  private readonly pendingPreparations = new Map<number, PendingPreparation>();
   private readonly retirementGate = Promise.withResolvers<void>();
   private disposing?: Promise<void>;
   private activation?: Promise<ProcessSupervisor>;
@@ -310,10 +350,10 @@ export class BrowserProcessBroker {
   }
   private launchPrepared(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
     const descendant = this.descendant(context.pid);
-    if (descendant) this.prepareDescendant(context, descendant.hook, descendant.transport);
-    return this.launchAdapter(context);
+    if (!descendant) return this.launchAdapter(context);
+    return this.prepareDescendant(context, descendant.hook, descendant.transport);
   }
-  /** Only the descendant's immutable root, in that root's own directory, prepares it. */
+  /** Required preparation is captured before any asynchronous acquisition. */
   private descendant(pid: number) {
     const transport = this.transport.get(pid);
     if (!transport) return undefined;
@@ -322,35 +362,145 @@ export class BrowserProcessBroker {
     if (!hook || hook.directory !== workerProcessDirectoryId(transport)) return undefined;
     return { hook, transport };
   }
-  /** Synchronous, so no page-side kill, root retirement or disposal can interleave before the
-   * adapter launcher. Kills from other workers remain fenced by the guest's entry commit. */
-  private prepareDescendant(
+  private preparationFailure(
+    context: ProcessContext,
+    hook: DescendantHook,
+    rootPid: number,
+  ): TerminalFailure | undefined {
+    if (this.suspended || this.descendantHooks.get(rootPid) !== hook) return "CANCELED";
+    if (readOutcome(context.outcome)) return "CANCELED";
+    const root = this.roots.get(rootPid);
+    if (!root || readOutcome(workerProcessState(root).signals.outcome)) return "PROCESS_GONE";
+    return undefined;
+  }
+  private beginPreparation(
+    context: ProcessContext,
+    rootPid: number,
+    initial: TerminalControlReceipt,
+    hook: DescendantHook,
+    descendant: RuntimeDescendant,
+  ): PendingPreparation {
+    const controller = new AbortController();
+    const release = this.retainRoot(rootPid);
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const record: PendingPreparation = {
+      rootPid,
+      controller,
+      settled,
+      phase: "preparing",
+      receipt: initial,
+      entry: "not-entered",
+      finish: () => {
+        if (record.phase === "settled" || record.phase === "settling") return;
+        record.phase = "settling";
+        const completion: RootPreparationCompletion =
+          record.receipt.phase === "committed"
+            ? { kind: "committed", entry: record.entry, receipt: record.receipt }
+            : { kind: "rolled-back", receipt: record.receipt };
+        try {
+          const notification: unknown = hook.prepare.settled?.(descendant, completion);
+          if (notification !== undefined) {
+            if (isInstance(notification, PromiseConstructor)) observeRejectedPromise(notification);
+            throw new TypeError("preparation settlement must return undefined synchronously");
+          }
+        } catch (error) {
+          this.report(error);
+        } finally {
+          this.pendingPreparations.delete(context.pid);
+          record.phase = "settled";
+          settle();
+          release();
+        }
+      },
+    };
+    this.pendingPreparations.set(context.pid, record);
+    context.registerRevocation(() => {
+      if (record.phase === "preparing") controller.abort();
+    });
+    return record;
+  }
+  private async watchPreparation(
     context: ProcessContext,
     hook: DescendantHook,
     transport: WorkerProcessTransport,
-  ): void {
+    record: PendingPreparation,
+  ): Promise<void> {
+    const wake = new Int32Array(transport.directory, 4, 1);
+    while (this.pendingPreparations.get(context.pid) === record && record.phase === "preparing") {
+      const seen = Atomics.load(wake, 0);
+      if (this.preparationFailure(context, hook, record.rootPid)) {
+        record.controller.abort();
+        return;
+      }
+      const waiting = atomicsWaitAsync(wake, 0, seen);
+      if (waiting.async) await waiting.value;
+    }
+  }
+  private async prepareDescendant(
+    context: ProcessContext,
+    hook: DescendantHook,
+    transport: WorkerProcessTransport,
+  ): Promise<ProcessHandle> {
     const state = workerProcessState(transport);
+    const root = this.roots.get(state.rootPid);
+    if (!root) throw new ProcessError(ProcessErrno.CANCELED, "preparation root is gone");
     const claims = { ...(transport.data as Record<string, unknown>) };
     for (const key of reservedDescendantData) delete claims[key];
-    const result: unknown = hook.prepare.call(
-      hook.receiver,
-      Object.freeze({
-        pid: state.pid,
-        parentPid: state.parentPid,
-        job: state.job,
-        data: Object.freeze(structuredClone(claims)),
-      }),
-    );
-    if (result !== undefined) {
-      if (typeof (result as PromiseLike<unknown> | null)?.then === "function")
-        void Promise.resolve(result).catch((error) => this.report(error));
-      throw new TypeError("prepareDescendant must return undefined synchronously");
+    const descendant = Object.freeze({
+      pid: state.pid,
+      parentPid: state.parentPid,
+      job: state.job,
+      data: Object.freeze(structuredClone(claims)),
+    });
+    const initial = terminalPreparationReceipt(hook.prepare.terminal, root);
+    const record = this.beginPreparation(context, state.rootPid, initial, hook, descendant);
+    void this.watchPreparation(context, hook, transport, record).catch((error) => {
+      record.controller.abort();
+      this.report(error);
+    });
+    try {
+      const result = await prepareTerminalDescendant({
+        terminal: hook.prepare.terminal,
+        root,
+        signal: record.controller.signal,
+        check: () => this.preparationFailure(context, hook, state.rootPid),
+        settled: (receipt) => {
+          record.receipt = receipt;
+        },
+        work: (turn) => hook.prepare.run(descendant, turn),
+        finish: (result, receipt) => {
+          record.receipt = receipt;
+          try {
+            if (result.kind === "error") throw terminalPreparationError(result.code);
+            const failure = this.preparationFailure(context, hook, state.rootPid);
+            if (failure) throw terminalPreparationError(failure);
+            record.phase = "handed-off";
+            record.entry = "adapter-invoked";
+            wakeDirectory(transport.directory);
+            return this.launchAdapter(context);
+          } finally {
+            record.finish();
+            wakeDirectory(transport.directory);
+          }
+        },
+      });
+      if (result.kind === "error") throw terminalPreparationError(result.code);
+      return result.value;
+    } finally {
+      record.finish();
+      wakeDirectory(transport.directory);
     }
-    // launchAdapter rechecks disposal in this same turn.
-    if (this.descendantHooks.get(state.rootPid) !== hook)
-      throw new Error("descendant root controller retired during preparation");
-    if (readOutcome(context.outcome))
-      throw new Error("process exited before descendant preparation completed");
+  }
+  private cancelPreparations(pid?: number): void {
+    for (const [child, record] of this.pendingPreparations)
+      if (
+        record.phase === "preparing" &&
+        (pid === undefined || child === pid || record.rootPid === pid)
+      )
+        record.controller.abort();
   }
   private launchAdapter(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
     if (this.suspended) throw new Error("Process broker is disposed");
@@ -587,10 +737,13 @@ export class BrowserProcessBroker {
     // Capture once: later option mutation cannot redirect or remove descendant preparation.
     const prepare = options.prepareDescendant;
     this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
-    if (typeof prepare === "function")
+    if (prepare)
       this.descendantHooks.set(state.pid, {
-        prepare,
-        receiver: options,
+        prepare: Object.freeze({
+          terminal: prepare.terminal,
+          run: prepare.run,
+          settled: prepare.settled,
+        }),
         directory: workerProcessDirectoryId(transport),
       });
     if (this.activation) {
@@ -1253,6 +1406,7 @@ export class BrowserProcessBroker {
     }
   }
   private quiesceProcess(pid: number): void | Promise<void> {
+    this.cancelPreparations(pid);
     const pending = this.fences.get(pid);
     if (pending) return pending;
     const controller = this.controllers.get(pid);
@@ -1285,6 +1439,8 @@ export class BrowserProcessBroker {
   }
   private processFence(pid: number): void | Promise<void> {
     const pending: Promise<void>[] = [];
+    const preparation = this.pendingPreparations.get(pid);
+    if (preparation) pending.push(preparation.settled);
     const terminal = this.terminalLifetimes.get(pid)?.quiesce();
     if (terminal) pending.push(terminal);
     // Lazy/external roots may have no supervisor record to invoke their revocation hook.
@@ -1520,6 +1676,7 @@ export class BrowserProcessBroker {
   suspend(): void {
     if (this.suspended) return;
     this.suspended = true;
+    this.cancelPreparations();
     this.workers.dispose();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
@@ -1636,6 +1793,9 @@ export class BrowserProcessBroker {
         this.supervisor?.dispose();
       }
       await Promise.allSettled(this.startupDiagnostics);
+      await Promise.all(
+        Array.from(this.pendingPreparations.values(), (preparation) => preparation.settled),
+      );
       await this.quiesce();
       // A controller stop may release a physical handle, but cannot consume authority
       // before a pending launcher acquires it. Then settle both stops before retirement.
@@ -1718,6 +1878,18 @@ function stopTerminalConsumer(
   const pending = handle.terminate();
   if (pending) return pending.then(() => terminal?.stopped());
   terminal?.stopped();
+}
+
+function terminalPreparationError(code: TerminalFailure): ProcessError {
+  const errno =
+    code === "CAPACITY"
+      ? ProcessErrno.AGAIN
+      : code === "CANCELED" || code === "PROCESS_GONE"
+        ? ProcessErrno.CANCELED
+        : code === "CLOSED" || code === "EXHAUSTED"
+          ? 29
+          : ProcessErrno.INVAL;
+  return new ProcessError(errno, `terminal preparation failed: ${code}`);
 }
 
 function rootOutput(options: RuntimeRootOptions): TerminalOutputDelivery | undefined {

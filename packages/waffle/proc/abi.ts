@@ -1,3 +1,4 @@
+import { assertTerminalWaitAllowed } from "./terminal-turn.js";
 import { reopenDescriptor } from "../core/fd-reopen.js";
 import {
   arrayAppend,
@@ -533,6 +534,7 @@ export class ProcessABI {
         }
         if (flags === 1) return -ProcessErrno.AGAIN;
         if (this.pending()) return -27; // EINTR; no signal consumed.
+        assertTerminalWaitAllowed();
         if (this.options.wait) this.options.wait(10, word, sequence);
         else controlWait(word, 0, sequence, 10);
       }
@@ -572,6 +574,7 @@ export class ProcessABI {
       const sequence = controlLoad(wake, 0);
       this.checkFatal();
       if (this.collectCleanup(job, ptr)) return 0;
+      assertTerminalWaitAllowed();
       if (this.options.wait) this.options.wait(Infinity, wake, sequence);
       else controlWait(wake, 0, sequence);
       this.checkFatal();
@@ -862,6 +865,7 @@ export class ProcessABI {
         // rescan. A fully notified wait set can park until its actual deadline.
         const milliseconds = fullyNotified ? remaining : Math.min(remaining, 10);
         const expected = sequence;
+        assertTerminalWaitAllowed();
         if (this.options.wait) this.options.wait(milliseconds, word, expected);
         else controlWait(word, 0, expected, milliseconds);
       }

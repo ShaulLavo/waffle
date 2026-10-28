@@ -30,6 +30,8 @@ async function isolatedIntrinsics(
     module: { exports: {} },
     crypto: cryptoHost,
     setTimeout,
+    AbortSignal,
+    EventTarget,
     captured: undefined as unknown as Pick<typeof Intrinsics, "arrayAppend" | "cryptoRandomUUID">,
     guestObject: undefined as unknown as ObjectConstructor,
   };
@@ -96,6 +98,7 @@ describe("private process authority builtin boundary", () => {
       EventTarget,
       Event,
       AbortController,
+      AbortSignal,
       TextEncoder,
       TextDecoder,
       processAPI: undefined,

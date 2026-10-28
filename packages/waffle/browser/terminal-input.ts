@@ -1,3 +1,4 @@
+import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import type { Readiness } from "../core/descriptors.js";
 import {
   TERMINAL_SESSION_LIMITS,
@@ -10,7 +11,15 @@ import {
 } from "./terminal-session.js";
 import {
   atomicsAdd,
+  atomicsWaitAsyncBigInt,
+  atomicsWaitAsync,
+  PromiseConstructor,
+  afterNativePromise,
+  abortSignalAborted,
+  listenAbort,
+  unlistenAbort,
   atomicsCompareExchange,
+  atomicsExchange,
   atomicsLoad,
   atomicsNotify,
   atomicsStore,
@@ -32,7 +41,7 @@ const AGAIN = -6;
 const BADF = -8;
 const CANCELED = -11;
 const NOTSUP = -58;
-const HEADER_WORDS = 16;
+const HEADER_WORDS = 17;
 const HEADER_BYTES = HEADER_WORDS * 4;
 const DEFAULT_CAPACITY = 65536;
 const H = {
@@ -49,8 +58,13 @@ const H = {
   poisoned: 11,
   nonce: 12,
   nextToken: 14,
+  contended: 16,
 } as const;
 
+export interface TerminalInputObservation {
+  /** Advisory data/lock wake; does not consume bytes. All native registrations join before return. */
+  wait(options?: { readonly signal?: AbortSignal }): Promise<TerminalResult<void>>;
+}
 export interface TerminalInput {
   /** Shared transport passed to a worker through spawn metadata. */
   readonly buffer: SharedArrayBuffer;
@@ -59,6 +73,8 @@ export interface TerminalInput {
   /** Nonblocking producer operation: all bytes written, AGAIN, BADF or CANCELED. */
   push(bytes: Uint8Array): number;
   available(): number;
+  /** Observe before a bounded read attempt; wait outside the granted turn if needed. */
+  observe(): TerminalInputObservation;
   /** Publishes true EOF after already queued bytes are drained. */
   close(): void;
   /** Cancels pending consumers; resume is explicit and does not reopen a closed input. */
@@ -136,6 +152,9 @@ class InputBuffer implements TerminalInput {
   available(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
   }
+  observe(): TerminalInputObservation {
+    return new InputObservation(this, atomicsLoad(this.notification, 0), atomicsLoad(this.lock, 0));
+  }
   cancelled(): boolean {
     return atomicsLoad(this.state, H.cancelled) !== 0;
   }
@@ -145,7 +164,7 @@ class InputBuffer implements TerminalInput {
     if (!length) return 0;
     if (this.cancelled()) return CANCELED;
     if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
-    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, 1n) !== 0n) return this.contend();
     try {
       if (atomicsLoad(this.state, H.closed) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
@@ -156,8 +175,7 @@ class InputBuffer implements TerminalInput {
       this.signal();
       return length;
     } finally {
-      atomicsStore(this.lock, 0, 0n);
-      atomicsNotify(this.lock, 0);
+      this.unlock();
     }
   }
   read(turn: TerminalTurn, chunks: readonly Uint8Array[], cooked: boolean): number {
@@ -174,15 +192,24 @@ class InputBuffer implements TerminalInput {
     );
   }
   private lockedRead(chunks: readonly Uint8Array[], cooked: boolean, token: bigint): number {
-    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return AGAIN;
+    if (atomicsCompareExchange(this.lock, 0, 0n, token) !== 0n) return this.contend();
     try {
       if (atomicsLoad(this.state, H.poisoned) !== 0) return BADF;
       if (this.cancelled()) return CANCELED;
       return cooked ? this.readCooked(chunks) : this.readRaw(chunks);
     } finally {
-      atomicsStore(this.lock, 0, 0n);
-      atomicsNotify(this.lock, 0);
+      this.unlock();
     }
+  }
+  private contend(): number {
+    atomicsStore(this.state, H.contended, 1);
+    if (atomicsLoad(this.lock, 0) === 0n) this.signal();
+    return AGAIN;
+  }
+  private unlock(): void {
+    atomicsStore(this.lock, 0, 0n);
+    atomicsNotify(this.lock, 0);
+    if (atomicsExchange(this.state, H.contended, 0) !== 0) this.signal();
   }
   inputReady(cooked: boolean): boolean {
     if (atomicsLoad(this.state, H.poisoned) !== 0) return true;
@@ -336,6 +363,71 @@ class InputBuffer implements TerminalInput {
   private signal(): void {
     atomicsAdd(this.state, H.wake, 1);
     atomicsNotify(this.state, H.wake);
+  }
+}
+
+class InputObservation implements TerminalInputObservation {
+  private used = false;
+  constructor(
+    private readonly input: InputBuffer,
+    private readonly sequence: number,
+    private readonly owner: bigint,
+  ) {}
+  async wait(options: { readonly signal?: AbortSignal } = {}): Promise<TerminalResult<void>> {
+    assertTerminalWaitAllowed();
+    if (this.used) return { kind: "error", code: "INVALID" };
+    this.used = true;
+    const signal = options.signal;
+    const wake = () => this.notify();
+    if (signal) listenAbort(signal, wake);
+    try {
+      const failure = this.failure(signal);
+      if (failure) return { kind: "error", code: failure };
+      if (!this.changed()) await this.joinWake(signal);
+      const after = this.failure(signal);
+      return after ? { kind: "error", code: after } : { kind: "ok", value: undefined };
+    } finally {
+      if (signal) unlistenAbort(signal, wake);
+    }
+  }
+  private failure(signal?: AbortSignal): TerminalFailure | undefined {
+    if ((signal && abortSignalAborted(signal)) || this.input.cancelled()) return "CANCELED";
+    return atomicsLoad(this.input.state, H.poisoned) !== 0 ? "CLOSED" : undefined;
+  }
+  private changed(): boolean {
+    return (
+      atomicsLoad(this.input.notification, 0) !== this.sequence ||
+      atomicsLoad(this.input.lock, 0) !== this.owner
+    );
+  }
+  private notify(): void {
+    atomicsNotify(this.input.notification, 0);
+    atomicsNotify(this.input.lock, 0);
+  }
+  private joinWake(signal?: AbortSignal): Promise<void> {
+    return new PromiseConstructor((resolve, reject) => {
+      const data = atomicsWaitAsync(this.input.notification, 0, this.sequence);
+      let lock: ReturnType<typeof atomicsWaitAsyncBigInt>;
+      try {
+        lock = atomicsWaitAsyncBigInt(this.input.lock, 0, this.owner);
+      } catch (cause) {
+        this.notify();
+        reject(cause);
+        return;
+      }
+      let remaining = 2;
+      const completed = () => {
+        remaining--;
+        this.notify(); // Release the losing registration too; never modify either word.
+        if (remaining === 0) resolve();
+      };
+      if (data.async) afterNativePromise(data.value, completed, reject);
+      else completed();
+      if (lock.async) afterNativePromise(lock.value, completed, reject);
+      else completed();
+      // Cover input/signal cancellation between predicate check and native registration.
+      if (this.changed() || this.failure(signal)) this.notify();
+    });
   }
 }
 

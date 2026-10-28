@@ -112,6 +112,7 @@ export {
 } from "./terminal-input.js";
 export type {
   TerminalInput,
+  TerminalInputObservation,
   TerminalInputPolicyOptions,
   TerminalInputPushResult,
 } from "./terminal-input.js";
@@ -146,6 +147,13 @@ export type {
   TerminalAdmittedMember,
   TerminalMemberUpdate,
   TerminalAuthority,
+  TerminalControlOptions,
+  TerminalControlTurn,
+  TerminalControlReceipt,
+  TerminalControlResult,
+  TerminalControlState,
+  TerminalGroupStatus,
+  TerminalMemberStatus,
   TerminalGeometrySubscription,
   TerminalControls,
   TerminalAttachment,

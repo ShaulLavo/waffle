@@ -1,3 +1,4 @@
+import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
 import type { NotificationConnection } from "./notification-relay.js";
@@ -850,6 +851,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       sleep: (ms) => {
         checkActive();
         if (ms > 0) {
+          assertTerminalWaitAllowed();
           if (sleepCell) atomicsWait(sleepCell, 0, 0, ms);
           else {
             const end = perfNow() + ms;
@@ -868,6 +870,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           : undefined,
       wait: (word, expected, ms) => {
         checkActive();
+        assertTerminalWaitAllowed();
         controlWait(word, 0, expected, ms);
         checkActive();
       },
@@ -979,6 +982,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         createPipe: () => runtimeProcess!.createPipe(),
         wait: (ms, word, expected) => {
           checkActive();
+          assertTerminalWaitAllowed();
           controlWait(word, 0, expected, ms);
           checkActive();
         },

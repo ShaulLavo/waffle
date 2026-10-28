@@ -56,34 +56,60 @@ A root controller can act on every later descendant of its root before that desc
 
 ```ts
 const supervisor = await service.ready();
-function removeMember(pid: number) {
+const unsubscribe = supervisor.onChildExit(({ pid }) => {
   const member = members.get(pid);
-  if (!member) return;
-  members.delete(pid);
-  authority.removeMember(member);
-}
-const unsubscribe = supervisor.onChildExit(({ pid }) => removeMember(pid));
+  if (!member) return; // Rollback never published ownership.
+  track(
+    authority.control(
+      (turn) => {
+        const removed = authority.removeMember(member);
+        if (removed.kind === "error") return removed;
+        turn.publish(() => {
+          members.delete(pid);
+        });
+        return { kind: "ok", value: undefined };
+      },
+      { signal: lifetime.signal },
+    ),
+  );
+});
 await service.adoptRuntimeRoot(root, {
+  prepareDescendant: {
+    terminal: authority,
+    run({ pid, job }, turn) {
+      const group = groups.get(job);
+      if (!group) return { kind: "ok", value: undefined };
+      const admitted = authority.admitExisting({ group, pid });
+      if (admitted.kind === "error") return admitted;
+      turn.publish((receipt) => {
+        members.set(pid, admitted.value.member);
+        reconcileProducer(receipt);
+      });
+      return { kind: "ok", value: undefined };
+    },
+    settled(_descendant, completion) {
+      if (completion.kind === "rolled-back") reconcileProducer(completion.receipt);
+      // Every committed member belongs to onChildExit, even if no adapter was entered.
+    },
+  },
+  async quiesce() {
+    lifetime.abort();
+    await joinTrackedControls();
+  },
   retired() {
     unsubscribe();
     members.clear();
   },
-  prepareDescendant({ pid, job }) {
-    const group = groups.get(job);
-    if (!group) return undefined;
-    const admitted = authority.admitExisting({ group, pid });
-    if (admitted.kind === "error") throw new Error(admitted.code);
-    members.set(pid, admitted.value.member);
-    return undefined;
-  },
 });
 ```
 
-Waffle calls the hook synchronously, once per descendant whose immutable root is this root, in the root's own process directory. The call comes after the descendant's reservation is admitted and immediately before its adapter launcher runs, so the guest cannot enter first. `data` is a frozen clone of the spawn metadata without `filesystem` and `pipeRegistry`. Its fields are the parent's claims, not membership. The hook does not change the metadata the guest receives.
+The kernel waits for the declared authority before invoking `run` synchronously once. It never replays a callback after partial progress. `run` returns a synchronous `TerminalResult<void>`; promises are invalid. `data` remains a frozen clone of spawn claims without `filesystem` and `pipeRegistry`, not proof of membership. Guest metadata is unchanged.
 
-The hook must return `undefined`. A throw or any other return value, including a promise, fails the start. A rejected promise is only reported. After the hook, Waffle rechecks in the same turn that the process has no outcome and the root controller is still registered. A kill from another worker can still land after that point; the guest's entry commit then loses to the kill and the guest never runs. Waffle captures the hook when it adopts the root, and later edits to the options object have no effect.
+A successful `run` alone is not a commit. Publish local maps and cached state only through `turn.publish`. Precommit failure/cancellation discards staged metadata and publications. Its completion is `rolled-back`; a not-entered receipt has no fresh state, while an acquired rollback receipt reconciles real handles. Provisional new handles are invalid and reused state is not rewound.
 
-Clean up per-process state from `supervisor.onChildExit`, which reports each completed exit once, including start failures and kills before entry. Keep the subscription until root retirement, then unsubscribe and clear any remaining member handles. The root's terminal authority is already gone at retirement. Runtime disposal can clear exit listeners before pending exits complete. If adoption fails, release the subscription in the caller's cleanup. Do not use `registerController` for this: it allows one controller per process, and the adapter that launches the process may register its own. Worker stop and physical cleanup stay with Waffle.
+After commit/publication, a final entry check can still cancel launch. That completion is `committed` with `entry: "not-entered"`, and membership remains owned by `onChildExit` cleanup. `entry: "adapter-invoked"` proves only launcher invocation, not a Worker or guest entry. Completion is synchronous and occurs once before exit/retirement callbacks. A racing kill remains fenced by worker entry commit. Options are captured at adoption.
+
+`track`, `joinTrackedControls` and `reconcileProducer` above are caller bookkeeping. Close task admission, abort and join every control/input wait before disposing the producer or stopping its native consumer. [Waiting terminal control](terminal-control.md) gives exact receipts and input-observation semantics. Keep the exit subscription until root retirement; if adoption fails, unsubscribe in caller cleanup. Do not register a second process controller or implement a private gate, spin or timer retry.
 
 ## Identity helpers
 
