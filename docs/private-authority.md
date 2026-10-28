@@ -65,9 +65,26 @@ similarly named module receives no capture or implementation trust.
 
 Enforcement is intentionally an explicit process boundary, not a claim that all
 filesystem and WASI code is hardened. `enforcedModules` covers the guest-facing
-process modules, `browser/worker.ts`, guarded streams, terminal provenance, and
+process modules, `browser/worker.ts`, guarded streams, terminal provenance, Session/input
+transport and terminal lifetime helpers, and
 `core/descriptors.ts`. New `proc/*.ts` implementations must be classified as
 checked or trusted; they do not silently escape an old file list.
+
+Terminal modules remain enforced even when an individual entry point is intended for a
+trusted host. Their runtime graph is reachable from guest bootstrap imports, and their
+closures and buffers carry process authority:
+
+| Enforced module                | Authority role                                                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `proc/terminal-lifetime.ts`    | Guest-realm counted admission and leave, plus tagged incarnation capture, revocation and native-stop acknowledgement.       |
+| `browser/terminal-session.ts`  | Shared Session gate, membership/selection authority, original turns and interrupted-owner capture.                          |
+| `browser/terminal-input.ts`    | Private input ring, lock/cursor state, acquisition tokens and poison state. Copies and subviews use captured helpers.       |
+| `browser/terminal-lifetime.ts` | Captured terminal identities, input views and stop closures. Private collections use captured append and indexed traversal. |
+
+Terminal identity/context, policy/turn, attachment/authority, input and process-lifetime
+handles are named private types in the checker. None of these modules is classified as a
+page-only trusted implementation, and no payload exception exempts their private buffers
+or collections.
 
 The page-only supervisor, table, registry, broker and lazy facade are named in
 `trustedModules`. The Node WASI descriptor adapter is also trusted because it is an explicit
