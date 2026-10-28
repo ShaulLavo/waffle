@@ -39,6 +39,7 @@
     "tests/inherited-fd-review.test.ts",
     "tests/runtime-terminals.test.ts",
     "tests/terminal-resolver-worker.test.ts",
+    "tests/terminal-read-fds.test.ts",
     "tests/libc-tooling.test.ts",
     "tests/fixtures/preopen-node-host.ts",
     "tests/fixtures/start-failure-public.ts"

@@ -245,6 +245,11 @@ to keep host output without routing it back through `WorkerSetupContext.post`. T
 option is available directly on
 `createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
 
+Terminal-session endpoints for targets 0, 1 and 2 share the policy's input cursor and foreground
+readiness. WASI descriptor rights determine whether each bound fd may read; the endpoint's
+target number does not prohibit input. Output still uses the policy's target 1 or 2 destination,
+and target 0 remains unwritable.
+
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the
 returned producer and its `buffer`, and feeds bytes with `pushTerminalInput()`; the helper splits
 large pastes into bounded `TerminalDisplay.input()` turns and returns an accepted prefix alongside
