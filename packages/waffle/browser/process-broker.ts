@@ -24,6 +24,7 @@ import { requestSignal, createSignalState, type SignalTransport } from "../proc/
 import {
   claimOutcome,
   outcomeWord,
+  type OutcomeWord,
   readOutcome,
   startStatus,
   serializeOutcome,
@@ -138,6 +139,21 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   wake?(): void;
   executableName?(name: string): string;
 }
+interface DescendantHook {
+  readonly prepare: NonNullable<RuntimeRootOptions["prepareDescendant"]>;
+  readonly receiver: RuntimeRootOptions;
+  readonly directory: string;
+}
+const reservedDescendantData = ["filesystem", "pipeRegistry"];
+function descendantData(data: unknown): Record<string, unknown> {
+  if (typeof data !== "object" || data === null || Array.isArray(data))
+    throw new TypeError("descendant data must be an object");
+  // Snapshot before publication: later caller mutation never reaches the launched guest.
+  const snapshot = structuredClone(data) as Record<string, unknown>;
+  for (const key of reservedDescendantData)
+    if (Object.hasOwn(snapshot, key)) throw new TypeError(`descendant data cannot replace ${key}`);
+  return snapshot;
+}
 interface RuntimeChild {
   notifications?: NotificationBridge;
   filesystem: FilesystemIdentity;
@@ -176,6 +192,9 @@ export class BrowserProcessBroker {
   private controllerStops?: Map<number, { pending: Promise<void>; controllerStop: boolean }>;
   private launches?: Set<number>;
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
+  private readonly descendantHooks = new Map<number, DescendantHook>();
+  private preparing?: Set<Promise<void>>;
+  private readonly preparations = new Map<number, { outcome: OutcomeWord; settle(): void }>();
   private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
@@ -219,88 +238,7 @@ export class BrowserProcessBroker {
         const supervisor = (this.supervisor = new proc.ProcessSupervisor({
           registry: this.options.registry,
           table: this.options.table,
-          launch: (context) => {
-            if (this.suspended) throw new Error("Process broker is disposed");
-            this.traceProcess(context, "launching");
-            (this.launches ??= new Set()).add(context.pid);
-            let acquireLaunch!: () => void, settleLaunch!: () => void;
-            // A launcher may select an outcome synchronously before returning its handle.
-            // Retain its cleanup authority before invoking any adapter code.
-            (this.pendingLaunches ??= new Map()).set(context.pid, {
-              acquired: new Promise<void>((resolve) => {
-                acquireLaunch = resolve;
-              }),
-              settled: new Promise<void>((resolve) => {
-                settleLaunch = resolve;
-              }),
-            });
-            const settled = () => {
-              this.pendingLaunches?.delete(context.pid);
-              this.releaseAcquiredProcess(context.pid);
-              acquireLaunch();
-              settleLaunch();
-            };
-            let launched: ProcessHandle | Promise<ProcessHandle>;
-            try {
-              launched =
-                this.controllers.get(context.pid)?.launch?.(context) ??
-                this.options.launch(context);
-            } catch (error) {
-              this.launches.delete(context.pid);
-              settled();
-              throw error;
-            }
-            const track = (handle: ProcessHandle): ProcessHandle => {
-              this.traceProcess(context, "launched");
-              if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
-                this.launches?.delete(context.pid);
-                settled();
-                return handle;
-              }
-              acquireLaunch();
-              // External launchers own their physical handle. Keep controller authority until
-              // that handle's asynchronous cleanup settles, not merely its child-exit event.
-              return {
-                terminate: () => {
-                  let pending: void | Promise<void>;
-                  try {
-                    pending = handle.terminate();
-                  } catch (error) {
-                    settled();
-                    throw error;
-                  }
-                  if (pending) {
-                    const stopping = pending
-                      .then(() => {
-                        this.controllerStops?.delete(context.pid);
-                        this.launches?.delete(context.pid);
-                        this.retireChildController(context.pid);
-                      })
-                      .finally(settled);
-                    (this.controllerStops ??= new Map()).set(context.pid, {
-                      pending: stopping,
-                      controllerStop: false,
-                    });
-                    return stopping;
-                  }
-                  this.launches?.delete(context.pid);
-                  this.retireChildController(context.pid);
-                  settled();
-                },
-              };
-            };
-            if (!("then" in launched)) return track(launched);
-            // Disposal owns late external handles too. Settlement follows physical cleanup,
-            // not just promise resolution, so retirement cannot outrun a pending launcher.
-            return Promise.resolve(launched).then(track, (error) => {
-              this.launches?.delete(context.pid);
-              settled();
-              // A terminal outcome can win while this external launcher is still pending.
-              if (readOutcome(context.outcome))
-                void this.stopController(context.pid)?.catch((error) => this.report(error));
-              throw error;
-            });
-          },
+          launch: (context) => this.launchPrepared(context),
           canConfirmExit: (pid) => {
             const child = this.children.get(pid);
             return (
@@ -316,6 +254,7 @@ export class BrowserProcessBroker {
           onError: (error) => this.report(error),
         }));
         supervisor.onChildExit((event) => {
+          this.settlePreparation(event.pid);
           this.revokeRuntimeProcess(event.pid);
           const transport = this.transport.get(event.pid);
           if (transport && !this.children.get(event.pid)?.acknowledged)
@@ -352,6 +291,166 @@ export class BrowserProcessBroker {
         return supervisor;
       },
     ));
+  }
+  private launchPrepared(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
+    const descendant = this.descendant(context.pid);
+    if (!descendant) return this.launchAdapter(context);
+    const preparing = this.prepareDescendant(context, descendant.hook, descendant.transport);
+    const pending = preparing.then(() => this.launchAdapter(context));
+    (this.preparing ??= new Set()).add(preparing);
+    void preparing.then(
+      () => this.preparing?.delete(preparing),
+      () => this.preparing?.delete(preparing),
+    );
+    return pending;
+  }
+  /** Only the descendant's immutable root, in that root's own directory, prepares it. */
+  private descendant(pid: number) {
+    const transport = this.transport.get(pid);
+    if (!transport) return undefined;
+    const { rootPid } = workerProcessState(transport);
+    const hook = rootPid === pid ? undefined : this.descendantHooks.get(rootPid);
+    if (!hook || hook.directory !== workerProcessDirectoryId(transport)) return undefined;
+    return { hook, transport };
+  }
+  private async prepareDescendant(
+    context: ProcessContext,
+    hook: DescendantHook,
+    transport: WorkerProcessTransport,
+  ): Promise<void> {
+    const state = workerProcessState(transport);
+    const claims = { ...(transport.data as Record<string, unknown>) };
+    for (const key of reservedDescendantData) delete claims[key];
+    const prepared = await hook.prepare.call(
+      hook.receiver,
+      Object.freeze({
+        pid: state.pid,
+        parentPid: state.parentPid,
+        job: state.job,
+        data: Object.freeze(structuredClone(claims)),
+      }),
+    );
+    if (prepared !== undefined && (typeof prepared !== "object" || prepared === null))
+      throw new TypeError("descendant preparation must be an object");
+    const cancel = prepared?.cancel,
+      data = prepared?.data;
+    let cancelled = false;
+    const settle = () => {
+      if (cancelled || typeof cancel !== "function") return;
+      cancelled = true;
+      try {
+        cancel.call(prepared);
+      } catch (error) {
+        this.report(error);
+      }
+    };
+    try {
+      if (cancel !== undefined && typeof cancel !== "function")
+        throw new TypeError("descendant cancel must be a function");
+      if (this.suspended) throw new Error("Process broker is disposed");
+      if (readOutcome(context.outcome))
+        throw new Error("process exited before descendant preparation completed");
+      if (data !== undefined) transport.data = { ...transport.data!, ...descendantData(data) };
+    } catch (error) {
+      settle();
+      throw error;
+    }
+    if (typeof cancel === "function")
+      this.preparations.set(context.pid, { outcome: context.outcome, settle });
+  }
+  /** Prepared descendants that never entered their guest release the root's reservation. */
+  private settlePreparation(pid: number): void {
+    const preparation = this.preparations.get(pid);
+    if (!preparation) return;
+    this.preparations.delete(pid);
+    let entered = false;
+    try {
+      entered = startStatus(preparation.outcome) === 0;
+    } catch (error) {
+      if (!isCollectedProcess(error)) this.report(error);
+    }
+    if (!entered) preparation.settle();
+  }
+  private launchAdapter(context: ProcessContext): ProcessHandle | Promise<ProcessHandle> {
+    if (this.suspended) throw new Error("Process broker is disposed");
+    this.traceProcess(context, "launching");
+    (this.launches ??= new Set()).add(context.pid);
+    let acquireLaunch!: () => void, settleLaunch!: () => void;
+    // A launcher may select an outcome synchronously before returning its handle.
+    // Retain its cleanup authority before invoking any adapter code.
+    (this.pendingLaunches ??= new Map()).set(context.pid, {
+      acquired: new Promise<void>((resolve) => {
+        acquireLaunch = resolve;
+      }),
+      settled: new Promise<void>((resolve) => {
+        settleLaunch = resolve;
+      }),
+    });
+    const settled = () => {
+      this.pendingLaunches?.delete(context.pid);
+      this.releaseAcquiredProcess(context.pid);
+      acquireLaunch();
+      settleLaunch();
+    };
+    let launched: ProcessHandle | Promise<ProcessHandle>;
+    try {
+      launched =
+        this.controllers.get(context.pid)?.launch?.(context) ?? this.options.launch(context);
+    } catch (error) {
+      this.launches.delete(context.pid);
+      settled();
+      throw error;
+    }
+    const track = (handle: ProcessHandle): ProcessHandle => {
+      this.traceProcess(context, "launched");
+      if (this.children.has(context.pid) || !this.controllers.has(context.pid)) {
+        this.launches?.delete(context.pid);
+        settled();
+        return handle;
+      }
+      acquireLaunch();
+      // External launchers own their physical handle. Keep controller authority until
+      // that handle's asynchronous cleanup settles, not merely its child-exit event.
+      return {
+        terminate: () => {
+          let pending: void | Promise<void>;
+          try {
+            pending = handle.terminate();
+          } catch (error) {
+            settled();
+            throw error;
+          }
+          if (pending) {
+            const stopping = pending
+              .then(() => {
+                this.controllerStops?.delete(context.pid);
+                this.launches?.delete(context.pid);
+                this.retireChildController(context.pid);
+              })
+              .finally(settled);
+            (this.controllerStops ??= new Map()).set(context.pid, {
+              pending: stopping,
+              controllerStop: false,
+            });
+            return stopping;
+          }
+          this.launches?.delete(context.pid);
+          this.retireChildController(context.pid);
+          settled();
+        },
+      };
+    };
+    if (!("then" in launched)) return track(launched);
+    // Disposal owns late external handles too. Settlement follows physical cleanup,
+    // not just promise resolution, so retirement cannot outrun a pending launcher.
+    return Promise.resolve(launched).then(track, (error) => {
+      this.launches?.delete(context.pid);
+      settled();
+      // A terminal outcome can win while this external launcher is still pending.
+      if (readOutcome(context.outcome))
+        void this.stopController(context.pid)?.catch((error) => this.report(error));
+      throw error;
+    });
   }
   /** Register an explicit adapter controller (including legacy transports), not a default adapter. */
   registerController(pid: number, controller: ProcessController): void {
@@ -452,6 +551,7 @@ export class BrowserProcessBroker {
         this.options.table.removeJob(root.job);
       this.completedRoots.delete(pid);
       this.reservedRoots.delete(pid);
+      this.descendantHooks.delete(pid);
       this.controllers.delete(pid);
       this.quiescedControllers.delete(pid);
       this.revokedControllers?.delete(pid);
@@ -499,7 +599,15 @@ export class BrowserProcessBroker {
     registry.registerProcess(state.pid);
     this.registries.set(state.pid, registry);
     transport.data = { ...data, pipeRegistry: registry.handle() };
+    // Capture once: later option mutation cannot redirect or remove descendant preparation.
+    const prepare = options.prepareDescendant;
     this.reserveRoot({ pid: state.pid, job: state.job, cwd, ...state.signals }, options);
+    if (typeof prepare === "function")
+      this.descendantHooks.set(state.pid, {
+        prepare,
+        receiver: options,
+        directory: workerProcessDirectoryId(transport),
+      });
     if (this.activation) {
       const supervisor = await this.activation;
       if (this.suspended) throw new Error("Process broker is disposed");
@@ -1423,6 +1531,8 @@ export class BrowserProcessBroker {
       }
       await Promise.allSettled(this.startupDiagnostics);
       await this.quiesce();
+      // A pending preparation must settle, and cancel if it lost, before roots retire.
+      await Promise.allSettled(this.preparing ?? []);
       // A controller stop may release a physical handle, but cannot consume authority
       // before a pending launcher acquires it. Then settle both stops before retirement.
       await Promise.all(
@@ -1452,6 +1562,7 @@ export class BrowserProcessBroker {
       } catch (error) {
         errors.push(error);
       }
+      for (const pid of Array.from(this.preparations.keys())) this.settlePreparation(pid);
       for (const controller of this.controllers.values()) {
         try {
           controller.retired?.();
@@ -1466,6 +1577,7 @@ export class BrowserProcessBroker {
       }
       this.retirementGate.resolve();
       this.reservedRoots.clear();
+      this.descendantHooks.clear();
       this.completedRoots.clear();
       this.rootLeases.clear();
       this.roots.clear();

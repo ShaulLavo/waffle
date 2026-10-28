@@ -50,8 +50,43 @@ worker.postMessage(
 
 Broker launches set `hostIdentity` themselves. Adapter callbacks can read `context.identity` without editing `proc/types.ts` or adding a second runtime. Guest-specific UID, EUID, PPID, and hostname imports remain the guest adapter's responsibility. Waffle's preview1 ABI gains no invented POSIX imports.
 
+## Preparing descendants before entry
+
+A root controller can prepare every later descendant of its root, including processes that other guests start. Pass `prepareDescendant` to `adoptRuntimeRoot`:
+
+```ts
+await service.adoptRuntimeRoot(root, {
+  prepareDescendant({ pid, parentPid, job, data }) {
+    const parent = members.get(parentPid);
+    if (!parent) return; // launch unchanged
+    const plan = must(authority.planMember({ group: parent.group, parent: parent.member }));
+    const bound = authority.bindMember({ planned: plan.member, pid });
+    if (bound.kind === "error") {
+      authority.cancelPlan(plan.member);
+      throw new Error(bound.code);
+    }
+    members.set(pid, { group: parent.group, member: bound.value.member });
+    return {
+      data: { terminalContext: bound.value.context },
+      cancel() {
+        authority.removeMember(bound.value.member);
+        members.delete(pid);
+      },
+    };
+  },
+});
+```
+
+Waffle calls the hook once per descendant whose immutable root is this root, in the root's own process directory. The call happens after the descendant's reservation is admitted and before its adapter launches, so the guest cannot enter first. `data` is a clone of the spawn metadata without `filesystem` and `pipeRegistry`. Its fields are the parent's claims, not proof of membership. The hook may reenter process control and may return a promise; the launch waits for it.
+
+The returned `data` is cloned and merged into the descendant's metadata before launch; it cannot replace `filesystem` or `pipeRegistry`. A throw, a rejection, or invalid `data` fails the start. When the hook throws, it owns any partial work. After it returns, `cancel` runs exactly once if the descendant ends without entering its guest: launch or start failure, a kill while the hook was pending, or broker disposal. `cancel` runs before the root's `retired()`. An entered descendant's exit never calls `cancel`. Waffle captures the hook when it adopts the root; later edits to the options object have no effect. Worker stop and physical cleanup are unchanged.
+
+## Identity helpers
+
 `waffle/browser/process-context` exports the identity types, `snapshotHostIdentity`, and `createProcessIdentity`. These dependency-free helpers support custom adapters without loading the process supervisor. The page facade still loads process implementation only when its process service is requested.
 
 ## Verification scope
+
+`tests/descendant-preparation.test.ts` runs the real broker, supervisor, shared directory and terminal authority. A same-job grandchild of a direct child is bound and receives a member context before launch, then reads queued input. It also covers a blocked hook, a kill while blocked, hook and launch failures, root isolation, root death and disposal. The adapter's Worker is replaced by a launch callback.
 
 `tests/runtime-process-context.test.ts` changes configured UID, EUID, and hostname and checks values stored by an original Wasm fixture. It verifies real shared-directory ancestry, unavailable host identity, frozen snapshots, and rejection of adapter and environment overrides. Its in-process Worker fixture runs the actual broker and bootstrap. It is not a native-browser campaign or a Shell compatibility-score claim. Shell must adopt the API and wire its own guest imports before its automatic variables can use these values.
