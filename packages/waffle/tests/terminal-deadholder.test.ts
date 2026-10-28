@@ -136,23 +136,25 @@ async function probe() {
     if (Atomics.wait(barrier, 0, 0, 5000) === "timed-out")
       throw new Error("holder barrier timeout");
   }
-  function cas(...args: unknown[]) {
-    const [array, index, expected, replacement] = args;
-    const entry =
+  function admissionCAS(array: unknown, index: unknown): boolean {
+    return (
       array instanceof BigInt64Array &&
       array.buffer === data.process.directory &&
       array.byteOffset === data.admissionOffset &&
-      index === 0 &&
+      index === 0
+    );
+  }
+  function cas(...args: unknown[]) {
+    const [array, index, expected, replacement] = args;
+    const entry =
+      admissionCAS(array, index) &&
       typeof expected === "bigint" &&
       (expected & 0xffffffffn) === 0n &&
       typeof replacement === "bigint" &&
       (replacement & 0xffffffffn) === 1n;
     if (entry && data.pause === "before-entry") pause();
     const leaving =
-      array instanceof BigInt64Array &&
-      array.buffer === data.process.directory &&
-      array.byteOffset === data.admissionOffset &&
-      index === 0 &&
+      admissionCAS(array, index) &&
       typeof expected === "bigint" &&
       (expected & 0xffffffffn) === 1n &&
       typeof replacement === "bigint" &&
