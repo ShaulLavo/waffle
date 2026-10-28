@@ -29,7 +29,7 @@
     "test:node": "node test/runtime.ts",
     "typecheck": "tsc -p .",
     "pack": "node ../../tools/program-package.ts pack",
-    "test:composition": "node --test scripts/test-waffle-source.ts tests/python-launcher.test.ts",
+    "test:composition": "node --test scripts/test-waffle-source.ts tests/python-launcher.test.ts scripts/test-stage-assets.ts",
     "prepack": "node ../../tools/program-package.ts check",
     "prepare:package": "node scripts/stage-assets.ts"
   },

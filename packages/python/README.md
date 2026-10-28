@@ -5,7 +5,7 @@ CPython 3.15.2 and its standard library as a lazy WASI program for Waffle.
 Stage the qualified assets, then create the family program on the page's existing runtime:
 
 ```sh
-node scripts/stage-assets.ts /path/to/qualified-python-artifact
+node scripts/stage-assets.ts --receipt-sha256 HEX /path/to/accepted-python-artifact
 ```
 
 ```ts

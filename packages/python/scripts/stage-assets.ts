@@ -1,57 +1,55 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parsePythonPayloadManifest } from "../src/python-payload.ts";
+import { stagePythonArtifact } from "./build-python.ts";
+import { pythonSource } from "./python-source.ts";
 
-const qualified = {
-  "python.wasm": "76453aaf80381c9e1a870bb26dde977d930f8ed767bcb803c5da5528d76a1ae9",
-  "python-stdlib.json": "98d84f8c3645e471794a7537304af0aedac881b2485907211bc4d3d1a55d8c3c",
-  "python-build.json": "d43db27f6e79ece3067a5d9823b30891aac58b9b6bd9bc2a9b73b86af6cfd46a",
-  "python.NOTICES.txt": "9736494b741d59bcc7cef5b2ea8d2cf2701b36580514f1f2fb351776da749a81",
-  "python-licenses.json": "cf6f81ec4651f5c18c7ed7f8cc755989d3487cebe7badd94bd60b2c3ceece5f1",
-} as const;
-
-function sha256(path: string): string {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function verifyQualifiedAssets(source: string): void {
-  for (const [name, expected] of Object.entries(qualified)) {
-    assert.equal(sha256(resolve(source, name)), expected, `Unqualified Python asset: ${name}`);
-  }
+export function verifyPythonReceipt(source: string, expectedSha256: string) {
+  assert.match(expectedSha256, /^[a-f0-9]{64}$/, "Provide the accepted producer receipt SHA-256");
+  const bytes = readFileSync(resolve(source, "python-build.json"));
+  assert.equal(
+    createHash("sha256").update(bytes).digest("hex"),
+    expectedSha256,
+    "Producer receipt SHA-256",
+  );
+  const receipt: unknown = JSON.parse(bytes.toString());
+  assert.ok(record(receipt));
+  assert.equal(receipt.cpython, pythonSource.revision);
+  assert.deepEqual(receipt.source, pythonSource, "Pinned CPython source identity");
+  assert.deepEqual(receipt.sourcePatch, pythonSource.patch, "Pinned CPython startup patch");
+  assert.equal(receipt.payloadFiles, 2650, "Full unpruned CPython payload");
+  return receipt;
 }
 
-function verifyPayload(source: string): { files: number; bytes: number } {
-  const value: unknown = JSON.parse(readFileSync(resolve(source, "python-stdlib.json"), "utf8"));
-  const manifest = parsePythonPayloadManifest(value);
-  let bytes = 0;
-  for (const file of manifest.files) {
-    assert.equal(file.url, `python-files${file.path}`, `Non-relocatable URL: ${file.path}`);
-    const path = resolve(source, file.url);
-    assert.equal(readFileSync(path).byteLength, file.bytes, `Payload size: ${file.path}`);
-    assert.equal(sha256(path), file.sha256, `Payload hash: ${file.path}`);
-    bytes += file.bytes;
-  }
-  return { files: manifest.files.length, bytes };
-}
-
-/** Verify a complete qualified artifact before copying anything into the package. */
-export function stagePythonAssets(source: string, output: string) {
+/** Stage an externally accepted artifact; retain its original producer receipt verbatim. */
+export function stagePythonAssets(source: string, output: string, receiptSha256: string) {
   assert.ok(!existsSync(output), `Asset output already exists: ${output}`);
-  verifyQualifiedAssets(source);
-  const payload = verifyPayload(source);
-  mkdirSync(output, { recursive: true });
-  for (const name of Object.keys(qualified)) copyFileSync(resolve(source, name), resolve(output, name));
-  cpSync(resolve(source, "python-files"), resolve(output, "python-files"), { recursive: true });
-  return { ...payload, output };
+  verifyPythonReceipt(source, receiptSha256);
+  const original = readFileSync(resolve(source, "python-build.json"));
+  const manifest = stagePythonArtifact(source, output);
+  assert.equal(manifest.files.length, 2650);
+  assert.deepEqual(readFileSync(resolve(output, "python-build.json")), original);
+  assert.deepEqual(readFileSync(resolve(source, "python-build.json")), original);
+  return {
+    files: manifest.files.length,
+    bytes: manifest.files.reduce((sum, file) => sum + file.bytes, 0),
+    output,
+    producerReceiptSha256: receiptSha256,
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const source = process.argv[2];
-  const output = process.argv[3] ?? resolve(import.meta.dirname, "../assets");
-  if (!source) throw new Error("Usage: node scripts/stage-assets.ts QUALIFIED_ARTIFACT [OUTPUT]");
-  mkdirSync(dirname(output), { recursive: true });
-  console.log(JSON.stringify(stagePythonAssets(resolve(source), resolve(output))));
+  const [flag, receiptSha256, source, destination] = process.argv.slice(2);
+  assert.ok(
+    flag === "--receipt-sha256" && receiptSha256 && source,
+    "Usage: node scripts/stage-assets.ts --receipt-sha256 HEX ACCEPTED_ARTIFACT [OUTPUT]",
+  );
+  const output = resolve(destination ?? resolve(import.meta.dirname, "../assets"));
+  console.log(JSON.stringify(stagePythonAssets(resolve(source), output, receiptSha256)));
 }
