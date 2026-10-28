@@ -121,20 +121,6 @@ export const payloadExceptions: readonly PayloadException[] = [
     expression: "chunks",
     reason: "Guest terminal iovecs, never private Stream provenance entries.",
   },
-  {
-    file: "browser/runtime-terminals.ts",
-    scope: "createRuntimeTerminalCodec.import.write",
-    rule: "mutable-builtin",
-    expression: "data.set(bytes, offset)",
-    reason: "Copy between terminal payload arrays, not provenance state.",
-  },
-  {
-    file: "browser/runtime-terminals.ts",
-    scope: "createRuntimeTerminalCodec.import.write",
-    rule: "mutable-getter",
-    expression: "bytes.length",
-    reason: "Guest terminal payload byte length.",
-  },
 ];
 
 const payloadReturnScopes = new Set(["proc/abi.ts:ProcessABI.span", "proc/abi.ts:ProcessABI.view"]);
@@ -150,6 +136,7 @@ export const enforcedModules = [
   "browser/terminal-session.ts",
   "browser/terminal-input.ts",
   "browser/terminal-lifetime.ts",
+  "browser/terminal-output.ts",
   "core/descriptors.ts",
   "proc/abi.ts",
   "proc/access.ts",

@@ -131,7 +131,7 @@ hello from a guest
 - **Program path.** `registerProgram` takes an absolute canonical path such as `/bin/hello`. You create the file at that path yourself with `writeFile`. Its contents do not matter. The registered module is what runs.
 - **`cooperative: true`.** You pass a compiled `WebAssembly.Module`, so Waffle cannot insert interruption checkpoints. The flag says the guest cooperates. To have Waffle instrument the code, pass `source` bytes instead. See [Host ABI](../host-abi.md) for the interruption contract.
 - **Root process.** A spawn needs a parent with a worker transport. A root from `supervisor.createRoot()` has none. `launchWorker` then throws `process has no admitted worker transport` and the spawn ends as `start-failed` with `EIO`.
-- **Output.** `adoptRuntimeRoot` takes an `output(fd, bytes)` callback. It receives the stdout and stderr of every descendant of the root.
+- **Output.** `adoptRuntimeRoot` takes an `output(fd, bytes)` callback. It receives the stdout and stderr of every descendant of the root. A destination with limited room, such as a terminal ring, passes `tryOutput` instead. See [Host terminal output](../architecture.md#host-terminal-output).
 - **Result.** `waitForExit` resolves to `{ kind: "exited" | "signaled", code, status }` or `{ kind: "start-failed", code, error, status: null }`. Spawning `/bin/missing` gives `start-failed` with `ENOENT`.
 
 For adapters with their own startup hooks, see [Guest executor extensions](../architecture.md#guest-executor-extensions). For every guest import and result shape, see [Host ABI](../host-abi.md).
