@@ -172,7 +172,8 @@ export interface WorkerExecutor<R extends RuntimeWorkerRequest = RuntimeWorkerRe
     imports: WebAssembly.Imports,
     context: WorkerBindingsContext<R>,
   ): WebAssembly.Imports | void;
-  /** Compose one process-local instance group; late work must call checkActive before publication. */
+  /** Compose one process-local instance group using the complete imports-hook result, including
+   * auxiliary namespaces. Late work must call checkActive before publication. */
   instantiate?(
     imports: WebAssembly.Imports,
     context: WorkerBindingsContext<R> & { bindMemory(memory: WebAssembly.Memory): void },
@@ -947,22 +948,26 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
           .filter((entry) => entry.kind === "memory")
           .map((entry) => ({ ...entry, memory: imports[entry.module]?.[entry.name] }))
       : undefined;
-    const linked = executor.imports?.(imports, bindingsContext) ?? imports;
+    // A custom executor may add imports for modules other than req.module. Observe the
+    // bootstrap-owned functions before policy hooks, then preserve their complete result.
+    const prepared = executor.instantiate
+      ? (memorySampler?.imports(req.module, imports) ?? imports)
+      : imports;
+    const linked = executor.imports?.(prepared, bindingsContext) ?? prepared;
     if (done) return;
     if (memories?.some((entry) => linked[entry.module]?.[entry.name] !== entry.memory)) {
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
     bindImportedMemory(req.module, linked, bindMemory);
-    const sampled = memorySampler?.imports(req.module, linked) ?? linked;
     const instance = executor.instantiate
       ? await Promise.race([
-          executor.instantiate(sampled, { ...bindingsContext, bindMemory }),
+          executor.instantiate(linked, { ...bindingsContext, bindMemory }),
           startupCancelled.then(() => {
             checkActive();
             throw new Error("startup cancelled");
           }),
         ])
-      : new WebAssembly.Instance(req.module, sampled);
+      : new WebAssembly.Instance(req.module, memorySampler?.imports(req.module, linked) ?? linked);
     if (done) return;
     checkActive();
     if (!(instance.exports.memory instanceof WebAssembly.Memory))

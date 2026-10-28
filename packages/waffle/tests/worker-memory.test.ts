@@ -69,3 +69,33 @@ test("zero is an actual sample and guest replacement of memory.buffer cannot for
     Object.defineProperty(WebAssembly.Memory.prototype, "buffer", descriptor);
   }
 });
+
+test("sampled calls preserve thrown values and returned promise identity", async () => {
+  const bytes = cell();
+  const sampler = createWorkerMemorySampler(bytes.buffer);
+  sampler.bind(new WebAssembly.Memory({ initial: 1 }));
+  const result = Promise.resolve(17);
+  const failure = new Error("original host failure");
+  const linked = sampler.imports(sampledHostImportsGuest(), {
+    fixture: {
+      grow: () => result,
+      fail() {
+        throw failure;
+      },
+    },
+  });
+  const grow = linked.fixture!.grow,
+    fail = linked.fixture!.fail;
+  if (typeof grow !== "function" || typeof fail !== "function")
+    throw Error("missing wrapped imports");
+  expect(grow()).toBe(result);
+  let caught: unknown;
+  try {
+    fail();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(failure);
+  expect(Atomics.load(bytes, 0)).toBe(65536n);
+  expect(await result).toBe(17);
+});

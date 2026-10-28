@@ -46,6 +46,8 @@ Each `WorkerMemoryObservation` is a fresh record with these read-only fields:
 
 Bootstrap samples the currently bound `WebAssembly.Memory` when it binds memory, before and after linked host imports, and during finish after the executor's `beforeFinish` hook. Each sample reads the memory's current buffer through captured native getters. It follows growth that replaces or grows that buffer. Existing bootstrap rules reject replacement with a different memory.
 
+Default instantiation observes the request module's linked imports after `executor.imports`. For a custom `executor.instantiate`, bootstrap observes the host functions it supplies before `executor.imports` runs and forwards the complete `executor.imports` result unchanged. Auxiliary namespaces are preserved. In that custom path, callbacks added or replaced by `executor.imports` and imports built separately for auxiliary modules are executor policy and are not automatically wrapped. Binding and finish still sample the one bound process memory; this is not a census of hidden auxiliary memories.
+
 The page reads a shared atomic sample without scheduling work inside the guest worker. While a host import blocks, the page can read its entry sample. No timer is expected to run while Wasm or a synchronous host import blocks the worker event loop.
 
 The result is a sampled allocation, not a configured maximum, an allocation limit, a peak, a heap-use measurement, resident memory, or a real-time guarantee. Memory can grow between host boundaries. During a long pure-Wasm interval, its reported size can remain stale until the next boundary or finish. The API does not measure multiple separate memories in a custom executor.

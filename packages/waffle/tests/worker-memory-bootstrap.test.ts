@@ -12,14 +12,20 @@ const empty = new WebAssembly.Module(
     101, 109, 111, 114, 121, 2, 0, 6, 95, 115, 116, 97, 114, 116, 0, 0, 10, 4, 1, 2, 0, 11,
   ]),
 );
-function run(module: WebAssembly.Module, executor: WorkerExecutor) {
+function run(module: WebAssembly.Module, executor: WorkerExecutor, observe = true) {
   const connection = createFilesystemConnection();
   const memoryObservation = new SharedArrayBuffer(8);
   const bytes = new BigInt64Array(memoryObservation);
   Atomics.store(bytes, 0, -1n);
   const errors: string[] = [];
   const pending = bootstrap(
-    { module, args: [], env: {}, filesystem: connection.client, memoryObservation },
+    {
+      module,
+      args: [],
+      env: {},
+      filesystem: connection.client,
+      memoryObservation: observe ? memoryObservation : undefined,
+    },
     {
       ...executor,
       setup(context) {
@@ -140,3 +146,66 @@ for (const namespaceInherited of [false, true])
       expect(Atomics.load(f.bytes, 0)).toBe(65536n);
     });
   }
+
+for (const observe of [false, true])
+  test(`r708 custom instance group keeps side-module imports, observed=${observe}`, async () => {
+    const sideModule = namedMemoryImportGuest();
+    let calls = 0;
+    let completeImports: WebAssembly.Imports | undefined;
+    const f = run(
+      empty,
+      {
+        imports(imports) {
+          completeImports = Object.assign(imports, { env: { ping: () => ++calls && 42 } });
+          return completeImports;
+        },
+        instantiate(imports, context) {
+          if (!completeImports) throw Error("imports hook did not run");
+          expect(imports).toBe(completeImports);
+          const side = new WebAssembly.Instance(sideModule, imports);
+          const start = side.exports._start;
+          if (typeof start !== "function") throw Error("fixture entry missing");
+          start();
+          return new WebAssembly.Instance(context.request.module, imports);
+        },
+        run: () => 0,
+      },
+      observe,
+    );
+    await f.pending;
+    console.log(JSON.stringify({ observe, calls, errors: f.errors }));
+    expect(f.errors).toEqual([]);
+    expect(calls).toBe(1);
+    expect(Atomics.load(f.bytes, 0)).toBe(observe ? 65536n : -1n);
+  });
+
+test("custom instantiation still samples bootstrap host-call growth before completion", async () => {
+  let memory: WebAssembly.Memory | undefined;
+  let calls = 0;
+  const ping = () => {
+    if (!memory) throw Error("memory not bound");
+    memory.grow(1);
+    calls++;
+    return 42;
+  };
+  const f = run(namedMemoryImportGuest(), {
+    namespaces: () => ({ env: { ping } }),
+    instantiate(imports, context) {
+      const instance = new WebAssembly.Instance(context.request.module, imports);
+      const exported = instance.exports.memory;
+      if (!(exported instanceof WebAssembly.Memory)) throw Error("fixture memory missing");
+      memory = exported;
+      context.bindMemory(memory);
+      const start = instance.exports._start;
+      if (typeof start !== "function") throw Error("fixture entry missing");
+      start();
+      expect(Atomics.load(new BigInt64Array(context.request.memoryObservation!), 0)).toBe(131072n);
+      return instance;
+    },
+    run: () => 0,
+  });
+  await f.pending;
+  expect(f.errors).toEqual([]);
+  expect(calls).toBe(2);
+  expect(Atomics.load(f.bytes, 0)).toBe(196608n);
+});
