@@ -8,6 +8,8 @@
 // while it runs: everything flowing towards it goes through the ring (see ring.ts), and `poll` sleeps
 // on the ring with Atomics.wait. Sending works fine from a blocked thread, so requests use postMessage.
 
+import type { RuntimeNetworkLookupOptions } from "./address.js";
+
 /** Results of the bun_wasm host functions (docs/host-abi.md). */
 export const OK = 0;
 export const ERROR = -1;
@@ -19,7 +21,7 @@ export const UNSUPPORTED = -4;
 export const Kind = {
   /** Fetch response head (JSON FetchHead). */
   Head: 1,
-  /** Body bytes (fetch) or bytes from the peer (connection). */
+  /** Body bytes, connection bytes, or a fragment before a lookup head/error. */
   Data: 2,
   /** End of the body / peer closed its side. */
   End: 3,
@@ -35,6 +37,8 @@ export const Kind = {
   FileChanged: 9,
   /** The peer consumed bytes after the connection hit its write limit. */
   Writable: 10,
+  /** Lookup result head (JSON RuntimeNetworkLookupResult[]). */
+  LookupHead: 11,
 } as const;
 export type Kind = (typeof Kind)[keyof typeof Kind];
 
@@ -52,6 +56,8 @@ export interface NetError {
   name: string;
   message: string;
   code?: string;
+  syscall?: string;
+  hostname?: string;
 }
 
 export interface PeerAddr {
@@ -75,6 +81,7 @@ export type TcpRequest = TcpCommand & { reply: SharedArrayBuffer };
 
 export type NetRequest =
   | TcpRequest
+  | { type: "lookup"; id: number; hostname: string; options: RuntimeNetworkLookupOptions }
   | { type: "tcp-read"; id: number; bytes: number }
   | { type: "tcp-accept"; id: number; listener: number }
   | { type: "shutdown"; id: number }
@@ -89,7 +96,7 @@ export type NetRequest =
     }
   /** The guest consumed `bytes` of a fetch body: the helper may send that much more. */
   | { type: "ack"; id: number; bytes: number }
-  /** Abort a fetch, stop a listener, or finish a connection (its response is complete). */
+  /** Cancel a lookup/fetch, stop a listener, or finish a connection. */
   | { type: "close"; id: number }
   | { type: "listen"; id: number; port: number; host: string }
   /** Response bytes the guest wrote on a virtual connection. */
