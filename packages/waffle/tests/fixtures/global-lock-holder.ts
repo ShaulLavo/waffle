@@ -10,6 +10,13 @@ interface Hold {
   signal?: { buffer: SharedArrayBuffer; index: number; value: number; afterMs: number };
   /** Never release: the holder dies with the lock. */
   keep?: boolean;
+  secondSignal?: {
+    buffer: SharedArrayBuffer;
+    index: number;
+    value: number;
+    afterMs: number;
+    sections?: SharedArrayBuffer;
+  };
 }
 
 const GLOBAL_LOCK = 1;
@@ -25,6 +32,15 @@ self.onmessage = ({ data }: MessageEvent<Hold>) => {
     Atomics.wait(control, 2, 0, data.signal.afterMs);
     Atomics.store(new Int32Array(data.signal.buffer), data.signal.index, data.signal.value);
   }
+  if (data.secondSignal) {
+    Atomics.wait(control, 2, 0, data.secondSignal.afterMs);
+    Atomics.store(
+      new Int32Array(data.secondSignal.buffer),
+      data.secondSignal.index,
+      data.secondSignal.value,
+    );
+  }
+  if (data.secondSignal?.sections) Atomics.notify(new Int32Array(data.secondSignal.sections), 0);
   if (data.keep) return;
   Atomics.wait(control, 2, 0, data.holdMs);
   Atomics.compareExchange(cells, GLOBAL_LOCK, data.owner, 0);

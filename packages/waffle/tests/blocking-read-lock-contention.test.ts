@@ -97,10 +97,17 @@ interface Hold {
   holdMs?: number;
   signal?: { buffer: SharedArrayBuffer; index: number; value: number; afterMs: number };
   keep?: boolean;
+  secondSignal?: {
+    buffer: SharedArrayBuffer;
+    index: number;
+    value: number;
+    afterMs: number;
+    sections?: SharedArrayBuffer;
+  };
 }
 
 /** The next shared.stat() call returns only after another thread holds the global lock. */
-function contendAfterStat(backend: PersistentBackend, hold: Hold) {
+function contendAfterStat(backend: PersistentBackend, hold: Hold, skip = 0) {
   const worker = new Worker(new URL("./fixtures/global-lock-holder.ts", import.meta.url).href);
   workers.push(worker);
   const control = new Int32Array(new SharedArrayBuffer(12));
@@ -113,6 +120,7 @@ function contendAfterStat(backend: PersistentBackend, hold: Hold) {
   const shared = backend.shared;
   const stat = shared.stat;
   shared.stat = (...args) => {
+    if (skip-- > 0) return stat.apply(shared, args);
     shared.stat = stat;
     const result = stat.apply(shared, args);
     Atomics.store(control, 0, 1);
@@ -238,4 +246,57 @@ test("a permanent dirty-capacity errno 6 is still terminal, not waited on", asyn
     },
     { checkpointLimits: { maxBytes: 32, maxMetadataBytes: 65536 } },
   );
+});
+
+test("revoked reader cleanup still recovers a holder that dies later", async () => {
+  await cold(async ({ backend, service, client, connection, handle }) => {
+    const peer = connectFilesystemIdentity(createProcessFilesystemIdentity(client.connection));
+    service.connect(peer.server);
+    // A real holder is admitted before taking locks. Reap may leave this count abandoned.
+    Atomics.store(new Int32Array(peer.client.sections), 0, 1);
+    try {
+      const lock = contendAfterStat(backend, {
+        owner: peer.client.owner,
+        holdMs: 800,
+        signal: { buffer: connection.ownerStates, index: 0, value: 1, afterMs: 20 },
+        secondSignal: {
+          buffer: peer.client.revocations[0]!,
+          index: 0,
+          value: 2,
+          afterMs: 80,
+          sections: peer.client.sections,
+        },
+      });
+      const started = performance.now();
+      expect(await outcome(client.asyncCall("read", [handle, 4, 0]))).toEqual({ errno: 11 });
+      // The holder is reported dead after 100ms. Its 800ms fallback must not be needed.
+      expect(lock.released()).toBe(false);
+      expect(performance.now() - started).toBeLessThan(500);
+    } finally {
+      peer.server.port.close();
+      peer.client.port.close();
+    }
+  });
+});
+
+test("second readMetadata identity wait observes request cancellation", async () => {
+  await cold(async ({ backend, client, connection, handle }) => {
+    const completion = client.submit("read", [handle, 4, 0]);
+    const lock = contendAfterStat(
+      backend,
+      {
+        owner: connection.owner,
+        holdMs: 800,
+        signal: { buffer: completion.buffer, index: 6, value: 1, afterMs: 20 },
+      },
+      1,
+    );
+    const started = performance.now();
+    expect(await outcome(completion.value().finally(() => completion.release()))).toEqual({
+      errno: 11,
+    });
+    expect(lock.released()).toBe(false);
+    expect(performance.now() - started).toBeLessThan(500);
+    await lock.waitReleased();
+  });
 });
