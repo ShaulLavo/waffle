@@ -565,9 +565,18 @@ export class WorkerProcessBroker {
       } catch (error) {
         state = error instanceof ProcessError ? -error.errno : -29;
       }
-      if (state) controlStore(shared.group.retirement, 0, state);
+      if (state) this.storeRetirement(shared.group.retirement, state);
     }
     for (const root of this.directories.values()) wakeWorkerProcess(root);
+  }
+  private storeRetirement(cell: import("./control.js").TaggedCells, state: number): void {
+    try {
+      controlStore(cell, 0, state);
+    } catch (error) {
+      // A public wait may collect and reuse this job after the pending check. Its
+      // tagged store cannot touch the replacement, which needs no old notification.
+      if (!isCollectedProcess(error) || cell.valid()) throw error;
+    }
   }
   private closeOwnedJobs(owner: number): Promise<void> | undefined {
     const pending: Promise<void>[] = [];

@@ -153,6 +153,7 @@ function fixture(
     beforeActivation?(supervisor: ProcessSupervisor): void;
     terminate?(): void | Promise<void>;
     quiesce?(pid: number): void | Promise<void>;
+    onError?(error: unknown): void;
     rejectedQuiesce?(pid: number): void | Promise<void>;
   } = {},
 ) {
@@ -163,6 +164,7 @@ function fixture(
   const contexts = new Map<number, ProcessContext>();
   const supervisor = new ProcessSupervisor({
     registry,
+    onError: options.onError,
     quiesce: options.quiesce,
     launch(context) {
       contexts.set(context.pid, context);
@@ -2899,4 +2901,161 @@ test("a sealed pending job reports ECHILD while its header remains live", async 
   expect(readOutcome(group.outcome)).toMatchObject({ kind: "exited", code: 23 });
   helpDirectoryJobs(f.transport.directory);
   await f.flush();
+});
+
+for (const boundary of ["load", "compareExchange"] as const) {
+  test(`failed-start retirement tolerates a public job reap racing its ${boundary}`, async () => {
+    const launch = Promise.withResolvers<ProcessHandle>();
+    const errors: unknown[] = [];
+    const f = fixture({
+      capacity: 2,
+      launch: () => launch.promise,
+      onError: (error) => errors.push(error),
+    });
+    const pid = f.root.spawn(1, request());
+    await f.flush();
+    const state = workerProcessState(f.broker.get(pid)!);
+    const group = findDirectoryJob(f.transport.directory, state.job)!;
+    const load = Atomics.load,
+      compareExchange = Atomics.compareExchange;
+    let raced = false;
+    const reap = (array: BigInt64Array) => {
+      if (
+        raced ||
+        array.buffer !== f.transport.directory ||
+        array.byteOffset !== group.retirement.byteOffset
+      )
+        return;
+      raced = true;
+      expect(f.root.waitJob(1, state.job)).toMatchObject({ kind: "start-failed", error: "EIO" });
+      f.root.spawn(1, request());
+    };
+    const racingLoad = (array: BigInt64Array, index: number) => {
+      const value = load(array, index);
+      reap(array);
+      return value;
+    };
+    const racingCas = (array: BigInt64Array, index: number, expected: bigint, value: bigint) => {
+      reap(array);
+      return compareExchange(array, index, expected, value);
+    };
+    try {
+      if (boundary === "load") Atomics.load = racingLoad as typeof Atomics.load;
+      else Atomics.compareExchange = racingCas as typeof Atomics.compareExchange;
+      launch.reject(new Error("intentional adapter startup rejection"));
+      await f.supervisor.start(pid);
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      expect(raced).toBe(true);
+      expect(errors).toEqual([]);
+      const replacement = workerProcessState(
+        f.messages.find((message) => message.operation === "spawn")!.transport,
+      );
+      expect(replacement.jobSlot).toBe(group.slot);
+      expect(controlLoad(replacement.jobPending)).toBe(1);
+      expect(
+        controlLoad(findDirectoryJob(f.transport.directory, replacement.job)!.retirement),
+      ).toBe(0);
+      expect(readOutcome(replacement.jobOutcome)).toBeNull();
+    } finally {
+      Atomics.load = load;
+      Atomics.compareExchange = compareExchange;
+      launch.reject(new Error("cleanup"));
+    }
+  });
+}
+
+test("retirement publication preserves physical-stop debt and failure", async () => {
+  const stopping = Promise.withResolvers<void>();
+  const errors: unknown[] = [];
+  const f = fixture({ terminate: () => stopping.promise, onError: (error) => errors.push(error) });
+  const pid = f.root.spawn(1, request());
+  await f.flush();
+  await f.supervisor.start(pid);
+  const state = workerProcessState(f.broker.get(pid)!);
+  const group = findDirectoryJob(f.transport.directory, state.job)!;
+  f.supervisor.exit(pid, 0);
+  expect(f.root.jobEmpty(1, state.job)).toBe(true);
+  expect(f.root.jobCleanupReady(1, state.job)).toBe(false);
+  expect(controlLoad(group.retirement)).toBe(0);
+  const failure = new Error("physical stop failed");
+  stopping.reject(failure);
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+  expect(controlLoad(group.retirement)).toBe(-29);
+  expectErrno(() => f.root.jobCleanupReady(1, state.job), 29);
+  expect(errors).toEqual([failure]);
+});
+
+test("a late handle acquired after cancellation remains retirement debt until physical stop", async () => {
+  const admission = Promise.withResolvers<ProcessHandle>();
+  const stopping = Promise.withResolvers<void>();
+  const launched = Promise.withResolvers<void>();
+  let stops = 0;
+  const f = fixture({
+    launch() {
+      launched.resolve();
+      return admission.promise;
+    },
+  });
+  const pid = f.root.spawn(1, request());
+  await f.flush();
+  await launched.promise;
+  const state = workerProcessState(f.broker.get(pid)!);
+  f.supervisor.kill(pid, 9);
+  const starting = f.supervisor.start(pid);
+  expect(f.root.jobCleanupReady(1, state.job)).toBe(false);
+  admission.resolve({
+    terminate() {
+      stops++;
+      return stopping.promise;
+    },
+  });
+  try {
+    await starting;
+    expect(stops).toBe(1);
+    expect(f.root.jobCleanupReady(1, state.job)).toBe(false);
+    stopping.resolve();
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    expect(f.root.jobCleanupReady(1, state.job)).toBe(true);
+    expect(f.root.waitJob(1, state.job)).toMatchObject({ kind: "signaled", code: 9 });
+  } finally {
+    admission.resolve({ terminate() {} });
+    stopping.resolve();
+    await starting;
+  }
+});
+
+test("retirement publication reports SRCH while its captured job remains live", async () => {
+  const launch = Promise.withResolvers<ProcessHandle>();
+  const errors: unknown[] = [];
+  const f = fixture({ launch: () => launch.promise, onError: (error) => errors.push(error) });
+  const pid = f.root.spawn(1, request());
+  await f.flush();
+  const state = workerProcessState(f.broker.get(pid)!);
+  const group = findDirectoryJob(f.transport.directory, state.job)!;
+  const load = Atomics.load;
+  const error = new ProcessError(ProcessErrno.SRCH, "live retirement store failed");
+  let injected = false;
+  const failingLoad = (array: BigInt64Array, index: number) => {
+    if (
+      !injected &&
+      array.buffer === f.transport.directory &&
+      array.byteOffset === group.retirement.byteOffset
+    ) {
+      injected = true;
+      throw error;
+    }
+    return load(array, index);
+  };
+  try {
+    Atomics.load = failingLoad as typeof Atomics.load;
+    launch.reject(new Error("intentional adapter startup rejection"));
+    await f.supervisor.start(pid);
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    expect(injected).toBe(true);
+    expect(group.retirement.valid()).toBe(true);
+    expect(errors).toEqual([error]);
+  } finally {
+    Atomics.load = load;
+    launch.reject(new Error("cleanup"));
+  }
 });
