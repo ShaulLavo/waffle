@@ -22,6 +22,108 @@ const request = (executable: string, cwd = "/"): SpawnRequest => ({
   fds: [],
 });
 
+function reviewSymlink(fs: ReturnType<typeof fixture>["fs"], path: string, target: string): void {
+  const resolved = fs.resolveAbsolute(path);
+  if (typeof resolved === "number") throw new Error(`cannot resolve ${path}`);
+  expect(fs.symlink(resolved, target)).toBe(0);
+}
+
+test("review: final symlink traversal respects the filesystem 40-link limit", async () => {
+  const state = fixture();
+  try {
+    for (let index = 0; index < 41; index++)
+      reviewSymlink(
+        state.fs,
+        `/bin/link-${index}`,
+        index === 40 ? "test-guest" : `link-${index + 1}`,
+      );
+    const pid = state.supervisor.reserveSpawn(state.root, request("/bin/link-0"));
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "start-failed",
+      error: "ELOOP",
+      code: 40,
+    });
+    expect(state.loads).toBe(0);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("review: symlink scripts resolve relative shebang interpreters against process cwd", async () => {
+  const state = fixture();
+  try {
+    state.fs.mkdirp("/links");
+    state.fs.writeFile("/tools/script", "#!./test-guest\n");
+    reviewSymlink(state.fs, "/links/script", "/tools/script");
+    expect(
+      await state.registry.resolve("/tools/script", "/bin", undefined, ["/tools/script", "arg"]),
+    ).toMatchObject({ adapter: "test", argv: ["./test-guest", "/tools/script", "arg"] });
+    expect(
+      await state.registry.resolve("/links/script", "/bin", undefined, ["/links/script", "arg"]),
+    ).toMatchObject({ adapter: "test", argv: ["./test-guest", "/links/script", "arg"] });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("review: registered final link target can traverse a directory symlink", async () => {
+  const state = fixture();
+  try {
+    reviewSymlink(state.fs, "/alias", "/bin");
+    reviewSymlink(state.fs, "/bin/indirect", "/alias/test-guest");
+    state.registry.register("/alias/test-guest", { module, adapter: "wrong-owner" });
+    expect(await state.registry.resolve("/bin/indirect")).toMatchObject({
+      module,
+      adapter: "test",
+    });
+    state.registry.unregister("/bin/test-guest");
+    await expect(state.registry.check("/bin/indirect")).rejects.toMatchObject({ code: "EACCES" });
+    state.registry.register("/bin/test-guest", { module, adapter: "replacement" });
+    expect(await state.registry.resolve("/bin/indirect")).toMatchObject({ adapter: "replacement" });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("review: link registration cannot override target ownership and replacement is live", async () => {
+  const state = fixture();
+  try {
+    reviewSymlink(state.fs, "/bin/link", "test-guest");
+    state.registry.register("/bin/link", { module, adapter: "wrong-owner" });
+    expect(await state.registry.check("/bin/link")).toMatchObject({ adapter: "test" });
+    expect(state.loads).toBe(0);
+    state.registry.unregister("/bin/test-guest");
+    await expect(state.registry.check("/bin/link")).rejects.toMatchObject({ code: "EACCES" });
+    state.registry.register("/bin/test-guest", { module, adapter: "replacement" });
+    expect(await state.registry.resolve("/bin/link")).toMatchObject({ adapter: "replacement" });
+    state.fs.remove("/bin/test-guest");
+    state.fs.mkdirp("/bin/test-guest");
+    await expect(state.registry.resolve("/bin/link")).rejects.toMatchObject({ code: "EACCES" });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("review: multi-hop relative and absolute links retain caller argv and reject target deletion", async () => {
+  const state = fixture();
+  try {
+    state.fs.mkdirp("/links");
+    reviewSymlink(state.fs, "/links/outer", "../bin/inner");
+    reviewSymlink(state.fs, "/bin/inner", "/bin/test-guest");
+    expect(
+      await state.registry.resolve("./outer", "/links", undefined, ["caller-argv", "arg"]),
+    ).toMatchObject({ module, adapter: "test", argv: ["caller-argv", "arg"] });
+    expect(state.loads).toBe(1);
+    state.fs.remove("/bin/test-guest");
+    await expect(state.registry.resolve("./outer", "/links")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
 function fixture() {
   const backend = new MemoryBackend(),
     fs = backend.fs;
@@ -104,6 +206,73 @@ for (const [executable, cwd] of [
     }
   });
 }
+
+test("spawn follows a symlink to the canonical registered executable", async () => {
+  const state = fixture();
+  try {
+    const link = state.fs.resolveAbsolute("/bin/test-link");
+    if (typeof link === "number") throw new Error("missing symlink path");
+    expect(state.fs.symlink(link, "test-guest")).toBe(0);
+    const descriptors = state.supervisor.get(state.root)?.descriptors;
+    if (!descriptors) throw new Error("missing root descriptors");
+    const parent = descriptors.open({ kind: "directory", handle: 1 }, 0n, 0n);
+    const pid = state.supervisor.reserveSpawn(state.root, {
+      ...request("./test-link", "/bin"),
+      argv: ["./test-link", "argument"],
+      env: { MARKER: "preserved" },
+      fds: [{ parent, child: 9 }],
+    });
+    await state.supervisor.start(pid);
+    expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+      kind: "exited",
+      code: 23,
+    });
+    expect(state.contexts[0]).toMatchObject({
+      module,
+      adapter: "test",
+      interruptible: true,
+      request: {
+        executable: "./test-link",
+        argv: ["./test-link", "argument"],
+        env: { MARKER: "preserved" },
+        cwd: "/bin",
+        fds: [{ parent, child: 9 }],
+      },
+    });
+    expect(state.loads).toBe(1);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
+
+test("spawn retains dangling and looping symlink errors", async () => {
+  const state = fixture();
+  try {
+    const loopA = state.fs.resolveAbsolute("/bin/loop-a");
+    const loopB = state.fs.resolveAbsolute("/bin/loop-b");
+    const dangling = state.fs.resolveAbsolute("/bin/dangling");
+    if (typeof loopA === "number" || typeof loopB === "number" || typeof dangling === "number")
+      throw new Error("missing symlink path");
+    expect(state.fs.symlink(loopA, "loop-b")).toBe(0);
+    expect(state.fs.symlink(loopB, "loop-a")).toBe(0);
+    expect(state.fs.symlink(dangling, "missing")).toBe(0);
+    for (const [executable, error, code] of [
+      ["/bin/loop-a", "ELOOP", 40],
+      ["/bin/dangling", "ENOENT", 2],
+    ] as const) {
+      const pid = state.supervisor.reserveSpawn(state.root, request(executable));
+      await state.supervisor.start(pid);
+      expect(await state.supervisor.waitForExit(state.root, pid)).toMatchObject({
+        kind: "start-failed",
+        error,
+        code,
+      });
+    }
+    expect(state.loads).toBe(0);
+  } finally {
+    state.supervisor.dispose();
+  }
+});
 
 for (const stateChange of ["missing", "deleted", "directory", "unregistered"] as const) {
   test(`spawn checks the live filesystem before loading a ${stateChange} executable`, async () => {
