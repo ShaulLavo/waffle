@@ -151,14 +151,19 @@ async function resolveRevision(context: GitContext, ref: string): Promise<string
 async function shorten(context: GitContext, oid: string, minimum: number): Promise<string> {
   for (let length = minimum; length < 40; length++) {
     const prefix = oid.slice(0, length);
-    try {
-      if ((await git.expandOid({ ...context, oid: prefix })) === oid) return prefix;
-    } catch (error) {
-      if (error instanceof git.Errors.NotFoundError) return prefix;
-      if (!(error instanceof git.Errors.AmbiguousError)) throw error;
-    }
+    if (await isUniquePrefix(context, oid, prefix)) return prefix;
   }
   return oid;
+}
+
+async function isUniquePrefix(context: GitContext, oid: string, prefix: string): Promise<boolean> {
+  try {
+    return (await git.expandOid({ ...context, oid: prefix })) === oid;
+  } catch (error) {
+    if (error instanceof git.Errors.NotFoundError) return true;
+    if (error instanceof git.Errors.AmbiguousError) return false;
+    throw error;
+  }
 }
 
 async function missingRevision(context: GitContext, query: RevisionQuery, ref: string) {
