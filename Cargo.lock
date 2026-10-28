@@ -1749,6 +1749,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "uu_echo"
+version = "0.13.0"
+source = "git+https://github.com/uutils/coreutils?rev=07763857f6b9a547742a994b58aef0ccd036198b#07763857f6b9a547742a994b58aef0ccd036198b"
+dependencies = [
+ "clap",
+ "fluent",
+ "uucore 0.13.0",
+]
+
+[[package]]
 name = "uu_env"
 version = "0.13.0"
 dependencies = [
@@ -2030,6 +2040,14 @@ name = "waffle-cut"
 version = "0.1.0"
 dependencies = [
  "uu_cut",
+ "uucore 0.13.0",
+]
+
+[[package]]
+name = "waffle-echo"
+version = "0.0.0"
+dependencies = [
+ "uu_echo",
  "uucore 0.13.0",
 ]
 
