@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs";
 
 const packageRoot = resolve(import.meta.dir, "..");
 const scratch = await mkdtemp(join(tmpdir(), "waffle-tarball-"));
@@ -54,7 +55,7 @@ async function run(): Promise<void> {
     "browser/worker.ts",
     "browser/net/network.wasm",
     "dist/browser/net/network.wasm",
-  ];
+  ].concat(wasiLibcBuildInputs);
   for (const path of required) {
     if (!existsSync(join(packedRoot, path))) throw new Error(`archive is missing ${path}`);
   }
@@ -66,6 +67,11 @@ async function run(): Promise<void> {
     )
   )
     throw new Error("archive has the wrong upstream license notice");
+  assertWasiLibcBuildInputs(packedRoot);
+  const sourcePatch = await readFile(join(packageRoot, wasiLibcBuildInputs[1]));
+  const packedPatch = await readFile(join(packedRoot, wasiLibcBuildInputs[1]));
+  if (!sourcePatch.equals(packedPatch))
+    throw new Error(`archive changed ${wasiLibcBuildInputs[1]} bytes`);
   await writeFile(
     join(consumerDirectory, "package.json"),
     JSON.stringify({
@@ -79,6 +85,7 @@ async function run(): Promise<void> {
     cwd: consumerDirectory,
     stdio: "pipe",
   });
+  assertWasiLibcBuildInputs(join(consumerDirectory, "node_modules/waffle"));
   const metadata = record(JSON.parse(await readFile(join(packedRoot, "package.json"), "utf8")));
   const exports = record(metadata.exports);
   const nodeSpecifiers: string[] = [];
