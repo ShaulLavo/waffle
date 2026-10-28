@@ -1,3 +1,4 @@
+import { bindImportedMemory, createWorkerMemorySampler } from "../browser/worker-memory.js";
 import { ExecutionUnwind } from "../core/unwind.js";
 import { directoryState, isCollectedProcess } from "../proc/directory.js";
 import * as processIntrinsics from "../proc/intrinsics.ts";
@@ -44,6 +45,8 @@ export async function failFirstWorkerImport(
 ) {
   const context = {
     ...processIntrinsics,
+    createWorkerMemorySampler,
+    bindImportedMemory,
     performance,
     AbortController,
     Error,

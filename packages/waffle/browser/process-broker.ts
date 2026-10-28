@@ -120,7 +120,12 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
   notificationWorkerUrl?: string;
   request: Omit<
     T,
-    "filesystem" | "runtimeProcess" | "startupStderr" | "hostIdentity" | "notifications"
+    | "filesystem"
+    | "runtimeProcess"
+    | "startupStderr"
+    | "hostIdentity"
+    | "notifications"
+    | "memoryObservation"
   >;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
@@ -133,7 +138,19 @@ interface DescendantHook {
   readonly directory: string;
 }
 const reservedDescendantData = ["filesystem", "pipeRegistry"];
+/** Latest sampled linear-memory bytes, retained until successful physical cleanup. */
+export interface WorkerMemoryObservation {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly rootPid: number;
+  readonly job: number;
+  readonly directory: string;
+  /** null until actual memory becomes visible; may be stale between host boundaries. */
+  readonly bytes: number | null;
+}
 interface RuntimeChild {
+  memory: BigInt64Array;
+  identity: Omit<WorkerMemoryObservation, "bytes">;
   notifications?: NotificationBridge;
   filesystem: FilesystemIdentity;
   context: ProcessContext;
@@ -942,6 +959,13 @@ export class BrowserProcessBroker {
   isIdleWorker(worker: Worker): boolean {
     return this.workers.isIdle(worker);
   }
+  /** Includes pending/failed physical cleanup. Each result is a fresh, authority-free snapshot. */
+  workerMemory(): readonly WorkerMemoryObservation[] {
+    return Array.from(this.children.values(), (child) => {
+      const bytes = Atomics.load(child.memory, 0);
+      return { ...child.identity, bytes: bytes < 0n ? null : Number(bytes) };
+    });
+  }
   launchWorker<T extends RuntimeWorkerRequest>(
     context: ProcessContext,
     options: WorkerLaunchOptions<T>,
@@ -949,9 +973,21 @@ export class BrowserProcessBroker {
     if (this.suspended) throw new Error("Process broker is disposed");
     const transport = this.transport.get(context.pid);
     if (!transport) throw new Error("process has no admitted worker transport");
+    if (this.children.has(context.pid)) throw new Error("process already has a worker");
+    const state = workerProcessState(transport);
+    const memory = new BigInt64Array(new SharedArrayBuffer(8));
+    Atomics.store(memory, 0, -1n);
     const filesystem = this.filesystem(transport);
     // Record cleanup ownership before either connection or Worker construction can throw.
     const child: RuntimeChild = {
+      memory,
+      identity: {
+        pid: state.pid,
+        parentPid: state.parentPid,
+        rootPid: state.rootPid,
+        job: state.job,
+        directory: workerProcessDirectoryId(transport),
+      },
       filesystem,
       context,
       acknowledged: false,
@@ -989,6 +1025,7 @@ export class BrowserProcessBroker {
     const request = {
       ...options.request,
       hostIdentity: this.hostIdentity,
+      memoryObservation: memory.buffer,
       filesystem: connection,
       runtimeProcess: transport,
       outcome: serializeOutcome(context.outcome),
@@ -1216,9 +1253,9 @@ export class BrowserProcessBroker {
       if (notifications) await settleStop(() => notifications.dispose(), errors);
       await settleStop(() => child.worker?.terminate(), errors);
       await settleStop(() => child.cleanup?.(), errors);
+      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
       this.children.delete(child.context.pid);
       this.retireChildController(child.context.pid);
-      if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
     };
     const fence = this.quiesceProcess(child.context.pid);
     return (child.stopping = fence ? fence.then(stop) : stop());

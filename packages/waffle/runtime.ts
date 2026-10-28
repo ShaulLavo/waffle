@@ -16,6 +16,7 @@ import type {
   BrowserProcessBroker,
   BrowserProcessBrokerOptions,
 } from "./browser/process-broker.js";
+export type { WorkerMemoryObservation } from "./browser/process-broker.js";
 import {
   createProcessIdentity,
   snapshotHostIdentity,
@@ -161,6 +162,7 @@ const processCapabilities = {
   transportFor: "method",
   releaseLegacyJob: "method",
   launchWorker: "method",
+  workerMemory: "method",
   takeWorker: "method",
   isIdleWorker: "method",
   kill: "async",

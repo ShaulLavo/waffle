@@ -1,3 +1,4 @@
+import { bindImportedMemory, createWorkerMemorySampler } from "./worker-memory.js";
 import { NotificationWaitScope } from "./notification-wait.js";
 import type { NotificationConnection } from "./notification-relay.js";
 import {
@@ -57,6 +58,8 @@ import {
 } from "../proc/intrinsics.ts";
 
 export interface RuntimeWorkerRequest {
+  /** Broker-owned latest actual memory sample, never a limit or a real-time guarantee. */
+  memoryObservation?: SharedArrayBuffer;
   notifications?: NotificationConnection;
   /** Supplied by the owning page or broker, never read from guest env. */
   hostIdentity?: RuntimeHostIdentity | null;
@@ -439,6 +442,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
   // Ownership begins before setup/namespaces can fail or finish the process.
   const ownedStdio = executor.stdio ? { ...executor.stdio } : undefined;
   let wasi: Wasi | null = null;
+  let memorySampler: ReturnType<typeof createWorkerMemorySampler> | undefined;
   let releaseStartupStderr: (() => void) | undefined;
   let done = false;
   let started = false;
@@ -499,6 +503,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     }
     if (winner?.kind !== "start-failed") attempt(() => releaseStartupStderr?.());
     attempt(() => executor.beforeFinish?.());
+    attempt(() => memorySampler?.sample());
     // Legacy transports must buffer diagnostics before publishing logical completion.
     if (
       executor.complete &&
@@ -596,6 +601,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
       ? directoryState(req.runtimeProcess).signals.outcome
       : (requestOutcome ?? executor.outcome);
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
+    if (req.memoryObservation) memorySampler = createWorkerMemorySampler(req.memoryObservation);
     const processModules = loadProcessModules(req.runtimeProcess);
     if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
@@ -806,6 +812,7 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
         throw new ExecutableFormatError("executor cannot replace bound process memory");
       wasi!.bindMemory(memory);
       boundMemory = memory;
+      memorySampler?.bind(memory);
     };
     const bindingsContext: WorkerBindingsContext<R> = { ...context, wasi };
     if (req.runtimeProcess) {
@@ -938,22 +945,24 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     if (memories?.some((entry) => linked[entry.module]?.[entry.name] !== entry.memory)) {
       throw new TypeError("executor imports hook cannot replace imported memory");
     }
+    bindImportedMemory(req.module, linked, bindMemory);
+    const sampled = memorySampler?.imports(linked) ?? linked;
     const instance = executor.instantiate
       ? await Promise.race([
-          executor.instantiate(linked, { ...bindingsContext, bindMemory }),
+          executor.instantiate(sampled, { ...bindingsContext, bindMemory }),
           startupCancelled.then(() => {
             checkActive();
             throw new Error("startup cancelled");
           }),
         ])
-      : new WebAssembly.Instance(req.module, linked);
+      : new WebAssembly.Instance(req.module, sampled);
     if (done) return;
     checkActive();
-    if (typeof instance.exports._start !== "function")
-      throw new ExecutableFormatError("guest has no _start entry point");
     if (!(instance.exports.memory instanceof WebAssembly.Memory))
       throw new ExecutableFormatError("guest has no memory");
     bindMemory(instance.exports.memory);
+    if (typeof instance.exports._start !== "function")
+      throw new ExecutableFormatError("guest has no _start entry point");
     postToHost({ type: "phase", name: "instantiate", duration: perfNow() - instantiating });
     const executionContext: WorkerExecutionContext<R> = { ...context, wasi, instance, process };
     await Promise.race([executor.instantiated?.(executionContext), startupCancelled]);
