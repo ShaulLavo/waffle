@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs";
+import { assertWasiLibcBuildInputs, wasiLibcBuildInputs } from "./package-inputs.js";
 
 const packageRoot = resolve(import.meta.dir, "..");
 const scratch = await mkdtemp(join(tmpdir(), "waffle-tarball-"));
