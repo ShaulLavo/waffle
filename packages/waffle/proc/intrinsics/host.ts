@@ -15,7 +15,7 @@ export const atomicsWaitAsync = (
       array: Int32Array,
       index: number,
       value: number,
-    ): { async: boolean; value: string | Promise<string> };
+    ): { async: false; value: string } | { async: true; value: Promise<string> };
   }
 ).waitAsync;
 
@@ -230,4 +230,22 @@ export function unlistenAbort(signal: AbortSignal, listener: () => void): void {
 const promiseThenMethod = Promise.prototype.then;
 export function observeRejectedPromise(promise: Promise<unknown>): void {
   apply(promiseThenMethod, promise, [() => {}, () => {}]);
+}
+
+export const atomicsWaitAsyncBigInt = (
+  Atomics as unknown as {
+    waitAsync(
+      array: BigInt64Array,
+      index: number,
+      value: bigint,
+    ): { async: false; value: string } | { async: true; value: Promise<string> };
+  }
+).waitAsync;
+
+export function afterNativePromise<T>(
+  promise: Promise<T>,
+  fulfilled: (value: T) => void,
+  rejected: (cause: unknown) => void,
+): void {
+  apply(promiseThenMethod, promise, [fulfilled, rejected]);
 }

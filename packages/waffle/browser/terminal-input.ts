@@ -1,3 +1,4 @@
+import { assertTerminalWaitAllowed } from "../proc/terminal-turn.js";
 import type { Readiness } from "../core/descriptors.js";
 import {
   TERMINAL_SESSION_LIMITS,
@@ -10,6 +11,13 @@ import {
 } from "./terminal-session.js";
 import {
   atomicsAdd,
+  atomicsWaitAsyncBigInt,
+  atomicsWaitAsync,
+  PromiseConstructor,
+  afterNativePromise,
+  abortSignalAborted,
+  listenAbort,
+  unlistenAbort,
   atomicsCompareExchange,
   atomicsLoad,
   atomicsNotify,
@@ -51,6 +59,10 @@ const H = {
   nextToken: 14,
 } as const;
 
+export interface TerminalInputObservation {
+  /** Advisory data/lock wake; does not consume bytes. All native registrations join before return. */
+  wait(options?: { readonly signal?: AbortSignal }): Promise<TerminalResult<void>>;
+}
 export interface TerminalInput {
   /** Shared transport passed to a worker through spawn metadata. */
   readonly buffer: SharedArrayBuffer;
@@ -59,6 +71,8 @@ export interface TerminalInput {
   /** Nonblocking producer operation: all bytes written, AGAIN, BADF or CANCELED. */
   push(bytes: Uint8Array): number;
   available(): number;
+  /** Observe before a bounded read attempt; wait outside the granted turn if needed. */
+  observe(): TerminalInputObservation;
   /** Publishes true EOF after already queued bytes are drained. */
   close(): void;
   /** Cancels pending consumers; resume is explicit and does not reopen a closed input. */
@@ -135,6 +149,9 @@ class InputBuffer implements TerminalInput {
   }
   available(): number {
     return (atomicsLoad(this.state, H.write) - atomicsLoad(this.state, H.read)) >>> 0;
+  }
+  observe(): TerminalInputObservation {
+    return new InputObservation(this, atomicsLoad(this.notification, 0), atomicsLoad(this.lock, 0));
   }
   cancelled(): boolean {
     return atomicsLoad(this.state, H.cancelled) !== 0;
@@ -336,6 +353,71 @@ class InputBuffer implements TerminalInput {
   private signal(): void {
     atomicsAdd(this.state, H.wake, 1);
     atomicsNotify(this.state, H.wake);
+  }
+}
+
+class InputObservation implements TerminalInputObservation {
+  private used = false;
+  constructor(
+    private readonly input: InputBuffer,
+    private readonly sequence: number,
+    private readonly owner: bigint,
+  ) {}
+  async wait(options: { readonly signal?: AbortSignal } = {}): Promise<TerminalResult<void>> {
+    assertTerminalWaitAllowed();
+    if (this.used) return { kind: "error", code: "INVALID" };
+    this.used = true;
+    const signal = options.signal;
+    const wake = () => this.notify();
+    if (signal) listenAbort(signal, wake);
+    try {
+      const failure = this.failure(signal);
+      if (failure) return { kind: "error", code: failure };
+      if (!this.changed()) await this.joinWake(signal);
+      const after = this.failure(signal);
+      return after ? { kind: "error", code: after } : { kind: "ok", value: undefined };
+    } finally {
+      if (signal) unlistenAbort(signal, wake);
+    }
+  }
+  private failure(signal?: AbortSignal): TerminalFailure | undefined {
+    if ((signal && abortSignalAborted(signal)) || this.input.cancelled()) return "CANCELED";
+    return atomicsLoad(this.input.state, H.poisoned) !== 0 ? "CLOSED" : undefined;
+  }
+  private changed(): boolean {
+    return (
+      atomicsLoad(this.input.notification, 0) !== this.sequence ||
+      atomicsLoad(this.input.lock, 0) !== this.owner
+    );
+  }
+  private notify(): void {
+    atomicsNotify(this.input.notification, 0);
+    atomicsNotify(this.input.lock, 0);
+  }
+  private joinWake(signal?: AbortSignal): Promise<void> {
+    return new PromiseConstructor((resolve, reject) => {
+      const data = atomicsWaitAsync(this.input.notification, 0, this.sequence);
+      let lock: ReturnType<typeof atomicsWaitAsyncBigInt>;
+      try {
+        lock = atomicsWaitAsyncBigInt(this.input.lock, 0, this.owner);
+      } catch (cause) {
+        this.notify();
+        reject(cause);
+        return;
+      }
+      let remaining = 2;
+      const completed = () => {
+        remaining--;
+        this.notify(); // Release the losing registration too; never modify either word.
+        if (remaining === 0) resolve();
+      };
+      if (data.async) afterNativePromise(data.value, completed, reject);
+      else completed();
+      if (lock.async) afterNativePromise(lock.value, completed, reject);
+      else completed();
+      // Cover input/signal cancellation between predicate check and native registration.
+      if (this.changed() || this.failure(signal)) this.notify();
+    });
   }
 }
 

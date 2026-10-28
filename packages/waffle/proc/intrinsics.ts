@@ -28,6 +28,7 @@ export {
 export {
   atomicsOr,
   atomicsWaitAsync,
+  atomicsWaitAsyncBigInt,
   Uint8ArrayConstructor,
   Uint32ArrayConstructor,
   objectHasOwn,
@@ -57,6 +58,7 @@ export {
   listenAbort,
   unlistenAbort,
   observeRejectedPromise,
+  afterNativePromise,
   sharedArrayBufferMaxByteLength,
   sharedArrayBufferGrow,
   dataViewGetUint32,

@@ -1,3 +1,6 @@
+import { Worker } from "node:worker_threads";
+import type { TerminalControlWorkerData } from "./fixtures/terminal-control-worker.js";
+import { controlLoad } from "../proc/control.js";
 import { afterEach, expect, test } from "bun:test";
 import {
   BrowserProcessBroker,
@@ -24,7 +27,7 @@ import { readOutcome } from "../proc/outcome.js";
 import { ExecutableRegistry } from "../proc/registry.js";
 import { requestSignal } from "../proc/signals.js";
 import { ProcessTable } from "../proc/table.js";
-import type { ProcessContext } from "../proc/types.js";
+import type { ProcessContext, ProcessHandle } from "../proc/types.js";
 import {
   createWorkerProcessTransport,
   WorkerProcessClient,
@@ -45,7 +48,7 @@ function must<T>(result: TerminalResult<T>): T {
 }
 
 /** A real broker, supervisor and directory; only the adapter's Worker is a launch callback. */
-function fixture(options: { launch?(context: ProcessContext): void } = {}) {
+function fixture(options: { launch?(context: ProcessContext): ProcessHandle | void } = {}) {
   const identities = new ProcessIdentityAllocator(),
     table = new ProcessTable(identities),
     registry = new ExecutableRegistry();
@@ -67,7 +70,8 @@ function fixture(options: { launch?(context: ProcessContext): void } = {}) {
     },
     launch(context) {
       launched.push(context.pid);
-      options.launch?.(context);
+      const handle = options.launch?.(context);
+      if (handle) return handle;
       return {
         terminate() {
           terminated.push(context.pid);
@@ -94,6 +98,7 @@ function fixture(options: { launch?(context: ProcessContext): void } = {}) {
     parent: WorkerProcessTransport,
     data: Record<string, unknown> = {},
     job = 0,
+    argv: string[] = [],
   ) {
     const descriptors = new DescriptorTable();
     let message: WorkerProcessMessage | undefined;
@@ -111,7 +116,7 @@ function fixture(options: { launch?(context: ProcessContext): void } = {}) {
     });
     const pid = client.spawn(parent.pid, {
       executable: "fixture",
-      argv: [],
+      argv,
       env: {},
       cwd: "/",
       job,
@@ -132,6 +137,7 @@ async function shellTerminal(
   f: ReturnType<typeof fixture>,
   extra: Omit<RuntimeRootOptions, "prepareDescendant"> & {
     run?: RootDescendantPreparation["run"];
+    settled?: RootDescendantPreparation["settled"];
   } = {},
 ) {
   const input = createTerminalInput();
@@ -142,7 +148,7 @@ async function shellTerminal(
     seen: RuntimeDescendant[] = [];
   let display!: ReturnType<typeof createTerminalSession>;
   let authority!: TerminalAuthority;
-  const { run, ...options } = extra;
+  const { run, settled, ...options } = extra;
   const root = await f.adopt((root) => {
     display = createTerminalSession({ controller: root, geometry: { columns: 80, rows: 24 } });
     cleanups.push(() => display.close("disposed"));
@@ -158,6 +164,7 @@ async function shellTerminal(
       ...options,
       prepareDescendant: {
         terminal: authority,
+        settled,
         run(descendant, turn) {
           seen.push(descendant);
           expect(f.launched).not.toContain(descendant.pid);
@@ -174,12 +181,21 @@ async function shellTerminal(
       },
     };
   });
+  const cleanupTasks: Promise<unknown>[] = [];
   (await f.broker.ready()).onChildExit(({ pid }) => {
     const member = members.get(pid);
     if (!member) return;
-    members.delete(pid);
-    removed.push(pid);
-    authority.removeMember(member);
+    cleanupTasks.push(
+      authority.control((turn) => {
+        const result = authority.removeMember(member);
+        if (result.kind === "error") return result;
+        turn.publish(() => {
+          members.delete(pid);
+          removed.push(pid);
+        });
+        return { kind: "ok", value: undefined };
+      }),
+    );
   });
   const editor = must(authority.createGroup({ initialMode: "raw" }));
   must(authority.admitExisting({ group: editor, pid: root.pid }));
@@ -192,6 +208,9 @@ async function shellTerminal(
     root,
     display,
     input,
+    cleanup: async () => {
+      await Promise.all(cleanupTasks);
+    },
     policy,
     authority,
     groups,
@@ -263,6 +282,7 @@ test("a same-job grandchild admitted by the root reads its inherited terminal", 
   grandchild.supervisor.exit(grandchild.pid, 0);
   await grandchild.supervisor.waitForExit(child.pid, grandchild.pid);
   // An entered descendant's exit cleans its membership exactly once.
+  await t.cleanup();
   expect(t.removed).toEqual([grandchild.pid]);
   expect(f.errors).toEqual([]);
 });
@@ -290,6 +310,7 @@ test("root cleanup composes with a foreign adapter's own process controller", as
     await member.supervisor.waitForExit(t.root.pid, pid);
   }
   expect(exited).toEqual([outside.pid, member.pid]);
+  await t.cleanup();
   expect(t.removed).toEqual([member.pid]);
   expect(f.errors).toEqual([]);
 });
@@ -311,6 +332,7 @@ for (const failure of ["throw", "promise", "value"] as const)
       "start-failed",
     );
     expect(f.launched).toEqual([]);
+    await t.cleanup();
     expect(t.removed).toEqual([]);
     if (failure === "promise")
       expect(f.errors.some((error) => String(error).includes("synchronous TerminalResult"))).toBe(
@@ -339,10 +361,11 @@ test("a kill and root exit inside the hook prevent launch; retirement follows cl
     order.push(`child-exit:${event.result.kind}`);
     exited.resolve();
   });
-  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  await f.spawn(t.root, {}, t.admitRootJob());
   await exited.promise;
   await f.broker.dispose();
   expect(f.launched).toEqual([]);
+  await t.cleanup();
   expect(t.removed).toEqual([]);
   expect(order[0]).toBe("child-exit:signaled");
   expect(order).toContain("retired");
@@ -378,6 +401,7 @@ test("a kill from another worker after the hook is fenced at guest entry", async
   expect(entered).toEqual([false]);
   expect(readOutcome(workerProcessState(child.transport).signals.outcome)?.kind).toBe("signaled");
   expect(f.terminated).toEqual([child.pid]);
+  await t.cleanup();
   expect(t.removed).toEqual([child.pid]);
 });
 
@@ -431,3 +455,226 @@ test("only the descendant's own preparation runs, as captured at adoption", asyn
   expect(calls).toEqual(["first", "second"]);
   expect(f.launched.length).toBe(3);
 });
+
+test("precommit resource rollback notifies before exit and never publishes membership", async () => {
+  const f = fixture();
+  const phases: string[] = [];
+  const t = await shellTerminal(f, {
+    run() {
+      return { kind: "error", code: "CAPACITY" };
+    },
+    settled(_descendant, completion) {
+      phases.push(`${completion.kind}:${completion.receipt.phase}`);
+    },
+  });
+  const supervisor = await f.broker.ready();
+  supervisor.onChildExit(() => phases.push("exit"));
+  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  await supervisor.waitForExit(t.root.pid, child.pid);
+  expect(t.members.has(child.pid)).toBe(false);
+  expect(f.launched).not.toContain(child.pid);
+  expect(readOutcome(workerProcessState(child.transport).signals.outcome)).toMatchObject({
+    kind: "start-failed",
+    error: "EAGAIN",
+  });
+  expect(phases).toEqual(["rolled-back:rolled-back", "exit"]);
+});
+
+test("postcommit cancellation reports committed/no-entry before exactly one exit cleanup", async () => {
+  const f = fixture();
+  const order: string[] = [];
+  let committed = false;
+  let ownedMember: TerminalMember | undefined;
+  const t = await shellTerminal(f, {
+    run(descendant, turn) {
+      turn.publish((receipt) => {
+        committed = receipt.phase === "committed";
+        requestSignal(workerProcessState(f.broker.transportFor(descendant.pid)!).signals, 9);
+      });
+      return { kind: "ok", value: undefined };
+    },
+    settled(_descendant, completion) {
+      ownedMember = t.members.get(_descendant.pid);
+      order.push(
+        completion.kind === "committed"
+          ? `${completion.kind}:${completion.entry}`
+          : completion.kind,
+      );
+    },
+  });
+  const supervisor = await f.broker.ready();
+  let exits = 0;
+  supervisor.onChildExit(() => {
+    exits++;
+    order.push("exit");
+  });
+  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  await supervisor.waitForExit(t.root.pid, child.pid);
+  expect(committed).toBe(true);
+  expect(f.launched).toEqual([]);
+  expect(order).toEqual(["committed:not-entered", "exit"]);
+  expect(exits).toBe(1);
+  await t.cleanup();
+  expect(t.removed).toEqual([child.pid]);
+  const reconciled = await t.authority.control(() => ({ kind: "ok", value: undefined }));
+  expect(reconciled.receipt.member(ownedMember!)).toBe("removed");
+});
+
+test("failed adapter invocation transfers committed membership to exit cleanup once", async () => {
+  const f = fixture({
+    launch() {
+      throw Error("adapter start failed");
+    },
+  });
+  const order: string[] = [];
+  const t = await shellTerminal(f, {
+    settled(_descendant, completion) {
+      order.push(
+        completion.kind === "committed"
+          ? `${completion.kind}:${completion.entry}`
+          : completion.kind,
+      );
+    },
+  });
+  const supervisor = await f.broker.ready();
+  let exits = 0;
+  supervisor.onChildExit(() => {
+    exits++;
+    order.push("exit");
+  });
+  const child = await f.spawn(t.root, {}, t.admitRootJob());
+  await supervisor.waitForExit(t.root.pid, child.pid);
+  expect(order).toEqual(["committed:adapter-invoked", "exit"]);
+  expect(exits).toBe(1);
+  await t.cleanup();
+  expect(t.removed).toEqual([child.pid]);
+});
+
+async function until(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw Error("controlled preparation deadline");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+}
+for (const count of [1, 2])
+  test(`real parent Worker waits outside the Session while ${count} child preparation waits for a live holder`, async () => {
+    const flags = new Int32Array(new SharedArrayBuffer(16));
+    const notices: Array<Record<string, unknown>> = [];
+    const workers: Worker[] = [];
+    const stops: Array<() => Promise<void>> = [];
+    let parent: Worker | undefined;
+    let t!: Awaited<ReturnType<typeof shellTerminal>>;
+    const run = (data: TerminalControlWorkerData) => {
+      const worker = new Worker(new URL("./fixtures/terminal-control-worker.ts", import.meta.url), {
+        workerData: data,
+      });
+      workers.push(worker);
+      worker.on("message", (message) => {
+        if (message.type === "runtime-proc")
+          void f.broker
+            .runtimeMessage(message, data.process.pid)
+            .catch((error) => notices.push({ kind: "failure", error: String(error) }));
+        else notices.push(message);
+      });
+      worker.on("error", (error) => notices.push({ kind: "failure", error: String(error) }));
+      let stopping: Promise<number> | undefined;
+      const stop = async () => {
+        stopping ??= worker.terminate();
+        await stopping;
+      };
+      stops.push(stop);
+      return { worker, stop };
+    };
+    const f = fixture({
+      launch(context) {
+        const transport = f.broker.transportFor(context.pid)!;
+        return {
+          terminate: run({
+            role: context.request.argv[0] === "holder" ? "holder" : "child",
+            process: transport,
+            context: t.display.inherit(),
+            input: t.input.buffer,
+            flags: flags.buffer,
+          }).stop,
+        };
+      },
+    });
+    try {
+      t = await shellTerminal(f, {
+        stop: async () => {
+          await parent?.terminate();
+        },
+        run(descendant, turn) {
+          if (t.groups.has(descendant.job)) return { kind: "ok", value: undefined };
+          const group = must(t.authority.createGroup({ initialMode: "raw" }));
+          const member = must(t.authority.admitExisting({ group, pid: descendant.pid })).member;
+          must(t.authority.startBackground(group));
+          turn.publish((receipt) => {
+            expect(receipt.member(member)).toBe("bound");
+            t.groups.set(descendant.job, group);
+            t.members.set(descendant.pid, member);
+          });
+          return { kind: "ok", value: undefined };
+        },
+      });
+      t.groups.set(
+        workerProcessState(t.root).job,
+        must(t.authority.createGroup({ initialMode: "raw" })),
+      );
+      // Holder and root belong to one running selected group.
+      const group = t.groups.get(workerProcessState(t.root).job)!;
+      must(t.authority.admitExisting({ group, pid: t.root.pid }));
+      must(t.authority.transfer({ from: t.lease, to: group }));
+      must(pushTerminalInput(t.display, t.input, Uint8Array.of(65)));
+      const holder = await f.spawn(
+        t.root,
+        { terminalContext: t.display.inherit(), terminalInput: t.input.buffer },
+        workerProcessState(t.root).job,
+        ["holder"],
+      );
+      await until(() => Atomics.load(flags, 0) === 1);
+      const rootState = workerProcessState(t.root);
+      parent = run({
+        role: "parent",
+        process: t.root,
+        context: t.display.inherit(),
+        input: t.input.buffer,
+        flags: flags.buffer,
+        count,
+        childFilesystem: createFilesystemIdentity(),
+      }).worker;
+      await until(
+        () => Atomics.load(flags, 2) === 1 && notices.some((notice) => notice.kind === "waiting"),
+      );
+      const waiting = notices.find((notice) => notice.kind === "waiting");
+      if (!waiting || !Array.isArray(waiting.children)) throw Error("missing parent children");
+      const children = waiting.children;
+      expect(controlLoad(rootState.terminalAdmission)).toBe(0);
+      expect(controlLoad(workerProcessState(holder.transport).terminalAdmission)).toBe(1);
+      expect(children.every((pid) => !f.launched.includes(pid))).toBe(true);
+      expect(t.seen.filter((descendant) => children.includes(descendant.pid))).toHaveLength(0);
+      Atomics.store(flags, 1, 1);
+      Atomics.notify(flags, 1);
+      await until(
+        () =>
+          Atomics.load(flags, 3) === 1 && notices.some((notice) => notice.kind === "parent-done"),
+      );
+      const done = notices.find((notice) => notice.kind === "parent-done");
+      expect(done).toMatchObject({ code: 0, status: 7 });
+      expect(notices.filter((notice) => notice.kind === "failure")).toEqual([]);
+      for (const pid of children) {
+        expect(t.seen.filter((descendant) => descendant.pid === pid)).toHaveLength(1);
+        expect(
+          notices.find((notice) => notice.kind === "child-entry" && notice.pid === pid),
+        ).toMatchObject({ started: true });
+      }
+      await t.cleanup();
+    } finally {
+      Atomics.store(flags, 1, 1);
+      Atomics.notify(flags, 1);
+      if (t) await f.broker.dispose();
+      for (const stop of stops) await stop();
+      for (const worker of workers) await worker.terminate();
+    }
+  }, 10000);
