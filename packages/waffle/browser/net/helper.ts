@@ -26,7 +26,14 @@ import {
   type TcpRequest,
 } from "./protocol.js";
 import { RingWriter } from "./ring.js";
-import { acceptedAddress, loopbackAddress, tcpAddress } from "./address.js";
+import {
+  acceptedAddress,
+  loopbackAddress,
+  tcpAddress,
+  lookupAddress,
+  type RuntimeNetworkLookupOptions,
+  type RuntimeNetworkLookupResult,
+} from "./address.js";
 import { NetNamespace, LoopbackSocket, tcpReply } from "./namespace.js";
 export { NetNamespace } from "./namespace.js";
 
@@ -67,6 +74,12 @@ export interface ConnectionSink {
 /** External network policy. Honor manual redirects and return already-decoded Fetch bodies. */
 export type NetFetch = (url: string, options: RequestInit) => Promise<Response>;
 
+/** The helper invokes the runtime's name policy on its responsive I/O thread. */
+export type NetLookup = (
+  hostname: string,
+  options?: RuntimeNetworkLookupOptions,
+) => RuntimeNetworkLookupResult[] | PromiseLike<RuntimeNetworkLookupResult[]>;
+
 export interface NetHelperHooks {
   /** A guest server started listening on `port`. */
   listening?(port: number, host: string): void;
@@ -80,6 +93,7 @@ export type PreviewSink = ResponseSink;
 export class NetHelper {
   private ring: RingWriter;
   private fetches = new Map<number, FetchJob>();
+  private lookups = new Map<number, object>();
   private listeners = new Map<number, number>(); // listener handle -> port
   private sharedListeners = new Set<number>();
   private connections = new Map<number, ConnectionSink>();
@@ -95,6 +109,7 @@ export class NetHelper {
     private hooks: NetHelperHooks = {},
     private namespace = new NetNamespace(),
     private assertOwnerLive: () => void = () => {},
+    private lookupRequest: NetLookup = lookupAddress,
   ) {
     this.ring = new RingWriter(sab);
   }
@@ -104,6 +119,9 @@ export class NetHelper {
     if ("reply" in req) return this.tcp(req);
     if (!this.live()) return;
     switch (req.type) {
+      case "lookup":
+        void this.lookup(req);
+        return;
       case "fetch":
         void this.fetch(req);
         return;
@@ -145,6 +163,7 @@ export class NetHelper {
     this.sockets.clear();
     this.pending.clear();
     this.fetches.clear();
+    this.lookups.clear();
     this.connections.clear();
     this.listeners.clear();
     this.sharedListeners.clear();
@@ -470,6 +489,35 @@ export class NetHelper {
 
   // ---------- fetch ----------
 
+  private async lookup(req: NetRequest & { type: "lookup" }): Promise<void> {
+    const job = {};
+    this.lookups.set(req.id, job);
+    try {
+      const lookupRequest = this.lookupRequest;
+      const results = await lookupRequest(req.hostname, req.options);
+      if (!this.lookupLive(req.id, job)) return;
+      const payload = json(results);
+      if (payload.length > MAX_RECORD) throw new RangeError("Lookup result exceeds ring record size");
+      await this.ring.write(req.id, Kind.LookupHead, payload);
+    } catch (error) {
+      if (this.lookupLive(req.id, job))
+        await this.ring.write(req.id, Kind.Error, json(lookupError(error)));
+    } finally {
+      if (this.lookups.get(req.id) === job) this.lookups.delete(req.id);
+    }
+  }
+
+  private lookupLive(id: number, job: object): boolean {
+    if (this.disposed || this.lookups.get(id) !== job) return false;
+    try {
+      this.assertOwnerLive();
+      return true;
+    } catch {
+      this.lookups.delete(id);
+      return false;
+    }
+  }
+
   private async fetch(req: FetchRequest): Promise<void> {
     const job: FetchJob = { controller: new AbortController(), inFlight: 0, wake: null };
     this.fetches.set(req.id, job);
@@ -677,6 +725,7 @@ export class NetHelper {
   // ---------- listeners and connections ----------
 
   private close(id: number): void {
+    if (this.lookups.delete(id)) return;
     const socket = this.sockets.get(id);
     if (socket) {
       this.sockets.delete(id);
@@ -725,6 +774,11 @@ function snapshotRequest(req: NetRequest): NetRequest {
   const type = req.type,
     id = req.id;
   switch (type) {
+    case "lookup": {
+      const hostname = req.hostname;
+      const options = req.options;
+      return { type, id, hostname, options: { family: options.family, hints: options.hints } };
+    }
     case "tcp-listen":
       return { type, id, reply: req.reply, port: req.port, host: req.host };
     case "tcp-connect":
@@ -754,6 +808,17 @@ function snapshotRequest(req: NetRequest): NetRequest {
     case "shutdown":
       return { type, id };
   }
+}
+
+function lookupError(error: unknown): NetError {
+  if (!error || typeof error !== "object") return { name: "Error", message: String(error) };
+  return {
+    name: "name" in error && typeof error.name === "string" ? error.name : "Error",
+    message: "message" in error && typeof error.message === "string" ? error.message : String(error),
+    code: "code" in error && typeof error.code === "string" ? error.code : undefined,
+    syscall: "syscall" in error && typeof error.syscall === "string" ? error.syscall : undefined,
+    hostname: "hostname" in error && typeof error.hostname === "string" ? error.hostname : undefined,
+  };
 }
 
 function redirectRequest(req: FetchRequest, head: FetchHead, location: string): FetchRequest {
