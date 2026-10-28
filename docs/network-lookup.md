@@ -34,3 +34,25 @@ Lookup failures throw the exported `RuntimeNetworkLookupError`. The error has `n
 Adapters preserve `code`, `syscall` and `hostname` when sending a failure through their own promise or callback bridge. No empty successful array or `ENOTFOUND` substitutes for unsupported resolution. No arbitrary DNS or outbound TCP capability is implied.
 
 The lookup implementation is original Waffle code. Its localhost and numeric loopback policy follows `tcpAddress` at `3d5304bf44390bfc4ab520aae60d7c0f6c9267a9`; it copies no Bun or OS resolver implementation.
+
+## Lookup from a blocked guest worker
+
+`NetHost` exposes the same policy through the existing network request channel and shared ring:
+
+```ts
+const handle = host.lookupStart("localhost", { family: 4, hints: 0 });
+let head = host.lookupHead(handle);
+while (head === AGAIN) {
+  host.poll(-1);
+  head = host.lookupHead(handle);
+}
+// A ready head is UTF-8 JSON RuntimeNetworkLookupResult[].
+// ERROR uses host.error(handle); BADF means an unknown, closed or wrong-kind handle.
+host.close(handle);
+```
+
+`lookupStart(hostname, options?)` allocates from the host's existing fetch/listener/connection handle sequence. It returns `BADF` after host disposal. `lookupHead(handle)` returns repeatable result bytes until close, allowing an adapter to query the byte length and copy on a later call. Lookup handles reject stream, listener and address operations. Lookup errors retain `name`, `message`, `code`, `syscall` and `hostname` in `error(handle)` JSON.
+
+Route every `NetRequest`, including `{ type: "lookup", id, hostname, options }`, to the host's existing helper. A runtime-created helper delegates to `RuntimeNetwork.lookup`; the policy above is unchanged. Completion uses ring data fragments followed by `Kind.LookupHead` or `Kind.Error`. A blocked guest needs no response MessageEvent or separate lookup channel. Adapters own their guest-memory pointer/length conversion.
+
+Closing a pending lookup or disposing its host/helper revokes its result publication. Runtime-owner revocation also prevents publication. The helper discards late policy success and failure; already queued ring records cannot revive a closed handle. Cancellation does not promise to interrupt an embedding's asynchronous policy. Helpers and rings retain their existing per-worker and per-runtime ownership. This transport adds no OS DNS or external-network permission.
