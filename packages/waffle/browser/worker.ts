@@ -662,6 +662,8 @@ export async function bootstrap<R extends RuntimeWorkerRequest>(
     outcome = sharedOutcome || isolated ? outcomeWord(sharedOutcome) : null;
     if (req.memoryObservation) memorySampler = createWorkerMemorySampler(req.memoryObservation);
     const processModules = loadProcessModules(req.runtimeProcess);
+    await fs.ready({ signal: cancellation.signal });
+    checkActive();
     if (req.filesystem.residentPublication) await fs.attachResidentPublication();
     if (req.startupStderr) {
       const { attachPipeEndpoint } = await import("../proc/pipes.js");
