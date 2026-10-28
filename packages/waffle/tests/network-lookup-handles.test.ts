@@ -372,6 +372,57 @@ test("lookup head ignores records for other handle kinds and drops late records 
   }
 });
 
+async function blockedLookup(
+  helper: Pick<NetHelper, "handle">,
+  ring: SharedArrayBuffer,
+  hostname: string,
+  options: RuntimeNetworkLookupOptions = {},
+  followup?: string,
+) {
+  const worker = new Worker(new URL("./network-lookup-worker.ts", import.meta.url), {
+    type: "module",
+  });
+  const result = Promise.withResolvers<Extract<LookupWorkerMessage, { kind: "result" }>>();
+  const timeout = setTimeout(
+    () => result.reject(Error("Lookup worker did not reach a terminal head")),
+    2000,
+  );
+  let stopped = false;
+  let request: NetRequest | undefined;
+  worker.onmessage = ({ data }: MessageEvent<LookupWorkerMessage>) => {
+    if (stopped) return;
+    if (data.kind === "failure") {
+      result.reject(Error(data.message));
+      return;
+    }
+    if (data.kind === "result") {
+      result.resolve(data);
+      return;
+    }
+    if (data.kind === "net") {
+      if (data.request.type === "lookup") request = data.request;
+      else helper.handle(data.request);
+      return;
+    }
+    worker.postMessage({ kind: "event" });
+    if (!request) {
+      result.reject(Error("Worker did not send lookup before blocking"));
+      return;
+    }
+    helper.handle(request);
+    request = undefined;
+  };
+  worker.onerror = (event) => result.reject(Error(event.message));
+  try {
+    worker.postMessage({ kind: "run", ring, hostname, options, followup });
+    return await result.promise;
+  } finally {
+    clearTimeout(timeout);
+    stopped = true;
+    worker.terminate();
+  }
+}
+
 for (const [hostname, options] of [
   ["localhost", { family: 4 }],
   ["::1", { family: 6 }],
@@ -379,43 +430,14 @@ for (const [hostname, options] of [
 ] satisfies [string, RuntimeNetworkLookupOptions][]) {
   test(`actual Worker resolves ${hostname} through the ring while blocked in poll`, async () => {
     const owner = runtime();
-    const worker = new Worker(new URL("./network-lookup-worker.ts", import.meta.url), {
-      type: "module",
-    });
-    const result = Promise.withResolvers<Extract<LookupWorkerMessage, { kind: "result" }>>();
-    let stopped = false;
     try {
       const network = await owner.network();
       const ring = createRing();
       const helper = network.createHelper({ ring, fetch: noFetch });
-      let request: NetRequest | undefined;
-      worker.onmessage = ({ data }: MessageEvent<LookupWorkerMessage>) => {
-        if (stopped) return;
-        if (data.kind === "failure") {
-          result.reject(Error(data.message));
-          return;
-        }
-        if (data.kind === "result") {
-          result.resolve(data);
-          return;
-        }
-        if (data.kind === "net") {
-          if (data.request.type === "lookup") request = data.request;
-          else helper.handle(data.request);
-          return;
-        }
-        worker.postMessage({ kind: "event" });
-        if (!request) {
-          result.reject(Error("Worker did not send lookup before blocking"));
-          return;
-        }
-        helper.handle(request);
-      };
-      worker.onerror = (event) => result.reject(Error(event.message));
-      worker.postMessage({ kind: "run", ring, hostname, options });
-      const completed = await result.promise;
+      const completed = await blockedLookup(helper, ring, hostname, options);
       expect(completed.messageEvents).toBe(0);
       expect(completed.polls).toBeGreaterThan(0);
+      expect(completed.closed).toBe(BADF);
       if (hostname === "example.com") {
         expect(completed.head).toBe(ERROR);
         expect(JSON.parse(String(completed.error))).toMatchObject({
@@ -426,9 +448,80 @@ for (const [hostname, options] of [
         });
       } else expect(JSON.parse(String(completed.head))).toEqual(network.lookup(hostname, options));
     } finally {
-      stopped = true;
-      worker.terminate();
       await owner.dispose();
+    }
+  });
+}
+
+const malformedModes = [
+  "undefined head",
+  "null-prototype rejection",
+  "throwing name getter",
+  "throwing message getter",
+  "throwing code getter",
+  "throwing syscall getter",
+  "throwing hostname getter",
+  "throwing string conversion",
+  "throwing property inspection",
+] as const;
+type MalformedMode = (typeof malformedModes)[number];
+function malformedProvider(mode: MalformedMode): NetLookup {
+  return (hostname) => {
+    if (hostname === "localhost") return records;
+    if (mode === "undefined head") return Object.assign([], { toJSON: () => undefined });
+    if (mode === "null-prototype rejection") throw Object.create(null);
+    if (mode === "throwing string conversion") {
+      throw {
+        [Symbol.toPrimitive]() {
+          throw Error("unprintable");
+        },
+      };
+    }
+    if (mode === "throwing property inspection") {
+      throw new Proxy(
+        {},
+        {
+          has() {
+            throw Error("uninspectable");
+          },
+        },
+      );
+    }
+    const field = mode.split(" ")[1]!;
+    throw Object.defineProperty(new Error("malformed lookup failure"), field, {
+      get() {
+        throw Error("unreadable");
+      },
+    });
+  };
+}
+
+for (const mode of malformedModes) {
+  test(`blocked-poll malformed provider terminates with ERROR: ${mode}`, async () => {
+    const unhandled: unknown[] = [];
+    const rejected = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", rejected);
+    const f = fixture(malformedProvider(mode));
+    try {
+      const completed = await blockedLookup(f.helper, f.ring, "malformed.example", {}, "localhost");
+      expect(completed.head).toBe(ERROR);
+      expect(completed.polls).toBeGreaterThan(0);
+      expect(completed.messageEvents).toBe(0);
+      expect(completed.closed).toBe(BADF);
+      expect(JSON.parse(String(completed.error))).toEqual(
+        mode === "undefined head"
+          ? { name: "TypeError", message: "Lookup result is not JSON serializable" }
+          : { name: "Error", message: "Lookup failed" },
+      );
+      expect(completed.followup?.head).toBe(JSON.stringify(records));
+      expect(completed.followup?.closed).toBe(BADF);
+      await settle();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", rejected);
+      f.close();
     }
   });
 }

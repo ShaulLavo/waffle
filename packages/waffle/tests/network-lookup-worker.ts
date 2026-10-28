@@ -14,11 +14,50 @@ export type LookupWorkerMessage =
       error: string | number;
       messageEvents: number;
       polls: number;
+      closed: number;
+      followup?: LookupResult;
     };
+interface LookupResult {
+  head: string | number;
+  error: string | number;
+  polls: number;
+  closed: number;
+}
 type Incoming =
-  | { kind: "run"; ring: SharedArrayBuffer; hostname: string; options: RuntimeNetworkLookupOptions }
+  | {
+      kind: "run";
+      ring: SharedArrayBuffer;
+      hostname: string;
+      options: RuntimeNetworkLookupOptions;
+      followup?: string;
+    }
   | { kind: "event" };
 let messageEvents = 0;
+function lookup(
+  host: NetHost,
+  hostname: string,
+  options: RuntimeNetworkLookupOptions,
+): LookupResult {
+  const handle = host.lookupStart(hostname, options);
+  let head = host.lookupHead(handle);
+  let polls = 0;
+  self.postMessage({ kind: "waiting" } satisfies LookupWorkerMessage);
+  while (head === AGAIN) {
+    host.poll(-1);
+    polls++;
+    head = host.lookupHead(handle);
+  }
+  const result = {
+    head: typeof head === "number" ? head : new TextDecoder().decode(head),
+    error: host.error(handle),
+    polls,
+  };
+  host.close(handle);
+  const closed = host.lookupHead(handle);
+  if (typeof closed !== "number") throw Error("Closed lookup retained head bytes");
+  return { ...result, closed };
+}
+
 self.onmessage = ({ data }: MessageEvent<Incoming>) => {
   if (data.kind === "event") {
     messageEvents++;
@@ -28,21 +67,13 @@ self.onmessage = ({ data }: MessageEvent<Incoming>) => {
     self.postMessage({ kind: "net", request } satisfies LookupWorkerMessage);
   });
   try {
-    const handle = host.lookupStart(data.hostname, data.options);
-    let head = host.lookupHead(handle);
-    let polls = 0;
-    self.postMessage({ kind: "waiting" } satisfies LookupWorkerMessage);
-    while (head === AGAIN) {
-      host.poll(-1);
-      polls++;
-      head = host.lookupHead(handle);
-    }
+    const result = lookup(host, data.hostname, data.options);
+    const followup = data.followup ? lookup(host, data.followup, {}) : undefined;
     self.postMessage({
       kind: "result",
-      head: typeof head === "number" ? head : new TextDecoder().decode(head),
-      error: host.error(handle),
+      ...result,
       messageEvents,
-      polls,
+      followup,
     } satisfies LookupWorkerMessage);
   } catch (error) {
     self.postMessage({ kind: "failure", message: String(error) } satisfies LookupWorkerMessage);

@@ -498,7 +498,9 @@ export class NetHelper {
       const lookupRequest = this.lookupRequest;
       const results = await lookupRequest(req.hostname, req.options);
       if (!this.lookupLive(req.id, job)) return;
-      await this.publishLookup(req.id, job, Kind.LookupHead, json(results));
+      const payload = json(results);
+      if (payload.length === 0) throw new TypeError("Lookup result is not JSON serializable");
+      await this.publishLookup(req.id, job, Kind.LookupHead, payload);
     } catch (error) {
       if (this.lookupLive(req.id, job))
         await this.publishLookup(req.id, job, Kind.Error, json(lookupError(error)));
@@ -828,6 +830,14 @@ function snapshotRequest(req: NetRequest): NetRequest {
 }
 
 function lookupError(error: unknown): NetError {
+  try {
+    return inspectLookupError(error);
+  } catch {
+    return { name: "Error", message: "Lookup failed" };
+  }
+}
+
+function inspectLookupError(error: unknown): NetError {
   if (!error || typeof error !== "object") return { name: "Error", message: String(error) };
   const name = "name" in error ? error.name : undefined;
   const message = "message" in error ? error.message : undefined;
