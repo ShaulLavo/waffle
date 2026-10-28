@@ -102,9 +102,9 @@ export interface LocalMutationPlan extends Omit<MutationPlan, "changes"> {
   readonly changes: readonly PublicationEffect[];
 }
 export class MemoryBackend implements FilesystemBackend {
-  identity(handle: FileHandle): FileIdentity {
+  identity(handle: FileHandle, revoked?: () => boolean): FileIdentity {
     const node = this.fs.nodeForHandle(handle);
-    return this.shared.identity(handle) ?? this.ensureIdentity(node);
+    return this.shared.identity(handle, revoked) ?? this.ensureIdentity(node);
   }
   ensureIdentity(node: Node): FileIdentity {
     return (node.identity ??= this.shared.identities.create());
@@ -187,9 +187,14 @@ export class MemoryBackend implements FilesystemBackend {
     this.shared.identities.copyFrom(previous.identities);
     this.sharedAttached = true;
   }
-  readMetadata(node: Node) {
+  /** revoked ends a wait for another owner's shared lock when the caller's request is cancelled. */
+  readMetadata(node: Node, revoked?: () => boolean) {
     const handle = this.fs.handleForNode(node);
-    return { ...this.fs.stat(handle), ...this.shared.stat(handle), ...this.identity(handle) };
+    return {
+      ...this.fs.stat(handle),
+      ...this.shared.stat(handle, revoked),
+      ...this.identity(handle, revoked),
+    };
   }
   selectReadBacking(
     node: Extract<Node, { kind: "file" }>,

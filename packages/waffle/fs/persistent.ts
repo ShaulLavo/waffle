@@ -303,6 +303,7 @@ export class PersistentBackend extends MemoryBackend {
     length: number,
     full = false,
     metadata?: ReaderMetadataBudget,
+    cancelled?: () => boolean,
   ): ReadBacking {
     this.assertAdmitting();
     const handle = this.fs.handleForNode(node);
@@ -314,7 +315,7 @@ export class PersistentBackend extends MemoryBackend {
       (this.shared.hasFile(handle) && this.shared.revision(handle) !== this.revisions.get(handle))
     )
       throw new FilesystemError(6, "cold revision is not retained");
-    const size = this.readMetadata(node).size;
+    const size = this.readMetadata(node, cancelled).size;
     const retention = this.storage.retainPayload(key, size, metadata);
     return { kind: "cold", key, size, storage: this.storage, retention };
   }
@@ -333,9 +334,10 @@ export class PersistentBackend extends MemoryBackend {
     if (node.kind !== "file") throw new FilesystemError(31);
     this.sync(handle);
     if (this.shared.isResident(handle)) return;
-    const count = Math.min(length, PAGE, Math.max(0, this.readMetadata(node).size - offset));
+    const size = this.readMetadata(node, cancelled).size;
+    const count = Math.min(length, PAGE, Math.max(0, size - offset));
     if (!count) return Promise.resolve(new Uint8Array());
-    const backing = this.selectReadBacking(node, offset, count);
+    const backing = this.selectReadBacking(node, offset, count, false, undefined, cancelled);
     if (backing.kind !== "cold") throw new FilesystemError(6);
     const drained = Promise.withResolvers<void>();
     this.ownWork(drained.promise);

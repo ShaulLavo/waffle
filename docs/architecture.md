@@ -512,6 +512,11 @@ be called after independently proven physical death to recover abandoned locks a
 existing quiescence waiter; a termination request or worker error alone is not that proof.
 A filesystem-worker error revokes the root and wakes all descendants, so an absent completion
 message cannot strand a guest or page startup.
+The filesystem owner takes file and global locks with a waiting acquisition. Another owner's
+section is synchronous and short, and while it waits the owner sweeps connections and reclaims
+the locks of proven-dead owners. A blocking request never fails with EAGAIN because another owner
+holds a shared lock; one cancelled or revoked during the wait ends cancelled. Only nonblocking
+guest paths (`try*` I/O and readiness probes) report that contention as EAGAIN.
 When a blocked guest spawns a child, it creates only a `FilesystemIdentity`. The runnable page
 uses `connectFilesystemIdentity` to create the MessageChannel and attach the service endpoint,
 then transfers the client endpoint to the child. Creating a new channel in a blocked guest

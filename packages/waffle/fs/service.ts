@@ -1142,16 +1142,18 @@ export class FilesystemService {
     return { ...pin, bytes: Array.from(pin.bytes) };
   }
   sweep(): void {
-    if (this.sweeping || this.shutdownOwner) return;
+    if (this.shutdownOwner) return;
+    // A close can itself wait for a holder that dies later. Recover dead owners even
+    // on reentry, while keeping session close and release bookkeeping non-reentrant.
+    for (const session of this.sessions)
+      if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) === 2)
+        this.backend.revokeOwner?.(
+          session.connection.owner,
+          new Int32Array(session.connection.epoch),
+        );
+    if (this.sweeping) return;
     this.sweeping = true;
     try {
-      // Recover all proven-dead lock owners before any close can need the allocator lock.
-      for (const session of this.sessions)
-        if (Atomics.load(new Int32Array(session.connection.revocations[0]!), 0) === 2)
-          this.backend.revokeOwner?.(
-            session.connection.owner,
-            new Int32Array(session.connection.epoch),
-          );
       for (const session of this.sessions) if (isRevoked(session.connection)) this.close(session);
     } finally {
       this.sweeping = false;
