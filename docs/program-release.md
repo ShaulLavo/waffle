@@ -20,6 +20,13 @@ bun scripts/program-release.ts --tag programs-v0.0.92 --out /work/tmp/programs-v
 
 `--list --families base,git` prints the dependency-ordered package directories to prepare.
 
+Production URLs are derived, not supplied: program assets live under
+`https://github.com/<repository>/releases/download/<tag>/`, and the runtime URL must be that
+repository's `waffle-v<version>/waffle-<version>.tgz`, where `<version>` is the version inside the
+hash-checked runtime tarball. `--repository` defaults to `ShaulLavo/waffle`. If the tag already
+exists it must name exactly the packed, clean commit (`tagState: tagged`); otherwise the manifest
+says `untagged-candidate`, and `--require-tag` refuses it.
+
 The command:
 
 1. Orders the requested families and their workspace dependencies, dependencies first.
@@ -35,8 +42,15 @@ The command:
 5. Packs a twin pointing at a local HTTP server, proves it equals the release tarballs except for
    those URLs, and runs a real `bun install` of the whole closure with the npm registry
    unreachable (`--registry` admits declared third-party pins, which Git needs). It imports
-   every export and checks that every exported guest is the admitted artifact.
+   every export. Every exported program descriptor's guest must be the admitted artifact, and
+   every admitted `.wasm` must be reached, by a descriptor or by a literal
+   `new URL(path, import.meta.url)` in exported code. The manifest records which, per package
+   (`guests`). Python's interpreter is a static reference; its qualified-artifact route is not
+   exercised by these checks. Pure JavaScript packages (base, Git) admit no guests.
    `--acceptance FILE` also bundles and runs a consumer program against the installed closure.
+   Every fetch and child command has a deadline (`--timeout-ms`, default ten minutes). Each child
+   runs in its own process group. SIGINT or SIGTERM, or a deadline, retires the whole group before
+   staging is removed. A group that will not exit leaves its staging in place and is reported.
 6. Writes the tarballs, `program-release.json` (source commit and trees, URLs, sizes, SHA-256s,
    edges and artifact hashes) and `SHA256SUMS` into `OUT/assets`.
 

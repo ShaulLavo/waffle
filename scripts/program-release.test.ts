@@ -6,18 +6,23 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
+  assertGuestsReached,
   auditPackedImports,
   buildRelease,
   loadWorkspace,
+  releaseAssetBase,
   releaseOrder,
   rewriteManifest,
+  runtimeReleaseUrl,
   type ReleaseManifest,
+  type ReleaseOptions,
 } from "./program-release.ts";
 
 const repository = resolve(import.meta.dirname, "..");
@@ -111,12 +116,12 @@ describe("base closure", () => {
 
   beforeAll(async () => {
     root = preparedFixture("closure");
+    git(root, ["tag", tag]);
     out = resolve(scratch, "closure-out");
     manifest = await buildRelease({
       root,
       tag,
       version: "0.0.92",
-      assetBase,
       runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: await runtimeTarball() },
       families: ["base"],
       out,
@@ -148,6 +153,8 @@ describe("base closure", () => {
     }
     expect(manifest.sourceCommit).toBe(git(root, ["rev-parse", "HEAD"]));
     expect(manifest.dirty).toBe(false);
+    expect(manifest.tagState).toBe("tagged");
+    expect(manifest.assetBase).toBe(assetBase);
   });
 
   test("packed manifests name only immutable asset URLs, never workspace or 0.0.0", () => {
@@ -190,6 +197,9 @@ describe("base closure", () => {
     expect(wasm.length).toBeGreaterThan(20);
     const reached = new Set(check.wasm.map((item) => item.path));
     for (const path of wasm) expect(reached.has(path)).toBe(true);
+    const guests = new Map(manifest.packages.map((item) => [item.name, item.guests]));
+    expect(guests.get("waffle-coreutils")?.descriptor).toHaveLength(18);
+    expect(guests.get("waffle-base")).toEqual({ descriptor: [], staticReference: [] });
   });
 
   test("never mutates the source checkout", () => {
@@ -241,7 +251,6 @@ describe("refusals", () => {
       root,
       tag,
       version: "0.0.92",
-      assetBase,
       runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: await runtimeTarball() },
       families: ["base"],
       out: resolve(scratch, "missing-guest-out"),
@@ -256,7 +265,6 @@ describe("refusals", () => {
       root,
       tag,
       version: "0.0.92",
-      assetBase,
       runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: await runtimeTarball() },
       families: ["base"],
       out: resolve(scratch, "dirty-out"),
@@ -296,4 +304,182 @@ describe("refusals", () => {
     }
     expect(() => releaseOrder(loadWorkspace(cycle), ["p"])).toThrow(/cycle/);
   });
+});
+
+async function fixtureOptions(root: string, name: string): Promise<ReleaseOptions> {
+  return {
+    root,
+    tag,
+    version: "0.0.92",
+    runtime: { url: runtimeUrl, sha256: runtimeSha256, tarball: await runtimeTarball() },
+    families: ["base"],
+    out: resolve(scratch, `${name}-out`),
+  };
+}
+
+function commitAll(root: string, message: string) {
+  git(root, ["add", "-A"]);
+  git(root, [
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@invalid",
+    "commit",
+    "-qm",
+    message,
+  ]);
+}
+
+/** A disposable acceptance program that records its pid and never finishes. */
+function hungAcceptance(name: string) {
+  const pidFile = resolve(scratch, `${name}.pid`);
+  const script = resolve(scratch, `${name}-acceptance.ts`);
+  writeFileSync(
+    script,
+    `await Bun.write(${JSON.stringify(pidFile)}, String(process.pid));\nawait Bun.sleep(600_000);\n`,
+  );
+  return { pidFile, script };
+}
+
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function leftoverWork(out: string) {
+  return existsSync(out) ? readdirSync(out).filter((name) => name.startsWith(".work-")) : [];
+}
+
+async function waitForFile(path: string, ms: number) {
+  const deadline = Date.now() + ms;
+  while (!existsSync(path) || !readFileSync(path, "utf8")) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
+    await Bun.sleep(50);
+  }
+  return Number(readFileSync(path, "utf8"));
+}
+
+describe("review r621 refusals", () => {
+  test("a family whose exports reach none of its admitted guests", async () => {
+    const root = preparedFixture("zero-guests");
+    writeFileSync(
+      resolve(root, "packages/coreutils/src/index.ts"),
+      'export const coreutils = { name: "coreutils", programs: [] };\nexport const coreutilsPrograms = coreutils.programs;\n',
+    );
+    commitAll(root, "export no guests");
+    const release = buildRelease(await fixtureOptions(root, "zero-guests"));
+    await expect(release).rejects.toThrow(
+      /waffle-coreutils packs guests no export reaches: dist\/env\.wasm/,
+    );
+  }, 60_000);
+
+  test("guest reach: descriptors, static references, pure JS and wrong bytes", () => {
+    const expected = new Map([
+      ["dist/a.wasm", "aa"],
+      ["assets/b.wasm", "bb"],
+    ]);
+    const descriptor = [{ file: "dist/a.wasm", sha256: "aa" }];
+    expect(assertGuestsReached("p", expected, descriptor, ["assets/b.wasm"])).toEqual({
+      descriptor: ["dist/a.wasm"],
+      staticReference: ["assets/b.wasm"],
+    });
+    expect(assertGuestsReached("js", new Map(), [], [])).toEqual({
+      descriptor: [],
+      staticReference: [],
+    });
+    expect(() => assertGuestsReached("p", expected, [], [])).toThrow(/no export reaches/);
+    expect(() =>
+      assertGuestsReached(
+        "p",
+        expected,
+        [{ file: "dist/a.wasm", sha256: "xx" }],
+        ["assets/b.wasm"],
+      ),
+    ).toThrow(/is not admitted/);
+  });
+
+  test("asset and runtime URLs are bound to their release tags and the runtime version", async () => {
+    expect(releaseAssetBase("ShaulLavo/waffle", tag)).toBe(assetBase);
+    expect(runtimeReleaseUrl("ShaulLavo/waffle", "0.0.91")).toBe(runtimeUrl);
+    expect(() => releaseAssetBase("https://example.invalid/latest", tag)).toThrow(/owner\/name/);
+    expect(() => runtimeReleaseUrl("ShaulLavo/waffle", "latest")).toThrow(/not exact/);
+    const root = preparedFixture("urls");
+    const options = await fixtureOptions(root, "urls");
+    const withRuntime = (url: string) => ({ ...options, runtime: { ...options.runtime, url } });
+    await expect(buildRelease(withRuntime("https://example.invalid/latest.tgz"))).rejects.toThrow(
+      /not a waffle-v<version> release asset/,
+    );
+    const other = "https://example.invalid/releases/download/waffle-v0.0.91/waffle-0.0.91.tgz";
+    await expect(buildRelease(withRuntime(other))).rejects.toThrow(/Runtime URL is not ours/);
+    const older = runtimeReleaseUrl("ShaulLavo/waffle", "0.0.90");
+    await expect(buildRelease(withRuntime(older))).rejects.toThrow(
+      /Runtime URL names 0\.0\.90, its package is 0\.0\.91/,
+    );
+    await expect(
+      buildRelease({ ...options, repository: "example.invalid/latest/x" }),
+    ).rejects.toThrow(/owner\/name/);
+    expect(leftoverWork(options.out)).toEqual([]);
+  }, 60_000);
+
+  test("an existing tag must name the packed commit; untagged is an explicit candidate", async () => {
+    const root = preparedFixture("tags");
+    const options = await fixtureOptions(root, "tags");
+    await expect(buildRelease({ ...options, requireTag: true })).rejects.toThrow(/does not exist/);
+    git(root, ["tag", tag]);
+    writeFileSync(resolve(root, "packages/sed/README.md"), "different release source\n");
+    commitAll(root, "move source past tag");
+    await expect(buildRelease(options)).rejects.toThrow(
+      /Tag programs-v0\.0\.92 names [0-9a-f]+, not packed/,
+    );
+    git(root, ["tag", "-d", tag]);
+    const candidate = await buildRelease(options);
+    expect(candidate.tagState).toBe("untagged-candidate");
+  }, 60_000);
+
+  test("a hung child times out, its process group is retired and staging removed", async () => {
+    const root = preparedFixture("hung");
+    const { pidFile, script } = hungAcceptance("hung");
+    const options = {
+      ...(await fixtureOptions(root, "hung")),
+      acceptance: script,
+      commandTimeoutMs: 8_000,
+    };
+    await expect(buildRelease(options)).rejects.toThrow(/interrupted or timed out/);
+    const pid = await waitForFile(pidFile, 1);
+    expect(alive(pid)).toBe(false);
+    expect(leftoverWork(options.out)).toEqual([]);
+  }, 60_000);
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    test(`${signal} to the CLI retires its child before removing staging`, async () => {
+      const name = `signal-${signal}`;
+      const root = preparedFixture(name);
+      const { pidFile, script } = hungAcceptance(name);
+      const out = resolve(scratch, `${name}-out`);
+      const args = ["--root", root, "--tag", tag, "--out", out, "--runtime-url", runtimeUrl]
+        .concat(["--runtime-sha256", runtimeSha256, "--runtime-tarball", await runtimeTarball()])
+        .concat(["--acceptance", script]);
+      const cli = Bun.spawn(
+        ["bun", resolve(import.meta.dirname, "program-release.ts")].concat(args),
+        {
+          stdout: "ignore",
+          stderr: "pipe",
+        },
+      );
+      try {
+        const pid = await waitForFile(pidFile, 30_000);
+        cli.kill(signal);
+        expect(await cli.exited).toBe(signal === "SIGTERM" ? 143 : 130);
+        expect(await new Response(cli.stderr).text()).toContain(`Interrupted by ${signal}`);
+        expect(alive(pid)).toBe(false);
+        expect(leftoverWork(out)).toEqual([]);
+      } finally {
+        cli.kill("SIGKILL");
+      }
+    }, 60_000);
+  }
 });

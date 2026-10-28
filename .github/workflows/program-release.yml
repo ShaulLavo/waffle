@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       runtime_url:
-        description: Published waffle-v<version> runtime tarball URL
+        description: This repository's waffle-v<version>/waffle-<version>.tgz release asset URL
         required: true
         type: string
       runtime_sha256:
@@ -45,10 +45,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag }}
-      - name: Verify the tag is on main and names no Python
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Verify the checkout is exactly the tag, on main, and names no Python
         run: |
           [[ "$RELEASE_TAG" =~ ^programs-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
           git fetch origin main
           git merge-base --is-ancestor HEAD origin/main
           # Python stages a qualified interpreter artifact; release it with the local CLI.
@@ -95,7 +96,7 @@ jobs:
           RUNTIME_SHA256: ${{ inputs.runtime_sha256 }}
           REGISTRY: ${{ inputs.registry }}
         run: |
-          bun scripts/program-release.ts --tag "$RELEASE_TAG" --families "$FAMILIES" \
+          bun scripts/program-release.ts --tag "$RELEASE_TAG" --require-tag --families "$FAMILIES" \
             --runtime-url "$RUNTIME_URL" --runtime-sha256 "$RUNTIME_SHA256" \
             ${REGISTRY:+--registry "$REGISTRY"} --out .build/program-release
       - uses: actions/upload-artifact@v4
