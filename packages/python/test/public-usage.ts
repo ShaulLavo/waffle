@@ -9,6 +9,14 @@ type UsageRoot = {
 };
 type Launch = { argv: string[]; cwd: string; env: Record<string, string> };
 
+export const browserUsageCases = publicUsageCases.filter((example) =>
+  [
+    "piped script source runs through EOF without a final newline",
+    "stdin reads UTF-8 and reaches EOF",
+    "relative Unicode and spaced filename follows cwd",
+  ].includes(example.name),
+);
+
 async function seed(runtime: Runtime, example: PublicUsageCase, cwd: string) {
   const files: Record<string, string> = { ...example.files };
   if (example.kind === "script") {
@@ -49,6 +57,7 @@ export async function qualifyPublicUsage(
       PWD: "/stale-directory",
       PYTHONDONTWRITEBYTECODE: "1",
       LC_ALL: "C.UTF-8",
+      NO_COLOR: "1",
       TOKEN: "preserved",
     };
     const originalEnv = JSON.stringify(env);
