@@ -17,6 +17,21 @@ export type TestRequest = Pick<SpawnRequest, "executable" | "argv" | "env" | "cw
   readonly input?: string;
 };
 
+type InputNotice = { kind: "input"; message: WorkerProcessMessage };
+type Notice = InputNotice | { kind: "process"; message: WorkerProcessMessage };
+type InputBinding = { fd: number; announcement: InputNotice };
+
+function discardNotice(notices: Notice[], announcement: InputNotice) {
+  const index = notices.indexOf(announcement);
+  if (index !== -1) notices.splice(index, 1);
+}
+
+function discardOwnedNotices(notices: Notice[]) {
+  for (let index = notices.length - 1; index >= 0; index--) {
+    if (notices[index]?.kind === "input") notices.splice(index, 1);
+  }
+}
+
 function decode(chunks: readonly Uint8Array[]) {
   const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
   let offset = 0;
@@ -27,17 +42,42 @@ function decode(chunks: readonly Uint8Array[]) {
   return new TextDecoder().decode(bytes);
 }
 
-function inputPipe(pipes: WorkerPipeHost, descriptors: DescriptorTable, input: string): number {
+function inputPipe(
+  pipes: WorkerPipeHost,
+  descriptors: DescriptorTable,
+  notices: Notice[],
+  input: string,
+): InputBinding {
   const [reader, writer] = pipes.createPipe();
+  const announcement = notices.at(-1);
   const bytes = new TextEncoder().encode(input);
   try {
+    if (announcement?.kind !== "input") throw new Error("Missing input pipe announcement");
     if (writer.write([bytes]) !== bytes.length) throw new Error("Short test stdin write");
-    return descriptors.open(reader, (1n << 1n) | (1n << 21n) | (1n << 27n), 0n);
+    return {
+      fd: descriptors.open(reader, (1n << 1n) | (1n << 21n) | (1n << 27n), 0n),
+      announcement,
+    };
   } catch (error) {
     reader.close();
+    if (announcement?.kind === "input") discardNotice(notices, announcement);
     throw error;
   } finally {
     writer.close();
+  }
+}
+
+function releaseInput(
+  descriptors: DescriptorTable,
+  input: InputBinding | undefined,
+  notices: Notice[],
+  canceled: boolean,
+) {
+  if (!input) return;
+  try {
+    descriptors.close(input.fd);
+  } finally {
+    if (canceled) discardNotice(notices, input.announcement);
   }
 }
 
@@ -98,37 +138,42 @@ export async function createProgramTestRoot(runtime: Runtime) {
       0n,
     );
   }
-  const notices: WorkerProcessMessage[] = [];
+  const notices: Notice[] = [];
   const pipes = new WorkerPipeHost({
     transport,
     registry: pipeRegistry,
-    postMessage: (message) => notices.push(message),
+    postMessage: (message) => notices.push({ kind: "input", message }),
   });
   const client = new WorkerProcessClient({
     transport,
     descriptors,
     codec: createRuntimeTerminalCodec({ descriptors, fallback: pipes.codec() }),
     prepareSpawn: (child) => preparePipeChild(runtime, pipes, child),
-    postMessage: (message) => notices.push(message),
+    postMessage: (message) => notices.push({ kind: "process", message }),
   });
   const active = new Set<number>();
   const flush = async () => {
-    while (notices.length) await service.runtimeMessage(notices.shift()!, transport.pid);
+    while (notices.length) await service.runtimeMessage(notices.shift()!.message, transport.pid);
   };
   const spawn = (request: TestRequest) => {
-    const inputFd =
-      request.input === undefined ? undefined : inputPipe(pipes, descriptors, request.input);
+    const input =
+      request.input === undefined
+        ? undefined
+        : inputPipe(pipes, descriptors, notices, request.input);
+    let reserved = false;
     try {
-      return client.spawn(transport.pid, {
+      const child = client.spawn(transport.pid, {
         executable: request.executable,
         argv: request.argv,
         env: request.env,
         cwd: request.cwd,
         job: -1,
-        fds: [0, 1, 2].map((fd) => ({ child: fd, parent: fd === 0 ? (inputFd ?? fd) : fd })),
+        fds: [0, 1, 2].map((fd) => ({ child: fd, parent: fd === 0 ? (input?.fd ?? fd) : fd })),
       });
+      reserved = true;
+      return child;
     } finally {
-      if (inputFd !== undefined) descriptors.close(inputFd);
+      releaseInput(descriptors, input, notices, !reserved);
     }
   };
   return {
@@ -161,7 +206,11 @@ export async function createProgramTestRoot(runtime: Runtime) {
       const stopped = await Promise.allSettled(
         Array.from(active, (child) => service.kill(child, 9)),
       );
-      descriptors.dispose();
+      try {
+        descriptors.dispose();
+      } finally {
+        discardOwnedNotices(notices);
+      }
       if (descriptors.inheritable().length) throw new Error("Test root retained descriptors");
       const failed = stopped.find((result) => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;

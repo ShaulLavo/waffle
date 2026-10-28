@@ -109,6 +109,8 @@ async function rootLifecycleFixture() {
   const { spyOn } = await import("bun:test");
   const { createRuntime } = await import("waffle");
   const { PipePublicationRegistry, PipeController } = await import("waffle/proc/pipes");
+  const { WorkerPipeHost } = await import("waffle/proc/worker-pipes");
+  const { BrowserProcessBroker } = await import("../packages/waffle/browser/process-broker.ts");
   const { createProgramTestRoot } = await import("./program-test-root.ts");
   const registrations: { registry: InstanceType<typeof PipePublicationRegistry>; pid: number }[] =
     [];
@@ -120,7 +122,7 @@ async function rootLifecycleFixture() {
   const retain = PipeController.prototype.retain;
   const relay = PipeController.prototype.startRelay;
   const dispose = PipeController.prototype.dispose;
-  const spies = [
+  const spies: Array<{ mockRestore(): void }> = [
     spyOn(PipePublicationRegistry.prototype, "registerProcess").mockImplementation(function (
       this: TestRegistry,
       pid,
@@ -151,6 +153,44 @@ async function rootLifecycleFixture() {
   const restore = () => {
     for (const spy of spies) spy.mockRestore();
   };
+  const pendingQueues = new Set<unknown[]>();
+  const processNotices: unknown[] = [];
+  let allocating = false;
+  const pipeHosts = new Set<InstanceType<typeof WorkerPipeHost>>();
+  let deliveredInputs = 0;
+  const push = Array.prototype.push;
+  const createPipe = WorkerPipeHost.prototype.createPipe;
+  const runtimeMessage = BrowserProcessBroker.prototype.runtimeMessage;
+  spies.push(
+    spyOn(Array.prototype, "push").mockImplementation(function (
+      this: unknown[],
+      ...items: unknown[]
+    ) {
+      if (allocating) pendingQueues.add(this);
+      if (!allocating && pendingQueues.has(this)) push.apply(processNotices, items);
+      return push.apply(this, items);
+    }),
+    spyOn(WorkerPipeHost.prototype, "createPipe").mockImplementation(function (
+      this: InstanceType<typeof WorkerPipeHost>,
+    ) {
+      pipeHosts.add(this);
+      const previous = allocating;
+      allocating = true;
+      try {
+        return createPipe.call(this);
+      } finally {
+        allocating = previous;
+      }
+    }),
+    spyOn(BrowserProcessBroker.prototype, "runtimeMessage").mockImplementation(function (
+      this: InstanceType<typeof BrowserProcessBroker>,
+      message,
+      sender,
+    ) {
+      if (message.operation === "pipe") deliveredInputs++;
+      return runtimeMessage.call(this, message, sender);
+    }),
+  );
   const runtime = createRuntime({
     filesystem: {
       mode: "memory",
@@ -160,6 +200,23 @@ async function rootLifecycleFixture() {
   let owner: Awaited<ReturnType<typeof createProgramTestRoot>> | undefined;
   return {
     runtime,
+    processNotices,
+    get deliveredInputs() {
+      return deliveredInputs;
+    },
+    pendingQueue() {
+      assert.equal(pendingQueues.size, 1, "only the root's input publication queue is observed");
+      const queue = pendingQueues.values().next().value;
+      assert.ok(queue);
+      return queue;
+    },
+    queuedInput() {
+      const host = pipeHosts.values().next().value;
+      assert.ok(host);
+      const pair = host.createPipe();
+      pair[0].close();
+      pair[1].close();
+    },
     async start() {
       owner = await createProgramTestRoot(runtime);
       return owner;
@@ -345,3 +402,72 @@ for (const outcome of ["kill", "start-failure", "EOF"] as const) {
     }
   });
 }
+
+test("failed input reservations release queued buffers before rejection and never deliver them later", async () => {
+  const fixture = await rootLifecycleFixture();
+  try {
+    const owner = await fixture.start();
+    const argv = ["missing"];
+    Object.defineProperty(argv, "slice", {
+      value() {
+        throw new Error("canceled snapshot");
+      },
+    });
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await assert.rejects(owner.exec({ ...pipeRequest, argv }), /canceled snapshot/);
+      assert.equal(fixture.pendingQueue().length, 0, "canceled pipe handle remains queued");
+      await fixture.idle();
+    }
+    assert.equal(fixture.deliveredInputs, 0);
+    const result = await owner.exec({
+      executable: "/missing",
+      argv: ["missing"],
+      cwd: "/",
+      env: {},
+    });
+    assert.equal(result.status, 127);
+    assert.equal(fixture.deliveredInputs, 0, "a later execution published canceled pipe handles");
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test("root disposal releases pending owned input handles and preserves unrelated process notices", async () => {
+  const fixture = await rootLifecycleFixture();
+  let queue: unknown[] | undefined;
+  try {
+    const owner = await fixture.start();
+    const argv = ["missing"];
+    Object.defineProperty(argv, "slice", {
+      value() {
+        throw new Error("canceled snapshot");
+      },
+    });
+    await assert.rejects(owner.exec({ ...pipeRequest, argv }), /canceled snapshot/);
+    const result = await owner.exec({
+      executable: "/missing",
+      argv: ["missing"],
+      cwd: "/",
+      env: {},
+    });
+    assert.equal(result.status, 127);
+    const unrelated = fixture.processNotices[0];
+    assert.ok(unrelated, "a real process notice was not observed");
+    fixture.queuedInput();
+    queue = fixture.pendingQueue();
+    assert.equal(queue.length, 1);
+    queue.unshift(unrelated);
+    const delivered = fixture.deliveredInputs;
+    await owner.dispose();
+    assert.equal(queue.length, 1, "disposal retained an owned handle or removed unrelated notices");
+    assert.equal(queue[0], unrelated);
+    assert.equal(
+      fixture.deliveredInputs,
+      delivered,
+      "disposal published a closed input announcement",
+    );
+  } finally {
+    if (queue) queue.length = 0;
+    await fixture.dispose();
+  }
+});
