@@ -1484,6 +1484,39 @@ export class BrowserProcessBroker {
     for (const pid of pids) this.quiesceProcess(pid);
     await Promise.all(this.fences.values());
   }
+  private stopDisposalController(
+    pid: number,
+    controller: ProcessController,
+    failed: Set<ProcessController>,
+  ): Promise<void> {
+    const stopping = this.controllerStops?.get(pid);
+    const pending = stopping?.controllerStop
+      ? stopping.pending
+      : Promise.resolve().then(() => controller.stop?.());
+    return pending.catch((error) => {
+      failed.add(controller);
+      throw error;
+    });
+  }
+  private retireDisposedControllers(
+    failed: ReadonlySet<ProcessController>,
+    errors: unknown[],
+  ): void {
+    for (const [pid, controller] of this.controllers) {
+      if (
+        failed.has(controller) ||
+        this.children.has(pid) ||
+        this.launches?.has(pid) ||
+        this.controllerStops?.has(pid)
+      )
+        continue;
+      try {
+        controller.retired?.();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
   dispose(): Promise<void> {
     if (this.disposing) return this.disposing;
     let resolve!: () => void, reject!: (error: unknown) => void;
@@ -1517,15 +1550,13 @@ export class BrowserProcessBroker {
       const physicalHandles = this.supervisor?.retireFencedProcesses();
       // Suspension freezes every owned pipe cursor; the filesystem fence above is still
       // mandatory. Attempt and settle every physical stop even if another consumer fails.
+      const failedControllers = new Set<ProcessController>();
       const stops = Array.from(this.children.values(), (child) =>
         Promise.resolve().then(() => this.stop(child)),
       ).concat(
-        Array.from(this.controllers, ([pid, controller]) => {
-          const stopping = this.controllerStops?.get(pid);
-          return stopping?.controllerStop
-            ? stopping.pending
-            : Promise.resolve().then(() => controller.stop?.());
-        }),
+        Array.from(this.controllers, ([pid, controller]) =>
+          this.stopDisposalController(pid, controller, failedControllers),
+        ),
         Array.from(this.controllerStops?.values() ?? [], (stopping) => stopping.pending),
         Array.from(this.pendingLaunches?.values() ?? [], (launch) => launch.settled),
       );
@@ -1538,13 +1569,7 @@ export class BrowserProcessBroker {
       } catch (error) {
         errors.push(error);
       }
-      for (const controller of this.controllers.values()) {
-        try {
-          controller.retired?.();
-        } catch (error) {
-          errors.push(error);
-        }
-      }
+      this.retireDisposedControllers(failedControllers, errors);
       if (errors.length) {
         const failure = new AggregateError(errors, "Process broker cleanup failed");
         this.retirementGate.reject(failure);

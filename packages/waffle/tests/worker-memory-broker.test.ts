@@ -32,6 +32,10 @@ async function until(predicate: () => boolean) {
   }
 }
 
+async function terminateNativeWorkers(workers: readonly { native?: NodeWorker }[]): Promise<void> {
+  await Promise.all(workers.map((worker) => worker.native?.terminate()));
+}
+
 async function fixture(real: boolean, stopping: Promise<void> = Promise.resolve()) {
   const previousWorker = globalThis.Worker;
   const workers: EmbeddingWorker[] = [];
@@ -122,11 +126,7 @@ async function fixture(real: boolean, stopping: Promise<void> = Promise.resolve(
     try {
       await broker.dispose().catch((error) => errors.push(error));
     } finally {
-      await Promise.all(
-        workers.map(async (worker) => {
-          await worker.native?.terminate();
-        }),
-      );
+      await terminateNativeWorkers(workers);
       filesystem.dispose();
       descriptors.dispose();
       for (const port of ports) port.close();
@@ -226,6 +226,84 @@ test("a collected directory slot cannot attribute a late old sample to its repla
     expect(f.broker.workerMemory().find((sample) => sample.pid === nextPid)?.bytes).toBeNull();
   } finally {
     stop.resolve();
+    await f.dispose();
+  }
+});
+
+test("r703 failed physical stop must not retire retained controller ancestry", async () => {
+  const stop = Promise.withResolvers<void>();
+  const f = await fixture(false, stop.promise);
+  let retired = 0,
+    independentRetired = 0,
+    independentStopped = 0;
+  f.broker.reserveRoot(
+    {},
+    {
+      stop() {
+        independentStopped++;
+      },
+      retired() {
+        independentRetired++;
+      },
+    },
+  );
+  f.broker.registerController(f.pid, {
+    retired() {
+      retired++;
+    },
+  });
+  try {
+    const worker = f.workers.find((worker) => worker.request)!;
+    worker.onmessage?.({ data: { type: "exit", code: 0 } });
+    await f.supervisor.waitForExit(f.root.pid, f.pid);
+    stop.reject(Error("r703 physical stop failure"));
+    await until(() => f.errors.length > 0);
+    expect(retired).toBe(0);
+    await expect(f.broker.dispose()).rejects.toThrow();
+    console.log(JSON.stringify({ retainedRows: f.broker.workerMemory().length, retired }));
+    expect(f.broker.workerMemory()).toHaveLength(1);
+    expect(retired).toBe(0);
+    expect(independentStopped).toBe(1);
+    expect(independentRetired).toBe(1);
+  } finally {
+    stop.resolve();
+    await f.dispose();
+  }
+});
+
+test("disposal retires successful independent controllers but retains a failed controller", async () => {
+  const f = await fixture(false);
+  let failedRetired = 0,
+    successfulRetired = 0,
+    successfulStopped = 0;
+  f.broker.reserveRoot(
+    {},
+    {
+      stop() {
+        throw Error("independent controller stop failed");
+      },
+      retired() {
+        failedRetired++;
+      },
+    },
+  );
+  f.broker.reserveRoot(
+    {},
+    {
+      stop() {
+        successfulStopped++;
+      },
+      retired() {
+        successfulRetired++;
+      },
+    },
+  );
+  try {
+    await expect(f.broker.dispose()).rejects.toThrow();
+    expect(failedRetired).toBe(0);
+    expect(successfulStopped).toBe(1);
+    expect(successfulRetired).toBe(1);
+  } finally {
     await f.dispose();
   }
 });
