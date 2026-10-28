@@ -41,7 +41,7 @@
       "livePath": "packages/coreutils/docs/wc.md",
       "historicalPath": "packages/coreutils/provenance/history/docs/wc.md",
       "historicalSha256": "e89b0c1b27f795be5ab4315966817b2bc0da56564a6909a528240c76d8bb21b7",
-      "liveSha256": "2b491f827d8ef0933c8dc81408811a158dd6ae43cd459d619ae9fbb2ca702883"
+      "liveSha256": "37adfcce5a787946c2a635627004532c9e8130797598b0e8493b5fa9f0cf884a"
     },
     {
       "livePath": "packages/coreutils/docs/ls.md",
@@ -59,7 +59,7 @@
       "livePath": "packages/coreutils/docs/file-operations.md",
       "historicalPath": "packages/coreutils/provenance/history/docs/file-operations.md",
       "historicalSha256": "657d826e7a3e79997b2b3c4809cdf34f4e17e6c933dcab62c0430683b803a2be",
-      "liveSha256": "77256cab70f40acd18dc3dfb647210bc8f5a8754167d200509a10077b6c3b5cd"
+      "liveSha256": "9b8c2af198689f2d9c364dd357e0ffce001c6b0d79eddb5ec9e3a285b8950236"
     },
     {
       "livePath": "packages/coreutils/docs/which.md",

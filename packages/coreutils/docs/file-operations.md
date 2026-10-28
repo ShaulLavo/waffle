@@ -1,6 +1,6 @@
 # file-operations
 
-Create, remove, copy and move files with touch, rm, cp and mv. The `coreutils` ProgramPackage exports this separate lazy guest at `/usr/bin/cp` with a `/bin` alias.
+Create, remove, copy and move files with touch, rm, cp and mv. The `coreutils` ProgramPackage exports separate lazy guests at `/usr/bin/touch`, `/usr/bin/rm`, `/usr/bin/cp` and `/usr/bin/mv`, each with a `/bin` alias.
 
 ```ts
 import { coreutils } from "waffle-coreutils";
