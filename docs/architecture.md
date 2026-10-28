@@ -233,13 +233,15 @@ and overwritten with the runtime's authoritative capabilities. Metadata is not i
 copied from the parent: allocate any per-process admission state afresh in this hook.
 Pipes retain their bounded defaults: 64 KiB capacity, 16 writers and 16 readers.
 
-`resolveTerminal(target: 0 | 1 | 2): Stream` maps inherited terminal provenance to a
+`resolveTerminal(target: 0 | 1 | 2): Stream | undefined` maps inherited terminal provenance to a
 process-local endpoint, including interactive input. Capture request metadata during `setup`
 if the endpoint needs it. The terminal codec owns provenance: duplication, redirection and
 later generations preserve the original target, not the destination fd number. Bindings
 sharing a transferred reference also share one open description; the resolver stream's
-`close` runs on that description's last release. Without a resolver, stdin remains EOF and
-output uses the host callbacks. The same resolver option is available directly on
+`close` runs on that description's last release. Return `undefined` for a target to use its
+default, just as when no resolver is provided: stdin remains EOF and output uses the checked
+host callbacks. A stdin-only resolver can return `target === 0 ? attachment.resolve(0) : undefined`
+to keep host output without routing it back through `WorkerSetupContext.post`. The same resolver option is available directly on
 `createRuntimeTerminalCodec` from `waffle/browser/runtime-terminals`.
 
 `createTerminalInput()` provides the generic foreground input transport. The page keeps the
