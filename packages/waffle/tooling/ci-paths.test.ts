@@ -320,6 +320,9 @@ test("programs selects every consumed tool, workspace dependency, installer and 
     "tools/program-family-manifest.test.ts",
     "tools/family-acceptance.ts",
     "tools/program-package.ts",
+    "scripts/program-release.ts",
+    "scripts/program-release.test.ts",
+    "scripts/tsconfig.json",
     "tools/program-notices.ts",
     "packages/waffle/programs/index.ts",
     "packages/waffle/runtime.ts",
@@ -332,4 +335,10 @@ test("programs selects every consumed tool, workspace dependency, installer and 
   expect(String(record(jobs.programs).if)).toContain("needs.changes.outputs.programs");
   for (const path of ["docs/development.md", "site/src/pages/index.astro", "site/bun.lock"])
     expect(selected("programs", path), path).toBe(false);
+});
+
+test("programs normal CI runs the release closure test from the folded source checkpoint", () => {
+  expect(
+    stepsFor("programs").some((step) => step.run === "bun test scripts/program-release.test.ts"),
+  ).toBe(true);
 });
