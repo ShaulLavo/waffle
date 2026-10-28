@@ -162,6 +162,7 @@ const processCapabilities = {
   transportFor: "method",
   releaseLegacyJob: "method",
   launchWorker: "method",
+  outputDrained: "method",
   workerMemory: "method",
   takeWorker: "method",
   isIdleWorker: "method",

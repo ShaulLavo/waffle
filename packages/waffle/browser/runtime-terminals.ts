@@ -1,9 +1,10 @@
-// Original browser adapter: terminal destinations are host callbacks, not shared pipe rings.
+// Original browser adapter: terminal destinations are host sinks, not shared pipe rings.
 import { OpenDescription, type DescriptorTable, type Stream } from "../core/descriptors.js";
 import { guardedStream } from "./guarded-stream.js";
 import { ProcessError } from "../proc/types.js";
 import type { WorkerDescriptorCodec } from "../proc/worker-client.js";
 import { WeakMapConstructor, weakMapGet, weakMapHas, weakMapSet } from "../proc/intrinsics.ts";
+import { hostTerminalStream, type RuntimeTerminalOutput } from "./terminal-output.js";
 
 type TerminalTarget = 0 | 1 | 2;
 interface TerminalToken {
@@ -18,7 +19,8 @@ export interface RuntimeTerminalCodecOptions {
   fallback: WorkerDescriptorCodec;
   /** Initial default stdio only. Existing imported provenance wins over the current fd number. */
   descriptors?: DescriptorTable;
-  output?(fd: 1 | 2, data: Uint8Array): void;
+  /** Host destination for unresolved terminal targets. Writes report exactly what it accepted. */
+  output?: RuntimeTerminalOutput;
   /** Resolve inherited provenance to a process-local endpoint, including interactive stdin.
    * Return undefined to keep this target's default EOF input or host output.
    * The returned stream is owned by the imported description and closed at its last release. */
@@ -88,36 +90,7 @@ export function createRuntimeTerminalCodec(
         remember(stream);
         return new OpenDescription(stream, () => stream.close?.());
       }
-      const read = () => {
-        options.checkActive?.();
-        return 0;
-      };
-      const write = (chunks: readonly Uint8Array[]) => {
-        options.checkActive?.();
-        const total = chunks.reduce((size, bytes) => size + bytes.length, 0);
-        if (!total) return 0;
-        if (!options.output) return -NOSYS;
-        // Copy guest memory before posting/transferring; WASM memory is never transferable.
-        const data = new Uint8Array(total);
-        let offset = 0;
-        for (const bytes of chunks) {
-          data.set(bytes, offset);
-          offset += bytes.length;
-        }
-        options.output(token.target === 2 ? 2 : 1, data);
-        return total;
-      };
-      const stream: Stream = {
-        kind: "terminal",
-        read,
-        tryRead: read,
-        write,
-        tryWrite: write,
-        readiness() {
-          options.checkActive?.();
-          return { readable: true, writable: true, hangup: token.target === 0 };
-        },
-      };
+      const stream = hostTerminalStream(token.target, options.output, options.checkActive);
       weakMapSet(targets, stream, token.target);
       return new OpenDescription(stream);
     },
@@ -128,6 +101,7 @@ export function createRuntimeTerminalCodec(
   };
 }
 
+export type { RuntimeTerminalOutput } from "./terminal-output.js";
 export { captureTerminalProcessLifetime } from "./terminal-lifetime.js";
 export type { TerminalProcessLifetime } from "./terminal-lifetime.js";
 export {

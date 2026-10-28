@@ -56,6 +56,12 @@ import {
   PipePublicationRegistry,
 } from "../proc/pipes.js";
 import { createRuntimeTerminalCodec } from "./runtime-terminals.js";
+import {
+  createTerminalOutput,
+  deliveredTerminalOutput,
+  type TerminalOutputDelivery,
+  type TerminalOutputReader,
+} from "./terminal-output.js";
 import type { RuntimeWorkerRequest } from "./worker.js";
 
 export interface ProcessFilesystem {
@@ -106,7 +112,14 @@ export interface RuntimeDescendant {
 export interface RuntimeRootOptions {
   filesystem?: FilesystemIdentity;
   acknowledged?(): boolean;
+  /** Takes every terminal byte of this root's processes, in order. Exclusive with tryOutput. */
   output?(fd: 1 | 2, data: Uint8Array): void;
+  /**
+   * Bounded terminal destination. Return the exact accepted prefix length, 0 to data.length.
+   * The rest stays in its writer's bounded buffer and that writer waits, like a full TTY.
+   * Call ProcessService.outputDrained(rootPid) when room returns. Exclusive with output.
+   */
+  tryOutput?(fd: 1 | 2, data: Uint8Array): number;
   quiesce?(): void | Promise<void>;
   stop?(): void | Promise<void>;
   wake?(): void;
@@ -130,6 +143,7 @@ export interface WorkerLaunchOptions<T extends RuntimeWorkerRequest = RuntimeWor
     | "hostIdentity"
     | "notifications"
     | "memoryObservation"
+    | "terminalOutput"
   >;
   cleanup?(): void;
   onMessage?(message: unknown, context: ProcessContext): void;
@@ -168,6 +182,10 @@ interface RuntimeChild {
   cleanup?(): void;
   wake?(): void;
 }
+interface TerminalOutputOwner {
+  readonly child: RuntimeChild;
+  readonly rootPid: number;
+}
 
 /** Page-owned process admission and descriptor transport. Guest adapter policy is injected. */
 export class BrowserProcessBroker {
@@ -193,7 +211,9 @@ export class BrowserProcessBroker {
   private launches?: Set<number>;
   private pendingLaunches?: Map<number, { acquired: Promise<void>; settled: Promise<void> }>;
   private readonly descendantHooks = new Map<number, DescendantHook>();
-  private readonly outputs = new Map<number, RuntimeRootOptions["output"]>();
+  private readonly outputs = new Map<number, TerminalOutputDelivery | undefined>();
+  /** Live Workers' buffers, and stopped Workers' buffers still holding accepted bytes. */
+  private readonly terminalOutputs = new Map<TerminalOutputReader, TerminalOutputOwner>();
   private readonly registries = new Map<number, PipePublicationRegistry>();
   private readonly children = new Map<number, RuntimeChild>();
   private readonly fences = new Map<number, Promise<void>>();
@@ -523,6 +543,9 @@ export class BrowserProcessBroker {
       this.revokedControllers?.delete(pid);
       this.roots.delete(pid);
       this.outputs.delete(pid);
+      // The destination is gone; nothing remains to deliver buffered bytes to.
+      for (const [reader, owner] of this.terminalOutputs)
+        if (owner.rootPid === pid) this.terminalOutputs.delete(reader);
       this.registries.delete(pid);
       this.fences.delete(pid);
       this.releaseAcquiredProcess(pid);
@@ -554,7 +577,7 @@ export class BrowserProcessBroker {
     const state = workerProcessState(transport);
     this.transport.adoptRoot(transport);
     this.roots.set(state.pid, transport);
-    this.outputs.set(state.pid, options.output);
+    this.outputs.set(state.pid, rootOutput(options));
     const data = transport.data as {
       filesystem: FilesystemIdentity;
       pipeRegistry?: import("../proc/pipes.js").PipePublicationRegistryHandle;
@@ -638,7 +661,10 @@ export class BrowserProcessBroker {
         fallback: createFilesystemDescriptorCodec(this.filesystem(transport), undefined, () =>
           this.options.filesystem.sweep?.(),
         ),
-        output: (fd, bytes) => this.outputFor(workerProcessState(transport).pid)?.(fd, bytes),
+        output: deliveredTerminalOutput((target, data) => {
+          const destination = this.outputFor(workerProcessState(transport).pid);
+          return destination ? destination(target, data) : data.length;
+        }),
       }),
     );
   }
@@ -721,7 +747,30 @@ export class BrowserProcessBroker {
     await Promise.all(pending);
     this.collectRuntimeProcess(transport.pid, workerProcessDirectoryId(transport));
   }
-  private outputFor(pid: number): RuntimeRootOptions["output"] {
+  /** A bounded root destination reports room for its writers' buffered terminal output. */
+  outputDrained(rootPid: number): void {
+    for (const [reader, owner] of this.terminalOutputs)
+      if (owner.rootPid === rootPid) this.drainTerminalOutput(reader);
+  }
+  private drainTerminalOutput(reader: TerminalOutputReader): void {
+    const owner = this.terminalOutputs.get(reader);
+    if (!owner || this.suspended) return;
+    const destination = this.outputs.has(owner.rootPid)
+      ? this.outputs.get(owner.rootPid)
+      : this.outputFor(owner.child.context.pid);
+    try {
+      reader.drain(destination ?? ((_target, data) => data.length));
+    } catch (error) {
+      this.report(error);
+    }
+    this.releaseTerminalOutputs(owner.child);
+  }
+  private releaseTerminalOutputs(child: RuntimeChild): void {
+    if (this.children.get(child.context.pid) === child) return;
+    for (const [reader, owner] of this.terminalOutputs)
+      if (owner.child === child && !reader.pending()) this.terminalOutputs.delete(reader);
+  }
+  private outputFor(pid: number): TerminalOutputDelivery | undefined {
     const rootPid = this.options.table.get(pid)?.rootPid;
     if (rootPid !== undefined && this.outputs.has(rootPid)) return this.outputs.get(rootPid);
     for (;;) {
@@ -1018,6 +1067,10 @@ export class BrowserProcessBroker {
     this.children.set(context.pid, child);
     let connection: FilesystemConnection | undefined;
     let worker: Worker;
+    const output = createTerminalOutput();
+    this.terminalOutputs.set(output, { child, rootPid: state.rootPid });
+    // Revocation refuses further writes and wakes a blocked writer; accepted bytes remain.
+    context.registerRevocation(() => output.close());
     try {
       const stderr = context.descriptors.get(2)?.resource;
       if (stderr instanceof PipeEndpoint) {
@@ -1050,9 +1103,15 @@ export class BrowserProcessBroker {
       outcome: serializeOutcome(context.outcome),
       startupStderr: child.startupStderr?.handle(),
       notifications: child.notifications?.connection,
+      terminalOutput: output.buffer,
     };
     this.watch();
     worker.onmessage = ({ data }: MessageEvent<any>) => {
+      if (data.type === "terminal-output") {
+        // Bytes the guest was told it wrote are delivered even after a signal won.
+        this.drainTerminalOutput(output);
+        return;
+      }
       let selected: ReturnType<typeof readOutcome>,
         entered = false;
       try {
@@ -1101,11 +1160,6 @@ export class BrowserProcessBroker {
       }
       if (selected?.kind === "signaled" && data.type !== "exit" && data.type !== "error") {
         options.onMessage?.(data, context);
-        return;
-      }
-      if (data.type === "stdout" || data.type === "stderr") {
-        if (!this.suspended)
-          this.outputFor(context.pid)?.(data.type === "stderr" ? 2 : 1, data.data);
         return;
       }
       if (data.type !== "exit" && data.type !== "error") {
@@ -1281,6 +1335,7 @@ export class BrowserProcessBroker {
       await settleStop(() => child.cleanup?.(), errors);
       if (errors.length) throw new AggregateError(errors, "Child physical stop failed");
       this.children.delete(child.context.pid);
+      this.releaseTerminalOutputs(child);
       this.retireChildController(child.context.pid);
     };
     const fence = this.quiesceProcess(child.context.pid);
@@ -1620,6 +1675,7 @@ export class BrowserProcessBroker {
       this.rootLeases.clear();
       this.roots.clear();
       this.outputs.clear();
+      this.terminalOutputs.clear();
       this.registries.clear();
       this.controllers.clear();
       this.quiescedControllers.clear();
@@ -1660,4 +1716,15 @@ function stopTerminalConsumer(
   const pending = handle.terminate();
   if (pending) return pending.then(() => terminal?.stopped());
   terminal?.stopped();
+}
+
+function rootOutput(options: RuntimeRootOptions): TerminalOutputDelivery | undefined {
+  const { output, tryOutput } = options;
+  if (output && tryOutput) throw new TypeError("root output and tryOutput are exclusive");
+  if (tryOutput) return (target, data) => tryOutput(target, data);
+  if (!output) return undefined;
+  return (target, data) => {
+    output(target, data);
+    return data.length;
+  };
 }
